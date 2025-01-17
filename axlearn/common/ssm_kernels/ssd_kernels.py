@@ -358,6 +358,7 @@ def _ssd_backward_kernel(
         k_block = k_ref[subchunk_idx, :].astype(jnp.float32)
         v_block = v_ref[subchunk_idx, :].astype(jnp.float32)
         do_block = mutable_do_ref[subchunk_idx, :].astype(jnp.float32)
+        causal_mask = jnp.tril(jnp.ones((subchunk_size, subchunk_size)), k=0).astype(jnp.float32)
 
         lambda_block = cum_log_alpha_ref[subchunk_idx, :]
         gamma_block = gamma_ref[subchunk_idx]
@@ -579,12 +580,14 @@ def ssd_linear_scan(
 
     Args:
         q, k: [batch_size, num_groups, seq_len, dk]
-        v: [batch_size, num_groups, seq_len, dv]
+        k: [batch_size, num_groups, seqlen, dk]
+        v: [batch_size, num_heads, seq_len, dv]
         log_alpha: [batch_size, num_heads, seq_len]
         h0: [batch_size, num_heads, dk, dv] or None
 
      Returns:
         output: [batch_size, num_heads, seq_len, dv]
+        hidden_state: [batch_size, num_heads, dk, dv]
     """
     bs, ng, _, dk = q.shape
     bs, nh, _, dv = v.shape
@@ -595,14 +598,14 @@ def ssd_linear_scan(
     q = repeat(q, "b ng l dk -> b (ng nhg) l dk", nhg=num_head_per_group)
     k = repeat(k, "b ng l dk -> b (ng nhg) l dk", nhg=num_head_per_group)
 
-    # It's more convenient for vmap to have internal states of size [dv, dk]
+    # ITt's more convenient for vmap to have internal states of size [dv, dk]
     if h0 is None:
         h0 = jnp.zeros((bs, nh, dv, dk), dtype=jnp.float32)
     else:
         # to be consistent with pallas api, h0 is in dk x dv as input
         h0 = rearrange(h0, "b h dk dv -> b h dv dk")
 
-    # All inputs are upcasted to float32, making this function a good reference function to
+    # All inputs are upcasted to float32, making this function a good reference funciton to
     # test pallas kernel's numerical precision in the case of bf16 inputs.
     dtype = q.dtype
     if dtype == jnp.bfloat16:
@@ -652,12 +655,13 @@ def ssd_linear_scan_w_hidden_states(
     Args:
         q: [batch_size, num_groups, seqlen, dk]
         k: [batch_size, num_groups, seqlen, dk]
-        v: [batch_size, num_groups, seqlen, dv]
+        v: [batch_size, num_heads, seqlen, dv]
         log_alpha: [batch_size, num_heads, seqlen]
         h0: [batch_size, num_heads, dk, dv] or None
 
      Returns:
         output: [batch_size, num_heads, seq_len, dv]
+        hidden_states: [batch_size, num_heads, seq_len, dk, dv]
     """
     bs, ng, _, dk = q.shape
     bs, nh, _, dv = v.shape
@@ -717,13 +721,14 @@ def ssd_linear_scan_w_timestep(
     Args:
         q: [batch_size, num_groups, seqlen, dk]
         k: [batch_size, num_groups, seqlen, dk]
-        v: [batch_size, num_groups, seqlen, dv]
+        v: [batch_size, num_heads, seqlen, dv]
         log_alpha: [batch_size, num_heads, seqlen]
         h0: [batch_size, num_heads, dk, dv] or None
         timestep: [batch_size, seqlen] or None
 
      Returns:
         output: [batch_size, num_heads, seq_len, dv]
+        hidden_states: [batch_size, num_heads, dk, dv]
 
     """
     bs, ng, l, dk = q.shape

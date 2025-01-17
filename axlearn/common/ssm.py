@@ -44,8 +44,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.convolution import Conv1D
-from axlearn.common.layers import GroupNorm, Linear, MultiLinear, NormType, RMSNorm
+from axlearn.common.layers import Conv1D, GroupNorm, Linear, MultiLinear, NormType, RMSNorm
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes, Initializer, Shape, constant_initializer, uniform
 from axlearn.common.ssm_kernels.mamba_kernels import compute_mamba_scan
@@ -79,8 +78,7 @@ class MambaDtProjInitializer(Initializer):
         # Clamp dt projection's bias to at least this value.
         dt_init_floor: float = 1e-4
         # One of 'random' or 'constant'.
-        # If 'constant', the projection matrix is initialized to a constant;
-        # otherwise, use random initialization.
+        # If 'constant', the projection matrix is initialized to a constant; otherwise, random. # pylint: disable=C0301
         mode: str = "random"
 
     def initialize(
@@ -1622,7 +1620,7 @@ class PallasSSDRecurrence(BaseSSDRecurrence):
 
         Unlike the Mamba recurrence, discretizations of parameters are not explicitly computed.
         More specifically, \bar a (i.e., discretized a) is computed outside the kernel whereas
-        \bar b is computed implicitly via multiplying the delta term to the input
+        \bar b is computed implicitly via adding the delta term to the input
             x -- \bar x = x * delta.
         See the following line from the official repo for details -
         https://github.com/state-spaces/mamba/blob/8ffd905c91d207f5c0cc84fc2a2fb748655094f0/mamba_ssm/modules/ssd_minimal.py#L103
@@ -2079,7 +2077,7 @@ class Mamba2MixerLayer(BaseLayer):
         Args:
             mode: {FORWARD, INIT_STATES, EXTEND_STEP}
             query: A Tensor of shape [batch_size, seq_len, input_dim]
-            cache: Optional NestedTensor as produced by `init_states`.
+            cache: Optional NestedTensor as produced by `prefill_states`.
 
         Returns:
             An optional cache, depending on `mode`.
@@ -2095,7 +2093,7 @@ class Mamba2MixerLayer(BaseLayer):
             )
         elif mode == ForwardMode.INIT_STATES:
             assert cache is not None
-            mamba_cache, mamba_output = self.init_states(
+            mamba_cache, mamba_output = self.prefill_states(
                 time_step=cache,
                 query=query,
             )
@@ -2139,19 +2137,49 @@ class Mamba2MixerLayer(BaseLayer):
         mamba_output = Mamba2MixerLayer.Mamba2Output(data=output, ssd_state=ssd_state)
         return mamba_cache, mamba_output
 
-    def init_states(
+    # pylint: disable=unused-argument
+    def init_states(self, *, target_batch_size: int, target_max_len: int) -> Mamba2Cache:
+        """Initializes cache for autoregressive cached decoding.
+
+        Args:
+            batch_size: The batch size of the target to be decoded.
+            target_max_len: The maximum length of the target to be decoded.
+
+        Returns:
+            A Mamba2Cache instance.
+        """
+        cfg = self.config
+        dtype = cfg.cache_dtype or cfg.dtype
+        cache = Mamba2MixerLayer.Mamba2Cache(
+            x_conv_state=jnp.zeros(
+                (target_batch_size, cfg.x_conv.window, self.inner_dim), dtype=dtype
+            ),
+            b_conv_state=jnp.zeros(
+                (target_batch_size, cfg.b_conv.window, self.bc_state_dim), dtype=dtype
+            ),
+            c_conv_state=jnp.zeros(
+                (target_batch_size, cfg.c_conv.window, self.bc_state_dim), dtype=dtype
+            ),
+            ssd_state=jnp.zeros(
+                (target_batch_size, cfg.num_heads, cfg.state_dim, self.head_dim), dtype=dtype
+            ),
+            time_step=jnp.zeros(target_batch_size, dtype=jnp.int32),
+        )
+        return cache
+
+    def prefill_states(
         self,
         *,
         time_step: Tensor,
-        query: Union[Tensor, TensorSpec],
-    ) -> tuple[Mamba2Cache, Union[None, Mamba2Output]]:
+        query: Tensor,
+    ) -> tuple[Mamba2Cache, Mamba2Output]:
         """Initializes cache for autoregressive cached decoding. It refines the mamba state
         returned from `_full_sequence_forward` to the state at `time_step` for the
         incremental decoding later.
 
         Args:
-            time_step: An optional Tensor of shape [batch_size]. Each value is an index into the
-               length dimension indicating where decoding will start from.
+            time_step: A Tensor of shape [batch_size]. Each value is an index into the length
+                dimension indicating where decoding will start from.
             query: Tensor of shape [batch_size, target_length, target_dim] corresponding to input
                 vector up to `time_step` indices. For batch index `i`, only
                 `inputs[i, :time_step[i], ...]` will affect subsequent decoding.
@@ -2162,26 +2190,6 @@ class Mamba2MixerLayer(BaseLayer):
         """
         cfg = self.config
         cache_dtype = cfg.cache_dtype or cfg.dtype
-
-        if time_step is None:
-            target_batch_size = query.shape[0]
-            init_state = Mamba2MixerLayer.Mamba2Cache(
-                x_conv_state=jnp.zeros(
-                    (target_batch_size, cfg.x_conv.window, self.inner_dim), dtype=cache_dtype
-                ),
-                b_conv_state=jnp.zeros(
-                    (target_batch_size, cfg.b_conv.window, self.bc_state_dim), dtype=cache_dtype
-                ),
-                c_conv_state=jnp.zeros(
-                    (target_batch_size, cfg.c_conv.window, self.bc_state_dim), dtype=cache_dtype
-                ),
-                ssd_state=jnp.zeros(
-                    (target_batch_size, cfg.num_heads, cfg.state_dim, self.head_dim),
-                    dtype=cache_dtype,
-                ),
-                time_step=jnp.zeros(target_batch_size, dtype=jnp.int32),
-            )
-            return init_state, None
 
         x, z = self._project_input(query)
         x_conv = jax.nn.silu(self.x_conv(x))

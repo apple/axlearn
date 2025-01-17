@@ -345,10 +345,8 @@ class SSDPallasKernelTest(TestCase):
 
 
 class ShardSSDPallasKernelTest(TestCase):
-    # This test only works for four devices
-    @pytest.mark.skipif(
-        jax.default_backend() != "gpu" or jax.device_count() != 4, reason="Requires 4 GPU devices"
-    )
+    # this test only works for four devices
+    @pytest.mark.skipif(jax.device_count() != 4, reason="Requires 4 devices")
     def test_sharded_ssd_wo_sp(self):
         batch, ngroups, nheads, seqlen, k_head_dim, v_head_dim = 8, 4, 4, 1024, 256, 128
         dtype = "float32"
