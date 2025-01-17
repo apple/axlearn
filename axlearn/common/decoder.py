@@ -659,6 +659,7 @@ class Decoder(BaseLayer):
             ),
             **kwargs,
         )
+        self.add_module_output("prefill_hidden_states", outputs["hidden_states"])
         states = dict(time_step=time_step, input_ids=input_ids, **states)
         return states, outputs
 

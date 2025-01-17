@@ -159,6 +159,7 @@ def sample_from_datasets(
             ds = ds.repeat()
         return ds
 
+    # TODO(markblee): Support mixing grain.IterDataset.
     return grain.MapDataset.mix(
         datasets=[maybe_repeat(source) for source in sources],
         weights=weights,
@@ -629,3 +630,22 @@ class Input(input_base.Input):
                     f"Please make sure to call {shard_dataset.__name__} if using input dispatch."
                 )
         return maybe_to_iter_dataset(ds)
+
+    def element_spec(self) -> utils.Nested[jax.ShapeDtypeStruct]:
+        """Infers the element spec.
+
+        Grain requires fetching an example from the dataset to extract the spec. To avoid reading
+        actual data, replace your source dataset with one from `input_fake.fake_grain_source`.
+        """
+        ds = self.dataset()
+        if isinstance(ds, grain.MapDataset):
+            example = ds[0]
+        else:
+            example = next(ds.__iter__())  # pylint: disable=unnecessary-dunder-call
+
+        def shape_dtype(x):
+            if not hasattr(x, "shape") or not hasattr(x, "dtype"):
+                raise ValueError(f"element_spec() requires Tensor-like leaves, got: {x}.")
+            return jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype)
+
+        return jax.tree.map(shape_dtype, example)

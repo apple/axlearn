@@ -134,8 +134,8 @@ from axlearn.common.repeat import Repeat
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
-    OffloadPolicy,
     PartitionSpec,
+    RematPolicy,
     SavePattern,
     Tensor,
     TensorSpec,
@@ -4003,8 +4003,6 @@ class PipelinedTransformerLayer(BaseStackedTransformerLayer):
     # TODO(sneha): extend_step
 
 
-# Adapted from jax source code to support regex. Reference:
-# https://github.com/jax-ml/jax/blob/0d36b0b433a93c707f86dac89b0c05d40302775a/jax/_src/ad_checkpoint.py#L120
 # TODO(kelvin-zou): deprecated, keep it here to minimize distruption to the golden configs.
 # Please use axlearn.common.utils.extended_checkpoint_policies instead.
 def _save_and_offload_only_these_names_regex(
@@ -4013,7 +4011,7 @@ def _save_and_offload_only_these_names_regex(
     names_which_can_be_offloaded: SavePattern,
     offload_src: str,
     offload_dst: str,
-) -> OffloadPolicy:
+) -> RematPolicy:
     return save_and_offload_only_these_names_regex(
         names_which_can_be_saved=names_which_can_be_saved,
         names_which_can_be_offloaded=names_which_can_be_offloaded,
@@ -4029,7 +4027,9 @@ class RematRegexSavePatterns(enum.Enum):
     CONTEXT = r".*context"
     LINEAR1_X = r".*linear1_[01]"
     LINEAR2_X = r".*linear2_[01]"
-    SELF_ATTENTION = ".*([qkvo]_proj|context)"
+    # This is called native attention because the "context" remat point only exists when using
+    # native attention, e.g. `MultiheadAttention` or `GroupedQueryAttention`.
+    NATIVE_ATTENTION = ".*([qkvo]_proj|context)"
     FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
 
 
@@ -4037,21 +4037,32 @@ def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
-    save_pattern: SavePattern = RematRegexSavePatterns.SELF_ATTENTION.value,
+    save_pattern: SavePattern = RematRegexSavePatterns.NATIVE_ATTENTION.value,
     offload_pattern: SavePattern = None,
     offload_dst: str = "pinned_host",
 ) -> Optional[RematSpec]:
     """Configures how the Transformer or Conformer stack will save the linearization points.
 
     We try to save activations from the forward pass that are inefficient to recompute on the
-    backward pass. We choose the linearization points in the MultiHeadAttention layer, as that
-    demonstrated (empirically) the best throughput, allowing us to train with a batch size of 16 on
-    gpt2-10b with adamw and full sharding across 4 TPU v4 chips and a RepeatedTransformerLayer,
-    with 1.8x the step time of a stacked layer with a batch size of 8 and the same sharding config.
+    backward pass which are mainly matrix multiplications. By default, we don't save linear
+    layer's output due to the large expansion factor.
 
     For conformer model, we start from the same remat policy as language models.
     TODO(zhiyunlu): investigate Conformer model's memory/step-time tradeoffs. Possibly we
     need to save points in the LConv module.
+
+    Note that the default `save_pattern`, `NATIVE_ATTENTION`, doesn't save the context tensor when
+    using `FlashAttention`. To save it when using `FlashAttention`, use the policy from the module
+    `axlearn.common.flash_attention.remat`:
+
+    ```python
+    from axlearn.common.utils import save_and_offload_these_names_regex
+    from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
+    combine_remat_policies(
+        save_and_offload_these_names_regex(...),
+        save_or_offload_flash_attention_policy()
+    )
+    ```
 
     Args:
         stack_cfg: A transformer config.
