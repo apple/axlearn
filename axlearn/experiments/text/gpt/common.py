@@ -303,8 +303,12 @@ def model_config(
     cfg = causal_lm.Model.default_config().set(
         decoder=decoder_cfg,
         param_init=model_param_init,
-        batch_axis_names=batch_axis_names,
-        seq_axis_names=("seq",),
+        input_partition=config_for_function(causal_lm.partition_by_ndim).set(
+            ndim_to_partition={
+                1: PartitionSpec(batch_axis_names),
+                2: PartitionSpec(batch_axis_names, "seq"),
+            }
+        ),
     )
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.

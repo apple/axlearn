@@ -4,7 +4,7 @@
 
 import math
 import re
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Protocol, Union
 
 from absl import logging
 from jax import numpy as jnp
@@ -20,7 +20,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import ConfigOr, config_class
+from axlearn.common.config import ConfigOr, config_class, config_for_function, maybe_instantiate
 from axlearn.common.decoder import Decoder
 from axlearn.common.decoding import (
     BeamSearchOutputs,
@@ -35,11 +35,53 @@ from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
-from axlearn.common.utils import flatten_items, with_sharding_constraint
+from axlearn.common.utils import Nested, flatten_items, with_sharding_constraint
 
 
 def layer_norm_config(eps=1e-5):
     return LayerNorm.default_config().set(eps=eps)
+
+
+class InputPartitionFn(Protocol):
+    """Partitions the input batch."""
+
+    def __call__(self, input_batch: Nested[Tensor]):
+        ...
+
+
+def partition_by_ndim(ndim_to_partition: dict[int, PartitionSpec]):
+    """Partitions the keys in the input batch by Tensor rank (ndim).
+
+    Args:
+        ndim_to_partition: A mapping from ndim to partition spec.
+            Inputs with ndim not present in this mapping will not have sharding constraints applied,
+            meaning we leave the sharding decisions to the XLA compiler.
+            If replication is desired, specify a value of None explicitly.
+
+    Returns:
+        A function that applies sharding constraints to an input batch in-place.
+        A warning will be logged for any keys that are not partitioned.
+    """
+
+    def fn(input_batch: Nested[Tensor]):
+        for k, v in input_batch.items():
+            if v.ndim in ndim_to_partition:
+                partition_spec = ndim_to_partition[v.ndim]
+                input_batch[k] = with_sharding_constraint(v, partition_spec)
+                logging.log_first_n(
+                    logging.INFO,
+                    "Constraining input_batch[%s] with %s.",
+                    len(input_batch),
+                    k,
+                    partition_spec,
+                )
+            else:
+                # We warn as not-constraining may be an oversight.
+                logging.log_first_n(
+                    logging.WARNING, "Not constraining input_batch[%s].", len(input_batch), k
+                )
+
+    return fn
 
 
 class Model(BaseModel):
@@ -53,13 +95,11 @@ class Model(BaseModel):
         decoder: Decoder.Config = Decoder.default_config()
         # An auxiliary z-loss scale. If >0 encourages the softmax normalizer to be well behaved.
         z_loss_scale: float = 0.0
-        # Batch mesh axis name(s).
-        # These will be used to constrain the batch (first) axis of relevant inputs.
-        batch_axis_names: tuple[str] = ("data",)
-        # Sequence-parallel mesh axis name(s).
-        # These will be used to constrain the sequence axis of relevant inputs.
-        # If None, no batch sequence dim constraints are applied.
-        seq_axis_names: Optional[tuple[str]] = None
+        # A function to partition inputs. By default, we partition the batch (first) axis of all
+        # rank-1 and rank-2 Tensors by "data".
+        input_partition: ConfigOr[InputPartitionFn] = config_for_function(partition_by_ndim).set(
+            ndim_to_partition={1: PartitionSpec("data"), 2: PartitionSpec("data")},
+        )
         # If not None, collect Tensors from `module_outputs` whose paths fully match the regular
         # expression and compute the sum as the auxiliary loss, which will be added to the overall
         # model loss and reported in the summary as `aux_loss`.
@@ -72,6 +112,7 @@ class Model(BaseModel):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._add_child("decoder", cfg.decoder)
+        self._input_partition: InputPartitionFn = maybe_instantiate(cfg.input_partition)
 
     @classmethod
     def default_config(cls):
@@ -342,29 +383,7 @@ class Model(BaseModel):
         mesh = thread_resources.env.physical_mesh  # type: ignore
         if mesh.empty or mesh.size == 1:
             return
-
-        cfg = self.config
-        for k, v in input_batch.items():
-            if k in [
-                "input_ids",
-                "target_labels",
-                "token_type_ids",
-                "prefix",
-                "input_segment_ids",
-                "input_positions",
-            ]:
-                assert v.ndim == 2
-                input_batch[k] = with_sharding_constraint(
-                    v, PartitionSpec(cfg.batch_axis_names, cfg.seq_axis_names)
-                )
-            elif k == "target_num_bytes":
-                assert v.ndim == 1
-                input_batch[k] = with_sharding_constraint(v, PartitionSpec(cfg.batch_axis_names))
-            else:
-                # We warn as not-constraining may be an oversight.
-                logging.log_first_n(
-                    logging.WARNING, "Not constraining input_batch[%s].", len(input_batch), k
-                )
+        self._input_partition(input_batch)
 
     def _aux_loss(self) -> Tensor:
         regex = self.config.aux_loss_regex

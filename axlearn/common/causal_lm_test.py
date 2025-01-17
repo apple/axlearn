@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests autoregressive models."""
+
 from functools import partial
 
 import jax
@@ -10,6 +11,7 @@ import pytest
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
+from jax.sharding import PartitionSpec
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm, utils
@@ -341,11 +343,17 @@ class ModelMetricsTest(TestCase):
             self.assertAlmostEqual(loss, ref_outputs["loss"])
             self.assertTrue(jnp.allclose(aux["per_label_loss"], ref_outputs["per_token_loss"]))
 
+    # TODO(markblee): Add a pytest marker for multi-device tests.
     @pytest.mark.skipif(
         jax.device_count() != 4 or jax.process_count() != 1,
-        reason="Incorrect device & process count for mesh.",
+        reason=(
+            "Incorrect device & process count for mesh.\n"
+            "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
+        ),
     )
     def test_constrain_input_batch(self):
+        batch_axis_names = ("data", "expert", "fsdp")
+        seq_axis_names = "seq"
         model = (
             causal_lm.Model.default_config()
             .set(
@@ -360,8 +368,12 @@ class ModelMetricsTest(TestCase):
                     layer_norm_epsilon=0.1,
                     dropout_rate=0.0,
                 ),
-                batch_axis_names=("data", "expert", "fsdp"),
-                seq_axis_names=("seq",),
+                input_partition=causal_lm.partition_by_ndim(
+                    {
+                        1: PartitionSpec(batch_axis_names),
+                        2: PartitionSpec(batch_axis_names, seq_axis_names),
+                    }
+                ),
                 name="metrics_test",
             )
             .instantiate(parent=None)
@@ -377,6 +389,7 @@ class ModelMetricsTest(TestCase):
             "extra_variable": jnp.ones((batch_size,), dtype=jnp.int32),
             "input_segment_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "input_positions": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
+            "scalar_variable": jnp.ones((), dtype=jnp.int32),
         }
 
         with jax.sharding.Mesh(
@@ -398,13 +411,13 @@ class ModelMetricsTest(TestCase):
             # Get stable-hlo representation.
             hlo_text = fn.lower(input_batch).compiler_ir(dialect="hlo").as_hlo_text()
 
-            # Five (out of six) tensors were sharded.
-            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 5)
+            # Eight (out of nine) tensors were sharded.
+            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 8)
             # For the [batch, seq_len] tensors.
-            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 4)
+            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 6)
             # For the [batch,] tensor.
             self.assertEqual(
-                hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
+                hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 2
             )
 
 

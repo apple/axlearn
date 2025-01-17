@@ -1,14 +1,19 @@
 # Change Log
 
+## 0.1.5
+
+* Changes
+    * Updates the `causal_lm.Model` API to support configuring input partitioning behavior. This requires a golden config change.
+
 ## 0.1.4
 
 * Changes
-  * Upgrade Jax from 0.4.33 to 0.4.34.
+    * Upgrade Jax from 0.4.33 to 0.4.34.
 
 ## 0.1.3
 
 * Changes
-  * Upgrade Jax from 0.4.30 to 0.4.33.
+    * Upgrade Jax from 0.4.30 to 0.4.33.
 
 ## 0.1.2
 
