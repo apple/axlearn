@@ -7,6 +7,7 @@ import logging
 import sys
 from typing import Optional, Protocol
 
+import grain.python as grain
 import numpy as np
 from grain._src.python.dataset.transformations.prefetch import MultiprocessPrefetchIterDataset
 
@@ -30,6 +31,8 @@ def _make_autoregressive_inputs(
     max_len: int,
     input_key: str = "target_labels",
     split_fn: Optional[ConfigOr[_SplitFn]] = None,
+    num_threads: int = 1,
+    prefetch_buffer_size: int = 16,
     window_size: int = 1,
 ) -> Dataset:
     """Produces `input_ids` autoregressively from `target_labels`.
@@ -44,6 +47,8 @@ def _make_autoregressive_inputs(
         input_key: Input key containing `target_labels`.
         split_fn: A callable taking flat input IDs and producing batched IDs of shape [-1, max_len].
             If None, returns the flat input IDs unchanged.
+        num_threads: number of threads used to convert to grain.IterDataset.
+        prefetch_buffer_size: Prefetch buffer size used to convert to grain.IterDataset.
         window_size: Window size. If > 1, also packs.
 
     Returns:
@@ -67,7 +72,12 @@ def _make_autoregressive_inputs(
     # Batch as lists to avoid ragged.
     ds = ds.batch(window_size, drop_remainder=False, batch_fn=list)
     ds = ds.map(process_example_fn)
-    ds = input_grain.maybe_to_iter_dataset(ds)
+    ds = input_grain.maybe_to_iter_dataset(
+        ds,
+        read_options=grain.ReadOptions(
+            num_threads=num_threads, prefetch_buffer_size=prefetch_buffer_size
+        ),
+    )
     # After processing, we have non-ragged np.arrays, so we can unbatch.
     ds = input_grain.unbatch(ds)
     return ds
