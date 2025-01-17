@@ -11,7 +11,6 @@ import pytest
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
-from jax.sharding import PartitionSpec
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm, utils
@@ -352,8 +351,6 @@ class ModelMetricsTest(TestCase):
         ),
     )
     def test_constrain_input_batch(self):
-        batch_axis_names = ("data", "expert", "fsdp")
-        seq_axis_names = "seq"
         model = (
             causal_lm.Model.default_config()
             .set(
@@ -368,12 +365,8 @@ class ModelMetricsTest(TestCase):
                     layer_norm_epsilon=0.1,
                     dropout_rate=0.0,
                 ),
-                input_partition=causal_lm.partition_by_ndim(
-                    {
-                        1: PartitionSpec(batch_axis_names),
-                        2: PartitionSpec(batch_axis_names, seq_axis_names),
-                    }
-                ),
+                batch_axis_names=("data", "expert", "fsdp"),
+                seq_axis_names=("seq",),
                 name="metrics_test",
             )
             .instantiate(parent=None)
@@ -389,7 +382,6 @@ class ModelMetricsTest(TestCase):
             "extra_variable": jnp.ones((batch_size,), dtype=jnp.int32),
             "input_segment_ids": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "input_positions": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
-            "scalar_variable": jnp.ones((), dtype=jnp.int32),
         }
 
         with jax.sharding.Mesh(
@@ -411,13 +403,13 @@ class ModelMetricsTest(TestCase):
             # Get stable-hlo representation.
             hlo_text = fn.lower(input_batch).compiler_ir(dialect="hlo").as_hlo_text()
 
-            # Eight (out of nine) tensors were sharded.
-            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 8)
+            # Seven (out of eight) tensors were sharded.
+            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 7)
             # For the [batch, seq_len] tensors.
             self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 6)
             # For the [batch,] tensor.
             self.assertEqual(
-                hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 2
+                hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
             )
 
 

@@ -21,6 +21,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common import (
     base_model,
     causal_lm,
+    input_base,
     input_fake,
     input_lm,
     input_tf_data,
@@ -303,12 +304,7 @@ def model_config(
     cfg = causal_lm.Model.default_config().set(
         decoder=decoder_cfg,
         param_init=model_param_init,
-        input_partition=config_for_function(causal_lm.partition_by_ndim).set(
-            ndim_to_partition={
-                1: PartitionSpec(batch_axis_names),
-                2: PartitionSpec(batch_axis_names, "seq"),
-            }
-        ),
+        batch_axis_names=None,  # We use input dispatch to partition batches.
     )
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
@@ -665,6 +661,9 @@ def get_trainer_config_fn(
     Returns:
         A function that returns a trainer config.
     """
+    # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
+    # "pipeline" axis (for pipeline parallelism).
+    batch_axis_names = tuple(el for el in mesh_axis_names if el not in ("model", "pipeline"))
 
     def config_fn() -> InstantiableConfig:
         cfg: SpmdTrainer.Config = SpmdTrainer.default_config()
@@ -681,6 +680,12 @@ def get_trainer_config_fn(
                 global_batch_size=train_batch_size,
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+            input_partitioner=config_for_function(input_base.partition_by_path_ndim).set(
+                path_ndim_to_partition={
+                    (".*", 1): PartitionSpec(batch_axis_names),
+                    (".*", 2): PartitionSpec(batch_axis_names, "seq"),
+                }
             ),
         )
         cfg.evalers = {}
@@ -709,11 +714,7 @@ def get_trainer_config_fn(
             )
         cfg.mesh_axis_names = mesh_axis_names
         cfg.mesh_shape = mesh_shape
-        # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
-        # "pipeline" axis (for pipeline parallelism).
-        cfg.batch_axis_names = tuple(
-            el for el in mesh_axis_names if el not in ("model", "pipeline")
-        )
+        cfg.batch_axis_names = batch_axis_names
         cfg.mesh_rules = mesh_rules
         # Maybe load state.
         if init_state_builder:

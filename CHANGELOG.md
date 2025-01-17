@@ -1,14 +1,11 @@
 # Change Log
 
-## 0.1.5
-
-* Changes
-    * Updates the `causal_lm.Model` API to support configuring input partitioning behavior. This requires a golden config change.
-
 ## 0.1.4
 
 * Changes
     * Upgrade Jax from 0.4.33 to 0.4.34.
+    * Updates the `input_base.Input` API to support configuring input partitioning behavior.
+    * The config fields `batch_axis_names` and `seq_axis_names` in `causal_lm.Model` are now deprecated. Please use `input_base.Input.input_partitioner` instead.
 
 ## 0.1.3
 
