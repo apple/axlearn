@@ -31,8 +31,7 @@ def _make_autoregressive_inputs(
     max_len: int,
     input_key: str = "target_labels",
     split_fn: Optional[ConfigOr[_SplitFn]] = None,
-    num_threads: int = 1,
-    prefetch_buffer_size: int = 16,
+    read_options: grain.ReadOptions = grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
     window_size: int = 1,
 ) -> Dataset:
     """Produces `input_ids` autoregressively from `target_labels`.
@@ -47,8 +46,8 @@ def _make_autoregressive_inputs(
         input_key: Input key containing `target_labels`.
         split_fn: A callable taking flat input IDs and producing batched IDs of shape [-1, max_len].
             If None, returns the flat input IDs unchanged.
-        num_threads: number of threads used to convert to grain.IterDataset.
-        prefetch_buffer_size: Prefetch buffer size used to convert to grain.IterDataset.
+        read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
+            used to convert the pipeline to grain.IterDataset.
         window_size: Window size. If > 1, also packs.
 
     Returns:
@@ -74,9 +73,7 @@ def _make_autoregressive_inputs(
     ds = ds.map(process_example_fn)
     ds = input_grain.maybe_to_iter_dataset(
         ds,
-        read_options=grain.ReadOptions(
-            num_threads=num_threads, prefetch_buffer_size=prefetch_buffer_size
-        ),
+        read_options=read_options,
     )
     # After processing, we have non-ragged np.arrays, so we can unbatch.
     ds = input_grain.unbatch(ds)
@@ -109,6 +106,7 @@ def text_to_lm_training_input(
     max_len: int,
     window_size: int = 128,
     max_padding_fraction: float = 1,
+    read_options: grain.ReadOptions = grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
 ) -> Dataset:
     """Returns a function that generates training inputs for language models from raw text.
 
@@ -124,6 +122,8 @@ def text_to_lm_training_input(
         max_padding_fraction: The maximum fraction of a batch example that we are willing to pad.
             E.g. if this is 0.5 then we will pad an example with >= 0.5 * max_len viable tokens,
             else drop it entirely.
+        read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
+            used to convert the pipeline to grain.IterDataset.
 
     Returns:
         A `grain.IterDataset` with potentially different cardinality than the input dataset.
@@ -146,7 +146,7 @@ def text_to_lm_training_input(
     ds = input_grain.rekey(ds, key_map={"target_labels": "text"})
     # Flatten, roll, split.
     ds = _make_autoregressive_inputs(
-        ds, max_len=max_len, window_size=window_size, split_fn=split_fn
+        ds, max_len=max_len, window_size=window_size, split_fn=split_fn, read_options=read_options
     )
     ds = input_grain_text.count_num_bytes(
         ds, input_key="target_labels", vocab=vocab, output_key="target_num_bytes"
