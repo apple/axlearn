@@ -1231,7 +1231,8 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
         Args:
             positions: A tensor representing the token position IDs.
                 The shape is [batch_size, seq_len].
-            max_seq_len: Max length of sequence, required if positions is not provided.
+            max_seq_len: Max length of sequence, required if positions is not provided,
+                ignored if positions is provided.
 
         Returns:
             Rotary Positional Embedding. Shape is [seq_len, dim].
