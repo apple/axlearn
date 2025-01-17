@@ -1223,7 +1223,7 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
         return jnp.arange(max_seq_len)[None]  # [batch_size=1, max_seq_len].
 
     def forward(
-        self, positions: Optional[Tensor] = None, max_seq_len: Optional[int] = None
+        self, *, positions: Optional[Tensor] = None, max_seq_len: Optional[int] = None
     ) -> Tensor:
         """
         TODO(bwzhang): 1. verify the performance under float32.
