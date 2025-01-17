@@ -83,8 +83,6 @@ class GCPWorkloadMonitoring:
             )
         except GoogleAPIError as e:
             logging.error("Failed to send metric to GCP. Metric: %s, Error: %s", metric_type, e)
-        except Exception as e:
-            logging.error("Unexpected Error. Metric: %s, Error: %s", metric_type, e)
 
     def send_heartbeat_metric(self, local_rank: str, global_rank: str):
         """Send heartbeat metric to Google Cloud Monitoring."""
@@ -138,8 +136,6 @@ class GCPWorkloadMonitoring:
             )
         except GoogleAPIError as e:
             logging.error("Failed to send metric to GCP. Metric: %s, Error: %s", metric_type, e)
-        except Exception as e:
-            logging.error("Unexpected Error. Metric: %s, Error: %s", metric_type, e)
 
 
 def main(argv):
