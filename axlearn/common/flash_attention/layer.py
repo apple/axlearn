@@ -110,6 +110,16 @@ class FlashAttention(GroupedQueryAttention):
         cfg = self.config
         return attention_logit_biases.partition_spec(cfg.mha_dim_to_partition_spec)
 
+    def _repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
+        """Repeats key or value heads dim to match the query.
+        TODO(dhwang2): optimize computation like GroupedQueryAttention.
+        """
+        num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
+        if num_head_repeats == 1:
+            return key_or_value
+        # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
+        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+
     def _compute_attention(
         self,
         *,
@@ -120,6 +130,10 @@ class FlashAttention(GroupedQueryAttention):
     ) -> tuple[Tensor, Tensor]:
         cfg: FlashAttention.Config = self.config
         backend = self._backend()
+
+        # Repeats key/value heads dim if necessary.
+        k_proj = self._repeat_kv_heads(k_proj)
+        v_proj = self._repeat_kv_heads(v_proj)
 
         batch, target_len, num_heads, _ = q_proj.shape
         _, source_len, _, _ = k_proj.shape
@@ -155,9 +169,8 @@ class FlashAttention(GroupedQueryAttention):
             in_specs=(
                 # Q [batch_size, seq_len, num_heads, per_head_dim].
                 cfg.mha_dim_to_partition_spec["btnh"],
-                # KV [batch_size, seq_len, num_kv_heads, per_head_dim].
-                # Note: while num_kv_heads can be different from num_heads, their partition spec
-                # should be the same.
+                # KV [batch_size, seq_len, num_heads, per_head_dim].
+                # TODO(hanzhi713, changlan): Do not repeat kv heads and shard properly.
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
