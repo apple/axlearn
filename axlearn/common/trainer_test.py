@@ -2,10 +2,12 @@
 
 """Tests SpmdTrainer."""
 
-# pylint: disable=no-self-use
 import copy
 import dataclasses
 import math
+
+# pylint: disable=no-self-use
+import os
 import os.path
 import shutil
 import tempfile
@@ -69,6 +71,8 @@ from axlearn.common.utils import (
 FLAGS = flags.FLAGS
 
 NUM_CLASSES = 16
+
+os.environ["TPU_SKIP_MDS_QUERY"] = "1"
 
 
 class DummyInput(Module):
@@ -171,6 +175,14 @@ class DummyInput(Module):
         # checkpointed properly even with a custom __iter__ (note that a custom __iter__ is not
         # guaranteed to be savable).
         yield from self.dataset()
+
+    def element_spec(self):
+        return jax.tree.map(
+            lambda tf_spec: jax.ShapeDtypeStruct(
+                shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
+            ),
+            self.dataset().element_spec,
+        )
 
 
 class DummyModel(BaseModel):
@@ -452,20 +464,23 @@ class TrainerTest(test_utils.TestCase):
         # The prng_key per step is deterministic.
         np.testing.assert_array_equal(output_a["aux"]["prng_key"], output_b["aux"]["prng_key"])
 
-    @parameterized.parameters(
-        {"platform": "cpu", "mesh_shape": (1, 1)},
-        {"platform": "tpu", "mesh_shape": (4, 1)},
+    @parameterized.product(
+        [{"platform": "cpu", "mesh_shape": (1, 1)}, {"platform": "tpu", "mesh_shape": (4, 1)}],
+        enable_python_cache=[True, False],
     )
     # pylint: enable=duplicate-code
-    def test_xsc_check_policy(
+    def test_xsc_check_policy_and_compilation_cache(
         self,
         *,
         platform,
         mesh_shape,
+        enable_python_cache,
     ):
         if not test_utils.is_supported_platform(platform):
             return
-        cfg = SpmdTrainer.default_config().set(name="test_trainer", train_dtype=jnp.bfloat16)
+        cfg: SpmdTrainer.Config = SpmdTrainer.default_config().set(
+            name="test_trainer", train_dtype=jnp.bfloat16
+        )
         cfg.dir = tempfile.mkdtemp()
         cfg.mesh_axis_names = ("data", "model")
         cfg.mesh_shape = mesh_shape
@@ -485,6 +500,7 @@ class TrainerTest(test_utils.TestCase):
         cfg.vlog = 2
         # Set XSC policy.
         cfg.xsc_check_policy = lambda step: (step in [7, 8])
+        cfg.cache_compiled_train_step = enable_python_cache
 
         # Test training run.
         trainer: SpmdTrainer = cfg.set(max_step=12).instantiate(parent=None)
@@ -508,13 +524,25 @@ class TrainerTest(test_utils.TestCase):
             output_a = trainer.run(prng_key=jax.random.PRNGKey(123))
             end_cache_hits = pjit_lib._pjit_lower_cached.cache_info().hits
             # pylint: enable=protected-access
-            # We expect to have hit the lowering cache on all but one step.
-            self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
-            self.assertEqual(mocked_compile_fn.call_count, cfg.max_step)
             if platform == "tpu":
+                if not enable_python_cache:
+                    # We expect to have hit the lowering cache on all but one step.
+                    self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
+                    self.assertEqual(mocked_compile_fn.call_count, cfg.max_step)
+                else:
+                    # We expect to have hit the lowering cache on xsc steps.
+                    self.assertEqual(end_cache_hits - start_cache_hits, 2)
+                    self.assertEqual(mocked_compile_fn.call_count, 3)
                 # Should have been called with compile options on two steps.
                 self.assertEqual(compiled_with_options_call_count[0], 2)
             else:
+                if not enable_python_cache:
+                    self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
+                    self.assertEqual(mocked_compile_fn.call_count, cfg.max_step)
+                else:
+                    # We won't hit any cache since we have python cache.
+                    self.assertEqual(end_cache_hits - start_cache_hits, 0)
+                    self.assertEqual(mocked_compile_fn.call_count, 1)
                 # XSC check should be disabled.
                 self.assertEqual(compiled_with_options_call_count[0], 0)
 

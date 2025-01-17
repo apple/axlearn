@@ -1583,5 +1583,28 @@ class DisableShuffleRecursivelyTest(parameterized.TestCase):
         self.assertEqual(cfg.source.source.train_shuffle_files, False)
 
 
+class ElementSpecTest(parameterized.TestCase):
+    """Tests Input.element_spec()."""
+
+    def test_element_spec(self):
+        cfg = Input.default_config().set(
+            source=config_for_function(with_processor).set(
+                source=config_for_function(fake_text_source),
+                processor=config_for_function(identity),
+            ),
+            processor=config_for_function(identity),
+            batcher=config_for_function(batch).set(
+                global_batch_size=2,
+                pad_example_fn=default_pad_example_fn,
+            ),
+            is_training=True,
+            name="test",
+        )
+        self.assertEqual(
+            {"text": jax.ShapeDtypeStruct(shape=(2,), dtype=object)},
+            cfg.instantiate(parent=None).element_spec(),
+        )
+
+
 if __name__ == "__main__":
     absltest.main()

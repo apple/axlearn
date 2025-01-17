@@ -613,8 +613,14 @@ class TestDecoder(TestCase):
                     side_effect=mock_tokens_to_scores,
                 )
 
+            # Drop any module outputs added in `method` to avoid leaking tracers via checkify.
+            def method_fn(*args, **kwargs):
+                out = getattr(decoder, method)(*args, **kwargs)
+                decoder.get_invocation_context().get_module_outputs().clear()
+                return out
+
             # Checkify the decoding method being called.
-            decoder._checked_method = checkify.checkify(getattr(decoder, method))
+            decoder._checked_method = checkify.checkify(method_fn)
 
             # pylint: enable=protected-access
             with mock_ctx:
