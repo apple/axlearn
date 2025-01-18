@@ -264,7 +264,7 @@ model.decoder.transformer.num_layers: 16
 model.decoder.transformer.repeat.drop_output.fn: 'axlearn.common.repeat._drop_by_regex'
 model.decoder.transformer.repeat.drop_output.rules[0]: 'module_outputs.*'
 model.decoder.transformer.repeat.klass: 'axlearn.common.attention._TransformerRepeat'
-model.decoder.vocab_size: 128256
+model.decoder.vocab_size: 131072
 model.dtype: 'jax.numpy.float32'
 model.klass: 'axlearn.common.causal_lm.Model'
 model.param_init.init_by_param_name['.*weight$'].distribution: 'normal'

@@ -223,6 +223,8 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
+    pad_token_id: Optional[int] = None,
+    eos_token_id: Optional[int] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -253,6 +255,8 @@ def model_config(
         atten_logit_cap: Cap the absolute values of logits by tanh.
             Enabled by setting a positive value.
         remat_offload_dst: Destination of remat checkptoing offloading.
+        pad_token_id: Int ID of the inputs to be masked for self-attention.
+        eos_token_id: Int ID of the end of sequence token id.
 
     Returns:
         A causal LM config.
@@ -283,6 +287,10 @@ def model_config(
         lm_head=lm_head_cfg,
         dropout_rate=dropout_rate,
     )
+    if pad_token_id is not None:
+        decoder_cfg.set(pad_token_id=pad_token_id)
+    if eos_token_id is not None:
+        decoder_cfg.set(eos_token_id=eos_token_id)
     # Model.
     model_param_init = DefaultInitializer.default_config().set(
         init_by_param_name={
