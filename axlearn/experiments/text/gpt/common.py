@@ -681,10 +681,10 @@ def get_trainer_config_fn(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
-            input_partitioner=config_for_function(input_base.partition_by_path_ndim).set(
-                path_ndim_to_partition={
-                    (".*", 1): PartitionSpec(batch_axis_names),
-                    (".*", 2): PartitionSpec(batch_axis_names, "seq"),
+            input_partitioner=config_for_function(input_base.partition_by_path_rank).set(
+                path_rank_to_partition={
+                    (None, 1): PartitionSpec(batch_axis_names),
+                    (None, 2): PartitionSpec(batch_axis_names, "seq"),
                 }
             ),
         )

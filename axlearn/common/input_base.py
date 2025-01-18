@@ -3,7 +3,7 @@
 """Base Input interface."""
 
 import re
-from typing import Iterable, Iterator, Optional, Protocol, Sequence, Union
+from typing import Iterable, Iterator, NamedTuple, Optional, Protocol, Sequence, Union
 
 import jax
 from absl import logging
@@ -33,23 +33,41 @@ class InputPartitionFn(Protocol):
         """
 
 
-def partition_by_path_ndim(
-    path_ndim_to_partition: dict[tuple[str | re.Pattern, int], PartitionSpec],
+class PathAndRank(NamedTuple):
+    """A tuple (path, rank) used for matching against inputs in a batch.
+
+    Attributes:
+        path: An optional path or path regex. None means match everything.
+        rank: An optional rank (ndim). None means match everything.
+    """
+
+    path: Optional[Union[str, re.Pattern]]
+    rank: Optional[int]
+
+
+def partition_by_path_rank(
+    path_rank_to_partition: dict[PathAndRank, PartitionSpec],
 ) -> InputPartitionFn:
     """Partitions the keys in the input batch by Tensor path and rank (ndim).
 
+    If not within a mesh, the partition fn is a no-op.
+
     Args:
-        path_ndim_to_partition: A mapping from (path_regex, ndim) to partition spec.
+        path_rank_to_partition: A mapping from (path_regex, rank) to partition spec.
             For each input path, the Tensor will be constrained by the first matching
-            (path_regex, ndim) rule, where paths are full-matched against `path_regex` and ranks are
-            matched against `ndim`.
-            Inputs that do not match any rule in this mapping will not have sharding constraints
-            applied, meaning we leave the sharding decisions to the XLA compiler.
-            If replication is desired, specify a value of None explicitly.
+            (path_regex, rank) rule, where paths are full-matched against `path_regex` and ranks are
+            matched against `rank`.
+            `path_regex` or `rank` are allowed to be None to match everything.
+            If replication is desired, specify a partition spec of None explicitly.
+            If leaving the input unconstrained is desired, specify a partition spec of
+            `PartitionSpec.UNCONSTRAINED` explicitly.
 
     Returns:
         A function that applies sharding constraints to an input batch and returns a new batch.
-        A warning will be logged for any keys that are not partitioned.
+
+    Raises:
+        ValueError: If no rules match for a given input, which is likely an oversight. If leaving
+            inputs unconstrained is desired, explicitly specify `PartitionSpec.UNCONSTRAINED`.
 
     Example:
         To constrain all rank-1 Tensors by ("data",) and rank-2 by ("data", "seq"):
@@ -60,9 +78,11 @@ def partition_by_path_ndim(
         })
         ```
     """
-    path_ndim_to_partition = {
-        (re.compile(regex), ndim): spec for (regex, ndim), spec in path_ndim_to_partition.items()
-    }
+    compiled = {}
+    for (regex, rank), spec in path_rank_to_partition.items():
+        if regex is not None:
+            regex = re.compile(regex)
+        compiled[(regex, rank)] = spec
 
     def fn(input_batch: Nested[Tensor]) -> Nested[Tensor]:
         mesh = thread_resources.env.physical_mesh  # type: ignore
@@ -70,24 +90,27 @@ def partition_by_path_ndim(
             return input_batch
 
         def maybe_constrain(path: str, value: Tensor):
-            for (path_regex, ndim), partition_spec in path_ndim_to_partition.items():
-                if not (value.ndim == ndim and re.fullmatch(path_regex, path)):
+            for (path_regex, rank), partition_spec in compiled.items():
+                if not (rank is None or value.ndim == rank) or not (
+                    path_regex is None or re.fullmatch(path_regex, path)
+                ):
                     continue
-                value = with_sharding_constraint(value, partition_spec)
-                logging.log_first_n(
-                    logging.INFO,
-                    "Constraining input_batch[%s] with %s.",
-                    len(input_batch),
-                    path,
-                    partition_spec,
-                )
-                break
-            else:
-                # No rules match. We warn as not-constraining may be an oversight.
-                logging.log_first_n(
-                    logging.WARNING, "Not constraining input_batch[%s].", len(input_batch), path
-                )
-            return value
+                if partition_spec is not PartitionSpec.UNCONSTRAINED:
+                    value = with_sharding_constraint(value, partition_spec)
+                    logging.log_first_n(
+                        logging.INFO,
+                        "Constraining input_batch[%s] with %s.",
+                        len(input_batch),
+                        path,
+                        partition_spec,
+                    )
+                return value
+            # No rules match. We raise as not-constraining is likely an oversight.
+            raise ValueError(
+                f"No rules matched input_batch['{path}']. "
+                "If you intended to leave the input unconstrained, "
+                "specify `PartitionSpec.UNCONSTRAINED` explicitly."
+            )
 
         return jax.tree_map(maybe_constrain, tree_paths(input_batch), input_batch)
 
