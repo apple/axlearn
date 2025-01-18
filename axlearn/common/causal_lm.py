@@ -63,7 +63,7 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
 
     def forward(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
-    ) -> Nested[Tensor]:
+    ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes cross entropy loss.
 
         Args:
@@ -287,14 +287,12 @@ class Model(PredictModel):
         # These will be used to constrain the sequence axis of relevant inputs.
         # If None, no batch sequence dim constraints are applied.
         seq_axis_names: Optional[tuple[str]] = None
+        # Configures training metrics.
+        metrics: BaseLossMetrics.Config = metrics_config()
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-
-        # If None, default to a composite of LM and aux loss.
-        if cfg.metrics is None:
-            cfg.metrics = metrics_config()
         self._add_child("decoder", cfg.decoder)
         self._add_child("metrics", cfg.metrics)
 
@@ -437,10 +435,7 @@ class Model(PredictModel):
         predictions = self.predict(input_batch)
         return predictions["logits"]
 
-    def score(
-        self,
-        input_batch: NestedTensor,
-    ) -> NestedTensor:
+    def score(self, input_batch: Nested[Tensor]) -> Nested[Tensor]:
         """Produce decoder score like per_token_loss and live_targets.
 
         Args:
@@ -457,7 +452,7 @@ class Model(PredictModel):
         """
         self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
-        results = self._metrics(input_batch=input_batch, predict_outputs=predictions)
+        _, results = self._metrics(input_batch=input_batch, predict_outputs=predictions)
         return {k: v for k, v in results.items() if k in ("per_token_loss", "live_targets")}
 
     def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
@@ -499,7 +494,7 @@ class Model(PredictModel):
 
     def _metrics(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
-    ) -> Nested[Tensor]:
+    ) -> tuple[Tensor, Nested[Tensor]]:
         cfg: Model.Config = self.config
         target_labels: Tensor = input_batch["target_labels"]
         self.vlog(3, "targets=%s(%s)", target_labels.dtype, target_labels.shape)

@@ -2,10 +2,8 @@
 
 """Base model definition."""
 
-from typing import Optional
-
 from axlearn.common.base_layer import BaseLayer
-from axlearn.common.config import config_class
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.metrics import BaseLossMetrics
 from axlearn.common.module import Nested, NestedTensor, Tensor
 
@@ -33,7 +31,7 @@ class PredictModel(BaseModel):
     class Config(BaseModel.Config):
         """Configures PredictModel."""
 
-        metrics: Optional[BaseLossMetrics.Config] = None
+        metrics: Required[BaseLossMetrics.Config] = REQUIRED
 
     def predict(self, input_batch: Nested[Tensor]) -> Nested[Tensor]:
         """Computes predictions with the given inputs.

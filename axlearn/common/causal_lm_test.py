@@ -109,7 +109,7 @@ class Gpt2TransformerTest(TestCase):
         assert_allclose(test_logits, ref_logits)
 
 
-class ModelMetricsTest(TestCase):
+class ModelTest(TestCase):
     def test_metrics(self):
         decoder_cfg = causal_lm.gpt_decoder_config(
             stack_cfg=StackedTransformerLayer.default_config(),
@@ -343,6 +343,13 @@ class ModelMetricsTest(TestCase):
         )
         self.assertAlmostEqual(loss, ref_loss)
         self.assertNestedAllClose(aux["metrics"], metrics)
+
+        # Check against score.
+        score_metrics, _ = functional(
+            **common_kwargs, inputs=dict(input_batch=input_batch), method="score"
+        )
+        for k, v in score_metrics.items():
+            self.assertNestedAllClose(metrics[k], v)
 
     # TODO(markblee): Add a pytest marker for multi-device tests.
     @pytest.mark.skipif(
