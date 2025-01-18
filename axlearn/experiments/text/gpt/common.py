@@ -306,7 +306,8 @@ def model_config(
         param_init=model_param_init,
         batch_axis_names=None,  # We use input dispatch to partition batches.
     )
-    cfg.metrics.metrics["lm"].z_loss_scale = z_loss_scale
+    if z_loss_scale:
+        cfg.metrics = causal_lm.metrics_config(z_loss_scale=z_loss_scale)
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(

@@ -453,8 +453,8 @@ class ModelAuxLossTest(TestCase):
         model_cfg: causal_lm.Model.Config = causal_lm.Model.default_config().set(
             decoder=decoder_cfg,
             name="metrics_test",
+            metrics=causal_lm.metrics_config(aux_loss_regex=aux_loss_regex),
         )
-        model_cfg.metrics.metrics["aux"].aux_loss_regex = aux_loss_regex
         model = model_cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)

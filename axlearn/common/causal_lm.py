@@ -19,7 +19,7 @@ from axlearn.common.attention import (
     TransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
-from axlearn.common.base_model import BaseModel
+from axlearn.common.base_model import PredictModel
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class
 from axlearn.common.decoder import Decoder
 from axlearn.common.decoding import (
@@ -55,11 +55,11 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
         """Configures CrossEntropyLossMetrics.
 
         Attributes:
-            z_loss_scale: An auxiliary z-loss scale. If >0 encourages the softmax normalizer to be
-                well behaved.
+            z_loss_scale: An auxiliary z-loss scale. If not None and >0, encourages the softmax
+                normalizer to be well behaved.
         """
 
-        z_loss_scale: float = 0.0
+        z_loss_scale: Optional[float] = None
 
     def forward(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
@@ -75,15 +75,15 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
 
         Returns:
             A tuple (loss, metrics):
-                loss: A scalar float Tensor corresponding to cross entropy loss.
+                loss: A scalar float Tensor corresponding to cross entropy loss, including auxiliary
+                    z-loss if `cfg.z_loss_scale` is provided.
                 metrics: A dict containing:
                     cross_entropy: Same as loss.
                     per_token_loss: A float Tensor of same shape as `target_labels`. Ignored targets
                         will be masked, i.e., have per-token loss of 0.
                     live_targets: A bool Tensor of same shape as `target_labels`. False indicates
                         ignored targets.
-                    num_targets: Sum of live targets.
-                    per_label_loss: Same as `per_token_loss`.
+                    num_targets: A scalar int Tensor corresponding to number of live targets.
         """
         validate_contains_paths(input_batch, paths=["target_labels"])
         validate_contains_paths(predict_outputs, paths=["logits"])
@@ -104,7 +104,7 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
             logits=logits,
             target_labels=target_labels,
             live_targets=live_targets,
-            z_loss_scale=cfg.z_loss_scale,
+            z_loss_scale=cfg.z_loss_scale if cfg.z_loss_scale is not None else 0.0,
         )
         per_token_loss = loss_dict["per_target_loss"] * live_targets
         self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
@@ -122,8 +122,6 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
             "live_targets": live_targets,
             "num_targets": num_targets,
         }
-        # Alias per_token_loss.
-        metrics["per_label_loss"] = metrics["per_token_loss"]
         self.add_summary("cross_entropy_loss", WeightedScalar(loss, num_targets))
         self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
         self.add_summary("loss", WeightedScalar(loss, num_targets))
@@ -248,11 +246,33 @@ class CompositeLossMetrics(BaseLossMetrics):
         return loss, metrics
 
 
-class Model(BaseModel):
+def metrics_config(
+    *,
+    z_loss_scale: Optional[float] = None,
+    aux_loss_regex: Optional[str] = None,
+) -> CompositeLossMetrics.Config:
+    """Constructs a default causal-lm metrics config.
+
+    Args:
+        z_loss_scale: Auxiliary z-loss scale. See `CrossEntropyLossMetrics.Config`.
+        aux_loss_regex: Aux loss regex. See `AuxLossMetrics.Config`.
+
+    Returns:
+        A composite of cross entropy and aux loss.
+    """
+    return CompositeLossMetrics.default_config().set(
+        metrics={
+            "lm": CrossEntropyLossMetrics.default_config().set(z_loss_scale=z_loss_scale),
+            "aux": AuxLossMetrics.default_config().set(aux_loss_regex=aux_loss_regex),
+        }
+    )
+
+
+class Model(PredictModel):
     """Autoregressive decoder-only transformer sequence model."""
 
     @config_class
-    class Config(BaseModel.Config):
+    class Config(PredictModel.Config):
         """Configuration for a causal-lm."""
 
         # Decoder.
@@ -267,17 +287,14 @@ class Model(BaseModel):
         # These will be used to constrain the sequence axis of relevant inputs.
         # If None, no batch sequence dim constraints are applied.
         seq_axis_names: Optional[tuple[str]] = None
-        # Computes training metrics.
-        metrics: BaseLossMetrics.Config = CompositeLossMetrics.default_config().set(
-            metrics={
-                "lm": CrossEntropyLossMetrics.default_config(),
-                "aux": AuxLossMetrics.default_config(),
-            }
-        )
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+
+        # If None, default to a composite of LM and aux loss.
+        if cfg.metrics is None:
+            cfg.metrics = metrics_config()
         self._add_child("decoder", cfg.decoder)
         self._add_child("metrics", cfg.metrics)
 
