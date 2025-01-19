@@ -661,9 +661,6 @@ def get_trainer_config_fn(
     Returns:
         A function that returns a trainer config.
     """
-    # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
-    # "pipeline" axis (for pipeline parallelism).
-    batch_axis_names = tuple(el for el in mesh_axis_names if el not in ("model", "pipeline"))
 
     def config_fn() -> InstantiableConfig:
         cfg: SpmdTrainer.Config = SpmdTrainer.default_config()
@@ -683,8 +680,10 @@ def get_trainer_config_fn(
             ),
             input_partitioner=config_for_function(input_base.partition_by_path_rank).set(
                 path_rank_to_partition={
-                    (None, 1): PartitionSpec(batch_axis_names),
-                    (None, 2): PartitionSpec(batch_axis_names, "seq"),
+                    # Note: the batch axes are different here than in `cfg.batch_axis_names`,
+                    # as we partition sequence dim over `seq`.
+                    (None, 1): PartitionSpec(("data", "expert", "fsdp")),
+                    (None, 2): PartitionSpec(("data", "expert", "fsdp"), "seq"),
                 }
             ),
         )
@@ -714,7 +713,12 @@ def get_trainer_config_fn(
             )
         cfg.mesh_axis_names = mesh_axis_names
         cfg.mesh_shape = mesh_shape
-        cfg.batch_axis_names = batch_axis_names
+        # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
+        # "pipeline" axis (for pipeline parallelism).
+        # TODO(markblee): Remove this and use `cfg.input.input_partitioner`.
+        cfg.batch_axis_names = tuple(
+            el for el in mesh_axis_names if el not in ("model", "pipeline")
+        )
         cfg.mesh_rules = mesh_rules
         # Maybe load state.
         if init_state_builder:

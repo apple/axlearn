@@ -2,6 +2,7 @@
 
 """Tests common GPT trainer utils."""
 
+import jax
 from absl.testing import parameterized
 
 from axlearn.common.config import config_for_function
@@ -46,3 +47,12 @@ class TrainerConfigTest(TestCase):
         self.assertEqual(cfg.mesh_axis_names, MESH_AXIS_NAMES)
         self.assertNotIn("pipeline", cfg.batch_axis_names)
         self.assertNotIn("model", cfg.batch_axis_names)
+
+        # Ensure that input partitioner mesh axes are well-behaved, i.e., we do not reuse the same
+        # axis for multiple dims.
+        for v in cfg.input.input_partitioner.path_rank_to_partition.values():
+            visited = set()
+            for axis in jax.tree_leaves(tuple(v)):  # Cast to tuple since PartitionSpec is a leaf.
+                self.assertNotIn(axis, visited)
+                visited.add(axis)
+            self.assertGreater(len(visited), 0)
