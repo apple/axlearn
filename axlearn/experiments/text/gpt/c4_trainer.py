@@ -40,7 +40,6 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
 ```
 """
 
-
 from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.utils import get_data_dir
