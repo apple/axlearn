@@ -53,10 +53,13 @@ class Model(BaseModel):
         decoder: Decoder.Config = Decoder.default_config()
         # An auxiliary z-loss scale. If >0 encourages the softmax normalizer to be well behaved.
         z_loss_scale: float = 0.0
-        # Batch mesh axis name(s).
+        # TODO(markblee): Remove `batch_axis_names` and `seq_axis_names`. Input sharding should
+        # happen at `Input.dispatch_global_batch` instead.
+        # Batch mesh axis name(s). (Deprecated.)
         # These will be used to constrain the batch (first) axis of relevant inputs.
-        batch_axis_names: tuple[str] = ("data",)
-        # Sequence-parallel mesh axis name(s).
+        # If None, no batch dim constraints are applied, rather than replicating across batch dim.
+        batch_axis_names: Optional[tuple[str]] = ("data",)
+        # Sequence-parallel mesh axis name(s). (Deprecated.)
         # These will be used to constrain the sequence axis of relevant inputs.
         # If None, no batch sequence dim constraints are applied.
         seq_axis_names: Optional[tuple[str]] = None
@@ -342,8 +345,18 @@ class Model(BaseModel):
         mesh = thread_resources.env.physical_mesh  # type: ignore
         if mesh.empty or mesh.size == 1:
             return
+        cfg: Model.Config = self.config
+        if cfg.batch_axis_names is None and cfg.seq_axis_names is None:
+            return
 
-        cfg = self.config
+        logging.log_first_n(
+            logging.WARNING,
+            "cfg.batch_axis_names and cfg.seq_axis_names are deprecated. "
+            "Dispatch inputs using `Input.dispatch_global_batch` instead. "
+            "See `input_base.Input.input_partitioner` for more details.",
+            1,
+        )
+
         for k, v in input_batch.items():
             if k in [
                 "input_ids",

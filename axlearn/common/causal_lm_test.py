@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests autoregressive models."""
+
 from functools import partial
 
 import jax
@@ -341,9 +342,13 @@ class ModelMetricsTest(TestCase):
             self.assertAlmostEqual(loss, ref_outputs["loss"])
             self.assertTrue(jnp.allclose(aux["per_label_loss"], ref_outputs["per_token_loss"]))
 
+    # TODO(markblee): Add a pytest marker for multi-device tests.
     @pytest.mark.skipif(
         jax.device_count() != 4 or jax.process_count() != 1,
-        reason="Incorrect device & process count for mesh.",
+        reason=(
+            "Incorrect device & process count for mesh.\n"
+            "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
+        ),
     )
     def test_constrain_input_batch(self):
         model = (
@@ -398,10 +403,10 @@ class ModelMetricsTest(TestCase):
             # Get stable-hlo representation.
             hlo_text = fn.lower(input_batch).compiler_ir(dialect="hlo").as_hlo_text()
 
-            # Five (out of six) tensors were sharded.
-            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 5)
+            # Seven (out of eight) tensors were sharded.
+            self.assertEqual(hlo_text.count('custom_call_target="Sharding"'), 7)
             # For the [batch, seq_len] tensors.
-            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 4)
+            self.assertEqual(hlo_text.count("sharding={devices=[2,2]<=[4]}"), 6)
             # For the [batch,] tensor.
             self.assertEqual(
                 hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
