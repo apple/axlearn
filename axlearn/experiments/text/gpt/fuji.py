@@ -332,7 +332,7 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
                 # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
             ),
@@ -412,7 +412,7 @@ def get_trainer_kwargs(
                 ),
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
             ),
