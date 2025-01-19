@@ -9,7 +9,6 @@ from typing import Optional, Protocol, Sequence, Union
 import jax
 import numpy as np
 import tensorflow.compat.v2 as tf
-from tokenizers import Tokenizer
 
 import axlearn.common.file_system as fs
 from axlearn.common.utils import get_data_dir
@@ -93,6 +92,10 @@ class FujiV3Vocabulary:
     """
 
     def __init__(self, filename: str):
+        # Only require tokenizers if instantiating.
+        # pylint: disable-next=import-outside-toplevel
+        from tokenizers import Tokenizer
+
         data_dir = get_data_dir()
         data_dir = (
             os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
