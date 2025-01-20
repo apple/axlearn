@@ -19,7 +19,7 @@ from axlearn.common.attention import (
     TransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
-from axlearn.common.base_model import PredictModel
+from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class
 from axlearn.common.decoder import Decoder
 from axlearn.common.decoding import (
@@ -268,11 +268,11 @@ def metrics_config(
     )
 
 
-class Model(PredictModel):
+class Model(BaseModel):
     """Autoregressive decoder-only transformer sequence model."""
 
     @config_class
-    class Config(PredictModel.Config):
+    class Config(BaseModel.Config):
         """Configuration for a causal-lm."""
 
         # Decoder.
