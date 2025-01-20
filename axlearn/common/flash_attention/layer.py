@@ -113,27 +113,39 @@ class FlashAttention(GroupedQueryAttention):
 
     def _maybe_repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
         """Repeats key or value heads dim to be shardable."""
-        partition_spec = self.config.mha_dim_to_partition_spec["bsnh"]
+        cfg = self.config
+        partition_spec = cfg.mha_dim_to_partition_spec["bsnh"]
         global_mesh = thread_resources.env.physical_mesh
         if (
             partition_spec == PartitionSpec(None)
-            or len(partition_spec) < 3
-            or partition_spec[2] is None
+            or len(partition_spec) != 4
+            or partition_spec[-2] is None
         ):
             return key_or_value
 
-        axis = partition_spec[2]
+        axis = partition_spec[-2]
         if isinstance(axis, tuple):
             axis_size = np.prod([global_mesh.shape[x] for x in axis])
         else:
             axis_size = global_mesh.shape[axis]
         # There will be sharding error if axis_size > num_heads.
-        repeated_num_heads = min(axis_size, self.config.num_heads)
-        num_head_repeats = repeated_num_heads // key_or_value.shape[-2]
-        if num_head_repeats <= 1:
-            return key_or_value
+        if cfg.num_heads < axis_size:
+            raise ValueError(
+                f"num_heads ({cfg.num_heads}) must be greater than or equal to "
+                f"the number of devices {axis_size} in the mesh axis {axis}."
+            )
+        num_head_repeats = axis_size // key_or_value.shape[-2]
         # Repeat along the num_heads dim: [batch, source_length, repeated_num_heads, per_head_dim].
-        return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+        if num_head_repeats > 1:
+            key_or_value = jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+
+        if key_or_value.shape[-2] % axis_size != 0:
+            raise ValueError(
+                f"repeated_num_heads dim size {key_or_value.shape[-2]} must be "
+                f"fully divisible by mesh axis {axis} size {axis_size}."
+            )
+
+        return key_or_value
 
     def _compute_attention(
         self,
