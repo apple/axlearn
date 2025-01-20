@@ -277,7 +277,7 @@ def check_tpu_splash_attention(
     head_dim = query.shape[3]
 
     if has_bias:
-        return False  # SplashAttention does not support specifying a bias.
+        raise SplashAttentionUnsupportedError("SplashAttention does not support specifying a bias.")
     with jax.ensure_compile_time_eval():
         if jnp.any(
             jnp.asarray([target_len, source_len, head_dim]) % splash_attention_kernel.NUM_LANES != 0

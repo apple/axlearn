@@ -115,7 +115,11 @@ class FlashAttention(GroupedQueryAttention):
         """Repeats key or value heads dim to be shardable."""
         partition_spec = self.config.mha_dim_to_partition_spec["bsnh"]
         global_mesh = thread_resources.env.physical_mesh
-        if partition_spec == PartitionSpec(None) or partition_spec[2] is None:
+        if (
+            partition_spec == PartitionSpec(None)
+            or len(partition_spec) < 3
+            or partition_spec[2] is None
+        ):
             return key_or_value
 
         axis = partition_spec[2]
