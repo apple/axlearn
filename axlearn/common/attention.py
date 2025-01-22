@@ -111,6 +111,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
+from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import (
     Dropout,
     LayerNorm,
@@ -4001,6 +4002,8 @@ def _save_and_offload_only_these_names_regex(
 
 # Regex patterns for matching remat names
 class RematRegexSavePatterns(enum.Enum):
+    """Common regex patterns for saving tensors in attention and feedforward layers."""
+
     QKV_PROJ = r".*[kqv]_proj"
     O_PROJ = r".*o_proj"
     CONTEXT = r".*context"
@@ -4009,6 +4012,8 @@ class RematRegexSavePatterns(enum.Enum):
     # This is called native attention because the "context" remat point only exists when using
     # native attention, e.g. `MultiheadAttention` or `GroupedQueryAttention`.
     NATIVE_ATTENTION = ".*([qkvo]_proj|context)"
+    FLASH_CONTEXT = f".*{FLASH_ATTN_RESIDUAL_NAME}"
+    FLASH_ATTENTION = "|".join([FLASH_CONTEXT, QKV_PROJ, O_PROJ])
     FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
 
 
