@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests TPU FlashAttention kernels."""
+
 from __future__ import annotations
 
 import unittest
@@ -46,6 +47,7 @@ def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
     return jnp.greater_equal(query_position, key_position)
 
 
+@pytest.mark.tpu
 class TestFlashAttention(TestCase):
     """Tests FlashAttention layer."""
 
