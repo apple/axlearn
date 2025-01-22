@@ -111,21 +111,20 @@ COPY . .
 FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04 as gpu
 
 # Copy from original base
-RUN apt-get update
-RUN apt-get install -y apt-transport-https ca-certificates gnupg curl \
-      gcc g++ python3 python3-venv ibverbs-utils
-RUN ln -s /usr/bin/python3 /usr/bin/python
+# Install curl and gpupg first so that we can use them to install google-cloud-cli.
+# Any RUN apt-get install step needs to have apt-get update otherwise stale package
+# list may occur when previous apt-get update step is cached. See here for more info:
+# https://docs.docker.com/build/building/best-practices/#apt-get
+RUN apt-get update && apt-get install -y curl gnupg
 
-# Install git.
-RUN apt-get install -y git
-
-# Install gcloud. https://cloud.google.com/sdk/docs/install
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    apt-get update -y && apt-get install google-cloud-cli -y
+    apt-get update -y && \
+    apt-get install -y apt-transport-https ca-certificates gcc g++ \
+      git screen ca-certificates google-perftools google-cloud-cli \
+      gcc g++ python3 python3-venv ibverbs-utils glibc-tools
 
-# Install screen and other utils for launch script.
-RUN apt-get install -y jq screen ca-certificates
+RUN ln -s /usr/bin/python3 /usr/bin/python
 
 # Setup.
 RUN mkdir -p /root
@@ -141,15 +140,14 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install flit
 RUN pip install --upgrade pip
-# End copy original base
 
-
-RUN apt update -y && apt-get install -y google-perftools glibc-tools
 
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 RUN pip install .[core,gpu]
 COPY . .
+
+# TODO(samos123): remove this once axlearn upgrades to Jax 0.4.38.
 RUN pip install -U "jax[gpu]==0.4.38" "jax==0.4.38" "jaxlib==0.4.38"
 COPY . .
 
