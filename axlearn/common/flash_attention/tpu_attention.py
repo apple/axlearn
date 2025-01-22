@@ -5,6 +5,7 @@ import functools
 from typing import Optional, Union
 
 import jax
+import jax.ad_checkpoint
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
@@ -38,6 +39,7 @@ from axlearn.common.attention_bias import (
     ZeroAttentionBias,
     as_attention_bias,
 )
+from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.utils import Tensor
 
 
@@ -388,6 +390,7 @@ def _tpu_splash_attention(
         head_shards=1,
         q_seq_shards=1,
         interpret=interpret,
+        residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
     )
     kernel = jax.vmap(kernel)
     context = kernel(q=query, k=key, v=value)
@@ -785,6 +788,9 @@ def _flash_attention_impl(
             )
         ),
     )(q, k, v, ab, q_segment_ids, kv_segment_ids)
+    o = jax.ad_checkpoint.checkpoint_name(o, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
+    l = jax.ad_checkpoint.checkpoint_name(l, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
+    m = jax.ad_checkpoint.checkpoint_name(m, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
     if save_residuals:
         l, m = (v[..., 0] for v in aux[-2:])
         return (o, l, m)
