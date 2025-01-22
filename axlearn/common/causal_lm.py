@@ -475,22 +475,12 @@ class Model(BaseModel):
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
         self._constrain_input_batch(input_batch)
-        input_ids: Tensor = input_batch["input_ids"]
-        token_type_ids: Optional[Tensor] = input_batch.get("token_type_ids")
-        input_segment_ids: Optional[Tensor] = input_batch.get("input_segment_ids")
-        input_positions: Optional[Tensor] = input_batch.get("input_positions")
+        # TODO(markblee): Simplify by using consistent naming between `input_positions` and
+        # `positions`, `input_segment_ids` and `segment_ids`.
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
-        decoder_output = self.decoder(
-            # TODO(markblee): Simplify by using consistent naming between `input_positions` and
-            # `positions`, `input_segment_ids` and `segment_ids`.
-            input_batch=dict(
-                input_ids=input_ids,
-                token_type_ids=token_type_ids,
-                input_segment_ids=input_segment_ids,
-                positions=input_positions,
-            ),
-        )
-        return decoder_output
+        decoder_batch = {**input_batch}
+        decoder_batch["positions"] = input_batch.get("input_positions")
+        return self.decoder(input_batch=decoder_batch)
 
     def _metrics(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
