@@ -97,17 +97,8 @@ COPY . .
 # GPU container spec.                                                          #
 ################################################################################
 
-# This causes INTERNAL: No valid engine configs for Matmul error
-# FROM base AS gpu
-#
-# RUN apt-get update && apt-get install -y ibverbs-utils
-# # TODO(markblee): Support extras.
-# ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-# RUN pip install .[core,gpu]
-# RUN pip install -U "jax[gpu]==0.4.37" "jax==0.4.37" "jaxlib==0.4.36" \
-#     -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-# COPY . .
-
+# Using `FROM base as GPU` causes INTERNAL: No valid engine configs for Matmul error.
+# So we're using the NVIDIA provided cuda image instead which works.
 FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04 as gpu
 
 # Copy from original base
