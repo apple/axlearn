@@ -474,18 +474,17 @@ def pallas_tpu_flash_attention(
             batch_size, num_heads, q_seq_len, kv_seq_len, d_model
         )
     return _flash_attention(
-        q, k, v, ab, segment_ids, False, causal, softmax_scale, block_sizes, debug, interpret
+        q, k, v, ab, segment_ids, causal, softmax_scale, block_sizes, debug, interpret
     )
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 11))
+@functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 10))
 def _flash_attention(
     q,
     k,
     v,
     ab,
     segment_ids,
-    save_residuals,
     causal,
     softmax_scale,
     block_sizes,
@@ -498,7 +497,7 @@ def _flash_attention(
         v,
         ab,
         segment_ids,
-        save_residuals,
+        False,
         causal,
         softmax_scale,
         block_sizes.block_b,
@@ -516,23 +515,32 @@ def _flash_attention_fwd(
     v,
     ab,
     segment_ids,
-    save_residuals,
     causal,
     softmax_scale,
     block_sizes,
     debug,
     interpret,
 ):
-    if save_residuals:
-        raise NotImplementedError("Higher-order AD not supported")
-    o, l, m = _flash_attention(
-        q, k, v, ab, segment_ids, True, causal, softmax_scale, block_sizes, debug, interpret
+    o, l, m = _flash_attention_impl(
+        q,
+        k,
+        v,
+        ab,
+        segment_ids,
+        True,
+        causal,
+        softmax_scale,
+        block_sizes.block_b,
+        block_sizes.block_q,
+        block_sizes.block_k_major,
+        block_sizes.block_k,
+        debug,
+        interpret,
     )
     return o, (q, k, v, ab, segment_ids, o, l, m)
 
 
 def _flash_attention_bwd(
-    save_residuals: bool,
     causal: bool,
     softmax_scale: float,
     block_sizes: LegacyBlockSizes,
@@ -542,8 +550,6 @@ def _flash_attention_bwd(
     do,
 ):
     """VJP rule for FlashAttention."""
-    if save_residuals:
-        raise NotImplementedError("Higher-order AD not supported")
     (q, k, v, ab, segment_ids, o, l, m) = residuals
     if not block_sizes.has_backward_blocks:
         raise ValueError(
@@ -789,11 +795,11 @@ def _flash_attention_impl(
             )
         ),
     )(q, k, v, ab, q_segment_ids, kv_segment_ids)
-    o = jax.ad_checkpoint.checkpoint_name(o, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
-    l = jax.ad_checkpoint.checkpoint_name(l, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
-    m = jax.ad_checkpoint.checkpoint_name(m, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
     if save_residuals:
         l, m = (v[..., 0] for v in aux[-2:])
+        o = jax.ad_checkpoint.checkpoint_name(o, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
+        l = jax.ad_checkpoint.checkpoint_name(l, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
+        m = jax.ad_checkpoint.checkpoint_name(m, f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
         return (o, l, m)
     else:
         return o
