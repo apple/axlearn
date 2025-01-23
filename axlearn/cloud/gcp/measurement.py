@@ -104,7 +104,8 @@ class GoodputRecorder(measurement.Recorder):
                 include_badput_breakdown=True,
             )
             if not self._monitor:
-                # This could happen if there are internal errors (such as access errors) from GCP services such as Cloud Logging or Cloud Storage.
+                # This could happen if there are internal errors (such as access errors)
+                # from GCP services such as Cloud Logging or Cloud Storage.
                 logging.log_first_n(
                     logging.WARNING,
                     "Goodput upload could not be started. Please check GoodputMonitor logs.",
