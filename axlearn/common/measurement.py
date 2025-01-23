@@ -61,7 +61,7 @@ class Recorder(Configurable):
 
     def start_monitoring(self, **kwargs):
         """Starts computing and uploading metrics at some configured interval in the background."""
-        raise NotImplementedError(type(self))
+        pass
 
 
 _recorders: dict[str, type] = {}
