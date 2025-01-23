@@ -59,6 +59,10 @@ _MEMORY_REQUEST_PERCENTAGE = 0.8
 # A label added to the jobset to indicate job version.
 BASTION_JOB_VERSION_LABEL = "bastion-job-version"
 
+# The metadata.google.internal IP.
+# https://cloud.google.com/compute/docs/troubleshooting/troubleshoot-metadata-server#failed-request
+_METADATA_GOOGLE_INTERNAL_IP = "169.254.169.254"
+
 
 class GCPJob(Job):
     """Base GCP Job definition."""
@@ -625,9 +629,9 @@ class TPUGKEJob(GKEJob):
             annotations.update(
                 {
                     "gke-gcsfuse/volumes": "true",
-                    "gke-gcsfuse/cpu-limit": cfg.gcsfuse_mount.cpu,
-                    "gke-gcsfuse/memory-limit": cfg.gcsfuse_mount.memory,
-                    "gke-gcsfuse/ephemeral-storage-limit": cfg.gcsfuse_mount.ephemeral_gb,
+                    "gke-gcsfuse/cpu-request": cfg.gcsfuse_mount.cpu,
+                    "gke-gcsfuse/memory-request": cfg.gcsfuse_mount.memory,
+                    "gke-gcsfuse/ephemeral-storage-request": cfg.gcsfuse_mount.ephemeral_gb,
                 }
             )
             # Parse GCSFuseMount path into bucket, prefix.
@@ -747,11 +751,19 @@ class TPUGKEJob(GKEJob):
                 }
             )
 
+        # Hardcode metadata.google.internal ip address to avoid transient DNS resolution issue.
+        metadata_host_alias = dict(
+            ip=_METADATA_GOOGLE_INTERNAL_IP,
+            hostnames=["metadata", "metadata.google.internal"],
+        )
+
         spec = dict(
             # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
             terminationGracePeriodSeconds=60,
             # Fail if any pod fails, and allow retries to happen at JobSet level.
             restartPolicy="Never",
+            # https://kubernetes.io/docs/tasks/network/customize-hosts-file-for-pods/#adding-additional-entries-with-hostaliases
+            hostAliases=[metadata_host_alias],
             nodeSelector={
                 "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
                 "cloud.google.com/gke-tpu-topology": system.topology,

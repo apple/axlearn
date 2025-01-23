@@ -12,19 +12,21 @@
 
 """Implements FlashAttention for GPU in JAX with logit bias support.
 
-This implementation follows the original closely:
-https://github.com/HazyResearch/flash-attention/blob/9818f85fee29ac6b60c9214bce841f8109a18b1b/flash_attn/flash_attn_triton.py
-https://github.com/google/jax/blob/jaxlib-v0.4.25/jax/experimental/pallas/ops/attention.py
+This implementation is ported from
+https://github.com/jax-ml/jax/blob/ed4e9823b19591f8a4c98b1f895c284775d6e0c7/jax/experimental/pallas/ops/gpu/attention.py
+and follows the original papers closely:
+FlashAttention: https://arxiv.org/abs/2205.14135
+FlashAttention2: https://arxiv.org/abs/2307.08691
 
-As well as the original paper: https://arxiv.org/abs/2205.14135
+Caveats of this implementation:
+* Sequence length must be a multiple of block size (128).
+* Only tested on A100/H100.
 
-Due to the caveats mentioned in the above link, we make several simplifying assumptions:
-* Sequence length is a multiple of block size (128).
-* No dropout is applied.
-* 4-d bias tensor is supported.
-* Currently only tested on A100/H100.
+Compared to the implementation in the JAX repo, we made the following enhancements:
+* Support kv_seq_len != q_seq_len.
+* Support 2D/4D bias.
+* Support dropout.
 """
-# pylint: disable=wrong-import-position,missing-param-doc,differing-param-doc
 import functools
 from collections.abc import Sequence
 from typing import Any, Optional
@@ -33,20 +35,31 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_attention
+from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
-from jax.experimental.pallas import gpu as plgpu
 
 from axlearn.common.attention import NEG_INF
+from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.layers import get_dropout_mask
 
 Tensor = jax.Array
+
+
+class NoPopDict(dict):
+    """A dict that doesn't delete after pop.
+
+    Used to workaround https://github.com/jax-ml/jax/issues/25714.
+    """
+
+    def pop(self, *args, **kwargs):
+        return super().get(*args, **kwargs)
 
 
 def _segment_mask(
     q_segment_ids: Tensor,
     kv_segment_ids: Tensor,
 ):
-    """
-    Build the segment mask for the given query and key bias ids.
+    """Build the segment mask for the given query and key bias ids.
 
     If mask[..., i, j] == True, query position i and key position j
     are in the same segment.
@@ -59,20 +72,20 @@ def _segment_mask(
 
 
 def _mha_forward_kernel(
-    # Inputs.
     q_ref,
     k_ref,
     v_ref,
     b_ref,
     s_ref,
+    dropout_mask_ref,
     # Outputs.
     o_ref,
     # Residual outputs.
     *residual_refs,
     softmax_scale: float,
     causal: bool,
+    dropout_rate: float,
     block_q: int,
-    block_d: int,
     block_k: int,
 ):
     """Computes attention outputs for the given block.
@@ -83,6 +96,9 @@ def _mha_forward_kernel(
 
     See also `_mha_backward_kernel` for the backward pass.
 
+    Note: the kernel name is used to do string matching for rematerialization in `remat.py`. Be
+    careful when renaming this.
+
     Args:
         q_ref: Input query ref.
         k_ref: Input key ref.
@@ -91,125 +107,113 @@ def _mha_forward_kernel(
         s_ref: Input segment_ids ref.
         o_ref: Output ref.
         *residual_refs: Residual output refs, e.g. softmax statistics.
-        softmax_scale: Softmax scale.
-        causal: Whether to apply causal mask.
-        block_q: Block size for query seq dim.
-        block_d: Block size for head dim.
-        block_k: Block size for key seq dim.
+        **kwargs: See `flash_attention`.
     """
-    seq_len = q_ref.shape[0]
+    kv_seq_len = k_ref.shape[0]
+    block_d = q_ref.shape[-1]
     start_q = pl.program_id(0)
+    precision = (
+        lax.Precision.HIGHEST
+        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
+        else lax.Precision.DEFAULT
+    )
 
-    # acc is the buffer where we accumulate the output on sram.
+    # o is the buffer where we accumulate the output on sram.
     # m_i and l_i (see FlashAttention paper) are updated during the k,v loop.
-    m_i = jnp.zeros(block_q, dtype=jnp.float32) + NEG_INF
+    m_i = jnp.full(block_q, NEG_INF, dtype=jnp.float32)
     l_i = jnp.zeros(block_q, dtype=jnp.float32)
     # acc is the buffer where we accumulate the output on sram.
-    acc = jnp.zeros((block_q, block_d), dtype=jnp.float32)
+    o = jnp.zeros((block_q, block_d), dtype=jnp.float32)
 
     # Load q: it will stay in L1 throughout. Indices form a matrix because we
     # read, compute, and write all in 2d chunks. 1 element ~= 1 CUDA thread index.
     # q tile has shape [block_q, block_d], block_d == head_dim.
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = pl.load(q_ref, (curr_q_slice, pl.dslice(None)))
-
-    # Effectively a segment id for padding mask.
-    if s_ref is not None:
-        q_segment_ids = pl.load(s_ref, (curr_q_slice,))
+    q = q_ref[...]
+    q_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_q_slice,))
 
     # In FlashAttention algorithm 1 there are 2 loops: slow over tiles of kv (size
-    # Bc == block_k here), and fast over blocks of q (size Br == block_q here).
-    # Here we only loop over blocks of kv to process entire seq_len, the loop over
+    # (Bc == block_k here), and fast over blocks of q (size Br == block_q here).
+    # Here we only loop over blocks of kv to process entire kv_seq_len, the loop over
     # blocks of q is carried out by the grid.
     def body(start_k, carry):
-        acc, m_prev, l_prev = carry
-        # This is slow loop over kv, essentially a scan through.
+        o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, pl.dslice(None)))
-        qk = pl.dot(q, k.T)  # [block_q, block_k].
+
+        k = pl.load(k_ref, (curr_k_slice, slice(None)))
+        qk = pl.dot(q, k.T, precision=precision)  # [block_q, block_k].
         if softmax_scale != 1.0:
             qk *= softmax_scale  # [block_q, block_k].
-
         if b_ref is not None:
-            b = pl.load(
-                b_ref,
-                (curr_q_slice, curr_k_slice),
-            )
-            qk += b
+            qk += pl.load(b_ref, (slice(None), curr_k_slice))
+        qk = jnp.maximum(qk, NEG_INF)
 
-        if s_ref is not None:
-            kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
-            mask = _segment_mask(q_segment_ids, kv_segment_ids)
+        if causal or s_ref is not None:
+            mask = None
+            if s_ref is not None:
+                kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
+                mask = _segment_mask(q_segment_ids, kv_segment_ids)
+            if causal:
+                span_q = start_q * block_q + jnp.arange(block_q)
+                span_k = start_k * block_k + jnp.arange(block_k)
+                causal_mask = span_q[:, None] >= span_k[None, :]
+                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
+            # Apply mask to qk.
             qk = jnp.where(mask, qk, NEG_INF)
 
-        if causal:
-            span_q = start_q * block_q + jnp.arange(block_q)
-            span_k = start_k * block_k + jnp.arange(block_k)
-            mask = span_q[:, None] >= span_k[None, :]
-            qk = jnp.where(mask, qk, NEG_INF)
-
-        # Bring closer to XLA:GPU numerics.
-        # These casts are needed to avoid precision issues.
-        qk = qk.astype(jnp.float32)
         m_curr = qk.max(axis=-1)
-        m_curr = jnp.maximum(m_curr, m_prev)
-        l_prev *= jnp.exp(m_prev - m_curr)
-        p = jnp.exp(qk - m_curr[:, None])
-        l_curr = jnp.sum(p, axis=1) + l_prev
-        l_rcp = 1.0 / l_curr
-        p = p * l_rcp[:, None]
-        acc_prev = (l_prev * l_rcp)[:, None] * acc
-
+        m_next = jnp.maximum(m_prev, m_curr)
+        correction = jnp.exp(m_prev - m_next)
+        l_prev_corr = correction * l_prev
+        s_curr = jnp.exp(
+            qk - m_next[:, None]
+        )  # Use m_next instead of m_curr to avoid a correction on l_curr
+        l_curr = s_curr.sum(axis=-1)
+        l_next = l_prev_corr + l_curr
+        o_prev_corr = correction[:, None] * o_prev
         v = pl.load(v_ref, (curr_k_slice, pl.dslice(block_d)))
-        acc_curr = pl.dot(p.astype(v.dtype), v)
-        acc_next = acc_prev + acc_curr
-        return acc_next, m_curr, l_curr
+        if dropout_rate > 0:
+            dropout_mask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
+            s_curr = jnp.where(dropout_mask, 0, s_curr / (1 - dropout_rate))
+        o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
+
+        o_next = o_prev_corr + o_curr
+        return o_next, m_next, l_next
 
     if causal:
-        upper_bound = lax.div(block_q * start_q, block_k) + 1
+        upper_bound = jnp.minimum(
+            lax.div((start_q + 1) * block_q, block_k), pl.cdiv(kv_seq_len, block_k)
+        )
     else:
-        upper_bound = pl.cdiv(seq_len, block_k)
-    acc, m_i, l_i = lax.fori_loop(0, upper_bound, body, (acc, m_i, l_i))
+        upper_bound = pl.cdiv(kv_seq_len, block_k)
+    o, m_i, l_i = lax.fori_loop(0, upper_bound, body, (o, m_i, l_i))
+
+    # We keep an unscaled version of o during the scan over kv_seq_len. Scaling it
+    # by the last l_i gives us the correct final output. See section 3.1.1 in the
+    # FlashAttention-2 paper: https://arxiv.org/pdf/2307.08691.
+    o /= l_i[:, None]
 
     if residual_refs:
-        l_ref, m_ref = residual_refs
-        pl.store(l_ref, (curr_q_slice,), l_i)
-        pl.store(m_ref, (curr_q_slice,), m_i)
-
+        lse_ref = residual_refs[0]
+        lse_ref[...] = m_i + jnp.log(l_i)
     # Write output to dram.
-    acc = acc.astype(o_ref.dtype)
-    pl.store(o_ref, (curr_q_slice, pl.dslice(None)), acc)
+    o_ref[...] = o.astype(o_ref.dtype)
 
 
-# TODO(kelvin-zou): may decide to deprecate the triton backend if we can fully move to
-# more low-level CUDA kernels.
-@functools.partial(jax.custom_vjp, nondiff_argnums=[5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
-@functools.partial(
-    jax.jit,
-    static_argnames=[
-        "softmax_scale",
-        "causal",
-        "block_q",
-        "block_k",
-        "backward_pass_impl",
-        "num_warps",
-        "num_stages",
-        "grid",
-        "interpret",
-        "debug",
-    ],
-)
+# pylint: disable=unused-argument
+@functools.partial(jax.custom_vjp, nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
 def flash_attention(
     query: Tensor,
     key: Tensor,
     value: Tensor,
     bias: Optional[Tensor] = None,
     segment_ids: Optional[Tensor] = None,
+    prng_key: Optional[Tensor] = None,
     softmax_scale: float = 1.0,
     causal: bool = False,
+    dropout_rate: float = 0.0,
     block_q: int = 128,
     block_k: int = 128,
-    backward_pass_impl: str = "triton",
     num_warps: Optional[int] = None,
     num_stages: Optional[int] = None,
     grid: Optional[Sequence[int]] = None,
@@ -218,457 +222,342 @@ def flash_attention(
 ):
     """Computes attention outputs following FlashAttention.
 
+    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
+
     Args:
         query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
         key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
         value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
         bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
         segment_ids: Optional segment ids of shape [batch_size, target_length].
+        prng_key: PRNG key used for dropout. Must be specified when dropout_rate > 0.0.
         softmax_scale: Optional scale to apply to softmax. Defaults to 1.
         causal: Whether to apply causal mask.
+        dropout_rate: Dropout rate. Default to 0.0 (no dropout).
         **kwargs: Pallas/triton kwargs.
 
     Returns:
-        The attention outputs of shape [batch_size, target_length, num_heads, per_head_dim].
+        The attention output tensor of shape [batch_size, target_length, num_heads, per_head_dim].
     """
-    del backward_pass_impl
-    # Configure the grid and triton kernel specs.
-    batch_size, seq_len, num_heads, head_dim = query.shape
-    block_q = min(block_q, seq_len)
-    block_k = min(block_k, seq_len)
-    # Heuristics.
-    grid_ = grid
-    if grid_ is None:
-        grid_ = (pl.cdiv(seq_len, block_q), batch_size, num_heads)
-    # Bias.
-    bias_block_spec = None
-    if bias is not None:
-        assert bias.ndim == 4
-
-        def bias_index_map(_, j, k):
-            return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
-
-        bias_block_spec = pl.BlockSpec(
-            index_map=bias_index_map, block_shape=(None, None, seq_len, seq_len)
-        )
-    # Segment Ids
-    segment_ids_block_spec = None
-    if segment_ids is not None:
-        assert segment_ids.ndim == 2
-        segment_ids_block_spec = pl.BlockSpec(
-            index_map=(lambda _, j, k: (j, 0)), block_shape=(None, seq_len)
-        )
-
-    num_warps_ = num_warps
-    if num_warps_ is None:
-        num_warps_ = 4 if head_dim <= 64 else 8
-    num_stages_ = num_stages
-    if num_stages_ is None:
-        num_stages_ = (
-            2 if bias is None and jnp.float32 not in (query.dtype, key.dtype, value.dtype) else 1
-        )
-    kernel = functools.partial(
-        _mha_forward_kernel,
-        softmax_scale=softmax_scale,
-        causal=causal,
-        block_q=block_q,
-        block_k=block_k,
-        block_d=head_dim,
-    )
-    out_shape = jax.ShapeDtypeStruct(shape=query.shape, dtype=query.dtype)
-
-    return pl.pallas_call(
-        kernel,
-        grid=grid_,
-        in_specs=[
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),  # query
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),  # key
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),  # value
-            bias_block_spec,  # bias
-            segment_ids_block_spec,  # segment_ids
-        ],
-        out_specs=pl.BlockSpec(
-            index_map=(lambda _, j, k: (j, 0, k, 0)), block_shape=(None, seq_len, None, head_dim)
-        ),
-        compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps_, num_stages=num_stages_),
-        out_shape=out_shape,
-        debug=debug,
-        interpret=interpret,
-        name="mha_forward",
-    )(query, key, value, bias, segment_ids)
+    return _flash_attention_impl(**locals())
 
 
-def _mha_forward(
+# pylint: enable=unused-argument
+def _flash_attention_impl(
     query: Tensor,
     key: Tensor,
     value: Tensor,
-    bias: Optional[Tensor],
-    segment_ids: Optional[Tensor],
-    softmax_scale: float,
-    causal: bool,
-    block_q: int,
-    block_k: int,
-    backward_pass_impl: str,
-    num_warps: Optional[int],
-    num_stages: int,
-    grid: Any,
-    interpret: bool,
-    debug: bool,
+    bias: Optional[Tensor] = None,
+    segment_ids: Optional[Tensor] = None,
+    prng_key: Optional[Tensor] = None,
+    softmax_scale: float = 1.0,
+    causal: bool = False,
+    dropout_rate: float = 0.0,
+    block_q: int = 128,
+    block_k: int = 128,
+    num_warps: Optional[int] = None,
+    num_stages: Optional[int] = None,
+    grid: Optional[Sequence[int]] = None,
+    interpret: bool = False,
+    debug: bool = False,
+    # output_activations has to be the last arg for custom vjp to work.
+    output_activations: bool = False,
 ):
-    """Calls `_mha_forward_kernel`."""
-    del backward_pass_impl
-    # Configure the grid and triton kernel specs.
-    batch_size, seq_len, num_heads, head_dim = query.shape
-    block_q = min(block_q, seq_len)
-    block_k = min(block_k, seq_len)
+    """Computes flash forward and residuals if output_activations is True.
+
+    Args:
+        See `flash_attention`
+
+    Returns:
+        If output_activations is False:
+            Tensor of shape [batch_size, target_length, num_heads, per_head_dim]
+        If output_activations is True:
+            (Tensor of shape [batch_size, target_length, num_heads, per_head_dim], (residuals, ...))
+    """
+    batch_size, q_seq_len, num_heads, head_dim = query.shape
+    kv_seq_len = key.shape[1]
+    block_q = min(block_q, q_seq_len)
+    block_k = min(block_k, kv_seq_len)
+    assert q_seq_len % block_q == 0
+    assert kv_seq_len % block_k == 0
     # Heuristics.
     grid_ = grid
     if grid_ is None:
-        grid_ = (pl.cdiv(seq_len, block_q), batch_size, num_heads)
-
-    # Bias.
-    bias_block_spec = None
-    if bias is not None:
-        assert bias.ndim == 4
-
-        def bias_index_map(_, j, k):
-            return (j if bias.shape[0] != 1 else 0, k if bias.shape[1] != 1 else 0, 0, 0)
-
-        bias_block_spec = pl.BlockSpec(
-            index_map=bias_index_map, block_shape=(None, None, seq_len, seq_len)
-        )
-
-    # Segment Ids.
-    segment_ids_block_spec = None
-    if segment_ids is not None:
-        assert segment_ids.ndim == 2
-        segment_ids_block_spec = pl.BlockSpec(
-            index_map=(lambda _, j, k: (j, 0)), block_shape=(None, seq_len)
-        )
-
-    num_warps_ = num_warps
-    if num_warps_ is None:
-        num_warps_ = 4 if head_dim <= 64 else 8
-    num_stages_ = num_stages
-    if num_stages_ is None:
-        num_stages_ = (
+        grid_ = (pl.cdiv(q_seq_len, block_q), batch_size, num_heads)
+    if num_stages is None:
+        num_stages = (
             2 if bias is None and jnp.float32 not in (query.dtype, key.dtype, value.dtype) else 1
         )
+    if num_warps is None:
+        num_warps = 4 if head_dim <= 64 else 8
     kernel = functools.partial(
         _mha_forward_kernel,
         softmax_scale=softmax_scale,
         causal=causal,
+        dropout_rate=dropout_rate,
         block_q=block_q,
         block_k=block_k,
-        block_d=head_dim,
     )
-    out_shape = [
-        jax.ShapeDtypeStruct(shape=query.shape, dtype=query.dtype),  # out
-        jax.ShapeDtypeStruct(shape=(batch_size, num_heads, seq_len), dtype=jnp.float32),  # l
-        jax.ShapeDtypeStruct(shape=(batch_size, num_heads, seq_len), dtype=jnp.float32),  # m
+    out_shape = jax.ShapeDtypeStruct(shape=query.shape, dtype=query.dtype)  # out
+    in_specs = [
+        pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda _, j, k: (j, 0, k, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda _, j, k: (j, 0, k, 0)),
     ]
-
-    out, l, m = pl.pallas_call(
+    if bias is not None:
+        assert bias.ndim == 4
+        in_specs.append(
+            pl.BlockSpec(
+                index_map=lambda i, j, k: (
+                    j if bias.shape[0] != 1 else 0,
+                    k if bias.shape[1] != 1 else 0,
+                    i,
+                    0,
+                ),
+                block_shape=(None, None, block_q, kv_seq_len),
+            )
+        )
+    else:
+        in_specs.append(None)
+    in_specs.append(
+        None if segment_ids is None else pl.BlockSpec((None, kv_seq_len), lambda _, j, k: (j, 0))
+    )
+    if dropout_rate > 0:
+        assert dropout_rate < 1
+        assert prng_key is not None
+        # TODO(hanzhi-zhou): Switch to in-kernel RNG when pallas supports it.
+        dropout_mask = get_dropout_mask(
+            (batch_size, num_heads, q_seq_len, kv_seq_len), prng_key=prng_key, rate=dropout_rate
+        )
+        in_specs.append(
+            pl.BlockSpec((None, None, block_q, kv_seq_len), lambda i, j, k: (j, k, i, 0))
+        )
+    else:
+        dropout_mask = None
+        in_specs.append(None)
+    out_specs = pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0))
+    if output_activations:
+        out_specs = [out_specs, pl.BlockSpec((None, None, block_q), lambda i, j, k: (j, k, i))]
+        out_shape = [
+            out_shape,
+            jax.ShapeDtypeStruct(
+                shape=(batch_size, num_heads, q_seq_len), dtype=jnp.float32
+            ),  # lse
+        ]
+    pallas_out = pl.pallas_call(
         kernel,
         grid=grid_,
-        in_specs=[
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),  # query
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),  # key
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),  # value
-            bias_block_spec,  # bias
-            segment_ids_block_spec,  # segment_ids
-        ],
-        out_specs=[
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),
-            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
-            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
-        ],
-        compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps_, num_stages=num_stages_),
+        in_specs=in_specs,
+        out_specs=out_specs,
+        compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
         name="mha_forward",
-    )(query, key, value, bias, segment_ids)
-    return out, (query, key, value, bias, segment_ids, out, l, m)
+    )(query, key, value, bias, segment_ids, dropout_mask)
+    if output_activations:
+        out, lse = pallas_out
+        out = checkpoint_name(out, f"gpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
+        lse = checkpoint_name(lse, f"gpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
+        return out, (query, key, value, bias, segment_ids, prng_key, out, lse)
+    return pallas_out
 
 
-def _preprocess_backward_kernel(
-    out_ref,
-    dout_ref,
-    l_ref,
-    new_dout_ref,
-    delta_ref,
-    *,
-    block_q: int,
-):
-    """Precomputes Di for the attention backwards pass.
-
-    This optimization is described in https://arxiv.org/abs/2205.14135 Appendix B.4 observation 2.
-    """
-    pid_m = pl.program_id(0)
-
-    off_m = pl.ds(pid_m * block_q, block_q)
-    # Load.
-    o = pl.load(out_ref, (off_m, slice(None))).astype(jnp.float32)
-    do = pl.load(dout_ref, (off_m, slice(None))).astype(jnp.float32)
-    denom = pl.load(l_ref, (off_m,)).astype(jnp.float32)
-    # Compute.
-    do = do / denom[:, None]
-    delta = jnp.sum(o * do, axis=1)
-    # Write-back.
-    pl.store(new_dout_ref, (off_m, slice(None)), do.astype(new_dout_ref.dtype))
-    pl.store(delta_ref, (off_m,), delta.astype(delta_ref.dtype))
+def _mha_forward(*args: Any):
+    """Wraps flash_attention for custom vjp."""
+    return _flash_attention_impl(*args, output_activations=True)
 
 
-@jax.named_scope("preprocess_backward")
-def _preprocess_backward(
-    out,
-    do,
-    l,
-    block_q: int,
-    debug: bool,
-    interpret: bool,
-):
-    """Calls `_preprocess_backward_kernel`."""
-    batch_size, seq_len, num_heads, head_dim = out.shape
-    out_shape = [
-        jax.ShapeDtypeStruct(do.shape, do.dtype),
-        jax.ShapeDtypeStruct(l.shape, l.dtype),
-    ]
-    do_scaled, delta = pl.pallas_call(
-        functools.partial(_preprocess_backward_kernel, block_q=block_q),
-        grid=(pl.cdiv(seq_len, block_q), batch_size, num_heads),
-        in_specs=[
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),
-            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
-        ],
-        out_specs=[
-            pl.BlockSpec(
-                index_map=(lambda _, j, k: (j, 0, k, 0)),
-                block_shape=(None, seq_len, None, head_dim),
-            ),
-            pl.BlockSpec(index_map=(lambda _, j, k: (j, k, 0)), block_shape=(None, None, seq_len)),
-        ],
-        compiler_params=plgpu.TritonCompilerParams(num_warps=4, num_stages=3),
-        out_shape=out_shape,
-        debug=debug,
-        interpret=interpret,
-        name="mha_preprocess_backward",
-    )(out, do, l)
-    return do_scaled, delta
-
-
-def _mha_backward_kernel(
+def _mha_backward_kernel_dkdv(
     # Inputs.
     q_ref,
     k_ref,
     v_ref,
     b_ref,
     s_ref,
-    out_ref,
+    dropout_mask_ref,
     do_scaled_ref,
-    l_ref,
-    m_ref,
+    lse_ref,
     delta_ref,
     # Outputs.
-    dq_ref,
     dk_ref,
     dv_ref,
     *,
     softmax_scale: float,
     causal: bool,
+    dropout_rate: float,
     block_q: int,
-    block_d: int,
     block_k: int,
 ):
-    """Computes the backward pass.
-
-    This algorithm is described in https://arxiv.org/abs/2205.14135 Appendix B.4 Algorithm 4.
-    Jax reference implementation:
-    https://github.com/jax-ml/jax/blob/0995bc231c51e2ee66995be8ee2b31adf9236509/jax/experimental/pallas/ops/gpu/attention.py#L343
-
-    See also `_mha_forward_kernel` for the forward pass.
-
-    The main difference between ours and jax reference implementation is that it supports 4-d bias,
-    and it supports float32 in the input dtype.
-
-    Args:
-        q_ref: Input query ref.
-        k_ref: Input key ref.
-        v_ref: Input value ref.
-        b_ref: Input bias ref.
-        s_ref: Input segment_ids ref.
-        out_ref: Input forward output ref.
-        do_scaled_ref: Preprocessed dOut ref. See `_preprocess_backward_kernel`.
-        l_ref: Input l ref.
-        m_ref: Input m ref.
-        delta_ref: Input delta ref. See `_preprocess_backward_kernel`.
-        dq_ref: Output dQuery ref.
-        dk_ref: Output dKey ref.
-        dv_ref: Output dValue ref.
-        softmax_scale: Softmax scale.
-        bias_type: Type of bias matrix.
-        causal: Whether to apply causal mask.
-        block_q: Block size for query seq dim.
-        block_d: Block size for head dim.
-        block_k: Block size for key seq dim.
+    """Computes dK and dV.
+    1. Load a block of K and V of size (block_k, head_dim) in SMEM.
+    2. Iterate through Q in chunks of (block_q, head_dim) to accumulate
+       dK and dV.
     """
-    del out_ref, l_ref  # Not needed
-    seq_len = q_ref.shape[0]
+    q_seq_len = q_ref.shape[0]
+    block_d = q_ref.shape[-1]
+    precision = (
+        lax.Precision.HIGHEST
+        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
+        else lax.Precision.DEFAULT
+    )
 
-    # Parallelize over k/v's seq dimension.
-    # Load a block of K and V of size (block_k, block_d).
-    # Iterate through Q in chunks of (block_q, block_d) to accumulate dK and dV.
     start_k = pl.program_id(2)
-    slice_k = pl.ds(start_k * block_k, block_k)
+    curr_k_slice = pl.dslice(start_k * block_k, block_k)
+
     dv = jnp.zeros([block_k, block_d], dtype=jnp.float32)
     dk = jnp.zeros([block_k, block_d], dtype=jnp.float32)
-    k = pl.load(k_ref, (slice_k, slice(None)))
-    v = pl.load(v_ref, (slice_k, slice(None)))
+
+    v = pl.load(v_ref, (curr_k_slice, slice(None)))
+    k = pl.load(k_ref, (curr_k_slice, slice(None)))
     span_k = start_k * block_k + jnp.arange(block_k)
-    kv_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_k,))
+    kv_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_k_slice,))
 
-    def inner_loop_dk_dv(start_q, carry):
+    def inner_loop_dkdv(start_q, carry):
         dv, dk = carry
-        slice_q = pl.ds(start_q * block_q, block_q)
-        q = pl.load(q_ref, (slice_q, slice(None)))
-        qk = pl.dot(q, k.T)
-        # These casts are needed to avoid precision issues.
-        qk = qk.astype(jnp.float32)
+        curr_q_slice = pl.dslice(start_q * block_q, block_q)
 
+        q = pl.load(q_ref, (curr_q_slice, slice(None)))
+        qk = pl.dot(q, k.T, precision=precision)  # type: ignore
         if softmax_scale != 1.0:
             qk *= softmax_scale
-
         if b_ref is not None:
-            # Load bias in transposed order, for hopefully better cache efficiency.
-            b = pl.load(
-                b_ref,
-                (slice_k, slice_q),
-            )
-            b = b.astype(jnp.float32)
-            qk += b.T  # Transpose back.
-        if s_ref is not None:
-            q_segment_ids = pl.load(s_ref, (slice_q,))
-            mask = _segment_mask(q_segment_ids, kv_segment_ids)
+            qk += pl.load(b_ref, (curr_q_slice, curr_k_slice))
+        qk = jnp.maximum(qk, NEG_INF)
+
+        if causal or s_ref is not None:
+            mask = None
+            if s_ref is not None:
+                q_segment_ids = pl.load(s_ref, (curr_q_slice,))
+                mask = _segment_mask(q_segment_ids, kv_segment_ids)
+
+            if causal:
+                span_q = start_q * block_q + jnp.arange(block_q)
+                causal_mask = span_q[:, None] >= span_k[None, :]
+                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
             qk = jnp.where(mask, qk, NEG_INF)
-        if causal:
-            span_q = start_q * block_q + jnp.arange(block_q)
-            mask = span_q[:, None] >= span_k[None, :]
-            qk = jnp.where(mask, qk, NEG_INF)
-        m = pl.load(m_ref, (slice_q,))
-        p = jnp.exp(qk - m[:, None])
-        do = pl.load(do_scaled_ref, (slice_q, slice(None)))
-        dv = dv + pl.dot(p.astype(do.dtype).T, do)
-        di = pl.load(delta_ref, (slice_q,))
-        dp = jnp.zeros((block_q, block_k), dtype=jnp.float32) - di[:, None]
-        dp = dp + pl.dot(do, v.T)
+
+        lse = pl.load(lse_ref, (curr_q_slice,))
+        di = pl.load(delta_ref, (curr_q_slice,))
+        do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
+
+        p = p_dropped = jnp.exp(qk - lse[:, None])
+        dp = dp_dropped = pl.dot(do, v.T, precision=precision)  # type: ignore
+        if dropout_rate > 0:
+            dropout_mask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+            p_dropped = jnp.where(dropout_mask, 0, p / (1 - dropout_rate))
+            dp = jnp.where(dropout_mask, 0, dp_dropped / (1 - dropout_rate))
+        dv = dv + pl.dot(p_dropped.astype(do.dtype).T, do, precision=precision)
+        dp = dp - di[:, None]
         ds = p * dp
         if softmax_scale != 1.0:
             ds = ds * softmax_scale
-        dk = dk + pl.dot(ds.astype(q_ref.dtype).T, q)
+        dk = dk + pl.dot(ds.astype(q_ref.dtype).T, q, precision=precision)
 
         return dv, dk
 
     lower_bound = lax.div(start_k * block_k, block_q) if causal else 0
-    dv, dk = lax.fori_loop(lower_bound, pl.cdiv(seq_len, block_q), inner_loop_dk_dv, (dv, dk))
-    pl.store(dv_ref, (slice_k, slice(None)), dv.astype(dv_ref.dtype))
-    pl.store(dk_ref, (slice_k, slice(None)), dk.astype(dk_ref.dtype))
-    # Free up memory.
-    del dv, dk
+    dv, dk = lax.fori_loop(lower_bound, pl.cdiv(q_seq_len, block_q), inner_loop_dkdv, (dv, dk))
+    pl.store(dv_ref, (curr_k_slice, slice(None)), dv.astype(dv_ref.dtype))
+    pl.store(dk_ref, (curr_k_slice, slice(None)), dk.astype(dk_ref.dtype))
 
-    # Parallelize over q's seq dimension.
-    # 1. Load a block of Q of size (block_q, block_d).
-    # 2. Iterate through K and V in chunks of (block_k, block_d) to accumulate dQ.
+
+def _mha_backward_kernel_dq(
+    # Inputs.
+    q_ref,
+    k_ref,
+    v_ref,
+    b_ref,
+    s_ref,
+    dropout_mask_ref,
+    do_scaled_ref,
+    lse_ref,
+    delta_ref,
+    # Outputs.
+    dq_ref,
+    *,
+    softmax_scale: float,
+    causal: bool,
+    dropout_rate: float,
+    block_q: int,
+    block_k: int,
+):
+    """Computes dQ.
+    1. Load a block of Q of size (block_q, head_dim) in SMEM.
+    2. Iterate through K and V in chunks of (block_k, head_dim) to
+       accumulate dQ.
+    """
+    kv_seq_len = k_ref.shape[0]
+    block_d = q_ref.shape[-1]
+    precision = (
+        lax.Precision.HIGHEST
+        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
+        else lax.Precision.DEFAULT
+    )
+
     start_q = pl.program_id(2)
-    slice_q = pl.ds(start_q * block_q, block_q)
-    q = pl.load(q_ref, (slice_q, slice(None)))
-    dq = jnp.zeros([block_q, block_d], dtype=jnp.float32)
-    q_segment_ids = None if s_ref is None else pl.load(s_ref, (slice_q,))
+    curr_q_slice = pl.ds(start_q * block_q, block_q)
     span_q = start_q * block_q + jnp.arange(block_q)
-    m = pl.load(m_ref, (slice_q,))
-    di = pl.load(delta_ref, (slice_q,))
-    do = pl.load(do_scaled_ref, (slice_q, slice(None)))
+    dq = jnp.zeros([block_q, block_d], dtype=jnp.float32)
 
-    def inner_loop_dq(start_k, carry):
-        dq = carry
-        slice_k = pl.ds(start_k * block_k, block_k)
-        k = pl.load(k_ref, (slice_k, slice(None)))
-        v = pl.load(v_ref, (slice_k, slice(None)))
-        qk = pl.dot(q, k.T)
+    q = pl.load(q_ref, (curr_q_slice, slice(None)))
+    q_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_q_slice,))
+    lse = pl.load(lse_ref, (curr_q_slice,))
+    do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
+    di = pl.load(delta_ref, (curr_q_slice,))
 
-        # These casts are needed to avoid precision issues.
-        qk = qk.astype(jnp.float32)
-
+    def inner_loop_dq(start_k, dq):
+        curr_k_slice = pl.dslice(start_k * block_k, block_k)
+        k = pl.load(k_ref, (curr_k_slice, slice(None)))
+        v = pl.load(v_ref, (curr_k_slice, slice(None)))
+        qk = pl.dot(q, k.T, precision=precision)
         if softmax_scale != 1.0:
             qk *= softmax_scale
         if b_ref is not None:
-            # Load bias in transposed order, for hopefully better cache efficiency.
-            b = pl.load(
-                b_ref,
-                (slice_k, slice_q),
-            )
-            b = b.astype(jnp.float32)
-            qk += b.T  # Transpose back.
-        if s_ref is not None:
-            kv_segment_ids = pl.load(s_ref, (slice_k,))
-            mask = _segment_mask(q_segment_ids, kv_segment_ids)
+            qk += pl.load(b_ref, (curr_q_slice, curr_k_slice))
+        qk = jnp.maximum(qk, NEG_INF)
+
+        if causal or s_ref is not None:
+            mask = None
+            if s_ref is not None:
+                kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
+                mask = _segment_mask(q_segment_ids, kv_segment_ids)
+
+            if causal:
+                span_k = start_k * block_k + jnp.arange(block_k)
+                causal_mask = span_q[:, None] >= span_k[None, :]
+                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
             qk = jnp.where(mask, qk, NEG_INF)
-        if causal:
-            span_k = start_k * block_k + jnp.arange(block_k)
-            mask = span_q[:, None] >= span_k[None, :]
-            qk = jnp.where(mask, qk, NEG_INF)
-        p = jnp.exp(qk - m[:, None])
-        dp = jnp.zeros((block_q, block_k), dtype=jnp.float32) - di[:, None]
-        dp = dp + pl.dot(do, v.T)
+
+        p = jnp.exp(qk - lse[:, None])
+        dp = dp_dropped = pl.dot(do, v.T, precision=precision)
+        if dropout_rate > 0:
+            dropout_mask = pl.load(dropout_mask_ref, (curr_q_slice, curr_k_slice))
+            dp = jnp.where(dropout_mask, 0, dp_dropped / (1 - dropout_rate))
+        dp = dp - di[:, None]
         ds = p * dp
         if softmax_scale != 1.0:
             ds = ds * softmax_scale
-        dq = dq + pl.dot(ds.astype(k.dtype), k).astype(dq.dtype)
+        dq = dq + pl.dot(ds.astype(k.dtype), k, precision=precision)
         return dq
 
     if causal:
-        upper_bound = lax.div((start_q + 1) * block_q, block_k)
+        upper_bound = jnp.minimum(
+            pl.cdiv((start_q + 1) * block_q, block_k), pl.cdiv(kv_seq_len, block_k)
+        )
     else:
-        upper_bound = pl.cdiv(seq_len, block_k)
+        upper_bound = pl.cdiv(kv_seq_len, block_k)
 
     dq = lax.fori_loop(0, upper_bound, inner_loop_dq, (dq))
-    pl.store(dq_ref, (slice_q, slice(None)), dq.astype(dq_ref.dtype))
+    pl.store(dq_ref, (curr_q_slice, slice(None)), dq.astype(dq_ref.dtype))
 
 
 def _mha_backward(
     softmax_scale: float,
     causal: bool,
+    dropout_rate: float,
     block_q: int,
     block_k: int,
-    backward_pass_impl: str,
     num_warps: Optional[int],
     num_stages: int,
     grid: Any,
@@ -677,126 +566,125 @@ def _mha_backward(
     res,
     do,
 ):
-    """Calls `_mha_backward_kernel`."""
-    del num_warps, num_stages, grid
-    q, k, v, b, s, out, l, m = res
+    """Calls Pallas kernels to compute dQ, dK and dV.
 
-    # NOTE: temporarily removed the "xla" branch, which seems unused.
-    if backward_pass_impl == "triton":
-        # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
-        if jnp.float32 in (q.dtype, k.dtype, v.dtype, jnp.bfloat16 if b is None else b.dtype):
-            block_q = block_k = 32
+    Note: separating dKdV and dQ loops into two kernels in flash backward improved performance by
+    10~15% when head_dim >= 128. Technically, fusing dKdVdQ into a single loop and use atomic add
+    for dQ is the fastest solution, but pallas atomics are extremely slow according to empirical
+    testing.
+    """
+    del num_warps, grid
+    q, k, v, bias, segment_ids, prng_key, out, lse = res
+    # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
+    if jnp.float32 in (q.dtype, k.dtype, v.dtype, jnp.bfloat16 if bias is None else bias.dtype):
+        block_q = block_k = 32
 
-        batch_size, seq_len, num_heads, head_dim = q.shape
-        # Backward heuristics, using the same block size for block q and block k.
-        block_q = min(block_q, seq_len)
-        block_k = min(block_k, seq_len)
-        # Very tiny amount of time, not worth using pallas_call.
-        do_scaled, delta = _preprocess_backward(out, do, l, block_q, debug, interpret)
-        # We accumulate into dq so we need to initialize it to zeros.
-        out_shapes = [
-            jax.ShapeDtypeStruct(q.shape, q.dtype),
-            jax.ShapeDtypeStruct(k.shape, k.dtype),
-            jax.ShapeDtypeStruct(v.shape, v.dtype),
-        ]
+    batch_size, q_seq_len, num_heads, head_dim = q.shape
+    kv_seq_len = k.shape[1]
+    block_q = min(block_q, q_seq_len)
+    block_k = min(block_k, kv_seq_len)
+    # Compute delta (D) as in Algorithm 2 Line 4 of FlashAttention2.
+    delta = (
+        (out.astype(jnp.float32) * do.astype(jnp.float32))
+        .sum(axis=3)
+        .transpose((0, 2, 1))
+        .astype(lse.dtype)
+    )
 
-        # Bias.
-        bias_block_spec = None
-        if b is not None:
-            assert b.ndim == 4
-            b = jnp.moveaxis(b, -1, -2)
+    if dropout_rate > 0:
+        dropout_mask = get_dropout_mask(
+            (batch_size, num_heads, q_seq_len, kv_seq_len), prng_key=prng_key, rate=dropout_rate
+        )
+    else:
+        dropout_mask = None
 
-            def bias_index_map(j, k, _):
-                return (j if b.shape[0] != 1 else 0, k if b.shape[1] != 1 else 0, 0, 0)
-
-            bias_block_spec = pl.BlockSpec(
-                index_map=bias_index_map, block_shape=(None, None, seq_len, seq_len)
+    in_specs = [
+        pl.BlockSpec((None, q_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)),  # q
+        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)),  # k
+        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)),  # v
+        (
+            None
+            if bias is None
+            else pl.BlockSpec(
+                index_map=lambda i, j, _: (
+                    i if bias.shape[0] != 1 else 0,
+                    j if bias.shape[1] != 1 else 0,
+                    0,
+                    0,
+                ),
+                block_shape=(None, None, q_seq_len, kv_seq_len),
             )
+        ),
+        None if segment_ids is None else pl.BlockSpec((None, kv_seq_len), lambda i, j, _: (i, 0)),
+        (
+            None
+            if dropout_mask is None
+            else pl.BlockSpec((None, None, q_seq_len, kv_seq_len), lambda i, j, _: (i, j, 0, 0))
+        ),
+        pl.BlockSpec((None, q_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)),  # do
+        pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),  # lse
+        pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),  # delta
+    ]
 
-        # Segment Ids.
-        segment_ids_block_spec = None
-        if s is not None:
-            assert s.ndim == 2
-            segment_ids_block_spec = pl.BlockSpec(
-                index_map=(lambda j, k, _: (j, 0)), block_shape=(None, seq_len)
-            )
-        grid = (batch_size, num_heads, pl.cdiv(seq_len, block_q))
-        # Add some proof check against SRAM for float32 inputs or huge bias input.
-        num_warps = 8
-        num_stages = 2 if b is None and jnp.float32 not in (q.dtype, k.dtype, v.dtype) else 1
-        dq, dk, dv = pl.pallas_call(
+    num_warps = 8
+    if num_stages is None:
+        num_stages = 2 if bias is None and jnp.float32 not in (q.dtype, k.dtype, v.dtype) else 1
+
+    def call_kernel(*, kernel, grid, out_shape, out_specs):
+        return pl.pallas_call(
             functools.partial(
-                _mha_backward_kernel,
+                kernel,
                 softmax_scale=softmax_scale,
                 causal=causal,
+                dropout_rate=dropout_rate,
                 block_q=block_q,
-                block_d=head_dim,
                 block_k=block_k,
             ),
+            out_shape=out_shape,
+            in_specs=in_specs,
             grid=grid,
-            out_shape=out_shapes,
-            in_specs=[
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),  # query
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),  # key
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),  # value
-                bias_block_spec,  # bias
-                segment_ids_block_spec,  # segment_ids
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, k, 0)), block_shape=(None, None, seq_len)
-                ),
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, k, 0)), block_shape=(None, None, seq_len)
-                ),
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, k, 0)), block_shape=(None, None, seq_len)
-                ),
-            ],
-            out_specs=[
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),
-                pl.BlockSpec(
-                    index_map=(lambda j, k, _: (j, 0, k, 0)),
-                    block_shape=(None, seq_len, None, head_dim),
-                ),
-            ],
-            name="mha_backward",
+            out_specs=out_specs,
+            name=kernel.__name__,
             debug=debug,
             interpret=interpret,
-            compiler_params=plgpu.TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
-        )(q, k, v, b, s, out, do_scaled, l, m, delta)
-    else:
-        raise ValueError(f"Invalid backward pass implementation: {backward_pass_impl}")
-    return dq.astype(q.dtype), dk, dv, None, None
+            compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+        )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta)
+
+    dk, dv = call_kernel(
+        kernel=_mha_backward_kernel_dkdv,
+        grid=(batch_size, num_heads, pl.cdiv(kv_seq_len, block_k)),
+        out_shape=[
+            jax.ShapeDtypeStruct(k.shape, k.dtype),
+            jax.ShapeDtypeStruct(v.shape, v.dtype),
+        ],
+        out_specs=[
+            pl.BlockSpec(
+                (None, kv_seq_len, None, head_dim),
+                lambda i, j, _: (i, 0, j, 0),  # dk
+            ),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, head_dim),
+                lambda i, j, _: (i, 0, j, 0),  # dv
+            ),
+        ],
+    )
+
+    dq = call_kernel(
+        kernel=_mha_backward_kernel_dq,
+        grid=(batch_size, num_heads, pl.cdiv(q_seq_len, block_q)),
+        out_shape=jax.ShapeDtypeStruct(q.shape, q.dtype),
+        out_specs=pl.BlockSpec(
+            (None, q_seq_len, None, head_dim),
+            lambda i, j, _: (i, 0, j, 0),  # dq
+        ),
+    )
+    return dq, dk, dv, None, None, None
 
 
 flash_attention.defvjp(_mha_forward, _mha_backward)
 
 
 # Interface to cuDNN's dot product attention.
-# TODO(kelvin-zou): Verify dropout rate functions.
 # TODO(kelvin-zou): Add support for segment IDs.
 def cudnn_dot_product_attention(
     query: Tensor,
@@ -812,6 +700,8 @@ def cudnn_dot_product_attention(
     qkv_layout: str = "BTNH",
 ):
     """Computes dot-product attention given query (Q), key (K), and value (V).
+
+    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
 
     Reference implementation:
     https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/cudnn/fused_attention_stablehlo.py#L927.

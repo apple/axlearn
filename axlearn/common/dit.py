@@ -13,6 +13,8 @@ Ref: https://github.com/facebookresearch/DiT
 
 from typing import Optional, Union
 
+import chex
+import einops
 import jax
 import jax.numpy as jnp
 
@@ -27,10 +29,25 @@ from axlearn.common.config import (
 )
 from axlearn.common.layers import Dropout, Embedding, LayerNormStateless, Linear, get_activation_fn
 from axlearn.common.module import Module, Tensor
+from axlearn.common.utils import NestedTensor, TensorSpec
 
 
 def modulate(*, x, shift, scale):
-    return x * (1 + jnp.expand_dims(scale, 1)) + jnp.expand_dims(shift, 1)
+    """Modulates the input x tensor.
+
+    Note: shift and scale must have the same shape.
+
+    Args:
+        x: input tensor with shape [batch_size, num_length, input_dim].
+        shift: shifting the norm tensor with shape [batch_size, 1|num_length, input_dim].
+        scale: scaling the norm tensor with shape [batch_size, 1|num_length, input_dim].
+
+    Returns:
+        A tensor with shape [batch_size, num_length, input_dim].
+    """
+    chex.assert_equal_shape((shift, scale))
+    chex.assert_equal_rank((x, shift, scale))
+    return x * (1 + scale) + shift
 
 
 class TimeStepEmbedding(BaseLayer):
@@ -210,16 +227,20 @@ class AdaptiveLayerNormModulation(BaseLayer):
         """Generate the parameters for modulation.
 
         Args:
-            input: A tensor with shape [batch_size, dim].
+            input: A tensor with shape [batch_size, dim] or [batch_size, num_length, dim].
 
         Returns:
             A list of tensors with length num_outputs.
-                Each tensor has shape [batch_size, dim].
+                Each tensor has shape [batch_size, 1|num_length, dim].
         """
         cfg = self.config
+        if input.ndim not in (2, 3):
+            raise ValueError(f"The input must be rank 2 or 3, but got the {input.shape} tensor.")
         x = get_activation_fn(cfg.activation)(input)
         output = self.linear(x)
-        output = jnp.split(output, cfg.num_outputs, axis=1)
+        if output.ndim == 2:
+            output = einops.rearrange(output, "b d -> b 1 d")
+        output = jnp.split(output, cfg.num_outputs, axis=-1)
         return output
 
 
@@ -291,16 +312,18 @@ class DiTFeedForwardLayer(BaseLayer):
 
         Args:
             input: input tensor with shape [batch_size, num_length, input_dim].
-            shift: shifting the norm tensor with shape [batch_size, input_dim].
-            scale: scaling the norm tensor with shape [batch_size, input_dim].
+            shift: shifting the norm tensor with shape [batch_size, 1|num_length, input_dim].
+            scale: scaling the norm tensor with shape [batch_size, 1|num_length, input_dim].
             gate: applying before the residual addition with shape
-                [batch_size, input_dim].
+                [batch_size, 1|num_length, input_dim].
 
         Returns:
             A tensor with shape [batch_size, num_length, input_dim].
         """
+        chex.assert_equal_shape((shift, scale, gate))
+        chex.assert_equal_rank((input, shift))
         cfg = self.config
-        remat_pt1 = "activation"
+        remat_pt1 = "linear1_0"
         remat_pt2 = "linear2"
 
         if cfg.structure == "prenorm":
@@ -312,8 +335,8 @@ class DiTFeedForwardLayer(BaseLayer):
 
         x = modulate(x=x, shift=shift, scale=scale)
         x = self.linear1(x)
-        x = get_activation_fn(cfg.activation)(x)
         x = self._remat_name(x, remat_pt1)
+        x = get_activation_fn(cfg.activation)(x)
         x = self.dropout1(x)
         x = self.linear2(x)
         x = self._remat_name(x, remat_pt2)
@@ -324,7 +347,7 @@ class DiTFeedForwardLayer(BaseLayer):
             x = self.postnorm(x)
 
         x = self.dropout2(x)
-        x = x * jnp.expand_dims(gate, 1)
+        x = x * gate
         x += input
         return x
 
@@ -388,12 +411,12 @@ class DiTAttentionLayer(BaseLayer):
 
         Args:
             input: input tensor with shape [batch_size, num_length, target_dim].
-            shift: If provided, shifting the norm tensor with shape [batch_size, target_dim] and
-                scale should be provided.
-            scale: If provided, scaling the norm tensor with shape [batch_size, target_dim] and
-                shift should be provided.
+            shift: If provided, shifting the norm tensor with shape [batch_size, 1|num_length,
+                target_dim] and scale should be provided.
+            scale: If provided, scaling the norm tensor with shape [batch_size, 1|num_length,
+                target_dim] and shift should be provided.
             gate: If provided, applying before the residual addition with shape
-                [batch_size, target_dim].
+                [batch_size, 1|num_length, target_dim].
             attention_logit_biases: Optional Tensor representing the self attention biases.
 
         Returns:
@@ -425,10 +448,88 @@ class DiTAttentionLayer(BaseLayer):
             x = self.postnorm(x)
 
         if gate is not None:
-            x = x * jnp.expand_dims(gate, 1)
+            x = x * gate
 
         output = input + x
         return output
+
+    def init_states(self, input_spec: TensorSpec) -> NestedTensor:
+        """Initializes cache for autoregressive cached decoding.
+
+        Args:
+            input_spec: TensorSpec [batch, num_length, target_dim] corresponding to query vector.
+
+        Returns:
+            init_states: A Nested Tensor state depending on the `attention` layer implementation.
+        """
+        states = dict()
+        states["attention"], _ = self.attention.init_states(
+            time_step=None, query=input_spec, attention_logit_biases=None
+        )
+        return states
+
+    def extend_step(
+        self,
+        cached_states: NestedTensor,
+        target: Tensor,
+        *,
+        shift: Optional[Tensor] = None,
+        scale: Optional[Tensor] = None,
+        gate: Optional[Tensor] = None,
+    ) -> tuple[NestedTensor, Tensor]:
+        """Computes the value vector given the query of the current step.
+        This function is used by autoregressive decoding.
+
+        Args:
+            cached_states: A `NestedTensor` object containing tensors which are the
+                results of previous attentions, and index used for fast decoding. Contains
+                "attention" cached states.
+            target: target tensor with shape [batch_size, step_length, target_dim].
+            shift: If provided, shifting the norm tensor with shape [batch_size, 1|num_length,
+                target_dim] and scale should be provided.
+            scale: If provided, scaling the norm tensor with shape [batch_size, 1|num_length,
+                target_dim] and shift should be provided.
+            gate: If provided, applying before the residual addition with shape
+                [batch_size, 1|num_length, target_dim].
+
+        Returns:
+            A tuple (cached_states, output):
+            * cached_states: A NestedTensor of cache states.
+            * output: A output tensor of shape [batch, step_length, target_dim]
+        """
+        if (shift is None) != (scale is None):
+            raise ValueError("shift and scale must be both provided or both None.")
+
+        cfg = self.config
+        if cfg.structure == "prenorm":
+            x = self.norm(target)
+        elif cfg.structure == "hybridnorm":
+            x = self.prenorm(target)
+        elif cfg.structure == "postnorm":
+            x = target
+
+        if shift is not None and scale is not None:
+            x = modulate(x=x, shift=shift, scale=scale)
+
+        # It supports only the (sliding window) causal case, which is handled by attention itself.
+        attention_logit_biases = None
+        attn_states, attn_output = self.attention.extend_step(
+            cached_states=cached_states["attention"],
+            query=x,
+            attention_logit_biases=attention_logit_biases,
+        )
+        x = attn_output.data
+
+        if cfg.structure == "postnorm":
+            x = self.norm(x)
+        elif cfg.structure == "hybridnorm":
+            x = self.postnorm(x)
+
+        if gate is not None:
+            x = x * gate
+
+        output = target + x
+        return dict(attention=attn_states), output
 
 
 class DiTBlock(BaseLayer):
@@ -463,8 +564,8 @@ class DiTBlock(BaseLayer):
 
         Args:
             input: input tensor with shape [batch_size, num_length, input_dim].
-            condition: tensor with shape [batch_size, input_dim] for generating
-                layer norm shift, scale, and gate.
+            condition: tensor with shape [batch_size, input_dim] or [batch_size, num_length,
+                input_dim] for generating layer norm shift, scale, and gate.
 
         Returns:
             A tensor with shape [batch_size, num_length, input_dim].
@@ -476,6 +577,55 @@ class DiTBlock(BaseLayer):
         x = self.feed_forward(input=x, shift=shift_ffn, scale=scale_ffn, gate=gate_ffn)
 
         return x
+
+    def init_states(self, input_spec: TensorSpec) -> NestedTensor:
+        """Initializes cache for autoregressive cached decoding.
+
+        Args:
+            input_spec: TensorSpec [batch, target_length, target_dim] corresponding to query vector.
+
+        Returns:
+            init_states: A Nested Tensor state depending on the `attention` layer implementation.
+        """
+        states = dict()
+        states["attention"] = self.attention.init_states(input_spec=input_spec)
+        return states
+
+    def extend_step(
+        self,
+        cached_states: NestedTensor,
+        target: Tensor,
+        *,
+        condition: Tensor,
+    ) -> tuple[NestedTensor, Tensor]:
+        """Computes the value vector given the query of the current step.
+        This function is used by autoregressive decoding.
+
+        Args:
+            cached_states: A `NestedTensor` object containing tensors which are the
+                results of previous attentions, and index used for fast decoding. Contains
+                "attention" cached states.
+            target: target tensor with shape [batch_size, step_length, input_dim].
+            condition: tensor with shape [batch_size, input_dim] or [batch_size, step_length,
+                input_dim] for generating layer norm shift, scale, and gate.
+
+        Returns:
+            A tuple (cached_states, output):
+            * cached_states: A NestedTensor of cache states.
+            * output: A output tensor of shape [batch, step_length, target_dim]
+        """
+        layer_norm_params = self.adaln(condition)
+        shift_attn, scale_attn, gate_attn = layer_norm_params[0:3]
+        shift_ffn, scale_ffn, gate_ffn = layer_norm_params[3:6]
+        attn_states, x = self.attention.extend_step(
+            cached_states=cached_states["attention"],
+            target=target,
+            shift=shift_attn,
+            scale=scale_attn,
+            gate=gate_attn,
+        )
+        x = self.feed_forward(input=x, shift=shift_ffn, scale=scale_ffn, gate=gate_ffn)
+        return dict(attention=attn_states), x
 
 
 class DiTFinalLayer(BaseLayer):
@@ -511,8 +661,8 @@ class DiTFinalLayer(BaseLayer):
 
         Args:
             input: input tensor with shape [batch_size, num_length, input_dim].
-            condition: tensor with shape [batch_size, input_dim] for generating
-                layer norm shift and scale.
+            condition: tensor with shape [batch_size, input_dim] or [batch_size, num_length,
+                input_dim] for generating layer norm shift and scale.
 
         Returns:
             A tensor with shape [batch_size, num_length, output_dim].

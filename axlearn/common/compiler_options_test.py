@@ -4,6 +4,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from absl.testing import parameterized
 
 from axlearn.common import compiler_options, test_utils
 from axlearn.common.utils import Tensor
@@ -48,3 +49,9 @@ class CompilerOptionsTest(test_utils.TestCase):
         )
         for name, option in options.items():
             self.assertEqual(option, expected_options[name])
+
+    @parameterized.parameters(
+        dict(tpu_type="v5e-16", expected="v5litepod"),
+    )
+    def test_tpu_version_alias(self, tpu_type: str, expected: str):
+        self.assertEqual(expected, compiler_options.infer_tpu_version(tpu_type))

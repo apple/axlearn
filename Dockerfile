@@ -5,19 +5,17 @@ ARG BASE_IMAGE=python:3.10-slim
 
 FROM ${BASE_IMAGE} AS base
 
-RUN apt-get update
-RUN apt-get install -y apt-transport-https ca-certificates gnupg curl gcc g++
+# Install curl and gpupg first so that we can use them to install google-cloud-cli.
+# Any RUN apt-get install step needs to have apt-get update otherwise stale package
+# list may occur when previous apt-get update step is cached. See here for more info:
+# https://docs.docker.com/build/building/best-practices/#apt-get
+RUN apt-get update && apt-get install -y curl gnupg
 
-# Install git.
-RUN apt-get install -y git
-
-# Install gcloud. https://cloud.google.com/sdk/docs/install
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    apt-get update -y && apt-get install google-cloud-cli -y
-
-# Install screen and other utils for launch script.
-RUN apt-get install -y jq screen ca-certificates
+    apt-get update -y && \
+    apt-get install -y apt-transport-https ca-certificates gcc g++ \
+      git screen ca-certificates google-perftools google-cloud-cli
 
 # Setup.
 RUN mkdir -p /root
@@ -39,7 +37,7 @@ RUN pip install --upgrade pip
 ################################################################################
 
 # Leverage multi-stage build for unit tests.
-FROM base as ci
+FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
 RUN pip install .[core,dev,grain,gcp,vertexai_tensorboard]
@@ -88,8 +86,6 @@ FROM base AS tpu
 
 ARG EXTRAS=
 
-RUN apt-get install -y google-perftools
-
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
@@ -102,8 +98,6 @@ COPY . .
 ################################################################################
 
 FROM base AS gpu
-
-RUN apt-get install -y google-perftools
 
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html

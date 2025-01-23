@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Encoder layers."""
+
 import math
 from typing import Optional
 
@@ -20,7 +21,7 @@ from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import BaseClassificationHead, set_dropout_rate_recursively
 from axlearn.common.module import Module, Tensor, child_context
-from axlearn.common.utils import NestedTensor
+from axlearn.common.utils import NestedTensor, TensorSpec
 
 
 class Encoder(BaseLayer):
@@ -57,6 +58,7 @@ class Encoder(BaseLayer):
             self._add_child("output", cfg.output.set(input_dim=cfg.dim))
         self._add_child("attention_mask", cfg.attention_mask)
 
+    # TODO(markblee): Generalize to support input_batch, similar to Decoder.
     def forward(
         self,
         input_ids: Tensor,
@@ -81,7 +83,9 @@ class Encoder(BaseLayer):
             A Tensor of shape [batch_size, seq_len, hidden_dim].
         """
         # [batch_size, seq_len, hidden_dim].
-        x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        )
         # [batch_size, num_heads, seq_len, seq_len].
         attention_logit_biases = self.compute_attention_logit_biases(
             input_ids, segment_ids=input_segment_ids, positions=positions
@@ -167,12 +171,15 @@ class CausalEncoder(Encoder):
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
+        cfg: CausalEncoder.Config = self.config
+        init_state, _ = self.transformer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim]),
+        )
         return dict(
-            transformer_state=self.transformer.init_states(
-                target_batch_size=batch_size, target_max_len=max_sequence_length
-            ),
+            transformer_state=init_state,
             input_ids=jnp.full(
-                (batch_size, max_sequence_length), self.config.pad_token_id, dtype=jnp.int32
+                (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
             ),
             time_step=jnp.zeros(batch_size, dtype=jnp.int32),
         )
@@ -227,7 +234,9 @@ class CausalEncoder(Encoder):
         batch_size, max_seq_len = input_ids.shape
 
         # [batch_size, seq_len, hidden_dim].
-        x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        )
 
         # Append optional cls tokens as used in CoCa.
         if cfg.num_cls_tokens > 0:
@@ -278,8 +287,10 @@ class CausalEncoder(Encoder):
     ) -> tuple[NestedTensor, NestedTensor]:
         # Note: this follows `Decoder.prefill_states` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
-        x = self.emb(input_ids, token_type_ids=token_type_ids, positions=None)
-        transformer_state, x = self.transformer.prefill_states(
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=None)
+        )
+        transformer_state, x = self.transformer.init_states(
             time_step=time_step,
             data=x,
             self_attention_logit_biases=self.compute_attention_logit_biases(input_ids),
@@ -324,7 +335,11 @@ class CausalEncoder(Encoder):
 
         # [B, 1, D].
         x = self.emb(
-            input_ids, positions=jnp.expand_dims(time_step, 1), token_type_ids=token_type_ids
+            input_batch=dict(
+                inputs=input_ids,
+                positions=jnp.expand_dims(time_step, 1),
+                token_type_ids=token_type_ids,
+            )
         )
         updated_transformer_state, transformer_data = self.transformer.extend_step(
             cached_states=cached_states["transformer_state"],

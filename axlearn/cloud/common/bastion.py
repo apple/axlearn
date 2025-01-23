@@ -702,6 +702,8 @@ class Bastion(Configurable):
         tf_io.gfile.makedirs(self._job_history_dir)
         self._project_history_dir = os.path.join(self._output_dir, "history", "projects")
         tf_io.gfile.makedirs(self._project_history_dir)
+        self._scheduler_history_dir = os.path.join(self._output_dir, "history", "scheduler")
+        tf_io.gfile.makedirs(self._scheduler_history_dir)
         # Mapping from project_id to previous job verdicts.
         self._project_history_previous_verdicts = {}
         # Jobs that have fully completed.
@@ -745,12 +747,22 @@ class Bastion(Configurable):
                 )
             )
 
-    def _append_to_project_history(
+    def _append_to_history(
         self, jobs: dict[str, JobMetadata], schedule_results: BaseScheduler.ScheduleResults
     ):
         now = datetime.now(timezone.utc)
+        with tf_io.gfile.GFile(
+            os.path.join(self._scheduler_history_dir, now.strftime("%Y%m%d-%H%M%S")), "a"
+        ) as f:
+            for job_id, verdict in schedule_results.job_verdicts.items():
+                job_metadata = jobs[job_id]
+                f.write(f"{job_id} [{job_metadata}] {verdict}\n")
         for project_id, limits in schedule_results.project_limits.items():
-            job_verdicts = schedule_results.job_verdicts.get(project_id, {})
+            job_verdicts = {
+                job_id: verdict
+                for job_id, verdict in schedule_results.job_verdicts.items()
+                if jobs[job_id].project_id == project_id
+            }
             verdicts = []
             for job_id, verdict in job_verdicts.items():
                 verdicts.append((job_id, verdict.should_run(), verdict.metadata))
@@ -1075,57 +1087,56 @@ class Bastion(Configurable):
             dry_run=schedule_options["dry_run"],
             verbosity=schedule_options["verbosity"],
         )
-        self._append_to_project_history(schedulable_jobs, schedule_results)
-        for verdicts in schedule_results.job_verdicts.values():
-            for job_name, verdict in verdicts.items():
-                job = self._active_jobs[job_name]
-                assert job.state.status in {JobStatus.PENDING, JobStatus.ACTIVE}
+        self._append_to_history(schedulable_jobs, schedule_results)
+        for job_name, verdict in schedule_results.job_verdicts.items():
+            job = self._active_jobs[job_name]
+            assert job.state.status in {JobStatus.PENDING, JobStatus.ACTIVE}
 
-                if verdict:
-                    old_tier = job.state.metadata.get("tier")
-                    new_tier = verdict.metadata.get("tier")
-                    changed_tiers = old_tier != new_tier
+            if verdict:
+                old_tier = job.state.metadata.get("tier")
+                new_tier = verdict.metadata.get("tier")
+                changed_tiers = old_tier != new_tier
 
-                    jobspec_changed = job.state.metadata.get("updated")
+                jobspec_changed = job.state.metadata.get("updated")
 
-                    # Jobspec changed, trigger a restart of the runner.
-                    if jobspec_changed:
-                        self._append_to_job_history(
-                            job,
-                            msg="UPDATING: Detected updated jobspec. Will restart the runner "
-                            "by sending to PENDING state",
-                            state=JobLifecycleState.UPDATING,
-                        )
-                        job.state.status = JobStatus.PENDING
-                    elif job.state.status == JobStatus.PENDING or not changed_tiers:
-                        # Resume if not running, or keep running if scheduling tier did not change.
-                        job.state.status = JobStatus.ACTIVE
-                    else:
-                        # Job changed scheduling tiers, and must be restarted on the new tier.
-                        # NOTE: this can possibly lead to thrashing of jobs that frequently switch
-                        # tiers. One option is track per-job tier changes and hold off on promoting
-                        # low priority to high priority if it was demoted recently.
-                        # TODO(markblee): Add instrumentation to track frequency of tier changes to
-                        # see whether this is necessary.
-                        assert job.state.status == JobStatus.ACTIVE and changed_tiers
-                        self._append_to_job_history(
-                            job,
-                            msg=f"Rescheduling at a different tier from {old_tier} to {new_tier}",
-                            state=JobLifecycleState.RESCHEDULING,
-                        )
-                        job.state.status = JobStatus.PENDING
+                # Jobspec changed, trigger a restart of the runner.
+                if jobspec_changed:
+                    self._append_to_job_history(
+                        job,
+                        msg="UPDATING: Detected updated jobspec. Will restart the runner "
+                        "by sending to PENDING state",
+                        state=JobLifecycleState.UPDATING,
+                    )
+                    job.state.status = JobStatus.PENDING
+                elif job.state.status == JobStatus.PENDING or not changed_tiers:
+                    # Resume if not running, or keep running if scheduling tier did not change.
+                    job.state.status = JobStatus.ACTIVE
                 else:
-                    # Pre-empt/stay queued.
-                    if job.command_proc is not None and _is_proc_complete(job.command_proc):
-                        # As a slight optimization, we avoid pre-empting ACTIVE jobs that are
-                        # complete, since we can directly transition to CLEANING.
-                        job.state.status = JobStatus.ACTIVE
-                    else:
-                        job.state.status = JobStatus.PENDING
-                        # Pending jobs which are not rescheduled should have no tier information.
-                        verdict.metadata.pop("tier", None)
+                    # Job changed scheduling tiers, and must be restarted on the new tier.
+                    # NOTE: this can possibly lead to thrashing of jobs that frequently switch
+                    # tiers. One option is track per-job tier changes and hold off on promoting
+                    # low priority to high priority if it was demoted recently.
+                    # TODO(markblee): Add instrumentation to track frequency of tier changes to
+                    # see whether this is necessary.
+                    assert job.state.status == JobStatus.ACTIVE and changed_tiers
+                    self._append_to_job_history(
+                        job,
+                        msg=f"Rescheduling at a different tier from {old_tier} to {new_tier}",
+                        state=JobLifecycleState.RESCHEDULING,
+                    )
+                    job.state.status = JobStatus.PENDING
+            else:
+                # Pre-empt/stay queued.
+                if job.command_proc is not None and _is_proc_complete(job.command_proc):
+                    # As a slight optimization, we avoid pre-empting ACTIVE jobs that are
+                    # complete, since we can directly transition to CLEANING.
+                    job.state.status = JobStatus.ACTIVE
+                else:
+                    job.state.status = JobStatus.PENDING
+                    # Pending jobs which are not rescheduled should have no tier information.
+                    verdict.metadata.pop("tier", None)
 
-                job.state.metadata = verdict.metadata
+            job.state.metadata = verdict.metadata
 
         # TODO(markblee): Parallelize this.
         for job_name, job in self._active_jobs.items():

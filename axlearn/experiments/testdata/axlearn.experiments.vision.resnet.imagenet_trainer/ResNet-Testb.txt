@@ -121,7 +121,7 @@ model.backbone.param_init.init_by_param_name['.*weight$'].scale: 1.4142135623730
 model.backbone.param_init.klass: 'axlearn.common.param_init.DefaultInitializer'
 model.backbone.stage.block.activation: 'nn.relu'
 model.backbone.stage.block.conv.bias: False
-model.backbone.stage.block.conv.klass: 'axlearn.common.layers.Conv2D'
+model.backbone.stage.block.conv.klass: 'axlearn.common.convolution.Conv2D'
 model.backbone.stage.block.conv.num_input_dim_groups: 1
 model.backbone.stage.block.conv.padding[0][0]: 1
 model.backbone.stage.block.conv.padding[0][1]: 1
@@ -166,7 +166,7 @@ model.backbone.stage.klass: 'axlearn.vision.resnet.ResNetStage'
 model.backbone.stage.stride: 1
 model.backbone.stem.activation: 'nn.relu'
 model.backbone.stem.conv.bias: False
-model.backbone.stem.conv.klass: 'axlearn.common.layers.Conv2D'
+model.backbone.stem.conv.klass: 'axlearn.common.convolution.Conv2D'
 model.backbone.stem.conv.num_input_dim_groups: 1
 model.backbone.stem.conv.padding[0][0]: 3
 model.backbone.stem.conv.padding[0][1]: 3

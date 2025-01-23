@@ -26,7 +26,7 @@ from axlearn.common.lora import (
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, TensorSpec
 
 
 class LoraLinearTest(TestCase):
@@ -137,7 +137,7 @@ class LoraLinearTest(TestCase):
 
 class LoraFusedQKVLinearTest(TestCase):
     def test_forward(self):
-        model_dim = 6
+        model_dim = 16
         num_heads = 2
         per_head_dim = 3
         seq_len = 4
@@ -197,7 +197,7 @@ class LoraFusedQKVLinearTest(TestCase):
         ),
     )
     def test_extend_step(self, layer):
-        model_dim = 8
+        model_dim = 16
         num_heads = 2
         per_head_dim = 4  # change this to 4 to adapt the need of RoPE.
         seq_len = 4
@@ -233,9 +233,11 @@ class LoraFusedQKVLinearTest(TestCase):
         q_proj, k_proj, v_proj = outputs
         forward_outputs = jnp.stack([q_proj, k_proj, v_proj])
 
-        initial_cache_state = layer.init_states(
-            target_batch_size=batch_size, target_max_len=seq_len
+        initial_cache_state, init_output = layer.init_states(
+            time_step=None,
+            query=TensorSpec([batch_size, seq_len]),
         )
+        self.assertIsNone(init_output)
 
         decoder_inputs = dict(cached_states=initial_cache_state)
         decoder_outputs = jnp.zeros(shape=[seq_len, 3, batch_size, num_heads, per_head_dim])
@@ -265,7 +267,7 @@ class LoraFusedQKVLinearTest(TestCase):
         )
 
     def test_prefill_states(self):
-        model_dim = 6
+        model_dim = 16
         num_heads = 2
         per_head_dim = 3
         seq_len = 4
@@ -305,7 +307,7 @@ class LoraFusedQKVLinearTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
             inputs=dict(time_step=time_step, query=inputs),
-            method="prefill_states",
+            method="init_states",
         )
         time_step_mask = jnp.arange(seq_len) < time_step[:, None]
         # [batch, tgt_len, num_heads, per_head_dim].

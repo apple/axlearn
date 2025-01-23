@@ -33,9 +33,9 @@ from typing import Any, Optional
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.convolution import Conv2D
 from axlearn.common.layers import (
     BatchNorm,
-    Conv2D,
     Linear,
     SqueezeExcitation,
     StochasticDepth,

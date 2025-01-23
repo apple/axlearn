@@ -8,7 +8,7 @@ from typing import Optional
 
 import jax.numpy as jnp
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.bert import BertLMHead
 from axlearn.common.config import config_class
 from axlearn.common.layers import BaseClassificationHead, RedirectToSharedModule, get_activation_fn

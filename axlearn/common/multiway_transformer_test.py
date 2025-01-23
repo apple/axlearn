@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests Multiway transformer layers."""
+
 # pylint: disable=no-member,no-self-use,duplicate-code
 import jax
 import jax.numpy as jnp
@@ -8,14 +9,13 @@ import numpy as np
 from absl.testing import absltest, parameterized
 
 from axlearn.common.attention import (
-    NEG_INF,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
     TransformerLayer,
     build_remat_spec,
-    make_causal_biases,
 )
+from axlearn.common.attention_bias import NEG_INF, make_causal_biases
 from axlearn.common.module import functional as F
 from axlearn.common.multiway_transformer import (
     IMAGE_MODALITY,
@@ -27,19 +27,13 @@ from axlearn.common.multiway_transformer import (
     _set_model_config,
 )
 from axlearn.common.test_utils import assert_allclose
-from axlearn.common.utils import VDict, as_tensor, count_model_params
+from axlearn.common.utils import TensorSpec, VDict, as_tensor, count_model_params
 from axlearn.vision import mask_generator
 
 
 class ModelTest(parameterized.TestCase):
-    @parameterized.product(
-        num_ffn=(1, 3),
-        checkpoint_feed_forward=(False, True),
-        checkpoint_self_attention=(False, True),
-    )
-    def test_stacked_with_multiway_transformer_layer(
-        self, num_ffn, checkpoint_feed_forward, checkpoint_self_attention
-    ):
+    @parameterized.product(num_ffn=(1, 3), test_remat=(True, False))
+    def test_stacked_with_multiway_transformer_layer(self, num_ffn, test_remat):
         batch_size, tgt_len = 10, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
         model_dim = 16
@@ -55,9 +49,8 @@ class ModelTest(parameterized.TestCase):
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-        layer_cfg.remat_spec = build_remat_spec(
-            cfg, self_attention=checkpoint_self_attention, feed_forward=checkpoint_feed_forward
-        )
+        if test_remat:
+            layer_cfg.remat_spec = build_remat_spec(cfg)
 
         # Test forward pass for all experts.
         data = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
@@ -145,7 +138,10 @@ class ModelTest(parameterized.TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
-        initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
+        initial_state, initial_output = layer.init_states(
+            time_step=None, data=TensorSpec([batch_size, tgt_len])
+        )
+        self.assertIsNone(initial_output)
         inputs = dict(
             cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
         )
@@ -262,7 +258,7 @@ class ModelTest(parameterized.TestCase):
                 cross_attention_logit_biases=cross_attention_logit_biases,
                 return_aux=return_aux,
             ),
-            method="prefill_states",
+            method="init_states",
         )
 
         # Zero-out outputs starting from initial time_step, and test that we can recover the full

@@ -2,6 +2,7 @@
 """Unit test for tool_use_execution.py."""
 
 import json
+from typing import Union
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -41,7 +42,7 @@ class TestToolUseExecution(parameterized.TestCase):
         self.assertEqual(metrics["accuracy"], 0)
         self.assertEqual(metrics["number_of_examples"], 0)
 
-    def test_responses_without_tool_calls(self):
+    def test_responses_without_target_message(self):
         """Tests with responses that lack target_message field."""
         responses = [
             {
@@ -290,6 +291,10 @@ class TestToolUseExecution(parameterized.TestCase):
             self.assertEqual(
                 metrics["number_of_expected_tool_calls"], number_of_expected_tool_calls
             )
+            self.assertEqual(metrics["number_of_func_call_intents_ground_truth"], 1)
+            self.assertEqual(metrics["number_of_func_call_intents_pred"], 1)
+            self.assertEqual(metrics["func_intent_recall"], 1)
+            self.assertEqual(metrics["func_intent_precision"], 1)
 
     def test_empty_pred(self):
         pred_message = {
@@ -334,3 +339,178 @@ class TestToolUseExecution(parameterized.TestCase):
                 },
             )
             self.assertEqual(metrics["accuracy"], 0.0)
+            self.assertEqual(metrics["number_of_func_call_intents_ground_truth"], 1)
+            self.assertEqual(metrics["number_of_func_call_intents_pred"], 0)
+            self.assertEqual(metrics["func_intent_recall"], 0)
+            self.assertEqual(metrics["func_intent_precision"], 0)
+
+    @parameterized.parameters(
+        # Simple match.
+        dict(
+            pred_target_pair=[
+                [{"name": "get_current_weather", "arguments": {"location": "Boston, MA"}}],
+                [{"name": "get_current_weather", "arguments": {"location": "Boston, MA"}}],
+            ],
+            expected_accuracy=1.0,
+            expected_number_of_examples=1,
+            expected_func_name_accuracy=1.0,
+            expected_strict_accuracy=1.0,
+            expected_lenient_accuracy=1.0,
+            expected_bow_accuracy=1.0,
+            expected_number_of_expected_tool_calls=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=1,
+            expected_func_intent_recall=1.0,
+            expected_func_intent_precision=1.0,
+        ),
+        # Test function intent, ground truth no tool_calls.
+        dict(
+            pred_target_pair=[
+                [{"name": "get_current_weather", "arguments": {"location": "Boston, MA"}}],
+                """Get weather for Boston~""",
+            ],
+            expected_accuracy=0.0,
+            expected_number_of_examples=1,
+            expected_func_name_accuracy=0.0,
+            expected_strict_accuracy=0.0,
+            expected_lenient_accuracy=0.0,
+            expected_bow_accuracy=0.0,
+            expected_number_of_expected_tool_calls=0,
+            expected_number_of_func_call_intents_ground_truth=0,
+            expected_number_of_func_call_intents_pred=1,
+            expected_func_intent_recall=0.0,
+            expected_func_intent_precision=0.0,
+        ),
+        # Test function intent, pred no tool_calls.
+        dict(
+            pred_target_pair=[
+                """Get weather for Boston~""",
+                [{"name": "get_current_weather", "arguments": {"location": "Boston, MA"}}],
+            ],
+            expected_accuracy=0.0,
+            expected_number_of_examples=1,
+            expected_func_name_accuracy=0.0,
+            expected_strict_accuracy=0.0,
+            expected_lenient_accuracy=0.0,
+            expected_bow_accuracy=0.0,
+            expected_number_of_expected_tool_calls=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=0,
+            expected_func_intent_recall=0.0,
+            expected_func_intent_precision=0.0,
+        ),
+        # Tool call name mis-match.
+        dict(
+            pred_target_pair=[
+                [{"name": "get_weather", "arguments": {"location": "Boston, MA"}}],
+                [{"name": "get_current_weather", "arguments": {"location": "Boston, MA"}}],
+            ],
+            expected_accuracy=0.0,
+            expected_number_of_examples=1,
+            expected_func_name_accuracy=0.0,
+            expected_strict_accuracy=0.0,
+            expected_lenient_accuracy=0.0,
+            expected_bow_accuracy=0.0,
+            expected_number_of_expected_tool_calls=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=1,
+            expected_func_intent_recall=1.0,
+            expected_func_intent_precision=1.0,
+        ),
+        # Tool call BOW.
+        dict(
+            pred_target_pair=[
+                [{"name": "get_current_weather", "arguments": {"location": "Boston, MA"}}],
+                [{"name": "get_current_weather", "arguments": {"location": "Boston"}}],
+            ],
+            expected_accuracy=0.0,
+            expected_number_of_examples=1,
+            expected_func_name_accuracy=1.0,
+            expected_strict_accuracy=0.0,
+            expected_lenient_accuracy=1.0,  # 'ma' is part of _STOP_WORDS and removed.
+            expected_bow_accuracy=1.0,
+            expected_number_of_expected_tool_calls=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_number_of_func_call_intents_pred=1,
+            expected_func_intent_recall=1.0,
+            expected_func_intent_precision=1.0,
+        ),
+    )
+    def test_all_metrics(
+        self,
+        pred_target_pair,
+        expected_accuracy,
+        expected_number_of_examples,
+        expected_func_name_accuracy,
+        expected_strict_accuracy,
+        expected_lenient_accuracy,
+        expected_bow_accuracy,
+        expected_number_of_expected_tool_calls,
+        expected_number_of_func_call_intents_ground_truth,
+        expected_number_of_func_call_intents_pred,
+        expected_func_intent_recall,
+        expected_func_intent_precision,
+    ):
+        """Tests all metrics."""
+
+        def _make_message(content_tool_call_info: Union[list, str]) -> dict:
+            if isinstance(content_tool_call_info, str):
+                content = content_tool_call_info
+                tool_calls = None
+            elif isinstance(content_tool_call_info, list):
+                content = ""
+                tool_calls = []
+                for tool_call_info in content_tool_call_info:
+                    tool_calls.append(
+                        {
+                            "type": "function",
+                            "function": tool_call_info,
+                        }
+                    )
+            return {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": tool_calls,
+            }
+
+        responses = []
+        pred_message = _make_message(pred_target_pair[0])
+        target_message = _make_message(pred_target_pair[1])
+        responses = [
+            {
+                "response": json.dumps({"choices": [{"message": pred_message}]}),
+                "target_message": target_message,
+            }
+        ]
+        mock_target_message = Mock(**target_message)
+        mock_target_message.model_dump.return_value = target_message
+        mock_pred_message = Mock(**pred_message)
+        mock_pred_message.model_dump.return_value = pred_message
+        self.generator.config.client.klass.parse_generation.return_value = [mock_pred_message]
+
+        with patch(
+            "axlearn.open_api.openai.OpenAIClient.format_message", return_value=mock_target_message
+        ):
+            metrics = metric_fn(
+                responses=responses,
+                generators={
+                    EvalGeneratorType.RESPONSE: self.generator,
+                },
+            )
+            expected_metrics = {
+                "accuracy": expected_accuracy,
+                "number_of_examples": expected_number_of_examples,
+                "number_of_parsing_errors": 0,
+                "number_of_generation_errors": 0,
+                "func_name_accuracy": expected_func_name_accuracy,
+                "strict_accuracy": expected_strict_accuracy,
+                "lenient_accuracy": expected_lenient_accuracy,
+                "bow_accuracy": expected_bow_accuracy,
+                "number_of_expected_tool_calls": expected_number_of_expected_tool_calls,
+                "number_of_func_call_intents_ground_truth": expected_number_of_func_call_intents_ground_truth,  # pylint: disable=line-too-long
+                "number_of_func_call_intents_pred": expected_number_of_func_call_intents_pred,
+                "func_intent_recall": expected_func_intent_recall,
+                "func_intent_precision": expected_func_intent_precision,
+            }
+
+            self.assertEqual(metrics, expected_metrics)

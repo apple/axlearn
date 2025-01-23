@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests vision param converter utils."""
+
 import jax
 import jax.numpy as jnp
 from absl.testing import parameterized
@@ -105,7 +106,7 @@ class HFClipTest(BaseParamConverterTest):
         out, hf_out = self._compute_layer_outputs(
             test_layer=layer,
             ref_layer=hf_layer,
-            test_inputs=[inputs],
+            test_inputs=dict(input_batch=dict(inputs=inputs)),
             ref_inputs=as_torch_tensor(inputs),
         )
         # Compare only at non-padding positions.

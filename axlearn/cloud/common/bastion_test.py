@@ -1484,7 +1484,7 @@ class BastionTest(parameterized.TestCase):
     ):
         with self._patch_bastion() as mock_bastion:
             patch_update = mock.patch.object(mock_bastion, "_update_single_job")
-            patch_history = mock.patch.object(mock_bastion, "_append_to_project_history")
+            patch_history = mock.patch.object(mock_bastion, "_append_to_history")
             patch_scheduler = mock.patch.object(mock_bastion, "_scheduler")
 
             with patch_update, patch_history, patch_scheduler as mock_scheduler:

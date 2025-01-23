@@ -8,7 +8,6 @@ See also checkpointer.py for other checkpointing utilities and checkpointer_test
 import asyncio
 import copy
 import dataclasses
-import functools
 import os
 from concurrent import futures
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -63,6 +62,10 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     def typestr(self) -> str:
         return "TfIterator"
 
+    def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
+        # Each worker writes its tf checkpoints under a different path.
+        return os.path.join(info.parent_dir, f"tf_{jax.process_index()}")
+
     async def serialize(
         self,
         values: Sequence[tf.data.Iterator],
@@ -74,7 +77,11 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
         futs = []
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
             for value, info in zip(values, infos):
-                futs.append(async_save_tf_savables(value, executor=executor, dir=info.path))
+                futs.append(
+                    async_save_tf_savables(
+                        {info.name: value}, executor=executor, dir=self._ckpt_dir(info)
+                    )
+                )
         return futs
 
     async def deserialize(
@@ -84,14 +91,16 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     ) -> Sequence[tf.data.Iterator]:
         if args is None:
             raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
+        futs = []
         with futures.ThreadPoolExecutor(max_workers=1) as executor:
-            futs = [
-                asyncio.get_event_loop().run_in_executor(
-                    executor,
-                    functools.partial(restore_tf_savables, arg.item, dir=info.path),
-                )
-                for arg, info in zip(args, infos)
-            ]
+            for arg, info in zip(args, infos):
+
+                def restore(arg=arg, info=info):
+                    return restore_tf_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
+                        info.name
+                    ]
+
+                futs.append(asyncio.get_event_loop().run_in_executor(executor, restore))
         return await asyncio.gather(*futs)
 
     async def metadata(
@@ -115,6 +124,10 @@ if _GRAIN_INSTALLED:
         def typestr(self) -> str:
             return "DatasetIterator"
 
+        def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
+            # Each worker writes its grain checkpoints under a different path.
+            return os.path.join(info.parent_dir, f"grain_{jax.process_index()}")
+
         async def serialize(
             self,
             values: Sequence[grain.DatasetIterator],
@@ -124,9 +137,7 @@ if _GRAIN_INSTALLED:
             """Serializes `values` into corresponding `info.path`s."""
             del args  # Unused.
             for value, info in zip(values, infos):
-                ckpt_dir = os.path.dirname(info.path)
-                path = os.path.basename(info.path)
-                maybe_save_grain_savables({path: value}, dir=ckpt_dir)
+                maybe_save_grain_savables({info.name: value}, dir=self._ckpt_dir(info))
             return []
 
         async def deserialize(
@@ -136,10 +147,14 @@ if _GRAIN_INSTALLED:
         ) -> Sequence[_GrainIterator]:
             if args is None:
                 raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
-            return [
-                maybe_restore_grain_savables(arg.item, dir=info.path)
-                for arg, info in zip(args, infos)
-            ]
+            ret = []
+            for arg, info in zip(args, infos):
+                ret.append(
+                    maybe_restore_grain_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
+                        info.name
+                    ]
+                )
+            return ret
 
         async def metadata(
             self, infos: Sequence[ocp.type_handlers.ParamInfo]
@@ -185,6 +200,11 @@ class OrbaxCheckpointer(BaseCheckpointer):
     def checkpoint_paths(cls, base_dir: str) -> List[str]:
         """See `BaseCheckpointer.checkpointer_paths`."""
         return [str(path) for path in ocp.utils.checkpoint_steps_paths(base_dir)]
+
+    @classmethod
+    def checkpoint_steps(cls, base_dir) -> list[int]:
+        """See `BaseCheckpointer.checkpointer_steps`."""
+        return ocp.utils.checkpoint_steps(base_dir)
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)

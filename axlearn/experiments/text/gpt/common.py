@@ -12,7 +12,7 @@ See c4_trainer.py for how they are used.
 
 import math
 from collections.abc import Sequence
-from typing import Literal, Optional, Protocol, Union
+from typing import Optional, Protocol, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
@@ -21,6 +21,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common import (
     base_model,
     causal_lm,
+    input_base,
     input_fake,
     input_lm,
     input_tf_data,
@@ -34,6 +35,7 @@ from axlearn.common.attention import (
     BaseQKVLinear,
     MultiheadAttention,
     RepeatedTransformerLayer,
+    StackedTransformerLayer,
     TransformerLayer,
     build_remat_spec,
     set_double_shard_weights_config,
@@ -187,36 +189,17 @@ def update_model_remat_config(
     *,
     stack_cfg: causal_lm.TransformerStackConfig,
     layer_cfg: TransformerLayer.Config,
-    offload_dst: Optional[Literal["pinned_host"]] = None,
 ):
     """Recomputes and sets the remat_spec based on provided layer_cfg.
-
-    Only applied if the stack_cfg is a RepeatedTransformerLayer.
 
     Args:
         stack_cfg: The transformer stack config.
         layer_cfg: The transformer layer config.
         offload_dst: Destination of remat checkptoing offloading.
 
-    Raises:
-        NotImplementedError: If `stack_cfg.klass` is not a RepeatedTransformerLayer.
     """
-    if stack_cfg.klass is not RepeatedTransformerLayer:
-        raise NotImplementedError(
-            f"Remat spec is not implemented for stack_cfg with klass={type(stack_cfg.klass)}"
-        )
 
-    if layer_cfg.self_attention.attention.klass is not FlashAttention:
-        # Enable remat to reduce memory usage for larger models.
-        remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg), offload_dst=offload_dst)
-    else:
-        # Checkpointing both ffn and attention to give the best performance.
-        remat_spec = build_remat_spec(
-            stack_cfg.clone(layer=layer_cfg),
-            feed_forward=True,
-            self_attention=True,
-            offload_dst=offload_dst,
-        )
+    remat_spec = build_remat_spec(stack_cfg.clone(layer=layer_cfg))
     layer_cfg.set(remat_spec=remat_spec)
 
 
@@ -241,6 +224,8 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
+    pad_token_id: Optional[int] = None,
+    eos_token_id: Optional[int] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -271,6 +256,8 @@ def model_config(
         atten_logit_cap: Cap the absolute values of logits by tanh.
             Enabled by setting a positive value.
         remat_offload_dst: Destination of remat checkptoing offloading.
+        pad_token_id: Int ID of the inputs to be masked for self-attention.
+        eos_token_id: Int ID of the end of sequence token id.
 
     Returns:
         A causal LM config.
@@ -288,7 +275,7 @@ def model_config(
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
-    if stack_cfg.klass is RepeatedTransformerLayer:
+    if issubclass(stack_cfg.klass, (RepeatedTransformerLayer, StackedTransformerLayer)):
         update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
@@ -301,6 +288,10 @@ def model_config(
         lm_head=lm_head_cfg,
         dropout_rate=dropout_rate,
     )
+    if pad_token_id is not None:
+        decoder_cfg.set(pad_token_id=pad_token_id)
+    if eos_token_id is not None:
+        decoder_cfg.set(eos_token_id=eos_token_id)
     # Model.
     model_param_init = DefaultInitializer.default_config().set(
         init_by_param_name={
@@ -310,12 +301,13 @@ def model_config(
         }
     )
     batch_axis_names = ("data", "expert", "fsdp")
-    cfg = causal_lm.Model.default_config().set(
+    cfg: causal_lm.Model.Config = causal_lm.Model.default_config().set(
         decoder=decoder_cfg,
         param_init=model_param_init,
-        batch_axis_names=batch_axis_names,
-        seq_axis_names=("seq",),
+        batch_axis_names=None,  # We use input dispatch to partition batches.
     )
+    if z_loss_scale:
+        cfg.metrics = causal_lm.metrics_config(z_loss_scale=z_loss_scale)
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
@@ -328,7 +320,6 @@ def model_config(
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
-    cfg.z_loss_scale = z_loss_scale
     return cfg
 
 
@@ -688,6 +679,14 @@ def get_trainer_config_fn(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
+            input_partitioner=config_for_function(input_base.partition_by_path_rank).set(
+                path_rank_to_partition={
+                    # Note: the batch axes are different here than in `cfg.batch_axis_names`,
+                    # as we partition sequence dim over `seq`.
+                    (None, 1): PartitionSpec(("data", "expert", "fsdp")),
+                    (None, 2): PartitionSpec(("data", "expert", "fsdp"), "seq"),
+                }
+            ),
         )
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
@@ -717,6 +716,7 @@ def get_trainer_config_fn(
         cfg.mesh_shape = mesh_shape
         # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
         # "pipeline" axis (for pipeline parallelism).
+        # TODO(markblee): Remove this and use `cfg.input.input_partitioner`.
         cfg.batch_axis_names = tuple(
             el for el in mesh_axis_names if el not in ("model", "pipeline")
         )

@@ -4,8 +4,9 @@
 
 # pylint: disable=no-self-use,too-many-lines
 import os
+import tempfile
 from copy import deepcopy
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -27,8 +28,9 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
+from axlearn.common.convolution import Conv2D
 from axlearn.common.input_fake import FakeLmInput
-from axlearn.common.layers import Conv2D, Linear
+from axlearn.common.layers import Linear
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import torch_to_axlearn
@@ -49,13 +51,18 @@ from axlearn.common.state_builder import (
     MergeStateConverter,
     MergeStateSelection,
     ModelStateScopeConverter,
+    OrbaxCheckpointer,
+    OrbaxStateBuilder,
     PosEmbeddingConverter,
     RestoreAndConvertBuilder,
+    TensorStoreStateStorage,
+    TensorStoreStateStorageBuilder,
+    build_step_dir,
     clone_tree,
     get_builder,
     traverse_and_set_target_state_parameters,
 )
-from axlearn.common.test_utils import TestCase, mock_trainer_config
+from axlearn.common.test_utils import TestCase, is_supported_mesh_shape, mock_trainer_config
 from axlearn.common.trainer import SpmdTrainer, TrainerState
 from axlearn.common.utils import (
     NestedTensor,
@@ -1362,6 +1369,85 @@ class EmaParamsConverterTest(TestCase):
                 output_state.trainer_state.learner["ema"],
                 source_state.trainer_state.learner["ema"],
             )
+
+
+def _mesh(mesh_shape: Sequence[int]):
+    devices = mesh_utils.create_device_mesh(mesh_shape)
+    return jax.sharding.Mesh(devices, ("data", "model"))
+
+
+def _make_state(float_dtype):
+    return dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=float_dtype))
+
+
+class TensorStoreStateStorageBuilderTest(TestCase):
+    """Tests TensorStoreStateStorageBuilder."""
+
+    def test_build(self):
+        mesh_shape = (1, 1)
+        if not is_supported_mesh_shape(mesh_shape):
+            return
+
+        with tempfile.TemporaryDirectory() as root_dir, _mesh(mesh_shape):
+            state = _make_state(float_dtype=jnp.float32)
+            storage = TensorStoreStateStorage.default_config().instantiate()
+
+            step = 1000
+            # Save ckpt.
+            final_dir = build_step_dir(root_dir, step=step)
+            storage.save_to_dir(step=step, state=state, ckpt_dir=final_dir)
+            storage.wait_until_finished()
+
+            # Build with dir.
+            builder_state = Builder.State(step=step, trainer_state=state, built_keys=set())
+            builder_state = (
+                TensorStoreStateStorageBuilder.default_config()
+                .set(name="tsssb", dir=final_dir)
+                .instantiate(parent=None)(builder_state)
+            )
+            self.assertNestedEqual(state, builder_state.trainer_state)
+
+            # Build with base_dir and step.
+            builder_state = Builder.State(step=step, trainer_state=state, built_keys=set())
+            builder_state = (
+                TensorStoreStateStorageBuilder.default_config()
+                .set(name="tsssb", base_dir=root_dir, step=step)
+                .instantiate(parent=None)(builder_state)
+            )
+            self.assertNestedEqual(state, builder_state.trainer_state)
+
+            with self.assertRaises(ValueError):
+                TensorStoreStateStorageBuilder.default_config().set(
+                    name="tsssb", dir=final_dir, base_dir=root_dir, step=step
+                ).instantiate(parent=None)
+
+
+class OrbaxStateBuilderTest(TestCase):
+    """Tests OrbaxStateBuilder."""
+
+    def test_build(self):
+        mesh_shape = (1, 1)
+        if not is_supported_mesh_shape(mesh_shape):
+            return
+
+        with tempfile.TemporaryDirectory() as root_dir, _mesh(mesh_shape):
+            state = _make_state(float_dtype=jnp.float32)
+            step = 1000
+            checkpointer = (
+                OrbaxCheckpointer.default_config()
+                .set(dir=root_dir, name="orbax")
+                .instantiate(parent=None)
+            )
+            checkpointer.save(step=step, state=state)
+            checkpointer.wait_until_finished()
+
+            builder_state = Builder.State(step=step, trainer_state=state, built_keys=set())
+            builder_state = (
+                OrbaxStateBuilder.default_config()
+                .set(name="osb", base_dir=root_dir, step=step)
+                .instantiate(parent=None)(builder_state)
+            )
+            self.assertNestedEqual(state, builder_state.trainer_state)
 
 
 if __name__ == "__main__":

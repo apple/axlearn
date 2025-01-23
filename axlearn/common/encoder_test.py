@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests encoder layers."""
+
 # pylint: disable=no-self-use
 from typing import Optional
 
@@ -159,9 +160,11 @@ class TestEncoder(TestCase):
                 prng_key=jax.random.PRNGKey(123),
                 state=parameters_from_torch_layer(self.hf_encoder)["encoder"]["emb"],
                 inputs=dict(
-                    inputs=source_ids,
-                    token_type_ids=source_type_ids,
-                    positions=source_positions,
+                    input_batch=dict(
+                        inputs=source_ids,
+                        token_type_ids=source_type_ids,
+                        positions=source_positions,
+                    ),
                 ),
             )
             ref_outputs = self.hf_encoder.embeddings(

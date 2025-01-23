@@ -23,21 +23,23 @@ import traceback
 import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
+from typing import Any, Callable, NamedTuple, Optional, Protocol, TypeVar, Union
 
 import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
-from jax._src.interpreters import partial_eval as pe
+from jax._src.ad_checkpoint import name_p
 from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
+from jax.ad_checkpoint import Offloadable, Recompute, Saveable
+from jax.core import Primitive
 from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
-from axlearn.common.config import is_named_tuple
+from axlearn.common.config import ConfigOr, is_named_tuple, maybe_instantiate, register_validator
 
 # New code should use Nested[XX] instead of NestedXX.
 # Old definitions are provided for backwards compatibility.
@@ -103,9 +105,58 @@ class TensorSpec:
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
+RematType = Union[type(Saveable), Offloadable, type(Recompute)]
+SavePattern = Union[str, re.Pattern, None]
+
+# Register a config validator for RematType.
+register_validator(
+    match_fn=lambda x: isinstance(x, (type(Saveable), Offloadable, type(Recompute))),
+    validate_fn=lambda x: None,
+)
 
 
-def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any], Any]:
+class RematPolicy(Protocol):
+    def __call__(self, prim: Primitive, *args: Any, **params: Any) -> Union[RematType, bool]:
+        ...
+
+
+def save_and_offload_only_these_names_regex(
+    *,
+    names_which_can_be_saved: SavePattern,
+    names_which_can_be_offloaded: SavePattern,
+    offload_src: str,
+    offload_dst: str,
+) -> RematPolicy:
+    """Adapted from jax source code to support regex.
+
+    Reference:
+    https://github.com/jax-ml/jax/blob/0d36b0b433a93c707f86dac89b0c05d40302775a/jax/_src/ad_checkpoint.py#L120
+
+    Args:
+        names_which_can_be_saved: A regex pattern for names which can be saved.
+        names_which_can_be_offloaded: A regex pattern for names which can be offloaded.
+        offload_src: The source device for offloading.
+        offload_dst: The target device for offloading.
+
+    Returns:
+        A policy function that offloads and saves only the tensors that match the given
+        regex patterns.
+    """
+
+    def policy(prim, *_, **params):
+        if str(prim) == str(name_p):
+            if names_which_can_be_saved and re.fullmatch(names_which_can_be_saved, params["name"]):
+                return Saveable
+            if names_which_can_be_offloaded and re.fullmatch(
+                names_which_can_be_offloaded, params["name"]
+            ):
+                return Offloadable(src=offload_src, dst=offload_dst)
+        return Recompute  # not saveable unless it's in the allow-list
+
+    return policy
+
+
+def offload_dots_saveable(offload_src: str, offload_dst: str) -> RematPolicy:
     """Extract from offload_dot_with_no_batch_dims and remove no-batch-dims limit.
 
     https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/ad_checkpoint.py#L81C1-L90C1
@@ -121,14 +172,120 @@ def offload_dots_saveable(offload_src: str, offload_dst: str) -> Callable[[Any],
 
     # pylint: disable-next=unused-argument
     def policy(prim, *_, **params):
-        if prim is lax_internal.dot_general_p:
-            return pe.Offloadable(src=offload_src, dst=offload_dst)
-        return pe.Recompute
+        if str(prim) == str(lax_internal.dot_general_p):
+            return Offloadable(src=offload_src, dst=offload_dst)
+        return Recompute
 
     return policy
 
 
-extended_checkpoint_policies = types.SimpleNamespace(offload_dots_saveable=offload_dots_saveable)
+class RematCombineFn(Protocol):
+    def __call__(
+        self,
+        p1: RematType,
+        p2: RematType,
+        *,
+        prim: Primitive,
+        args: tuple[Any],
+        kwargs: dict[str, Any],
+    ) -> RematType:
+        """Protocol for remat policy combine function.
+
+        Args:
+            p1: Remat type returned by policy 1 for `prim`.
+            p2: Remat type returned by policy 2 for `prim`.
+            prim: The jax primitive for which the remat type will be applied.
+            args: Positional arguments passed to RematPolicy
+            kwargs: Keyword arguments passed to RematPolicy.
+
+        Returns:
+            RematType: The final remat type for `prim`.
+        """
+
+
+def default_remat_combine_fn(preferred_remat_type: Optional[RematType] = None) -> RematCombineFn:
+    """The default remat policy combine function.
+
+    If the two policies return conflicting remat types and neither is `Recompute`:
+    - If `preferred_remat_type` is None, raises `RuntimeError`.
+    - If `preferred_remat_type` is not None, `preferred_remat_type` will be the resulting
+      remat type.
+
+    Args:
+        preferred_remat_type: Indicates how to resolve remat type conflicts.
+
+    Returns:
+        A `RematCombineFn` for use in `combine_remat_policies`.
+    """
+
+    def combine_fn(
+        p1: RematType,
+        p2: RematType,
+        *,
+        prim: Primitive,
+        args: tuple[Any],
+        kwargs: dict[str, Any],
+    ):
+        del args, kwargs
+        if p1 is not Recompute and p2 is not Recompute:
+            if p1 is not p2:
+                if preferred_remat_type is None:
+                    raise RuntimeError(
+                        f"Conflict in remat policies for primitive {prim}. "
+                        f"Got policy 1 = {p1}, policy 2 = {p2}. "
+                        "Please specify preferred_remat_type to resolve conflicts."
+                    )
+                else:
+                    return preferred_remat_type
+            return p1
+        else:
+            if p1 is not Recompute:
+                return p1
+            return p2
+
+    return combine_fn
+
+
+def combine_remat_policies(
+    policy_1: ConfigOr[RematPolicy],
+    policy_2: ConfigOr[RematPolicy],
+    *,
+    combine_fn: ConfigOr[RematCombineFn] = default_remat_combine_fn(),
+):
+    """Returns a remat policy that combines the two policies with `combine_fn`.
+
+    Args:
+        policy_1: Remat policy 1.
+        policy_2: Remat policy 2.
+        combine_fn: A function that combines and potentially resolves conflicts of the remat types
+            from the two policies. The default `combine_fn` chooses the policy that does not return
+            `Recompute` and raises `RuntimeError` if both are not `Recompute` and are different.
+
+    Returns:
+        A `RematPolicy`.
+    """
+    policy_1 = maybe_instantiate(policy_1)
+    policy_2 = maybe_instantiate(policy_2)
+    combine_fn = maybe_instantiate(combine_fn)
+
+    def convert_to_enum(p: Union[RematType, bool]) -> RematType:
+        if isinstance(p, bool):
+            p = Saveable if p else Recompute
+        return p
+
+    def policy(prim, *args, **kwargs):
+        p1 = convert_to_enum(policy_1(prim, *args, **kwargs))
+        p2 = convert_to_enum(policy_2(prim, *args, **kwargs))
+        return combine_fn(p1, p2, prim=prim, args=args, kwargs=kwargs)
+
+    return policy
+
+
+extended_checkpoint_policies = types.SimpleNamespace(
+    offload_dots_saveable=offload_dots_saveable,
+    save_and_offload_only_these_names_regex=save_and_offload_only_these_names_regex,
+    combine_remat_policies=combine_remat_policies,
+)
 
 
 @contextlib.contextmanager
@@ -442,6 +599,12 @@ def with_sharding_constraint(x, shardings):
     if mesh.empty or mesh.size == 1:
         return x
     return jax.lax.with_sharding_constraint(x, shardings)
+
+
+def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> NestedTensor:
+    if partition_spec is None:
+        return x
+    return with_sharding_constraint(x, PartitionSpec(*partition_spec))
 
 
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:
@@ -1441,3 +1604,15 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] =
     # [..., 1]
     lengths = lengths[..., jnp.newaxis]
     return (sequence < lengths).astype(dtype)
+
+
+def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
+    """Raises ValueError if any of the given `paths` are not present in `x`."""
+    for path in paths:
+        try:
+            get_recursively(x, path)
+        except KeyError as e:
+            raise ValueError(
+                f"Input is expected to contain '{path}'; "
+                f"instead, it contains: '{jax.tree_structure(x)}'."
+            ) from e

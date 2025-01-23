@@ -40,23 +40,29 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
 ```
 """
 
-
-from axlearn.common.config import InstantiableConfig, config_for_function
+from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
 from axlearn.experiments.text.gpt import fuji, gspmd
 from axlearn.experiments.text.gpt.common import mixture_train_input_source, tfds_input
+from axlearn.experiments.text.gpt.vocabulary_fuji_v3 import FujiV3Vocabulary
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# Sentencepiece vocabs generated from c4/en:3.0.1.
-# See bpe_{32k,128k}.json for the sentencepiece settings.
-_SENTENCEPIECE_MODEL_NAME = {
-    32 * 1024: "bpe_32k_c4.model",
-    # TikToken is not yet supported, so we are using sentencepiece for now.
-    # Our new grain-based inputs can support TikToken in the future.
-    128256: "bpe_128k_c4.model",
-}
+
+def _vocab_cfg(vocab_size: int):
+    if vocab_size == 32 * 1024:
+        # Sentencepiece vocabs generated from c4/en:3.0.1.
+        # See bpe_{32k,128k}.json for the sentencepiece settings.
+        return config_for_function(vocab).set(sentencepiece_model_name="bpe_32k_c4.model")
+    if vocab_size == 128 * 1024:
+        return config_for_function(vocab).set(sentencepiece_model_name="bpe_128k_c4.model")
+    if vocab_size == 128256:
+        # TikToken.
+        return config_for_class(FujiV3Vocabulary).set(filename="Llama-3-tokenizer.json")
+    raise ValueError(f"Tokenizer with vocab size {vocab_size} does not exist.")
+
+
 _train_data_mixture_components = [
     DataMixtureComponent(
         name="c4/en:3.0.1",
@@ -75,9 +81,7 @@ def _eval_input_sources(
             dataset_name="c4/en:3.0.1",
             split=split,
             is_training=False,
-            vocab_cfg=config_for_function(vocab).set(
-                sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size]
-            ),
+            vocab_cfg=_vocab_cfg(vocab_size),
             max_sequence_length=max_sequence_length,
         )
         for name, split in (("train", "train[:8192]"), ("validation", "validation"))
@@ -87,9 +91,7 @@ def _eval_input_sources(
 def _train_input_source(*, vocab_size: int, max_sequence_length: int) -> InstantiableConfig:
     source_cfg = config_for_function(mixture_train_input_source).set(
         data_mixture_components=_train_data_mixture_components,
-        vocab_cfg=config_for_function(vocab).set(
-            sentencepiece_model_name=_SENTENCEPIECE_MODEL_NAME[vocab_size]
-        ),
+        vocab_cfg=_vocab_cfg(vocab_size),
         max_sequence_length=max_sequence_length,
         preprocessor=config_for_function(lm_text_preprocessor).set(max_padding_fraction=0.5),
     )

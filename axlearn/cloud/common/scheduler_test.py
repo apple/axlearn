@@ -15,7 +15,6 @@ from axlearn.cloud.common.scheduler import (
     JobMetadata,
     JobQueue,
     JobScheduler,
-    JobVerdict,
     ProjectJobSorter,
     TierScheduler,
     _compute_total_limits,
@@ -207,9 +206,10 @@ class TierSchedulerTest(parameterized.TestCase):
 
         sched.schedule(resource_limits=[{"v4": 10, "v3": 3}], **common_kwargs)
 
-    @parameterized.parameters(
+    @parameterized.named_parameters(
         # Test a case where all jobs fit into tier 0.
         dict(
+            testcase_name="all_tier_0",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 5})),),
                 "b": (
@@ -219,11 +219,14 @@ class TierSchedulerTest(parameterized.TestCase):
             },
             expected_project_limits={"a": {"v4": 5}, "b": {"v4": 5}},
             expected_verdicts={"a1": True, "b1": True, "b2": True},
-            expected_tiers={"a1": 0, "b1": 0, "b2": 0},
+            # The order of entries in `expected_tiers` should reflect the job priorities.
+            # Here "b1" is ahead of "a1" because it requests fewer resources.
+            expected_tiers={"b1": 0, "a1": 0, "b2": 0},
         ),
         # Test tie-break. Although both are requesting the same amount, "b" is requesting more
         # relative to its quota, so "a" will be prioritized.
         dict(
+            testcase_name="tiebreak_by_relative_demand",
             project_jobs={
                 "b": (("b1", _mock_job_metadata({"v4": 7})),),
                 "a": (("a1", _mock_job_metadata({"v4": 7})),),
@@ -236,6 +239,7 @@ class TierSchedulerTest(parameterized.TestCase):
         # Test tie-break. Since both have the same quotas, we will tie-break using creation time.
         # In this case, a1 is created first.
         dict(
+            testcase_name="tiebreak_by_creation_time",
             project_jobs={
                 "a": (
                     (
@@ -258,6 +262,7 @@ class TierSchedulerTest(parameterized.TestCase):
         # Test when a higher priority job does not fit into tier 0, thus allowing a lower priority
         # job to schedule onto tier 0.
         dict(
+            testcase_name="high_priority_forced_into_tier_1",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 12})),),
                 "b": (
@@ -267,11 +272,12 @@ class TierSchedulerTest(parameterized.TestCase):
             },
             expected_project_limits={"a": {"v4": 12}, "b": {"v4": 3}},
             expected_verdicts={"a1": True, "b1": True, "b2": True},
-            expected_tiers={"a1": 1, "b1": 0, "b2": 0},
+            expected_tiers={"b1": 0, "b2": 0, "a1": 1},
         ),
         # In this case, "a" is requesting much more relative to its quota than "b", so "b" gets to
         # go first (so "a" doesn't fit).
         dict(
+            testcase_name="lower_demand_goes_first",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 13})),),
                 "b": (
@@ -281,10 +287,11 @@ class TierSchedulerTest(parameterized.TestCase):
             },
             expected_project_limits={"a": {"v4": 0}, "b": {"v4": 6}},
             expected_verdicts={"a1": False, "b1": True, "b2": True},
-            expected_tiers={"a1": None, "b1": 0, "b2": 0},
+            expected_tiers={"b1": 0, "b2": 0, "a1": None},
         ),
         # Test that leftover resources from reserved tier are schedulable by subsequent tiers.
         dict(
+            testcase_name="leftover_from_reserved_tier",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 7})),),
                 "b": (
@@ -294,10 +301,12 @@ class TierSchedulerTest(parameterized.TestCase):
             },
             expected_project_limits={"a": {"v4": 7}, "b": {"v4": 8}},
             expected_verdicts={"a1": True, "b1": True, "b2": True},
-            expected_tiers={"a1": 0, "b1": 0, "b2": 1},
+            # "b1" is ahead of "a1" since it requests fewer resource.
+            expected_tiers={"b1": 0, "a1": 0, "b2": 1},
         ),
         # Test load balance.
         dict(
+            testcase_name="load_balance",
             project_jobs={
                 "a": tuple((f"a{i}", _mock_job_metadata({"v4": 1})) for i in range(3)),
                 "b": tuple((f"b{i}", _mock_job_metadata({"v4": 1})) for i in range(3)),
@@ -321,14 +330,18 @@ class TierSchedulerTest(parameterized.TestCase):
                 "c0": 0,
                 "a1": 1,
                 "b1": 1,
-                "a2": None,
-                "b2": None,
+                # While the rest of the jobs are not scheduled, the order still reflects
+                # their priorities.
+                # Since "c" gets the least resource, its jobs take priority over those from a/b.
                 "c1": None,
                 "c2": None,
+                "a2": None,
+                "b2": None,
             },
         ),
         # Test projects with no quotas.
         dict(
+            testcase_name="projects_with_no_quota",
             project_jobs={
                 "a": tuple((f"a{i}", _mock_job_metadata({"v4": 1})) for i in range(3)),
                 "b": tuple((f"b{i}", _mock_job_metadata({"v4": 1})) for i in range(3)),
@@ -348,19 +361,22 @@ class TierSchedulerTest(parameterized.TestCase):
                 for i in range(3)
             },
             expected_tiers={
+                # "b" has quota for "v4", so its jobs get priorities.
                 "b0": 0,
                 "b1": 0,
                 "b2": 1,
+                # "a" and "c" jobs are interleaved in scheduling.
                 "a0": 2,
                 "c0": 2,
                 "a1": None,
-                "a2": None,
                 "c1": None,
+                "a2": None,
                 "c2": None,
             },
         ),
         # Test quotas of different scales.
         dict(
+            testcase_name="quotas_of_different_scales",
             project_jobs={
                 "a": (
                     ("a1", _mock_job_metadata({"v3": 1})),
@@ -393,6 +409,7 @@ class TierSchedulerTest(parameterized.TestCase):
         # Test that we cannot exceed total limit.
         # Note that missing resource types implicitly have limit 0.
         dict(
+            testcase_name="cannot_exceed_total_limit",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 1, "v3": 2})),),
                 "b": (
@@ -403,10 +420,11 @@ class TierSchedulerTest(parameterized.TestCase):
             resource_limits=[{"v4": 3}],
             expected_project_limits={"a": {"v4": 0, "v3": 0}, "b": {"v4": 2}},
             expected_verdicts={"a1": False, "b1": True, "b2": False},
-            expected_tiers={"a1": None, "b1": 0, "b2": None},
+            expected_tiers={"b1": 0, "b2": None, "a1": None},
         ),
         # Test that we can accumulate across tiers. Jobs should schedule onto the final tier.
         dict(
+            testcase_name="accumulation_across_tiers",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 1, "v3": 2})),),
                 "b": (
@@ -417,10 +435,13 @@ class TierSchedulerTest(parameterized.TestCase):
             resource_limits=[{"v4": 1}, {"v4": 1}, {"v4": 1}],
             expected_project_limits={"a": {"v4": 0, "v3": 0}, "b": {"v4": 3}},
             expected_verdicts={"a1": False, "b1": True, "b2": False},
-            expected_tiers={"a1": None, "b1": 2, "b2": None},
+            # While both "a1" and "b2" are not scheduled, "b2" is ranked ahead of "a1" because
+            # its demand/limit ratio is lower (there's no v3 resource, so a1's ratio is infinite).
+            expected_tiers={"b1": 2, "b2": None, "a1": None},
         ),
         # Test that we can accumulate across tiers across resource types.
         dict(
+            testcase_name="accumulation_across_tiers_resource_types",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 1, "v3": 2})),),
                 "b": (
@@ -436,6 +457,7 @@ class TierSchedulerTest(parameterized.TestCase):
         ),
         # Test that we acquire resources in reverse-tier-order.
         dict(
+            testcase_name="reverse_tier_order",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 1})),),
                 "b": (
@@ -453,6 +475,7 @@ class TierSchedulerTest(parameterized.TestCase):
         ),
         # Test that we acquire resources in reverse-tier-order (multiple resources).
         dict(
+            testcase_name="reverse_tier_order_multi_resource",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({"v4": 1, "v3": 2})),),
                 "b": (
@@ -470,6 +493,7 @@ class TierSchedulerTest(parameterized.TestCase):
         ),
         # Test scheduling jobs with no demands.
         dict(
+            testcase_name="jobs_with_no_demands",
             project_jobs={
                 "a": (("a1", _mock_job_metadata({})),),
                 "b": (
@@ -483,6 +507,7 @@ class TierSchedulerTest(parameterized.TestCase):
         ),
         # Test a case where some resource types are invalid.
         dict(
+            testcase_name="invalid_resource_types",
             project_jobs={
                 "a": (
                     ("a1", _mock_job_metadata({"v4": 5})),
@@ -497,7 +522,7 @@ class TierSchedulerTest(parameterized.TestCase):
             },
             expected_project_limits={"a": {"v4": 5}, "b": {"unknown": 0, "v4": 1}},
             expected_verdicts={"a1": True, "a2": False, "b1": False, "b2": True},
-            expected_tiers={"a1": 0, "a2": None, "b1": None, "b2": 0},
+            expected_tiers={"b2": 0, "a1": 0, "a2": None, "b1": None},
         ),
     )
     def test_schedule(
@@ -527,11 +552,7 @@ class TierSchedulerTest(parameterized.TestCase):
         )
         # project_limits should reflect limits across tiers.
         self.assertEqual(expected_project_limits, results.project_limits)
-        job_verdicts: dict[str, JobVerdict] = {
-            job_name: verdict
-            for project_verdicts in results.job_verdicts.values()
-            for job_name, verdict in project_verdicts.items()
-        }
+        job_verdicts = results.job_verdicts
         # Check that verdicts are expected.
         self.assertEqual(
             expected_verdicts,
@@ -545,6 +566,8 @@ class TierSchedulerTest(parameterized.TestCase):
                 for job_name, job_verdict in job_verdicts.items()
             },
         )
+        # Check that the order of jobs in `job_verdicts` matches that in `expected_tiers`.
+        self.assertEqual(list(job_verdicts.keys()), list(expected_tiers.keys()))
 
 
 def _mock_get_resource_limits(*args):
@@ -627,11 +650,7 @@ class TestJobScheduler(parameterized.TestCase):
         results = sched.schedule(jobs, dry_run=dry_run, verbosity=1)
 
         # Get verdicts by job name.
-        job_verdicts: dict[str, JobVerdict] = {
-            job_name: verdict
-            for project_verdicts in results.job_verdicts.values()
-            for job_name, verdict in project_verdicts.items()
-        }
+        job_verdicts = results.job_verdicts
         if dry_run:
             # All of the jobs should be scheduled, regardless.
             expected = {"a": True, "b": True, "c": True, "d": True, "e": True, "f": True}
@@ -674,11 +693,7 @@ class TestJobScheduler(parameterized.TestCase):
             for index, proj in enumerate(["a", "b", "c"])
         }
         results = sched.schedule(jobs)
-        job_verdicts: dict[str, JobVerdict] = {
-            job_name: verdict
-            for project_verdicts in results.job_verdicts.values()
-            for job_name, verdict in project_verdicts.items()
-        }
+        job_verdicts = results.job_verdicts
         # Two of the older jobs should run, even though every job's demand exceeds the project
         # limit.
         self.assertEqual(
@@ -726,11 +741,7 @@ class TestJobScheduler(parameterized.TestCase):
         results = sched.schedule(jobs)
 
         # Get verdicts by job name.
-        job_verdicts: dict[str, JobVerdict] = {
-            job_name: verdict
-            for project_verdicts in results.job_verdicts.values()
-            for job_name, verdict in project_verdicts.items()
-        }
+        job_verdicts = results.job_verdicts
         expected = {
             # The first job of each project will get scheduled.
             "a1": True,

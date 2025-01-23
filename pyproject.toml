@@ -24,8 +24,8 @@ core = [
     "chex==0.1.86",  # chex 0.1.86 is required for jax 0.4.25.
     "einops==0.8.0",
     "importlab==0.7",  # breaks pytype on 0.8
-    "jax==0.4.34",
-    "jaxlib==0.4.34",
+    "jax==0.4.33",
+    "jaxlib==0.4.33",
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
@@ -67,7 +67,7 @@ dev = [
     "pytest",  # test runner
     "pytest-xdist",  # pytest plugin for test parallelism
     "pytype==2022.4.22",  # type checking
-    "scikit-learn>=1.1.1",  # test-only
+    "scikit-learn>=1.1.1,<=1.5.2",  # test-only. v1.6.0 causes ValueError: Input arrays use different devices: cpu, TFRT_CPU_0
     # Fix AttributeError: module 'scipy.linalg' has no attribute 'tril' and related scipy import errors.
     "scipy==1.12.0",
     "sentencepiece != 0.1.92",
@@ -102,7 +102,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.34",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.4.33",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
@@ -126,7 +126,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==2.1.0",
-    "jax[cuda12]==0.4.34",
+    "jax[cuda12]==0.4.33",
 ]
 # Open API inference.
 open_api = [
@@ -146,11 +146,11 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.9.1",
+    "orbax-checkpoint==0.6.4",
 ]
 # Grain input processing. Currently does not support macos.
 grain = [
-    "grain==0.2.1; platform_machine == 'x86_64'",
+    "grain==0.2.3; platform_machine == 'x86_64'",
 ]
 # Audio dependencies.
 audio = [

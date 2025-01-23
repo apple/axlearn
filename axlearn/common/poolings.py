@@ -15,12 +15,11 @@ import jax
 import jax.numpy as jnp
 
 from axlearn.common.attention import (
-    NEG_INF,
     TransformerAttentionLayer,
     TransformerFeedForwardLayer,
-    make_segment_mask,
     scaled_hidden_dim,
 )
+from axlearn.common.attention_bias import NEG_INF, make_segment_mask
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Linear

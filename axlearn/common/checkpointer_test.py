@@ -47,11 +47,14 @@ from axlearn.common.checkpointer import (
     read_state_spec,
     restore_tf_savables,
 )
-from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
-from axlearn.common.input_grain_test import range_dataset
+from axlearn.common.checkpointer_orbax import _GRAIN_INSTALLED, OrbaxCheckpointer
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.utils import VDict
+
+# Conditionally import to allow running tests on Apple silicon where grain is not supported.
+if _GRAIN_INSTALLED:
+    from axlearn.common.input_grain_test import range_dataset
 
 
 def _mesh(mesh_shape: Sequence[int]):
@@ -121,20 +124,33 @@ class CheckpointerTest(test_utils.TestCase):
                         x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([3], dtype=jnp.float32)
                     ),
                 )
-
-            # When the given state has a different dict shape: [1] instead of [] for x.
-            # Orbax throws AssertionError in this case.
-            with self.assertRaisesRegex(
-                (AssertionError, ValueError),
-                "(checkpoint tree dtypes or shapes|not compatible)",
-            ):
-                ckpt.restore(
-                    step=None,
-                    state=dict(
-                        x=jnp.zeros([1], dtype=jnp.int32),
-                        y=jnp.ones([2], dtype=jnp.float32),
-                    ),
-                )
+            # TODO(matthew_e_hopkins): revert it once upgrade jax version.
+            if checkpointer_cls is Checkpointer:
+                # When the given state has a different dict shape: [1] instead of [] for x.
+                # Orbax throws AssertionError in this case.
+                with self.assertRaisesRegex(
+                    (AssertionError, ValueError),
+                    "(checkpoint tree dtypes or shapes|not compatible)",
+                ):
+                    ckpt.restore(
+                        step=None,
+                        state=dict(
+                            x=jnp.zeros([1], dtype=jnp.int32),
+                            y=jnp.ones([2], dtype=jnp.float32),
+                        ),
+                    )
+            else:
+                with self.assertRaisesRegex(
+                    (AssertionError, ValueError),
+                    "Cannot intersect index domain",
+                ):
+                    ckpt.restore(
+                        step=None,
+                        state=dict(
+                            x=jnp.zeros([1], dtype=jnp.int32),
+                            y=jnp.ones([2], dtype=jnp.float32),
+                        ),
+                    )
 
             # When the given state has a different dtype: float32 instead of int32 for x.
             with self.assertRaisesRegex(ValueError, "checkpoint tree dtypes or shapes"):
@@ -431,8 +447,17 @@ class CheckpointerTest(test_utils.TestCase):
                 input_iter=input_iter,
             )
 
+            self.assertEqual([], os.listdir(cfg.dir))
+
             ckpt.save(step=100, state=state0)
             ckpt.wait_until_finished()
+
+            # Check that input iterators are saved under a per-worker path.
+            # E.g., /path/to/<step>/[state/]tf_0/input_iter.index.
+            state_dir = ckpt.ckpt_dir(100)
+            if "state" in os.listdir(state_dir):
+                state_dir = os.path.join(state_dir, "state")
+            self.assertIn("tf_0", os.listdir(state_dir))
 
             state0_specs = dict(
                 x=utils.TensorSpec(shape=[], dtype=jnp.int32),
@@ -458,6 +483,8 @@ class CheckpointerTest(test_utils.TestCase):
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
     def test_grain(self, checkpointer_cls):
+        if not _GRAIN_INSTALLED:
+            self.skipTest("Cannot run when grain is not installed.")
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
@@ -469,8 +496,17 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertEqual(next(ds), 1)
             state0 = dict(x=jnp.ones([3, 2]), y=ds)
 
+            self.assertEqual([], os.listdir(cfg.dir))
+
             ckpt.save(step=100, state=state0)
             ckpt.wait_until_finished()
+
+            # Check that input iterators are saved under a per-worker path.
+            # E.g., /path/to/<step>/[state/]grain_0/input_iter.index.
+            state_dir = ckpt.ckpt_dir(100)
+            if "state" in os.listdir(state_dir):
+                state_dir = os.path.join(state_dir, "state")
+            self.assertIn("grain_0", os.listdir(state_dir))
 
             state0_specs = dict(
                 x=utils.TensorSpec(shape=[3, 2], dtype=jnp.float32),
@@ -891,7 +927,7 @@ class CheckpointerTest(test_utils.TestCase):
         self.assertTrue(policy(step=13, evaler_summaries={}))
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
-    def test_latest_checkpoint_path(self, checkpointer_cls: Type[BaseCheckpointer]):
+    def test_latest_checkpoint_path_and_step(self, checkpointer_cls: Type[BaseCheckpointer]):
         with tempfile.TemporaryDirectory() as td:
             # Test that the most recent checkpoint is returned.
             ckpt_paths = {}
@@ -913,6 +949,7 @@ class CheckpointerTest(test_utils.TestCase):
             final_ckpt_path = ckpt_paths[10]
             # Note: step 11 is not complete, so the latest path returns step 10.
             self.assertEqual(checkpointer_cls.latest_checkpoint_path(td), final_ckpt_path)
+            self.assertEqual(checkpointer_cls.latest_checkpoint_step(td), 10)
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
     def test_read_state_spec(self, checkpointer_cls: Type[BaseCheckpointer]):
@@ -1186,11 +1223,13 @@ class TfIteratorTest(test_utils.TestCase):
         ckpt_dir = os.path.join(tmpdir, "tf_ckpt")
         self.assertEqual(0, len(fs.listdir(tmpdir)))
         # Test that when we don't save input iterator, tf dirs are not created.
-        async_save_tf_savables({}, executor=executor, dir=ckpt_dir)
+        fut = async_save_tf_savables({}, executor=executor, dir=ckpt_dir)
+        fut.result()
         self.assertEqual([], fs.listdir(tmpdir))
         # Test that dirs are created if we save.
         ds = tf.data.Dataset.from_tensor_slices([])
-        async_save_tf_savables({"it": iter(ds)}, executor=executor, dir=ckpt_dir)
+        fut = async_save_tf_savables({"it": iter(ds)}, executor=executor, dir=ckpt_dir)
+        fut.result()
         self.assertEqual(["tf_ckpt"], fs.listdir(tmpdir))
 
 
