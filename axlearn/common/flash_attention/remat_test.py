@@ -187,12 +187,13 @@ class TestFlashAttentionRemat(TestCase):
                 )
             )
 
+            remat_hlo = str(jax.jit(remat).lower(params, inputs).as_text("hlo"))
             self.assertEqual(
-                str(jax.make_jaxpr(remat)(params, inputs)).count("_mha_forward_kernel"),
-                1,
+                remat_hlo.count('custom_call_target="__gpu$xla.gpu.triton"'),
+                3,
             )
             self.assertEqual(
-                str(jax.jit(remat).lower(params, inputs).as_text("hlo")).count(" dot("),
+                remat_hlo.count(" dot("),
                 no_remat_dots_count,
             )
 
@@ -229,4 +230,3 @@ class TestFlashAttentionRemat(TestCase):
                     str(jax.jit(remat).lower(params, inputs).as_text("hlo")).count(" dot("),
                     no_remat_dots_count,
                 )
-                jax.jit(remat).lower(params, inputs).as_text("hlo")
