@@ -36,6 +36,15 @@ class SystemCharacteristics:
 # TODO(markblee): Dedup with `axlearn/cloud/gcp/system_characteristics.py`.
 # Reference: https://github.com/google/maxtext/blob/main/MaxText/accelerator_to_spec_map.py
 USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
+    # v6e: one core per chip with 32 GB HBM
+    "v6e-1": SystemCharacteristics("tpu", "v6e:1x1", "default", (1, 1, 1), 1),
+    "v6e-4": SystemCharacteristics("tpu", "v6e:2x2", "default", (2, 2, 1), 4),
+    "v6e-8": SystemCharacteristics("tpu", "v6e:2x4", "default", (2, 2, 1), 8),
+    "v6e-16": SystemCharacteristics("tpu", "v6e:4x4", "default", (2, 2, 1), 16),
+    "v6e-32": SystemCharacteristics("tpu", "v6e:4x8", "default", (2, 2, 1), 32),
+    "v6e-64": SystemCharacteristics("tpu", "v6e:8x8", "default", (2, 2, 1), 64),
+    "v6e-128": SystemCharacteristics("tpu", "v6e:8x16", "default", (2, 2, 1), 128),
+    "v6e-256": SystemCharacteristics("tpu", "v6e:16x16", "default", (2, 2, 1), 256),
     # v5e
     "v5e-16": SystemCharacteristics("tpu", "v5e:4x4", "default", (2, 2, 1), 16),
     "v5e-32": SystemCharacteristics("tpu", "v5e:4x8", "default", (2, 2, 1), 32),

@@ -39,7 +39,7 @@ from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
-from axlearn.common.config import ConfigOr, is_named_tuple, maybe_instantiate
+from axlearn.common.config import ConfigOr, is_named_tuple, maybe_instantiate, register_validator
 
 # New code should use Nested[XX] instead of NestedXX.
 # Old definitions are provided for backwards compatibility.
@@ -107,6 +107,12 @@ class TensorSpec:
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
 RematType = Union[type(Saveable), Offloadable, type(Recompute)]
 SavePattern = Union[str, re.Pattern, None]
+
+# Register a config validator for RematType.
+register_validator(
+    match_fn=lambda x: isinstance(x, (type(Saveable), Offloadable, type(Recompute))),
+    validate_fn=lambda x: None,
+)
 
 
 class RematPolicy(Protocol):
@@ -241,8 +247,8 @@ def default_remat_combine_fn(preferred_remat_type: Optional[RematType] = None) -
 
 
 def combine_remat_policies(
-    policy_1: RematPolicy,
-    policy_2: RematPolicy,
+    policy_1: ConfigOr[RematPolicy],
+    policy_2: ConfigOr[RematPolicy],
     *,
     combine_fn: ConfigOr[RematCombineFn] = default_remat_combine_fn(),
 ):
@@ -258,6 +264,8 @@ def combine_remat_policies(
     Returns:
         A `RematPolicy`.
     """
+    policy_1 = maybe_instantiate(policy_1)
+    policy_2 = maybe_instantiate(policy_2)
     combine_fn = maybe_instantiate(combine_fn)
 
     def convert_to_enum(p: Union[RematType, bool]) -> RematType:

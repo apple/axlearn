@@ -142,6 +142,7 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         cross_attention_biases = cross_attention_biases[:, None, None, :]
         return cross_attention_biases
 
+    # TODO(markblee): Use configurable BaseMetrics instead.
     def _metrics(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
     ) -> tuple[Tensor, Nested[Tensor]]:
