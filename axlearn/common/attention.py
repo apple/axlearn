@@ -1245,8 +1245,10 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
         cfg = self.config
         if positions is not None and max_seq_len is not None:
             if max_seq_len != positions.shape[-1]:
-                raise ValueError("Both `positions` and `max_seq_len` are provided and they "
-                                 "do not match. You only need to provide one of them.")
+                raise ValueError(
+                    "Both `positions` and `max_seq_len` are provided and they "
+                    "do not match. You only need to provide one of them."
+                )
         if positions is None:
             if max_seq_len is None:
                 raise ValueError(
