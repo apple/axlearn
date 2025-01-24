@@ -1269,7 +1269,7 @@ def _reshape_mesh_to_rings(a: np.ndarray, *, strategy: tuple[int, int]) -> np.nd
     https://github.com/AI-Hypercomputer/maxtext/blob/7f0dcef34f4857476d19b4ca9ceada654246c0b0/MaxText/max_utils.py#L474.
 
     These strategies are valid on v5e and v6e on which 64x4 and 32x8 are non-native mesh sizes
-    and require carefully arrangement of devices to achieve good performance.
+    and require careful arrangement of devices to achieve good performance.
     """
     b = []
     if strategy == (64, 4):
