@@ -7,6 +7,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
@@ -110,6 +111,42 @@ class FlashAttention(GroupedQueryAttention):
         cfg = self.config
         return attention_logit_biases.partition_spec(cfg.mha_dim_to_partition_spec)
 
+    def _maybe_repeat_kv_heads(self, key_or_value: Tensor) -> Tensor:
+        """Repeats key or value heads dim to be shardable."""
+        cfg = self.config
+        partition_spec = cfg.mha_dim_to_partition_spec["bsnh"]
+        global_mesh = thread_resources.env.physical_mesh
+        if (
+            partition_spec == PartitionSpec(None)
+            or len(partition_spec) != 4
+            or partition_spec[-2] is None
+        ):
+            return key_or_value
+
+        axis = partition_spec[-2]
+        if isinstance(axis, tuple):
+            axis_size = np.prod([global_mesh.shape[x] for x in axis])
+        else:
+            axis_size = global_mesh.shape[axis]
+        # There will be sharding error if axis_size > num_heads.
+        if cfg.num_heads < axis_size:
+            raise ValueError(
+                f"num_heads ({cfg.num_heads}) must be greater than or equal to "
+                f"the number of devices {axis_size} in the mesh axis {axis}."
+            )
+        num_head_repeats = axis_size // key_or_value.shape[-2]
+        # Repeat along the num_heads dim: [batch, source_length, repeated_num_heads, per_head_dim].
+        if num_head_repeats > 1:
+            key_or_value = jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+
+        if key_or_value.shape[-2] % axis_size != 0:
+            raise ValueError(
+                f"repeated_num_heads dim size {key_or_value.shape[-2]} must be "
+                f"fully divisible by mesh axis {axis} size {axis_size}."
+            )
+
+        return key_or_value
+
     def _compute_attention(
         self,
         *,
@@ -120,6 +157,10 @@ class FlashAttention(GroupedQueryAttention):
     ) -> tuple[Tensor, Tensor]:
         cfg: FlashAttention.Config = self.config
         backend = self._backend()
+
+        # Repeats key/value heads dim if necessary.
+        k_proj = self._maybe_repeat_kv_heads(k_proj)
+        v_proj = self._maybe_repeat_kv_heads(v_proj)
 
         batch, target_len, num_heads, _ = q_proj.shape
         _, source_len, _, _ = k_proj.shape
@@ -155,9 +196,8 @@ class FlashAttention(GroupedQueryAttention):
             in_specs=(
                 # Q [batch_size, seq_len, num_heads, per_head_dim].
                 cfg.mha_dim_to_partition_spec["btnh"],
-                # KV [batch_size, seq_len, num_kv_heads, per_head_dim].
-                # Note: while num_kv_heads can be different from num_heads, their partition spec
-                # should be the same.
+                # KV [batch_size, seq_len, repeated_num_heads, per_head_dim].
+                # repeated_num_heads should be divided evenly by the n axis.
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 cfg.mha_dim_to_partition_spec["bsnh"],
                 # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].

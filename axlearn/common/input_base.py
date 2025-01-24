@@ -2,12 +2,15 @@
 
 """Base Input interface."""
 
-from typing import Iterable, Iterator, Optional, Sequence, Union
+import re
+from typing import Iterable, Iterator, NamedTuple, Optional, Protocol, Sequence, Union
 
 import jax
+from absl import logging
+from jax._src.mesh import thread_resources
 from jax.sharding import PartitionSpec
 
-from axlearn.common.config import config_class
+from axlearn.common.config import ConfigOr, config_class, maybe_instantiate
 from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.module import Module
 from axlearn.common.utils import (
@@ -15,8 +18,103 @@ from axlearn.common.utils import (
     Tensor,
     as_numpy_array,
     dispatch_input_batch,
+    tree_paths,
     with_sharding_constraint,
 )
+
+
+class InputPartitionFn(Protocol):
+    """Partitions the input batch."""
+
+    def __call__(self, input_batch: Nested[Tensor]) -> Nested[Tensor]:
+        """Applies sharding constraints to `input_batch` and returns the modified batch.
+
+        Implementations should avoid making in-place updates to `input_batch`.
+        """
+
+
+class PathAndRank(NamedTuple):
+    """A tuple (path, rank) used for matching against inputs in a batch.
+
+    Attributes:
+        path: An optional path or path regex. None means match everything.
+        rank: An optional rank (ndim). None means match everything.
+    """
+
+    path: Optional[Union[str, re.Pattern]]
+    rank: Optional[int]
+
+
+def partition_by_path_rank(
+    path_rank_to_partition: dict[PathAndRank, PartitionSpec],
+) -> InputPartitionFn:
+    """Partitions the keys in the input batch by Tensor path and rank (ndim).
+
+    If not within a mesh, the partition fn is a no-op.
+
+    Args:
+        path_rank_to_partition: A mapping from (path_regex, rank) to partition spec.
+            For each input path, the Tensor will be constrained by the first matching
+            (path_regex, rank) rule, where paths are full-matched against `path_regex` and ranks are
+            matched against `rank`.
+            `path_regex` or `rank` are allowed to be None to match everything.
+            If replication is desired, specify a partition spec of None explicitly.
+            If leaving the input unconstrained is desired, specify a partition spec of
+            `PartitionSpec.UNCONSTRAINED` explicitly.
+
+    Returns:
+        A function that applies sharding constraints to an input batch and returns a new batch.
+
+    Raises:
+        ValueError: If no rules match for a given input, which is likely an oversight. If leaving
+            inputs unconstrained is desired, explicitly specify `PartitionSpec.UNCONSTRAINED`.
+
+    Example:
+        To constrain all rank-1 Tensors by ("data",) and rank-2 by ("data", "seq"):
+        ```
+        partition_by_path_ndim({
+            (".*", 1): PartitionSpec("data"),
+            (".*", 2): PartitionSpec("data", "seq"),
+        })
+        ```
+    """
+    compiled = {}
+    for (regex, rank), spec in path_rank_to_partition.items():
+        if regex is not None:
+            regex = re.compile(regex)
+        compiled[(regex, rank)] = spec
+
+    def fn(input_batch: Nested[Tensor]) -> Nested[Tensor]:
+        mesh = thread_resources.env.physical_mesh  # type: ignore
+        if mesh.empty or mesh.size == 1:
+            return input_batch
+
+        def maybe_constrain(path: str, value: Tensor):
+            for (path_regex, rank), partition_spec in compiled.items():
+                if not (rank is None or value.ndim == rank) or not (
+                    path_regex is None or re.fullmatch(path_regex, path)
+                ):
+                    continue
+                if partition_spec is not PartitionSpec.UNCONSTRAINED:
+                    value = with_sharding_constraint(value, partition_spec)
+                    logging.log_first_n(
+                        logging.INFO,
+                        "Constraining input_batch[%s] with %s.",
+                        len(input_batch),
+                        path,
+                        partition_spec,
+                    )
+                return value
+            # No rules match. We raise as not-constraining is likely an oversight.
+            raise ValueError(
+                f"No rules matched input_batch['{path}']. "
+                "If you intended to leave the input unconstrained, "
+                "specify `PartitionSpec.UNCONSTRAINED` explicitly."
+            )
+
+        return jax.tree_map(maybe_constrain, tree_paths(input_batch), input_batch)
+
+    return fn
 
 
 class Input(Module):
@@ -53,9 +151,12 @@ class Input(Module):
         Attributes:
             input_dispatcher: If not None, creates an InputDispatcher and uses it for dispatching
                 per-feed batches to global batches.
+            input_partitioner: If not None, applies additional sharding constraints on each input
+                batch during `dispatch_global_batch`.
         """
 
         input_dispatcher: Optional[InputDispatcher.Config] = None
+        input_partitioner: Optional[ConfigOr[InputPartitionFn]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -64,6 +165,9 @@ class Input(Module):
             self.input_dispatcher: InputDispatcher = (  # pytype: disable=annotation-type-mismatch
                 self._add_child("input_dispatcher", cfg.input_dispatcher)
             )
+        self._input_partitioner: Optional[InputPartitionFn] = maybe_instantiate(
+            cfg.input_partitioner
+        )
 
     def dataset(self) -> Iterable[Nested[Tensor]]:
         """Returns the input dataset, which should produce per-feed logical batches.
@@ -131,6 +235,9 @@ class Input(Module):
         The leaves of the output logical batch are partitioned across `batch_axis_names` along the
         0th (batch) dimension. This should be invoked from within `pjit` so that the sharding
         constraints can be applied.
+
+        If `cfg.input_partitioner` is not None, it will be applied to each logical batch after
+        constraining `batch_axis_names`.
         """
 
         def constrain_batch_axis(batch):
@@ -147,7 +254,14 @@ class Input(Module):
             global_logical_batch = dispatch_input_batch(
                 global_physical_batch, batch_axis_names=batch_axis_names
             )
-        return constrain_batch_axis(global_logical_batch)
+
+        global_logical_batch = constrain_batch_axis(global_logical_batch)
+
+        # Further constrain based on user-configured partitioning rules.
+        if self._input_partitioner is not None:
+            global_logical_batch = self._input_partitioner(global_logical_batch)
+
+        return global_logical_batch
 
     def element_spec(self) -> Nested[jax.ShapeDtypeStruct]:
         """Returns the per-feed logical batch spec.

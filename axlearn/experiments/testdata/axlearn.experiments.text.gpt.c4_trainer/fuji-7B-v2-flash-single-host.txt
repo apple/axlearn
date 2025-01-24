@@ -70,6 +70,14 @@ input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 input.batcher.global_batch_size: 8
 input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 input.batcher.prefetch_buffer_size: -1
+input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
+input.input_partitioner.path_rank_to_partition[(None, 1)][0][0]: 'data'
+input.input_partitioner.path_rank_to_partition[(None, 1)][0][1]: 'expert'
+input.input_partitioner.path_rank_to_partition[(None, 1)][0][2]: 'fsdp'
+input.input_partitioner.path_rank_to_partition[(None, 2)][0][0]: 'data'
+input.input_partitioner.path_rank_to_partition[(None, 2)][0][1]: 'expert'
+input.input_partitioner.path_rank_to_partition[(None, 2)][0][2]: 'fsdp'
+input.input_partitioner.path_rank_to_partition[(None, 2)][1]: 'seq'
 input.is_training: True
 input.klass: 'axlearn.common.input_tf_data.Input'
 input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -187,7 +195,7 @@ mesh_rules[5][1][2]: 1
 mesh_rules[5][1][3]: 8
 mesh_rules[5][1][4]: 1
 mesh_rules[5][1][5]: 1
-mesh_rules[6][0]: 'gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)'
+mesh_rules[6][0]: 'gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)'
 mesh_rules[6][1][0]: 1
 mesh_rules[6][1][1]: -1
 mesh_rules[6][1][2]: 1
@@ -200,9 +208,7 @@ mesh_shape[2]: 1
 mesh_shape[3]: 8
 mesh_shape[4]: 1
 mesh_shape[5]: 1
-model.batch_axis_names[0]: 'data'
-model.batch_axis_names[1]: 'expert'
-model.batch_axis_names[2]: 'fsdp'
+model.batch_axis_names: None
 model.decoder.attention_mask: None
 model.decoder.decoding.klass: 'axlearn.common.decoder.DecodingLayer'
 model.decoder.dim: 4096
@@ -348,13 +354,14 @@ model.decoder.transformer.repeat.klass: 'axlearn.common.attention._TransformerRe
 model.decoder.vocab_size: 32768
 model.dtype: 'jax.numpy.float32'
 model.klass: 'axlearn.common.causal_lm.Model'
+model.metrics.klass: 'axlearn.common.causal_lm.CompositeLossMetrics'
+model.metrics.metrics['lm'].klass: 'axlearn.common.causal_lm.CrossEntropyLossMetrics'
+model.metrics.metrics['aux'].klass: 'axlearn.common.causal_lm.AuxLossMetrics'
 model.param_init.init_by_param_name['.*weight$'].distribution: 'normal'
 model.param_init.init_by_param_name['.*weight$'].fan: 'fan_in'
 model.param_init.init_by_param_name['.*weight$'].klass: 'axlearn.common.param_init.WeightInitializer'
 model.param_init.init_by_param_name['.*weight$'].scale: 1.0
 model.param_init.klass: 'axlearn.common.param_init.DefaultInitializer'
-model.seq_axis_names[0]: 'seq'
-model.z_loss_scale: 0.0
 name: 'gpt_trainer'
 prune_empty_state_updates: True
 save_input_iterator: False

@@ -9,7 +9,6 @@ import os
 # pylint: disable=wrong-import-position
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-from contextlib import nullcontext
 
 # pylint: enable=wrong-import-position
 import jax
@@ -19,6 +18,7 @@ from jax.ad_checkpoint import checkpoint_policies
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
+from axlearn.common.config import config_for_function
 from axlearn.common.flash_attention.layer import (
     FlashAttention,
     default_mha_dim_to_partition_spec,
@@ -115,30 +115,34 @@ class TestFlashAttentionRemat(TestCase):
         with mesh:
             no_remat = jax.value_and_grad(loss)
             full_remat = jax.value_and_grad(jax.remat(loss))
-            with self.assertRaises(NotImplementedError) if isinstance(
-                remat_type, Offloadable
-            ) else nullcontext():
-                save_flash = jax.value_and_grad(
-                    jax.remat(loss, policy=save_or_offload_flash_attention_policy(remat_type))
-                )
-            if isinstance(remat_type, Offloadable):
-                return
+            save_flash = jax.value_and_grad(
+                jax.remat(loss, policy=save_or_offload_flash_attention_policy(remat_type))
+            )
             fn_expected_fw_count = [
                 (no_remat, 1),
                 (full_remat, 2),
                 (save_flash, 1),
             ]
 
-            # Note: we don't use HLO for Pallas since HLO doesn't contain the kernel name.
             if jax.default_backend() == "gpu":
                 if use_segment_ids:
                     # Pallas kernel case.
                     for fn, count in fn_expected_fw_count:
                         self.assertEqual(
-                            str(jax.make_jaxpr(fn)(params, inputs)).count("_mha_forward_kernel"),
-                            count,
+                            jax.jit(fn)
+                            .lower(params, inputs)
+                            .as_text("hlo")
+                            .count('custom_call_target="__gpu$xla.gpu.triton"'),
+                            # +1 because this custom call also matches the backward call.
+                            # also +1 since the backward kernels are not fused. I.e. there are two
+                            # calls, one for dkdv and one for dq.
+                            count + 2,
                         )
                 else:
+                    if isinstance(remat_type, Offloadable):
+                        with self.assertRaises(NotImplementedError):
+                            jax.jit(save_flash).lower(params, inputs).as_text("hlo")
+                        return
                     # cuDNN case.
                     # Note: the backward kernel is called "__cudnn$fmhaSoftmaxBackward".
                     # Use " to distinguish forward and backward kernel.
@@ -183,12 +187,13 @@ class TestFlashAttentionRemat(TestCase):
                 )
             )
 
+            remat_hlo = str(jax.jit(remat).lower(params, inputs).as_text("hlo"))
             self.assertEqual(
-                str(jax.make_jaxpr(remat)(params, inputs)).count("_mha_forward_kernel"),
-                1,
+                remat_hlo.count('custom_call_target="__gpu$xla.gpu.triton"'),
+                3,
             )
             self.assertEqual(
-                str(jax.jit(remat).lower(params, inputs).as_text("hlo")).count(" dot("),
+                remat_hlo.count(" dot("),
                 no_remat_dots_count,
             )
 
@@ -212,8 +217,12 @@ class TestFlashAttentionRemat(TestCase):
                         loss,
                         policy=combine_remat_policies(
                             checkpoint_policies.everything_saveable,
-                            offload_dots_saveable("device", "pinned_host"),
-                            combine_fn=default_remat_combine_fn(preferred),
+                            config_for_function(offload_dots_saveable).set(
+                                offload_src="device", offload_dst="pinned_host"
+                            ),
+                            combine_fn=config_for_function(default_remat_combine_fn).set(
+                                preferred_remat_type=preferred
+                            ),
                         ),
                     )
                 )
@@ -221,4 +230,3 @@ class TestFlashAttentionRemat(TestCase):
                     str(jax.jit(remat).lower(params, inputs).as_text("hlo")).count(" dot("),
                     no_remat_dots_count,
                 )
-                jax.jit(remat).lower(params, inputs).as_text("hlo")

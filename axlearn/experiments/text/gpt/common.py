@@ -21,6 +21,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common import (
     base_model,
     causal_lm,
+    input_base,
     input_fake,
     input_lm,
     input_tf_data,
@@ -223,6 +224,8 @@ def model_config(
     ffn_structure: str = "prenorm",
     atten_structure: str = "prenorm",
     atten_logit_cap: Optional[float] = None,
+    pad_token_id: Optional[int] = None,
+    eos_token_id: Optional[int] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -253,6 +256,8 @@ def model_config(
         atten_logit_cap: Cap the absolute values of logits by tanh.
             Enabled by setting a positive value.
         remat_offload_dst: Destination of remat checkptoing offloading.
+        pad_token_id: Int ID of the inputs to be masked for self-attention.
+        eos_token_id: Int ID of the end of sequence token id.
 
     Returns:
         A causal LM config.
@@ -283,6 +288,10 @@ def model_config(
         lm_head=lm_head_cfg,
         dropout_rate=dropout_rate,
     )
+    if pad_token_id is not None:
+        decoder_cfg.set(pad_token_id=pad_token_id)
+    if eos_token_id is not None:
+        decoder_cfg.set(eos_token_id=eos_token_id)
     # Model.
     model_param_init = DefaultInitializer.default_config().set(
         init_by_param_name={
@@ -292,12 +301,13 @@ def model_config(
         }
     )
     batch_axis_names = ("data", "expert", "fsdp")
-    cfg = causal_lm.Model.default_config().set(
+    cfg: causal_lm.Model.Config = causal_lm.Model.default_config().set(
         decoder=decoder_cfg,
         param_init=model_param_init,
-        batch_axis_names=batch_axis_names,
-        seq_axis_names=("seq",),
+        batch_axis_names=None,  # We use input dispatch to partition batches.
     )
+    if z_loss_scale:
+        cfg.metrics = causal_lm.metrics_config(z_loss_scale=z_loss_scale)
     cfg.dtype = jnp.float32
     # Shard some FFN and attention weights over multiple axes.
     set_double_shard_weights_config(
@@ -310,7 +320,6 @@ def model_config(
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")
     set_bias_recursively(cfg, False)
     set_norm_recursively(cfg, normalization)
-    cfg.z_loss_scale = z_loss_scale
     return cfg
 
 
@@ -670,6 +679,14 @@ def get_trainer_config_fn(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
+            input_partitioner=config_for_function(input_base.partition_by_path_rank).set(
+                path_rank_to_partition={
+                    # Note: the batch axes are different here than in `cfg.batch_axis_names`,
+                    # as we partition sequence dim over `seq`.
+                    (None, 1): PartitionSpec(("data", "expert", "fsdp")),
+                    (None, 2): PartitionSpec(("data", "expert", "fsdp"), "seq"),
+                }
+            ),
         )
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
@@ -699,6 +716,7 @@ def get_trainer_config_fn(
         cfg.mesh_shape = mesh_shape
         # Set batch sharding spec to exclude the "model" axis (assumed for tensor-parallelism) and
         # "pipeline" axis (for pipeline parallelism).
+        # TODO(markblee): Remove this and use `cfg.input.input_partitioner`.
         cfg.batch_axis_names = tuple(
             el for el in mesh_axis_names if el not in ("model", "pipeline")
         )

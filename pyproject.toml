@@ -83,7 +83,10 @@ dev = [
 gcp = [
     "cloud-tpu-client",  # for creating and managing TPUs.
     "crcmod",  # for file uploads.
-    "kubernetes",
+    # kubernetes==32.0.0 will cause "kube_config.py:520] Object of type ConfigNode is not JSON serializable" error
+    # when loading kube config, hence failing kubernetes client authentication.
+    # See also https://github.com/kubernetes-client/python/issues/2333
+    "kubernetes==31.0.0",
     "google-api-core==2.17.1",
     "google-api-python-client==2.109.0",
     "google-auth==2.29.0",

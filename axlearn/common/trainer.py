@@ -118,6 +118,7 @@ class SpmdTrainer(Module):
         # The mesh axis names. The names can be referenced in ParameterSpec.mesh_axes.
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
+        # TODO(markblee): Deprecate this field in favor of `input.input_partitioner`.
         batch_axis_names: Union[str, Sequence[str]] = "data"
 
         # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
@@ -988,7 +989,7 @@ class SpmdTrainer(Module):
             RuntimeError: If `with_xsc` is requested on heterogenous device kinds.
         """
         if (
-            not (self.config.cache_compiled_train_step is False)
+            self.config.cache_compiled_train_step is not False
             and not with_xsc
             and self._compiled_train_step is not None
         ):

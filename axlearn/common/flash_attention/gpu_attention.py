@@ -35,9 +35,11 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_attention
+from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
 
 from axlearn.common.attention import NEG_INF
+from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 
 Tensor = jax.Array
@@ -198,24 +200,50 @@ def _mha_forward_kernel(
     o_ref[...] = o.astype(o_ref.dtype)
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
-@functools.partial(
-    jax.jit,
-    static_argnames=[
-        "softmax_scale",
-        "causal",
-        "block_q",
-        "block_k",
-        "num_warps",
-        "num_stages",
-        "grid",
-        "interpret",
-        "debug",
-        "dropout_rate",
-        "output_activations",
-    ],
-)
+# pylint: disable=unused-argument
+@functools.partial(jax.custom_vjp, nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
 def flash_attention(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    bias: Optional[Tensor] = None,
+    segment_ids: Optional[Tensor] = None,
+    prng_key: Optional[Tensor] = None,
+    softmax_scale: float = 1.0,
+    causal: bool = False,
+    dropout_rate: float = 0.0,
+    block_q: int = 128,
+    block_k: int = 128,
+    num_warps: Optional[int] = None,
+    num_stages: Optional[int] = None,
+    grid: Optional[Sequence[int]] = None,
+    interpret: bool = False,
+    debug: bool = False,
+):
+    """Computes attention outputs following FlashAttention.
+
+    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
+
+    Args:
+        query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
+        key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
+        value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
+        bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
+        segment_ids: Optional segment ids of shape [batch_size, target_length].
+        prng_key: PRNG key used for dropout. Must be specified when dropout_rate > 0.0.
+        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
+        causal: Whether to apply causal mask.
+        dropout_rate: Dropout rate. Default to 0.0 (no dropout).
+        **kwargs: Pallas/triton kwargs.
+
+    Returns:
+        The attention output tensor of shape [batch_size, target_length, num_heads, per_head_dim].
+    """
+    return _flash_attention_impl(**locals())
+
+
+# pylint: enable=unused-argument
+def _flash_attention_impl(
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -235,25 +263,16 @@ def flash_attention(
     # output_activations has to be the last arg for custom vjp to work.
     output_activations: bool = False,
 ):
-    """Computes attention outputs following FlashAttention.
-
-    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
+    """Computes flash forward and residuals if output_activations is True.
 
     Args:
-        query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
-        key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
-        value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
-        bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
-        segment_ids: Optional segment ids of shape [batch_size, target_length].
-        prng_key: PRNG key used for dropout. Must be specified when dropout_rate > 0.0.
-        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
-        causal: Whether to apply causal mask.
-        dropout_rate: Dropout rate. Default to 0.0 (no dropout).
-        output_activations: Whether to output activations for backward. Default to False.
-        **kwargs: Pallas/triton kwargs.
+        See `flash_attention`
 
     Returns:
-        The attention outputs of shape [batch_size, target_length, num_heads, per_head_dim].
+        If output_activations is False:
+            Tensor of shape [batch_size, target_length, num_heads, per_head_dim]
+        If output_activations is True:
+            (Tensor of shape [batch_size, target_length, num_heads, per_head_dim], (residuals, ...))
     """
     batch_size, q_seq_len, num_heads, head_dim = query.shape
     kv_seq_len = key.shape[1]
@@ -338,13 +357,15 @@ def flash_attention(
     )(query, key, value, bias, segment_ids, dropout_mask)
     if output_activations:
         out, lse = pallas_out
+        out = checkpoint_name(out, f"gpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
+        lse = checkpoint_name(lse, f"gpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
         return out, (query, key, value, bias, segment_ids, prng_key, out, lse)
     return pallas_out
 
 
 def _mha_forward(*args: Any):
     """Wraps flash_attention for custom vjp."""
-    return flash_attention(*args[:-1], output_activations=True)
+    return _flash_attention_impl(*args, output_activations=True)
 
 
 def _mha_backward_kernel_dkdv(
@@ -542,7 +563,6 @@ def _mha_backward(
     grid: Any,
     interpret: bool,
     debug: bool,
-    output_activations: bool,
     res,
     do,
 ):
@@ -553,7 +573,7 @@ def _mha_backward(
     for dQ is the fastest solution, but pallas atomics are extremely slow according to empirical
     testing.
     """
-    del num_warps, grid, output_activations
+    del num_warps, grid
     q, k, v, bias, segment_ids, prng_key, out, lse = res
     # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
     if jnp.float32 in (q.dtype, k.dtype, v.dtype, jnp.bfloat16 if bias is None else bias.dtype):

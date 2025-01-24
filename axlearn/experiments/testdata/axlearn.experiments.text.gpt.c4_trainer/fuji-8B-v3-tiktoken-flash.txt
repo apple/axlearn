@@ -31,8 +31,8 @@ evalers['train'].input.source.max_sequence_length: 8192
 evalers['train'].input.source.replace_newlines_with: '\n'
 evalers['train'].input.source.split: 'train[:8192]'
 evalers['train'].input.source.train_shuffle_buffer_size: 16384
-evalers['train'].input.source.vocab_cfg.fn: 'axlearn.experiments.text.common.vocab'
-evalers['train'].input.source.vocab_cfg.sentencepiece_model_name: 'bpe_128k_c4.model'
+evalers['train'].input.source.vocab_cfg.filename: 'Llama-3-tokenizer.json'
+evalers['train'].input.source.vocab_cfg.klass: 'axlearn.experiments.text.gpt.vocabulary_fuji_v3.FujiV3Vocabulary'
 evalers['train'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['train'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['train'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -58,8 +58,8 @@ evalers['validation'].input.source.max_sequence_length: 8192
 evalers['validation'].input.source.replace_newlines_with: '\n'
 evalers['validation'].input.source.split: 'validation'
 evalers['validation'].input.source.train_shuffle_buffer_size: 16384
-evalers['validation'].input.source.vocab_cfg.fn: 'axlearn.experiments.text.common.vocab'
-evalers['validation'].input.source.vocab_cfg.sentencepiece_model_name: 'bpe_128k_c4.model'
+evalers['validation'].input.source.vocab_cfg.filename: 'Llama-3-tokenizer.json'
+evalers['validation'].input.source.vocab_cfg.klass: 'axlearn.experiments.text.gpt.vocabulary_fuji_v3.FujiV3Vocabulary'
 evalers['validation'].klass: 'axlearn.common.evaler.SpmdEvaler'
 evalers['validation'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccumulator'
 evalers['validation'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -70,6 +70,14 @@ input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 input.batcher.global_batch_size: 2048
 input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 input.batcher.prefetch_buffer_size: -1
+input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
+input.input_partitioner.path_rank_to_partition[(None, 1)][0][0]: 'data'
+input.input_partitioner.path_rank_to_partition[(None, 1)][0][1]: 'expert'
+input.input_partitioner.path_rank_to_partition[(None, 1)][0][2]: 'fsdp'
+input.input_partitioner.path_rank_to_partition[(None, 2)][0][0]: 'data'
+input.input_partitioner.path_rank_to_partition[(None, 2)][0][1]: 'expert'
+input.input_partitioner.path_rank_to_partition[(None, 2)][0][2]: 'fsdp'
+input.input_partitioner.path_rank_to_partition[(None, 2)][1]: 'seq'
 input.is_training: True
 input.klass: 'axlearn.common.input_tf_data.Input'
 input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -85,8 +93,8 @@ input.source.preprocessor.max_padding_fraction: 0.5
 input.source.preprocessor.shuffle_buffer_size: 8192
 input.source.preprocessor.window_size: 128
 input.source.replace_newlines_with: '<n>'
-input.source.vocab_cfg.fn: 'axlearn.experiments.text.common.vocab'
-input.source.vocab_cfg.sentencepiece_model_name: 'bpe_128k_c4.model'
+input.source.vocab_cfg.filename: 'Llama-3-tokenizer.json'
+input.source.vocab_cfg.klass: 'axlearn.experiments.text.gpt.vocabulary_fuji_v3.FujiV3Vocabulary'
 klass: 'axlearn.common.trainer.SpmdTrainer'
 learner.ema.fn: 'axlearn.common.optimizers.param_ema'
 learner.enable_per_variable_summaries: False
@@ -171,7 +179,7 @@ mesh_rules[4][1][2]: 1
 mesh_rules[4][1][3]: 8
 mesh_rules[4][1][4]: 1
 mesh_rules[4][1][5]: 1
-mesh_rules[5][0]: 'gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)'
+mesh_rules[5][0]: 'gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)'
 mesh_rules[5][1][0]: 1
 mesh_rules[5][1][1]: -1
 mesh_rules[5][1][2]: 1
@@ -184,9 +192,7 @@ mesh_shape[2]: 1
 mesh_shape[3]: 8
 mesh_shape[4]: 1
 mesh_shape[5]: 1
-model.batch_axis_names[0]: 'data'
-model.batch_axis_names[1]: 'expert'
-model.batch_axis_names[2]: 'fsdp'
+model.batch_axis_names: None
 model.decoder.attention_mask: None
 model.decoder.decoding.klass: 'axlearn.common.decoder.DecodingLayer'
 model.decoder.dim: 4096
@@ -201,7 +207,7 @@ model.decoder.emb.token_emb.param_init.init_by_param_name['.*weight$'].scale: 1.
 model.decoder.emb.token_emb.param_init.klass: 'axlearn.common.param_init.DefaultInitializer'
 model.decoder.emb.token_emb.param_partition_spec[0]: None
 model.decoder.emb.token_emb.param_partition_spec[1]: 'model'
-model.decoder.eos_token_id: 1
+model.decoder.eos_token_id: 128001
 model.decoder.klass: 'axlearn.common.decoder.Decoder'
 model.decoder.lm_head.klass: 'axlearn.common.decoder.LmHead'
 model.decoder.lm_head.param_partition_spec[0]: None
@@ -215,7 +221,7 @@ model.decoder.output_dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.output_norm.eps: 1e-05
 model.decoder.output_norm.forward_dtype: None
 model.decoder.output_norm.klass: 'axlearn.common.layers.RMSNorm'
-model.decoder.pad_token_id: 0
+model.decoder.pad_token_id: 128004
 model.decoder.transformer.klass: 'axlearn.common.attention.RepeatedTransformerLayer'
 model.decoder.transformer.layer.feed_forward.activation[0]: 'nn.silu'
 model.decoder.transformer.layer.feed_forward.activation[1]: 'linear'
@@ -336,13 +342,14 @@ model.decoder.transformer.repeat.klass: 'axlearn.common.attention._TransformerRe
 model.decoder.vocab_size: 128256
 model.dtype: 'jax.numpy.float32'
 model.klass: 'axlearn.common.causal_lm.Model'
+model.metrics.klass: 'axlearn.common.causal_lm.CompositeLossMetrics'
+model.metrics.metrics['lm'].klass: 'axlearn.common.causal_lm.CrossEntropyLossMetrics'
+model.metrics.metrics['aux'].klass: 'axlearn.common.causal_lm.AuxLossMetrics'
 model.param_init.init_by_param_name['.*weight$'].distribution: 'normal'
 model.param_init.init_by_param_name['.*weight$'].fan: 'fan_in'
 model.param_init.init_by_param_name['.*weight$'].klass: 'axlearn.common.param_init.WeightInitializer'
 model.param_init.init_by_param_name['.*weight$'].scale: 1.0
 model.param_init.klass: 'axlearn.common.param_init.DefaultInitializer'
-model.seq_axis_names[0]: 'seq'
-model.z_loss_scale: 0.0
 name: 'gpt_trainer'
 prune_empty_state_updates: True
 save_input_iterator: False
