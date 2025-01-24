@@ -1238,9 +1238,14 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
             Rotary Positional Embedding. Shape is [seq_len, dim].
 
         Raises:
-            ValueError: If positions is None and max_seq_len is None.
+            ValueError: If positions is None and max_seq_len is None, or they both exist
+                but do not match.
         """
         cfg = self.config
+        if positions is not None and max_seq_len is not None:
+            if max_seq_len != positions.shape[-1]:
+                raise ValueError("Both `positions` and `max_seq_len` are provided and they "
+                                 "do not match. You only need to provide one of them.")
         if positions is None:
             if max_seq_len is None:
                 raise ValueError(
