@@ -1262,17 +1262,17 @@ def register_per_param_settings(
     return settings
 
 
-def _reshape_mesh_to_rings(a: np.ndarray, *, strategy: tuple[int, int]) -> np.ndarray:
+def _reshape_mesh_to_rings(a: np.ndarray, *, shape: tuple[int, int]) -> np.ndarray:
     """Reshapes device mesh to rings for 64x4 or 32x8 mesh shape.
 
     Adapted from maxtext. Reference:
     https://github.com/AI-Hypercomputer/maxtext/blob/7f0dcef34f4857476d19b4ca9ceada654246c0b0/MaxText/max_utils.py#L474.
 
-    These strategies are valid on v5e and v6e on which 64x4 and 32x8 are non-native mesh sizes
-    and require careful arrangement of devices to achieve good performance.
+    64x4 and 32x8 are non-native mesh sizes on v6e and v5e and require careful arrangement of
+    devices to achieve good performance.
     """
     b = []
-    if strategy == (64, 4):
+    if shape == (64, 4):
         for i in range(8):
             b.append([])
             for j in range(8):
@@ -1280,7 +1280,7 @@ def _reshape_mesh_to_rings(a: np.ndarray, *, strategy: tuple[int, int]) -> np.nd
                 a_j = j * 2
                 # Forms a ring of size 4.
                 b[i].append([a[a_i, a_j], a[a_i, a_j + 1], a[a_i + 1, a_j + 1], a[a_i + 1, a_j]])
-    elif strategy == (32, 8):
+    elif shape == (32, 8):
         for i in range(8):
             b.append([])
             for j in range(4):
@@ -1300,12 +1300,14 @@ def _reshape_mesh_to_rings(a: np.ndarray, *, strategy: tuple[int, int]) -> np.nd
                     ]
                 )
     else:
-        raise ValueError(f"The strategy {strategy} to reshape the mesh is not implemented.")
-    return np.reshape(np.array(b), strategy)
+        raise ValueError(f"The target mesh shape {shape} is not implemented.")
+    return np.reshape(np.array(b), shape)
 
 
-def _maybe_get_special_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> tuple[int, int]:
-    """Checks if any of the custom mesh strategies are applicable."""
+def _maybe_get_special_mesh(
+    mesh_shape: MeshShape, *, devices: np.ndarray
+) -> Optional[tuple[int, int]]:
+    """Checks if any of the custom mesh shapes are applicable."""
     if int(np.prod(mesh_shape)) != 256:
         return None
     if getattr(devices[0], "device_kind", None) not in [
@@ -1316,12 +1318,13 @@ def _maybe_get_special_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> tu
     ]:
         return None
 
-    valid_strategies = [(64, 4), (32, 8)]
-    for strategy in valid_strategies:
-        filtered_mesh = set(mesh_shape)
-        filtered_mesh.remove(1)
-        if tuple(filtered_mesh) == strategy:
-            return strategy
+    filtered_mesh = set(mesh_shape)
+    filtered_mesh.remove(1)
+    filtered_mesh = tuple(filtered_mesh)
+    target_shapes = [(64, 4), (32, 8)]
+    for shape in target_shapes:
+        if filtered_mesh == shape:
+            return shape
     return None
 
 
@@ -1329,9 +1332,9 @@ def build_standard_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> np.nda
     logging.info("Building device mesh.")
     mesh_shape = infer_mesh_shape(mesh_shape, num_devices=devices.size)
     try:
-        if (strategy := _maybe_get_special_mesh(mesh_shape, devices=devices)) is not None:
+        if (shape := _maybe_get_special_mesh(mesh_shape, devices=devices)) is not None:
             mesh = mesh_utils.create_device_mesh([16, 16], devices=devices)
-            mesh = _reshape_mesh_to_rings(mesh, strategy=strategy)
+            mesh = _reshape_mesh_to_rings(mesh, shape=shape)
             mesh = mesh.reshape(mesh_shape)
             logging.log_first_n(logging.INFO, "Using custom mesh: %s", 1, str(mesh))
             return mesh
