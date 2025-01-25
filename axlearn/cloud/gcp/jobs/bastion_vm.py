@@ -21,7 +21,7 @@ Examples:
     # Notes:
     #  - Only docker bundler_type is supported.
     #  - We assume the image is tagged with the same name as the bastion.
-    #  - Unless configured in the settings, the default bastion name is <zone>-shared-bastion.
+    #  - Unless configured in the settings, the default bastion name is <env_id>-shared-bastion.
     #
     axlearn gcp bastion create --name=shared-bastion
 
@@ -134,7 +134,7 @@ from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.uploader import Uploader, with_interval
 from axlearn.cloud.common.utils import configure_logging, parse_action
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import CPUJob, docker_command
 from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
@@ -153,6 +153,7 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
     bastion_job_flags(flag_values=flag_values)
     flag_values.set_default("project", default_project())
     flag_values.set_default("zone", default_zone())
+    flag_values.set_default("env_id", default_env_id())
 
     flags.DEFINE_string(
         "vm_type", "n2-highmem-128", "Machine spec to boot for VM.", flag_values=flag_values
@@ -208,15 +209,15 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
 def shared_bastion_name(
     fv: Optional[flags.FlagValues], gcp_api: Optional[str] = None
 ) -> Optional[str]:
-    # The zone-namespacing is necessary because of quirks with compute API. Specifically, even if
+    # The env_id-namespacing is necessary because of quirks with compute API. Specifically, even if
     # creating VMs within a specific zone, names are global. On the other hand, the list API only
     # returns VMs within a zone, so there's no easy way to check if a shared bastion already exists
     # in another zone.
-    zone = gcp_settings("zone", fv=fv)
+    env_id = gcp_settings("env_id", fv=fv)
     if gcp_api is not None and gcp_api.lower() == GCPAPI.GKE.lower():
-        default = f"{zone}-gke-bastion"
+        default = f"{env_id}-gke-bastion"
     else:
-        default = f"{zone}-shared-bastion"
+        default = f"{env_id}-shared-bastion"
     bastion_name = gcp_settings(  # pytype: disable=bad-return-type
         "bastion_name",
         default=default,
@@ -320,7 +321,7 @@ class RemoteBastionJob(CPUJob):
         # flagfile, and reading that.
         run_cmd = docker_command(
             f"python3 -m axlearn.cloud.gcp.jobs.bastion_vm --name={cfg.name} "
-            f"--project={cfg.project} --zone={cfg.zone} start 2>&1 | {output_cmd}",
+            f"--project={cfg.project} --env_id={cfg.env_id} start 2>&1 | {output_cmd}",
             image=image,
             volumes={"/var/tmp": "/var/tmp"},
             detached_session=cfg.name,

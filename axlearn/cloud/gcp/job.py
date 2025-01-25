@@ -31,7 +31,7 @@ from axlearn.cloud.common.bastion import (
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import (
@@ -76,6 +76,8 @@ class GCPJob(Job):
         project: Required[str] = REQUIRED
         # GCP zone.
         zone: Required[str] = REQUIRED
+        # GCP env_id.
+        env_id: Optional[str] = None
         # If not none, the current job will be executed as the service account.
         service_account: Optional[str] = None
 
@@ -85,6 +87,12 @@ class GCPJob(Job):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("project", default_project(), "The GCP project name.", **common_kwargs)
         flags.DEFINE_string("zone", default_zone(), "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string(
+            "env_id",
+            default_env_id(),
+            "The env_id, used along with project to identify gcp settings",
+            **common_kwargs,
+        )
         flags.DEFINE_string(
             "service_account",
             None,
