@@ -489,7 +489,7 @@ class ModelAuxLossTest(TestCase):
             aux_loss_regex=aux_loss_regex,
             use_aux_layer=use_aux_layer,
         )
-        model = model_cfg.instantiate(parent=None)
+        model: causal_lm.Model = model_cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
 
@@ -502,13 +502,26 @@ class ModelAuxLossTest(TestCase):
         input_batch = dict(input_ids=input_ids, target_labels=target_labels)
 
         # Ensure that forward outputs are consistent with metrics output.
-        # NOTE: invoking _metrics directly can give different outputs due to missing aux loss from
-        # module outputs in the invocation context.
         common_kwargs = dict(module=model, prng_key=prng_key, state=model_params, is_training=True)
-        (loss, aux), _ = functional(
+        (loss, aux), output_collection = functional(
             **common_kwargs,
             inputs=dict(input_batch=input_batch, return_aux=True),
+            drop_output_collections=(),
         )
+        oc = new_output_collection()
+        oc.module_outputs.update(output_collection.module_outputs)
+        metrics_fn = InvocationContext(
+            name="metrics", parent=None, output_collection=oc, **common_kwargs
+        ).functional(
+            model._metrics  # pylint: disable=protected-access
+        )
+        (ref_loss, metrics), _ = metrics_fn(
+            input_batch=dict(target_labels=target_labels),
+            predict_outputs=dict(logits=aux["logits"]),
+        )
+        self.assertAlmostEqual(loss, ref_loss)
+        self.assertNestedAllClose(aux["metrics"], metrics)
+
         # `aux_loss` is only collected when `aux_loss_regex` is set.
         if aux_loss_regex is not None:
             self.assertIn("aux_loss", aux["metrics"])

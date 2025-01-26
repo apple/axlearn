@@ -63,7 +63,11 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
         z_loss_scale: Optional[float] = None
 
     def forward(
-        self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
+        self,
+        input_batch: Nested[Tensor],
+        *,
+        predict_outputs: Nested[Tensor],
+        module_outputs: Nested[Tensor],
     ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes cross entropy loss.
 
@@ -73,6 +77,7 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
                     the loss calculation.
             predict_outputs: A dict containing at minimum:
                 logits: A float Tensor of shape [..., num_classes].
+            module_outputs: Unused.
 
         Returns:
             A tuple (loss, metrics):
@@ -86,6 +91,7 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
                         ignored targets.
                     num_targets: A scalar int Tensor corresponding to number of live targets.
         """
+        del module_outputs
         validate_contains_paths(input_batch, paths=["target_labels"])
         validate_contains_paths(predict_outputs, paths=["logits"])
 
@@ -154,7 +160,11 @@ class AuxLossMetrics(BaseLossMetrics):
         aux_loss_regex: Optional[str] = None
 
     def forward(
-        self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
+        self,
+        input_batch: Nested[Tensor],
+        *,
+        predict_outputs: Nested[Tensor],
+        module_outputs: Nested[Tensor],
     ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes aux loss by aggregating module outputs from all layers.
 
@@ -163,6 +173,8 @@ class AuxLossMetrics(BaseLossMetrics):
                 target_labels: An int Tensor of any shape. Negative targets do not contribute to
                     the loss calculation.
             predict_outputs: Unused.
+            module_outputs: A nested Tensor consisting of outputs added via `add_module_output`.
+                Paths within `module_outputs` will be full-matched against `aux_loss_regex`.
 
         Returns:
             A tuple (loss, metrics):
@@ -170,6 +182,8 @@ class AuxLossMetrics(BaseLossMetrics):
                 metrics: A dict containing:
                     aux_loss: Same as loss.
         """
+        del predict_outputs
+
         cfg: AuxLossMetrics.Config = self.config
         regex = cfg.aux_loss_regex
 
@@ -177,30 +191,19 @@ class AuxLossMetrics(BaseLossMetrics):
             return 0.0, {}
 
         validate_contains_paths(input_batch, paths=["target_labels"])
-        del predict_outputs
         target_labels: Tensor = input_batch["target_labels"]
         live_targets = target_labels >= 0
         num_targets = live_targets.sum()
 
-        # Collect aux_loss from all leaves in the invocation hierarchy, not just current ctx.
-        ctx = self.get_invocation_context()
-        while ctx.parent:
-            # TODO(markblee): Fix learner dropping module outputs in forward.
-            if isinstance(ctx.module, BaseModel):
-                break
-            ctx = ctx.parent
-        module_outputs = ctx.get_module_outputs()
-
-        logging.info("Context: %s Module outputs: %s", ctx, jax.tree_structure(module_outputs))
+        logging.info("Module outputs: %s", jax.tree_structure(module_outputs))
         accumulation = []
-        for k, _ in flatten_items(module_outputs):
+        for k, v in flatten_items(module_outputs):
             if re.fullmatch(regex, k):
                 logging.info("Aux loss found at %s", k)
+                accumulation.append(v.mean())
             else:
                 logging.info("Aux loss not found at %s", k)
-        accumulation = list(
-            v.mean() for k, v in flatten_items(module_outputs) if re.fullmatch(regex, k)
-        )
+
         if accumulation:
             aux_loss = sum(accumulation) / len(accumulation)
         else:
@@ -228,7 +231,11 @@ class CompositeLossMetrics(BaseLossMetrics):
             self._metrics[name] = self._add_child(name, child)
 
     def forward(
-        self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
+        self,
+        input_batch: Nested[Tensor],
+        *,
+        predict_outputs: Nested[Tensor],
+        module_outputs: Nested[Tensor],
     ) -> tuple[Tensor, Nested[Tensor]]:
         """Combines losses and metrics from the configured children.
 
@@ -247,7 +254,9 @@ class CompositeLossMetrics(BaseLossMetrics):
             oc = new_output_collection()
             with child_context(name, output_collection=oc):
                 child_loss, child_metrics = child.forward(
-                    input_batch=input_batch, predict_outputs=predict_outputs
+                    input_batch=input_batch,
+                    predict_outputs=predict_outputs,
+                    module_outputs=module_outputs,
                 )
             summaries = self.get_invocation_context().output_collection.summaries
             loss = loss + child_loss
@@ -503,14 +512,16 @@ class Model(BaseModel):
         # Map padding targets to out-of-class label for metrics calculation.
         target_labels = jnp.where(target_labels == cfg.decoder.pad_token_id, -1, target_labels)
 
+        ctx = self.get_invocation_context()
         oc = new_output_collection()
         with child_context("metrics", output_collection=oc):
             loss, metrics = self.metrics.forward(
                 input_batch={**input_batch, "target_labels": target_labels},
                 predict_outputs=predict_outputs,
+                module_outputs=ctx.get_module_outputs(),
             )
         # Accumulate summaries.
-        self.get_invocation_context().output_collection.update(oc)
+        ctx.output_collection.update(oc)
 
         return loss, metrics
 
