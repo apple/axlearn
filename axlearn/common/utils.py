@@ -1265,7 +1265,7 @@ def register_per_param_settings(
 def _reshape_mesh_to_rings(a: np.ndarray, *, shape: tuple[int, int]) -> np.ndarray:
     """Reshapes device mesh to rings for 64x4 or 32x8 mesh shape.
 
-    Adapted from maxtext. Reference:
+    Adapted from maxtext and made some code simplifications. Reference:
     https://github.com/AI-Hypercomputer/maxtext/blob/7f0dcef34f4857476d19b4ca9ceada654246c0b0/MaxText/max_utils.py#L474.
 
     64x4 and 32x8 are non-native mesh sizes on v6e and v5e and require careful arrangement of
@@ -1307,7 +1307,7 @@ def _reshape_mesh_to_rings(a: np.ndarray, *, shape: tuple[int, int]) -> np.ndarr
 def _maybe_get_special_mesh(
     mesh_shape: MeshShape, *, devices: np.ndarray
 ) -> Optional[tuple[int, int]]:
-    """Checks if any of the custom mesh shapes are applicable."""
+    """Checks if any of the special mesh shapes are applicable."""
     if int(np.prod(mesh_shape)) != 256:
         return None
     if getattr(devices[0], "device_kind", None) not in [
@@ -1318,14 +1318,9 @@ def _maybe_get_special_mesh(
     ]:
         return None
 
-    filtered_mesh = set(mesh_shape)
-    filtered_mesh.remove(1)
-    filtered_mesh = tuple(filtered_mesh)
+    filtered_mesh = tuple(filter(lambda x: x != 1, mesh_shape))
     target_shapes = [(64, 4), (32, 8)]
-    for shape in target_shapes:
-        if filtered_mesh == shape:
-            return shape
-    return None
+    return None if filtered_mesh not in target_shapes else filtered_mesh
 
 
 def build_standard_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> np.ndarray:
@@ -1333,6 +1328,7 @@ def build_standard_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> np.nda
     mesh_shape = infer_mesh_shape(mesh_shape, num_devices=devices.size)
     try:
         if (shape := _maybe_get_special_mesh(mesh_shape, devices=devices)) is not None:
+            # If any of the special mesh shapes is applicable, use them.
             mesh = mesh_utils.create_device_mesh([16, 16], devices=devices)
             mesh = _reshape_mesh_to_rings(mesh, shape=shape)
             mesh = mesh.reshape(mesh_shape)
