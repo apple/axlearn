@@ -6,6 +6,7 @@ import math
 import re
 from typing import Callable, Optional, Union
 
+import jax
 from absl import logging
 from jax import numpy as jnp
 from jax._src.mesh import thread_resources
@@ -184,15 +185,26 @@ class AuxLossMetrics(BaseLossMetrics):
         # Collect aux_loss from all leaves in the invocation hierarchy, not just current ctx.
         ctx = self.get_invocation_context()
         while ctx.parent:
+            # TODO(markblee): Fix learner dropping module outputs in forward.
+            if isinstance(ctx.module, BaseModel):
+                break
             ctx = ctx.parent
         module_outputs = ctx.get_module_outputs()
 
+        logging.info("Context: %s Module outputs: %s", ctx, jax.tree_structure(module_outputs))
+        accumulation = []
+        for k, _ in flatten_items(module_outputs):
+            if re.fullmatch(regex, k):
+                logging.info("Aux loss found at %s", k)
+            else:
+                logging.info("Aux loss not found at %s", k)
         accumulation = list(
             v.mean() for k, v in flatten_items(module_outputs) if re.fullmatch(regex, k)
         )
         if accumulation:
             aux_loss = sum(accumulation) / len(accumulation)
         else:
+            logging.warning("Aux loss not found: %s", cfg.aux_loss_regex)
             aux_loss = 0.0
 
         self.add_summary("aux_loss", WeightedScalar(aux_loss, num_targets))
