@@ -214,6 +214,13 @@ class AuxLossMetrics(BaseLossMetrics):
         return aux_loss, {"aux_loss": aux_loss}
 
 
+def _update(x: dict, updates: dict):
+    """Equivalent to `x.update(updates)` but raises upon key conflicts."""
+    if not x.keys().isdisjoint(updates.keys()):
+        raise KeyError(f"Key conflict: {set(x.keys()).intersection(updates)}")
+    x.update(updates)
+
+
 class CompositeLossMetrics(BaseLossMetrics):
     """Computes a composite loss from multiple child metrics."""
 
@@ -245,11 +252,6 @@ class CompositeLossMetrics(BaseLossMetrics):
         loss = 0
         metrics = {}
 
-        def update(x: dict, updates: dict):
-            if not x.keys().isdisjoint(updates.keys()):
-                raise KeyError(f"Key conflict: {set(x.keys()).intersection(updates)}")
-            x.update(updates)
-
         for name, child in self._metrics.items():
             oc = new_output_collection()
             with child_context(name, output_collection=oc):
@@ -258,11 +260,13 @@ class CompositeLossMetrics(BaseLossMetrics):
                     predict_outputs=predict_outputs,
                     module_outputs=module_outputs,
                 )
-            summaries = self.get_invocation_context().output_collection.summaries
             loss = loss + child_loss
 
-            update(summaries, oc.summaries)
-            update(metrics, child_metrics)
+            ctx = self.get_invocation_context()
+            _update(ctx.output_collection.summaries, oc.summaries)
+            _update(ctx.output_collection.module_outputs, oc.module_outputs)
+            _update(ctx.output_collection.state_updates, oc.state_updates)
+            _update(metrics, child_metrics)
 
         return loss, metrics
 
@@ -520,8 +524,10 @@ class Model(BaseModel):
                 predict_outputs=predict_outputs,
                 module_outputs=ctx.get_module_outputs(),
             )
-        # Accumulate summaries.
-        ctx.output_collection.update(oc)
+        # Accumulate outputs.
+        _update(ctx.output_collection.summaries, oc.summaries)
+        _update(ctx.output_collection.module_outputs, oc.module_outputs)
+        _update(ctx.output_collection.state_updates, oc.state_updates)
 
         return loss, metrics
 
