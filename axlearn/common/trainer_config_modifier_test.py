@@ -144,7 +144,7 @@ class PartitionSpecModifierTest(test_utils.TestCase):
             )
             .instantiate()
         )
-        with self.assertRaisesRegex(ValueError, ".*does not have unknown_partition_spec attribute"):
+        with self.assertRaisesRegex(ValueError, "unknown_partition_spec is not found in.*"):
             _ = cfg_modifier(cfg)
 
 

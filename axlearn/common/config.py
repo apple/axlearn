@@ -70,7 +70,7 @@ import types
 from collections import defaultdict
 from collections.abc import Collection, Iterable
 from functools import cache
-from typing import Any, Callable, Generic, Optional, TypeVar, Union
+from typing import Any, Callable, Generic, Optional, Sequence, TypeVar, Union
 
 # attr provides similar features as Python dataclass. Unlike
 # dataclass, however, it provides a richer set of features to regulate
@@ -393,6 +393,54 @@ class ConfigBase:
         for k, v in kwargs.items():
             setattr(self, k, v)
         return self
+
+    def get_recursively(self, path: Sequence[str]) -> Any:
+        """Recursively find the target key in the config and return its value.
+
+        Args:
+            path: A sequence of keys for indexing to get the target value.
+
+        Raises:
+            ValueError: A key in path is not found or path is empty
+
+        Returns:
+            value at the path.
+        """
+        if not path:
+            raise ValueError("Path is empty.")
+
+        if path[0] not in self:
+            raise ValueError(f"{path[0]} is not found in {self}.")
+
+        child = getattr(self, path[0])
+
+        if len(path) == 1:
+            return child
+
+        return child.get_recursively(path[1:])
+
+    def set_recursively(self, path: Sequence[str], *, value: Any):
+        """Recursively find the target key in the config and set its value.
+
+        Args:
+            path: A sequence of keys for indexing to set the target value.
+            new_value: New value to replace the target value.
+
+        Raises:
+            ValueError: A key in path is not found or path is empty
+        """
+        if not path:
+            raise ValueError("Path is empty.")
+
+        if path[0] not in self:
+            raise ValueError(f"{path[0]} is not found in {self}.")
+
+        child = getattr(self, path[0])
+
+        if len(path) == 1:
+            return setattr(self, path[0], value)
+
+        return child.set_recursively(path[1:], value=value)
 
     def clone(self, **kwargs):
         """Returns a clone of the original config with the optional keyword overrides.
