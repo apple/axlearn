@@ -213,7 +213,8 @@ def shared_bastion_name(
     # creating VMs within a specific zone, names are global. On the other hand, the list API only
     # returns VMs within a zone, so there's no easy way to check if a shared bastion already exists
     # in another zone.
-    env_id = gcp_settings("env_id", fv=fv)
+    # If env_id is not set, fall back to "zone" for backwards compatibility.
+    env_id = gcp_settings("env_id", fv=fv, required=False) or gcp_settings("zone", fv=fv)
     if gcp_api is not None and gcp_api.lower() == GCPAPI.GKE.lower():
         default = f"{env_id}-gke-bastion"
     else:
