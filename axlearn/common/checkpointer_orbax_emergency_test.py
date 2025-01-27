@@ -96,7 +96,7 @@ def _test_orbax_main(process_id: int, port: int, persist_dir: str, local_dir: st
     cfg.local_save_policy = config_for_function(every_n_steps_policy).set(n=5)
     # Local checkpoint path suffix must be the same for orbax synchronization to work.
     cfg.local_dir = local_dir
-    cfg.unique_str = persist_dir
+    cfg.trainer_dir = persist_dir
     cfg.dir = persist_dir
     cfg.keep_last_n = 2
     cfg.replica_axis_index = 0
@@ -160,7 +160,7 @@ def _test_init_proc_id_main(
     if new_idx_map[process_id] != -1:
         _dump_process_info(
             local_ckpt_dir,
-            unique_str=trainer_dir,
+            trainer_dir=trainer_dir,
             proc_info=_ProcessInfo(distributed_coordinator, new_idx_map[process_id], process_id),
         )
 
@@ -228,7 +228,7 @@ class OrbaxCheckpointerTest(parameterized.TestCase):
                 self.assertEqual(p.exitcode, 0)
 
             infos = [
-                _get_previous_process_info(local_dir, unique_str="any")
+                _get_previous_process_info(local_dir, trainer_dir="any")
                 for local_dir in local_tempdirs
             ]
             for info in infos:
