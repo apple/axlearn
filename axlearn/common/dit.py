@@ -405,6 +405,7 @@ class DiTAttentionLayer(BaseLayer):
         shift: Optional[Tensor] = None,
         scale: Optional[Tensor] = None,
         gate: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
     ) -> Tensor:
         """The forward function of DiTAttentionLayer.
@@ -440,7 +441,9 @@ class DiTAttentionLayer(BaseLayer):
         if shift is not None and scale is not None:
             x = modulate(x=x, shift=shift, scale=scale)
 
-        x = self.attention(query=x, attention_logit_biases=attention_logit_biases).data
+        x = self.attention(
+            query=x, query_positions=query_positions, attention_logit_biases=attention_logit_biases
+        ).data
 
         if cfg.structure == "postnorm":
             x = self.norm(x)
