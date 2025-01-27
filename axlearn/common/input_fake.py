@@ -4,16 +4,19 @@
 
 import json
 from collections.abc import Iterable, Sequence
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import jax
 import numpy as np
 import tensorflow as tf
 
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.input_tf_data import BuildDatasetFn
 from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor, as_numpy_array, as_tensor
+
+if TYPE_CHECKING:
+    # TODO(markblee): replace with generic "dataset" definition
+    from axlearn.common.input_tf_data import BuildDatasetFn
 
 
 class EmptyInput(Module):
@@ -225,7 +228,7 @@ def fake_source(
     repeat: int = 1,
     spec: Optional[dict[str, tf.TypeSpec]] = None,
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     if len(examples) == 0:
         raise ValueError("examples cannot be empty")
 
@@ -257,7 +260,7 @@ def fake_text_source(
     is_training: bool,
     shuffle_buffer_size: Optional[int] = None,
     batch_size: int = 2,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     return fake_source(
         is_training=is_training,
         examples=[
@@ -271,7 +274,7 @@ def fake_text_source(
     )
 
 
-def fake_serialized_json_source(examples: Sequence[dict[str, Any]]) -> BuildDatasetFn:
+def fake_serialized_json_source(examples: Sequence[dict[str, Any]]) -> "BuildDatasetFn":
     """Returns a BuildDatasetFn that returns a dataset of jsonlines of examples.
 
     Args:
@@ -301,7 +304,7 @@ def fake_text2text_source(
     target_key: str = "target_text",
     is_training: bool,
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     return fake_source(
         is_training=is_training,
         examples=[
@@ -324,7 +327,7 @@ def fake_glue_source(
     num_examples: Optional[int] = None,
     shuffle_buffer_size: Optional[int] = None,
     spec: Optional[dict[str, tf.TypeSpec]] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     if isinstance(input_key, str):
         input_key = [input_key]
     if num_examples is None:
@@ -352,7 +355,7 @@ def fake_classification_source(
     is_training: bool,
     classes: Sequence[str],
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     num_classes = len(classes)
     return fake_source(
         is_training=is_training,
@@ -376,7 +379,7 @@ def fake_classification_source_instruct_lm(
     shuffle_buffer_size: Optional[int] = None,
     eoa_text: str = "<eoa>",
     eob_text: str = "<eob>",
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     """Returns a BuildDatasetFn containing fake classification examples in the InstructLM format.
 
     Args:
@@ -418,7 +421,7 @@ def fake_speech_source(
     num_examples: int = 100,
     speech_key: str = "speech",
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     """Fake speech data source.
 
     Args:

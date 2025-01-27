@@ -23,7 +23,7 @@ import tensorflow as tf
 from absl import flags, logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
-from jax._src import pjit as pjit_lib
+from jax._src.interpreters import pxla
 from jax.experimental import checkify
 
 from axlearn.common import (
@@ -520,9 +520,9 @@ class TrainerTest(test_utils.TestCase):
             trainer, "compile_train_step", side_effect=mock_compile_train_step
         ) as mocked_compile_fn:
             # pylint: disable=protected-access
-            start_cache_hits = pjit_lib._pjit_lower_cached.cache_info().hits
+            start_cache_hits = pxla._cached_lowering_to_hlo.cache_info().hits
             output_a = trainer.run(prng_key=jax.random.PRNGKey(123))
-            end_cache_hits = pjit_lib._pjit_lower_cached.cache_info().hits
+            end_cache_hits = pxla._cached_lowering_to_hlo.cache_info().hits
             # pylint: enable=protected-access
             if platform == "tpu":
                 if not enable_python_cache:
@@ -1160,7 +1160,7 @@ class CompatibilityTest(test_utils.TestCase):
                 cfg = self.config
                 if cfg.kind == "chex":
                     param = struct_test.Chex(
-                        field_d=jnp.array(0),
+                        field_d=jnp.array(4),
                         field_b=jnp.array(1),
                         field_a=jnp.array(2),
                         field_c=jnp.array(3),
