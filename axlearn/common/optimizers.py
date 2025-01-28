@@ -183,7 +183,9 @@ def trace_partition(
 def adam_partition(base: optax.GradientTransformation) -> PartitionedGradientTransformation:
     state: optax.ScaleByAdamState = base.init({})
 
-    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[OptStateSpec]:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, optax.ScaleByAdamState]]:
         return optax.ScaleByAdamState(
             count=OptStateSpec(
                 dtype=state.count.dtype, shape=state.count.shape, mesh_axes=PartitionSpec()
@@ -973,7 +975,7 @@ def ema(
         )
         return updates, new_state
 
-    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[OptStateSpec]:
+    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[Union[OptStateSpec, EmaState]]:
         def get_ema_partition(param_spec: ParameterSpec) -> OptStateSpec:
             # Store momentum in accumulator_dtype if it is set and p is not scalar.
             if param_spec.shape and accumulator_dtype is not None:
@@ -1435,7 +1437,9 @@ def skip_and_clip_by_global_norm(
             drop_stats=new_drop_stats,
         )
 
-    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[OptStateSpec]:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, SkipClipState]]:
         if use_adaptive_drop_norm:
             one = jnp.ones([], jnp.float32)
             dict_thresholds = drop_norm(count=one, mean=one, stddev=one)
@@ -1594,7 +1598,9 @@ def param_ema(
         )
         return updates, ParamEmaState(count=count_inc, ema=new_ema)
 
-    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[OptStateSpec]:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, ParamEmaState]]:
         return ParamEmaState(
             count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
             ema=copy_partition(param_specs),
@@ -1640,7 +1646,9 @@ def scale_by_lion(
         updates = jax.tree.map(lambda g, m: jnp.sign((1.0 - b1) * g + b1 * m), updates, state.mu)
         return updates, ScaleByLionState(count=count_inc, mu=mu)
 
-    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[OptStateSpec]:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, ScaleByLionState]]:
         mu_specs = param_specs
         if mu_dtype is not None:
             mu_specs = jax.tree.map(
