@@ -476,6 +476,129 @@ class ModelTest(TestCase):
                 hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
             )
 
+    def test_share_module_paths(self):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+
+        class DummyMetrics(BaseLossMetrics):
+            """Dummy layer that calls `get_shared_module`."""
+
+            def forward(self, **kwargs):
+                del kwargs
+                return 0, self.get_shared_module("emb").state
+
+        cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        cfg.shared_module_paths = {"emb": "decoder.emb"}
+        cfg.metrics = DummyMetrics.default_config()
+
+        model: causal_lm.Model = cfg.set(name="ref_model").instantiate(parent=None)
+
+        id_key, tgt_key, fwd_key, init_key = jax.random.split(jax.random.PRNGKey(0), num=4)
+        model_params = model.initialize_parameters_recursively(init_key)
+
+        shape = [batch_size, seq_len]
+        input_ids = jax.random.randint(id_key, shape=shape, minval=0, maxval=vocab_size)
+        target_labels = jax.random.randint(tgt_key, shape=shape, minval=-1, maxval=vocab_size)
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        # Ensure that forward outputs are consistent with metrics output.
+        (_, aux), _ = functional(
+            inputs=dict(input_batch=input_batch, return_aux=True),
+            module=model,
+            prng_key=fwd_key,
+            state=model_params,
+            is_training=True,
+        )
+        self.assertNestedAllClose(aux["metrics"], model_params["decoder"]["emb"])
+
+        # Fail if path is invalid.
+        with self.assertRaisesRegex(ValueError, "invalid.path"):
+            cfg.shared_module_paths = {"emb": "invalid.path"}
+            cfg.set(name="ref_model").instantiate(parent=None)
+
+
+class CrossEntropyLossMetricsTest(TestCase):
+    """Tests CrossEntropyLossMetrics."""
+
+    def test_live_targets(self):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+        tgt_key, logit_key, live_tgt_key = jax.random.split(jax.random.PRNGKey(0), num=3)
+        target_labels = jax.random.randint(
+            tgt_key, shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        logits = jax.random.uniform(logit_key, shape=[*target_labels.shape, vocab_size])
+        layer = (
+            causal_lm.CrossEntropyLossMetrics.default_config()
+            .set(name="test")
+            .instantiate(parent=None)
+        )
+
+        # Make sure at least one masked target.
+        assert jnp.any(target_labels == -1), target_labels
+
+        def forward(live_targets):
+            (loss, metrics), _ = functional(
+                layer,
+                prng_key=None,
+                state={},
+                inputs=dict(
+                    input_batch=dict(target_labels=target_labels, live_targets=live_targets),
+                    predict_outputs=dict(logits=logits),
+                    module_outputs={},
+                ),
+                is_training=True,
+            )
+            return loss, metrics
+
+        # Test without live_targets. Should be equivalent to target_labels >= 0.
+        test_loss, metrics = forward(live_targets=None)
+        ref_loss, _ = cross_entropy(logits, target_labels, live_targets=target_labels >= 0)
+        self.assertAlmostEqual(test_loss, ref_loss)
+        self.assertEqual(metrics["num_targets"], (target_labels >= 0).sum())
+
+        # Test with live_targets.
+        live_targets = jax.random.randint(
+            live_tgt_key, shape=target_labels.shape, minval=0, maxval=2
+        )
+        test_loss, metrics = forward(live_targets=live_targets)
+        ref_loss, _ = cross_entropy(logits, target_labels, live_targets=live_targets)
+        self.assertAlmostEqual(test_loss, ref_loss)
+        self.assertEqual(metrics["num_targets"], live_targets.sum())
+
+
+class CompositeLossMetricsTest(TestCase):
+    """Tests CompositeLossMetrics."""
+
+    def test_loss_weights(self):
+        class DummyMetrics(BaseLossMetrics):
+            def forward(self, input_batch, **kwargs):
+                del kwargs
+                return input_batch[self.name], {}
+
+        cfg = causal_lm.CompositeLossMetrics.default_config().set(
+            name="test",
+            metrics={
+                "test0": DummyMetrics.default_config(),
+                "test1": DummyMetrics.default_config(),
+            },
+        )
+
+        # Test mismatched keys.
+        with self.assertRaisesRegex(ValueError, "keys"):
+            cfg.set(loss_weights={"test0": 0.5}).instantiate(parent=None)
+
+        metrics = cfg.set(loss_weights={"test0": 0.5, "test1": 1.0}).instantiate(parent=None)
+
+        (loss, _), _ = functional(
+            metrics,
+            prng_key=jax.random.PRNGKey(123),
+            state={},
+            inputs=dict(
+                input_batch={"test0": 1.23, "test1": 3.45}, predict_outputs={}, module_outputs={}
+            ),
+            is_training=True,
+        )
+        self.assertAlmostEqual(loss, 1.23 * 0.5 + 3.45)
+
 
 class DummyFeedForwardWithAuxLoss(TransformerFeedForwardLayer):
     """A dummy FFN with aux loss."""

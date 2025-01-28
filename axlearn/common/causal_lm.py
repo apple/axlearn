@@ -99,9 +99,11 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
 
         target_labels: Tensor = input_batch["target_labels"]
         target_num_bytes: Optional[Tensor] = input_batch.get("target_num_bytes")
+        live_targets: Optional[Tensor] = input_batch.get("live_targets")
         logits = predict_outputs["logits"]
 
-        live_targets = target_labels >= 0
+        if live_targets is None:
+            live_targets = target_labels >= 0
         num_targets = live_targets.sum()
         accuracy = (
             jnp.equal(jnp.argmax(logits, axis=-1), target_labels) * live_targets
@@ -226,9 +228,15 @@ class CompositeLossMetrics(BaseLossMetrics):
 
     @config_class
     class Config(BaseLossMetrics.Config):
-        """Configures CompositeLossMetrics."""
+        """Configures CompositeLossMetrics.
+
+        Attributes:
+            metrics: A mapping from child name to metrics config.
+            loss_weights: An optional mapping from child name to loss weight.
+        """
 
         metrics: Required[dict[str, BaseLossMetrics.Config]] = REQUIRED
+        loss_weights: Optional[dict[str, float]] = None
 
     def __init__(self, cfg, *, parent):
         super().__init__(cfg, parent=parent)
@@ -236,6 +244,8 @@ class CompositeLossMetrics(BaseLossMetrics):
         self._metrics: dict[str, BaseLossMetrics] = {}
         for name, child in cfg.metrics.items():
             self._metrics[name] = self._add_child(name, child)
+        if cfg.loss_weights is not None and cfg.metrics.keys() != cfg.loss_weights.keys():
+            raise ValueError(f"Expected {cfg.loss_weights.keys()=} to match {cfg.metrics.keys()}.")
 
     def forward(
         self,
@@ -249,6 +259,7 @@ class CompositeLossMetrics(BaseLossMetrics):
         By default, losses are summed and metrics/summaries are flattened, raising if any keys
         conflict.
         """
+        cfg: CompositeLossMetrics.Config = self.config
         loss = 0
         metrics = {}
 
@@ -258,10 +269,14 @@ class CompositeLossMetrics(BaseLossMetrics):
                 predict_outputs=predict_outputs,
                 module_outputs=module_outputs,
             )
+            if cfg.loss_weights is not None:
+                child_loss *= cfg.loss_weights[name]
             loss = loss + child_loss
 
             ctx = self.get_invocation_context()
             # Flatten summaries for backwards compatibility.
+            # TODO(markblee): Avoid flattening summaries and metrics for compat with composite
+            # metrics of multiple metrics of the same kind.
             _update(ctx.output_collection.summaries, ctx.output_collection.summaries.pop(name))
             _update(metrics, child_metrics)
 
@@ -311,12 +326,23 @@ class Model(BaseModel):
         seq_axis_names: Optional[tuple[str]] = None
         # Configures training metrics.
         metrics: BaseLossMetrics.Config = metrics_config()
+        # An optional mapping from name to child path to share with descendants.
+        shared_module_paths: Optional[dict[str, str]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._add_child("decoder", cfg.decoder)
         self._add_child("metrics", cfg.metrics)
+
+        for name, path in (cfg.shared_module_paths or {}).items():
+            module = self
+            for part in path.split("."):
+                if part not in module.children:
+                    raise ValueError(f"Module {self.name} does not have a descendant at {path=}.")
+                module = module.children[part]
+
+            self._share_with_descendants(module, shared_module_name=name)
 
     @classmethod
     def default_config(cls):
