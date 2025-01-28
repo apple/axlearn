@@ -261,4 +261,5 @@ def mask_tree(tree: dict, *, keep: dict, mask_value: Any) -> dict:
         lambda should_keep, leaf: leaf if should_keep else mask_value,
         keep,
         tree,
+        is_leaf=lambda x: x is None,
     )

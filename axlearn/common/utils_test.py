@@ -9,6 +9,7 @@ import sys
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from typing import Any, NamedTuple, Optional, Union
+from unittest import mock
 
 # pylint: disable=no-self-use
 import jax
@@ -1553,11 +1554,32 @@ class DeviceMeshTest(TestCase):
             "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, -1, 16), dcn_mesh_shape=(-1, 1, 1)),
             "expected": (2, 16, 16),
         },
+        # Test a case when a special optimized mesh can be used.
+        {
+            "logical_mesh": HybridMeshShape(
+                ici_mesh_shape=(1, 64, 1, 4), dcn_mesh_shape=(-1, 1, 1, 1)
+            ),
+            "expected": (2, 64, 1, 4),
+            "is_custom": True,
+        },
+        # Test a case when a special optimized mesh can be used.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 64, 4), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (2, 64, 4),
+            "is_custom": True,
+        },
+        # Test a case when a special optimized mesh can be used.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 32, 8), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (2, 32, 8),
+            "is_custom": True,
+        },
     )
     def test_create_device_mesh_multi_slice_tpuv5e(
         self,
         logical_mesh: Union[MeshShape, HybridMeshShape],
         expected: Optional[Union[MeshShape, Exception]] = None,
+        is_custom: bool = False,
     ):
         slice_physical_mesh = (16, 16, 1)
         num_slices = 2
@@ -1570,7 +1592,7 @@ class DeviceMeshTest(TestCase):
         devices = [
             DummyMultiSliceTpuDevice(
                 platform="tpu",
-                device_kind="TPU v5litepod",
+                device_kind="TPU v5 lite",
                 process_index=(len(coords) * slice_index + ix) // 4,
                 coords=coord,
                 slice_index=slice_index,
@@ -1582,8 +1604,15 @@ class DeviceMeshTest(TestCase):
             with self.assertRaisesRegex(type(expected), str(expected)):
                 create_device_mesh(mesh_shape=logical_mesh, devices=devices)
         else:
+            # pylint: disable-next=protected-access
+            custom_mesh_fn = mock.Mock(wraps=utils._reshape_mesh_to_rings)
+            with mock.patch.object(utils, "_reshape_mesh_to_rings", custom_mesh_fn):
+                device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+            if is_custom:
+                self.assertEqual(custom_mesh_fn.call_count, num_slices)
+            else:
+                custom_mesh_fn.assert_not_called()
             # Check that the constructed mesh has the expected shape.
-            device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
             self.assertEqual(expected or logical_mesh, device_mesh.shape)
 
             # Check that the sub_mesh along the first non-singleton mesh axis only contains devices

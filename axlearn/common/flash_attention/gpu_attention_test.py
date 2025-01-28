@@ -28,7 +28,7 @@ from axlearn.common.flash_attention.gpu_decoding import NEG_INF, flash_decoding
 from axlearn.common.flash_attention.utils import _repeat_kv_heads, mha_reference
 from axlearn.common.test_utils import TestCase
 
-if jax.default_backend() != "gpu":
+if jax.default_backend() not in ("gpu", "cpu"):
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
 
@@ -69,6 +69,8 @@ def test_triton_fwd_only_against_ref(
         kv_seq_len = seq_len
     if kv_seq_len != seq_len and use_segment_ids:
         pytest.skip()
+    if jax.default_backend() == "cpu" and kv_seq_len > 128:
+        pytest.skip(reason="CI got OOM.")
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
     q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
     k = jax.random.normal(k2, (batch_size, kv_seq_len, num_heads, per_head_dim), dtype=input_dtype)
@@ -101,6 +103,7 @@ def test_triton_fwd_only_against_ref(
         causal=causal,
         softmax_scale=softmax_scale,
         dropout_rate=dropout_rate,
+        interpret=(jax.default_backend() == "cpu"),
     )
     o_ref = mha_reference(
         q,
@@ -152,6 +155,8 @@ class FlashDecodingTest(TestCase):
         kv_head_factor: int,
         window_len: int,
     ):
+        if jax.default_backend() == "cpu" and seq_len >= 512:
+            pytest.skip(reason="Too slow on CPU.")
         self.assertEqual(num_heads % kv_head_factor, 0)
         assert num_heads % kv_head_factor == 0
         k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(42), 4)
@@ -180,7 +185,14 @@ class FlashDecodingTest(TestCase):
         if window_len > 0:
             mask_fn = sliding_window_causal_mask(window_len)
         o = flash_decoding(
-            q, k, v, bias=bias, softmax_scale=softmax_scale, kv_seq_len=seq_len, mask_fn=mask_fn
+            q,
+            k,
+            v,
+            bias=bias,
+            softmax_scale=softmax_scale,
+            kv_seq_len=seq_len,
+            mask_fn=mask_fn,
+            interpret=(jax.default_backend() == "cpu"),
         )
         if bias is not None:
             bias = bias[:, :, :, :seq_len]
@@ -239,6 +251,8 @@ def test_triton_against_xla_ref(
         kv_seq_len = seq_len
     if kv_seq_len != seq_len and use_segment_ids:
         pytest.skip()
+    if jax.default_backend() == "cpu" and kv_seq_len >= 512:
+        pytest.skip(reason="Too slow on CPU.")
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
     q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
     k = jax.random.normal(k2, (batch_size, kv_seq_len, num_heads, per_head_dim), dtype=input_dtype)
@@ -269,6 +283,7 @@ def test_triton_against_xla_ref(
         block_q=block_size,
         block_k=block_size,
         dropout_rate=dropout_rate,
+        interpret=(jax.default_backend() == "cpu"),
     )
     jax_out = call_flash(
         q,
@@ -346,6 +361,9 @@ def test_cudnn_against_triton_ref(
     causal: bool,
     dtype: jnp.dtype,
 ):
+    if jax.default_backend() == "cpu":
+        pytest.skip(reason="cudnn function needs GPU.")
+
     k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
     q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=dtype)
     k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=dtype)
@@ -357,7 +375,15 @@ def test_cudnn_against_triton_ref(
     jax_out = cudnn_dot_product_attention(
         q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale
     )
-    jax_ref_out = flash_attention(q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale)
+    jax_ref_out = flash_attention(
+        q,
+        k,
+        v,
+        bias=None,
+        causal=causal,
+        softmax_scale=softmax_scale,
+        interpret=(jax.default_backend() == "cpu"),
+    )
     if dtype == jnp.bfloat16:
         # We relax the atol to support bf16 in the unit test.
         chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.02, rtol=1e-5)
@@ -372,7 +398,15 @@ def test_cudnn_against_triton_ref(
         ).sum()
 
     def ref_fn(q, k, v):
-        return flash_attention(q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale).sum()
+        return flash_attention(
+            q,
+            k,
+            v,
+            bias=None,
+            causal=causal,
+            softmax_scale=softmax_scale,
+            interpret=(jax.default_backend() == "cpu"),
+        ).sum()
 
     # Compare gradients.
     jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v)
@@ -414,6 +448,8 @@ def test_cudnn_dropout_against_xla_dropout(
     by setting V to the identity matrix. However, this only works when seq_len == per_head_dim,
     i.e. when the shape of output is the same as the shape of the dropout mask.
     """
+    if jax.default_backend() == "cpu":
+        pytest.skip(reason="cudnn function needs GPU.")
     qkv_shape = (batch_size, seq_len, num_heads, per_head_dim)
     softmax_scale = 1.0
     cudnn_attn = functools.partial(
@@ -481,6 +517,8 @@ def test_cudnn_dropout_against_xla_dropout(
 
 def test_cudnn_dropout_determinism():
     """Tests that cuDNN dropout produces identical outputs across runs."""
+    if jax.default_backend() == "cpu":
+        pytest.skip(reason="cudnn function needs GPU.")
     k1, k2, k3 = jax.random.split(jax.random.PRNGKey(3), 3)
     q = jax.random.normal(k1, (1, 128, 2, 64), dtype=jnp.float16)
     k = jax.random.normal(k2, (1, 128, 2, 64), dtype=jnp.float16)
