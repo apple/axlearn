@@ -54,6 +54,7 @@ from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.flash_attention.layer import FlashAttention
+from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
 from axlearn.common.optimizer_base import PartitionedGradientTransformation
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
@@ -636,6 +637,7 @@ def get_trainer_config_fn(
     keep_every_n_steps: int = 50_000,
     save_every_n_steps: Optional[int] = None,
     init_state_builder: Optional[state_builder.Builder.Config] = None,
+    logical_feed_indices: Optional[Sequence[int]] = None,
 ) -> TrainerConfigFn:
     """Builds a TrainerConfigFn according to the model and input specs.
 
@@ -673,9 +675,12 @@ def get_trainer_config_fn(
         cfg.input = input_tf_data.Input.default_config().set(
             is_training=True,
             source=train_input_source,
+            input_dispatcher=InputDispatcher.default_config().set(
+                global_logical_batch_size=train_batch_size,
+                logical_feed_indices=logical_feed_indices,
+            ),
             processor=config_for_function(input_tf_data.identity),
-            batcher=config_for_function(input_tf_data.batch).set(
-                global_batch_size=train_batch_size,
+            batcher=config_for_function(input_tf_data.per_feed_batch).set(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
