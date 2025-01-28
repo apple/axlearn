@@ -632,6 +632,11 @@ class TPUGKEJob(GKEJob):
                     "gke-gcsfuse/cpu-request": cfg.gcsfuse_mount.cpu,
                     "gke-gcsfuse/memory-request": cfg.gcsfuse_mount.memory,
                     "gke-gcsfuse/ephemeral-storage-request": cfg.gcsfuse_mount.ephemeral_gb,
+                    # GCSFuse will set limits=request if we only set requests:
+                    # https://github.com/GoogleCloudPlatform/gcs-fuse-csi-driver/blob/main/pkg/webhook/config.go#L110
+                    "gke-gcsfuse/cpu-limit": "0",
+                    "gke-gcsfuse/memory-limit": "0",
+                    "gke-gcsfuse/ephemeral-storage-limit": "0",
                 }
             )
             # Parse GCSFuseMount path into bucket, prefix.
