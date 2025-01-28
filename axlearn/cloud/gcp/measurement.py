@@ -92,6 +92,9 @@ class GoodputRecorder(measurement.Recorder):
         Goodput and Badput at the upload_interval and upload to the specified TensorBoard
         directory.
         Note: This function requires initialization of distributed JAX before it is called.
+        If there are internal GCP errors from querying and uploading data, these will be
+        logged without affecting the workload. GoodputMonitor logs will provide further
+        information if data is not being uploaded correctly.
         """
         if self._monitor is None:
             cfg: GoodputRecorder.Config = self.config
@@ -105,8 +108,4 @@ class GoodputRecorder(measurement.Recorder):
             )
 
         self._monitor.start_goodput_uploader(*args, **kwargs)
-        # If there are internal errors from querying and uploading data,
-        # (start_goodput_uploader) these will be logged without affecting the
-        # workload, refer to GoodputMonitor logs to investigate further if
-        # GoodputMonitor data is not being uploaded correctly.
         logging.info("Started Goodput upload to Tensorboard in the background!")
