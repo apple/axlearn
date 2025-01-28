@@ -34,7 +34,7 @@ from axlearn.common.layers import LayerNorm
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import BaseLossMetrics, WeightedScalar
-from axlearn.common.module import Module, NestedTensor, Tensor, child_context, new_output_collection
+from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.utils import (
     Nested,
@@ -253,19 +253,16 @@ class CompositeLossMetrics(BaseLossMetrics):
         metrics = {}
 
         for name, child in self._metrics.items():
-            oc = new_output_collection()
-            with child_context(name, output_collection=oc):
-                child_loss, child_metrics = child.forward(
-                    input_batch=input_batch,
-                    predict_outputs=predict_outputs,
-                    module_outputs=module_outputs,
-                )
+            child_loss, child_metrics = child.forward(
+                input_batch=input_batch,
+                predict_outputs=predict_outputs,
+                module_outputs=module_outputs,
+            )
             loss = loss + child_loss
 
             ctx = self.get_invocation_context()
-            _update(ctx.output_collection.summaries, oc.summaries)
-            _update(ctx.output_collection.module_outputs, oc.module_outputs)
-            _update(ctx.output_collection.state_updates, oc.state_updates)
+            # Flatten summaries for backwards compatibility.
+            _update(ctx.output_collection.summaries, ctx.output_collection.summaries.pop(name))
             _update(metrics, child_metrics)
 
         return loss, metrics
@@ -517,17 +514,13 @@ class Model(BaseModel):
         target_labels = jnp.where(target_labels == cfg.decoder.pad_token_id, -1, target_labels)
 
         ctx = self.get_invocation_context()
-        oc = new_output_collection()
-        with child_context("metrics", output_collection=oc):
-            loss, metrics = self.metrics.forward(
-                input_batch={**input_batch, "target_labels": target_labels},
-                predict_outputs=predict_outputs,
-                module_outputs=ctx.get_module_outputs(),
-            )
-        # Accumulate outputs.
-        _update(ctx.output_collection.summaries, oc.summaries)
-        _update(ctx.output_collection.module_outputs, oc.module_outputs)
-        _update(ctx.output_collection.state_updates, oc.state_updates)
+        loss, metrics = self.metrics.forward(
+            input_batch={**input_batch, "target_labels": target_labels},
+            predict_outputs=predict_outputs,
+            module_outputs=ctx.get_module_outputs(),
+        )
+        # Flatten summaries for backwards compatibility.
+        _update(ctx.output_collection.summaries, ctx.output_collection.summaries.pop("metrics"))
 
         return loss, metrics
 

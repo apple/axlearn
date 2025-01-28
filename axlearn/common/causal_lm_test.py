@@ -340,26 +340,16 @@ class ModelTest(TestCase):
     def test_metrics_update(self):
         # pylint: disable=unused-argument
 
-        class DummySummary(BaseLossMetrics):
+        class DummyMetrics(BaseLossMetrics):
             def forward(self, *args, **kwargs):
-                self.add_summary("test", 0)
-                return 0, {}
-
-        class DummyModuleOutput(BaseLossMetrics):
-            def forward(self, *args, **kwargs):
-                self.add_module_output("test", 0)
-                return 0, {}
-
-        class DummyStateUpdate(BaseLossMetrics):
-            def forward(self, *args, **kwargs):
-                self.add_state_update("test", 0)
+                self.add_summary(f"{self.name}_summary", 0)
+                self.add_module_output(f"{self.name}_output", 0)
+                self.add_state_update(f"{self.name}_state", 0)
                 return 0, {}
 
         class DummyConflictModel(causal_lm.Model):
             def _metrics(self, *args, **kwargs):
-                self.add_summary("test", 1)
-                self.add_module_output("test", 1)
-                self.add_state_update("test", 1)
+                self.add_summary("metrics_summary", 1)
                 return super()._metrics(*args, **kwargs)
 
         def forward(model_cfg: causal_lm.Model.Config, metrics_cfg: BaseLossMetrics.Config):
@@ -382,28 +372,15 @@ class ModelTest(TestCase):
                 drop_output_collections=(),
             )
 
-        def test_key_conflict(metrics_cfg: BaseLossMetrics.Config):
-            with self.assertRaisesRegex(KeyError, "Key conflict"):
-                forward(DummyConflictModel.default_config(), metrics_cfg)
-
-        test_key_conflict(DummySummary.default_config())
-        test_key_conflict(DummyModuleOutput.default_config())
-        test_key_conflict(DummyStateUpdate.default_config())
-        test_key_conflict(
-            causal_lm.CompositeLossMetrics.default_config().set(
-                metrics={
-                    "summary": DummySummary.default_config(),
-                    "module_output": DummyModuleOutput.default_config(),
-                    "state_update": DummyStateUpdate.default_config(),
-                }
-            )
-        )
+        # Check that flattening summaries do not override base model summaries.
+        with self.assertRaisesRegex(KeyError, "Key conflict"):
+            forward(DummyConflictModel.default_config(), DummyMetrics.default_config())
 
         class DummyModel(causal_lm.Model):
             def _metrics(self, *args, **kwargs):
-                self.add_summary("other", 1)
-                self.add_module_output("other", 1)
-                self.add_state_update("other", 1)
+                self.add_summary("parent_summary", 1)
+                self.add_module_output("parent_output", 1)
+                self.add_state_update("parent_state", 1)
                 return super()._metrics(*args, **kwargs)
 
         def test_no_conflict(metrics_cfg: BaseLossMetrics.Config, expected: OutputCollection):
@@ -413,41 +390,30 @@ class ModelTest(TestCase):
             self.assertNestedEqual(output_collection.state_updates, expected.state_updates)
 
         test_no_conflict(
-            DummySummary.default_config(),
+            DummyMetrics.default_config(),
             OutputCollection(
-                summaries={"other": 1, "test": 0},
-                module_outputs={"other": 1},
-                state_updates={"other": 1},
-            ),
-        )
-        test_no_conflict(
-            DummyModuleOutput.default_config(),
-            OutputCollection(
-                summaries={"other": 1},
-                module_outputs={"other": 1, "test": 0},
-                state_updates={"other": 1},
-            ),
-        )
-        test_no_conflict(
-            DummyStateUpdate.default_config(),
-            OutputCollection(
-                summaries={"other": 1},
-                module_outputs={"other": 1},
-                state_updates={"other": 1, "test": 0},
+                summaries={"parent_summary": 1, "metrics_summary": 0},
+                module_outputs={"parent_output": 1, "metrics": {"metrics_output": 0}},
+                state_updates={"parent_state": 1, "metrics": {"metrics_state": 0}},
             ),
         )
         test_no_conflict(
             causal_lm.CompositeLossMetrics.default_config().set(
                 metrics={
-                    "summary": DummySummary.default_config(),
-                    "module_output": DummyModuleOutput.default_config(),
-                    "state_update": DummyStateUpdate.default_config(),
+                    "child1": DummyMetrics.default_config(),
+                    "child2": DummyMetrics.default_config(),
                 }
             ),
             OutputCollection(
-                summaries={"other": 1, "test": 0},
-                module_outputs={"other": 1, "test": 0},
-                state_updates={"other": 1, "test": 0},
+                summaries={"parent_summary": 1, "child1_summary": 0, "child2_summary": 0},
+                module_outputs={
+                    "parent_output": 1,
+                    "metrics": {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
+                },
+                state_updates={
+                    "parent_state": 1,
+                    "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
+                },
             ),
         )
 
