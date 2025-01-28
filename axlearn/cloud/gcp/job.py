@@ -5,6 +5,7 @@
 Note that these utilities do not handle resource management.
 """
 import atexit
+import importlib
 import io
 import logging
 import math
@@ -455,6 +456,7 @@ class TPUGKEJob(GKEJob):
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
+        import_modules: list[str] = []
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -468,6 +470,9 @@ class TPUGKEJob(GKEJob):
             "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
             "not all TPU types support this flag.",
             **common_kwargs,
+        )
+        flags.DEFINE_list(
+            "import_modules", [], "Modules to enable pathways proxy.", **common_kwargs
         )
 
     @classmethod
@@ -492,6 +497,20 @@ class TPUGKEJob(GKEJob):
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         super().__init__(cfg)
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
+        self._import_modules()
+        self.using_pathways = self._is_pathways_used()
+
+    def _is_pathways_used(self) -> bool:
+        # identify if a job is configured to use pathways by
+        # checking jax_backend flag and optional import for pathways utils
+        return "jax_backend=proxy" in self.config.command.replace(" ", "=")
+
+    def _import_modules(self):
+        try:
+            for module in self.config.import_modules:
+                importlib.import_module(module)
+        except ModuleNotFoundError:
+            logging.error("An error occurred while importing dependencies.")
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
@@ -503,7 +522,17 @@ class TPUGKEJob(GKEJob):
                 ),
             )
 
-    def _build_container(self) -> Nested[Any]:
+    def _get_pathways_tpu_type(self, device: str) -> str:
+        pathways_tpu_devices = {
+            "v6e": "tpuv6e",
+            "v5p": "tpuv5",
+            "v5litepod": "tpuv5e",
+            "v4": "tpuv4",
+            "v3": "tpuv3",
+        }
+        return pathways_tpu_devices[device.split("-")[0].lower()]
+
+    def _build_container(self, job_type: str = None) -> Nested[Any]:
         """Builds a config for a single container.
 
         Returns:
@@ -512,6 +541,7 @@ class TPUGKEJob(GKEJob):
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         volume_mounts = [self._output_volume_mount]
+        resources = {"limits": {}}
 
         self._maybe_add_volume_mount(volume_mounts, spec=cfg.gcsfuse_mount)
         if cfg.host_mounts:
@@ -522,15 +552,51 @@ class TPUGKEJob(GKEJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
-        resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
-        # Set request memory by host machine type.
-        machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
-            system.gce_machine_type, None
-        )
-        if machine_memory_gi is not None:
-            request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
-            resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
-            resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
+        if not self.using_pathways:
+            resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
+            # Set request memory by host machine type.
+            machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
+                system.gce_machine_type, None
+            )
+            if machine_memory_gi is not None:
+                request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
+                resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
+                resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
+
+        args = []
+        image = self._bundler.id(cfg.name)
+        ports = [
+            dict(containerPort=8471),  # Port using which TPU VMs communicate.
+            dict(containerPort=8080),  # Port for MXLA coordinator.
+            dict(containerPort=8431),  # Port to export TPU runtime metrics.
+        ]
+
+        if self.using_pathways:
+            staging_location = f"{cfg.output_dir}/pathways-staging"
+            if job_type == "pathways-head":
+                env_vars.update(
+                    JAX_BACKEND_TARGET=f"grpc://{cfg.name}-pathways-head-0-0.{cfg.name}:29000",
+                    XCLOUD_ENVIRONMENT="GCP",
+                    JAX_PLATFORMS="proxy",
+                    ENABLE_PATHWAYS_PERSISTENCE="1",
+                    TPU_SKIP_MDS_QUERY="true",
+                )
+            elif job_type == "pathways-workers":
+                env_vars.update(
+                    MEGASCALE_COORDINATOR_ADDRESS=f"{cfg.name}-pathways-head-0-0.{cfg.name}",
+                    MEGASCALE_NUM_SLICES=cfg.accelerator.num_replicas,
+                    MEGASCALE_SLICE_ID=0,
+                )
+                args.extend(
+                    [
+                        "--server_port=29001",
+                        f"--resource_manager_address={cfg.name}-pathways-head-0-0.{cfg.name}:29001",
+                        f"--gcs_scratch_location={staging_location}",
+                    ]
+                )
+                image = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
+                ports.append(dict(containerPort=29001))
+                resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
 
         k8s_env_vars = [dict(name=k, value=str(v)) for k, v in env_vars.items()]
         k8s_env_vars.append(
@@ -556,20 +622,17 @@ class TPUGKEJob(GKEJob):
 
         return dict(
             name=cfg.name,
-            image=self._bundler.id(cfg.name),
+            image=image,
             # https://cloud.google.com/kubernetes-engine/docs/how-to/tpus#tpu-chips-node-pool
             # https://cloud.google.com/kubernetes-engine/docs/how-to/tpu-multislice#run_workload
-            ports=[
-                dict(containerPort=8471),  # Port using which TPU VMs communicate.
-                dict(containerPort=8080),  # Port for MXLA coordinator.
-                dict(containerPort=8431),  # Port to export TPU runtime metrics.
-            ],
+            ports=ports,
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
-            command=["bash", "-c", cfg.command],
+            command=["bash", "-c", cfg.command] if job_type != "pathways-workers" else None,
             resources=resources,
             # Env var values should always be strings.
             env=k8s_env_vars,
+            args=args,
             volumeMounts=volume_mounts,
             imagePullPolicy="Always",
         )
@@ -611,7 +674,55 @@ class TPUGKEJob(GKEJob):
             volumeMounts=volume_mounts,
         )
 
-    def _build_pod(self) -> Nested[Any]:
+    def _build_pathways_containers(self) -> list[dict]:
+        """Builds a config for the pathways containers which orchestrate resource management
+            and pathways proxy communications.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: TPUGKEJob.Config = self.config
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        staging_location = f"{cfg.output_dir}/pathways-staging"
+        tpu_type = self._get_pathways_tpu_type(system.device_type)
+
+        return [
+            dict(
+                name="pathways-proxy",
+                image="us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:latest",
+                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
+                # SideCar container is an init container with restartPolicy as "Always".
+                restartPolicy="Always",
+                args=[
+                    f"--resource_manager_address={cfg.name}-pathways-head-0-0.{cfg.name}:29001",
+                    "--server_port=29000",
+                    f"--gcs_scratch_location={staging_location}",
+                ],
+                ports=[dict(containerPort=29000)],
+            ),
+            dict(
+                name="pathways-rm",
+                image="us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest",
+                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
+                # SideCar container is an init container with restartPolicy as "Always".
+                restartPolicy="Always",
+                env=[
+                    {
+                        "name": "TPU_SKIP_MDS_QUERY",
+                        "value": "true",
+                    },
+                ],
+                args=[
+                    "--server_port=29001",
+                    "--node_type=resource_manager",
+                    f"--instance_count={cfg.accelerator.num_replicas}",
+                    f"--instance_type={tpu_type}:{system.topology}",
+                    f"--gcs_scratch_location={staging_location}",
+                ],
+            ),
+        ]
+
+    def _build_pod(self, job_type: str = None) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
         https://kubernetes.io/docs/concepts/workloads/pods
@@ -622,6 +733,7 @@ class TPUGKEJob(GKEJob):
         cfg: TPUGKEJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
+        initContainers = [self._build_uploader_container()]
 
         volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
@@ -670,22 +782,24 @@ class TPUGKEJob(GKEJob):
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
         tier = os.environ.get("BASTION_TIER", None)
 
-        if tier == "0" and cfg.reservation is not None:
-            logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
-            selector.update({"cloud.google.com/reservation-name": cfg.reservation})
-            labels.update({"bastion-tier": "reserved"})
-        else:
-            logging.info("Found tier=%s in env. Using spot quota", tier)
-            selector.update({"cloud.google.com/gke-spot": "true"})
-            tolerations.append(
-                {
-                    "key": "cloud.google.com/gke-spot",
-                    "operator": "Equal",
-                    "value": "true",
-                    "effect": "NoSchedule",
-                }
-            )
-            labels.update({"bastion-tier": "spot"})
+        # skip reservation/spot flags for Pathways CPU jobs.
+        if job_type != "pathways-head":
+            if tier == "0" and cfg.reservation is not None:
+                logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
+                selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+                labels.update({"bastion-tier": "reserved"})
+            else:
+                logging.info("Found tier=%s in env. Using spot quota", tier)
+                selector.update({"cloud.google.com/gke-spot": "true"})
+                tolerations.append(
+                    {
+                        "key": "cloud.google.com/gke-spot",
+                        "operator": "Equal",
+                        "value": "true",
+                        "effect": "NoSchedule",
+                    }
+                )
+                labels.update({"bastion-tier": "spot"})
 
         if cfg.enable_tpu_ici_resiliency is not None:
             selector.update(
@@ -706,7 +820,7 @@ class TPUGKEJob(GKEJob):
                     PRE_PROVISIONER_LABEL: cfg.name,
                 }
             )
-        else:
+        elif not self.using_pathways:
             # Used by GCP auto-provisioner.
             selector.update(
                 {
@@ -756,6 +870,18 @@ class TPUGKEJob(GKEJob):
                 }
             )
 
+        if job_type == "pathways-head":
+            # Target a specific CPU nodepool for Pathways containers
+            selector.update({"node.kubernetes.io/instance-type": "n2-standard-32"})
+            initContainers.extend(self._build_pathways_containers())
+        else:
+            selector.update(
+                {
+                    "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                    "cloud.google.com/gke-tpu-topology": system.topology,
+                }
+            )
+
         # Hardcode metadata.google.internal ip address to avoid transient DNS resolution issue.
         metadata_host_alias = dict(
             ip=_METADATA_GOOGLE_INTERNAL_IP,
@@ -770,15 +896,16 @@ class TPUGKEJob(GKEJob):
             # https://kubernetes.io/docs/tasks/network/customize-hosts-file-for-pods/#adding-additional-entries-with-hostaliases
             hostAliases=[metadata_host_alias],
             nodeSelector={
-                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                "cloud.google.com/gke-tpu-topology": system.topology,
                 **selector,
             },
             tolerations=tolerations,
-            containers=[self._build_container()],
-            initContainers=[self._build_uploader_container()],
+            containers=[self._build_container(job_type)],
+            initContainers=initContainers,
             serviceAccountName=cfg.service_account,
             volumes=volumes,
+            # Enable host network for optimal performance with Pathways
+            hostNetwork=True if self.using_pathways else False,
+            dnsPolicy="ClusterFirstWithHostNet" if self.using_pathways else None,
         )
 
         if cfg.priority_class:
@@ -789,7 +916,7 @@ class TPUGKEJob(GKEJob):
             spec=spec,
         )
 
-    def _build_job(self) -> Nested[Any]:
+    def _build_job(self, job_type: str = None) -> Nested[Any]:
         """Builds a config for a single Job, which is a set of Pods.
 
         https://kubernetes.io/docs/concepts/workloads/controllers/job/
@@ -798,13 +925,36 @@ class TPUGKEJob(GKEJob):
             A nested dict corresponding to a k8s Job config, including the job metadata and spec.
         """
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        return dict(
-            spec=dict(
+        annotations, spec = {}, {}
+
+        if job_type == "pathways-workers":
+            annotations.update(
+                {"alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
+            )
+            spec.update(
+                parallelism=system.vms_per_slice,
+                completions=system.vms_per_slice,
+                backoffLimit=system.vms_per_slice * 4,
+                template=self._build_pod(job_type),
+            )
+        elif job_type == "pathways-head":
+            spec.update(
+                parallelism=1,
+                completions=1,
+                backoffLimit=0,
+                template=self._build_pod(job_type),
+            )
+        else:
+            spec.update(
                 parallelism=system.vms_per_slice,
                 completions=system.vms_per_slice,
                 backoffLimit=0,  # Fail the job if any node fails. Retries happen at JobSet level.
                 template=self._build_pod(),
-            ),
+            )
+
+        return dict(
+            metadata=dict(annotations=annotations),
+            spec=spec,
         )
 
     def _build_jobset(self) -> Nested[Any]:
@@ -817,31 +967,61 @@ class TPUGKEJob(GKEJob):
         """
         cfg: TPUGKEJob.Config = self.config
 
-        annotations = {
-            # The exclusive topology annotation will ensure that all Pods will have affinity
-            # rules added that will ensure that they are fully scheduled on the same
-            # pod-slice node-pools.
-            "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
-        }
+        annotations, labels = {}, {}
+
         if cfg.queue:
-            annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
+            if self.using_pathways:
+                labels["kueue.x-k8s.io/queue-name"] = cfg.queue
+            else:
+                annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
+
+        spec = dict(
+            failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
+            replicatedJobs=[
+                # NOTE: the suffix here impacts how long job names can be.
+                dict(
+                    name="job",
+                    replicas=cfg.accelerator.num_replicas,
+                    template=self._build_job(),
+                ),
+            ],
+        )
+
+        if self.using_pathways:
+            logging.info("Building pathways jobset.")
+            spec = dict(
+                failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
+                successPolicy=dict(operator="All", targetReplicatedJobs=["pathways-head"]),
+                replicatedJobs=[
+                    dict(
+                        name="pathways-head",
+                        replicas=1,
+                        template=self._build_job("pathways-head"),
+                    ),
+                    dict(
+                        name="pathways-workers",
+                        replicas=cfg.accelerator.num_replicas,
+                        template=self._build_job("pathways-workers"),
+                    ),
+                ],
+            )
+        else:
+            annotations.update(
+                {
+                    # The exclusive topology annotation will ensure that all Pods will have affinity
+                    # rules added that will ensure that they are fully scheduled on the same
+                    # pod-slice node-pools.
+                    "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
+                }
+            )
 
         return dict(
             metadata=dict(
                 name=cfg.name,
                 annotations=annotations,
+                labels=labels,
             ),
-            spec=dict(
-                failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
-                replicatedJobs=[
-                    # NOTE: the suffix here impacts how long job names can be.
-                    dict(
-                        name="job",
-                        replicas=cfg.accelerator.num_replicas,
-                        template=self._build_job(),
-                    ),
-                ],
-            ),
+            spec=spec,
         )
 
     def _delete(self):
