@@ -153,6 +153,7 @@ def copy_partition(
         pattern: Regex to match the full path of each spec. Matched specs will have their memory
             kind replaced with `memory_kind`.
         memory_kind: New memory kind. Default to None.
+
     Returns:
         A Nested[OptStateSpec] with possibly a different memory kind.
     """
