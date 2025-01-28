@@ -103,13 +103,10 @@ class GoodputRecorder(measurement.Recorder):
                 monitoring_enabled=(jax.process_index() == 0),
                 include_badput_breakdown=True,
             )
-            if not self._monitor:
-                # This could happen if there are internal errors (such as access errors)
-                # from GCP services such as Cloud Logging or Cloud Storage.
-                logging.log_first_n(
-                    logging.WARNING,
-                    "Goodput upload could not be started. Please check GoodputMonitor logs.",
-                    1,
-                )
+
         self._monitor.start_goodput_uploader(*args, **kwargs)
+        # If there are internal errors from querying and uploading data,
+        # (start_goodput_uploader) these will be logged without affecting the
+        # workload, refer to GoodputMonitor logs to investigate further if
+        # GoodputMonitor data is not being uploaded correctly.
         logging.info("Started Goodput upload to Tensorboard in the background!")

@@ -79,3 +79,35 @@ class GoodputRecorderTest(parameterized.TestCase):
             # Ensure that start_goodput_uploader is called on the monitor instance
             mock_monitor_instance.start_goodput_uploader.assert_called_once()
             self.assertIsNotNone(recorder._monitor)
+
+    def test_missing_required_flags(self):
+        fv = flags.FlagValues()
+        measurement.define_flags(flag_values=fv)
+        # Missing 'upload_dir' and 'upload_interval' from recorder_spec
+        fv.set_default("recorder_spec", ["name=test-name"])  # Incomplete config
+        fv.mark_as_parsed()
+
+        # Expecting ValueError since 'upload_dir' and 'upload_interval' are required
+        with self.assertRaises(ValueError):
+            GoodputRecorder.from_flags(fv)
+
+    def test_monitoring_initialization_failure(self):
+        fv = flags.FlagValues()
+        measurement.define_flags(flag_values=fv)
+        fv.set_default(
+            "recorder_spec",
+            ["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],
+        )
+        fv.mark_as_parsed()
+
+        recorder = GoodputRecorder.from_flags(fv)
+        self.assertIsNone(recorder._monitor)
+
+        # Mock a failure in initializing the GoodputMonitor
+        with mock.patch(
+            "ml_goodput_measurement.monitoring.GoodputMonitor",
+            side_effect=Exception("Failed to initialize GoodputMonitor"),
+        ):
+            with self.assertRaises(Exception):
+                recorder.start_monitoring()
+            self.assertIsNone(recorder._monitor)
