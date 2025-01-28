@@ -25,7 +25,7 @@ from axlearn.common.attention import (
 from axlearn.common.config import config_for_function
 from axlearn.common.learner import Learner
 from axlearn.common.loss import cross_entropy
-from axlearn.common.metrics import MetricAccumulator, WeightedScalar
+from axlearn.common.metrics import BaseLossMetrics, MetricAccumulator, WeightedScalar
 from axlearn.common.module import (
     InvocationContext,
     OutputCollection,
@@ -119,24 +119,24 @@ class Gpt2TransformerTest(TestCase):
 
 
 class ModelTest(TestCase):
-    def test_metrics(self):
+    def _model_config(self, vocab_size: int, seq_len: int) -> causal_lm.Model.Config:
         decoder_cfg = causal_lm.gpt_decoder_config(
             stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=1,
+            num_layers=2,
             hidden_dim=10,
             num_heads=2,
-            vocab_size=10,
+            vocab_size=vocab_size,
             activation_function="nn.gelu",
-            max_position_embeddings=10,
+            max_position_embeddings=seq_len,
             layer_norm_epsilon=0.1,
             dropout_rate=0.0,
         )
+        return causal_lm.Model.default_config().set(decoder=decoder_cfg)
+
+    def test_metrics(self):
         model = (
-            causal_lm.Model.default_config()
-            .set(
-                decoder=decoder_cfg,
-                name="metrics_test",
-            )
+            self._model_config(vocab_size=10, seq_len=10)
+            .set(name="metrics_test")
             .instantiate(parent=None)
         )
 
@@ -213,21 +213,9 @@ class ModelTest(TestCase):
     def test_segment_ids(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
 
-        ref_decoder_cfg = causal_lm.gpt_decoder_config(
-            stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=2,
-            hidden_dim=10,
-            num_heads=2,
-            vocab_size=vocab_size,
-            activation_function="nn.gelu",
-            max_position_embeddings=seq_len,
-            layer_norm_epsilon=0.1,
-            dropout_rate=0.0,
-        )
-        ref_model_cfg = causal_lm.Model.default_config().set(
-            decoder=ref_decoder_cfg, name="ref_model"
-        )
-        ref_model = ref_model_cfg.instantiate(parent=None)
+        ref_model_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        ref_decoder_cfg = ref_model_cfg.decoder
+        ref_model = ref_model_cfg.set(name="ref_model").instantiate(parent=None)
 
         # Enable attention_mask
         decoder_cfg = ref_decoder_cfg.clone()
@@ -311,19 +299,8 @@ class ModelTest(TestCase):
     def test_forward(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
 
-        decoder_cfg = causal_lm.gpt_decoder_config(
-            stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=2,
-            hidden_dim=10,
-            num_heads=2,
-            vocab_size=vocab_size,
-            activation_function="nn.gelu",
-            max_position_embeddings=seq_len,
-            layer_norm_epsilon=0.1,
-            dropout_rate=0.0,
-        )
-        model_cfg = causal_lm.Model.default_config().set(decoder=decoder_cfg, name="metrics_test")
-        model = model_cfg.instantiate(parent=None)
+        model_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        model = model_cfg.set(name="metrics_test").instantiate(parent=None)
 
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
@@ -360,6 +337,86 @@ class ModelTest(TestCase):
         for k, v in score_metrics.items():
             self.assertNestedAllClose(metrics[k], v)
 
+    def test_metrics_update(self):
+        # pylint: disable=unused-argument
+
+        class DummyMetrics(BaseLossMetrics):
+            def forward(self, *args, **kwargs):
+                self.add_summary(f"{self.name}_summary", 0)
+                self.add_module_output(f"{self.name}_output", 0)
+                self.add_state_update(f"{self.name}_state", 0)
+                return 0, {}
+
+        class DummyConflictModel(causal_lm.Model):
+            def _metrics(self, *args, **kwargs):
+                self.add_summary("metrics_summary", 1)
+                return super()._metrics(*args, **kwargs)
+
+        def forward(model_cfg: causal_lm.Model.Config, metrics_cfg: BaseLossMetrics.Config):
+            batch_size, vocab_size, seq_len = 3, 10, 10
+            base_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+            model_cfg = model_cfg.set(**{k: v for k, v in base_cfg.items() if k not in ("klass",)})
+            model_cfg.metrics = metrics_cfg
+            model = model_cfg.set(name="test").instantiate(parent=None)
+            init_key, forward_key, target_key = jax.random.split(jax.random.PRNGKey(0), num=3)
+            target_labels = jax.random.randint(
+                target_key, shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+            )
+            return functional(
+                module=model,
+                prng_key=forward_key,
+                state=model.initialize_parameters_recursively(init_key),
+                inputs=dict(input_batch=dict(target_labels=target_labels), predict_outputs={}),
+                method="_metrics",
+                is_training=True,
+                drop_output_collections=(),
+            )
+
+        # Check that flattening summaries do not override base model summaries.
+        with self.assertRaisesRegex(KeyError, "Key conflict"):
+            forward(DummyConflictModel.default_config(), DummyMetrics.default_config())
+
+        class DummyModel(causal_lm.Model):
+            def _metrics(self, *args, **kwargs):
+                self.add_summary("parent_summary", 1)
+                self.add_module_output("parent_output", 1)
+                self.add_state_update("parent_state", 1)
+                return super()._metrics(*args, **kwargs)
+
+        def test_no_conflict(metrics_cfg: BaseLossMetrics.Config, expected: OutputCollection):
+            _, output_collection = forward(DummyModel.default_config(), metrics_cfg)
+            self.assertNestedEqual(output_collection.summaries, expected.summaries)
+            self.assertNestedEqual(output_collection.module_outputs, expected.module_outputs)
+            self.assertNestedEqual(output_collection.state_updates, expected.state_updates)
+
+        test_no_conflict(
+            DummyMetrics.default_config(),
+            OutputCollection(
+                summaries={"parent_summary": 1, "metrics_summary": 0},
+                module_outputs={"parent_output": 1, "metrics": {"metrics_output": 0}},
+                state_updates={"parent_state": 1, "metrics": {"metrics_state": 0}},
+            ),
+        )
+        test_no_conflict(
+            causal_lm.CompositeLossMetrics.default_config().set(
+                metrics={
+                    "child1": DummyMetrics.default_config(),
+                    "child2": DummyMetrics.default_config(),
+                }
+            ),
+            OutputCollection(
+                summaries={"parent_summary": 1, "child1_summary": 0, "child2_summary": 0},
+                module_outputs={
+                    "parent_output": 1,
+                    "metrics": {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
+                },
+                state_updates={
+                    "parent_state": 1,
+                    "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
+                },
+            ),
+        )
+
     # TODO(markblee): Add a pytest marker for multi-device tests.
     @pytest.mark.skipif(
         jax.device_count() != 4 or jax.process_count() != 1,
@@ -370,19 +427,8 @@ class ModelTest(TestCase):
     )
     def test_constrain_input_batch(self):
         model = (
-            causal_lm.Model.default_config()
+            self._model_config(vocab_size=10, seq_len=10)
             .set(
-                decoder=causal_lm.gpt_decoder_config(
-                    stack_cfg=StackedTransformerLayer.default_config(),
-                    num_layers=1,
-                    hidden_dim=10,
-                    num_heads=2,
-                    vocab_size=10,
-                    activation_function="nn.relu",
-                    max_position_embeddings=10,
-                    layer_norm_epsilon=0.1,
-                    dropout_rate=0.0,
-                ),
                 batch_axis_names=("data", "expert", "fsdp"),
                 seq_axis_names=("seq",),
                 name="metrics_test",
@@ -489,7 +535,7 @@ class ModelAuxLossTest(TestCase):
             aux_loss_regex=aux_loss_regex,
             use_aux_layer=use_aux_layer,
         )
-        model = model_cfg.instantiate(parent=None)
+        model: causal_lm.Model = model_cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
 
@@ -502,13 +548,26 @@ class ModelAuxLossTest(TestCase):
         input_batch = dict(input_ids=input_ids, target_labels=target_labels)
 
         # Ensure that forward outputs are consistent with metrics output.
-        # NOTE: invoking _metrics directly can give different outputs due to missing aux loss from
-        # module outputs in the invocation context.
         common_kwargs = dict(module=model, prng_key=prng_key, state=model_params, is_training=True)
-        (loss, aux), _ = functional(
+        (loss, aux), output_collection = functional(
             **common_kwargs,
             inputs=dict(input_batch=input_batch, return_aux=True),
+            drop_output_collections=(),
         )
+        oc = new_output_collection()
+        oc.module_outputs.update(output_collection.module_outputs)
+        metrics_fn = InvocationContext(
+            name="metrics", parent=None, output_collection=oc, **common_kwargs
+        ).functional(
+            model._metrics  # pylint: disable=protected-access
+        )
+        (ref_loss, metrics), _ = metrics_fn(
+            input_batch=dict(target_labels=target_labels),
+            predict_outputs=dict(logits=aux["logits"]),
+        )
+        self.assertAlmostEqual(loss, ref_loss)
+        self.assertNestedAllClose(aux["metrics"], metrics)
+
         # `aux_loss` is only collected when `aux_loss_regex` is set.
         if aux_loss_regex is not None:
             self.assertIn("aux_loss", aux["metrics"])
