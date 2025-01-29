@@ -24,6 +24,7 @@ from typing import Optional
 import chex
 import jax
 import jax.numpy as jnp
+import jax.scipy.special
 import numpy as np
 import optax
 import pytest

@@ -5,7 +5,8 @@ from typing import Optional
 
 from typing_extensions import Protocol
 
-from axlearn.common.config import InstantiableConfig
+from axlearn.common.config import InstantiableConfig, config_class
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
 
 
 class TrainerConfigFn(Protocol):
@@ -28,3 +29,13 @@ def with_overrides(trainer_config_fn: TrainerConfigFn, **kwargs) -> TrainerConfi
         return trainer_cfg
 
     return wrapped_fn
+
+
+class V6eFlashConfigModifier(FlashBlockSizeModifier):
+    """Modified the tpu_block_size config for better performance on TPU v6e."""
+
+    @config_class
+    class Config(FlashBlockSizeModifier.Config):
+        """Configures V6eFlashConfigModifier."""
+
+        tpu_block_size: int = 1024

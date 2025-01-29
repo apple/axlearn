@@ -3,7 +3,7 @@
 """FlashAttention layers."""
 
 from collections.abc import Sequence
-from typing import Optional
+from typing import Optional, cast
 
 import jax
 import jax.numpy as jnp
@@ -14,7 +14,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
-from axlearn.common.config import config_class
+from axlearn.common.config import REQUIRED, ConfigBase, ConfigModifier, Required, config_class
 from axlearn.common.flash_attention.utils import (
     MultiHeadAttentionImpl,
     flash_attention_implementation,
@@ -278,3 +278,30 @@ def default_output_dim_to_partition_spec(
         "btnh": PartitionSpec(batch_axis_names, sp_axis_name, tp_axis_name, None),
         "bnts": PartitionSpec(batch_axis_names, tp_axis_name, sp_axis_name, None),
     }
+
+
+class FlashBlockSizeModifier(ConfigModifier):
+    """Modified the tpu_block_size config of FlashAttention."""
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configures FlashBlockSizeModifier."""
+
+        tpu_block_size: Required[int] = REQUIRED
+
+    def __call__(self, cfg: ConfigBase) -> ConfigBase:
+        tpu_block_size = self.config.tpu_block_size
+
+        def is_flash_config(cfg):
+            return isinstance(cfg, FlashAttention.Config)
+
+        def visit_fn(_, value):
+            if is_flash_config(value):
+                value = cast(FlashAttention.Config, value)
+                value.tpu_block_size = tpu_block_size
+
+        def enter_fn(_, value, default_kv):
+            return None if is_flash_config(value) else default_kv
+
+        cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+        return cfg
