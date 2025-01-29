@@ -574,8 +574,9 @@ def evaler_config_dict(
         evaler_input = input_tf_data.Input.default_config().set(
             is_training=False,
             source=input_source_config,
+            input_dispatcher=InputDispatcher.default_config(),
             processor=config_for_function(input_tf_data.identity),
-            batcher=config_for_function(input_tf_data.batch).set(
+            batcher=config_for_function(input_tf_data.per_feed_batch).set(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
@@ -637,7 +638,8 @@ def get_trainer_config_fn(
     keep_every_n_steps: int = 50_000,
     save_every_n_steps: Optional[int] = None,
     init_state_builder: Optional[state_builder.Builder.Config] = None,
-    logical_feed_indices: Optional[Sequence[int]] = None,
+    train_logical_feed_indices: Optional[Sequence[int]] = None,
+    eval_logical_feed_indices: Optional[Sequence[int]] = None,
 ) -> TrainerConfigFn:
     """Builds a TrainerConfigFn according to the model and input specs.
 
@@ -660,6 +662,10 @@ def get_trainer_config_fn(
         init_state_builder: Builder to initialize trainer states. If none, default initializer.
             Load a checkpoint using state_builder.TensorStoreStateStorageBuilder, setting `dir` to
             the checkpoint path (such as mixture_general_lm.PRETRAINED_CHECKPOINTS[config_name]).
+        train_logical_feed_indices: Logical feed indices for `InputDispatcher` when training.
+            Required if per host batch size < 1.
+        eval_logical_feed_indices: Logical feed indices for `InputDispatcher` when doing eval.
+            Required if per host batch size < 1. Default to `train_logical_feed_indices`.
 
     Returns:
         A function that returns a trainer config.
@@ -677,7 +683,7 @@ def get_trainer_config_fn(
             source=train_input_source,
             input_dispatcher=InputDispatcher.default_config().set(
                 global_logical_batch_size=train_batch_size,
-                logical_feed_indices=logical_feed_indices,
+                logical_feed_indices=train_logical_feed_indices,
             ),
             processor=config_for_function(input_tf_data.identity),
             batcher=config_for_function(input_tf_data.per_feed_batch).set(
@@ -695,7 +701,12 @@ def get_trainer_config_fn(
         )
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
-            evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
+            evaler_cfg.input.input_dispatcher.global_logical_batch_size = (
+                eval_batch_size or train_batch_size
+            )
+            evaler_cfg.input.input_dispatcher.logical_feed_indices = (
+                eval_logical_feed_indices or train_logical_feed_indices
+            )
             evaler_cfg.set(
                 eval_policy=config_for_function(eval_every_n_steps_policy).set(
                     n=eval_every_n_steps,
