@@ -187,6 +187,8 @@ mesh_rules[4][1].config_modifiers[1].remat_policies['model.decoder.transformer.l
 mesh_rules[4][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].names_which_can_be_saved: None
 mesh_rules[4][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: 'pinned_host'
 mesh_rules[4][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_src: 'device'
+mesh_rules[4][1].config_modifiers[2].klass: 'axlearn.experiments.trainer_config_utils.V6eFlashConfigModifier'
+mesh_rules[4][1].config_modifiers[2].tpu_block_size: 1024
 mesh_rules[4][1].klass: 'axlearn.common.trainer_config_modifier.ChainConfigModifier'
 mesh_rules[5][0]: 'tpu-v5p-.*'
 mesh_rules[5][1][0]: 1

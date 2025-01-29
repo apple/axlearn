@@ -56,7 +56,7 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -320,6 +320,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),
@@ -475,6 +476,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),
@@ -494,6 +496,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            V6eFlashConfigModifier.default_config(),
                             GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
