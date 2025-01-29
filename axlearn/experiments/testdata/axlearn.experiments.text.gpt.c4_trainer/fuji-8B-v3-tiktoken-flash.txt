@@ -17,10 +17,11 @@ evalers['train'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_policy'
 evalers['train'].eval_policy.max_step: 983040
 evalers['train'].eval_policy.min_step: 1
 evalers['train'].eval_policy.n: 5000
-evalers['train'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'
-evalers['train'].input.batcher.global_batch_size: 2048
+evalers['train'].input.batcher.fn: 'axlearn.common.input_tf_data.per_feed_batch'
 evalers['train'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 evalers['train'].input.batcher.prefetch_buffer_size: -1
+evalers['train'].input.input_dispatcher.global_logical_batch_size: 2048
+evalers['train'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
 evalers['train'].input.is_training: False
 evalers['train'].input.klass: 'axlearn.common.input_tf_data.Input'
 evalers['train'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -44,10 +45,11 @@ evalers['validation'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_polic
 evalers['validation'].eval_policy.max_step: 983040
 evalers['validation'].eval_policy.min_step: 1
 evalers['validation'].eval_policy.n: 5000
-evalers['validation'].input.batcher.fn: 'axlearn.common.input_tf_data.batch'
-evalers['validation'].input.batcher.global_batch_size: 2048
+evalers['validation'].input.batcher.fn: 'axlearn.common.input_tf_data.per_feed_batch'
 evalers['validation'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 evalers['validation'].input.batcher.prefetch_buffer_size: -1
+evalers['validation'].input.input_dispatcher.global_logical_batch_size: 2048
+evalers['validation'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
 evalers['validation'].input.is_training: False
 evalers['validation'].input.klass: 'axlearn.common.input_tf_data.Input'
 evalers['validation'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -66,10 +68,11 @@ evalers['validation'].metric_calculator.metric_accumulator.klass: 'axlearn.commo
 evalers['validation'].metric_calculator.model_method: 'forward'
 evalers['validation'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['validation'].summary_writer.write_every_n_steps: 1
-input.batcher.fn: 'axlearn.common.input_tf_data.batch'
-input.batcher.global_batch_size: 2048
+input.batcher.fn: 'axlearn.common.input_tf_data.per_feed_batch'
 input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 input.batcher.prefetch_buffer_size: -1
+input.input_dispatcher.global_logical_batch_size: 2048
+input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
 input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
 input.input_partitioner.path_rank_to_partition[(None, 1)][0][0]: 'data'
 input.input_partitioner.path_rank_to_partition[(None, 1)][0][1]: 'expert'

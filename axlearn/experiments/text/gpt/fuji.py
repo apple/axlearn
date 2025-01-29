@@ -709,11 +709,11 @@ def trainer_configs(
 
                 # The original config was supposed to run on >= 32 machines.
                 # pylint: disable=cell-var-from-loop
-                cfg.input.batcher.global_batch_size //= (
+                cfg.input.input_dispatcher.global_logical_batch_size //= (
                     128 if version in (Version.V3, Version.V3_TIKTOKEN) else 32
                 )
                 for evaler in cfg.evalers.values():
-                    evaler.input.batcher.global_batch_size //= (
+                    evaler.input.input_dispatcher.global_logical_batch_size //= (
                         128 if version in (Version.V3, Version.V3_TIKTOKEN) else 32
                     )
                 # pylint: enable=cell-var-from-loop
