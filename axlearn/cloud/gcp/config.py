@@ -65,16 +65,40 @@ def _gcp_settings_from_active_config(key: str) -> Optional[str]:
     return project_configs.get(key, None)
 
 
-def default_project():
+def default_project() -> Optional[str]:
+    """Default project from active `gcp_settings`.
+
+    Project is used along with env_id to identify `gcp_settings`.
+
+    Returns: the project in active `gcp_settings` config.
+    """
+
     return _gcp_settings_from_active_config("project")
 
 
-def default_zone():
+def default_zone() -> Optional[str]:
+    """Default zone from active `gcp_settings`.
+
+    Besides specifying the GCP zone, this value was also used
+    along with project to identify `gcp_settings`. It is being replaced by
+    env_id. See `default_env_id`.
+
+    Returns: the zone in active `gcp_settings` config.
+    """
+
     return _gcp_settings_from_active_config("zone")
 
 
-def default_env_id():
-    # When env_id is not set, fall back to zone for backwards compatibility.
+def default_env_id() -> Optional[str]:
+    """Default env_id value from active `gcp_settings`.
+
+    Env_id is used along with project to identify `gcp_settings`.
+
+    When env_id is None, fall back to zone for backwards compatibility.
+
+    Returns: the env_id in active `gcp_settings` config; if it doesn't exist, returns the zone.
+    """
+
     return _gcp_settings_from_active_config("env_id") or _gcp_settings_from_active_config("zone")
 
 

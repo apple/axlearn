@@ -90,7 +90,7 @@ class GCPJob(Job):
         flags.DEFINE_string(
             "env_id",
             default_env_id(),
-            "The env_id, used along with project to identify gcp settings",
+            "The env_id, used along with project to identify `gcp_settings`.",
             **common_kwargs,
         )
         flags.DEFINE_string(

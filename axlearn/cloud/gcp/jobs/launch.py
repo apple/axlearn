@@ -181,7 +181,7 @@ class BaseBastionManagedJob(Job):
     class Config(Job.Config):
         """Configures BaseBastionManagedJob."""
 
-        # Used along with project to identify gcp settings
+        # Used along with project to identify `gcp_settings`.
         env_id: Optional[str] = None
         # Where to run the remote job.
         zone: Required[str] = REQUIRED
