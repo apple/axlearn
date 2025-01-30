@@ -180,7 +180,7 @@ def default_pad_example_fn(example: utils.Nested[Any]) -> utils.Nested[Any]:
 class _UnbatchDatasetIterator(grain.DatasetIterator):
     """An iterator that unbatches np.arrays along dim=0."""
 
-    def __init__(self, parent: grain.DatasetIterator, skip_empty_batch: bool = False):
+    def __init__(self, parent: grain.DatasetIterator, *, skip_empty_batch: bool = False):
         super().__init__(parent)
         # Index within the unbatched inputs.
         self._index = 0
@@ -190,37 +190,44 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
         self._skip_empty_batch = skip_empty_batch
 
     def __next__(self):
-        # Note that self._index may initially be non-zero, e.g. if restoring from checkpoint
-        # using `set_state`.
-        if self._current_batch is None:
-            # Possibly raises StopIteration.
-            example = next(self._parent)
-            leaves, structure = jax.tree.flatten(example)
-            if not leaves:
-                return next(self)  # Parent produced an empty batch, continue.
+        example = None
 
-            # Make sure all leaves have same batch dim.
-            if not all(leaves[0].shape[0] == x.shape[0] for x in leaves[1:]):
-                raise ValueError(
-                    f"Expected all leaves to have same batch dim: {utils.shapes(example)}"
-                )
-            self._current_batch = (leaves, structure)
+        # Use a loop to avoid having to recursively call next(self).
+        while example is None:
+            # Note that self._index may initially be non-zero, e.g. if restoring from checkpoint
+            # using `set_state`.
+            if self._current_batch is None:
+                # Possibly raises StopIteration.
+                example = next(self._parent)
+                leaves, structure = jax.tree.flatten(example)
+                if not leaves:
+                    example = None
+                    continue  # Parent produced an empty batch, continue.
 
-        leaves, structure = self._current_batch
-        assert len(leaves) > 0, self._current_batch
-        batch_size = leaves[0].shape[0]  # All leaves have same batch size due to check above.
-        skip_batch = batch_size == 0 and self._skip_empty_batch
-        if not skip_batch:
-            assert 0 <= self._index < batch_size, (self._index, batch_size)
-            example = jax.tree.unflatten(structure, (x[self._index] for x in leaves))
-        self._index += 1
+                # Make sure all leaves have same batch dim.
+                if not all(leaves[0].shape[0] == x.shape[0] for x in leaves[1:]):
+                    raise ValueError(
+                        f"Expected all leaves to have same batch dim: {utils.shapes(example)}"
+                    )
+                self._current_batch = (leaves, structure)
 
-        # Move onto the next batch.
-        if self._index >= batch_size:
-            self._index = 0
-            self._current_batch = None
-            self._parent_state = self._parent.get_state()
-        return next(self) if skip_batch else example
+            leaves, structure = self._current_batch
+            assert len(leaves) > 0, self._current_batch
+            batch_size = leaves[0].shape[0]  # All leaves have same batch size due to check above.
+            if batch_size == 0 and self._skip_empty_batch:
+                example = None
+            else:
+                assert 0 <= self._index < batch_size, (self._index, batch_size)
+                example = jax.tree.unflatten(structure, (x[self._index] for x in leaves))
+            self._index += 1
+
+            # Move onto the next batch.
+            if self._index >= batch_size:
+                self._index = 0
+                self._current_batch = None
+                self._parent_state = self._parent.get_state()
+
+        return example
 
     def get_state(self) -> dict[str, Any]:
         return {
