@@ -4,6 +4,7 @@
 
 Note that these utilities do not handle resource management.
 """
+
 import atexit
 import io
 import logging
@@ -513,7 +514,12 @@ class TPUGKEJob(GKEJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         volume_mounts = [self._output_volume_mount]
 
-        self._maybe_add_volume_mount(volume_mounts, spec=cfg.gcsfuse_mount)
+        if cfg.gcsfuse_mount:
+            self._maybe_add_volume_mount(volume_mounts, spec=cfg.gcsfuse_mount)
+            self._maybe_add_volume_mount(
+                volume_mounts, spec=VolumeMount(name="shared-memory", mount_path="/dev/shm")
+            )
+
         if cfg.host_mounts:
             for mount in cfg.host_mounts:
                 self._maybe_add_volume_mount(volume_mounts, spec=mount)
@@ -611,6 +617,16 @@ class TPUGKEJob(GKEJob):
             volumeMounts=volume_mounts,
         )
 
+    def _build_shared_memory_volumes(self):
+        volume = {
+            "name": "shared-memory",
+            "emptyDir": {
+                "medium": "Memory",
+                "sizeLimit": "1Gi",
+            },
+        }
+        return volume
+
     def _build_pod(self) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
@@ -625,6 +641,9 @@ class TPUGKEJob(GKEJob):
 
         volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
+            # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
+            # prefetch is enabled.
+            volumes.append(self._build_shared_memory_volumes())
             # Mount a GCS bucket as a volume.
             annotations.update(
                 {
@@ -644,6 +663,9 @@ class TPUGKEJob(GKEJob):
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
             # Caveat: --implicit-dirs might have negative impacts on i/o performance. See
             # https://github.com/googlecloudplatform/gcsfuse/blob/master/docs/semantics.md .
+            # See https://cloud.google.com/storage/docs/cloud-storage-fuse/config-file for more
+            # details about mountOptions.
+            # The mountOptions are following https://github.com/AI-Hypercomputer/maxtext/pull/1070.
             volumes.append(
                 dict(
                     name=cfg.gcsfuse_mount.name,
@@ -652,7 +674,9 @@ class TPUGKEJob(GKEJob):
                         readOnly=cfg.gcsfuse_mount.read_only,
                         volumeAttributes=dict(
                             bucketName=parsed.netloc,
-                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs",
+                            # pylint: disable=line-too-long
+                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1",
+                            gcsfuseMetadataPrefetchOnMount="true",  # Improves first-time read.
                         ),
                     ),
                 )
@@ -999,10 +1023,10 @@ class GPUGKEJob(GKEJob):
                 "NCCL_GPUDIRECTTCPX_TX_COMPLETION_NANOSLEEP": "1000",
                 "NCCL_GPUDIRECTTCPX_PROGRAM_FLOW_STEERING_WAIT_MICROS": "1000000",
                 "NCCL_GPUDIRECTTCPX_TX_BINDINGS": (
-                    "eth1:8-21,112-125;eth2:8-21,112-125;" "eth3:60-73,164-177;eth4:60-73,164-177"
+                    "eth1:8-21,112-125;eth2:8-21,112-125;eth3:60-73,164-177;eth4:60-73,164-177"
                 ),
                 "NCCL_GPUDIRECTTCPX_RX_BINDINGS": (
-                    "eth1:22-35,124-139;eth2:22-35,124-139;" "eth3:74-87,178-191;eth4:74-87,178-191"
+                    "eth1:22-35,124-139;eth2:22-35,124-139;eth3:74-87,178-191;eth4:74-87,178-191"
                 ),
                 "NCCL_GPUDIRECTTCPX_SOCKET_IFNAME": "eth1,eth2,eth3,eth4",
                 "NCCL_GPUDIRECTTCPX_CTRL_DEV": "eth0",
@@ -1071,8 +1095,7 @@ class GPUGKEJob(GKEJob):
         return dict(
             name="tcpx-nccl-plugin-installer",
             image=(
-                "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/"
-                "nccl-plugin-gpudirecttcpx-dev:v3.1.7"
+                "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/nccl-plugin-gpudirecttcpx-dev:v3.1.7"
             ),
             command=command,
             env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
