@@ -476,9 +476,20 @@ def get_consistent_proc_info(
 class OrbaxEmergencyCheckpointer(BaseCheckpointer):
     """Checkpointer implementation that uses Orbax emergency checkpoint.
 
-    TLDR: To use the checkpointer, besides configuring it properly, it also requires
+    ## Summary:
+
+    Using this checkpointer for large training jobs can improve goodput:
+    1. It can save to a local path (usually backed by a ramdisk) more frequently, so the progress
+       lost during restart can be reduced. This is in contrast with saving to remote filesystem
+       such as GCS directly, which has limited bandwidth to support frequent checkpointing.
+    2. During restart, checkpoint can be broadcasted through network, which is faster than reading
+       from a remote filesystem.
+
+    To use the checkpointer, besides configuring it properly, it also requires
     `get_consistent_proc_info` to be called and pass `inv_proc_id` and `address` as
     `process_id` and `coordinator_address` to `jax.distributed.initialize`.
+
+    ## How it works under the hood
 
     This checkpointer is intended for multi-slice training that uses data-parallelism across
     slices. Orbax emergency checkpoint works by exploiting the following properties:
@@ -507,6 +518,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
     and tf iterators. These non-tensor states will be saved whenever local or persistent checkpoint
     need to be saved. As the result, the persistent checkpoint structure looks like this:
 
+    ```
     ├── path_prefix
     │   ├── non-tensors
     │   │   └── step_00000010
@@ -515,6 +527,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
     │   └── tensors
     │       └── step_00000010
     │           └── orbax_files_xxx
+    ```
 
     A persistent training checkpoint `step_xxx` is commited when `non-tensors/step_xxx/index`
     exists and `tensors/step_xxx` is commited by Orbax. Refer to the docstring of
