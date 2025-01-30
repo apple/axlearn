@@ -263,6 +263,26 @@ class UtilsTest(TestCase):
         ds = iter(ds)
         self._test_checkpointing(ds)
 
+    def test_unbatch_empty_batch(self):
+        # Test with skip_empty_batch=True.
+        ds = fake_grain_source(
+            [
+                {"x": np.array([]), "y": np.array([])},
+                {"x": np.array([]), "y": np.array([])},
+                {"x": np.array([1, 2]), "y": np.array([1, 2])},
+            ]
+        )
+        ds = unbatch(maybe_to_iter_dataset(ds), skip_empty_batch=True)
+        ds = iter(ds)
+        self.assertEqual({"x": 1, "y": 1}, next(ds))
+        self.assertEqual({"x": 2, "y": 2}, next(ds))
+
+        # Test with skip_empty_batch=False.
+        with self.assertRaisesRegex(AssertionError, "(0, 0)"):
+            ds = fake_grain_source([{"x": np.array([]), "y": np.array([])}])
+            ds = unbatch(maybe_to_iter_dataset(ds))
+            list(ds)
+
     @parameterized.parameters(
         dict(
             feature_lens={"input_ids": 5},

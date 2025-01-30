@@ -180,13 +180,14 @@ def default_pad_example_fn(example: utils.Nested[Any]) -> utils.Nested[Any]:
 class _UnbatchDatasetIterator(grain.DatasetIterator):
     """An iterator that unbatches np.arrays along dim=0."""
 
-    def __init__(self, parent: grain.DatasetIterator):
+    def __init__(self, parent: grain.DatasetIterator, skip_empty_batch: bool = False):
         super().__init__(parent)
         # Index within the unbatched inputs.
         self._index = 0
         self._current_batch = None
         # Don't advance parent state until all indices in current batch have been yielded.
         self._parent_state = self._parent.get_state()
+        self._skip_empty_batch = skip_empty_batch
 
     def __next__(self):
         # Note that self._index may initially be non-zero, e.g. if restoring from checkpoint
@@ -208,8 +209,10 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
         leaves, structure = self._current_batch
         assert len(leaves) > 0, self._current_batch
         batch_size = leaves[0].shape[0]  # All leaves have same batch size due to check above.
-        assert 0 <= self._index < batch_size, (self._index, batch_size)
-        example = jax.tree.unflatten(structure, (x[self._index] for x in leaves))
+        skip_batch = batch_size == 0 and self._skip_empty_batch
+        if not skip_batch:
+            assert 0 <= self._index < batch_size, (self._index, batch_size)
+            example = jax.tree.unflatten(structure, (x[self._index] for x in leaves))
         self._index += 1
 
         # Move onto the next batch.
@@ -217,7 +220,7 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
             self._index = 0
             self._current_batch = None
             self._parent_state = self._parent.get_state()
-        return example
+        return next(self) if skip_batch else example
 
     def get_state(self) -> dict[str, Any]:
         return {
@@ -233,14 +236,20 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
 
 
 class _UnbatchIterDataset(grain.IterDataset):
+    def __init__(self, parents, *, skip_empty_batch: bool = False):
+        super().__init__(parents)
+        self._skip_empty_batch = skip_empty_batch
+
     def __str__(self) -> str:
         return "UnbatchIterDataset"
 
     def __iter__(self) -> _UnbatchDatasetIterator:
-        return _UnbatchDatasetIterator(self._parent.__iter__())
+        return _UnbatchDatasetIterator(
+            self._parent.__iter__(), skip_empty_batch=self._skip_empty_batch
+        )
 
 
-def unbatch(ds: Dataset) -> Dataset:
+def unbatch(ds: Dataset, *, skip_empty_batch: bool = False) -> Dataset:
     """Similar to `input_tf_data.unbatch`.
 
     Unlike `batch`, which naively groups top-level elements, unbatch applies to JAX leaves only.
@@ -250,12 +259,14 @@ def unbatch(ds: Dataset) -> Dataset:
 
     Args:
         ds: A Dataset where each example has leaves with the same batch dim.
+        skip_empty_batch: Whether to skip batches with leading batch dim=0. If False, an assertion
+            error will be raised upon encountering an empty batch.
 
     Returns:
         A Dataset with unbatched inputs.
     """
     _ensure_iter_dataset(ds)
-    return _UnbatchIterDataset(ds)
+    return _UnbatchIterDataset(ds, skip_empty_batch=skip_empty_batch)
 
 
 def rekey(
