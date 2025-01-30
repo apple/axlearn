@@ -403,26 +403,28 @@ class ModelTest(TestCase):
             ),
             {"metrics_output": 0},
         )
-        test_no_conflict(
-            causal_lm.CompositeLossMetrics.default_config().set(
-                metrics={
-                    "child1": DummyMetrics.default_config(),
-                    "child2": DummyMetrics.default_config(),
-                }
-            ),
-            OutputCollection(
-                summaries={"parent_summary": 1, "child1_summary": 0, "child2_summary": 0},
-                module_outputs={
-                    "parent_output": 1,
-                    "metrics": {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
-                },
-                state_updates={
-                    "parent_state": 1,
-                    "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
-                },
-            ),
-            {"child1_output": 0, "child2_output": 0},
-        )
+        for flatten_metrics in (None, True):
+            test_no_conflict(
+                causal_lm.CompositeLossMetrics.default_config().set(
+                    metrics={
+                        "child1": DummyMetrics.default_config(),
+                        "child2": DummyMetrics.default_config(),
+                    },
+                    flatten_metrics=flatten_metrics,
+                ),
+                OutputCollection(
+                    summaries={"parent_summary": 1, "child1_summary": 0, "child2_summary": 0},
+                    module_outputs={
+                        "parent_output": 1,
+                        "metrics": {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
+                    },
+                    state_updates={
+                        "parent_state": 1,
+                        "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
+                    },
+                ),
+                {"child1_output": 0, "child2_output": 0},
+            )
 
         # Test without flattening.
         test_no_conflict(
