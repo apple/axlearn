@@ -27,7 +27,7 @@ import traceback
 import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Any, Callable, NamedTuple, Optional, Protocol, TypeVar, Union
+from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, TypeVar, Union
 
 import jax
 import numpy as np
@@ -91,6 +91,13 @@ class HybridMeshShape:
         return len(self.ici_mesh_shape)
 
 
+# "device" = Accelerator memory, e.g. HBM.
+# "pinned_host" = Page locked memory on CPU, which can be address directly by accelerators by
+# direct memory access (DMA). For TPU, "pinned_host" memory layout follows TPU device tile
+# layout and usually cannot be zero-copy converted to a CPU-tensor.
+MemoryKind = Literal["device", "pinned_host"]
+
+
 @dataclasses.dataclass
 class TensorSpec:
     """Specification of a Tensor.
@@ -101,11 +108,12 @@ class TensorSpec:
     shape: Sequence[int]
     dtype: Optional[jnp.dtype] = None
     mesh_axes: Optional[PartitionSpec] = None
+    memory_kind: Optional[MemoryKind] = None
 
     @property
     def sharding(self) -> jax.sharding.Sharding:
         mesh = thread_resources.env.physical_mesh
-        return jax.sharding.NamedSharding(mesh, self.mesh_axes)
+        return jax.sharding.NamedSharding(mesh, self.mesh_axes, memory_kind=self.memory_kind)
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
