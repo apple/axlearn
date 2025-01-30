@@ -345,7 +345,7 @@ class ModelTest(TestCase):
                 self.add_summary(f"{self.name}_summary", 0)
                 self.add_module_output(f"{self.name}_output", 0)
                 self.add_state_update(f"{self.name}_state", 0)
-                return 0, {}
+                return 0, {f"{self.name}_output": 0}
 
         class DummyConflictModel(causal_lm.Model):
             def _metrics(self, *args, **kwargs):
@@ -383,11 +383,16 @@ class ModelTest(TestCase):
                 self.add_state_update("parent_state", 1)
                 return super()._metrics(*args, **kwargs)
 
-        def test_no_conflict(metrics_cfg: BaseLossMetrics.Config, expected: OutputCollection):
-            _, output_collection = forward(DummyModel.default_config(), metrics_cfg)
-            self.assertNestedEqual(output_collection.summaries, expected.summaries)
-            self.assertNestedEqual(output_collection.module_outputs, expected.module_outputs)
-            self.assertNestedEqual(output_collection.state_updates, expected.state_updates)
+        def test_no_conflict(
+            metrics_cfg: BaseLossMetrics.Config,
+            expected_oc: OutputCollection,
+            expected_metrics: dict,
+        ):
+            (_, metrics), output_collection = forward(DummyModel.default_config(), metrics_cfg)
+            self.assertNestedEqual(output_collection.summaries, expected_oc.summaries)
+            self.assertNestedEqual(output_collection.module_outputs, expected_oc.module_outputs)
+            self.assertNestedEqual(output_collection.state_updates, expected_oc.state_updates)
+            self.assertNestedEqual(metrics, expected_metrics)
 
         test_no_conflict(
             DummyMetrics.default_config(),
@@ -396,6 +401,7 @@ class ModelTest(TestCase):
                 module_outputs={"parent_output": 1, "metrics": {"metrics_output": 0}},
                 state_updates={"parent_state": 1, "metrics": {"metrics_state": 0}},
             ),
+            {"metrics_output": 0},
         )
         test_no_conflict(
             causal_lm.CompositeLossMetrics.default_config().set(
@@ -415,6 +421,34 @@ class ModelTest(TestCase):
                     "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
                 },
             ),
+            {"child1_output": 0, "child2_output": 0},
+        )
+
+        # Test without flattening.
+        test_no_conflict(
+            causal_lm.CompositeLossMetrics.default_config().set(
+                metrics={
+                    "child1": DummyMetrics.default_config(),
+                    "child2": DummyMetrics.default_config(),
+                },
+                flatten_metrics=False,
+            ),
+            OutputCollection(
+                summaries={
+                    "parent_summary": 1,
+                    "child1": {"child1_summary": 0},
+                    "child2": {"child2_summary": 0},
+                },
+                module_outputs={
+                    "parent_output": 1,
+                    "metrics": {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
+                },
+                state_updates={
+                    "parent_state": 1,
+                    "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
+                },
+            ),
+            {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
         )
 
     # TODO(markblee): Add a pytest marker for multi-device tests.
@@ -475,45 +509,6 @@ class ModelTest(TestCase):
             self.assertEqual(
                 hlo_text.count("sharding={devices=[2,2]<=[4] last_tile_dim_replicate}"), 1
             )
-
-    def test_share_module_paths(self):
-        batch_size, seq_len, vocab_size = 3, 10, 10
-
-        class DummyMetrics(BaseLossMetrics):
-            """Dummy layer that calls `get_shared_module`."""
-
-            def forward(self, **kwargs):
-                del kwargs
-                return 0, self.get_shared_module("emb").state
-
-        cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
-        cfg.shared_module_paths = {"emb": "decoder.emb"}
-        cfg.metrics = DummyMetrics.default_config()
-
-        model: causal_lm.Model = cfg.set(name="ref_model").instantiate(parent=None)
-
-        id_key, tgt_key, fwd_key, init_key = jax.random.split(jax.random.PRNGKey(0), num=4)
-        model_params = model.initialize_parameters_recursively(init_key)
-
-        shape = [batch_size, seq_len]
-        input_ids = jax.random.randint(id_key, shape=shape, minval=0, maxval=vocab_size)
-        target_labels = jax.random.randint(tgt_key, shape=shape, minval=-1, maxval=vocab_size)
-        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
-
-        # Ensure that forward outputs are consistent with metrics output.
-        (_, aux), _ = functional(
-            inputs=dict(input_batch=input_batch, return_aux=True),
-            module=model,
-            prng_key=fwd_key,
-            state=model_params,
-            is_training=True,
-        )
-        self.assertNestedAllClose(aux["metrics"], model_params["decoder"]["emb"])
-
-        # Fail if path is invalid.
-        with self.assertRaisesRegex(ValueError, "invalid.path"):
-            cfg.shared_module_paths = {"emb": "invalid.path"}
-            cfg.set(name="ref_model").instantiate(parent=None)
 
 
 class CrossEntropyLossMetricsTest(TestCase):

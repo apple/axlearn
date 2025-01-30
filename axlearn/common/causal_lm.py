@@ -233,10 +233,14 @@ class CompositeLossMetrics(BaseLossMetrics):
         Attributes:
             metrics: A mapping from child name to metrics config.
             loss_weights: An optional mapping from child name to loss weight.
+                If None, all weights are considered 1.
+            flatten_metrics: Whether to flatten summaries and metrics from each child. If None,
+                defaults to True.
         """
 
         metrics: Required[dict[str, BaseLossMetrics.Config]] = REQUIRED
         loss_weights: Optional[dict[str, float]] = None
+        flatten_metrics: Optional[bool] = None
 
     def __init__(self, cfg, *, parent):
         super().__init__(cfg, parent=parent)
@@ -274,11 +278,12 @@ class CompositeLossMetrics(BaseLossMetrics):
             loss = loss + child_loss
 
             ctx = self.get_invocation_context()
-            # Flatten summaries for backwards compatibility.
-            # TODO(markblee): Avoid flattening summaries and metrics for compat with composite
-            # metrics of multiple metrics of the same kind.
-            _update(ctx.output_collection.summaries, ctx.output_collection.summaries.pop(name))
-            _update(metrics, child_metrics)
+
+            if cfg.flatten_metrics is False:
+                _update(metrics, {name: child_metrics})
+            else:
+                _update(ctx.output_collection.summaries, ctx.output_collection.summaries.pop(name))
+                _update(metrics, child_metrics)
 
         return loss, metrics
 
@@ -326,23 +331,12 @@ class Model(BaseModel):
         seq_axis_names: Optional[tuple[str]] = None
         # Configures training metrics.
         metrics: BaseLossMetrics.Config = metrics_config()
-        # An optional mapping from name to child path to share with descendants.
-        shared_module_paths: Optional[dict[str, str]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._add_child("decoder", cfg.decoder)
         self._add_child("metrics", cfg.metrics)
-
-        for name, path in (cfg.shared_module_paths or {}).items():
-            module = self
-            for part in path.split("."):
-                if part not in module.children:
-                    raise ValueError(f"Module {self.name} does not have a descendant at {path=}.")
-                module = module.children[part]
-
-            self._share_with_descendants(module, shared_module_name=name)
 
     @classmethod
     def default_config(cls):
