@@ -115,9 +115,11 @@ def _query_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]
     """build the iteration begin/end indices for the query dimension.
 
     Returns:
-        Index_offset tensor where index_offset[i][j] to store the first jth available
-    block index for ith query block, and the unused blocks are padded with 0 at the very end.
-        Index_offset_size tensor to store the number of valid blocks for each iteration.
+        Index_offset (num_q_blocks, num_kv_blocks) tensor where index_offset[i][j]
+    to store the first jth available block index for ith query block, and the unused
+    blocks are padded with 0 at the very end.
+        Index_offset_size ((num_q_blocks) tensor to store the number of valid blocks
+    for each iteration.
     """
     num_q_blocks, num_kv_blocks = block_mask_map.shape
     index_offset = np.zeros(shape=(num_q_blocks, num_kv_blocks), dtype=np.int32)
@@ -136,9 +138,11 @@ def _key_value_iterator_indices(block_mask_map: np.ndarray)->Tuple[Tensor, Tenso
     """build the iteration begin/end indices for the key/value dimension.
 
     Returns:
-        Index_offset tensor where index_offset[i][j] to store the first jth available
-    block index for ith kv block, and the unused blocks are padded with 0 at the very end.
-        Index_offset_size tensor to store the number of valid blocks for each iteration.
+        Index_offset (num_kv_blocks, num_q_blocks) tensor where index_offset[i][j]
+    to store the first jth available block index for ith kv block, and the unused
+    blocks are padded with 0 at the very end.
+        Index_offset_size (num_kv_blocks) tensor to store the number of valid blocks
+    for each iteration.
     """
     num_q_blocks, num_kv_blocks = block_mask_map.shape
     index_offset = np.zeros(shape=(num_kv_blocks, num_q_blocks), dtype=np.int32)
