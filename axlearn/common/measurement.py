@@ -18,11 +18,23 @@ class Event(enum.Enum):
         START_JOB: Start of job.
         END_JOB: End of job.
         START_STEP: Start of a training step. Should be recorded with `step` as a positional arg.
+        START_ACCELERATOR_INIT: Start of accelerator mesh initialization.
+        END_ACCELERATOR_INIT: End of accelerator mesh initialization.
+        START_TRAINING_PREPARATION: Start of training preparation.
+        END_TRAINING_PREPARATION: End of training preparation.
+        START_DATA_LOADING: Start of data loading.
+        END_DATA_LOADING: End of data loading.
     """
 
     START_JOB = "START_JOB"
     END_JOB = "END_JOB"
     START_STEP = "START_STEP"
+    START_ACCELERATOR_INIT = "START_ACCELERATOR_INIT"
+    END_ACCELERATOR_INIT = "END_ACCELERATOR_INIT"
+    START_TRAINING_PREPARATION = "START_TRAINING_PREPARATION"
+    END_TRAINING_PREPARATION = "END_TRAINING_PREPARATION"
+    START_DATA_LOADING = "START_DATA_LOADING"
+    END_DATA_LOADING = "END_DATA_LOADING"
 
 
 class Recorder(Configurable):
@@ -45,6 +57,10 @@ class Recorder(Configurable):
 
     def record(self, event: Event, *args, **kwargs):
         """Records an event with the given name."""
+        raise NotImplementedError(type(self))
+
+    def start_monitoring(self, **kwargs):
+        """Starts computing and uploading metrics at some configured interval in the background."""
         raise NotImplementedError(type(self))
 
 
@@ -120,3 +136,16 @@ def record_event(event: Event):
         logging.log_first_n(logging.INFO, "No recorder configured, ignoring events.", 1)
     else:
         global_recorder.record(event)
+
+
+def start_monitoring():
+    """Begins monitoring events as per global monitor functionality."""
+    if global_recorder is None:
+        logging.log_first_n(
+            logging.INFO, "Since recorder is not set up, monitoring cannot be started.", 1
+        )
+    else:
+        global_recorder.start_monitoring()
+        logging.info(
+            "Starting monitoring of events using global recorder's monitor: %s", global_recorder
+        )
