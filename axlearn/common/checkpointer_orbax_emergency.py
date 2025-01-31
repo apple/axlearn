@@ -478,7 +478,12 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
 
     ## Summary:
 
-    Using this checkpointer for large training jobs can improve goodput:
+    This checkpointer is designed to improve the goodput of large multi-slice training jobs that
+    use data-parallelism across slices. At least two data-parallel slices are required. For other
+    use cases where this is not applicable or ultimate goodput is not required, please use
+    `OrbaxCheckpointer`.
+
+    Why it can improve goodput:
     1. It can save to a local path (usually backed by a ramdisk) more frequently, so the progress
        lost during restart can be reduced. This is in contrast with saving to remote filesystem
        such as GCS directly, which has limited bandwidth to support frequent checkpointing.
