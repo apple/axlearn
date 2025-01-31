@@ -248,6 +248,7 @@ class TPUGKEJobTest(TestCase):
         enable_pre_provisioner: Optional[bool] = None,
         host_mount_spec: Optional[list[str]] = None,
         priority_class: Optional[str] = None,
+        gcsfuse_mount_spec: Optional[str] = None,
     ):
         with mock_gcp_settings([job.__name__, bundler.__name__], self._mock_settings):
             fv = flags.FlagValues()
@@ -258,6 +259,8 @@ class TPUGKEJobTest(TestCase):
                 fv.set_default("service_account", service_account)
             if host_mount_spec:
                 fv.set_default("host_mount_spec", host_mount_spec)
+            if gcsfuse_mount_spec:
+                fv.set_default("gcsfuse_mount_spec", gcsfuse_mount_spec)
             fv.mark_as_parsed()
             cfg = job.TPUGKEJob.from_flags(fv)
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
@@ -360,6 +363,7 @@ class TPUGKEJobTest(TestCase):
         location_hint=["test-location-hint", None],
         enable_tpu_smart_repair=[True, False],
         host_mount_spec=[["name=host-mount,host_path=/tmp,mount_path=/host-tmp"], None],
+        gcsfuse_mount_spec=[["mount_path=/tmp/gcsfuse", "gcs_path=/tmp/gcs_path"], None],
         priority_class=[None, "such-high-priority"],
     )
     def test_build_pod(
@@ -373,11 +377,13 @@ class TPUGKEJobTest(TestCase):
         location_hint: Optional[str] = None,
         enable_tpu_smart_repair: bool = False,
         host_mount_spec: Optional[list[str]] = None,
+        gcsfuse_mount_spec: Optional[list[str]] = None,
         priority_class: Optional[str] = None,
     ):
         with mock.patch.dict("os.environ", env), self._job_config(
             bundler_cls,
             host_mount_spec=host_mount_spec,
+            gcsfuse_mount_spec=gcsfuse_mount_spec,
             priority_class=priority_class,
         ) as cfg:
             gke_job: job.TPUGKEJob = cfg.set(
@@ -446,6 +452,14 @@ class TPUGKEJobTest(TestCase):
                         break
                 else:
                     self.fail("host-mount not found!")
+
+            if gcsfuse_mount_spec:
+                self.assertIn("shared-memory", [v["name"] for v in pod_spec["volumes"]])
+                for v in pod_spec["volumes"]:
+                    if v["name"] == "shared-memory":
+                        self.assertIn("sizeLimit", v["emptyDir"])
+            else:
+                self.assertNotIn("shared-memory", [v["name"] for v in pod_spec["volumes"]])
 
             self.assertEqual(container["imagePullPolicy"], "Always")
 

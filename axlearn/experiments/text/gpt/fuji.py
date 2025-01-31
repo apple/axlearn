@@ -56,7 +56,7 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -320,6 +320,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),
@@ -332,7 +333,7 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
                 # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
             ),
@@ -412,7 +413,7 @@ def get_trainer_kwargs(
                 ),
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
             ),
@@ -475,6 +476,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),
@@ -494,6 +496,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
+                            V6eFlashConfigModifier.default_config(),
                             GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
@@ -709,11 +712,11 @@ def trainer_configs(
 
                 # The original config was supposed to run on >= 32 machines.
                 # pylint: disable=cell-var-from-loop
-                cfg.input.batcher.global_batch_size //= (
+                cfg.input.input_dispatcher.global_logical_batch_size //= (
                     128 if version in (Version.V3, Version.V3_TIKTOKEN) else 32
                 )
                 for evaler in cfg.evalers.values():
-                    evaler.input.batcher.global_batch_size //= (
+                    evaler.input.input_dispatcher.global_logical_batch_size //= (
                         128 if version in (Version.V3, Version.V3_TIKTOKEN) else 32
                     )
                 # pylint: enable=cell-var-from-loop

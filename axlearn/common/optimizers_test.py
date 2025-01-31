@@ -40,6 +40,7 @@ from axlearn.common.optimizers import (
     ema,
     l2_regularizer,
     lion_optimizer,
+    offload_optimizer,
     opt_param_values,
     param_ema,
     per_param_scale_by_path,
@@ -379,12 +380,25 @@ class OptimizerTest(TestCase):
         jax.tree.map(_check_dtypes, init_state, partition_state, update_state)
 
     def _test_optimizer(self, optimizer):
-        params = OptParam(
-            value=jnp.asarray([0, 1, 2, -3], dtype=jnp.float32),
-            factorization_spec=None,
-            weight_decay_scale=1.0,
-        )
-        state = optimizer.init(params)
+        self._test_optimizer_helper(optimizer, True)
+        self._test_optimizer_helper(optimizer, False)
+
+    def _test_optimizer_helper(self, optimizer, offload):
+        if offload:
+            optimizer = offload_optimizer(optimizer)
+        params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
+
+        def create_opt_params(x):
+            return jax.tree.map(
+                lambda y: OptParam(
+                    value=y,
+                    factorization_spec=None,
+                    weight_decay_scale=1.0,
+                ),
+                x,
+            )
+
+        state = optimizer.init(create_opt_params(params))
 
         param_spec = ParameterSpec(shape=[4], mesh_axes=PartitionSpec("model"), factorization=None)
         state_partition_spec = optimizer.partition(param_spec)
@@ -399,13 +413,23 @@ class OptimizerTest(TestCase):
 
         jax.tree.map(check_partition_spec, state_partition_spec, state)
 
-        def compute_loss(x):
-            return -jax.nn.log_softmax(x)[1]
+        @jax.jit
+        def jit_fn(params, state):
+            def compute_loss(x):
+                return -jax.nn.log_softmax(x)[1]
 
-        loss, grads = jax.value_and_grad(compute_loss)(params.value)
-        updates, _ = optimizer.update(grads, state=state, params=params)
-        updated_params = optax.apply_updates(params.value, updates)
-        new_loss = compute_loss(updated_params)
+            params = create_opt_params(params)
+            loss, grads = jax.value_and_grad(compute_loss)(params.value)
+            updates, _ = optimizer.update(grads, state=state, params=params)
+            updated_params = optax.apply_updates(params.value, updates)
+            return loss, compute_loss(updated_params)
+
+        if offload:
+            self.assertIn(
+                "TransferToMemoryKind(memory_kind='pinned_host')",
+                str(jax.make_jaxpr(jit_fn)(params, state)),
+            )
+        loss, new_loss = jit_fn(params, state)
         self.assertLess(new_loss, loss)
 
     @parameterized.product(
@@ -788,14 +812,17 @@ class OptimizerTest(TestCase):
             config_for_function(drop_norm_by_grad_norm_ema).set(multipliers=[0.1, 1]),
             config_for_function(drop_norm_by_grad_norm_stddev).set(multipliers=[20, 40]),
         ),
+        offload=(True, False),
     )
-    def test_gradient_skipping_and_clipping(self, max_norm, drop_norm):
+    def test_gradient_skipping_and_clipping(self, max_norm, drop_norm, offload):
         clip = skip_and_clip_by_global_norm(
             inner=_counter(),
             drop_norm=drop_norm,
             max_norm=max_norm,
             grad_norm_ema_decay=0.99,
         )
+        if offload:
+            clip = offload_optimizer(clip)
         params = jnp.asarray([0, 1, 2, -3], dtype=jnp.float32)
         state = clip.init(params)
         init_ema = state.grad_norm_ema
@@ -821,7 +848,11 @@ class OptimizerTest(TestCase):
         else:
             is_valid_step = drop_norm is None or g_norm < drop_norm
 
-        updates, state = clip.update(grads, state=state, params=params)
+        @jax.jit
+        def jit_fn(grads, state, params):
+            return clip.update(grads, state=state, params=params)
+
+        updates, state = jit_fn(grads, state, params)
         if is_valid_step:
             if max_norm is None or g_norm < max_norm:
                 np.testing.assert_allclose(updates, grads, atol=1e-6)

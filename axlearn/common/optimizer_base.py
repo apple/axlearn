@@ -16,14 +16,13 @@ factorization, specifically:
    - weight_decay_scale: control the weight decay rate.
 """
 import dataclasses
-from collections.abc import Sequence
 from typing import Any, Callable, NamedTuple, Optional, Union
 
 import optax
 import typing_extensions
 
-from axlearn.common.base_layer import FactorizationSpec, NestedParameterSpec
-from axlearn.common.utils import Tensor, TensorSpec
+from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
+from axlearn.common.utils import Nested, Tensor, TensorSpec
 
 
 @dataclasses.dataclass
@@ -66,8 +65,7 @@ class TransformUpdateFn(typing_extensions.Protocol):
 
 # Specification of an optimizer state array.
 OptStateSpec = TensorSpec
-NestedOptStateSpec = Union[OptStateSpec, dict, Sequence]
-TransformPartitionSpecFn = Callable[[NestedParameterSpec], NestedOptStateSpec]
+TransformPartitionSpecFn = Callable[[Nested[ParameterSpec]], Nested[OptStateSpec]]
 
 
 class PartitionedGradientTransformation(NamedTuple):

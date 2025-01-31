@@ -5,6 +5,10 @@
 # google/jax:
 # Copyright 2018 Google LLC.
 # Licensed under the Apache License, Version 2.0 (the "License").
+#
+# AI-Hypercomputer/maxtext:
+# Copyright 2024 The MaxText Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 """Common utilities."""
 
@@ -23,7 +27,7 @@ import traceback
 import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Any, Callable, NamedTuple, Optional, Protocol, TypeVar, Union
+from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, TypeVar, Union
 
 import jax
 import numpy as np
@@ -87,6 +91,13 @@ class HybridMeshShape:
         return len(self.ici_mesh_shape)
 
 
+# "device" = Accelerator memory, e.g. HBM.
+# "pinned_host" = Page locked memory on CPU, which can be address directly by accelerators by
+# direct memory access (DMA). For TPU, "pinned_host" memory layout follows TPU device tile
+# layout and usually cannot be zero-copy converted to a CPU-tensor.
+MemoryKind = Literal["device", "pinned_host"]
+
+
 @dataclasses.dataclass
 class TensorSpec:
     """Specification of a Tensor.
@@ -97,11 +108,12 @@ class TensorSpec:
     shape: Sequence[int]
     dtype: Optional[jnp.dtype] = None
     mesh_axes: Optional[PartitionSpec] = None
+    memory_kind: Optional[MemoryKind] = None
 
     @property
     def sharding(self) -> jax.sharding.Sharding:
         mesh = thread_resources.env.physical_mesh
-        return jax.sharding.NamedSharding(mesh, self.mesh_axes)
+        return jax.sharding.NamedSharding(mesh, self.mesh_axes, memory_kind=self.memory_kind)
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
@@ -1258,10 +1270,78 @@ def register_per_param_settings(
     return settings
 
 
+def _reshape_mesh_to_rings(a: np.ndarray, *, shape: tuple[int, int]) -> np.ndarray:
+    """Reshapes device mesh to rings for 64x4 or 32x8 mesh shape.
+
+    Adapted from maxtext and made some code simplifications. Reference:
+    https://github.com/AI-Hypercomputer/maxtext/blob/7f0dcef34f4857476d19b4ca9ceada654246c0b0/MaxText/max_utils.py#L474.
+
+    64x4 and 32x8 are non-native mesh sizes on v6e and v5e and require careful arrangement of
+    devices to achieve good performance.
+    """
+    b = []
+    if shape == (64, 4):
+        for i in range(8):
+            b.append([])
+            for j in range(8):
+                a_i = i * 2
+                a_j = j * 2
+                # Forms a ring of size 4.
+                b[i].append([a[a_i, a_j], a[a_i, a_j + 1], a[a_i + 1, a_j + 1], a[a_i + 1, a_j]])
+    elif shape == (32, 8):
+        for i in range(8):
+            b.append([])
+            for j in range(4):
+                a_i = i * 2
+                a_j = j * 4
+                # Forms a ring of size 8.
+                b[i].append(
+                    [
+                        a[a_i, a_j],
+                        a[a_i, a_j + 1],
+                        a[a_i, a_j + 2],
+                        a[a_i, a_j + 3],
+                        a[a_i + 1, a_j + 3],
+                        a[a_i + 1, a_j + 2],
+                        a[a_i + 1, a_j + 1],
+                        a[a_i + 1, a_j],
+                    ]
+                )
+    else:
+        raise ValueError(f"The target mesh shape {shape} is not implemented.")
+    return np.reshape(np.array(b), shape)
+
+
+def _maybe_get_special_mesh(
+    mesh_shape: MeshShape, *, devices: np.ndarray
+) -> Optional[tuple[int, int]]:
+    """Checks if any of the special mesh shapes are applicable."""
+    if int(np.prod(mesh_shape)) != 256:
+        return None
+    if getattr(devices[0], "device_kind", None) not in [
+        "TPU v5e",
+        "TPU v6e",
+        "TPU v6 lite",
+        "TPU v5 lite",
+    ]:
+        return None
+
+    filtered_mesh = tuple(filter(lambda x: x != 1, mesh_shape))
+    target_shapes = [(64, 4), (32, 8)]
+    return None if filtered_mesh not in target_shapes else filtered_mesh
+
+
 def build_standard_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> np.ndarray:
     logging.info("Building device mesh.")
     mesh_shape = infer_mesh_shape(mesh_shape, num_devices=devices.size)
     try:
+        if (shape := _maybe_get_special_mesh(mesh_shape, devices=devices)) is not None:
+            # If any of the special mesh shapes is applicable, use them.
+            mesh = mesh_utils.create_device_mesh([16, 16], devices=devices)
+            mesh = _reshape_mesh_to_rings(mesh, shape=shape)
+            mesh = mesh.reshape(mesh_shape)
+            logging.log_first_n(logging.INFO, "Using custom mesh: %s", 1, str(mesh))
+            return mesh
         return mesh_utils.create_device_mesh(mesh_shape, devices=devices)
     except NotImplementedError as e:
         logging.warning(

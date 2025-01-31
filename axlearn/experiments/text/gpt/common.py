@@ -54,6 +54,7 @@ from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.flash_attention.layer import FlashAttention
+from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
 from axlearn.common.optimizer_base import PartitionedGradientTransformation
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
@@ -573,8 +574,9 @@ def evaler_config_dict(
         evaler_input = input_tf_data.Input.default_config().set(
             is_training=False,
             source=input_source_config,
+            input_dispatcher=InputDispatcher.default_config(),
             processor=config_for_function(input_tf_data.identity),
-            batcher=config_for_function(input_tf_data.batch).set(
+            batcher=config_for_function(input_tf_data.per_feed_batch).set(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
@@ -673,9 +675,11 @@ def get_trainer_config_fn(
         cfg.input = input_tf_data.Input.default_config().set(
             is_training=True,
             source=train_input_source,
+            input_dispatcher=InputDispatcher.default_config().set(
+                global_logical_batch_size=train_batch_size,
+            ),
             processor=config_for_function(input_tf_data.identity),
-            batcher=config_for_function(input_tf_data.batch).set(
-                global_batch_size=train_batch_size,
+            batcher=config_for_function(input_tf_data.per_feed_batch).set(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
@@ -690,7 +694,9 @@ def get_trainer_config_fn(
         )
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
-            evaler_cfg.input.batcher.set(global_batch_size=eval_batch_size or train_batch_size)
+            evaler_cfg.input.input_dispatcher.global_logical_batch_size = (
+                eval_batch_size or train_batch_size
+            )
             evaler_cfg.set(
                 eval_policy=config_for_function(eval_every_n_steps_policy).set(
                     n=eval_every_n_steps,

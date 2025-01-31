@@ -3,6 +3,7 @@
 """Tests autoregressive models."""
 
 from functools import partial
+from typing import cast
 
 import jax
 import jax.random
@@ -15,23 +16,31 @@ from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm, utils
 from axlearn.common.attention import (
+    BaseStackedTransformerLayer,
     CausalAttentionLogitBiasLayer,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
 )
+from axlearn.common.config import config_for_function
+from axlearn.common.learner import Learner
 from axlearn.common.loss import cross_entropy
-from axlearn.common.metrics import MetricAccumulator
+from axlearn.common.metrics import BaseLossMetrics, MetricAccumulator, WeightedScalar
 from axlearn.common.module import (
     InvocationContext,
+    OutputCollection,
+    child_context,
     functional,
     new_output_collection,
     set_current_context,
 )
+from axlearn.common.optimizer_base import OptParam
+from axlearn.common.optimizers import sgd_optimizer
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
+from axlearn.common.update_transformation import ForwardBackwardOutputs, ForwardOutputs
 from axlearn.common.utils import Tensor
 
 
@@ -110,24 +119,24 @@ class Gpt2TransformerTest(TestCase):
 
 
 class ModelTest(TestCase):
-    def test_metrics(self):
+    def _model_config(self, vocab_size: int, seq_len: int) -> causal_lm.Model.Config:
         decoder_cfg = causal_lm.gpt_decoder_config(
             stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=1,
+            num_layers=2,
             hidden_dim=10,
             num_heads=2,
-            vocab_size=10,
+            vocab_size=vocab_size,
             activation_function="nn.gelu",
-            max_position_embeddings=10,
+            max_position_embeddings=seq_len,
             layer_norm_epsilon=0.1,
             dropout_rate=0.0,
         )
+        return causal_lm.Model.default_config().set(decoder=decoder_cfg)
+
+    def test_metrics(self):
         model = (
-            causal_lm.Model.default_config()
-            .set(
-                decoder=decoder_cfg,
-                name="metrics_test",
-            )
+            self._model_config(vocab_size=10, seq_len=10)
+            .set(name="metrics_test")
             .instantiate(parent=None)
         )
 
@@ -204,21 +213,9 @@ class ModelTest(TestCase):
     def test_segment_ids(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
 
-        ref_decoder_cfg = causal_lm.gpt_decoder_config(
-            stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=2,
-            hidden_dim=10,
-            num_heads=2,
-            vocab_size=vocab_size,
-            activation_function="nn.gelu",
-            max_position_embeddings=seq_len,
-            layer_norm_epsilon=0.1,
-            dropout_rate=0.0,
-        )
-        ref_model_cfg = causal_lm.Model.default_config().set(
-            decoder=ref_decoder_cfg, name="ref_model"
-        )
-        ref_model = ref_model_cfg.instantiate(parent=None)
+        ref_model_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        ref_decoder_cfg = ref_model_cfg.decoder
+        ref_model = ref_model_cfg.set(name="ref_model").instantiate(parent=None)
 
         # Enable attention_mask
         decoder_cfg = ref_decoder_cfg.clone()
@@ -302,19 +299,8 @@ class ModelTest(TestCase):
     def test_forward(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
 
-        decoder_cfg = causal_lm.gpt_decoder_config(
-            stack_cfg=StackedTransformerLayer.default_config(),
-            num_layers=2,
-            hidden_dim=10,
-            num_heads=2,
-            vocab_size=vocab_size,
-            activation_function="nn.gelu",
-            max_position_embeddings=seq_len,
-            layer_norm_epsilon=0.1,
-            dropout_rate=0.0,
-        )
-        model_cfg = causal_lm.Model.default_config().set(decoder=decoder_cfg, name="metrics_test")
-        model = model_cfg.instantiate(parent=None)
+        model_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        model = model_cfg.set(name="metrics_test").instantiate(parent=None)
 
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
@@ -351,6 +337,86 @@ class ModelTest(TestCase):
         for k, v in score_metrics.items():
             self.assertNestedAllClose(metrics[k], v)
 
+    def test_metrics_update(self):
+        # pylint: disable=unused-argument
+
+        class DummyMetrics(BaseLossMetrics):
+            def forward(self, *args, **kwargs):
+                self.add_summary(f"{self.name}_summary", 0)
+                self.add_module_output(f"{self.name}_output", 0)
+                self.add_state_update(f"{self.name}_state", 0)
+                return 0, {}
+
+        class DummyConflictModel(causal_lm.Model):
+            def _metrics(self, *args, **kwargs):
+                self.add_summary("metrics_summary", 1)
+                return super()._metrics(*args, **kwargs)
+
+        def forward(model_cfg: causal_lm.Model.Config, metrics_cfg: BaseLossMetrics.Config):
+            batch_size, vocab_size, seq_len = 3, 10, 10
+            base_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+            model_cfg = model_cfg.set(**{k: v for k, v in base_cfg.items() if k not in ("klass",)})
+            model_cfg.metrics = metrics_cfg
+            model = model_cfg.set(name="test").instantiate(parent=None)
+            init_key, forward_key, target_key = jax.random.split(jax.random.PRNGKey(0), num=3)
+            target_labels = jax.random.randint(
+                target_key, shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+            )
+            return functional(
+                module=model,
+                prng_key=forward_key,
+                state=model.initialize_parameters_recursively(init_key),
+                inputs=dict(input_batch=dict(target_labels=target_labels), predict_outputs={}),
+                method="_metrics",
+                is_training=True,
+                drop_output_collections=(),
+            )
+
+        # Check that flattening summaries do not override base model summaries.
+        with self.assertRaisesRegex(KeyError, "Key conflict"):
+            forward(DummyConflictModel.default_config(), DummyMetrics.default_config())
+
+        class DummyModel(causal_lm.Model):
+            def _metrics(self, *args, **kwargs):
+                self.add_summary("parent_summary", 1)
+                self.add_module_output("parent_output", 1)
+                self.add_state_update("parent_state", 1)
+                return super()._metrics(*args, **kwargs)
+
+        def test_no_conflict(metrics_cfg: BaseLossMetrics.Config, expected: OutputCollection):
+            _, output_collection = forward(DummyModel.default_config(), metrics_cfg)
+            self.assertNestedEqual(output_collection.summaries, expected.summaries)
+            self.assertNestedEqual(output_collection.module_outputs, expected.module_outputs)
+            self.assertNestedEqual(output_collection.state_updates, expected.state_updates)
+
+        test_no_conflict(
+            DummyMetrics.default_config(),
+            OutputCollection(
+                summaries={"parent_summary": 1, "metrics_summary": 0},
+                module_outputs={"parent_output": 1, "metrics": {"metrics_output": 0}},
+                state_updates={"parent_state": 1, "metrics": {"metrics_state": 0}},
+            ),
+        )
+        test_no_conflict(
+            causal_lm.CompositeLossMetrics.default_config().set(
+                metrics={
+                    "child1": DummyMetrics.default_config(),
+                    "child2": DummyMetrics.default_config(),
+                }
+            ),
+            OutputCollection(
+                summaries={"parent_summary": 1, "child1_summary": 0, "child2_summary": 0},
+                module_outputs={
+                    "parent_output": 1,
+                    "metrics": {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
+                },
+                state_updates={
+                    "parent_state": 1,
+                    "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
+                },
+            ),
+        )
+
     # TODO(markblee): Add a pytest marker for multi-device tests.
     @pytest.mark.skipif(
         jax.device_count() != 4 or jax.process_count() != 1,
@@ -361,19 +427,8 @@ class ModelTest(TestCase):
     )
     def test_constrain_input_batch(self):
         model = (
-            causal_lm.Model.default_config()
+            self._model_config(vocab_size=10, seq_len=10)
             .set(
-                decoder=causal_lm.gpt_decoder_config(
-                    stack_cfg=StackedTransformerLayer.default_config(),
-                    num_layers=1,
-                    hidden_dim=10,
-                    num_heads=2,
-                    vocab_size=10,
-                    activation_function="nn.relu",
-                    max_position_embeddings=10,
-                    layer_norm_epsilon=0.1,
-                    dropout_rate=0.0,
-                ),
                 batch_axis_names=("data", "expert", "fsdp"),
                 seq_axis_names=("seq",),
                 name="metrics_test",
@@ -431,21 +486,19 @@ class DummyFeedForwardWithAuxLoss(TransformerFeedForwardLayer):
 
 
 class ModelAuxLossTest(TestCase):
-    @parameterized.product(
-        aux_loss_regex=(None, ".*/aux_loss", ".*/apple"),
-        stack_cfg=(
-            RepeatedTransformerLayer.default_config(),
-            StackedTransformerLayer.default_config(),
-        ),
-        use_aux_layer=(False, True),
-    )
-    def test_aux_loss(self, aux_loss_regex, stack_cfg, use_aux_layer):
-        batch_size, seq_len, vocab_size = 3, 10, 10
-        hidden_dim = 8
-        num_layers = 6
+    def _model_config(
+        self,
+        *,
+        stack_cfg: BaseStackedTransformerLayer.Config,
+        hidden_dim: int,
+        vocab_size: int,
+        seq_len: int,
+        aux_loss_regex: str,
+        use_aux_layer: bool,
+    ) -> causal_lm.Model.Config:
         decoder_cfg = causal_lm.gpt_decoder_config(
             stack_cfg=stack_cfg,
-            num_layers=num_layers,
+            num_layers=6,
             hidden_dim=hidden_dim,
             num_heads=4,
             vocab_size=vocab_size,
@@ -457,12 +510,32 @@ class ModelAuxLossTest(TestCase):
             decoder_cfg.transformer.layer.feed_forward = (
                 DummyFeedForwardWithAuxLoss.default_config().set(hidden_dim=4 * hidden_dim)
             )
-        model_cfg: causal_lm.Model.Config = causal_lm.Model.default_config().set(
+        return causal_lm.Model.default_config().set(
             decoder=decoder_cfg,
             name="metrics_test",
             metrics=causal_lm.metrics_config(aux_loss_regex=aux_loss_regex),
         )
-        model = model_cfg.instantiate(parent=None)
+
+    @parameterized.product(
+        aux_loss_regex=(None, ".*/aux_loss", ".*/apple"),
+        stack_cfg=(
+            RepeatedTransformerLayer.default_config(),
+            StackedTransformerLayer.default_config(),
+        ),
+        use_aux_layer=(False, True),
+    )
+    def test_aux_loss(self, aux_loss_regex, stack_cfg, use_aux_layer):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+        hidden_dim = 8
+        model_cfg = self._model_config(
+            stack_cfg=stack_cfg,
+            hidden_dim=hidden_dim,
+            vocab_size=vocab_size,
+            seq_len=seq_len,
+            aux_loss_regex=aux_loss_regex,
+            use_aux_layer=use_aux_layer,
+        )
+        model: causal_lm.Model = model_cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
 
@@ -475,13 +548,26 @@ class ModelAuxLossTest(TestCase):
         input_batch = dict(input_ids=input_ids, target_labels=target_labels)
 
         # Ensure that forward outputs are consistent with metrics output.
-        # NOTE: invoking _metrics directly can give different outputs due to missing aux loss from
-        # module outputs in the invocation context.
         common_kwargs = dict(module=model, prng_key=prng_key, state=model_params, is_training=True)
-        (loss, aux), _ = functional(
+        (loss, aux), output_collection = functional(
             **common_kwargs,
             inputs=dict(input_batch=input_batch, return_aux=True),
+            drop_output_collections=(),
         )
+        oc = new_output_collection()
+        oc.module_outputs.update(output_collection.module_outputs)
+        metrics_fn = InvocationContext(
+            name="metrics", parent=None, output_collection=oc, **common_kwargs
+        ).functional(
+            model._metrics  # pylint: disable=protected-access
+        )
+        (ref_loss, metrics), _ = metrics_fn(
+            input_batch=dict(target_labels=target_labels),
+            predict_outputs=dict(logits=aux["logits"]),
+        )
+        self.assertAlmostEqual(loss, ref_loss)
+        self.assertNestedAllClose(aux["metrics"], metrics)
+
         # `aux_loss` is only collected when `aux_loss_regex` is set.
         if aux_loss_regex is not None:
             self.assertIn("aux_loss", aux["metrics"])
@@ -493,6 +579,82 @@ class ModelAuxLossTest(TestCase):
         else:
             self.assertNotIn("aux_loss", aux)
             self.assertEqual(aux["metrics"]["cross_entropy"], loss)
+
+    @parameterized.product(
+        stack_cfg=(
+            RepeatedTransformerLayer.default_config(),
+            StackedTransformerLayer.default_config(),
+        ),
+    )
+    def test_aux_loss_learner(self, stack_cfg):
+        batch_size, seq_len, vocab_size = 3, 10, 10
+        hidden_dim = 8
+        model_cfg = self._model_config(
+            stack_cfg=stack_cfg,
+            hidden_dim=hidden_dim,
+            vocab_size=vocab_size,
+            seq_len=seq_len,
+            aux_loss_regex=".*/aux_loss",
+            use_aux_layer=True,
+        )
+        model: causal_lm.Model = model_cfg.set(name="model").instantiate(parent=None)
+        learner_cfg = Learner.default_config().set(
+            optimizer=config_for_function(sgd_optimizer).set(
+                learning_rate=0.1, decouple_weight_decay=True, weight_decay=1.0
+            )
+        )
+        learner = learner_cfg.set(name="learner").instantiate(parent=None)
+        init_key, forward_key = jax.random.split(jax.random.PRNGKey(123), num=2)
+
+        model_cfg = causal_lm.Model.default_config()
+        params = model.initialize_parameters_recursively(init_key)
+        opt_params = jax.tree.map(
+            lambda v: OptParam(value=v, factorization_spec=None, weight_decay_scale=None), params
+        )
+        state = learner.init(model_params=opt_params)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        def loss_fn(model_params, inputs):
+            model_output_collection = new_output_collection()
+            with child_context(
+                "model",
+                module=model,
+                state=model_params,
+                prng_key=inputs["forward_key"],
+                output_collection=model_output_collection,
+            ):
+                loss, aux = model(input_batch=inputs["input_batch"])
+            return ForwardOutputs(loss=loss, aux=aux, output_collection=model_output_collection)
+
+        inputs = dict(
+            fn=loss_fn,
+            inputs=dict(forward_key=forward_key, input_batch=input_batch),
+            opt_params=opt_params,
+        )
+        outputs, _ = functional(
+            learner,
+            method="forward_and_backward",
+            is_training=True,
+            prng_key=forward_key,
+            state=state,
+            inputs=inputs,
+        )
+        outputs = cast(ForwardBackwardOutputs, outputs)
+        output_collection: OutputCollection = outputs.forward_outputs.output_collection
+        summaries: dict[str, WeightedScalar] = output_collection.summaries
+        self.assertIn("aux_loss", summaries)
+        self.assertEqual(summaries["aux_loss"].mean, 1.0)
+        self.assertEqual(
+            summaries["cross_entropy_loss"].mean + summaries["aux_loss"].mean,
+            outputs.forward_outputs.loss,
+        )
 
 
 if __name__ == "__main__":

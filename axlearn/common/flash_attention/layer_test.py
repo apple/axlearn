@@ -21,7 +21,7 @@ os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 import jax
 import jax.numpy as jnp
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
@@ -100,6 +100,7 @@ def _prepare_layers(
     sliding_window_size,
     inference=False,
     set_layer_bias_recursively=False,
+    tpu_block_size=512,
     dropout_rate=0.0,
 ):
     hidden_dim = num_heads * per_head_dim
@@ -124,6 +125,7 @@ def _prepare_layers(
         .set(
             mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
             output_dim_to_partition_spec=default_output_dim_to_partition_spec(mesh_axis_names),
+            tpu_block_size=tpu_block_size,
         )
     )
     if inference:
@@ -550,6 +552,7 @@ class TestFlashAttention(TestCase):
                 causal=causal,
                 sliding_window_size=sliding_window_size,
                 dropout_rate=dropout_rate,
+                tpu_block_size=128,
             )
 
             query_len = int(query_len_multiplier * seq_len)
@@ -916,3 +919,7 @@ class TestFlashAttention(TestCase):
                 atol=2e-2,
             )
         jax.extend.backend.clear_backends()
+
+
+if __name__ == "__main__":
+    absltest.main()

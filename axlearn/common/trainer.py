@@ -50,10 +50,10 @@ from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
     Nested,
-    NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
     Tensor,
+    TensorSpec,
     count_model_params,
     flatten_items,
     match_regex_rules,
@@ -62,9 +62,9 @@ from axlearn.common.utils import (
 
 
 class TrainerState(NamedTuple):
-    prng_key: Union[Tensor, NestedPartitionSpec]
-    model: Union[NestedTensor, NestedPartitionSpec]
-    learner: Union[NestedTensor, NestedPartitionSpec]
+    prng_key: Union[Tensor, TensorSpec, jax.sharding.NamedSharding]
+    model: Union[NestedTensor, Nested[TensorSpec], Nested[jax.sharding.NamedSharding]]
+    learner: Union[NestedTensor, Nested[TensorSpec], Nested[jax.sharding.NamedSharding]]
 
 
 # pylint: disable-next=too-many-instance-attributes
@@ -319,8 +319,8 @@ class SpmdTrainer(Module):
                 model=self._model_param_specs,
                 learner=self._learner_state_partition_specs,
             )
-            self._trainer_state_partition_specs = jax.tree.map(
-                lambda spec: spec.mesh_axes, self._trainer_state_specs
+            self._trainer_state_partition_specs: TrainerState = jax.tree.map(
+                lambda spec: spec.sharding, self._trainer_state_specs
             )
             # Create evalers, which depend on model_param_partition_specs.
             self._evalers = {}
