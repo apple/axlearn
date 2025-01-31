@@ -76,12 +76,7 @@ def _segment_mask(
 
 
 def _build_mask(
-    mask_fn: MaskFn,
-    *,
-    q_seq_len: int,
-    kv_seq_len: int,
-    block_q: int,
-    block_k: int
+    mask_fn: MaskFn, *, q_seq_len: int, kv_seq_len: int, block_q: int, block_k: int
 ) -> np.ndarray:
     """build the iteration map where True means the block is not empty.
 
@@ -134,7 +129,7 @@ def _query_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]
     return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
 
 
-def _key_value_iterator_indices(block_mask_map: np.ndarray)->Tuple[Tensor, Tensor]:
+def _key_value_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]:
     """build the iteration begin/end indices for the key/value dimension.
 
     Returns:
