@@ -75,7 +75,14 @@ def _segment_mask(
     return jnp.equal(q_segment_ids, kv_segment_ids).astype(jnp.bool_)
 
 
-def _build_mask(mask_fn: MaskFn, *, q_seq_len: int, kv_seq_len: int, block_q: int, block_k: int) -> np.ndarray:
+def _build_mask(
+    mask_fn: MaskFn,
+    *,
+    q_seq_len: int,
+    kv_seq_len: int,
+    block_q: int,
+    block_k: int
+) -> np.ndarray:
     """build the iteration map where True means the block is not empty.
 
     Returns:
