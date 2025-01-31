@@ -5,7 +5,7 @@
 import contextlib
 import itertools
 import math
-import os.path
+import os
 import signal
 import threading
 import time
@@ -19,6 +19,8 @@ from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
 
+from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.monitoring.monitor_workload import GCPWorkloadMonitoring
 from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
@@ -218,6 +220,26 @@ class SpmdTrainer(Module):
     ):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+
+        self.gcp_workload_monitor = None
+        self.enable_gcp_workload_monitoring = gcp_settings(
+            "enable_gcp_workload_monitoring", default=False
+        )
+
+        if self.enable_gcp_workload_monitoring:
+            self.gcp_project_id = gcp_settings("project", required=True)
+            self.gcp_zone = gcp_settings("zone", required=True)
+            workload_id = os.environ.get("JOBSET_NAME") or os.environ.get("JOB_NAME") or "unknown"
+            self.workload_id = gcp_settings("workload_id", default=workload_id)
+            self.replica_id = gcp_settings("replica_id", default="0")
+
+            # Initialize Google Cloud Monitoring client if GCP reporting is enabled.
+            self.gcp_workload_monitor = GCPWorkloadMonitoring(
+                project_id=self.gcp_project_id,
+                zone=self.gcp_zone,
+                workload_id=self.workload_id,
+                replica_id=self.replica_id,
+            )
 
         if not cfg.prune_empty_state_updates:
             raise ValueError(
@@ -562,6 +584,7 @@ class SpmdTrainer(Module):
             with self.checkpointer:
                 logging.info("Starting loop...")
                 start_time = time.perf_counter()
+                init_time = start_time  # Separate variable for gcp monitoring
                 num_steps = 0
                 output = None
                 stop_trace_step = None
@@ -585,6 +608,33 @@ class SpmdTrainer(Module):
                     )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
+
+                    if self.enable_gcp_workload_monitoring:
+                        curr_time = time.perf_counter()
+                        step_time = curr_time - init_time
+                        init_time = curr_time
+
+                        jax_process_index = jax.process_index()
+
+                        logging.info("Step: %s", str(self.step))
+                        logging.info("Jax process id: %s", str(jax_process_index))
+
+                        if jax_process_index == 0:
+                            self.gcp_workload_monitor.send_performance_metric(perf_metric=step_time)
+
+                        local_rank = 0  # Local Rank is always 0 for now
+
+                        logging.info(
+                            "Jax process %s alive. Local Rank: %s. Sending heartbeat.",
+                            str(jax_process_index),
+                            str(local_rank),
+                        )
+
+                        self.gcp_workload_monitor.send_heartbeat_metric(
+                            local_rank=str(local_rank),
+                            global_rank=str(jax_process_index),
+                        )
+
                     if num_steps % 100 == 0:
                         now = time.perf_counter()
                         average_step_time = (now - start_time) / num_steps
