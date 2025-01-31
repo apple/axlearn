@@ -457,6 +457,7 @@ class TPUGKEJob(GKEJob):
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
         import_modules: list[str] = []
+        enable_pathways: bool = False
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -473,6 +474,12 @@ class TPUGKEJob(GKEJob):
         )
         flags.DEFINE_list(
             "import_modules", [], "Modules to enable pathways proxy.", **common_kwargs
+        )
+        flags.DEFINE_boolean(
+            "enable_pathways",
+            None,
+            "Whether to enable ML Pathways (single-controler JAX) for TPU workloads.",
+            **common_kwargs,
         )
 
     @classmethod
@@ -498,12 +505,6 @@ class TPUGKEJob(GKEJob):
         super().__init__(cfg)
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
         self._import_modules()
-        self.using_pathways = self._is_pathways_used()
-
-    def _is_pathways_used(self) -> bool:
-        # identify if a job is configured to use pathways by
-        # checking jax_backend flag and optional import for pathways utils
-        return "jax_backend=proxy" in self.config.command.replace(" ", "=")
 
     def _import_modules(self):
         try:
@@ -552,7 +553,7 @@ class TPUGKEJob(GKEJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
-        if not self.using_pathways:
+        if not cfg.enable_pathways:
             resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
             # Set request memory by host machine type.
             machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
@@ -571,7 +572,7 @@ class TPUGKEJob(GKEJob):
             dict(containerPort=8431),  # Port to export TPU runtime metrics.
         ]
 
-        if self.using_pathways:
+        if cfg.enable_pathways:
             staging_location = f"{cfg.output_dir}/pathways-staging"
             if job_type == "pathways-head":
                 env_vars.update(
@@ -815,7 +816,7 @@ class TPUGKEJob(GKEJob):
                     PRE_PROVISIONER_LABEL: cfg.name,
                 }
             )
-        elif not self.using_pathways:
+        elif not cfg.enable_pathways:
             # Used by GCP auto-provisioner.
             selector.update(
                 {
@@ -899,8 +900,8 @@ class TPUGKEJob(GKEJob):
             serviceAccountName=cfg.service_account,
             volumes=volumes,
             # Enable host network for optimal performance with Pathways
-            hostNetwork=True if self.using_pathways else False,
-            dnsPolicy="ClusterFirstWithHostNet" if self.using_pathways else None,
+            hostNetwork=True if cfg.enable_pathways else False,
+            dnsPolicy="ClusterFirstWithHostNet" if cfg.enable_pathways else None,
         )
 
         if cfg.priority_class:
@@ -965,7 +966,7 @@ class TPUGKEJob(GKEJob):
         annotations, labels = {}, {}
 
         if cfg.queue:
-            if self.using_pathways:
+            if cfg.enable_pathways:
                 labels["kueue.x-k8s.io/queue-name"] = cfg.queue
             else:
                 annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
@@ -982,7 +983,7 @@ class TPUGKEJob(GKEJob):
             ],
         )
 
-        if self.using_pathways:
+        if cfg.enable_pathways:
             logging.info("Building pathways jobset.")
             spec = dict(
                 failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
