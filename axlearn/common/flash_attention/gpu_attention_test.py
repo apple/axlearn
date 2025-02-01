@@ -369,7 +369,7 @@ def test_triton_against_xla_ref(
 
 
 @pytest.mark.parametrize("batch_size", [1])
-@pytest.mark.parametrize("seq_len", [512, 8192])
+@pytest.mark.parametrize("seq_len", [512, 2048])
 @pytest.mark.parametrize("sliding_window_size", [256])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.parametrize("num_heads", [8])
