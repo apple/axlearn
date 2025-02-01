@@ -142,7 +142,7 @@ class CheckpointerTest(test_utils.TestCase):
             else:
                 with self.assertRaisesRegex(
                     (AssertionError, ValueError),
-                    "Cannot intersect index domain",
+                    "Cannot intersect index domain|not compatible",
                 ):
                     ckpt.restore(
                         step=None,
