@@ -135,6 +135,7 @@ class _TFSavablesStateStorage(StateStorage):
         # `on_commit_callback` to finalize the checkpoint.
         spec = self._get_spec(step=step, state=state)
         self.wait_until_finished()
+        jax.block_until_ready(state)
 
         save_tf_future = async_save_tf_savables(
             spec["tf_ckpt_map"],
@@ -656,6 +657,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
                 or self._reached_preemption
             )
 
+        self._composite_save_policy = _composite_save_policy
         ckpt_cfg.save_policy = config_for_function(lambda: _composite_save_policy)
         self._non_tensor_manager: Checkpointer = ckpt_cfg.instantiate(parent=self)
         self._tensor_manager: Optional[oecp.CheckpointManager] = None
@@ -737,17 +739,20 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         self._eval_summaries = copy.deepcopy(evaler_summaries or {})
         self._reached_preemption = self._tensor_manager.reached_preemption(step)
 
-        start_t = time.perf_counter()
         state_with_tensors = jax.tree.map(
             lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
         )
         # Note that save() waits for prior serialization to finish.
         self._non_tensor_manager.save(step=step, state=state)
+        # _non_tensor_manager will block for train step to finish. Start the timer here to avoid
+        # including step time in total blocking time.
+        start_t = time.perf_counter()
         self._get_tensor_manager(state_with_tensors).save(
             step=step, args=ocp.args.PyTreeSave(item=state_with_tensors)
         )
         self._eval_summaries = None
-        if (time_diff := time.perf_counter() - start_t) > 0.5:
+        time_diff = time.perf_counter() - start_t
+        if self._composite_save_policy(step=step, evaler_summaries=self._eval_summaries):
             logging.info("In-mem ckpt blocking time is %fs.", time_diff)
         if self._reached_preemption:
             self.wait_until_finished()
