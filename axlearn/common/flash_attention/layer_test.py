@@ -587,7 +587,7 @@ class TestFlashAttention(TestCase):
             # cudnn dropout will be used and it uses different PRNG than ours.
             if dropout_rate == 0.0 or use_segment_ids:
                 self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
-        jax.extend.backend.clear_backends()
+        jax.clear_caches()
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -719,7 +719,7 @@ class TestFlashAttention(TestCase):
             if dropout_rate == 0.0 or use_segment_ids:
                 self.assertNestedAllClose(ref_value, test_value, atol=atol, rtol=rtol)
                 self.assertNestedAllClose(ref_grads, test_grads, atol=atol, rtol=rtol)
-        jax.extend.backend.clear_backends()
+        jax.clear_caches()
 
     @parameterized.product(
         _TEST_CONFIGS, causal=[True], sliding_window_size=[None, 4], use_bias=[True, False]
@@ -918,7 +918,7 @@ class TestFlashAttention(TestCase):
                 test_out.data,
                 atol=2e-2,
             )
-        jax.extend.backend.clear_backends()
+        jax.clear_caches()
 
 
 if __name__ == "__main__":

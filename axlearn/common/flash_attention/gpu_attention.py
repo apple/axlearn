@@ -26,19 +26,23 @@ Compared to the implementation in the JAX repo, we made the following enhancemen
 * Support kv_seq_len != q_seq_len.
 * Support 2D/4D bias.
 * Support dropout.
+* Support arbitrary mask function,
+    with speed and memory optimization for sliding window type mask,
+    and memory optimizations for arbitrary mask.
 """
 import functools
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_attention
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention import NEG_INF, MaskFn
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 
@@ -71,6 +75,83 @@ def _segment_mask(
     return jnp.equal(q_segment_ids, kv_segment_ids).astype(jnp.bool_)
 
 
+def _build_mask(
+    mask_fn: MaskFn, *, q_seq_len: int, kv_seq_len: int, block_q: int, block_k: int
+) -> np.ndarray:
+    """build the iteration map where True means the block is not empty.
+
+    Returns:
+        A boolean array of shape (num_q_blocks, num_kv_blocks) where True means
+    the block is not empty.
+    """
+    # Initialize the iteration map where True means the block is not empty.
+    num_q_blocks = pl.cdiv(q_seq_len, block_q)
+    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
+    block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
+    # # Initialize the scan begin and end indices.
+    rows = np.arange(q_seq_len, dtype=np.int32)
+    cols = np.arange(kv_seq_len, dtype=np.int32)
+    # Run a compile-time evaluation to get the mask array.
+    # TODO(kelvin-zou): use a block-wise mask function to avoid the compile-time
+    # high memory usage.
+    with jax.ensure_compile_time_eval():
+        mask_array = np.asarray(mask_fn(rows[:, None], cols[None, :]))
+    for i in range(0, q_seq_len, block_q):
+        for j in range(0, kv_seq_len, block_k):
+            # Extract the block
+            block = mask_array[i : i + block_q, j : j + block_k]
+            # All empty means skipping
+            if not block.any():
+                block_mask_map[i // block_q, j // block_k] = False
+    return block_mask_map
+
+
+def _query_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]:
+    """build the iteration begin/end indices for the query dimension.
+
+    Returns:
+        Index_offset (num_q_blocks, num_kv_blocks) tensor where index_offset[i][j]
+    to store the first jth available block index for ith query block, and the unused
+    blocks are padded with 0 at the very end.
+        Index_offset_size ((num_q_blocks) tensor to store the number of valid blocks
+    for each iteration.
+    """
+    num_q_blocks, num_kv_blocks = block_mask_map.shape
+    index_offset = np.zeros(shape=(num_q_blocks, num_kv_blocks), dtype=np.int32)
+    index_offset_size = np.zeros(shape=(num_q_blocks), dtype=np.int32)
+    for i in range(num_q_blocks):
+        k = 0
+        for j in range(num_kv_blocks):
+            if block_mask_map[i, j]:
+                index_offset[i, k] = j
+                k += 1
+        index_offset_size[i] = k
+    return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
+
+
+def _key_value_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]:
+    """build the iteration begin/end indices for the key/value dimension.
+
+    Returns:
+        Index_offset (num_kv_blocks, num_q_blocks) tensor where index_offset[i][j]
+    to store the first jth available block index for ith kv block, and the unused
+    blocks are padded with 0 at the very end.
+        Index_offset_size (num_kv_blocks) tensor to store the number of valid blocks
+    for each iteration.
+    """
+    num_q_blocks, num_kv_blocks = block_mask_map.shape
+    index_offset = np.zeros(shape=(num_kv_blocks, num_q_blocks), dtype=np.int32)
+    index_offset_size = np.zeros(shape=(num_kv_blocks), dtype=np.int32)
+    for i in range(num_kv_blocks):
+        k = 0
+        for j in range(num_q_blocks):
+            if block_mask_map[j, i]:
+                index_offset[i, k] = j
+                k += 1
+        index_offset_size[i] = k
+    return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
+
+
 def _mha_forward_kernel(
     q_ref,
     k_ref,
@@ -78,12 +159,14 @@ def _mha_forward_kernel(
     b_ref,
     s_ref,
     dropout_mask_ref,
+    index_offset_ref,
+    index_offset_size_ref,
     # Outputs.
     o_ref,
     # Residual outputs.
     *residual_refs,
     softmax_scale: float,
-    causal: bool,
+    mask_fn: Optional[MaskFn],
     dropout_rate: float,
     block_q: int,
     block_k: int,
@@ -105,6 +188,9 @@ def _mha_forward_kernel(
         v_ref: Input value ref.
         b_ref: Input bias ref.
         s_ref: Input segment_ids ref.
+        dropout_mask_ref: Dropout mask ref.
+        index_offset_ref: The index offset for the seq block.
+        index_offset_size_ref: The number of valid blocks for each iteration.
         o_ref: Output ref.
         *residual_refs: Residual output refs, e.g. softmax statistics.
         **kwargs: See `flash_attention`.
@@ -131,15 +217,19 @@ def _mha_forward_kernel(
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
     q = q_ref[...]
     q_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_q_slice,))
-
     # In FlashAttention algorithm 1 there are 2 loops: slow over tiles of kv (size
     # (Bc == block_k here), and fast over blocks of q (size Br == block_q here).
     # Here we only loop over blocks of kv to process entire kv_seq_len, the loop over
     # blocks of q is carried out by the grid.
+    span_q = start_q * block_q + jnp.arange(block_q)
+
     def body(start_k, carry):
+        if index_offset_ref is not None:
+            # We retrieve the dynamic indices for the current block if offset is provided.
+            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+        span_k = start_k * block_k + jnp.arange(block_k)
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-
         k = pl.load(k_ref, (curr_k_slice, slice(None)))
         qk = pl.dot(q, k.T, precision=precision)  # [block_q, block_k].
         if softmax_scale != 1.0:
@@ -148,16 +238,12 @@ def _mha_forward_kernel(
             qk += pl.load(b_ref, (slice(None), curr_k_slice))
         qk = jnp.maximum(qk, NEG_INF)
 
-        if causal or s_ref is not None:
-            mask = None
+        if s_ref is not None or mask_fn is not None:
+            mask = None if mask_fn is None else mask_fn(span_q[:, None], span_k[None, :])
             if s_ref is not None:
                 kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
-                mask = _segment_mask(q_segment_ids, kv_segment_ids)
-            if causal:
-                span_q = start_q * block_q + jnp.arange(block_q)
-                span_k = start_k * block_k + jnp.arange(block_k)
-                causal_mask = span_q[:, None] >= span_k[None, :]
-                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
+                segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
+                mask = segment_mask if mask is None else jnp.logical_and(mask, segment_mask)
             # Apply mask to qk.
             qk = jnp.where(mask, qk, NEG_INF)
 
@@ -180,13 +266,10 @@ def _mha_forward_kernel(
         o_next = o_prev_corr + o_curr
         return o_next, m_next, l_next
 
-    if causal:
-        upper_bound = jnp.minimum(
-            lax.div((start_q + 1) * block_q, block_k), pl.cdiv(kv_seq_len, block_k)
-        )
+    if index_offset_size_ref is not None:
+        o, m_i, l_i = lax.fori_loop(0, index_offset_size_ref[...], body, (o, m_i, l_i))
     else:
-        upper_bound = pl.cdiv(kv_seq_len, block_k)
-    o, m_i, l_i = lax.fori_loop(0, upper_bound, body, (o, m_i, l_i))
+        o, m_i, l_i = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_k), body, (o, m_i, l_i))
 
     # We keep an unscaled version of o during the scan over kv_seq_len. Scaling it
     # by the last l_i gives us the correct final output. See section 3.1.1 in the
@@ -210,7 +293,7 @@ def flash_attention(
     segment_ids: Optional[Tensor] = None,
     prng_key: Optional[Tensor] = None,
     softmax_scale: float = 1.0,
-    causal: bool = False,
+    mask_fn: Optional[MaskFn] = None,
     dropout_rate: float = 0.0,
     block_q: int = 128,
     block_k: int = 128,
@@ -222,7 +305,7 @@ def flash_attention(
 ):
     """Computes attention outputs following FlashAttention.
 
-    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
+    If provided, bias, segment_ids, and any mask fn are applied on top of one another.
 
     Args:
         query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
@@ -232,7 +315,7 @@ def flash_attention(
         segment_ids: Optional segment ids of shape [batch_size, target_length].
         prng_key: PRNG key used for dropout. Must be specified when dropout_rate > 0.0.
         softmax_scale: Optional scale to apply to softmax. Defaults to 1.
-        causal: Whether to apply causal mask.
+        mask_fn: Whether to apply an arbitrary mask fn.
         dropout_rate: Dropout rate. Default to 0.0 (no dropout).
         **kwargs: Pallas/triton kwargs.
 
@@ -251,7 +334,7 @@ def _flash_attention_impl(
     segment_ids: Optional[Tensor] = None,
     prng_key: Optional[Tensor] = None,
     softmax_scale: float = 1.0,
-    causal: bool = False,
+    mask_fn: Optional[MaskFn] = None,
     dropout_rate: float = 0.0,
     block_q: int = 128,
     block_k: int = 128,
@@ -293,7 +376,7 @@ def _flash_attention_impl(
     kernel = functools.partial(
         _mha_forward_kernel,
         softmax_scale=softmax_scale,
-        causal=causal,
+        mask_fn=mask_fn,
         dropout_rate=dropout_rate,
         block_q=block_q,
         block_k=block_k,
@@ -335,6 +418,21 @@ def _flash_attention_impl(
     else:
         dropout_mask = None
         in_specs.append(None)
+    index_offset = index_offset_spec = index_offset_size = index_offset_size_spec = None
+    if mask_fn is not None:
+        block_mask_array = _build_mask(
+            mask_fn, q_seq_len=q_seq_len, kv_seq_len=kv_seq_len, block_q=block_q, block_k=block_k
+        )
+        index_offset, index_offset_size = _query_iterator_indices(block_mask_array)
+        num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
+        index_offset_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (i, 0)), block_shape=((None, num_kv_blocks))
+        )
+        index_offset_size_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (i)), block_shape=((None,))
+        )
+    in_specs.append(index_offset_spec)
+    in_specs.append(index_offset_size_spec)
     out_specs = pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0))
     if output_activations:
         out_specs = [out_specs, pl.BlockSpec((None, None, block_q), lambda i, j, k: (j, k, i))]
@@ -354,7 +452,7 @@ def _flash_attention_impl(
         debug=debug,
         interpret=interpret,
         name="mha_forward",
-    )(query, key, value, bias, segment_ids, dropout_mask)
+    )(query, key, value, bias, segment_ids, dropout_mask, index_offset, index_offset_size)
     if output_activations:
         out, lse = pallas_out
         out = checkpoint_name(out, f"gpu_attention.{FLASH_ATTN_RESIDUAL_NAME}")
@@ -379,12 +477,14 @@ def _mha_backward_kernel_dkdv(
     do_scaled_ref,
     lse_ref,
     delta_ref,
+    index_offset_ref,
+    index_offset_size_ref,
     # Outputs.
     dk_ref,
     dv_ref,
     *,
     softmax_scale: float,
-    causal: bool,
+    mask_fn: Optional[MaskFn],
     dropout_rate: float,
     block_q: int,
     block_k: int,
@@ -414,6 +514,10 @@ def _mha_backward_kernel_dkdv(
     kv_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_k_slice,))
 
     def inner_loop_dkdv(start_q, carry):
+        if index_offset_ref is not None:
+            # Retrieve dynamic index for the current block if offset is provided.
+            start_q = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_q, 1),)))
+        span_q = start_q * block_q + jnp.arange(block_q)
         dv, dk = carry
         curr_q_slice = pl.dslice(start_q * block_q, block_q)
 
@@ -425,16 +529,12 @@ def _mha_backward_kernel_dkdv(
             qk += pl.load(b_ref, (curr_q_slice, curr_k_slice))
         qk = jnp.maximum(qk, NEG_INF)
 
-        if causal or s_ref is not None:
-            mask = None
+        if s_ref is not None or mask_fn is not None:
+            mask = None if mask_fn is None else mask_fn(span_q[:, None], span_k[None, :])
             if s_ref is not None:
                 q_segment_ids = pl.load(s_ref, (curr_q_slice,))
-                mask = _segment_mask(q_segment_ids, kv_segment_ids)
-
-            if causal:
-                span_q = start_q * block_q + jnp.arange(block_q)
-                causal_mask = span_q[:, None] >= span_k[None, :]
-                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
+                segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
+                mask = segment_mask if mask is None else jnp.logical_and(mask, segment_mask)
             qk = jnp.where(mask, qk, NEG_INF)
 
         lse = pl.load(lse_ref, (curr_q_slice,))
@@ -456,8 +556,11 @@ def _mha_backward_kernel_dkdv(
 
         return dv, dk
 
-    lower_bound = lax.div(start_k * block_k, block_q) if causal else 0
-    dv, dk = lax.fori_loop(lower_bound, pl.cdiv(q_seq_len, block_q), inner_loop_dkdv, (dv, dk))
+    if index_offset_size_ref is not None:
+        dv, dk = lax.fori_loop(0, index_offset_size_ref[...], inner_loop_dkdv, (dv, dk))
+    else:
+        dv, dk = lax.fori_loop(0, pl.cdiv(q_seq_len, block_q), inner_loop_dkdv, (dv, dk))
+
     pl.store(dv_ref, (curr_k_slice, slice(None)), dv.astype(dv_ref.dtype))
     pl.store(dk_ref, (curr_k_slice, slice(None)), dk.astype(dk_ref.dtype))
 
@@ -473,11 +576,13 @@ def _mha_backward_kernel_dq(
     do_scaled_ref,
     lse_ref,
     delta_ref,
+    index_offset_ref,
+    index_offset_size_ref,
     # Outputs.
     dq_ref,
     *,
     softmax_scale: float,
-    causal: bool,
+    mask_fn: Optional[MaskFn],
     dropout_rate: float,
     block_q: int,
     block_k: int,
@@ -506,7 +611,12 @@ def _mha_backward_kernel_dq(
     do = pl.load(do_scaled_ref, (curr_q_slice, slice(None)))
     di = pl.load(delta_ref, (curr_q_slice,))
 
-    def inner_loop_dq(start_k, dq):
+    def inner_loop_dq(start_k, carry):
+        if index_offset_ref is not None:
+            # Retrieve dynamic index for the current block if offset is provided.
+            start_k = jnp.sum(pl.load(index_offset_ref, (pl.dslice(start_k, 1),)))
+        span_k = start_k * block_k + jnp.arange(block_k)
+        dq = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
         k = pl.load(k_ref, (curr_k_slice, slice(None)))
         v = pl.load(v_ref, (curr_k_slice, slice(None)))
@@ -517,16 +627,12 @@ def _mha_backward_kernel_dq(
             qk += pl.load(b_ref, (curr_q_slice, curr_k_slice))
         qk = jnp.maximum(qk, NEG_INF)
 
-        if causal or s_ref is not None:
-            mask = None
+        if s_ref is not None or mask_fn is not None:
+            mask = None if mask_fn is None else mask_fn(span_q[:, None], span_k[None, :])
             if s_ref is not None:
                 kv_segment_ids = pl.load(s_ref, (curr_k_slice,))
-                mask = _segment_mask(q_segment_ids, kv_segment_ids)
-
-            if causal:
-                span_k = start_k * block_k + jnp.arange(block_k)
-                causal_mask = span_q[:, None] >= span_k[None, :]
-                mask = causal_mask if mask is None else jnp.logical_and(mask, causal_mask)
+                segment_mask = _segment_mask(q_segment_ids, kv_segment_ids)
+                mask = segment_mask if mask is None else jnp.logical_and(mask, segment_mask)
             qk = jnp.where(mask, qk, NEG_INF)
 
         p = jnp.exp(qk - lse[:, None])
@@ -541,20 +647,17 @@ def _mha_backward_kernel_dq(
         dq = dq + pl.dot(ds.astype(k.dtype), k, precision=precision)
         return dq
 
-    if causal:
-        upper_bound = jnp.minimum(
-            pl.cdiv((start_q + 1) * block_q, block_k), pl.cdiv(kv_seq_len, block_k)
-        )
+    if index_offset_size_ref is not None:
+        dq = lax.fori_loop(0, index_offset_size_ref[...], inner_loop_dq, (dq))
     else:
-        upper_bound = pl.cdiv(kv_seq_len, block_k)
+        dq = lax.fori_loop(0, pl.cdiv(kv_seq_len, block_k), inner_loop_dq, (dq))
 
-    dq = lax.fori_loop(0, upper_bound, inner_loop_dq, (dq))
     pl.store(dq_ref, (curr_q_slice, slice(None)), dq.astype(dq_ref.dtype))
 
 
 def _mha_backward(
     softmax_scale: float,
-    causal: bool,
+    mask_fn: Optional[MaskFn],
     dropout_rate: float,
     block_q: int,
     block_k: int,
@@ -598,6 +701,32 @@ def _mha_backward(
     else:
         dropout_mask = None
 
+    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
+    num_q_blocks = pl.cdiv(q_seq_len, block_q)
+    q_index_offset = q_index_offset_spec = q_index_offset_size = q_index_offset_size_spec = None
+    kv_index_offset = kv_index_offset_spec = kv_index_offset_size = kv_index_offset_size_spec = None
+    if mask_fn is not None:
+        block_mask_array = _build_mask(
+            mask_fn, q_seq_len=q_seq_len, kv_seq_len=kv_seq_len, block_q=block_q, block_k=block_k
+        )
+        # Compute the dynamic indices for the query for dq.
+        q_index_offset, q_index_offset_size = _query_iterator_indices(block_mask_array)
+        q_index_offset_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_kv_blocks))
+        )
+        q_index_offset_size_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (k)), block_shape=((None,))
+        )
+        # Compute the dynamic indices for the key-value for dkdv.
+        kv_index_offset, kv_index_offset_size = _key_value_iterator_indices(block_mask_array)
+        kv_index_offset_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_q_blocks))
+        )
+
+        kv_index_offset_size_spec = pl.BlockSpec(
+            index_map=(lambda i, _, k: (k)), block_shape=((None,))
+        )
+
     in_specs = [
         pl.BlockSpec((None, q_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)),  # q
         pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda i, j, _: (i, 0, j, 0)),  # k
@@ -625,17 +754,24 @@ def _mha_backward(
         pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),  # lse
         pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),  # delta
     ]
-
+    dq_in_spec = in_specs.copy()
+    dq_in_spec.append(q_index_offset_spec)
+    dq_in_spec.append(q_index_offset_size_spec)
+    dkdv_in_spec = in_specs.copy()
+    dkdv_in_spec.append(kv_index_offset_spec)
+    dkdv_in_spec.append(kv_index_offset_size_spec)
     num_warps = 8
     if num_stages is None:
         num_stages = 2 if bias is None and jnp.float32 not in (q.dtype, k.dtype, v.dtype) else 1
 
-    def call_kernel(*, kernel, grid, out_shape, out_specs):
+    def call_kernel(
+        *, kernel, grid, out_shape, in_specs, out_specs, index_offset, index_offset_size
+    ):
         return pl.pallas_call(
             functools.partial(
                 kernel,
                 softmax_scale=softmax_scale,
-                causal=causal,
+                mask_fn=mask_fn,
                 dropout_rate=dropout_rate,
                 block_q=block_q,
                 block_k=block_k,
@@ -648,7 +784,7 @@ def _mha_backward(
             debug=debug,
             interpret=interpret,
             compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
-        )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta)
+        )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta, index_offset, index_offset_size)
 
     dk, dv = call_kernel(
         kernel=_mha_backward_kernel_dkdv,
@@ -657,6 +793,7 @@ def _mha_backward(
             jax.ShapeDtypeStruct(k.shape, k.dtype),
             jax.ShapeDtypeStruct(v.shape, v.dtype),
         ],
+        in_specs=dkdv_in_spec,
         out_specs=[
             pl.BlockSpec(
                 (None, kv_seq_len, None, head_dim),
@@ -667,16 +804,21 @@ def _mha_backward(
                 lambda i, j, _: (i, 0, j, 0),  # dv
             ),
         ],
+        index_offset=kv_index_offset,
+        index_offset_size=kv_index_offset_size,
     )
 
     dq = call_kernel(
         kernel=_mha_backward_kernel_dq,
         grid=(batch_size, num_heads, pl.cdiv(q_seq_len, block_q)),
         out_shape=jax.ShapeDtypeStruct(q.shape, q.dtype),
+        in_specs=dq_in_spec,
         out_specs=pl.BlockSpec(
             (None, q_seq_len, None, head_dim),
             lambda i, j, _: (i, 0, j, 0),  # dq
         ),
+        index_offset=q_index_offset,
+        index_offset_size=q_index_offset_size,
     )
     return dq, dk, dv, None, None, None
 
