@@ -25,6 +25,7 @@ For new optimizers, using `UpdateTransformation` is preferred instead.
 
 Despite this, there are no plans to stop supporting `PartitionedGradientTransformation`.
 """
+
 import dataclasses
 import re
 from collections.abc import Sequence
@@ -1923,7 +1924,8 @@ def adastar_optimizer(
         )
         # Clip raw updates if necessary.
         clip_fn = clip_by_block_rms(
-            raw_update_clipping_threshold, summary_suffix="raw_update_norm"
+            raw_update_clipping_threshold,
+            summary_suffix="raw_update_norm" if verbosity > 0 else None,
         ).update
         raw_updates, _ = clip_fn(raw_updates, None, params)
         # Compute smoothed updates.
@@ -1934,12 +1936,12 @@ def adastar_optimizer(
                 pps_tree,
             )
         )
-        # Add param and update stats to summaries.
-        _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
-        param_values = jax.tree.map(lambda p: p.value, params)
-        param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
         # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
         if verbosity > 0:
+            # Add param and update stats to summaries.
+            _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
+            param_values = jax.tree.map(lambda p: p.value, params)
+            param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
             # Note the covariance and correlation stats might be biased if params and updates do not
             # have zero mean.
             raw_update_norm = _compute_rms_norms(raw_updates)
