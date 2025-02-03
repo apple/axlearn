@@ -99,6 +99,7 @@ def _test_orbax_main(process_id: int, port: int, persist_dir: str, local_dir: st
     cfg.trainer_dir = persist_dir
     cfg.dir = persist_dir
     cfg.keep_last_n = 2
+    cfg.local_keep_last_n = 2
     cfg.replica_axis_index = 0
     cfg.async_timeout_secs = 5
     cfg.non_tensor_async_timeout_secs = 5
@@ -119,9 +120,11 @@ def _test_orbax_main(process_id: int, port: int, persist_dir: str, local_dir: st
             assert checkpointer.latest_checkpoint_step(checkpointer.config.dir) == 25
             # This step should already be garbage collected.
             assert 20 not in checkpointer._tensor_manager.all_steps()
+            # Step 40 is incomplete (it has the index file removed manually).
+            assert 40 not in checkpointer._checkpoint_steps_include_local()
             # Although the persistent save interval is 25 steps, local save interval is 5
             # steps, so we should be able to restore step 40.
-            assert step >= 40
+            assert step == 35, step
             # Since we save after step X is finished, after restore the first step is X + 1.
             step += 1
         for i in range(step, 100):
@@ -131,7 +134,7 @@ def _test_orbax_main(process_id: int, port: int, persist_dir: str, local_dir: st
             checkpointer.save(step=i, state=state)
             if process_id == 0:
                 logging.info("step %d", i)
-            if i == 45 and first_run:
+            if i == 44 and first_run:
                 break
 
         checkpointer.wait_until_finished()
@@ -281,6 +284,9 @@ class OrbaxCheckpointerTest(parameterized.TestCase):
             for p in processes:
                 p.join()
                 self.assertEqual(p.exitcode, 0)
+
+            # Remove step 40 index file to simulate incomplete checkpoints.
+            os.remove(os.path.join(persistent_tempdir, "non-tensors", "step_00000040", "index"))
 
             # Shuffle the process ids to verify that we are able to restore the process id.
             processes = start_processes(reverse_process_id=True)
