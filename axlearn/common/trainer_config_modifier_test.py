@@ -13,7 +13,7 @@ from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulationModifier,
     MeshShapeModifier,
-    ModelConfigModifier,
+    ModuleConfigModifier,
     PartitionSpecModifier,
     RematSpecModifier,
 )
@@ -76,7 +76,7 @@ class ModelConfigModifierTest(test_utils.TestCase):
         )
 
         cfg_modifier = (
-            ModelConfigModifier.default_config()
+            ModuleConfigModifier.default_config()
             .set(
                 target_config="model.decoder.transformer",
                 modification=RepeatedTransformerLayer.default_config(),
@@ -90,7 +90,7 @@ class ModelConfigModifierTest(test_utils.TestCase):
             str(cfg.model.decoder.transformer) == str(RepeatedTransformerLayer.default_config())
         )
         cfg_modifier = (
-            ModelConfigModifier.default_config()
+            ModuleConfigModifier.default_config()
             .set(
                 target_config="model.decoder.unknown",
                 modification=RepeatedTransformerLayer.default_config(),

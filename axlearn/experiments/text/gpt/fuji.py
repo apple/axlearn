@@ -40,7 +40,7 @@ from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulationModifier,
     MeshShapeModifier,
-    ModelConfigModifier,
+    ModuleConfigModifier,
     PartitionSpecModifier,
     RematSpecModifier,
 )
@@ -159,14 +159,15 @@ def get_trainer_kwargs(
     trn2_model_modifications = [
         # Neuron compiler has a module to detect repeating blocks and reuse them during compilation.
         # So compile time does not grow with the number of layers.
-        ModelConfigModifier.default_config().set(
+        ModuleConfigModifier.default_config().set(
             target_config="model.decoder.transformer",
             modification=StackedTransformerLayer.default_config(),
         )
     ]
-    if version != Version.V1:
+    # Grouped QKV is only used in fuji-v3 except in fuji-v2 if model is 70B
+    if version == Version.V3 or (model_size == "70B" and version != Version.V1):
         trn2_model_modifications.append(
-            ModelConfigModifier.default_config().set(
+            ModuleConfigModifier.default_config().set(
                 target_config="model.decoder.transformer.layer.self_attention.attention."
                 "input_linear.input_linear",
                 modification=GroupedQKVLinear.default_config(),
@@ -186,12 +187,6 @@ def get_trainer_kwargs(
                     "output_partition_spec": ("fsdp", "model"),
                     "embedding_partition_spec": ("model", "fsdp"),
                 },
-                "model.decoder.lm_head": {
-                    "param_partition_spec": (
-                        "model",
-                        ("expert", "fsdp", "seq"),
-                    ),
-                },
                 # Sequence parallel shardings for norms.
                 "model.decoder.transformer.layer.self_attention.norm": {
                     "input_partition_spec": ("fsdp", "model", None),
@@ -204,6 +199,20 @@ def get_trainer_kwargs(
                 "model.decoder.output_norm": {
                     "input_partition_spec": ("fsdp", "model", None),
                     "output_partition_spec": ("fsdp", None, None),
+                },
+            },
+        ),
+    ]
+
+    trn2_lm_head_partition_spec = [
+        PartitionSpecModifier.default_config().set(
+            partition_specs={
+                # Vocab parallel embeddings sharding from Megatron LM.
+                "model.decoder.lm_head": {
+                    "param_partition_spec": (
+                        "model",
+                        ("expert", "fsdp", "seq"),
+                    ),
                 },
             },
         ),
@@ -530,7 +539,7 @@ def get_trainer_kwargs(
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
                             ),
                             *trn2_model_modifications,
-                            *trn2_partition_spec_modifications,
+                            *(trn2_partition_spec_modifications + trn2_lm_head_partition_spec),
                         ],
                     ),
                 ),
@@ -552,7 +561,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=8,
+            train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -655,7 +664,7 @@ def get_trainer_kwargs(
                                 }
                             ),
                             *trn2_model_modifications,
-                            *trn2_partition_spec_modifications,
+                            *(trn2_partition_spec_modifications + trn2_lm_head_partition_spec),
                         ],
                     ),
                 ),

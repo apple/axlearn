@@ -401,23 +401,26 @@ class ConfigBase:
             path: A sequence of keys for indexing to get the target value.
 
         Raises:
-            ValueError: A key in path is not found or path is empty
+            ValueError: A key in path is not found or path is empty.
+            AttributeError: If key in path is not found.
 
         Returns:
-            value at the path.
+            value at the path or self if path is empty.
         """
-        if not path:
-            raise ValueError("Path is empty.")
+        current = self
+        index = 0
 
-        if path[0] not in self:
-            raise ValueError(f"{path[0]} is not found in {self}.")
+        while path and index < len(path):
+            key = path[index]
 
-        child = getattr(self, path[0])
+            # TODO(markblee): maybe use cfg.visit instead of getattr
+            current = getattr(current, key)
+            index += 1
 
-        if len(path) == 1:
-            return child
+            if index == len(path):
+                return current
 
-        return child.get_recursively(path[1:])
+        return current
 
     def set_recursively(self, path: Sequence[str], *, value: Any):
         """Recursively find the target key in the config and set its value.
@@ -427,20 +430,21 @@ class ConfigBase:
             new_value: New value to replace the target value.
 
         Raises:
-            ValueError: A key in path is not found or path is empty
+            ValueError: A key in path is not found or path is empty.
+            AttributeError: If key in path is not found.
         """
+
         if not path:
             raise ValueError("Path is empty.")
 
-        if path[0] not in self:
-            raise ValueError(f"{path[0]} is not found in {self}.")
-
-        child = getattr(self, path[0])
-
-        if len(path) == 1:
-            return setattr(self, path[0], value)
-
-        return child.set_recursively(path[1:], value=value)
+        current = self
+        for i, key in enumerate(path):
+            if i == len(path) - 1:
+                setattr(current, key, value)
+                return
+            else:
+                # TODO(markblee): maybe use cfg.visit instead of getattr
+                current = getattr(current, key)
 
     def clone(self, **kwargs):
         """Returns a clone of the original config with the optional keyword overrides.

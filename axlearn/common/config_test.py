@@ -957,12 +957,11 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(cfg.get_recursively(["value"]), 1)
 
         # Test getting non-existent value.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AttributeError):
             cfg.get_recursively(["non_existent"])
 
-        # Test getting empty path.
-        with self.assertRaises(ValueError):
-            cfg.get_recursively([])
+        # Test getting empty path, should return self.
+        self.assertEqual(cfg.get_recursively([]), cfg)
 
     def test_set_recursively(self):
         @config_class
@@ -989,12 +988,12 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(cfg.value, 5)
 
         # Test setting non-existent value.
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AttributeError):
             cfg.set_recursively(["non_existent"], value=20)
 
         # Test setting empty path.
         with self.assertRaises(ValueError):
-            cfg.get_recursively([])
+            cfg.set_recursively([], value=20)
 
 
 if __name__ == "__main__":

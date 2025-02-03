@@ -137,12 +137,12 @@ class MeshShapeModifier(ConfigModifier):
         return cfg
 
 
-class ModelConfigModifier(ConfigModifier):
+class ModuleConfigModifier(ConfigModifier):
     """Update the model config for the trainer config."""
 
     @config_class
     class Config(ConfigModifier.Config):
-        """Configure ModelConfigModifier.
+        """Configure ModuleConfigModifier.
 
         Attributes:
             target_config: Target module path
