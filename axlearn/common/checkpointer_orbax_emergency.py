@@ -758,24 +758,17 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
             self.wait_until_finished()
             raise SystemExit(f"Exiting after saving checkpoint at {step=} due to pre-emption.")
 
-    def restore(
-        self,
-        *,
-        step: Optional[int] = None,
-        state: Union[Nested[Tensor], Nested[TensorSpec]],
-    ) -> Tuple[Optional[int], Nested[Tensor]]:
-        """See `BaseCheckpointer.restore` for details."""
-        start_t = time.perf_counter()
-        cfg: OrbaxEmergencyCheckpointer.Config = self.config
-        state_with_tensors = jax.tree.map(
-            lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
-        )
-        tensor_manager = self._get_tensor_manager(state_with_tensors)
-        if step is None:
-            # Find the intersection of the checkpoint steps managed by tensor and non-tensor
-            # manager, and then use the latest step in the intersection for restore. `all_steps`
-            # from tensor manager contains both local and persistent checkpoints.
-            common_steps = set(tensor_manager.all_steps()).intersection(
+    def _checkpoint_steps_include_local(self) -> list[int]:
+        """Returns a sorted list of complete checkpoints, including both persistent and local.
+
+        This is done by finding the intersection of the checkpoint steps managed by tensor and
+        non-tensor manager. `all_steps` from tensor manager gives the steps of complete local and
+        persistent checkpoints.
+
+        This function assumes tensor manager has already been initialized.
+        """
+        return sorted(
+            set(self._tensor_manager.all_steps()).intersection(
                 set(
                     (
                         parse_step_from_dir(d)
@@ -785,6 +778,23 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
                     )
                 )
             )
+        )
+
+    def restore(
+        self,
+        *,
+        step: Optional[int] = None,
+        state: Union[Nested[Tensor], Nested[TensorSpec]],
+    ) -> Tuple[Optional[int], Nested[Tensor]]:
+        """Restores state from either local or persistent checkpoint."""
+        start_t = time.perf_counter()
+        cfg: OrbaxEmergencyCheckpointer.Config = self.config
+        state_with_tensors = jax.tree.map(
+            lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
+        )
+        tensor_manager = self._get_tensor_manager(state_with_tensors)
+        if step is None:
+            common_steps = self._checkpoint_steps_include_local()
             if not common_steps:
                 logging.warning("Could not find any completed checkpoints under %s.", cfg.dir)
                 return None, state
