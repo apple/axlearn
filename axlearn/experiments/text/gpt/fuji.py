@@ -184,8 +184,8 @@ def get_trainer_kwargs(
                         ("expert", "fsdp", "seq"),
                     ),
                     "input_partition_spec": ("fsdp", None),
-                    "output_partition_spec": ("fsdp", "model"),
-                    "embedding_partition_spec": ("model", "fsdp"),
+                    "output_partition_spec": ("fsdp", None, None),
+                    "embedding_partition_spec": ("model", None),
                 },
                 # Sequence parallel shardings for norms.
                 "model.decoder.transformer.layer.self_attention.norm": {
@@ -198,6 +198,9 @@ def get_trainer_kwargs(
                 },
                 "model.decoder.output_norm": {
                     "input_partition_spec": ("fsdp", "model", None),
+                    "output_partition_spec": ("fsdp", None, None),
+                },
+                "model.decoder.transformer.layer.feed_forward.linear2": {
                     "output_partition_spec": ("fsdp", None, None),
                 },
             },

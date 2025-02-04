@@ -935,20 +935,22 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual("default", cfg_clone.b)
 
     def test_get_recursively(self):
-        @config_class
-        class NestedConfig(ConfigBase):
-            """A dummy config."""
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
 
-            value: int = 0
+                value: int = 0
 
-        @config_class
-        class TestConfig(ConfigBase):
-            """Another dummy config that has a nested config."""
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
 
-            nested: NestedConfig = NestedConfig()
-            value: int = 1
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
 
-        cfg = TestConfig()
+        cfg = Test.default_config()
 
         # Test getting nested value.
         self.assertEqual(cfg.get_recursively(["nested", "value"]), 0)
@@ -964,20 +966,22 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(cfg.get_recursively([]), cfg)
 
     def test_set_recursively(self):
-        @config_class
-        class NestedConfig(ConfigBase):
-            """A dummy config."""
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
 
-            value: int = 0
+                value: int = 0
 
-        @config_class
-        class TestConfig(ConfigBase):
-            """Another dummy config that has a nested config."""
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
 
-            nested: NestedConfig = NestedConfig()
-            value: int = 1
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
 
-        cfg = TestConfig()
+        cfg = Test.default_config()
 
         # Test setting nested value.
         cfg.set_recursively(["nested", "value"], value=10)
