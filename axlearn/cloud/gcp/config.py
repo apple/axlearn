@@ -132,12 +132,9 @@ def gcp_settings(
     project = flag_values.get("project", None)
     if key == "project" and project:
         return project
-    zone = flag_values.get("zone", None)
-    if key == "zone" and zone:
-        return zone
 
-    # For backwards compatibility, env_id defaults to zone if not specified.
-    env_id = flag_values.get("env_id", zone)
+    # For backwards compatibility, env_id falls back to zone if not specified.
+    env_id = flag_values.get("env_id") or flag_values.get("zone", None)
     if key == "env_id" and env_id:
         return env_id
 

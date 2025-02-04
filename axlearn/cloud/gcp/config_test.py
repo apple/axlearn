@@ -34,7 +34,6 @@ class ConfigTest(TestWithTemporaryCWD):
 
         self.assertEqual("test-proj", gcp_config.gcp_settings("project", fv=flag_values))
         self.assertEqual("test-env-id", gcp_config.gcp_settings("env_id", fv=flag_values))
-        self.assertEqual("test-zone", gcp_config.gcp_settings("zone", fv=flag_values))
 
         # By default, should fail because no config file exists.
         with self.assertRaises(SystemExit):
@@ -83,6 +82,7 @@ class ConfigTest(TestWithTemporaryCWD):
 
         # Should succeed.
         self.assertEqual("test-bucket", gcp_config.gcp_settings("bucket", fv=flag_values))
+        self.assertEqual("test-zone", gcp_config.gcp_settings("zone", fv=flag_values))
 
     def test_gcp_settings_when_env_id_not_set(self):
         """Test the backwards compatibility for env_id.
@@ -103,7 +103,6 @@ class ConfigTest(TestWithTemporaryCWD):
         flag_values.mark_as_parsed()
 
         self.assertEqual("test-proj", gcp_config.gcp_settings("project", fv=flag_values))
-        self.assertEqual("test-zone", gcp_config.gcp_settings("zone", fv=flag_values))
         # When env_id is not set, it falls back to zone
         self.assertEqual("test-zone", gcp_config.gcp_settings("env_id", fv=flag_values))
 
@@ -153,6 +152,8 @@ class ConfigTest(TestWithTemporaryCWD):
 
         # Should succeed.
         self.assertEqual("test-bucket", gcp_config.gcp_settings("bucket", fv=flag_values))
+
+        self.assertEqual("test-zone", gcp_config.gcp_settings("zone", fv=flag_values))
 
     def test_gcp_settings_with_active_config(self):
         temp_dir = os.path.realpath(self._temp_root.name)
