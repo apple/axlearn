@@ -401,7 +401,6 @@ class ConfigBase:
             path: A sequence of keys for indexing to get the target value.
 
         Raises:
-            ValueError: A key in path is not found or path is empty.
             AttributeError: If key in path is not found.
 
         Returns:
@@ -418,7 +417,7 @@ class ConfigBase:
             index += 1
 
             if index == len(path):
-                return current
+                break
 
         return current
 
@@ -430,21 +429,13 @@ class ConfigBase:
             new_value: New value to replace the target value.
 
         Raises:
-            ValueError: A key in path is not found or path is empty.
+            ValueError: if Path is empty.
             AttributeError: If key in path is not found.
         """
-
         if not path:
             raise ValueError("Path is empty.")
-
-        current = self
-        for i, key in enumerate(path):
-            if i == len(path) - 1:
-                setattr(current, key, value)
-                return
-            else:
-                # TODO(markblee): maybe use cfg.visit instead of getattr
-                current = getattr(current, key)
+        parent = self.get_recursively(path[:-1])
+        setattr(parent, path[-1], value)
 
     def clone(self, **kwargs):
         """Returns a clone of the original config with the optional keyword overrides.
