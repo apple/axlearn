@@ -138,11 +138,6 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases
 RUN pip install .[core,gpu]
 COPY . .
 
-# TODO(samos123): remove this once axlearn upgrades to Jax 0.4.38.
-RUN pip install -U "jax[gpu]==0.4.38" "jax==0.4.38" "jaxlib==0.4.38"
-COPY . .
-
-
 ################################################################################
 # Final target spec.                                                           #
 ################################################################################
