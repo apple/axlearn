@@ -1022,7 +1022,7 @@ class _Functional:
             ValueError: If there are circular references in args, kwargs, or context.
         """
         call = getattr(self.method_fn, "__qualname__", None) or getattr(self.method_fn, "__name__")
-        logging.vlog(1, "functional: %s.%s %s(*%s, **%s)", call, self.method_fn, args, kwargs)
+        logging.vlog(1, "functional: %s.%s (*%s, **%s)", call, self.method_fn, args, kwargs)
 
         # Copy to prevent method_fn from mutating the original.
         # Some badly behaved tests call F() with an InvocationContext.state that contains
