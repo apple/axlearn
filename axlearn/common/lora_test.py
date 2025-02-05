@@ -14,7 +14,14 @@ from absl.testing import absltest, parameterized
 from einops import rearrange
 
 from axlearn.common import utils
-from axlearn.common.attention import FusedQKVLinear, MultiheadOutputLinear, RoFormerQKVLinear
+from axlearn.common.attention import (
+    FusedQKVLinear,
+    KVState,
+    MultiheadOutputLinear,
+    QKVLinear,
+    QLinear,
+    RoFormerQKVLinear,
+)
 from axlearn.common.layers import Linear
 from axlearn.common.lora import (
     LoraFusedQKVAdapter,
@@ -136,8 +143,14 @@ class LoraLinearTest(TestCase):
 
 
 class LoraFusedQKVLinearTest(TestCase):
-    def test_forward(self):
-        model_dim = 16
+    @parameterized.parameters(
+        (QKVLinear.default_config(),),
+        (FusedQKVLinear.default_config(),),
+        (QLinear.default_config(),),
+    )
+    def test_forward(self, ref_layer_cfg):
+        test_layer_cfg = LoraFusedQKVLinear.default_config().set(layer=ref_layer_cfg)
+        model_dim = 6
         num_heads = 2
         per_head_dim = 3
         seq_len = 4
@@ -146,8 +159,20 @@ class LoraFusedQKVLinearTest(TestCase):
         alpha = 4
         enable_lora = dict(query=True, key=False, value=True)
         inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, seq_len, model_dim))
+        if isinstance(ref_layer_cfg, QLinear.Config):
+            external_key = jax.random.normal(
+                jax.random.PRNGKey(78), (batch_size, seq_len, num_heads, per_head_dim)
+            )
+            external_value = jax.random.normal(
+                jax.random.PRNGKey(90), (batch_size, seq_len, num_heads, per_head_dim)
+            )
+            inputs = dict(
+                query=inputs, kv_state=KVState(k_proj=external_key, v_proj=external_value)
+            )
+        else:
+            inputs = (inputs,)
 
-        ref_layer_cfg = FusedQKVLinear.default_config().set(
+        ref_layer_cfg = ref_layer_cfg.set(
             name="ref_test",
             query_dim=model_dim,
             key_dim=model_dim,
@@ -162,10 +187,10 @@ class LoraFusedQKVLinearTest(TestCase):
             state=ref_state,
             is_training=True,
             prng_key=jax.random.PRNGKey(456),
-            inputs=(inputs,),
+            inputs=inputs,
         )
 
-        layer_cfg = LoraFusedQKVLinear.default_config().set(
+        layer_cfg = test_layer_cfg.set(
             name="test",
             query_dim=model_dim,
             key_dim=model_dim,
@@ -178,14 +203,17 @@ class LoraFusedQKVLinearTest(TestCase):
         state = layer.initialize_parameters_recursively(
             prng_key=jax.random.PRNGKey(123), prebuilt=None
         )
-        state["layer"]["qkv_proj"]["weight"] = ref_state["qkv_proj"]["weight"]
-        state["layer"]["qkv_proj"]["bias"] = ref_state["qkv_proj"]["bias"]
+        for layer_type in ("qkv_proj", "q_proj", "k_proj", "v_proj"):
+            if layer_type in ref_state:
+                state["layer"][layer_type]["weight"] = ref_state[layer_type]["weight"]
+                state["layer"][layer_type]["bias"] = ref_state[layer_type]["bias"]
         outputs, _ = jax.jit(partial(F, layer, is_training=True))(
             state=state,
             prng_key=jax.random.PRNGKey(456),
-            inputs=(inputs,),
+            inputs=inputs,
         )
 
+        # Expect the same output due to zero initialization of one of the LoRA weights.
         assert_allclose(outputs, ref_outputs)
 
     @parameterized.product(

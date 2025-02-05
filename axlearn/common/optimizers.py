@@ -25,6 +25,7 @@ For new optimizers, using `UpdateTransformation` is preferred instead.
 
 Despite this, there are no plans to stop supporting `PartitionedGradientTransformation`.
 """
+
 import dataclasses
 import re
 from collections.abc import Sequence
@@ -36,10 +37,11 @@ import optax
 import typing_extensions
 from absl import logging
 from jax import numpy as jnp
+from jax._src.sharding_impls import TransferToMemoryKind
 from optax._src import numerics
 
 from axlearn.common import schedule, struct
-from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec, PartitionSpec
+from axlearn.common.base_layer import ParameterSpec, PartitionSpec
 from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.factorized_rms import scale_by_factored_rms
 from axlearn.common.module import current_context
@@ -51,8 +53,8 @@ from axlearn.common.optimizer_base import (
     TransformPartitionSpecFn,
 )
 from axlearn.common.utils import (
+    MemoryKind,
     Nested,
-    NestedPartitionSpec,
     NestedTensor,
     NestedTree,
     Tensor,
@@ -139,19 +141,41 @@ def with_partition_fn(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-def copy_partition(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+def copy_partition(
+    specs: Nested[OptStateSpec],
+    *,
+    pattern: Union[None, str, re.Pattern] = None,
+    memory_kind: Optional[MemoryKind] = None,
+) -> Nested[OptStateSpec]:
+    """Copies OptStateSpec and optionally assigns with a different memory kind.
+
+    Args:
+        specs: Nested[OptStateSpec] to copy from.
+        pattern: Regex to match the full path of each spec. Matched specs will have their memory
+            kind replaced with `memory_kind`.
+        memory_kind: New memory kind. Default to None.
+
+    Returns:
+        A Nested[OptStateSpec] with possibly a different memory kind.
+    """
     return jax.tree.map(
-        lambda param_spec: OptStateSpec(
-            dtype=param_spec.dtype, shape=param_spec.shape, mesh_axes=param_spec.mesh_axes
+        lambda path, spec: OptStateSpec(
+            dtype=spec.dtype,
+            shape=spec.shape,
+            mesh_axes=spec.mesh_axes,
+            memory_kind=memory_kind
+            if pattern and re.fullmatch(pattern, path)
+            else spec.memory_kind,
         ),
-        param_specs,
+        tree_paths(specs),
+        specs,
     )
 
 
 def trace_partition(
     base: optax.GradientTransformation,
 ) -> PartitionedGradientTransformation:
-    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[OptStateSpec]:
         return optax.TraceState(trace=copy_partition(param_specs))
 
     return with_partition_fn(base, partition_fn)
@@ -160,7 +184,9 @@ def trace_partition(
 def adam_partition(base: optax.GradientTransformation) -> PartitionedGradientTransformation:
     state: optax.ScaleByAdamState = base.init({})
 
-    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, optax.ScaleByAdamState]]:
         return optax.ScaleByAdamState(
             count=OptStateSpec(
                 dtype=state.count.dtype, shape=state.count.shape, mesh_axes=PartitionSpec()
@@ -950,7 +976,7 @@ def ema(
         )
         return updates, new_state
 
-    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+    def partition_fn(param_specs: Nested[ParameterSpec]) -> Nested[Union[OptStateSpec, EmaState]]:
         def get_ema_partition(param_spec: ParameterSpec) -> OptStateSpec:
             # Store momentum in accumulator_dtype if it is set and p is not scalar.
             if param_spec.shape and accumulator_dtype is not None:
@@ -1412,7 +1438,9 @@ def skip_and_clip_by_global_norm(
             drop_stats=new_drop_stats,
         )
 
-    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, SkipClipState]]:
         if use_adaptive_drop_norm:
             one = jnp.ones([], jnp.float32)
             dict_thresholds = drop_norm(count=one, mean=one, stddev=one)
@@ -1571,7 +1599,9 @@ def param_ema(
         )
         return updates, ParamEmaState(count=count_inc, ema=new_ema)
 
-    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, ParamEmaState]]:
         return ParamEmaState(
             count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
             ema=copy_partition(param_specs),
@@ -1617,7 +1647,9 @@ def scale_by_lion(
         updates = jax.tree.map(lambda g, m: jnp.sign((1.0 - b1) * g + b1 * m), updates, state.mu)
         return updates, ScaleByLionState(count=count_inc, mu=mu)
 
-    def partition_fn(param_specs: NestedParameterSpec) -> NestedPartitionSpec:
+    def partition_fn(
+        param_specs: Nested[ParameterSpec],
+    ) -> Nested[Union[OptStateSpec, ScaleByLionState]]:
         mu_specs = param_specs
         if mu_dtype is not None:
             mu_specs = jax.tree.map(
@@ -1892,7 +1924,8 @@ def adastar_optimizer(
         )
         # Clip raw updates if necessary.
         clip_fn = clip_by_block_rms(
-            raw_update_clipping_threshold, summary_suffix="raw_update_norm"
+            raw_update_clipping_threshold,
+            summary_suffix="raw_update_norm" if verbosity > 0 else None,
         ).update
         raw_updates, _ = clip_fn(raw_updates, None, params)
         # Compute smoothed updates.
@@ -1903,12 +1936,12 @@ def adastar_optimizer(
                 pps_tree,
             )
         )
-        # Add param and update stats to summaries.
-        _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
-        param_values = jax.tree.map(lambda p: p.value, params)
-        param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
         # Computing extra stats increases step time. Only adds them to summaries in verbose mode.
         if verbosity > 0:
+            # Add param and update stats to summaries.
+            _compute_rms_norms(grads, summary_suffix="raw_grad_norm")
+            param_values = jax.tree.map(lambda p: p.value, params)
+            param_norm = _compute_rms_norms(param_values, summary_suffix="param_norm")
             # Note the covariance and correlation stats might be biased if params and updates do not
             # have zero mean.
             raw_update_norm = _compute_rms_norms(raw_updates)
@@ -1993,3 +2026,100 @@ def adastar_optimizer(
         partition=lambda _: OptStateSpec(shape=[], dtype=jnp.int32, mesh_axes=PartitionSpec()),
     )
     return named_chain(**tx)
+
+
+def offload_optimizer(
+    optimizer: ConfigOr[PartitionedGradientTransformation],
+    *,
+    pattern: Union[str, re.Pattern] = ".*",
+    offload_src: MemoryKind = "device",
+    offload_dst: MemoryKind = "pinned_host",
+) -> PartitionedGradientTransformation:
+    """Offload the state of the wrapped optimizer that matches `pattern` to `offload_dst`.
+
+    Args:
+        optimizer: The optimizer to offload.
+        pattern: Regex pattern used to match the path of optimizer states. Fully matched states
+            will be offloaded. Default to regex that matches all states.
+        offload_src: Offload-from memory kind. Default to "device".
+        offload_dst: Offload-to memory kind. Default to "pinned_host".
+
+    Returns:
+        A optimizer whose state is on `offload_dst` and does the same computation as `optimizer`.
+
+    Raises:
+        ValueError: when the `update` function of the returned optimizer is called outside of jit
+            context.
+
+    This function returns a new `PartitionedGradientTransformation` that
+    1. Puts matched states of the wrapped optimizer on `offload_dst` through the partition function
+       during state initialization in the trainer.
+    2. Copies the matched states to `offload_src` before `optimizer.update` is called.
+    3. Copies the matched updated states to `offload_dst` after `optimizer.update` is called.
+
+    The regex pattern is matched against the full path of each optimizer state. An example full
+    path is optimizer/1/0/mu/decoder/transformer/repeat/layer/feed_forward/linear1_0. If the
+    pattern should not depend on model structure, you can use ".*/mu/.*" to offload all `mu`.
+
+    The .update function of the returned `PartitionedGradientTransformation` must be called within
+    a jit function.
+
+    Example usage:
+    ```python
+    your_opt = adamw_optimizer(...)
+    offloaded_opt = offload_optimizer(your_opt)
+    ```
+
+    When using `skip_and_clip_by_global_norm` with this offload optimizer, you must wrap the entire
+    `skip_and_clip_by_global_norm` inside. Do not wrap the inner of `skip_and_clip_by_global_norm`
+    or you will get errors. Correct example:
+    ```
+    offloaded_opt = offload_optimizer(skip_and_clip_by_global_norm(inner=adamw_optimizer(...)))
+    ```
+    The reason is that `skip_and_clip_by_global_norm` conditionally chooses the previous optimizer
+    state and the updated new optimizer state using `jnp.where`, which doesn't support tensors on
+    `pinned_host` memory space.
+    """
+    optimizer = maybe_instantiate(optimizer)
+    if offload_src is None or offload_dst is None:
+        raise ValueError(
+            "offload_src and offload_dst cannot be None when using optimizer offloading."
+        )
+
+    logging.info("Optimizer offloading from %s to %s enabled.", offload_src, offload_dst)
+
+    def init_fn(params: NestedOptParam):
+        return optimizer.init(params)
+
+    def _move_fn(state: optax.OptState, dst: MemoryKind) -> optax.OptState:
+        # TransferToMemoryKind let us change the memory kind of tensors without specifying the full
+        # sharding (i.e. jax.sharding.NamedSharding). Although there's no documentation about it,
+        # it's specified in the API signature. Reference:
+        # https://github.com/jax-ml/jax/blob/21f8885a9e104b8828c9a8b721eed0c68b622691/jax/_src/api.py#L2220
+        # Note: device_put doesn't move everything at once. When we pass a pytree of arrays to
+        # device_put, each array in the pytree is moved independent of one another. The exact order
+        # is decided by the latency hiding scheduler. The scheduler will try to overlap the
+        # transfers of each state with the state update on TPU whenever possible. There is some
+        # memory spike due the the temporary state in HBM, but the spike is much less than the full
+        # memory usage of all states. Moreover, when the optimizer is run, all activations are
+        # released, so we have less memory pressure at that point in time.
+        return jax.tree.map(
+            lambda path, tensor: jax.device_put(tensor, TransferToMemoryKind(dst))
+            if re.fullmatch(pattern, path)
+            else tensor,
+            tree_paths(state),
+            state,
+        )
+
+    def update_fn(updates: optax.Updates, state: optax.OptState, params: NestedOptParam):
+        state = _move_fn(state, offload_src)
+        updates, state = optimizer.update(updates, state, params)
+        state = _move_fn(state, offload_dst)
+        return updates, state
+
+    def partition_fn(param_spec: Nested[ParameterSpec]) -> Nested[OptStateSpec]:
+        return copy_partition(
+            optimizer.partition(param_spec), pattern=pattern, memory_kind=offload_dst
+        )
+
+    return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)

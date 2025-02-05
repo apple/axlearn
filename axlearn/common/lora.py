@@ -466,7 +466,7 @@ class LoraMultiheadOutputLinear(BaseLayer):
 
 
 class LoraFusedQKVLinear(BaseQKVLinear):
-    """LoRA's replacement of the FusedQKVLinear layer.
+    """Fused LoRA replacement for non-grouped QKVLinear layers.
 
     N.B. Only supports cases where (1) key and value are None; (2) query, key,
     and value all have the same shape; (3) model_dim = num_heads * per_head_dim.
@@ -476,8 +476,8 @@ class LoraFusedQKVLinear(BaseQKVLinear):
     class Config(BaseQKVLinear.Config):
         """Configures LoraFusedQKVLinear."""
 
-        # The original FusedQKVLinear layer config.
-        layer: FusedQKVLinear.Config = FusedQKVLinear.default_config()
+        # The original QKVLinear layer config.
+        layer: BaseQKVLinear.Config = FusedQKVLinear.default_config()
         # The adapter config for LoRA.
         adapter: LoraFusedQKVAdapter.Config = LoraFusedQKVAdapter.default_config()
 
@@ -519,12 +519,6 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         kv_state: Optional[Tensor] = None,
         query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
-        if kv_state is not None:
-            raise ValueError(
-                "LoraFusedQKVLinear computes key and value projections "
-                "and does not expect external `kv_state`."
-            )
-
         cfg = self.config
         if key is None and value is None:
             inputs = query
@@ -532,7 +526,7 @@ class LoraFusedQKVLinear(BaseQKVLinear):
             raise ValueError("Key and value should be both None in LoraFusedQKVLinear.")
 
         q_proj, k_proj, v_proj = self.layer(
-            query, key=key, value=value, query_positions=query_positions
+            query, key=key, value=value, kv_state=kv_state, query_positions=query_positions
         )
         adapter_outputs = self.adapter(inputs)
 

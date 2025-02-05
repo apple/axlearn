@@ -111,6 +111,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
+from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import (
     Dropout,
     LayerNorm,
@@ -1216,18 +1217,45 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
         dim: Required[int] = REQUIRED  # The dimensionality of the positional embedding.
         theta: float = 10000.0  # The scale of base frequency.
 
-    def forward(self, positions: Tensor) -> Tensor:
+    def default_query_positions(self, max_seq_len: int) -> Tensor:
+        """Compute default `positions` value to be inputed into forward when `positions` is
+        not provided to the corresponding QKVLinear class such as `RoFormerQKVLinear`
+        """
+        return jnp.arange(max_seq_len)[None]  # [batch_size=1, max_seq_len].
+
+    def forward(
+        self, *, positions: Optional[Tensor] = None, max_seq_len: Optional[int] = None
+    ) -> Tensor:
         """
         TODO(bwzhang): 1. verify the performance under float32.
 
         Args:
             positions: A tensor representing the token position IDs.
                 The shape is [batch_size, seq_len].
+            max_seq_len: Max length of sequence, required if positions is not provided,
+                ignored if positions is provided.
 
         Returns:
             Rotary Positional Embedding. Shape is [seq_len, dim].
+
+        Raises:
+            ValueError: If positions is None and max_seq_len is None, or they both exist
+                but do not match.
         """
         cfg = self.config
+        if positions is not None and max_seq_len is not None:
+            if max_seq_len != positions.shape[-1]:
+                raise ValueError(
+                    "Both `positions` and `max_seq_len` are provided and they "
+                    "do not match. You only need to provide one of them."
+                )
+        if positions is None:
+            if max_seq_len is None:
+                raise ValueError(
+                    "Must provide `max_seq_len` for computing default query positions if "
+                    "`positions` is None."
+                )
+            positions = self.default_query_positions(max_seq_len)
         return _rotary_sinusoidal_positional_embeddings(
             positions=positions, dim=cfg.dim, theta=cfg.theta
         )
@@ -1300,7 +1328,7 @@ class RoFormerQKVLinear(BaseQKVLinear):
     class Config(BaseQKVLinear.Config):
         """Configures RoFormerQKVLinear."""
 
-        rope_pos_emb_layer: InstantiableConfig = (
+        rope_pos_emb_layer: RoFormerSinusoidalPositionalEmbedding.Config = (
             RoFormerSinusoidalPositionalEmbedding.default_config()
         )
         input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
@@ -1342,9 +1370,10 @@ class RoFormerQKVLinear(BaseQKVLinear):
         cfg = self.config
         # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
         query, key, value = self.i_proj(query, key=key, value=value, kv_state=kv_state)
-        if query_positions is None:
-            query_positions = jnp.arange(query.shape[1])[None]
-        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(query_positions).astype(query.dtype)
+        seq_len = query.shape[1]
+        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(
+            positions=query_positions, max_seq_len=seq_len
+        ).astype(query.dtype)
         # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
         sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
 
@@ -4001,6 +4030,8 @@ def _save_and_offload_only_these_names_regex(
 
 # Regex patterns for matching remat names
 class RematRegexSavePatterns(enum.Enum):
+    """Common regex patterns for saving tensors in attention and feedforward layers."""
+
     QKV_PROJ = r".*[kqv]_proj"
     O_PROJ = r".*o_proj"
     CONTEXT = r".*context"
@@ -4009,6 +4040,8 @@ class RematRegexSavePatterns(enum.Enum):
     # This is called native attention because the "context" remat point only exists when using
     # native attention, e.g. `MultiheadAttention` or `GroupedQueryAttention`.
     NATIVE_ATTENTION = ".*([qkvo]_proj|context)"
+    FLASH_CONTEXT = f".*{FLASH_ATTN_RESIDUAL_NAME}"
+    FLASH_ATTENTION = "|".join([FLASH_CONTEXT, QKV_PROJ, O_PROJ])
     FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
 
 

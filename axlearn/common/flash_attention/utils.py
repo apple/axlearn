@@ -17,7 +17,6 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
     TensorAttentionBias,
-    ZeroAttentionBias,
     split,
 )
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
@@ -203,6 +202,7 @@ def flash_attention_implementation(
                     mask_fn=mask_fn,
                     kv_seq_len=kv_seq_len,
                     softmax_scale=softmax_scale,
+                    interpret=(backend == "cpu"),
                 )
 
             key = _repeat_kv_heads(query.shape[2], key)
@@ -210,23 +210,24 @@ def flash_attention_implementation(
 
             # We have two implementations to choose from.
             # Both support `causal`.
-            # One supports `segment_ids`.
-            causal, segment_ids, explicit_bias = split(
-                bias, CausalAttentionBias, SegmentIdAttentionBias
+            # Only pallas supports `segment_ids` and `mask_fn`.
+            mask, segment_ids, explicit_bias = split(
+                bias, MaskFnAttentionBias, SegmentIdAttentionBias
             )
 
             # Fall back to triton gpu kernel if:
             # - segment_ids is not None, or
-            # - explicit_bias is not empty, or
+            # - mask fn is not empty, or
             # - query/key/value is in float32.
             if (
                 segment_ids.has_value()
-                or explicit_bias.has_value()
+                or mask.has_value()
                 or jnp.float32 in (query.dtype, key.dtype, value.dtype)
                 or query.shape[1] != key.shape[1]
                 or dropout_rate != 0.0
             ):
                 logging.warning("Flash attention falling back to Triton GPU kernel.")
+                logging.warning("explicit_bias after extracting mask: %s", explicit_bias.value())
                 return gpu_flash_attention(
                     query,
                     key,
@@ -235,11 +236,16 @@ def flash_attention_implementation(
                     segment_ids=get_segment_ids(segment_ids),
                     prng_key=prng_key,
                     softmax_scale=softmax_scale,
-                    causal=causal.has_value(),
+                    mask_fn=mask.mask if mask.has_value() else None,
                     dropout_rate=dropout_rate,
+                    interpret=(backend == "cpu"),
                 )
             else:
-                explicit_bias += segment_ids
+                causal, explicit_bias = split(
+                    bias,
+                    CausalAttentionBias,
+                )
+                # TODO(kelvinzou): verify cudnn's mask support with BoolAttentionBias.
                 return cudnn_dot_product_attention(
                     query,
                     key,
@@ -268,20 +274,18 @@ def flash_attention_implementation(
                 value,
                 bias=explicit_bias.value(),
                 segment_ids=get_segment_ids(segment_ids),
-                # The `from_sequence()` function guarantees that if there is only one
-                # mask, it is returned without modification.
-                # This allows the `causal` path in `_legacy_tpu_flash_attention()` to work.
-                mask=mask if not isinstance(mask, ZeroAttentionBias) else None,
+                mask=mask,
                 softmax_scale=softmax_scale,
                 block_size=block_size,
+                interpret=(backend == "cpu"),
             )
 
         elif backend in ("cpu", "xla"):
             key = _repeat_kv_heads(query.shape[2], key)
             value = _repeat_kv_heads(query.shape[2], value)
             if backend == "cpu":
-                logging.warning("Flash attention CPU backend is for testing only.")
-            logging.warning("Flash attention falling back using plain MHA implementation")
+                logging.info("Flash attention CPU backend is for testing only.")
+            logging.info("Flash attention falling back using plain MHA implementation")
 
             # `causal` is supported.
             # `segment_ids` is supported.

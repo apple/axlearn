@@ -53,12 +53,12 @@ brew install bazelisk
 # This was tested using clang version 15 - you may get non-working wheels with earlier versions of clang.
 mkdir ~/builds && git clone https://github.com/tensorflow/text.git ~/builds/text
 # Install tensorflow prior to building.
-pip install 'tensorflow==2.16.1'
-cd ~/builds/text && git checkout 0f9f6df5b4da19bc7a734ba05fc4fa12bccbedbe
+pip install 'tensorflow==2.17.1'
+cd ~/builds/text && git checkout v2.17.0
 
 # Build tensorflow-text.
 ./oss_scripts/run_build.sh
-pip install ./tensorflow_text-2.16.1-cp310-cp310-macosx_*_arm64.whl
+pip install ./tensorflow_text-2.17.0-cp310-cp310-macosx_*_arm64.whl
 ```
 </details>
 
