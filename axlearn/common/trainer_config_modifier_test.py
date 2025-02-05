@@ -64,11 +64,11 @@ class RematSpecModifierTest(test_utils.TestCase):
             .instantiate()
         )
         # Ensure that the exception is working.
-        with self.assertRaisesRegex(ValueError, "unknown is not found in.*"):
+        with self.assertRaisesRegex(AttributeError, r"unknown \(keys are *"):
             _ = cfg_modifier(cfg)
 
 
-class ModelConfigModifierTest(test_utils.TestCase):
+class ModuleConfigModifierTest(test_utils.TestCase):
     def test_model_config_override(self):
         cfg = SpmdTrainer.default_config().set(model=causal_lm.Model.default_config())
         self.assertTrue(
@@ -98,7 +98,7 @@ class ModelConfigModifierTest(test_utils.TestCase):
             .instantiate()
         )
         # Ensure that the exception is working.
-        with self.assertRaisesRegex(ValueError, "unknown is not found in.*"):
+        with self.assertRaisesRegex(AttributeError, r"unknown \(keys are *"):
             _ = cfg_modifier(cfg)
 
 
@@ -129,7 +129,7 @@ class PartitionSpecModifierTest(test_utils.TestCase):
             .instantiate()
         )
         # Ensure that the exception is working.
-        with self.assertRaisesRegex(ValueError, "unknown is not found in.*"):
+        with self.assertRaisesRegex(AttributeError, r"unknown \(keys are *"):
             _ = cfg_modifier(cfg)
 
         cfg_modifier = (
@@ -144,7 +144,7 @@ class PartitionSpecModifierTest(test_utils.TestCase):
             )
             .instantiate()
         )
-        with self.assertRaisesRegex(ValueError, "unknown_partition_spec is not found in.*"):
+        with self.assertRaisesRegex(AttributeError, "unknown_partition_spec *"):
             _ = cfg_modifier(cfg)
 
 

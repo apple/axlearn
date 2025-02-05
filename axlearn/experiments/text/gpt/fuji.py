@@ -13,7 +13,7 @@ The fuji models are set up to imitate LLaMA models:
 import enum
 import functools
 import itertools
-from typing import Any, Optional, Union
+from typing import Any, List, NamedTuple, Optional, Union
 
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
@@ -135,28 +135,31 @@ TOKENS_PER_BATCH = {
 }
 
 
-def get_trainer_kwargs(
+class _Trn2CustomConfig(NamedTuple):
+    """Config modifications required to run Fuji models on TRN2."""
+
+    # Module config modifications.
+    module_modifications: List[ModuleConfigModifier.Config]
+    # Partition spec modifications.
+    partition_spec_modifications: List[PartitionSpecModifier.Config]
+
+
+def _generate_trn2_custom_configs(
     model_size: str,
     *,
-    vocab_size: int,
     version: Version,
-    flash_attention: bool = False,
-) -> dict[str, Any]:
-    """Construct default trainer kwargs given a model size."""
-    tokens_per_batch = TOKENS_PER_BATCH[version]
-    max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
-    max_sequence_length = MAX_SEQUENCE_LENGTH[version]
-    train_batch_size = tokens_per_batch // max_sequence_length
+) -> _Trn2CustomConfig:
+    """Generate custom module config and PartitionSpec modification for TRN2.
 
-    # Whether to use grouped query attention.
-    num_kv_heads = None
-    if version in (Version.V3, Version.V3_TIKTOKEN):
-        num_kv_heads = 8
+    Args:
+        model_size: Size of the Fuji model.
+        version: Version of the Fuji model.
 
-    rope_theta = ROPE_THETA[version]
-
-    # TRN2 specific model config modifications
-    trn2_model_modifications = [
+    Returns:
+        A _Trn2CustomConfig object that contains the generated modifications.
+    """
+    # TRN2 specific model config modifications.
+    trn2_module_modifications = [
         # Neuron compiler has a module to detect repeating blocks and reuse them during compilation.
         # So compile time does not grow with the number of layers.
         ModuleConfigModifier.default_config().set(
@@ -164,9 +167,9 @@ def get_trainer_kwargs(
             modification=StackedTransformerLayer.default_config(),
         )
     ]
-    # Grouped QKV is only used in fuji-v3 except in fuji-v2 if model is 70B
+    # Grouped QKV is only used in fuji-v3 except in fuji-v2 if model is 70B.
     if version == Version.V3 or (model_size == "70B" and version != Version.V1):
-        trn2_model_modifications.append(
+        trn2_module_modifications.append(
             ModuleConfigModifier.default_config().set(
                 target_config="model.decoder.transformer.layer.self_attention.attention."
                 "input_linear.input_linear",
@@ -220,7 +223,36 @@ def get_trainer_kwargs(
             },
         ),
     ]
+    if model_size in ("70B", "8B"):
+        trn2_partition_spec_modifications += trn2_lm_head_partition_spec
 
+    return _Trn2CustomConfig(
+        module_modifications=trn2_module_modifications,
+        partition_spec_modifications=trn2_partition_spec_modifications,
+    )
+
+
+def get_trainer_kwargs(
+    model_size: str,
+    *,
+    vocab_size: int,
+    version: Version,
+    flash_attention: bool = False,
+) -> dict[str, Any]:
+    """Construct default trainer kwargs given a model size."""
+    tokens_per_batch = TOKENS_PER_BATCH[version]
+    max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
+    max_sequence_length = MAX_SEQUENCE_LENGTH[version]
+    train_batch_size = tokens_per_batch // max_sequence_length
+
+    # Whether to use grouped query attention.
+    num_kv_heads = None
+    if version in (Version.V3, Version.V3_TIKTOKEN):
+        num_kv_heads = 8
+
+    rope_theta = ROPE_THETA[version]
+
+    trn2_config = _generate_trn2_custom_configs(model_size, version=version)
     offload_dots_saveable_policy = config_for_function(
         extended_checkpoint_policies.offload_dots_saveable
     ).set(offload_src="device", offload_dst="pinned_host")
@@ -284,8 +316,8 @@ def get_trainer_kwargs(
                                 # Each TRN2 chip has 4 XLA cores.
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
                             ),
-                            *trn2_model_modifications,
-                            *trn2_partition_spec_modifications,
+                            *trn2_config.module_modifications,
+                            *trn2_config.partition_spec_modifications,
                         ],
                     ),
                 ),
@@ -318,8 +350,8 @@ def get_trainer_kwargs(
                                 # Each TRN2 chip has 4 XLA cores.
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
                             ),
-                            *trn2_model_modifications,
-                            *trn2_partition_spec_modifications,
+                            *trn2_config.module_modifications,
+                            *trn2_config.partition_spec_modifications,
                         ],
                     ),
                 ),
@@ -447,8 +479,8 @@ def get_trainer_kwargs(
                                 # Each TRN2 chip has 4 XLA cores.
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
                             ),
-                            *trn2_model_modifications,
-                            *trn2_partition_spec_modifications,
+                            *trn2_config.module_modifications,
+                            *trn2_config.partition_spec_modifications,
                         ],
                     ),
                 ),
@@ -541,8 +573,8 @@ def get_trainer_kwargs(
                                 # Each TRN2 chip has 4 XLA cores.
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
                             ),
-                            *trn2_model_modifications,
-                            *(trn2_partition_spec_modifications + trn2_lm_head_partition_spec),
+                            *trn2_config.module_modifications,
+                            *trn2_config.partition_spec_modifications,
                         ],
                     ),
                 ),
@@ -666,8 +698,8 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            *trn2_model_modifications,
-                            *(trn2_partition_spec_modifications + trn2_lm_head_partition_spec),
+                            *trn2_config.module_modifications,
+                            *trn2_config.partition_spec_modifications,
                         ],
                     ),
                 ),
