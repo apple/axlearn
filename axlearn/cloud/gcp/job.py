@@ -320,7 +320,7 @@ class GCSFuseMount(VolumeMount):
         cpu: Defaults to 250m. Increase if higher throughput needed.
         memory: Defaults to 256Mi. Set proportionally to number of files processed (not filesize).
         ephemeral_gb: Defaults to 5Gi. Used for staging temp files before uploading to GCS.
-        shared_memory: Default to 1Gi. Used for e.g. Grain-related jobs which store prefetch 
+        shared_memory: Default to 1Gi. Used for e.g. Grain-related jobs which store prefetch
             elements in shared_memory. Setting it to 0 means unlimited shared_memory.
         read_only: Whether the mount should be read-only.
     """
