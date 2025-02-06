@@ -65,12 +65,41 @@ def _gcp_settings_from_active_config(key: str) -> Optional[str]:
     return project_configs.get(key, None)
 
 
-def default_project():
+def default_project() -> Optional[str]:
+    """Default project from active `gcp_settings`.
+
+    Project is used along with env_id to identify `gcp_settings`.
+
+    Returns: the project in active `gcp_settings` config.
+    """
+
     return _gcp_settings_from_active_config("project")
 
 
-def default_zone():
+def default_zone() -> Optional[str]:
+    """Default zone from active `gcp_settings`.
+
+    Besides specifying the GCP zone, this value was also used
+    along with project to identify `gcp_settings`. It is being replaced by
+    env_id. See `default_env_id`.
+
+    Returns: the zone in active `gcp_settings` config.
+    """
+
     return _gcp_settings_from_active_config("zone")
+
+
+def default_env_id() -> Optional[str]:
+    """Default env_id value from active `gcp_settings`.
+
+    Env_id is used along with project to identify `gcp_settings`.
+
+    When env_id is None, fall back to zone for backwards compatibility.
+
+    Returns: the env_id in active `gcp_settings` config; if it doesn't exist, returns the zone.
+    """
+
+    return _gcp_settings_from_active_config("env_id") or _gcp_settings_from_active_config("zone")
 
 
 def gcp_settings(
@@ -103,13 +132,16 @@ def gcp_settings(
     project = flag_values.get("project", None)
     if key == "project" and project:
         return project
-    zone = flag_values.get("zone", None)
-    if key == "zone" and zone:
-        return zone
+
+    # For backwards compatibility, env_id falls back to zone if not specified.
+    env_id = flag_values.get("env_id") or flag_values.get("zone", None)
+    if key == "env_id" and env_id:
+        return env_id
+
     required = required and default is None
     config_file, configs = config.load_configs(CONFIG_NAMESPACE, required=required)
-    if project and zone:
-        config_name = _project_config_key(project, zone)
+    if project and env_id:
+        config_name = _project_config_key(project, env_id)
     else:
         # Try to infer from active config.
         config_name = configs.get("_active", None)
@@ -118,16 +150,21 @@ def gcp_settings(
     if required and not project_configs:
         # TODO(markblee): Link to docs once available.
         logging.error(
-            "Unknown settings for project=%s and zone=%s; "
+            "Unknown settings for project=%s and env_id=%s; "
             "You may want to configure this project first; Please refer to the docs for details.",
             project,
-            zone,
+            env_id,
         )
         sys.exit(1)
 
     # Only set the default value if the field is omitted. Explicitly falsey values should not be
     # defaulted.
     value = project_configs.get(key, default)
+
+    if key == "env_id" and value is None:
+        # Fall back to "zone" for backwards compatibility.
+        value = project_configs.get("zone")
+
     if required and value is None:
         logging.error("Could not find key %s in settings.", key)
         logging.error(
@@ -140,9 +177,9 @@ def gcp_settings(
     return value
 
 
-def _project_config_key(project: str, zone: str) -> str:
-    """Constructs a toml-friendly name uniquely identified by project, zone."""
-    return f"{project}:{zone}"
+def _project_config_key(project: str, env_id: str) -> str:
+    """Constructs a toml-friendly name uniquely identified by project, env_id."""
+    return f"{project}:{env_id}"
 
 
 def main(argv: Sequence[str], *, namespace: str = CONFIG_NAMESPACE, fv: flags.FlagValues = FLAGS):

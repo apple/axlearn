@@ -231,9 +231,9 @@ def _get_projects(
     Args:
         project_configs: A mapping from projects to project-specific configs. Keys prefixed with `_`
             are considered internal and always filtered out.
-        labels: Optional labels to use for filtering. A project config is considered a match if it
-            has a "labels" field (either a sequence or comma separated string) containing all of the
-            values supplied in `labels`.
+        labels: Optional labels to use for filtering. A project config is considered a match if the
+            combination of the "labels" field (either a sequence or comma separated string) and the
+            "project" field contains all of the values supplied in `labels`.
 
     Returns:
         A dict of key, values from `project_configs` matching the given `labels`.
@@ -246,6 +246,9 @@ def _get_projects(
             project_labels = project_cfg.get("labels", [])
             if isinstance(project_labels, str):
                 project_labels = [label.strip() for label in project_labels.split(",")]
+            project = project_cfg.get("project", None)
+            if project:
+                project_labels.append(project)
             if not set(labels).issubset(set(project_labels)):
                 continue
         projects[key] = project_cfg
