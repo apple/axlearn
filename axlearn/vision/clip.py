@@ -12,7 +12,7 @@ Ref: https://github.com/openai/CLIP/blob/main/clip/model.py
 """
 # pylint: disable=duplicate-code
 
-from typing import Optional, Union
+from typing import Optional, Protocol, Union
 
 import jax.numpy as jnp
 import numpy as np
@@ -31,10 +31,12 @@ from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.bert import bert_embedding_config, bert_model_config, bert_transformer_config
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     FunctionConfigBase,
     InstantiableConfig,
     Required,
     config_class,
+    maybe_instantiate,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import (
@@ -51,7 +53,7 @@ from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, S
 from axlearn.common.param_init import ConstantInitializer
 from axlearn.common.poolings import BasePoolingLayer, FirstNTokenPooling, LastNTokenPooling
 from axlearn.common.text_encoder import TEXT_EMBEDDINGS, TextEmbeddingEncoder
-from axlearn.common.utils import NestedTensor
+from axlearn.common.utils import NestedTensor, Tensor
 from axlearn.common.vision_transformer import VisionTransformer, layer_norm_config
 from axlearn.vision.mobilenets import MobileNets
 
@@ -452,6 +454,13 @@ def set_bert_text_encoder_config(
     return text_encoder_cfg
 
 
+class _ContrastiveLossFn(Protocol):
+    def __call__(
+        self, x_y_logits: Tensor, y_x_logits: Tensor, *, temperature: Union[Tensor, float]
+    ) -> Tensor:
+        ...
+
+
 class CLIPFusionNetwork(FusionNetwork):
     """CLIP fusion network. See also CLIPModel."""
 
@@ -465,11 +474,13 @@ class CLIPFusionNetwork(FusionNetwork):
             value=np.log(1 / 0.07)
         )
         temperature_max_cap: float = 100
+        contrastive_loss_fn: ConfigOr[_ContrastiveLossFn] = symmetric_contrastive_loss_from_logits
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._log_logit_scale_init = cfg.log_logit_scale_init.instantiate()
+        self._contrastive_loss_fn = maybe_instantiate(cfg.contrastive_loss_fn)
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         param_specs = {}
@@ -515,9 +526,7 @@ class CLIPFusionNetwork(FusionNetwork):
         log_logit_scale = jnp.clip(log_logit_scale, a_max=jnp.log(cfg.temperature_max_cap))
         temperature = 1 / jnp.exp(log_logit_scale)
         similarity = contrastive_logits(x, y)
-        loss = symmetric_contrastive_loss_from_logits(
-            similarity, similarity.T, temperature=temperature
-        )
+        loss = self._contrastive_loss_fn(similarity, similarity.T, temperature=temperature)
         self.add_summary("temperature", temperature)
         # Show the first 2048 samples. As the data is randomly sampled, this is
         # an approximation of the whole datapoints.
