@@ -78,6 +78,7 @@ from collections.abc import Sequence
 from enum import Enum, unique
 from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 
+import chex
 import einops
 import jax
 from jax import numpy as jnp
@@ -734,18 +735,22 @@ class BaseQKVLinear(BaseLayer):
         # If `kv_state` is provided externally, we do not have to maintain key/value in cache.
         # Otherwise, initialize the cache from provided query, key, value.
         if kv_state is None:
+            if key is None:
+                batch, max_len = query.shape[:2]
+            else:
+                batch, max_len = key.shape[:2]
+                chex.assert_equal_shape((key, value))
 
-            def maybe_initialize(kv: Optional[Tensor]):
-                # [batch, source/target_len, num_kv_heads, per_head_dim].
-                if kv is None:
-                    kv = jnp.zeros(
-                        (*query.shape[:2], self.num_kv_heads, cfg.per_head_dim), dtype=dtype
-                    )
-                else:
-                    kv = jnp.reshape(kv, (*kv.shape[:2], self.num_kv_heads, cfg.per_head_dim))
-                return kv
-
-            init_state.update(key=maybe_initialize(key), value=maybe_initialize(value))
+            init_state.update(
+                key=jnp.zeros(
+                    shape=(batch, max_len, self.num_kv_heads, cfg.per_head_dim),
+                    dtype=dtype,
+                ),
+                value=jnp.zeros(
+                    shape=(batch, max_len, self.num_kv_heads, cfg.per_head_dim),
+                    dtype=dtype,
+                ),
+            )
 
         # If time_step is not provided, initialize an empty cache (i.e., all 0's).
         # Otherwise, treat as prefill case and invoke `extend_step`.
