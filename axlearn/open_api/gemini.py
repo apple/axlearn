@@ -207,6 +207,10 @@ def _format_request(request: dict[str, Any]):
 def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[Content]:
     """Converts OpenAI messages to Gemini Content.
 
+    Note: system messages are converted into user messages due to a design limitation that system
+    prompts need to be set when GenerativeModel is created instead of per request. See
+    https://cloud.google.com/vertex-ai/generative-ai/docs/learn/prompts/system-instructions
+
     Args:
         messages: OpenAI format messages.
 
@@ -223,6 +227,8 @@ def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[C
     gemini_messages = []
     for message in messages:
         role = message["role"]
+        if role == "system":
+            role = "user"
         if role == "user":
             if isinstance(message["content"], str):
                 content = Content(
