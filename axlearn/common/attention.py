@@ -845,17 +845,16 @@ class BaseQKVLinear(BaseLayer):
             k_proj = k_proj.astype(cached_key.dtype)
             v_proj = v_proj.astype(cached_value.dtype)
 
-            # TODO(dhwang2): jax.lax.dynamic_update_slice_in_dim is generally faster than advanced
-            # indexing, but an unusual slowdown was observed, with RLHF sampling taking up to
-            # 3 hours per run. Investigate and fix it.
-            # Note: All X_idx are small, so generating them on-demand is not costly.
-            b, _, n, h = cached_key.shape
-            b_idx = jnp.arange(b)[:, None, None, None]
-            t_idx = (jnp.arange(k_proj.shape[1])[None] + time_step[:, None])[:, :, None, None]
-            n_idx = jnp.arange(n)[None, None, :, None]
-            h_idx = jnp.arange(h)[None, None, None, :]
-            k_proj = cached_key.at[b_idx, t_idx, n_idx, h_idx].set(k_proj)
-            v_proj = cached_value.at[b_idx, t_idx, n_idx, h_idx].set(v_proj)
+            # Function to update the cache for a single batch element.
+            def update_single(cached_kv_slice, kv_proj_slice, time_idx):
+                return jax.lax.dynamic_update_slice_in_dim(
+                    cached_kv_slice, kv_proj_slice, time_idx, axis=0
+                )
+
+            # Use jax.vmap to vectorize over the batch dimension.
+            vmap_update = jax.vmap(update_single)
+            k_proj = vmap_update(cached_key, k_proj, time_step)
+            v_proj = vmap_update(cached_value, v_proj, time_step)
 
             updated_state.update(key=k_proj, value=v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
