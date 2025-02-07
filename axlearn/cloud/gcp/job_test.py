@@ -363,7 +363,10 @@ class TPUGKEJobTest(TestCase):
         location_hint=["test-location-hint", None],
         enable_tpu_smart_repair=[True, False],
         host_mount_spec=[["name=host-mount,host_path=/tmp,mount_path=/host-tmp"], None],
-        gcsfuse_mount_spec=[["mount_path=/tmp/gcsfuse", "gcs_path=/tmp/gcs_path"], None],
+        gcsfuse_mount_spec=[
+            ["mount_path=/tmp/gcsfuse", "gcs_path=/tmp/gcs_path", "shared_memory=5Gi"],
+            None,
+        ],
         priority_class=[None, "such-high-priority"],
     )
     def test_build_pod(
@@ -458,6 +461,11 @@ class TPUGKEJobTest(TestCase):
                 for v in pod_spec["volumes"]:
                     if v["name"] == "shared-memory":
                         self.assertIn("sizeLimit", v["emptyDir"])
+                        size_limit_request = [x for x in gcsfuse_mount_spec if "shared_memory" in x]
+                        self.assertLessEqual(len(size_limit_request), 1)
+                        if size_limit_request:
+                            size_limit_request = size_limit_request[0].split("=")[1]
+                            self.assertEqual(v["emptyDir"]["sizeLimit"], size_limit_request)
             else:
                 self.assertNotIn("shared-memory", [v["name"] for v in pod_spec["volumes"]])
 

@@ -320,6 +320,8 @@ class GCSFuseMount(VolumeMount):
         cpu: Defaults to 250m. Increase if higher throughput needed.
         memory: Defaults to 256Mi. Set proportionally to number of files processed (not filesize).
         ephemeral_gb: Defaults to 5Gi. Used for staging temp files before uploading to GCS.
+        shared_memory: Default to 1Gi. Used for e.g. Grain-related jobs which store prefetch
+            elements in shared_memory. Setting it to 0 means unlimited shared_memory.
         read_only: Whether the mount should be read-only.
     """
 
@@ -329,6 +331,7 @@ class GCSFuseMount(VolumeMount):
     cpu: str = "250m"
     memory: str = "256Mi"
     ephemeral_gb: str = "5Gi"
+    shared_memory: str = "1Gi"
 
 
 @dataclass(kw_only=True)
@@ -625,12 +628,12 @@ class TPUGKEJob(GKEJob):
             volumeMounts=volume_mounts,
         )
 
-    def _build_shared_memory_volumes(self):
+    def _build_shared_memory_volumes(self, shared_memory: str):
         volume = {
             "name": "shared-memory",
             "emptyDir": {
                 "medium": "Memory",
-                "sizeLimit": "1Gi",
+                "sizeLimit": shared_memory,
             },
         }
         return volume
@@ -651,7 +654,7 @@ class TPUGKEJob(GKEJob):
         if cfg.gcsfuse_mount:
             # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
             # prefetch is enabled.
-            volumes.append(self._build_shared_memory_volumes())
+            volumes.append(self._build_shared_memory_volumes(cfg.gcsfuse_mount.shared_memory))
             # Mount a GCS bucket as a volume.
             annotations.update(
                 {
