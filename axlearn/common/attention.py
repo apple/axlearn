@@ -837,24 +837,41 @@ class BaseQKVLinear(BaseLayer):
         q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, query_positions=query_positions)
         updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
-            # Update the cache via dynamic slice. [B, S, N, H].
+            # Update the cache via one-hot broadcast and addition.
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
 
-            # Ensure that we accumulate using the original dtype.
-            k_proj = k_proj.astype(cached_key.dtype)
-            v_proj = v_proj.astype(cached_value.dtype)
+            target_len = cached_key.shape[1]
 
-            # Function to update the cache for a single batch element.
-            def update_single(cached_kv_slice, kv_proj_slice, time_idx):
-                return jax.lax.dynamic_update_slice_in_dim(
-                    cached_kv_slice, kv_proj_slice, time_idx, axis=0
-                )
+            # Create one-hot encodings for each position in the step range
+            # time_step is [B], need to create [B, step] indices
+            base_indices = time_step[:, None] + jnp.arange(num_query_steps)  # [B, step]
+            oh_indices = jax.nn.one_hot(
+                base_indices, target_len, dtype=k_proj.dtype
+            )  # [B, step, T]
 
-            # Use jax.vmap to vectorize over the batch dimension.
-            vmap_update = jax.vmap(update_single)
-            k_proj = vmap_update(cached_key, k_proj, time_step)
-            v_proj = vmap_update(cached_value, v_proj, time_step)
+            # Reshape to [B, step, T, 1, 1] to broadcast across N and H dimensions
+            oh_indices = oh_indices[:, :, :, None, None]
+            negated_oh_indices = (1 - oh_indices).astype(cached_key.dtype)
+            negated_oh_indices = jnp.prod(negated_oh_indices, axis=1)  # [B, T, 1, 1]
+
+            # Reshape projections to align with one-hot encoding
+            # from [B, step, N, H] to [B, step, 1, N, H]
+            k_proj = k_proj[:, :, None, :, :]
+            v_proj = v_proj[:, :, None, :, :]
+
+            # Perform the update
+            # First multiply with one-hot encodings: [B, step, T, N, H]
+            k_proj = (k_proj * oh_indices).astype(cached_key.dtype)
+            v_proj = (v_proj * oh_indices).astype(cached_value.dtype)
+
+            # Sum across step dimension to get final projection values: [B, T, N, H]
+            k_proj = jnp.sum(k_proj, axis=1)
+            v_proj = jnp.sum(v_proj, axis=1)
+
+            # Combine with cached values
+            k_proj = (cached_key * negated_oh_indices) + k_proj
+            v_proj = (cached_value * negated_oh_indices) + v_proj
 
             updated_state.update(key=k_proj, value=v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
