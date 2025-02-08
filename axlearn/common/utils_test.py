@@ -71,6 +71,7 @@ from axlearn.common.utils import (
     infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    prune_empty,
     prune_tree,
     pytree_children,
     replicate_to_local_data,
@@ -779,6 +780,35 @@ class TreeUtilsTest(TestCase):
         mask = utils.sequence_mask(lengths=jnp.array(lengths), max_len=max_len, dtype=dtype)
         expected = jnp.array(expected).astype(dtype if dtype else jnp.int32)
         self.assertNestedAllClose(mask, expected)
+
+    def test_prune_empty_state(self):
+        state = {
+            "state": {
+                "tensor": jnp.array(0),
+                "nested": {
+                    "empty": {},
+                    "not_empty": jnp.array([]),
+                },
+            },
+            "removed": {
+                "nested": {
+                    "deep_nested": {},
+                },
+                "sibling": {
+                    "deep_nested": {},
+                },
+            },
+        }
+        expected = {
+            "state": {
+                "tensor": jnp.array(0),
+                "nested": {
+                    "not_empty": jnp.array([]),
+                },
+            },
+        }
+        actual = prune_empty(state)
+        self.assertNestedAllClose(expected, actual)
 
 
 class SimilarNamesTest(TestCase):

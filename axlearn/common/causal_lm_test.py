@@ -23,9 +23,10 @@ from axlearn.common.attention import (
     TransformerFeedForwardLayer,
 )
 from axlearn.common.config import config_for_function
+from axlearn.common.layers import BaseLossMetrics
 from axlearn.common.learner import Learner
 from axlearn.common.loss import cross_entropy
-from axlearn.common.metrics import BaseLossMetrics, MetricAccumulator, WeightedScalar
+from axlearn.common.metrics import MetricAccumulator, WeightedScalar
 from axlearn.common.module import (
     InvocationContext,
     OutputCollection,

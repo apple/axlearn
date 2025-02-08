@@ -6,6 +6,7 @@
 - Applying updates on non-differentiable params such as batch norm stats;
 - Maintaining Polyak averages of model params (if enabled).
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -47,7 +48,7 @@ from axlearn.common.utils import (
     Tensor,
     flatten_items,
     match_regex_rules,
-    prune_tree,
+    prune_empty,
     register_per_param_settings,
     tree_paths,
 )
@@ -89,22 +90,6 @@ def should_update_with_optimizers(update_type: UpdateType) -> bool:
 
 def should_apply_state_updates(update_type: UpdateType) -> bool:
     return update_type in (UpdateType.STATE_UPDATES, UpdateType.ALL_UPDATES)
-
-
-def _prune_empty(in_tree: Nested[Tensor]) -> Nested[Tensor]:
-    """Returns a shallow copy of the input tree with empty subtrees pruned.
-
-    If a tree would be made empty by removal of its subtrees, it will also be pruned.
-    This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
-
-    Args:
-        in_tree: the input tree to be pruned.
-
-    Returns:
-        The pruned copy of the input tree.
-    """
-    # Note that falsey values or empty Tensors are not considered empty.
-    return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
 
 
 class BaseLearner(LearnerModule):
@@ -309,7 +294,7 @@ class Learner(BaseLearner):
         updated_model_params = optax.apply_updates(
             jax.tree.map(lambda op: op.value, opt_params), parameter_updates
         )
-        state_updates = _prune_empty(state_updates)
+        state_updates = prune_empty(state_updates)
         apply_state_updates = jax.tree.map(
             should_apply_state_updates,
             self._update_types(state_updates),

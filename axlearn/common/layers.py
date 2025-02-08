@@ -53,6 +53,7 @@ from axlearn.common.param_init import (
 )
 from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     Tensor,
     maybe_shard,
@@ -1524,3 +1525,29 @@ class MovingAverage(BaseLayer):
         self.add_state_update("value", new_moving_average)
         self.add_state_update("count", 1 + self.parameters["count"])
         return new_moving_average
+
+
+class BaseLossMetrics(BaseLayer):
+    """A module for computing training time metrics.
+
+    See `causal_lm.Model` for an example usage.
+    """
+
+    def forward(
+        self,
+        input_batch: Nested[Tensor],
+        *,
+        predict_outputs: Nested[Tensor],
+        module_outputs: Nested[Tensor],
+    ) -> tuple[Tensor, Nested[Tensor]]:
+        """Computes metrics from inputs and predictions.
+
+        Args:
+            input_batch: A mapping from input keys to Tensors.
+            predict_outputs: Model predictions for computing metrics.
+            module_outputs: Outputs from the model's invocation context.
+
+        Returns:
+            A tuple (loss, metrics).
+        """
+        raise NotImplementedError(type(self))
