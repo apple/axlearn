@@ -803,7 +803,7 @@ class BaseQKVLinear(BaseLayer):
         Args:
             cached_states: A `NestedTensor` object containing tensors which are the results of
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
-                shape [batch, num_heads, per_head_dim, target_length], and a Tensor "time_step" of
+                shape [batch, source_length, num_heads, per_head_dim], and a Tensor "time_step" of
                 shape [batch].
             query: Tensor of shape [batch, steps, target_dim] corresponding to query vector starting
                 at "time_step" indices.
@@ -841,37 +841,18 @@ class BaseQKVLinear(BaseLayer):
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
 
-            target_len = cached_key.shape[1]
+            source_len = cached_key.shape[1]
 
-            # Create one-hot encodings for each position in the step range
-            # time_step is [B], need to create [B, step] indices
-            base_indices = time_step[:, None] + jnp.arange(num_query_steps)  # [B, step]
+            # Create a dispatch matrix of shape [B, T=step, S].
             oh_indices = jax.nn.one_hot(
-                base_indices, target_len, dtype=k_proj.dtype
-            )  # [B, step, T]
-
-            # Reshape to [B, step, T, 1, 1] to broadcast across N and H dimensions
-            oh_indices = oh_indices[:, :, :, None, None]
-            negated_oh_indices = (1 - oh_indices).astype(cached_key.dtype)
-            negated_oh_indices = jnp.prod(negated_oh_indices, axis=1)  # [B, T, 1, 1]
-
-            # Reshape projections to align with one-hot encoding
-            # from [B, step, N, H] to [B, step, 1, N, H]
-            k_proj = k_proj[:, :, None, :, :]
-            v_proj = v_proj[:, :, None, :, :]
-
-            # Perform the update
-            # First multiply with one-hot encodings: [B, step, T, N, H]
-            k_proj = (k_proj * oh_indices).astype(cached_key.dtype)
-            v_proj = (v_proj * oh_indices).astype(cached_value.dtype)
-
-            # Sum across step dimension to get final projection values: [B, T, N, H]
-            k_proj = jnp.sum(k_proj, axis=1)
-            v_proj = jnp.sum(v_proj, axis=1)
-
-            # Combine with cached values
-            k_proj = (cached_key * negated_oh_indices) + k_proj
-            v_proj = (cached_value * negated_oh_indices) + v_proj
+                time_step[:, None] + jnp.arange(num_query_steps), source_len, dtype=k_proj.dtype
+            )
+            # Create a mask of shape [B, S, 1, 1].
+            negated_oh_indices = (1 - oh_indices.sum(axis=1))[..., None, None]
+            k_proj = jnp.einsum("bt...,bts->bs...", k_proj, oh_indices)
+            v_proj = jnp.einsum("bt...,bts->bs...", v_proj, oh_indices)
+            k_proj = cached_key * negated_oh_indices + k_proj
+            v_proj = cached_value * negated_oh_indices + v_proj
 
             updated_state.update(key=k_proj, value=v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
