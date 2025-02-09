@@ -528,6 +528,44 @@ class TestDiTAttn(parameterized.TestCase):
         # Expect the output be the same for valid items because of logit_biases.
         assert_allclose(layer_output * valid_mask, layer_output2 * valid_mask)
 
+    def test_dit_attn_segment_ids(self):
+        batch_size = 2
+        seq_len = 3
+        dim = 32
+        num_heads = 2
+
+        prng_key = jax.random.PRNGKey(0)
+        inputs = jax.random.normal(prng_key, shape=(batch_size, seq_len, dim))
+        shift = jax.random.normal(prng_key, shape=(batch_size, 1, dim))
+        scale = jax.random.normal(prng_key, shape=(batch_size, 1, dim))
+        gate = jax.random.normal(prng_key, shape=(batch_size, 1, dim))
+        segment_ids = jnp.ones((batch_size, seq_len))
+
+        layer_cfg = DiTAttentionLayer.default_config().set(
+            name="test",
+            source_dim=dim,
+            target_dim=dim,
+        )
+        layer_cfg.attention.num_heads = num_heads
+        layer_cfg.norm.eps = 1e-6
+        layer = layer_cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=prng_key)
+
+        layer_output, _ = F(
+            layer,
+            inputs=dict(
+                input=inputs,
+                shift=shift,
+                scale=scale,
+                gate=gate,
+                segment_ids=segment_ids,
+            ),
+            state=state,
+            is_training=False,
+            prng_key=prng_key,
+        )
+        assert_allclose(layer_output.shape, inputs.shape)
+
     @parameterized.parameters([True, False])
     def test_dit_attn_optional_input(self, use_ssg):
         batch_size = 2
