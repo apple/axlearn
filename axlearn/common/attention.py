@@ -741,13 +741,17 @@ class BaseQKVLinear(BaseLayer):
                 batch, max_len = key.shape[:2]
                 chex.assert_equal_shape((key, value))
 
+            # NB: key and value in init_state are transposed so that source_length is in the last
+            # dimension as a TPU fusion optimization.
+            # Reference:
+            # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
             init_state.update(
                 key=jnp.zeros(
-                    shape=(batch, max_len, self.num_kv_heads, cfg.per_head_dim),
+                    shape=(batch, self.num_kv_heads, cfg.per_head_dim, max_len),
                     dtype=dtype,
                 ),
                 value=jnp.zeros(
-                    shape=(batch, max_len, self.num_kv_heads, cfg.per_head_dim),
+                    shape=(batch, self.num_kv_heads, cfg.per_head_dim, max_len),
                     dtype=dtype,
                 ),
             )
@@ -808,7 +812,7 @@ class BaseQKVLinear(BaseLayer):
         Args:
             cached_states: A `NestedTensor` object containing tensors which are the results of
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
-                shape [batch, source_length, num_heads, per_head_dim], and a Tensor "time_step" of
+                shape [batch, num_heads, per_head_dim, source_length], and a Tensor "time_step" of
                 shape [batch].
             query: Tensor of shape [batch, steps, target_dim] corresponding to query vector starting
                 at "time_step" indices.
@@ -841,6 +845,7 @@ class BaseQKVLinear(BaseLayer):
         # Project inputs to key, value and query. Each has shape [B, steps, N, H].
         q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, query_positions=query_positions)
         updated_state = dict(time_step=time_step + num_query_steps)
+
         if kv_state is None:
             # Update the cache via one-hot broadcast and addition.
             # NB: Cache updates can also be done via dynamic slice update. However it was observed
@@ -849,21 +854,32 @@ class BaseQKVLinear(BaseLayer):
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
 
-            source_len = cached_key.shape[1]
+            source_len = cached_key.shape[-1]
+
+            # [B, T, N, H] --> [B, N, H, T].
+            k_proj = jnp.einsum("btnh->bnht", k_proj)
+            v_proj = jnp.einsum("btnh->bnht", v_proj)
 
             # Create a dispatch matrix of shape [B, T=step, S].
             oh_indices = jax.nn.one_hot(
                 time_step[:, None] + jnp.arange(num_query_steps), source_len, dtype=cached_key.dtype
             )
-            # Create a mask of shape [B, S, 1, 1].
-            negated_oh_indices = (1 - oh_indices.sum(axis=1))[..., None, None]
-            k_proj = jnp.einsum("bt...,bts->bs...", k_proj, oh_indices)
-            v_proj = jnp.einsum("bt...,bts->bs...", v_proj, oh_indices)
-            # Ensure that we accumulate using the original dtype.
-            k_proj = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
-            v_proj = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+            # Create a mask of shape [B, 1, 1, S].
+            negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
 
-            updated_state.update(key=k_proj, value=v_proj)
+            k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
+            v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
+
+            # Ensure that we accumulate using the original dtype.
+            cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
+            cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+
+            updated_state.update(key=cached_key, value=cached_value)
+
+            # [B, S, N, H]
+            k_proj = jnp.einsum("bnhs->bsnh", cached_key)
+            v_proj = jnp.einsum("bnhs->bsnh", cached_value)
+
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
