@@ -45,8 +45,7 @@ from jax.experimental import pallas as pl
 from axlearn.common.attention import NEG_INF, MaskFn
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
-
-Tensor = jax.Array
+from axlearn.common.utils import Tensor
 
 
 class NoPopDict(dict):
