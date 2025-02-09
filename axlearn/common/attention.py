@@ -838,6 +838,9 @@ class BaseQKVLinear(BaseLayer):
         updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
             # Update the cache via one-hot broadcast and addition.
+            # NB: Cache updates can also be done via dynamic slice update. However it was observed
+            # that RLHF training got stuck in some cases.
+            # TODO(ds-hwang): Investigate the root cause.
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
 
