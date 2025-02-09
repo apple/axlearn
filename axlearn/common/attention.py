@@ -808,7 +808,7 @@ class BaseQKVLinear(BaseLayer):
         Args:
             cached_states: A `NestedTensor` object containing tensors which are the results of
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
-                shape [batch, num_heads, per_head_dim, target_length], and a Tensor "time_step" of
+                shape [batch, source_length, num_heads, per_head_dim], and a Tensor "time_step" of
                 shape [batch].
             query: Tensor of shape [batch, steps, target_dim] corresponding to query vector starting
                 at "time_step" indices.
@@ -842,25 +842,25 @@ class BaseQKVLinear(BaseLayer):
         q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, query_positions=query_positions)
         updated_state = dict(time_step=time_step + num_query_steps)
         if kv_state is None:
-            # Update the cache via dynamic slice. [B, S, N, H].
+            # Update the cache via one-hot broadcast and addition.
+            # NB: Cache updates can also be done via dynamic slice update. However it was observed
+            # that RLHF training got stuck in some cases.
+            # TODO(ds-hwang): Investigate the root cause.
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
 
-            # Ensure that we accumulate using the original dtype.
-            k_proj = k_proj.astype(cached_key.dtype)
-            v_proj = v_proj.astype(cached_value.dtype)
+            source_len = cached_key.shape[1]
 
-            # TODO(dhwang2): jax.lax.dynamic_update_slice_in_dim is generally faster than advanced
-            # indexing, but an unusual slowdown was observed, with RLHF sampling taking up to
-            # 3 hours per run. Investigate and fix it.
-            # Note: All X_idx are small, so generating them on-demand is not costly.
-            b, _, n, h = cached_key.shape
-            b_idx = jnp.arange(b)[:, None, None, None]
-            t_idx = (jnp.arange(k_proj.shape[1])[None] + time_step[:, None])[:, :, None, None]
-            n_idx = jnp.arange(n)[None, None, :, None]
-            h_idx = jnp.arange(h)[None, None, None, :]
-            k_proj = cached_key.at[b_idx, t_idx, n_idx, h_idx].set(k_proj)
-            v_proj = cached_value.at[b_idx, t_idx, n_idx, h_idx].set(v_proj)
+            # Create a dispatch matrix of shape [B, T=step, S].
+            oh_indices = jax.nn.one_hot(
+                time_step[:, None] + jnp.arange(num_query_steps), source_len, dtype=k_proj.dtype
+            )
+            # Create a mask of shape [B, S, 1, 1].
+            negated_oh_indices = (1 - oh_indices.sum(axis=1))[..., None, None]
+            k_proj = jnp.einsum("bt...,bts->bs...", k_proj, oh_indices)
+            v_proj = jnp.einsum("bt...,bts->bs...", v_proj, oh_indices)
+            k_proj = cached_key * negated_oh_indices + k_proj
+            v_proj = cached_value * negated_oh_indices + v_proj
 
             updated_state.update(key=k_proj, value=v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
