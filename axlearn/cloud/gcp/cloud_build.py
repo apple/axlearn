@@ -64,8 +64,18 @@ class CloudBuildStatus(enum.Enum):
 
 
 def _get_build_request_filter(*, image_name: str, tags: list[str]) -> str:
-    # To filter builds by multiple tags, use "AND", "OR", or "NOT" to list tags.
-    # Example: '(tags = tag1 AND tags = tag2) OR results.images.name="image"'.
+    """Constructs a filter string to query build requests based on image name and tags.
+
+    To filter builds by multiple tags, use "AND", "OR", or "NOT" to list tags.
+    Example: '(tags = tag1 AND tags = tag2) OR results.images.name="image"'.
+
+    Args:
+        image_name: The name of the image to filter build requests by.
+        tags: A list of tags to filter build requests by.
+
+    Returns:
+        str: A filter string suitable for use in build request queries.
+    """
     filter_by_tag = ""
     if tags:
         filter_by_tag = "(" + " AND ".join(f"tags = {tag}" for tag in tags) + ")" + " OR "
@@ -86,59 +96,68 @@ def _list_available_regions(project_id: str) -> list[str]:
         Exception: If an error occurs when retrieving regions from the Compute Engine API.
     """
     try:
-        # Initialize the Compute Engine client.
         client = RegionsClient()
-
-        # List all regions for the given project.
         request = ListRegionsRequest(project=project_id)
         regions = client.list(request=request)
-
-        # Extract and return region names as list.
         return [region.name for region in regions]
     except Exception as e:
-        logging.error("Failed to look up regions for project: %s", e)
+        logging.error("Failed to look up regions for project '%s': %s", project_id, e)
         raise
 
 
-def _get_cloud_build_status_for_region(
-    *, project_id: str, image_name: str, tags: list[str], region: str = "global"
-) -> Optional[CloudBuildStatus]:
-    """Gets the status of the latest build by filtering on the build tags, image name, and region.
+def _list_builds_in_region(
+    project_id: str, image_name: str, tags: tuple[str, ...], region: str
+) -> list[Build]:
+    """Lists all builds for a given combination of region, project, image name, and tags.
 
     Args:
         project_id: The GCP project ID.
-        region: The GCP region. Defaults to 'global' if no region is given.
-        image_name: The image name including the image path of the Artifact Registry.
-        tags: A list of the CloudBuild build tags. Note that these are not docker image tags.
+        image_name: The name of the Docker image.
+        tags: A tuple of build tags to filter the builds.
+        region: The region to query for builds.
 
     Returns:
-        CloudBuild status for the latest build in this region.
-        None if no build found for the image name in the given region.
+        A list of CloudBuild Builds matching the criteria.
+    """
+    client = cloudbuild_v1.CloudBuildClient()
+    request = cloudbuild_v1.ListBuildsRequest(
+        parent=f"projects/{project_id}/locations/{region}",
+        project_id=project_id,
+        filter=_get_build_request_filter(image_name=image_name, tags=list(tags)),
+    )
+    return list(client.list_builds(request=request))
 
-    Raises:
-        Exception: On failure to get the latest build status of a given image in a GCP project.
+
+def _get_latest_build_status_in_region(
+    project_id: str, image_name: str, tags: tuple[str, ...], region: str
+) -> Optional[CloudBuildStatus]:
+    """Gets the CloudBuild status for the latest build in a given region (no caching).
+
+    Args:
+        project_id: The GCP project ID.
+        image_name: The name of the Docker image.
+        tags: A tuple of build tags to filter the builds.
+        region: The region to query for the latest build.
+
+    Returns:
+        The CloudBuildStatus of the latest build, or None if no build is found.
     """
     try:
-        client = cloudbuild_v1.CloudBuildClient()
-        request = cloudbuild_v1.ListBuildsRequest(
-            # CloudBuild lookups are region-specific.
-            parent=f"projects/{project_id}/locations/{region}",
-            project_id=project_id,
-            filter=_get_build_request_filter(image_name=image_name, tags=tags),
+        builds = _list_builds_in_region(
+            project_id=project_id, image_name=image_name, tags=tags, region=region
         )
-        builds = list(client.list_builds(request=request))
-
         if not builds:
-            logging.warning("No builds found in region '%s' for image '%s'", image_name, region)
+            logging.info("No builds found in region '%s' for image '%s'.", region, image_name)
             return None
 
+        # Sort builds by creation time and pick the latest.
         builds.sort(key=lambda build: build.create_time)
-        logging.info("Build found in region '%s' for image '%s': %s", region, image_name, builds)
-
         latest_build = builds[-1]
+        logging.info(
+            "Latest build found in region '%s' for image '%s': %s", region, image_name, latest_build
+        )
         return CloudBuildStatus.from_build_status(latest_build.status)
 
-    # TODO(liang-he): Distinguish retryable and non-retryable google.api_core.exceptions
     except Exception as e:
         logging.warning(
             "Failed to find the build for image '%s' in region '%s', exception: %s",
@@ -149,33 +168,53 @@ def _get_cloud_build_status_for_region(
         raise
 
 
+# In-memory memo to store the last known region for a given (project_id, image_name, tags).
+_last_known_region_for_build = {}
+
+
 def get_cloud_build_status(
     *, project_id: str, image_name: str, tags: list[str]
 ) -> Optional[CloudBuildStatus]:
     """Gets the status of the latest CloudBuild by filtering on the build tags and image name.
 
-    Performs a request for each available region, including 'global' first.
+    In order:
+    1. Queries the last known region where a build was previously found (if any).
+    2. Queries all regions if not found above.
+
+    The build results are not cached to ensure the latest build status is always retrieved.
 
     Args:
         project_id: The GCP project ID.
-        image_name: The image name including the image path of the Artifact Registry.
-        tags: A list of the CloudBuild build tags. Note that these are not docker image tags.
+        image_name: The name of the image.
+        tags: A list of tags used to filter the builds.
 
     Returns:
-        CloudBuild status for the latest build found in the first available region.
-        None if no build found for the image name and tag across all available regions.
+        The CloudBuildStatus of the latest build, or None if no build is found.
     """
-    build_status = None
-    # Unfortunately the CloudBuild API does not support wildcard region lookup.
-    # Workaround: Check each region for the latest build, stopping when the first is found.
-    # Try global (default) region first before other regions.
+    tags_tuple = tuple(sorted(tags))
+
+    # If there is a last known region where a build was found previously, use it
+    last_region = _last_known_region_for_build.get((project_id, image_name, tags_tuple))
+    if last_region:
+        logging.info("Checking last known region '%s' for image '%s'.", last_region, image_name)
+        status = _get_latest_build_status_in_region(
+            project_id=project_id, image_name=image_name, tags=tags_tuple, region=last_region
+        )
+        if status is not None:
+            return status
+
+    # If not found yet, iterate over all available regions.
     all_regions = ["global"] + _list_available_regions(project_id)
     for region in all_regions:
-        logging.info("Looking for CloudBuild with image '%s' in region '%s'", image_name, region)
-        build_status = _get_cloud_build_status_for_region(
-            project_id=project_id, image_name=image_name, tags=tags, region=region
+        logging.info(
+            "Checking region '%s' for image '%s' in project '%s'.", region, image_name, project_id
         )
-        if build_status is not None:
-            # Short-circuit so there are no extraneous queries after the first build is found.
-            break
-    return build_status
+        status = _get_latest_build_status_in_region(
+            project_id=project_id, image_name=image_name, tags=tags_tuple, region=region
+        )
+        if status is not None:
+            _last_known_region_for_build[(project_id, image_name, tags_tuple)] = region
+            return status
+
+    # No build found in any region.
+    return None
