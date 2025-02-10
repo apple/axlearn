@@ -2,7 +2,6 @@
 
 """Evaluates and computes metrics for responses from generator."""
 import asyncio
-import logging
 import os
 from datetime import timedelta
 from typing import Optional
