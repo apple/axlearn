@@ -31,7 +31,7 @@ from axlearn.cloud.common.bastion import (
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import parse_kv_flags, subprocess_run
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.system_characteristics import (
@@ -76,6 +76,8 @@ class GCPJob(Job):
         project: Required[str] = REQUIRED
         # GCP zone.
         zone: Required[str] = REQUIRED
+        # GCP env_id.
+        env_id: Optional[str] = None
         # If not none, the current job will be executed as the service account.
         service_account: Optional[str] = None
 
@@ -85,6 +87,12 @@ class GCPJob(Job):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("project", default_project(), "The GCP project name.", **common_kwargs)
         flags.DEFINE_string("zone", default_zone(), "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string(
+            "env_id",
+            default_env_id(),
+            "The env_id, used along with project to identify `gcp_settings`.",
+            **common_kwargs,
+        )
         flags.DEFINE_string(
             "service_account",
             None,
@@ -312,6 +320,8 @@ class GCSFuseMount(VolumeMount):
         cpu: Defaults to 250m. Increase if higher throughput needed.
         memory: Defaults to 256Mi. Set proportionally to number of files processed (not filesize).
         ephemeral_gb: Defaults to 5Gi. Used for staging temp files before uploading to GCS.
+        shared_memory: Default to 1Gi. Used for e.g. Grain-related jobs which store prefetch
+            elements in shared_memory. Setting it to 0 means unlimited shared_memory.
         read_only: Whether the mount should be read-only.
     """
 
@@ -321,6 +331,7 @@ class GCSFuseMount(VolumeMount):
     cpu: str = "250m"
     memory: str = "256Mi"
     ephemeral_gb: str = "5Gi"
+    shared_memory: str = "1Gi"
 
 
 @dataclass(kw_only=True)
@@ -617,12 +628,12 @@ class TPUGKEJob(GKEJob):
             volumeMounts=volume_mounts,
         )
 
-    def _build_shared_memory_volumes(self):
+    def _build_shared_memory_volumes(self, shared_memory: str):
         volume = {
             "name": "shared-memory",
             "emptyDir": {
                 "medium": "Memory",
-                "sizeLimit": "1Gi",
+                "sizeLimit": shared_memory,
             },
         }
         return volume
@@ -643,7 +654,7 @@ class TPUGKEJob(GKEJob):
         if cfg.gcsfuse_mount:
             # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
             # prefetch is enabled.
-            volumes.append(self._build_shared_memory_volumes())
+            volumes.append(self._build_shared_memory_volumes(cfg.gcsfuse_mount.shared_memory))
             # Mount a GCS bucket as a volume.
             annotations.update(
                 {

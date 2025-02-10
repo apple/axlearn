@@ -26,6 +26,9 @@ def common_flags(**kwargs):
     """Defines common GCP flags. Keyword args will be forwarded to flag definitions."""
     flags.DEFINE_string("project", None, "The GCP project name.", **kwargs)
     flags.DEFINE_string("zone", None, "The GCP zone name.", **kwargs)
+    flags.DEFINE_string(
+        "env_id", None, "The env_id, used along with project to identify `gcp_settings`.", **kwargs
+    )
 
 
 def get_credentials(
