@@ -407,17 +407,10 @@ class ConfigBase:
             value at the path or self if path is empty.
         """
         current = self
-        index = 0
 
-        while path and index < len(path):
-            key = path[index]
-
-            # TODO(markblee): maybe use cfg.visit instead of getattr
+        for key in path:
+            # TODO(markblee): Maybe use cfg.visit instead of getattr.
             current = getattr(current, key)
-            index += 1
-
-            if index == len(path):
-                break
 
         return current
 
