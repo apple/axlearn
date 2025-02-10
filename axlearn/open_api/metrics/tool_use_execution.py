@@ -168,7 +168,7 @@ def _match_tool_call_with_rules(
     seen_arguments = []
     if "arguments" in match_rule:
         for arg_name, rule in match_rule["arguments"].items():
-            if not arg_name in pred_args:
+            if arg_name not in pred_args:
                 return False
             if not _match_argument(
                 arg_name=arg_name,
@@ -180,7 +180,7 @@ def _match_tool_call_with_rules(
             seen_arguments.append(arg_name)
 
     for arg in set(list(pred_args.keys()) + list(target_args.keys())):
-        if not arg in seen_arguments:
+        if arg not in seen_arguments:
             pred_value = pred_args.get(arg, None)
             target_value = target_args.get(arg, None)
             if not _default_value_match(pred_value, target_value):
