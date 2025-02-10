@@ -853,14 +853,15 @@ class BaseQKVLinear(BaseLayer):
 
             # Create a dispatch matrix of shape [B, T=step, S].
             oh_indices = jax.nn.one_hot(
-                time_step[:, None] + jnp.arange(num_query_steps), source_len, dtype=k_proj.dtype
+                time_step[:, None] + jnp.arange(num_query_steps), source_len, dtype=cached_key.dtype
             )
             # Create a mask of shape [B, S, 1, 1].
             negated_oh_indices = (1 - oh_indices.sum(axis=1))[..., None, None]
             k_proj = jnp.einsum("bt...,bts->bs...", k_proj, oh_indices)
             v_proj = jnp.einsum("bt...,bts->bs...", v_proj, oh_indices)
-            k_proj = cached_key * negated_oh_indices + k_proj
-            v_proj = cached_value * negated_oh_indices + v_proj
+            # Ensure that we accumulate using the original dtype.
+            k_proj = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
+            v_proj = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
 
             updated_state.update(key=k_proj, value=v_proj)
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
@@ -1750,8 +1751,7 @@ class MultiheadAttention(BaseLayer):
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
-                "key and value must be both None or both set, "
-                f"key:{type(key)}, value:{type(value)}"
+                f"key and value must be both None or both set, key:{type(key)}, value:{type(value)}"
             )
         if kv_state is not None:
             if key is not None or value is not None:
