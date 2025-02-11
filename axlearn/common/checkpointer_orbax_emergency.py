@@ -750,10 +750,10 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         self._get_tensor_manager(state_with_tensors).save(
             step=step, args=ocp.args.PyTreeSave(item=state_with_tensors)
         )
-        self._eval_summaries = None
         time_diff = time.perf_counter() - start_t
         if self._composite_save_policy(step=step, evaler_summaries=self._eval_summaries):
             logging.info("In-mem ckpt blocking time is %fs.", time_diff)
+        self._eval_summaries = None
         if self._reached_preemption:
             self.wait_until_finished()
             raise SystemExit(f"Exiting after saving checkpoint at {step=} due to pre-emption.")
