@@ -1,5 +1,6 @@
 # Copyright © 2023 Apple Inc.
 """Tests learner."""
+
 import copy
 import re
 from numbers import Number
@@ -24,7 +25,6 @@ from axlearn.common.learner import (
     Learner,
     UpdateType,
     _apply_updates,
-    _prune_empty,
     _split_gradients,
     _value_and_grad,
     should_update_with_optimizers,
@@ -168,35 +168,6 @@ class LearnerTest(TestCase):
             jax.tree_util.tree_structure(updated_model_params),
             jax.tree_util.tree_structure(learner_state["optimizer"][1].mu),
         )
-
-    def test_prune_empty_state(self):
-        state = {
-            "state": {
-                "tensor": jnp.array(0),
-                "nested": {
-                    "empty": {},
-                    "not_empty": jnp.array([]),
-                },
-            },
-            "removed": {
-                "nested": {
-                    "deep_nested": {},
-                },
-                "sibling": {
-                    "deep_nested": {},
-                },
-            },
-        }
-        expected = {
-            "state": {
-                "tensor": jnp.array(0),
-                "nested": {
-                    "not_empty": jnp.array([]),
-                },
-            },
-        }
-        actual = _prune_empty(state)
-        self.assertNestedAllClose(expected, actual)
 
     @parameterized.product(ema_decay=(None, 0.9), method=("update", "forward_and_backward"))
     def test_learner(self, ema_decay: Optional[float], method: str):

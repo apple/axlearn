@@ -9,9 +9,8 @@ import jax.numpy as jnp
 from absl import logging
 
 from axlearn.common.config import Configurable
-from axlearn.common.module import Module
 from axlearn.common.summary import Summary
-from axlearn.common.utils import Nested, NestedTensor, Tensor
+from axlearn.common.utils import NestedTensor, Tensor
 
 
 class WeightedScalarValue(Summary):
@@ -49,32 +48,6 @@ class WeightedScalar(WeightedScalarValue):
         if not isinstance(other, WeightedScalar):
             raise TypeError(f"Expected WeightedScalar, got {type(other)}.")
         return self + other
-
-
-class BaseLossMetrics(Module):
-    """A module for computing training time metrics.
-
-    See `causal_lm.Model` for an example usage.
-    """
-
-    def forward(
-        self,
-        input_batch: Nested[Tensor],
-        *,
-        predict_outputs: Nested[Tensor],
-        module_outputs: Nested[Tensor],
-    ) -> tuple[Tensor, Nested[Tensor]]:
-        """Computes metrics from inputs and predictions.
-
-        Args:
-            input_batch: A mapping from input keys to Tensors.
-            predict_outputs: Model predictions for computing metrics.
-            module_outputs: Outputs from the model's invocation context.
-
-        Returns:
-            A tuple (loss, metrics).
-        """
-        raise NotImplementedError(type(self))
 
 
 class MetricAccumulator(Configurable):

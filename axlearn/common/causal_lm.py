@@ -33,7 +33,8 @@ from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import LayerNorm
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.loss import cross_entropy
-from axlearn.common.metrics import BaseLossMetrics, WeightedScalar
+from axlearn.common.loss_metrics import BaseLossMetrics
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.utils import (
@@ -48,6 +49,7 @@ def layer_norm_config(eps=1e-5):
     return LayerNorm.default_config().set(eps=eps)
 
 
+# TODO(markblee): Move these to `axlearn.common.loss_metrics` and update golden configs.
 class CrossEntropyLossMetrics(BaseLossMetrics):
     """Computes cross entropy loss and related training summaries."""
 

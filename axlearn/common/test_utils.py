@@ -56,6 +56,7 @@ from axlearn.common.utils import (
     complete_partition_spec_tree,
     flatten_items,
     pop_data_dir,
+    prune_empty,
     prune_tree,
     push_data_dir,
     set_data_dir,
@@ -194,8 +195,9 @@ class TestCase(parameterized.TestCase):
         )
         # Optionally, test that trees also have the same structure.
         if require_same_tree_structure:
-            ref_structure = jax.tree_util.tree_structure(params_from_ref)
-            test_structure = jax.tree_util.tree_structure(layer_params)
+            # Prune empty subtrees so we don't require empty dicts for layers with no params.
+            ref_structure = jax.tree_util.tree_structure(prune_empty(params_from_ref))
+            test_structure = jax.tree_util.tree_structure(prune_empty(layer_params))
             self.assertEqual(
                 ref_structure, test_structure, msg=f"\nRef: {ref_structure}\nTest: {test_structure}"
             )
