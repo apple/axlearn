@@ -131,7 +131,7 @@ def sample_from_datasets(
     sources: Sequence[Dataset],
     weights: Sequence[float],
 ) -> Dataset:
-    """Mixes one or more data sources.
+    """Mixes one or more repeated data sources.
 
     Different from `input_tf_data.sample_from_datasets`, the mixing is deterministic:
     https://github.com/google/grain/blob/ddf825c68b6d2c811f9e599d7fb7ae7572affd8c/grain/_src/python/dataset/transformations/mix.py#L222
@@ -148,22 +148,24 @@ def sample_from_datasets(
         A Dataset for the mixed data source.
     """
 
-    # Without repeat, mixing stops as soon as the first dataset is exhausted.
-    def maybe_repeat(ds: Dataset):
-        if not isinstance(ds, grain.MapDataset):
-            raise ValueError(
-                f"{sample_from_datasets.__name__} requires {grain.MapDataset.__name__}"
-            )
-        # Only repeat if not already infinite.
-        if len(ds) != sys.maxsize:
-            ds = ds.repeat()
-        return ds
+    def _ensure_repeated(sources: Sequence[Dataset]):
+        # There is no easy way to check if a grain.IterDataset is repeated.
+        for source in sources:
+            if isinstance(source, grain.MapDataset) and len(source) != sys.maxsize:
+                raise ValueError(
+                    f"sample_from_datasets requires each dataset to be repeated, {source} is not."
+                )
+            if isinstance(source, grain.IterDataset):
+                logging.info(
+                    "Sampling from grain.IterDataset, please make sure your dataset is repeated."
+                )
 
-    # TODO(markblee): Support mixing grain.IterDataset.
-    return grain.MapDataset.mix(
-        datasets=[maybe_repeat(source) for source in sources],
-        weights=weights,
-    )
+    _ensure_repeated(sources)
+    # If any of the datasets are grain.IterDataset, we should use grain.IterDataset.mix().
+    if any(isinstance(ds, grain.IterDataset) for ds in sources):
+        return grain.IterDataset.mix(datasets=sources, weights=weights)
+
+    return grain.MapDataset.mix(datasets=sources, weights=weights)
 
 
 def default_pad_example_fn(example: utils.Nested[Any]) -> utils.Nested[Any]:
