@@ -973,7 +973,7 @@ def identity() -> DatasetToDatasetFn:
     return fn
 
 
-def skip_on_error(log_warning: bool = False) -> DatasetToDatasetFn:
+def skip_on_error(*, log_warning: bool = False) -> DatasetToDatasetFn:
     """Silently skip examples in the dataset that raise an error.
 
     Args:
