@@ -28,6 +28,7 @@ from axlearn.common.input_grain import (
     rekey,
     sample_from_datasets,
     shard_dataset,
+    shard_dataset_with_proportion,
     trim_and_pack_dataset,
     unbatch,
 )
@@ -528,6 +529,38 @@ class InputTest(parameterized.TestCase):
             self.assertSameElements(
                 list(range(epoch_len))[slice(process_index, None, process_count)], examples
             )
+
+    @parameterized.parameters(
+        # A single shard case.
+        dict(range_start=0, range_end=1, period=1),
+        # Two-shard cases.
+        dict(range_start=0, range_end=1, period=2),
+        dict(range_start=1, range_end=2, period=2),
+        # Non-even shard cases.
+        dict(range_start=0, range_end=3, period=8),
+        dict(range_start=3, range_end=8, period=8),
+        # 3-shard case.
+        dict(range_start=0, range_end=2, period=13),
+        dict(range_start=2, range_end=7, period=13),
+        dict(range_start=7, range_end=13, period=13),
+    )
+    def test_shard_dataset_with_proportion(self, range_start, range_end, period):
+        epoch_len = 20
+        num_epochs = 5
+        ds = range_dataset(start=0, stop=epoch_len, seed=123)
+        ds = shard_dataset_with_proportion(
+            ds, range_start=range_start, range_end=range_end, period=period
+        ).repeat(num_epochs=num_epochs)
+
+        executed_results = list(ds)
+
+        expected_result = []
+        for index in range(epoch_len * num_epochs):
+            index_inside_epoch = index % epoch_len
+            if range_start <= index_inside_epoch % period < range_end:
+                expected_result.append(index_inside_epoch)
+
+        self.assertEqual(executed_results, expected_result)
 
     def test_batches(self):
         """Test that we validate per-feed logical batch size."""

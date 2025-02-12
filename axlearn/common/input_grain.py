@@ -40,6 +40,7 @@ import numpy as np
 from absl import logging
 from array_record.python.array_record_data_source import PathLikeOrFileInstruction
 from grain._src.python.data_loader import _determine_worker_count
+from grain._src.python.dataset import dataset as dataset_base
 from grain._src.python.dataset.transformations import packing
 from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
@@ -415,6 +416,54 @@ class _ShardDataset(slice_dataset.SliceMapDataset):
         return super().__getitem__(index)
 
 
+class _ProportionalSliceMapDataset(dataset_base.MapDataset[_T]):
+    """Slices a MapDataset given the integer proportions."""
+
+    _MUTATES_ELEMENT_SPEC = False
+
+    def __init__(
+        self, parent: dataset_base.MapDataset[_T], *, range_start: int, range_end: int, period: int
+    ):
+        super().__init__(parent)
+        if not range_start < range_end <= period:
+            raise ValueError(
+                f"{range_start=}, {range_end=}, {period=} is not valid args. Please make sure"
+                f"{range_start=} < {range_end=} and {range_end=} <= {period=}"
+            )
+        self._range_start = range_start
+        self._range_end = range_end
+        self._period = period
+        self._stop = len(parent)
+        # Let's denote T(range_start, range_end, period, stop) equals to the total count of
+        # examples in this shard.
+        # T(range_start, range_end, period, stop) = T(0, range_end, period, stop)
+        #                                         - T(0, range_start, period, stop)
+        # T(0, x, period, stop) = (stop // period) * x + min(stop % period, x)
+        self._length = (
+            (self._stop // self._period) * (range_end - range_start)
+            + min(self._stop % self._period, range_end)
+            - min(self._stop % self._period, range_start)
+        )
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, index: int):
+        with self._stats.record_self_time():
+            # Converts the index back to within range.
+            index = index % len(self)
+            parent_index = (
+                self._range_start
+                + index // (self._range_end - self._range_start) * self._period
+                + index % (self._range_end - self._range_start)
+            )
+
+        return self._parent[parent_index]
+
+    def __str__(self) -> str:
+        return f"_ProportionalSliceMapDataset[{self._range_start}:{self._range_end}:{self._period}]"
+
+
 def shard_dataset(
     ds: Dataset,
     *,
@@ -442,6 +491,40 @@ def shard_dataset(
     if not 0 <= process_index < process_count:
         raise ValueError(f"{process_index=} should be between 0 and {process_count=}, exclusive.")
     return _ShardDataset(parent=ds, sl=slice(process_index, None, process_count))
+
+
+def shard_dataset_with_proportion(
+    ds: Dataset,
+    *,
+    range_start: int,
+    range_end: int,
+    period: int,
+) -> Dataset:
+    """Shards dataset given within host proportions.
+
+    Given a range_start, range_end, this function will shard examples at:
+    [range_start + period * n, range_end + period * n) where n is an non-negative integer.
+
+    This function is used when sharding a Dataset to multiple hosts. Period should be the total
+    component weights, and range_start and range_end should be the local component weight.
+
+    For example, if we want to shard a dataset with total weight of 100 to 30 and 70, we should do:
+
+    shard_dataset_with_proportion(ds, range_start=0, range_end=30, period=100) and
+    shard_dataset_with_proportion(ds, range_start=30, range_end=100, period=100).
+
+    Args:
+        ds: A Dataset.
+        range_start: An integer indicating start of the range, inclusive.
+        range_end: An integer indicating end of the range, exclusive.
+        period: An integer indicating the period to be sampled.
+
+    Returns:
+        A sharded (sliced) dataset.
+    """
+    return _ProportionalSliceMapDataset(
+        parent=ds, range_start=range_start, range_end=range_end, period=period
+    )
 
 
 def prefetch_dataset(
