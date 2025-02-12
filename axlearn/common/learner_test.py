@@ -1452,7 +1452,6 @@ class CompositeLearnerTest(TestCase):
                     rule: The rule from `cfg.masking_rules` to check agains.
                 """
                 cfg = self.config
-                tree: dict
 
                 rule_dict: dict[str, Union[optax.MaskedNode, None]] = cfg.rules[rule]
 
