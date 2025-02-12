@@ -107,5 +107,6 @@ class GoodputRecorder(measurement.Recorder):
                 include_badput_breakdown=True,
             )
 
-        self._monitor.start_goodput_uploader(*args, **kwargs)
-        logging.info("Started Goodput upload to Tensorboard in the background!")
+        if jax.process_index() == 0:
+            self._monitor.start_goodput_uploader(*args, **kwargs)
+            logging.info("Started Goodput upload to Tensorboard in the background!")
