@@ -40,8 +40,7 @@ from axlearn.common.param_init import (
     PerGroupInitializer,
     WeightInitializer,
 )
-
-Tensor = jnp.ndarray
+from axlearn.common.utils import Tensor
 
 
 def batch_norm():

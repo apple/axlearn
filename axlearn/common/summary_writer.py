@@ -13,7 +13,6 @@ from typing import Any, Callable, Optional
 import jax
 import numpy as np
 from absl import logging
-from jax import numpy as jnp
 from tensorflow import summary as tf_summary
 
 from axlearn.common import file_system as fs
@@ -26,8 +25,6 @@ try:
     import wandb
 except ModuleNotFoundError:
     wandb = None
-
-Tensor = jnp.ndarray
 
 
 class CheckpointerAction(str, enum.Enum):

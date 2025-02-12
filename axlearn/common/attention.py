@@ -78,6 +78,7 @@ from collections.abc import Sequence
 from enum import Enum, unique
 from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 
+import chex
 import einops
 import jax
 from jax import numpy as jnp
@@ -734,18 +735,26 @@ class BaseQKVLinear(BaseLayer):
         # If `kv_state` is provided externally, we do not have to maintain key/value in cache.
         # Otherwise, initialize the cache from provided query, key, value.
         if kv_state is None:
+            if key is None:
+                batch, max_len = query.shape[:2]
+            else:
+                batch, max_len = key.shape[:2]
+                chex.assert_equal_shape((key, value))
 
-            def maybe_initialize(kv: Optional[Tensor]):
-                # [batch, source/target_len, num_kv_heads, per_head_dim].
-                if kv is None:
-                    kv = jnp.zeros(
-                        (*query.shape[:2], self.num_kv_heads, cfg.per_head_dim), dtype=dtype
-                    )
-                else:
-                    kv = jnp.reshape(kv, (*kv.shape[:2], self.num_kv_heads, cfg.per_head_dim))
-                return kv
-
-            init_state.update(key=maybe_initialize(key), value=maybe_initialize(value))
+            # NB: key and value in init_state are transposed so that source_length is in the last
+            # dimension as a TPU fusion optimization.
+            # Reference:
+            # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
+            init_state.update(
+                key=jnp.zeros(
+                    shape=(batch, self.num_kv_heads, cfg.per_head_dim, max_len),
+                    dtype=dtype,
+                ),
+                value=jnp.zeros(
+                    shape=(batch, self.num_kv_heads, cfg.per_head_dim, max_len),
+                    dtype=dtype,
+                ),
+            )
 
         # If time_step is not provided, initialize an empty cache (i.e., all 0's).
         # Otherwise, treat as prefill case and invoke `extend_step`.
@@ -803,7 +812,7 @@ class BaseQKVLinear(BaseLayer):
         Args:
             cached_states: A `NestedTensor` object containing tensors which are the results of
                 previous attentions, and index used for fast decoding. Contains "key" and "value" of
-                shape [batch, num_heads, per_head_dim, target_length], and a Tensor "time_step" of
+                shape [batch, num_heads, per_head_dim, source_length], and a Tensor "time_step" of
                 shape [batch].
             query: Tensor of shape [batch, steps, target_dim] corresponding to query vector starting
                 at "time_step" indices.
@@ -836,28 +845,41 @@ class BaseQKVLinear(BaseLayer):
         # Project inputs to key, value and query. Each has shape [B, steps, N, H].
         q_proj, k_proj, v_proj = self.forward(query, **kv_kwargs, query_positions=query_positions)
         updated_state = dict(time_step=time_step + num_query_steps)
+
         if kv_state is None:
-            # Update the cache via dynamic slice. [B, S, N, H].
+            # Update the cache via one-hot broadcast and addition.
+            # NB: Cache updates can also be done via dynamic slice update. However it was observed
+            # that RLHF training got stuck in some cases.
+            # TODO(ds-hwang): Investigate the root cause.
             cached_key = cached_states["key"]
             cached_value = cached_states["value"]
 
+            source_len = cached_key.shape[-1]
+
+            # [B, T, N, H] --> [B, N, H, T].
+            k_proj = jnp.einsum("btnh->bnht", k_proj)
+            v_proj = jnp.einsum("btnh->bnht", v_proj)
+
+            # Create a dispatch matrix of shape [B, T=step, S].
+            oh_indices = jax.nn.one_hot(
+                time_step[:, None] + jnp.arange(num_query_steps), source_len, dtype=cached_key.dtype
+            )
+            # Create a mask of shape [B, 1, 1, S].
+            negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
+
+            k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
+            v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
+
             # Ensure that we accumulate using the original dtype.
-            k_proj = k_proj.astype(cached_key.dtype)
-            v_proj = v_proj.astype(cached_value.dtype)
+            cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
+            cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
 
-            # TODO(dhwang2): jax.lax.dynamic_update_slice_in_dim is generally faster than advanced
-            # indexing, but an unusual slowdown was observed, with RLHF sampling taking up to
-            # 3 hours per run. Investigate and fix it.
-            # Note: All X_idx are small, so generating them on-demand is not costly.
-            b, _, n, h = cached_key.shape
-            b_idx = jnp.arange(b)[:, None, None, None]
-            t_idx = (jnp.arange(k_proj.shape[1])[None] + time_step[:, None])[:, :, None, None]
-            n_idx = jnp.arange(n)[None, None, :, None]
-            h_idx = jnp.arange(h)[None, None, None, :]
-            k_proj = cached_key.at[b_idx, t_idx, n_idx, h_idx].set(k_proj)
-            v_proj = cached_value.at[b_idx, t_idx, n_idx, h_idx].set(v_proj)
+            updated_state.update(key=cached_key, value=cached_value)
 
-            updated_state.update(key=k_proj, value=v_proj)
+            # [B, S, N, H]
+            k_proj = jnp.einsum("bnhs->bsnh", cached_key)
+            v_proj = jnp.einsum("bnhs->bsnh", cached_value)
+
         return updated_state, self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
@@ -1745,8 +1767,7 @@ class MultiheadAttention(BaseLayer):
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
-                "key and value must be both None or both set, "
-                f"key:{type(key)}, value:{type(value)}"
+                f"key and value must be both None or both set, key:{type(key)}, value:{type(value)}"
             )
         if kv_state is not None:
             if key is not None or value is not None:
