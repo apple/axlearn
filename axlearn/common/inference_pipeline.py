@@ -138,7 +138,7 @@ class InferencePipeline(Module):
             self.summary_writer(step=batch_index, values=output.summaries)
 
             if (batch_index + 1) % 10 == 0:
-                global_batch_size = len(jax.tree_util.tree_leaves(global_input_batch)[0])
+                global_batch_size = len(jax.tree.leaves(global_input_batch)[0])
                 logging.info(
                     "Processed %d batches and %d examples",
                     batch_index + 1,

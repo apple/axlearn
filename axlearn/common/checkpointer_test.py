@@ -425,9 +425,7 @@ class CheckpointerTest(test_utils.TestCase):
             step, restored_state = ckpt.restore(step=None, state=state0)
             self.assertEqual(100, step)
             self.assertEqual(type(restored_state), custom_dict_type)
-            self.assertIn(
-                custom_dict_type.__name__, str(jax.tree_util.tree_structure(restored_state))
-            )
+            self.assertIn(custom_dict_type.__name__, str(jax.tree.structure(restored_state)))
             self.assertNestedEqual(state0, restored_state)
             ckpt.stop()
 

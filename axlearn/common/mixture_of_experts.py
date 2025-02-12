@@ -991,7 +991,7 @@ def convert_dense_to_moe_parameters(
             ) from e
         # The target layer is a RepeatedTransformerLayer.
         target_parameters = {"repeat": VDict({"layer": {}})}
-        num_stages = jax.tree_util.tree_leaves(stage_parameter_specs)[0].shape[0]
+        num_stages = jax.tree.leaves(stage_parameter_specs)[0].shape[0]
         # The target stage is expected to be a StackedTransformerLayer.
         num_layers_per_stage = len(stage_parameter_specs)
         for layer_i in range(num_layers_per_stage):

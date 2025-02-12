@@ -427,9 +427,7 @@ class CompositeLearner(BaseLearner):
             tree_paths(params),
         )
         # Check that all params is covered.
-        if not jax.tree_util.tree_reduce(
-            lambda x, y: x and (y != ""), learner_name_tree, initializer=True
-        ):
+        if not jax.tree.reduce(lambda x, y: x and (y != ""), learner_name_tree, initializer=True):
             raise ValueError("Composite learner rules do not update all model params.")
         return learner_name_tree
 

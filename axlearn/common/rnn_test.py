@@ -185,11 +185,9 @@ class StackedRNNTest(TestCase):
             final_states_list.append(output_collections.module_outputs["final_states"])
 
         # Stack the tree leaves.
-        tree_leaves = [jax.tree_util.tree_flatten(t)[0] for t in final_states_list]
-        tree_def = jax.tree_util.tree_structure(final_states_list[0])
-        final_states = jax.tree_util.tree_unflatten(
-            tree_def, [jnp.stack(leaf) for leaf in zip(*tree_leaves)]
-        )
+        tree_leaves = [jax.tree.flatten(t)[0] for t in final_states_list]
+        tree_def = jax.tree.structure(final_states_list[0])
+        final_states = jax.tree.unflatten(tree_def, [jnp.stack(leaf) for leaf in zip(*tree_leaves)])
         self.assertEqual(shapes(final_states), shapes(init_states))
 
         forward_outputs, forward_collections = F(

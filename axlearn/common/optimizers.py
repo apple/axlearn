@@ -1351,7 +1351,7 @@ def skip_and_clip_by_global_norm(
                 return is_valid, new_drop_stats
 
         # Check if every gradient is finite.
-        flat_updates = jax.tree_util.tree_flatten(updates)[0]
+        flat_updates = jax.tree.flatten(updates)[0]
         is_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(p)) for p in flat_updates]))
         g_norm = optax.global_norm(updates)
         if drop_norm is not None:

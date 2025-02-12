@@ -58,7 +58,7 @@ class StructTest(absltest.TestCase):
 
     def test_pytree_nodes(self):
         p = _Point(x=1, y=2, meta={"abc": True})
-        leaves = jax.tree_util.tree_leaves(p)
+        leaves = jax.tree.leaves(p)
         self.assertEqual(leaves, [1, 2])
         new_p = jax.tree.map(lambda x: x + x, p)
         self.assertEqual(new_p, _Point(x=2, y=4, meta={"abc": True}))
@@ -104,7 +104,7 @@ class StructTest(absltest.TestCase):
             )
             # tree_flatten_with_path is not preserved because Chex does not support this so the
             # fallback jax implementation with numbered keys gets used.
-            flattened.append(jax.tree_util.tree_leaves(instance))
+            flattened.append(jax.tree.leaves(instance))
         chex.assert_trees_all_equal(*flattened)
 
     def test_constructor_order(self):
@@ -133,7 +133,7 @@ class StructTest(absltest.TestCase):
             field_b: int
             field_a: int
 
-        result = jax.tree_util.tree_leaves(C(field_b=1, field_a=2))
+        result = jax.tree.leaves(C(field_b=1, field_a=2))
         expected = (1, 2)
         self.assertSequenceEqual(result, expected)
 
