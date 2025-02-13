@@ -116,6 +116,10 @@ def get_trainer_config(
         from axlearn.cloud.gcp.monitoring.tpu_device_monitor import create_tpu_monitor
 
         trainer_config.device_monitor = create_tpu_monitor()
+    if hasattr(trainer_config.checkpointer, "trainer_dir"):
+        # Set trainer_dir if not already set.
+        if not isinstance(trainer_config.checkpointer.trainer_dir, str):
+            trainer_config.checkpointer.trainer_dir = trainer_config.dir
     return trainer_config
 
 
