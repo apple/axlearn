@@ -14,9 +14,10 @@ from typing import Any, Callable, Optional, Union
 
 import pkg_resources
 import psutil
-from absl import app, logging
+from absl import app, logging, flags
 
 from axlearn.cloud import ROOT_MODULE_NAME
+from axlearn.common.config import Configurable
 
 
 class FilterDiscoveryLogging(pylogging.Filter):
@@ -384,3 +385,21 @@ class Table:
     def __repr__(self) -> str:
         """Formats the table for printing."""
         return format_table(headings=self.headings, rows=self.rows)
+
+
+class FlagConfigurable(Configurable):
+    """A Configurable object that also supports flag-based configuration."""
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        """Defines absl flags to be read by `from_flags()`."""
+        del fv
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        """Populate config partially using parsed absl flags."""
+        flag_values = {**fv.flag_values_dict(), **kwargs}
+        cfg = cls.default_config()
+        return cfg.set(
+            **{field: flag_values[field] for field in cfg.keys() if field in flag_values}
+        )

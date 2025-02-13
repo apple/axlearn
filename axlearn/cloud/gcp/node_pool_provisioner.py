@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Utilities to provision TPU node pools."""
+
 import hashlib
 import io
 import os
@@ -12,6 +13,7 @@ from absl import flags, logging
 from axlearn.cloud.common.bastion import _BASTION_SERIALIZED_JOBSPEC_ENV_VAR, deserialize_jobspec
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import AcceleratorConfig, GKEJob, TPUGKEJob
+from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
     construct_node_pool_name,
     create_node_pools,
@@ -82,10 +84,11 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
         cfg: TPUNodePoolProvisioner.Config = self.config
         job_cfg: TPUGKEJob.Config = job.config
         acc_cfg: AcceleratorConfig = job_cfg.accelerator
-        reservation = job_cfg.reservation
-        location_hint = job_cfg.location_hint
-        enable_tpu_ici_resiliency = job_cfg.enable_tpu_ici_resiliency
-        enable_tpu_smart_repair = job_cfg.enable_tpu_smart_repair
+        builder_cfg: TPUReplicatedJob.Config = job_cfg.builder
+        reservation = builder_cfg.reservation
+        location_hint = builder_cfg.location_hint
+        enable_tpu_ici_resiliency = builder_cfg.enable_tpu_ici_resiliency
+        enable_tpu_smart_repair = builder_cfg.enable_tpu_smart_repair
         tpu_type = infer_tpu_type(acc_cfg.instance_type)
         job_sys_property = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
         num_node_pools = acc_cfg.num_replicas

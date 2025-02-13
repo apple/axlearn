@@ -10,10 +10,11 @@ from typing import Any, Optional
 from absl import flags
 
 from axlearn.cloud.common.bundler import Bundler, bundler_flags
-from axlearn.common.config import REQUIRED, Configurable, Required, config_class
+from axlearn.cloud.common.utils import FlagConfigurable
+from axlearn.common.config import REQUIRED, Required, config_class
 
 
-class Job(Configurable):
+class Job(FlagConfigurable):
     """Base Job definition.
 
     Job's main API method is `execute`, which sets up the environment according to `bundler`,
@@ -27,7 +28,7 @@ class Job(Configurable):
     """
 
     @config_class
-    class Config(Configurable.Config):
+    class Config(FlagConfigurable.Config):
         """Configures Job."""
 
         # TODO(markblee): Convert all comments into config class docstrings.
@@ -64,15 +65,6 @@ class Job(Configurable):
         )
         # Allow bundler to be optional.
         bundler_flags(required=False, **common_kwargs)
-
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        """Populate config partially using parsed absl flags."""
-        flag_values = {**fv.flag_values_dict(), **kwargs}
-        cfg = cls.default_config()
-        return cfg.set(
-            **{field: flag_values[field] for field in cfg.keys() if field in flag_values}
-        )
 
     @property
     def bundler(self):

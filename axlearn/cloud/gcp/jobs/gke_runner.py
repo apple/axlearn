@@ -43,14 +43,14 @@ from axlearn.cloud.common.utils import (
     configure_logging,
     generate_job_name,
     parse_action,
-    parse_kv_flags,
 )
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import BASTION_JOB_VERSION_LABEL, GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
+from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
     delete_node_pools,
@@ -168,7 +168,7 @@ class GKERunnerJob(GCPJob):
         cfg: GKERunnerJob.Config = super().from_flags(fv, **kwargs)
         cfg.max_tries = cfg.max_tries or 10
         cfg.name = cfg.name or generate_job_name()
-        cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
+        # cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
         )
@@ -204,6 +204,9 @@ class GKERunnerJob(GCPJob):
         super().__init__(cfg)
         cfg = self.config
         # Instantiate inner job impl.
+        # TODO(markblee): Reduce the number of pass-through args. Some of these fields can be
+        # directly initialized within `inner` and read from `cfg.inner`. This minimizes config
+        # duplication/ambiguity about where values are read from.
         self._inner: GKEJob = cfg.inner.set(
             name=cfg.name,
             bundler=cfg.bundler,
@@ -537,6 +540,8 @@ def _get_runner_or_exit(instance_type: str):
     if instance_type.startswith("tpu"):
         return TPUGKERunnerJob
     elif instance_type.startswith("gpu-a3"):
+        # TODO(markblee): We can directly construct:
+        # GKERunnerJob.with_inner(GKEJob.with_jobset(A3ReplicatedJob))
         return GPUGKERunnerJob
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")
