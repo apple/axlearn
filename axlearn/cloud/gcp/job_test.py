@@ -271,7 +271,7 @@ class TPUGKEJobTest(TestCase):
             for key, value in final_config.items():
                 if key not in ("klass", "bundler") and key in inner_config.keys():
                     self.assertEqual(value, getattr(inner_config, key), msg=key)
-            self.assertEqual("v4-8", gke_job._builder._tpu_type)
+            self.assertEqual("v4-8", gke_job._builder._tpu_type)  # pytype: disable=attribute-error
 
 
 class GPUGKEJobTest(TestCase):

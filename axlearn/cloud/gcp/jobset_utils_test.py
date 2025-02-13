@@ -3,14 +3,16 @@
 """Tests Jobset utilities."""
 
 import contextlib
-from datetime import datetime
 import io
 import math
 import os
+from datetime import datetime
 from typing import Optional
 from unittest import mock
+
 from absl import flags
 from absl.testing import parameterized
+
 from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
     BASTION_JOB_VERSION_ENV_VAR,
@@ -20,8 +22,8 @@ from axlearn.cloud.common.bastion import (
 )
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.types import JobMetadata
+from axlearn.cloud.gcp import bundler, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
-from axlearn.cloud.gcp import jobset_utils, bundler
 from axlearn.cloud.gcp.jobset_utils import (
     _MEMORY_REQUEST_PERCENTAGE,
     _METADATA_GOOGLE_INTERNAL_IP,
@@ -164,7 +166,6 @@ class TPUReplicatedJobTest(TestCase):
                 priority_class=priority_class,
             ) as (cfg, bundler_cfg),
         ):
-            bundler = bundler_cfg.instantiate()
             gke_job: jobset_utils.TPUReplicatedJob = cfg.set(
                 reservation=reservation,
                 enable_tpu_ici_resiliency=enable_ici_resiliency,
@@ -174,7 +175,7 @@ class TPUReplicatedJobTest(TestCase):
                 enable_tpu_smart_repair=enable_tpu_smart_repair,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler)
+            ).instantiate(bundler=bundler_cfg.instantiate())
             # pylint: disable-next=protected-access
             pod = gke_job._build_pod()
             pod_spec = pod["spec"]
@@ -425,9 +426,8 @@ class A3ReplicatedJobTest(TestCase):
             cfg,
             bundler_cfg,
         ):
-            bundler = bundler_cfg.instantiate()
             gke_job: jobset_utils.A3ReplicatedJob = cfg.set(name="test").instantiate(
-                bundler=bundler
+                bundler=bundler_cfg.instantiate()
             )
             # pylint: disable-next=protected-access
             pod = gke_job._build_pod()

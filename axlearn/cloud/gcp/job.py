@@ -39,6 +39,7 @@ from axlearn.cloud.gcp.utils import (
     running_from_vm,
 )
 from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.utils import Nested
 
 
 class GCPJob(Job):
@@ -249,6 +250,7 @@ class TPUQRMJob(GCPJob):
 class GKEJob(GCPJob):
     """Base GKE JobSet interface."""
 
+    # Flags defined in `builder.define_flags` will be considered part of this class' flag API.
     builder: type[BaseReplicatedJob]
 
     @config_class
@@ -309,7 +311,11 @@ class GKEJob(GCPJob):
             raise NotImplementedError(f"Only docker bundler supported, got: {bundler_cfg}")
         super().__init__(cfg)
         cfg: GKEJob.Config = self.config
-        self._builder = cfg.builder.set(
+        # This instantiatees a builder for constructing replicated job specs, which will be managed
+        # together under the jobset represented by this class.
+        # Note the distinction from bundlers, which are responsible for bundling any code assets
+        # required to run the job.
+        self._builder: BaseReplicatedJob = cfg.builder.set(
             name=cfg.name,
             command=cfg.command,
             accelerator=cfg.accelerator,
@@ -325,7 +331,7 @@ class GKEJob(GCPJob):
         # fully blocking; after the call returns there can be a delay before everything is deleted.
         delete_k8s_jobset(cfg.name, namespace=cfg.namespace)
 
-    def _build_jobset(self):
+    def _build_jobset(self) -> Nested[Any]:
         """Builds a config for a JobSet, which is a set of Jobs.
 
         https://github.com/kubernetes-sigs/jobset/blob/d49514bee57da8ac9aec2fcea06c3a13c21afeae/docs/concepts/README.md

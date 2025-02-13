@@ -43,6 +43,7 @@ from axlearn.cloud.common.utils import (
     configure_logging,
     generate_job_name,
     parse_action,
+    parse_kv_flags,
 )
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
@@ -168,7 +169,7 @@ class GKERunnerJob(GCPJob):
         cfg: GKERunnerJob.Config = super().from_flags(fv, **kwargs)
         cfg.max_tries = cfg.max_tries or 10
         cfg.name = cfg.name or generate_job_name()
-        # cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
+        cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
         cfg.output_dir = (
             cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
         )

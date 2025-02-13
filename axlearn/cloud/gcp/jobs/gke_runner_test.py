@@ -212,6 +212,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         service_account: str,
         enable_pre_provisioner: Optional[bool] = None,
         gcsfuse_mount_spec: Optional[str] = None,
+        env_vars: Optional[dict] = None,
     ) -> Iterator[tuple[gke_runner.TPUGKERunnerJob.Config, dict]]:
         mock_user = mock.patch("os.environ", {"USER": "test"})
         mock_settings = {
@@ -240,6 +241,8 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             fv.set_default("enable_pre_provisioner", enable_pre_provisioner)
             if gcsfuse_mount_spec:
                 fv.set_default("gcsfuse_mount_spec", gcsfuse_mount_spec)
+            if env_vars:
+                fv.set_default("env", [f"{k}:{v}" for k, v in env_vars.items()])
             fv.set_default("instance_type", "tpu-v4-8")
             fv.mark_as_parsed()
             yield gke_runner.TPUGKERunnerJob.from_flags(fv), mock_settings
@@ -250,9 +253,10 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         service_account=[None, "test-sa"],
         enable_pre_provisioner=[None, False, True],
         gcsfuse_mount_spec=[None, ["gcs_path=my-test-path"]],
+        env_vars=[None, {"test": "123"}],
     )
     def test_from_flags(
-        self, name, cluster, service_account, enable_pre_provisioner, gcsfuse_mount_spec
+        self, name, cluster, service_account, enable_pre_provisioner, gcsfuse_mount_spec, env_vars
     ):
         with self._job_config(
             name=name,
@@ -260,6 +264,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
             gcsfuse_mount_spec=gcsfuse_mount_spec,
+            env_vars=env_vars,
         ) as (cfg, mock_settings):
             if name:
                 self.assertEqual(cfg.name, name)
@@ -274,6 +279,9 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
 
             # Test that TPU defaults are set.
             self.assertIn("TPU_TYPE", cfg.env_vars)
+            if env_vars is not None:
+                for k, v in env_vars.items():
+                    self.assertEqual(cfg.env_vars[k], v)
 
             # Instantiating should propagate fields.
             cfg.bundler.image = "FAKE"

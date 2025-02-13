@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional, Union
 
 import pkg_resources
 import psutil
-from absl import app, logging, flags
+from absl import app, flags, logging
 
 from axlearn.cloud import ROOT_MODULE_NAME
 from axlearn.common.config import Configurable
@@ -392,7 +392,7 @@ class FlagConfigurable(Configurable):
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
-        """Defines absl flags to be read by `from_flags()`."""
+        """Subclasses can override this method to define absl flags to be read by `from_flags()`."""
         del fv
 
     @classmethod

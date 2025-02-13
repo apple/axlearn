@@ -128,7 +128,7 @@ class BaseReplicatedJob(FlagConfigurable):
 
     @config_class
     class Config(FlagConfigurable.Config):
-        """Configures BaseJobBuilder.
+        """Configures BaseReplicatedJob.
 
         Attributes:
             name: Name of the jobset. Also used for inferring docker image.
@@ -567,7 +567,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
         )
 
     def __call__(self) -> Sequence[Nested[Any]]:
-        """See `BaseJobBuilder` docstring for details."""
+        """See `BaseReplicatedJob` docstring for details."""
         cfg: TPUReplicatedJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         job_spec = dict(
