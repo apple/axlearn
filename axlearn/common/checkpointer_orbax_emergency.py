@@ -477,6 +477,9 @@ def get_consistent_proc_info(
 class OrbaxEmergencyCheckpointer(BaseCheckpointer):
     """Checkpointer implementation that uses Orbax emergency checkpoint.
 
+    EXPERIMENTAL. Do not use for actual training runs since the checkpoint layout will likely
+    change in the future.
+
     ## Summary:
 
     This checkpointer is designed to improve the goodput of large multi-slice training jobs that
