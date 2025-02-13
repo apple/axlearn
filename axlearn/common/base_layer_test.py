@@ -614,7 +614,7 @@ class ComputeFanAxesTest(TestCase):
         def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
             if name == "fan_axes_specified_weight":
                 raise RuntimeError("Should not be invoked.")
-            super()._compute_fan_axes(name, parameter_spec)
+            return super()._compute_fan_axes(name, parameter_spec)
 
     @parameterized.parameters(
         (
