@@ -934,6 +934,71 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(123, cfg_clone.a)
         self.assertEqual("default", cfg_clone.b)
 
+    def test_get_recursively(self):
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
+
+                value: int = 0
+
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
+
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
+
+        cfg = Test.default_config()
+
+        # Test getting nested value.
+        self.assertEqual(cfg.get_recursively(["nested", "value"]), 0)
+
+        # Test getting top-level value.
+        self.assertEqual(cfg.get_recursively(["value"]), 1)
+
+        # Test getting non-existent value.
+        with self.assertRaises(AttributeError):
+            cfg.get_recursively(["non_existent"])
+
+        # Test getting empty path, should return self.
+        self.assertEqual(cfg.get_recursively([]), cfg)
+
+    def test_set_recursively(self):
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
+
+                value: int = 0
+
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
+
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
+
+        cfg = Test.default_config()
+
+        # Test setting nested value.
+        cfg.set_recursively(["nested", "value"], value=10)
+        self.assertEqual(cfg.nested.value, 10)
+
+        # Test setting top-level value.
+        cfg.set_recursively(["value"], value=5)
+        self.assertEqual(cfg.value, 5)
+
+        # Test setting non-existent value.
+        with self.assertRaises(AttributeError):
+            cfg.set_recursively(["non_existent"], value=20)
+
+        # Test setting empty path.
+        with self.assertRaises(ValueError):
+            cfg.set_recursively([], value=20)
+
 
 if __name__ == "__main__":
     absltest.main()

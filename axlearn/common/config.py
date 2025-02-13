@@ -70,7 +70,7 @@ import types
 from collections import defaultdict
 from collections.abc import Collection, Iterable
 from functools import cache
-from typing import Any, Callable, Generic, Optional, TypeVar, Union
+from typing import Any, Callable, Generic, Optional, Sequence, TypeVar, Union
 
 # attr provides similar features as Python dataclass. Unlike
 # dataclass, however, it provides a richer set of features to regulate
@@ -393,6 +393,42 @@ class ConfigBase:
         for k, v in kwargs.items():
             setattr(self, k, v)
         return self
+
+    def get_recursively(self, path: Sequence[str]) -> Any:
+        """Recursively find the target key in the config and return its value.
+
+        Args:
+            path: A sequence of keys for indexing to get the target value.
+
+        Raises:
+            AttributeError: If key in path is not found.
+
+        Returns:
+            value at the path or self if path is empty.
+        """
+        current = self
+
+        for key in path:
+            # TODO(markblee): Maybe use cfg.visit instead of getattr.
+            current = getattr(current, key)
+
+        return current
+
+    def set_recursively(self, path: Sequence[str], *, value: Any):
+        """Recursively find the target key in the config and set its value.
+
+        Args:
+            path: A sequence of keys for indexing to set the target value.
+            new_value: New value to replace the target value.
+
+        Raises:
+            ValueError: if Path is empty.
+            AttributeError: If key in path is not found.
+        """
+        if not path:
+            raise ValueError("Path is empty.")
+        parent = self.get_recursively(path[:-1])
+        setattr(parent, path[-1], value)
 
     def clone(self, **kwargs):
         """Returns a clone of the original config with the optional keyword overrides.
