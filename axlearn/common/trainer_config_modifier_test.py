@@ -3,17 +3,21 @@
 """Test various ConfigModifier classes in trainer_config_modifier.py."""
 
 import jax
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 
 from axlearn.common import causal_lm, test_utils
 from axlearn.common.attention import RepeatedTransformerLayer, StackedTransformerLayer
 from axlearn.common.base_layer import RematSpec
+from axlearn.common.config import config_for_function
+from axlearn.common.optimizers import sgd_optimizer
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
+    FP8ConfigModifier,
     GradientAccumulationModifier,
     MeshShapeModifier,
     ModuleConfigModifier,
+    OverrideInplaceUpdateTransformation,
     PartitionSpecModifier,
     RematSpecModifier,
 )
@@ -172,6 +176,43 @@ class ChainConfigModifierTest(test_utils.TestCase):
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.mesh_shape, (4, 1, 8, 1))
         self.assertEqual(cfg.learner.forward_fn_transformation.steps, 4)
+
+
+class FP8ConfigModifierTest(test_utils.TestCase):
+    @parameterized.parameters([True, False])
+    def test_fp8_config_modifier(self, use_config_fn):
+        cfg: SpmdTrainer.Config = SpmdTrainer.default_config().set(
+            model=DummyModel.default_config()
+        )
+        if use_config_fn:
+            cfg.learner.optimizer = config_for_function(sgd_optimizer).set(
+                learning_rate=0.5,
+                decouple_weight_decay=True,
+            )
+        else:
+            cfg.learner.optimizer = sgd_optimizer(
+                learning_rate=0.5,
+                decouple_weight_decay=True,
+            )
+
+        cfg_modifier = (
+            FP8ConfigModifier.default_config().set(fp8_amax_history_length=1).instantiate()
+        )
+        cfg = cfg_modifier(cfg)
+
+        self.assertIsInstance(cfg.learner.optimizer, OverrideInplaceUpdateTransformation.Config)
+        self.assertEqual(
+            cfg.learner.optimizer.rules,
+            [
+                ".*/input_scale",
+                ".*/kernel_scale",
+                ".*/output_grad_scale",
+                ".*/input_amax_history",
+                ".*/kernel_amax_history",
+                ".*/output_grad_amax_history",
+            ],
+        )
+        self.assertEqual(cfg.model.linear.quantized_dot_general.fp8_amax_history_length, 1)
 
 
 if __name__ == "__main__":
