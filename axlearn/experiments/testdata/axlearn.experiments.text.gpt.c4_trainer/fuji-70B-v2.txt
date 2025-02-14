@@ -320,12 +320,12 @@ model.decoder.emb.token_emb.param_init.init_by_param_name['.*weight$'].fan: 'fan
 model.decoder.emb.token_emb.param_init.init_by_param_name['.*weight$'].klass: 'axlearn.common.param_init.WeightInitializer'
 model.decoder.emb.token_emb.param_init.init_by_param_name['.*weight$'].scale: 1.0
 model.decoder.emb.token_emb.param_init.klass: 'axlearn.common.param_init.DefaultInitializer'
-model.decoder.emb.token_emb.param_partition_spec[0]: None
+model.decoder.emb.token_emb.param_partition_spec[0]: 'fsdp'
 model.decoder.emb.token_emb.param_partition_spec[1]: 'model'
 model.decoder.eos_token_id: 1
 model.decoder.klass: 'axlearn.common.decoder.Decoder'
 model.decoder.lm_head.klass: 'axlearn.common.decoder.LmHead'
-model.decoder.lm_head.param_partition_spec[0]: None
+model.decoder.lm_head.param_partition_spec[0]: 'fsdp'
 model.decoder.lm_head.param_partition_spec[1]: 'model'
 model.decoder.logits_partition_spec[0][0]: 'data'
 model.decoder.logits_partition_spec[0][1]: 'expert'

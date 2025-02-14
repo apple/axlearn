@@ -2,11 +2,12 @@
 
 """FlashAttention utilities shared amongst CPU/GPU/TPU backends."""
 import functools
-from typing import Callable, Literal, Optional
+from typing import Literal, Optional
 
 import jax
 import jax.numpy as jnp
 from absl import logging
+from jax._src.mesh import thread_resources
 
 from axlearn.common.attention import softmax_with_biases
 from axlearn.common.attention_bias import (
@@ -22,7 +23,12 @@ from axlearn.common.attention_bias import (
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
 from axlearn.common.flash_attention.gpu_decoding import flash_decoding
-from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
+from axlearn.common.flash_attention.tpu_attention import (
+    SplashAttentionUnsupportedError,
+    legacy_tpu_flash_attention,
+    make_tpu_splash_attention,
+)
+from axlearn.common.flash_attention.types import FlashAttentionShardMapSpecs
 from axlearn.common.layers import dropout
 from axlearn.common.utils import Tensor
 
@@ -100,20 +106,24 @@ def _repeat_kv_heads(num_q_heads: int, key_or_value: Tensor) -> Tensor:
     return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
 
 
-# Accepts [query, key, value, attention_bias, prng_key] tensors and returns the context Tensor.
-MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Optional[Tensor]], Tensor]
-
-
 def flash_attention_implementation(
-    backend: Literal["cpu", "tpu", "gpu", "xla", "neuron"],
     *,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    bias: BaseAttentionBias,
+    backend: Literal["cpu", "tpu", "gpu", "xla", "neuron"],
     softmax_scale: float,
     block_size: int = 128,
     dropout_rate: Optional[float] = 0.0,
-) -> MultiHeadAttentionImpl:
-    """Returns a jitted "flash" multihead-attention implementation for the given backend.
+) -> FlashAttentionShardMapSpecs:
+    """Returns a flash attention implementation for the given backend that can be used in shard_map.
 
     Args:
+        query: Full query tensor outside of shard_map for compilation and static checks.
+        key: Full key tensor outside of shard_map for compilation and static checks.
+        value: Full key tensor outside of shard_map for compilation and static checks.
+        bias: Full bias outside of shard_map for compilation and static checks.
         backend: A valid XLA backend name. 'cpu' intended for testing only.
         softmax_scale: A scalar value applied to the logits before softmax.
         block_size: The size of the computation-block unit, only applies to the 'tpu' backend.
@@ -121,13 +131,33 @@ def flash_attention_implementation(
             Smaller values are more memory efficient but less compute efficient.
 
     Returns:
-        A jitted function implementing multi-head attention for the given backend.
+        A `FlashAttentionShardMapSpecs` for the given backend. See also the docstring of
+            `FlashAttentionShardMapSpecs`
 
     Raises:
         NotImplementedError: If implementation for the backend is not available.
     """
     if dropout_rate is None:
         dropout_rate = 0.0
+    if dropout_rate != 0.0 and backend not in ("gpu", "xla", "cpu"):
+        raise NotImplementedError("Dropout is only implemented for GPU, CPU and XLA.")
+
+    seq_dim = thread_resources.env.physical_mesh.shape.get("seq", 1)
+    if backend == "tpu":
+        try:
+            return make_tpu_splash_attention(
+                query, key, value, mask=bias, softmax_scale=softmax_scale, block_size=block_size
+            )
+        except SplashAttentionUnsupportedError as e:
+            logging.warning(
+                "Falling back to legacy flash attention because SplashAttention is not supported.\n"
+                "Reason: %s",
+                e,
+            )
+    if seq_dim > 1:
+        raise ValueError(
+            "Sequence (context) parallelism is only supported for SplashAttention for TPU backend."
+        )
 
     # shard_map-decorated function needs to be jitted.
     @jax.jit
@@ -152,8 +182,6 @@ def flash_attention_implementation(
             # TODO(senyut): Support TPU decoding.
             backend = "xla"
             bias = TensorAttentionBias(bias.value())
-        if dropout_rate != 0.0 and backend not in ("gpu", "xla", "cpu"):
-            raise NotImplementedError("Dropout is only implemented for GPU, CPU and XLA.")
 
         bias = CompositeAttentionBias([bias])
 
@@ -267,7 +295,7 @@ def flash_attention_implementation(
             mask, segment_ids, explicit_bias = split(
                 bias, MaskFnAttentionBias, SegmentIdAttentionBias
             )
-            return tpu_flash_attention(
+            return legacy_tpu_flash_attention(
                 query,
                 key,
                 value,
@@ -331,4 +359,4 @@ def flash_attention_implementation(
 
         raise NotImplementedError(f"Backend ({backend}) does not have an implementation.")
 
-    return jit_attn
+    return FlashAttentionShardMapSpecs(fn=jit_attn)

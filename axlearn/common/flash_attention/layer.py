@@ -15,10 +15,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common.attention import Dropout, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
 from axlearn.common.config import REQUIRED, ConfigBase, ConfigModifier, Required, config_class
-from axlearn.common.flash_attention.utils import (
-    MultiHeadAttentionImpl,
-    flash_attention_implementation,
-)
+from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor, with_sharding_constraint
 
@@ -167,13 +164,6 @@ class FlashAttention(GroupedQueryAttention):
 
         attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
-        jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
-            backend=backend,
-            softmax_scale=1.0,
-            block_size=cfg.tpu_block_size,
-            dropout_rate=cfg.dropout.rate,
-        )
-
         attention_logit_biases_spec = self._logit_biases_spec(attention_logit_biases)
         attention_logit_biases = with_sharding_constraint(
             attention_logit_biases, attention_logit_biases_spec
@@ -188,10 +178,21 @@ class FlashAttention(GroupedQueryAttention):
         k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec["bsnh"])
         v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec["bsnh"])
 
+        shard_map_specs = flash_attention_implementation(
+            query=q_proj,
+            key=k_proj,
+            value=v_proj,
+            bias=attention_logit_biases,
+            backend=backend,
+            softmax_scale=1.0,
+            block_size=cfg.tpu_block_size,
+            dropout_rate=cfg.dropout.rate,
+        )
+
         # We need to manually partition pallas | jax-triton calls.
         # Note: shard_map doesn't support kwargs.
         partitioned_mha = shard_map(
-            jit_attn,
+            shard_map_specs.fn,
             mesh=thread_resources.env.physical_mesh,
             in_specs=(
                 # Q [batch_size, seq_len, num_heads, per_head_dim].
@@ -204,6 +205,7 @@ class FlashAttention(GroupedQueryAttention):
                 attention_logit_biases_spec,
                 # PRNG Key.
                 PartitionSpec(None),
+                *shard_map_specs.additional_in_specs,
             ),
             # O [batch_size, seq_len, num_heads, per_head_dim].
             out_specs=cfg.mha_dim_to_partition_spec["btnh"],
@@ -221,6 +223,7 @@ class FlashAttention(GroupedQueryAttention):
                 v_proj,
                 attention_logit_biases,
                 self.dropout.get_prng_key(),
+                *shard_map_specs.additional_args,
             ),
             cfg.output_dim_to_partition_spec["btnh"],
         )
@@ -247,12 +250,13 @@ def default_mha_dim_to_partition_spec(
     Returns:
         A dictionary keyed by MHA tensor dims with partition spec values.
     """
-    batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
+    batch_axis_names = tuple(el for el in mesh_axis_names if el in ["data", "fsdp"])
     tp_axis_name = "model" if "model" in mesh_axis_names else None
+    sp_axis_name = "seq" if "seq" in mesh_axis_names else None
     return {
-        "btnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
+        "btnh": PartitionSpec(batch_axis_names, sp_axis_name, tp_axis_name, None),
         "bsnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
-        "bnts": PartitionSpec(batch_axis_names, tp_axis_name, None, None),
+        "bnts": PartitionSpec(batch_axis_names, tp_axis_name, sp_axis_name, None),
     }
 
 
@@ -271,7 +275,7 @@ def default_output_dim_to_partition_spec(
     Returns:
         A dictionary keyed by FlashAttention output tensor dims with partition spec values.
     """
-    batch_axis_names = tuple(el for el in mesh_axis_names if el not in ["seq", "model"])
+    batch_axis_names = tuple(el for el in mesh_axis_names if el in ["data", "fsdp"])
     tp_axis_name = "model" if "model" in mesh_axis_names else None
     sp_axis_name = "seq" if "seq" in mesh_axis_names else None
     return {
