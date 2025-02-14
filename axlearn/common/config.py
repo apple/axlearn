@@ -151,6 +151,7 @@ class RequiredFieldValue:
         return "REQUIRED"
 
 
+# TODO(markblee): Raise if trying to set attributes on REQUIRED.
 REQUIRED = RequiredFieldValue()
 Required = Union[T, RequiredFieldValue, Any]
 
@@ -638,7 +639,7 @@ class ConfigBase:
     def _key_error_string(self, name: str) -> str:
         similar = similar_names(name, list(self.keys()))
         if similar:
-            return f'{name} (did you mean: [{", ".join(similar)}])'
+            return f"{name} (did you mean: [{', '.join(similar)}])"
         return f"{name} (keys are {self.keys()})"
 
 

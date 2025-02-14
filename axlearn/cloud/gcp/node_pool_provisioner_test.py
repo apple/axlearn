@@ -52,7 +52,8 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
             job_cfg = TPUGKEJob.from_flags(fv)
             job_cfg.bundler = ArtifactRegistryBundler.from_spec([], fv=fv).set(image="test-image")
             job_cfg.accelerator.instance_type = "tpu-v4-8"
-            job_cfg.enable_tpu_smart_repair = enable_tpu_smart_repair
+            job_cfg.builder.enable_tpu_smart_repair = enable_tpu_smart_repair
+            job_cfg.output_dir = "FAKE"
 
             provisioner_cfg = node_pool_provisioner.TPUNodePoolProvisioner.from_flags(fv)
 
@@ -99,10 +100,14 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
             construct_node_pool_name=mock_construct_node_pool_name,
         )
 
-        with self._mock_configs(num_replicas, enable_tpu_smart_repair) as [
-            job_cfg,
-            provisioner_cfg,
-        ], mock_utils, mock.patch.dict("os.environ", env):
+        with (
+            self._mock_configs(num_replicas, enable_tpu_smart_repair) as [
+                job_cfg,
+                provisioner_cfg,
+            ],
+            mock_utils,
+            mock.patch.dict("os.environ", env),
+        ):
             tpu_gke_job = job_cfg.instantiate()
             provisioner = provisioner_cfg.set(name="pre-provisioner-0").instantiate()
 

@@ -14,7 +14,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
-from axlearn.cloud.gcp.job import BASTION_JOB_VERSION_LABEL, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
 from axlearn.cloud.gcp.jobs.gke_runner import (
@@ -22,6 +22,7 @@ from axlearn.cloud.gcp.jobs.gke_runner import (
     _infer_job_version,
     _infer_reservation,
 )
+from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 
@@ -75,8 +76,12 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             "default_dockerfile": "settings-dockerfile",
             "docker_repo": "settings-repo",
         }
-        with mock_user, mock_gcp_settings(
-            [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__], mock_settings
+        with (
+            mock_user,
+            mock_gcp_settings(
+                [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                mock_settings,
+            ),
         ):
             fv = flags.FlagValues()
             gke_runner.GPUGKERunnerJob.define_flags(fv)
@@ -112,7 +117,7 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             self.assertEqual(cfg.cluster, cluster or mock_settings["gke_cluster"])
             self.assertEqual(cfg.service_account, service_account or "default")
             if gcsfuse_mount_spec:
-                fuse = cast(GPUGKEJob.Config, cfg.inner).gcsfuse_mount
+                fuse = cast(GPUGKEJob.Config, cfg.inner).builder.gcsfuse_mount
                 self.assertEqual(fuse.gcs_path, "my-test-path")
 
     @parameterized.product(
@@ -143,15 +148,11 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             name="test-name",
             cluster="test-cluster",
             service_account="test-sa",
-        ) as (
-            cfg,
-            _,
-        ):
+        ) as (cfg, _):
             cfg.bundler.set(image="test")
 
             job: gke_runner.GPUGKERunnerJob = cfg.set(
-                command="",
-                status_interval_seconds=0,
+                command="", status_interval_seconds=0
             ).instantiate()
 
             mock_job = mock.patch.multiple(
@@ -211,6 +212,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         service_account: str,
         enable_pre_provisioner: Optional[bool] = None,
         gcsfuse_mount_spec: Optional[str] = None,
+        env_vars: Optional[dict] = None,
     ) -> Iterator[tuple[gke_runner.TPUGKERunnerJob.Config, dict]]:
         mock_user = mock.patch("os.environ", {"USER": "test"})
         mock_settings = {
@@ -221,8 +223,12 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             "default_dockerfile": "settings-dockerfile",
             "docker_repo": "settings-repo",
         }
-        with mock_user, mock_gcp_settings(
-            [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__], mock_settings
+        with (
+            mock_user,
+            mock_gcp_settings(
+                [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                mock_settings,
+            ),
         ):
             fv = flags.FlagValues()
             gke_runner.TPUGKERunnerJob.define_flags(fv)
@@ -235,6 +241,8 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             fv.set_default("enable_pre_provisioner", enable_pre_provisioner)
             if gcsfuse_mount_spec:
                 fv.set_default("gcsfuse_mount_spec", gcsfuse_mount_spec)
+            if env_vars:
+                fv.set_default("env", [f"{k}:{v}" for k, v in env_vars.items()])
             fv.set_default("instance_type", "tpu-v4-8")
             fv.mark_as_parsed()
             yield gke_runner.TPUGKERunnerJob.from_flags(fv), mock_settings
@@ -245,9 +253,10 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         service_account=[None, "test-sa"],
         enable_pre_provisioner=[None, False, True],
         gcsfuse_mount_spec=[None, ["gcs_path=my-test-path"]],
+        env_vars=[None, {"test": "123"}],
     )
     def test_from_flags(
-        self, name, cluster, service_account, enable_pre_provisioner, gcsfuse_mount_spec
+        self, name, cluster, service_account, enable_pre_provisioner, gcsfuse_mount_spec, env_vars
     ):
         with self._job_config(
             name=name,
@@ -255,6 +264,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
             gcsfuse_mount_spec=gcsfuse_mount_spec,
+            env_vars=env_vars,
         ) as (cfg, mock_settings):
             if name:
                 self.assertEqual(cfg.name, name)
@@ -264,11 +274,23 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             self.assertEqual(cfg.service_account, service_account or "default")
             self.assertEqual(cfg.enable_pre_provisioner, enable_pre_provisioner)
             if gcsfuse_mount_spec:
-                fuse = cast(TPUGKEJob.Config, cfg.inner).gcsfuse_mount
+                fuse = cast(TPUGKEJob.Config, cfg.inner).builder.gcsfuse_mount
                 self.assertEqual(fuse.gcs_path, "my-test-path")
 
             # Test that TPU defaults are set.
             self.assertIn("TPU_TYPE", cfg.env_vars)
+            if env_vars is not None:
+                for k, v in env_vars.items():
+                    self.assertEqual(cfg.env_vars[k], v)
+
+            # Instantiating should propagate fields.
+            cfg.bundler.image = "FAKE"
+            runner = cfg.instantiate()
+            final_config: gke_runner.TPUGKERunnerJob.Config = runner.config
+            inner_config: TPUGKEJob.Config = runner._inner.config
+            for key, value in final_config.items():
+                if key not in ("klass", "bundler") and key in inner_config.keys():
+                    self.assertEqual(value, getattr(inner_config, key), msg=key)
 
     @parameterized.product(
         status=[
