@@ -1,6 +1,20 @@
 # Copyright © 2024 Apple Inc.
 
-"""Measurement utils for GCP."""
+"""Measurement utils for GCP.
+
+   Example:
+
+   # Enable GoodPut when launching an AXLearn training job
+   axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
+        --bundler_type=artifactregistry --bundler_spec=image=tpu \
+        --bundler_spec=dockerfile=Dockerfile \
+        -- python3 -m my_training_job \
+        --recorder_type=axlearn.cloud.gcp.measurement:goodput \
+        --recorder_spec=name=my-run-with-goodput \
+        --recorder_spec=upload_dir=my-output-directory/summaries \
+        --recorder_spec=upload_interval=30
+
+"""
 
 import jax
 from absl import flags, logging
