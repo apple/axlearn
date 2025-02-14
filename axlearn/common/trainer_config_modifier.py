@@ -2,7 +2,7 @@
 
 """Defines trainer config modifiers, which will be used in model definitions."""
 
-from typing import Dict, Sequence, Union
+from typing import Dict, Optional, Sequence, Union
 
 from axlearn.common import config
 from axlearn.common.base_layer import RematSpec
@@ -16,6 +16,7 @@ from axlearn.common.config import (
     maybe_instantiate,
 )
 from axlearn.common.gradient_accumulation import with_minibatch_steps
+from axlearn.common.input_base import InputPartitionFn
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.quantized_dot_general.layers import (
     DenseGeneralBaseLayer,
@@ -37,17 +38,21 @@ class GradientAccumulationModifier(ConfigModifier):
 
         Attributes:
             grad_acc_steps: The number of steps to accumulate the gradients from mini-batches.
+            grad_acc_steps: The number of steps to accumulate the gradients from mini-batches.
             metric_accumulator: The metric accumulator to export the metrics.
+            minibatch_partitioner: Constraints the minibatch to a PartitionSpec.
         """
 
         grad_acc_steps: Required[int] = REQUIRED
         metric_accumulator: MetricAccumulator.Config = MetricAccumulator.default_config()
+        minibatch_partitioner: Optional[ConfigOr[InputPartitionFn]] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
         self._grad_acc_steps = cfg.grad_acc_steps
         self._metric_accumulator = cfg.metric_accumulator
+        self._minibatch_partitioner = cfg.minibatch_partitioner
 
     def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
         """Overwrite the forward_fn_transformation to accumulate gradients for grad_acc_steps steps.
@@ -70,6 +75,7 @@ class GradientAccumulationModifier(ConfigModifier):
         ).set(
             steps=self._grad_acc_steps,
             metric_accumulator=self._metric_accumulator,
+            minibatch_partitioner=self._minibatch_partitioner,
         )
         return cfg
 
