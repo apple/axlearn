@@ -378,9 +378,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         asyncio.run(_run_serializer())
 
-        self._add_futures(
-            jax.tree_util.tree_flatten(commit_futures)[0] + (additional_futures or [])
-        )
+        self._add_futures(jax.tree.flatten(commit_futures)[0] + (additional_futures or []))
 
         # Used in wait_until_finished to check on process != 0, if the checkpoint
         # has finished writing.

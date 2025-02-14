@@ -579,9 +579,7 @@ class TrainerTest(test_utils.TestCase):
         trainer: SpmdTrainer = cfg.instantiate(parent=None)
         compiled_without_args = trainer.compile_train_step()
         # pylint: disable=protected-access
-        input_batch = jax.tree_util.tree_map(
-            jnp.array, next(trainer.input.batches(trainer._input_iter))
-        )
+        input_batch = jax.tree.map(jnp.array, next(trainer.input.batches(trainer._input_iter)))
         # pylint: enable=protected-access
         compiled_with_input_batch = trainer.compile_train_step(input_batch=input_batch)
         # In a single-host environment, both compiled functions should match.

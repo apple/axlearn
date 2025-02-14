@@ -5161,7 +5161,7 @@ class StackedTransformerTest(BaseTransformerTest):
             lambda path, spec: spec if has_prebuilt_layers(path) else None, param_specs
         )
         if prebuilt_layers:
-            self.assertNotEmpty(jax.tree_util.tree_leaves(prebuilt_specs))
+            self.assertNotEmpty(jax.tree.leaves(prebuilt_specs))
         initialized_state = layer.initialize_parameters_recursively(
             prng_key=jax.random.PRNGKey(123), prebuilt=prebuilt_specs
         )

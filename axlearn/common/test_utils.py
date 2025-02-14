@@ -196,8 +196,8 @@ class TestCase(parameterized.TestCase):
         # Optionally, test that trees also have the same structure.
         if require_same_tree_structure:
             # Prune empty subtrees so we don't require empty dicts for layers with no params.
-            ref_structure = jax.tree_util.tree_structure(prune_empty(params_from_ref))
-            test_structure = jax.tree_util.tree_structure(prune_empty(layer_params))
+            ref_structure = jax.tree.structure(prune_empty(params_from_ref))
+            test_structure = jax.tree.structure(prune_empty(layer_params))
             self.assertEqual(
                 ref_structure, test_structure, msg=f"\nRef: {ref_structure}\nTest: {test_structure}"
             )
@@ -428,8 +428,8 @@ def _complete_param_init_spec_tree(
     params_with_nones = jax.tree_map(
         partial(replace_keys, mapping={k: None for k in delegates}), params, is_leaf=is_leaf
     )
-    _, treedef = jax.tree_util.tree_flatten(params_with_nones)
-    inits_with_nones = jax.tree_util.tree_unflatten(treedef, param_init_specs)
+    _, treedef = jax.tree.flatten(params_with_nones)
+    inits_with_nones = jax.tree.unflatten(treedef, param_init_specs)
 
     # Replace the Nones with a delegate.
     return jax.tree_map(partial(replace_keys, mapping=delegates), inits_with_nones, is_leaf=is_leaf)
@@ -563,9 +563,7 @@ def read_per_param_settings(
         model_params = model.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
         model_specs = model.create_parameter_specs_recursively()
-        model_specs = complete_partition_spec_tree(
-            jax.tree_util.tree_structure(model_params), model_specs
-        )
+        model_specs = complete_partition_spec_tree(jax.tree.structure(model_params), model_specs)
         opt_params = jax.tree.map(
             lambda param, spec: OptParam(
                 value=param,

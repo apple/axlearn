@@ -146,7 +146,7 @@ class ImageBackboneModelMixin(Module):
             pass
 
         def _paths(x):
-            return jax.tree_util.tree_leaves(tree_paths(x))
+            return jax.tree.leaves(tree_paths(x))
 
         raise ValueError(
             f"Cannot find visual features at {cfg.visual_feature_layer_name}. "
