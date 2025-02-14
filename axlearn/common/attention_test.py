@@ -1538,7 +1538,8 @@ class QKVLinearTest(TestCase):
             # of the `kv_cache`, and then returns it.
             kv_shape = (batch_size, cached_kv_length + src_len, num_heads, per_head_dim)
         else:
-            kv_cache_shape = (batch_size, src_len, num_heads, per_head_dim)
+            # The default KV cache uses transpose optimization.
+            kv_cache_shape = (batch_size, num_heads, per_head_dim, src_len)
             kv_shape = (batch_size, src_len, num_heads, per_head_dim)
 
         for name in layer_names:
@@ -2912,7 +2913,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertTrue(jnp.all(time_step == initial_states["i_proj"]["time_step"]))
         for proj in ["key", "value"]:
             self.assertEqual(
-                (batch_size, tgt_len, num_kv_heads or num_heads, model_dim // num_heads),
+                (batch_size, num_kv_heads or num_heads, model_dim // num_heads, tgt_len),
                 initial_states["i_proj"][proj].shape,
             )
             self.assertEqual(
