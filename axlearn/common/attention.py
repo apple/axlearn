@@ -731,7 +731,11 @@ class KVCache(BaseKVCache):
     """
 
     def init_states(self, shape: BaseKVCache.Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
-        shape = (shape.batch_size, shape.kv_len, shape.num_kv_heads, shape.per_head_dim)
+        # NB: key and value in init_state are transposed so that source_length is in the last
+        # dimension as a TPU fusion optimization for one-hot matmul.
+        # Reference:
+        # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.py#L215
+        shape = (shape.batch_size, shape.num_kv_heads, shape.per_head_dim, shape.kv_len)
         return dict(
             key=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
             value=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
@@ -745,28 +749,39 @@ class KVCache(BaseKVCache):
         v_proj: Tensor,
         time_step: Tensor,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
-        # Update the cache via dynamic slice. [B, S, N, H].
+        # Update the cache via one-hot broadcast and addition.
+        # NB: Cache updates can also be done via dynamic slice update. However it was observed
+        # that RLHF training got stuck in some cases.
+        # TODO(ds-hwang): Investigate the root cause.
         cached_key: Tensor = cached_states["key"]
         cached_value: Tensor = cached_states["value"]
 
-        k_proj = k_proj.astype(cached_key.dtype)
-        v_proj = v_proj.astype(cached_value.dtype)
         query_positions = jnp.arange(k_proj.shape[1])[None] + time_step[:, None]  # [batch, steps]
+        source_len = cached_key.shape[-1]
 
-        # Function to update the cache for a single batch element.
-        def update_single(cached_kv_slice, kv_proj_slice, time_idx):
-            return jax.lax.dynamic_update_slice_in_dim(
-                cached_kv_slice, kv_proj_slice, time_idx, axis=0
-            )
+        # [B, T, N, H] --> [B, N, H, T].
+        k_proj = jnp.einsum("btnh->bnht", k_proj)
+        v_proj = jnp.einsum("btnh->bnht", v_proj)
 
-        # Use jax.vmap to vectorize over the batch dimension.
-        vmap_update = jax.vmap(update_single)
-        k_proj = vmap_update(cached_key, k_proj, time_step)
-        v_proj = vmap_update(cached_value, v_proj, time_step)
-        updated_state = dict(key=k_proj, value=v_proj)
+        # Create a dispatch matrix of shape [B, T=step, S].
+        oh_indices = jax.nn.one_hot(query_positions, source_len, dtype=cached_key.dtype)
+        # Create a mask of shape [B, 1, 1, S].
+        negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
 
+        k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
+        v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
+
+        # Ensure that we accumulate using the original dtype.
+        cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
+        cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+
+        updated_state = dict(key=cached_key, value=cached_value)
         chex.assert_equal_shape((updated_state["key"], cached_key))
         chex.assert_equal_shape((updated_state["value"], cached_value))
+
+        # [B, S, N, H]
+        k_proj = jnp.einsum("bnhs->bsnh", cached_key)
+        v_proj = jnp.einsum("bnhs->bsnh", cached_value)
         key_positions = jnp.arange(k_proj.shape[1])[None]  # [1, source_length]
         return updated_state, self.Output(
             k_proj=k_proj,
