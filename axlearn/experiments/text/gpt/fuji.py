@@ -24,6 +24,7 @@ from axlearn.common.attention import (
     FusedQKVLinear,
     GroupedQKVLinear,
     GroupedQueryAttention,
+    KVCache,
     MultiheadAttention,
     RematRegexSavePatterns,
     RepeatedTransformerLayer,
@@ -770,13 +771,13 @@ def model_config(
     else:
         atten_cfg = MultiheadAttention.default_config()
         atten_input_linear = FusedQKVLinear.default_config()
-    atten_input_linear.cache_dtype = STEP_DTYPE
+    atten_input_linear.set(kv_cache=KVCache.default_config().set(cache_dtype=STEP_DTYPE))
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
     atten_qkv_linear = RoFormerQKVLinear.default_config().set(
-        cache_dtype=STEP_DTYPE,
         input_linear=atten_input_linear,
         rotary_value=False,
     )
+    atten_qkv_linear.set(kv_cache=KVCache.default_config().set(cache_dtype=STEP_DTYPE))
     atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
 
     cfg = common_model_config(

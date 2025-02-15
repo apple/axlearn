@@ -928,7 +928,7 @@ def _parameters_from_deberta_self_attention(
     num_heads = src.num_attention_heads
     per_head_dim = src.attention_head_size
     params = {}
-    i_proj = {}
+    i_proj = dict(kv_cache=dict())
     for src_proj, dst_proj in (
         ("query_proj", "q_proj"),
         ("key_proj", "k_proj"),
@@ -1036,7 +1036,7 @@ def _parameters_from_opt_attention(src: hf_opt.OPTAttention) -> NestedTensor:
         weight=output_dense.weight.view(-1, num_heads, per_head_dim),
         bias=output_dense.bias,
     )
-    dst = dict(i_proj=dict(qkv_proj=qkv_proj), o_proj=o_proj, dropout={})
+    dst = dict(i_proj=dict(qkv_proj=qkv_proj, kv_cache=dict()), o_proj=o_proj, dropout={})
     return as_tensor(dst)
 
 
@@ -1150,7 +1150,7 @@ def _parameters_from_attention_dense(
 ):
     num_heads = src.num_attention_heads
     per_head_dim = src.attention_head_size
-    i_proj = {}
+    i_proj = dict(kv_cache=dict())
     for src_proj, dst_proj in (
         ("query", "q_proj"),
         ("key", "k_proj"),
@@ -1330,7 +1330,7 @@ def _parameters_from_gpt2_attention(
         c_attn_b = torch.cat((src.q_attn.bias, src.c_attn.bias), dim=-1)
     c_attn_w = c_attn_w.split(c_attn_w.shape[-1] // 3, dim=-1)
     c_attn_b = c_attn_b.split(c_attn_b.shape[-1] // 3, dim=-1)
-    i_proj = {}
+    i_proj = dict(kv_cache=dict())
     for w, b, proj in zip(c_attn_w, c_attn_b, ("q_proj", "k_proj", "v_proj")):
         i_proj[proj] = dict(
             weight=w.reshape(w.shape[0], num_heads, -1), bias=b.reshape(num_heads, -1)
@@ -1521,7 +1521,7 @@ def _parameters_from_roberta_sequence_classification_model(
 def _parameters_from_t5_attention(src: hf_t5.T5Attention, *, dst_layer: TransformerAttentionLayer):
     num_heads = src.n_heads
     per_head_dim = src.key_value_proj_dim
-    i_proj, o_proj = {}, {}
+    i_proj, o_proj = dict(kv_cache=dict()), {}
     for src_proj, dst_proj in (
         ("q", "q_proj"),
         ("k", "k_proj"),
@@ -1553,6 +1553,7 @@ def _parameters_from_t5_attention(src: hf_t5.T5Attention, *, dst_layer: Transfor
                     *[i_proj[proj_key] for proj_key in ("q_proj", "k_proj", "v_proj")],
                 )
             ),
+            kv_cache=dict(),
         )
     return dict(i_proj=i_proj, dropout={}, **o_proj, scale_query={}, scale_key={})
 
@@ -1727,7 +1728,8 @@ def _parameters_from_xlnet_attention(src: hf_xlnet.XLNetRelativeAttention):
             i_proj=VDict(
                 qkv_proj=dict(
                     weight=torch.stack([src.q, src.k, src.v], dim=0),
-                )
+                ),
+                kv_cache=dict(),
             ),
             o_proj=dict(weight=src.o),
             r_proj=dict(weight=src.r),
@@ -1776,7 +1778,7 @@ def _parameters_from_distilbert_attention_dense(
 ):
     num_heads = src.n_heads
     per_head_dim = src.dim // src.n_heads
-    i_proj = {}
+    i_proj = dict(kv_cache=dict())
     for src_proj, dst_proj in (
         ("q_lin", "q_proj"),
         ("k_lin", "k_proj"),
@@ -1865,7 +1867,7 @@ def _parameters_from_timm_vit_attn(src: timm_vit.Attention, dst_layer: Multihead
 
     num_heads = dst_layer.hidden_dim() // dst_layer.per_head_dim()
     per_head_dim = dst_layer.per_head_dim()
-    i_proj = {}
+    i_proj = dict(kv_cache=dict())
     for src_proj, dst_proj in (
         ("q", "q_proj"),
         ("k", "k_proj"),
@@ -2033,7 +2035,7 @@ def _parameters_from_t5x_attention(
         NotImplementedError: If dst_layer.attention.i_proj is not supported.
     """
     dst = dict(dropout={}, stochastic_depth={}, attention=dict(i_proj={}, dropout={}))
-    i_proj = {}
+    i_proj = dict(kv_cache=dict())
 
     for layer, params in src.items():
         if layer not in {"query", "key", "value", "out"}:

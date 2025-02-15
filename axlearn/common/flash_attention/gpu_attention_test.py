@@ -370,7 +370,7 @@ def test_triton_against_xla_ref(
 
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("seq_len", [512, 2048])
-@pytest.mark.parametrize("sliding_window_size", [256])
+@pytest.mark.parametrize("left_context", [256])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.parametrize("num_heads", [8])
 @pytest.mark.parametrize("per_head_dim", [128])
@@ -379,7 +379,7 @@ def test_sliding_window_mask(
     seq_len,
     num_heads,
     per_head_dim,
-    sliding_window_size,
+    left_context,
     use_segment_ids: bool,
 ):
     k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
@@ -394,7 +394,7 @@ def test_sliding_window_mask(
 
     def fn(q, k, v):
         softmax_scale = q.shape[-1] ** -0.5
-        mask = sliding_window_causal_mask(sliding_window_size)
+        mask = sliding_window_causal_mask(left_context)
         return flash_attention(
             q,
             k,
@@ -413,7 +413,7 @@ def test_sliding_window_mask(
     fn(q, k, v)
 
     def ref_fn(q, k, v):
-        mask_fn = sliding_window_causal_mask(sliding_window_size)
+        mask_fn = sliding_window_causal_mask(left_context)
         # We convert mask into a bias tensor.
         mask = mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :])
         bias = jnp.zeros((1, 1, seq_len, seq_len), dtype=jnp.float16)
