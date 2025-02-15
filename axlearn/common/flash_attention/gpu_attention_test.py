@@ -10,6 +10,7 @@
 
 Currently tested on A100/H100.
 """
+
 import functools
 from typing import Literal
 
@@ -27,9 +28,6 @@ from axlearn.common.flash_attention.gpu_attention import (
 from axlearn.common.flash_attention.gpu_decoding import NEG_INF, flash_decoding
 from axlearn.common.flash_attention.utils import _repeat_kv_heads, mha_reference
 from axlearn.common.test_utils import TestCase
-
-if jax.default_backend() not in ("gpu", "cpu"):
-    pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
 
 @pytest.mark.parametrize(
@@ -52,6 +50,7 @@ if jax.default_backend() not in ("gpu", "cpu"):
 @pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
+@pytest.mark.gpu
 def test_triton_fwd_only_against_ref(
     batch_size: int,
     seq_len: int,
@@ -140,6 +139,7 @@ def test_triton_fwd_only_against_ref(
         chex.assert_trees_all_close(o, o_ref, atol=0.03)
 
 
+@pytest.mark.gpu
 class FlashDecodingTest(TestCase):
     """Tests FlashDecoding."""
 
@@ -252,6 +252,7 @@ class FlashDecodingTest(TestCase):
 @pytest.mark.parametrize("block_size", [128])  # Triton broken for block size !=128
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
+@pytest.mark.gpu
 def test_triton_against_xla_ref(
     batch_size: int,
     num_heads: int,
@@ -448,6 +449,7 @@ def test_sliding_window_mask(
 )
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
+@pytest.mark.gpu
 def test_cudnn_against_triton_ref(
     batch_size: int,
     num_heads: int,
@@ -534,6 +536,7 @@ def test_cudnn_against_triton_ref(
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
 @pytest.mark.parametrize("dropout_rate", [0.1, 0.25])
+@pytest.mark.gpu
 def test_cudnn_dropout_against_xla_dropout(
     batch_size: int,
     num_heads: int,
@@ -616,6 +619,7 @@ def test_cudnn_dropout_against_xla_dropout(
         raise ValueError(f"Unsupported dtype: {dtype}")
 
 
+@pytest.mark.gpu
 def test_cudnn_dropout_determinism():
     """Tests that cuDNN dropout produces identical outputs across runs."""
     if jax.default_backend() == "cpu":
