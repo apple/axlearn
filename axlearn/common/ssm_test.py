@@ -23,13 +23,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax._src.mesh import ResourceEnv, thread_resources
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec
 from transformers.activations import ACT2FN
 from transformers.configuration_utils import PretrainedConfig
 
+from axlearn.common.attention import KVCache
 from axlearn.common.attention_bias import make_causal_biases
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.module import functional as F
@@ -424,7 +425,7 @@ class MambaMixerLayerTest(TestCase):
         )
         initial_state, initial_output = layer.init_states(
             time_step=None,
-            query=TensorSpec([batch_size, tgt_len]),
+            query=TensorSpec([batch_size, tgt_len], dtype=dtype),
         )
         self.assertIsNone(initial_output)
         for k in ["conv_input", "state"]:
@@ -552,9 +553,9 @@ def _test_extend_step(layer_cfg: InstantiableConfig, *, model_dim: int, dtype: j
         inputs=inputs,
     )
     if isinstance(layer, MambaMixerLayer):
-        init_kwargs = dict(query=TensorSpec([batch_size, tgt_len]))
+        init_kwargs = dict(query=TensorSpec([batch_size, tgt_len], dtype=dtype))
     else:
-        init_kwargs = dict(data=TensorSpec([batch_size, tgt_len]))
+        init_kwargs = dict(data=TensorSpec([batch_size, tgt_len], dtype=dtype))
     initial_state, initial_output = layer.init_states(time_step=None, **init_kwargs)
     assert initial_output is None
     inputs = dict(cached_states=initial_state)
@@ -930,7 +931,9 @@ class StackedMixedSSMTransformerTest(TestCase):
         cfg.ssm_layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
         cfg.layer.feed_forward.hidden_dim = hidden_dim
         cfg.layer.self_attention.attention.num_heads = num_heads
-        cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
+        cfg.layer.self_attention.attention.input_linear.set(
+            kv_cache=KVCache.default_config().set(cache_dtype=dtype)
+        )
         _test_extend_step(cfg, model_dim=model_dim, dtype=dtype)
 
     @parameterized.parameters(jnp.float32, jnp.bfloat16)
@@ -953,7 +956,9 @@ class StackedMixedSSMTransformerTest(TestCase):
         cfg.ssm_layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
         cfg.layer.feed_forward.hidden_dim = hidden_dim
         cfg.layer.self_attention.attention.num_heads = num_heads
-        cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
+        cfg.layer.self_attention.attention.input_linear.set(
+            kv_cache=KVCache.default_config().set(cache_dtype=dtype)
+        )
         _test_prefill_states(cfg, model_dim=model_dim, dtype=dtype)
 
 
@@ -1541,3 +1546,7 @@ class GPUMamba2MixerLayerTest(TestCase):
         torch_output_np = torch_output.cpu().detach().numpy()
 
         assert_allclose(torch_output_np, jax_output_np, atol=1e-2, rtol=1e-2)
+
+
+if __name__ == "__main__":
+    absltest.main()

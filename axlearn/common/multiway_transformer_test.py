@@ -139,7 +139,7 @@ class ModelTest(parameterized.TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         initial_state, initial_output = layer.init_states(
-            time_step=None, data=TensorSpec([batch_size, tgt_len])
+            time_step=None, data=TensorSpec([batch_size, tgt_len], dtype=jnp.float32)
         )
         self.assertIsNone(initial_output)
         inputs = dict(
