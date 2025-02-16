@@ -439,10 +439,16 @@ class SegmentIdAttentionBias(BoolAttentionBias):
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
     ) -> Union[BaseAttentionBias, PartitionSpec]:
         # Segment IDs: [batch_size, seq_len].
-        q_spec = mha_dim_to_partition_spec["btnh"]
-        if q_spec == PartitionSpec(None):
+        # We use the partition spec of KV (which are not sequence sharded) for segment ids. This is
+        # because Splash requires two seq ids, q_seg and kv_seg. Therefore, we pass a not seq
+        # sharded seg ids into the shard map, and manually shard it inside for q_seg and not
+        # shard it for kv_seg.
+        kv_spec = mha_dim_to_partition_spec["bsnh"]
+        if kv_spec == PartitionSpec(None):
             return PartitionSpec(None)
-        return PartitionSpec(q_spec[0], q_spec[1])
+        if kv_spec[1] is not None:
+            raise ValueError("The partition spec of `s` in `bsnh` should be None.")
+        return PartitionSpec(kv_spec[0], kv_spec[1])
 
 
 class MaskFn(Protocol):
