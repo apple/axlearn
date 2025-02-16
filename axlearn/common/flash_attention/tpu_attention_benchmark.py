@@ -150,13 +150,22 @@ def _benchmark(
 
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     mha_impl = flash_attention_implementation(
-        "tpu", softmax_scale=softmax_scale, block_size=block_size
+        query=q,
+        key=k,
+        value=v,
+        bias=bias,
+        backend="tpu",
+        softmax_scale=softmax_scale,
+        block_size=block_size,
     )
 
-    flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias))
+    flash_fwd_time = _time_call(lambda: mha_impl.fn(q, k, v, bias, None, *mha_impl.additional_args))
 
     flash_grad_fn = jax.jit(
-        jax.grad(lambda q, k, v, b: mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
+        jax.grad(
+            lambda q, k, v, b: mha_impl.fn(q, k, v, b, None, *mha_impl.additional_args).mean(),
+            argnums=(0, 1, 2),
+        )
     )
     flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
 

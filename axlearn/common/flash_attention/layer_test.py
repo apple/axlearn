@@ -451,6 +451,19 @@ class TestFlashAttention(TestCase):
             backend = test_layer._backend()  # pylint: disable=protected-access
             self.assertEqual(backend, "tpu")
 
+    def _maybe_skip_unsupported_context_parallel(
+        self, mesh, mesh_axis_names, use_bias, per_head_dim
+    ):
+        # TODO(hanzhi-zhou): Add GPU support.
+        if jax.default_backend() != "tpu":
+            self.skipTest("Context parallelism is only supported on TPU for now.")
+        for mesh_dim, mesh_name in zip(mesh, mesh_axis_names):
+            if mesh_name == "seq" and mesh_dim > 1 and (use_bias or per_head_dim % 128 != 0):
+                self.skipTest(
+                    "Context parallelism is not supported when need to fallback to legacy TPU"
+                    " flash attention."
+                )
+
     @parameterized.parameters(_TEST_CONFIGS)
     def test_shard_biases(
         self, batch, seq_len, num_heads, num_kv_heads, per_head_dim, mesh, mesh_axis_names
@@ -501,7 +514,7 @@ class TestFlashAttention(TestCase):
             spec = test_layer._logit_biases_spec(segment_ids)  # pylint: disable=protected-access
             spec = as_partition_spec(spec)
             self.assertIsInstance(spec, PartitionSpec)
-            self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["btnh"][:2])
+            self.assertEqual(spec, test_layer.config.mha_dim_to_partition_spec["bsnh"][:2])
 
     @parameterized.product(
         _TEST_CONFIGS,
@@ -534,6 +547,10 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
         if not causal and left_context is not None:
             pytest.skip(reason="Sliding window attention must be causal.")
+        if query_len_multiplier > 1 and left_context is not None:
+            # When sliding window is enabled and q_len > kv_len, there might be be fully masked
+            # rows.
+            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
         if causal and use_bias:
             # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
             pytest.skip(reason="Only one of causal and use_bias can be True.")
@@ -544,6 +561,7 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
             pytest.skip("Dropout is implemented for GPU only.")
+        self._maybe_skip_unsupported_context_parallel(mesh, mesh_axis_names, use_bias, per_head_dim)
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -630,6 +648,7 @@ class TestFlashAttention(TestCase):
         if attn_type == "causal" and use_bias:
             # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
             pytest.skip(reason="Only one of causal and use_bias can be True.")
+        self._maybe_skip_unsupported_context_parallel(mesh, mesh_axis_names, use_bias, per_head_dim)
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             hidden_dim = num_heads * per_head_dim
