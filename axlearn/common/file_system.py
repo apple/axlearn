@@ -156,6 +156,12 @@ def open(path: str, mode: str = "r") -> IO:
 
 
 @_wrap_tf_errors
+def readfile(path: str) -> str:
+    with open(path, mode="r") as f:
+        return f.read()
+
+
+@_wrap_tf_errors
 def makedirs(path: str):
     """Analogous to tf.io.gfile.makedirs."""
     return tf.io.gfile.makedirs(path)
