@@ -46,6 +46,9 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
     "v6e-128": SystemCharacteristics("tpu", "v6e:8x16", "default", (2, 2, 1), 128),
     "v6e-256": SystemCharacteristics("tpu", "v6e:16x16", "default", (2, 2, 1), 256),
     # v5e
+    "v5e-1": SystemCharacteristics("tpu", "v5e:1x1", "default", (1, 1, 1), 1),
+    "v5e-4": SystemCharacteristics("tpu", "v5e:2x2", "default", (2, 2, 1), 4),
+    "v5e-8": SystemCharacteristics("tpu", "v5e:2x4", "default", (2, 2, 1), 8),
     "v5e-16": SystemCharacteristics("tpu", "v5e:4x4", "default", (2, 2, 1), 16),
     "v5e-32": SystemCharacteristics("tpu", "v5e:4x8", "default", (2, 2, 1), 32),
     "v5e-64": SystemCharacteristics("tpu", "v5e:8x8", "default", (2, 2, 1), 64),
