@@ -32,10 +32,10 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Literal, Optional, Union
 
-import tensorflow as tf
 from absl import flags, logging
 
 from axlearn.cloud.gcp import tpu_health_check_main
+from axlearn.common.file_system import open as fs_open
 
 CheckType = Literal["single", "pairwise", "global"]
 
@@ -122,7 +122,7 @@ def _run_health_check_program(
     fname = (
         f"{timestamp}-slice-{slice_id_str}-{os.environ['HOSTNAME']}-{os.environ['NODE_NAME']}.txt"
     )
-    with tf.io.gfile.GFile(os.path.join(output_dir, fname), "w") as f:
+    with fs_open(os.path.join(output_dir, fname), "w") as f:
         f.write(error_type)
     sys.exit(-1)
 
@@ -233,14 +233,14 @@ def global_health_check(check_spec: str, *, output_dir: str):
         # Join timed out.
         logging.error("Multi-slice (global) health check failed due to timeout!")
 
-        with tf.io.gfile.GFile(os.path.join(output_dir, fname), "w") as f:
+        with fs_open(os.path.join(output_dir, fname), "w") as f:
             f.write("timeout")
         # Normal exit via sys.exit may not work when health check program hanged.
         os.kill(os.getpid(), signal.SIGKILL)
     else:
         if not return_val[0]:
             logging.error("Multi-slice (global) health check failed due to program error!")
-            with tf.io.gfile.GFile(os.path.join(output_dir, fname), "w") as f:
+            with fs_open(os.path.join(output_dir, fname), "w") as f:
                 f.write("program error")
             os.kill(os.getpid(), signal.SIGKILL)
         logging.info("Global health check passed in %fs.", time.perf_counter() - start_t)

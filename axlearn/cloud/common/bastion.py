@@ -66,8 +66,6 @@ from subprocess import CalledProcessError
 from typing import IO, Any, Optional, Union
 
 from absl import flags, logging
-from tensorflow import errors as tf_errors
-from tensorflow import io as tf_io
 from tensorflow import nest as tf_nest
 
 # tensorflow_io import is necessary for tf_io to understand s3:// scheme.
@@ -92,6 +90,9 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
+from axlearn.common.file_system import NotFoundError, copy, exists, isdir, listdir, makedirs
+from axlearn.common.file_system import open as fs_open
+from axlearn.common.file_system import readfile, remove, rmtree
 from axlearn.common.utils import Nested
 
 _LATEST_BASTION_VERSION = 1  # Determines job schema (see JobSpec).
@@ -113,34 +114,33 @@ def bastion_job_flags(flag_values: flags.FlagValues = FLAGS):
 
 
 # The following functions, `_download`, `_readfile`, `_listdir`, and `_remove`, can be patched to
-# support alternative storages that cannot be accessed via gfile.
+# support alternative storages that cannot be accessed via file_system.
 #
 # TODO(ruoming): refactor them to a `BastionDirStorage` class.
 def _download(path: str, local_file: str):
-    tf_io.gfile.copy(path, local_file, overwrite=True)
+    copy(path, local_file, overwrite=True)
 
 
 def _readfile(path: str) -> str:
-    with tf_io.gfile.GFile(path, mode="r") as f:
-        return f.read()
+    return readfile(path)
 
 
 def _listdir(path: str) -> list[str]:
-    """Wraps tf_io.gfile.listdir by returning empty list if dir is not found."""
+    """Wraps file_system.listdir by returning empty list if dir is not found."""
     try:
-        return tf_io.gfile.listdir(path)
-    except tf_errors.NotFoundError:
+        return listdir(path)
+    except NotFoundError:
         return []
 
 
 def _remove(path: str):
-    """Wraps tf_io.gfile.remove by catching not found errors."""
+    """Wraps file_system.remove by catching not found errors."""
     try:
-        if tf_io.gfile.isdir(path):
-            tf_io.gfile.rmtree(path)
+        if isdir(path):
+            rmtree(path)
         else:
-            tf_io.gfile.remove(path)
-    except tf_errors.NotFoundError:
+            remove(path)
+    except NotFoundError:
         pass
 
 
@@ -357,7 +357,7 @@ def _upload_jobspec(spec: JobSpec, *, remote_dir: str, local_dir: str = _JOB_DIR
     local_file = os.path.join(local_dir, spec.name)
     remote_file = os.path.join(remote_dir, spec.name)
     serialize_jobspec(spec, local_file)
-    tf_io.gfile.copy(local_file, remote_file, overwrite=True)
+    copy(local_file, remote_file, overwrite=True)
 
 
 @dataclasses.dataclass
@@ -440,7 +440,7 @@ def _download_job_state(job_name: str, *, remote_dir: str) -> JobState:
     """Loads job state from gs path."""
     remote_file = os.path.join(remote_dir, job_name)
     try:
-        # Note: tf_io.gfile.GFile seems to hit libcurl errors with ThreadPoolExecutor.
+        # Note: GFile seems to hit libcurl errors with ThreadPoolExecutor.
         contents = _readfile(remote_file)
         try:
             state = json.loads(contents)
@@ -449,7 +449,7 @@ def _download_job_state(job_name: str, *, remote_dir: str) -> JobState:
             state = dict(status=contents)
         state["status"] = JobStatus[state["status"].strip().upper()]
         return JobState(**state)
-    except tf_errors.NotFoundError:
+    except NotFoundError:
         # No job state, defaults to PENDING.
         return JobState(status=JobStatus.PENDING)
 
@@ -458,7 +458,7 @@ def _upload_job_state(job_name: str, state: JobState, *, remote_dir: str, verbos
     """Uploads job state to gs path."""
     remote_file = os.path.join(remote_dir, job_name)
     logging.log_if(logging.INFO, "Writing %s to %s.", verbose, state.status.name, remote_file)
-    with tf_io.gfile.GFile(remote_file, mode="w") as f:
+    with fs_open(remote_file, mode="w") as f:
         json.dump(dataclasses.asdict(state), f)
 
 
@@ -471,7 +471,7 @@ def _start_command(job: Job, *, remote_log_dir: str, env_vars: dict):
     local_log = os.path.join(_LOG_DIR, job.spec.name)
     try:
         _download(remote_log, local_log)
-    except tf_errors.NotFoundError:
+    except NotFoundError:
         pass
     # Pipe all outputs to the local _LOG_DIR.
     job.command_proc = _piped_popen(
@@ -648,9 +648,8 @@ def _load_runtime_options(bastion_dir: str) -> dict[str, Any]:
     """Loads runtime option(s) from file, or returns {} on failure."""
     flag_file = os.path.join(bastion_dir, "runtime_options")
     try:
-        with tf_io.gfile.GFile(flag_file, "r") as f:
-            return json.load(f)
-    except (tf_errors.NotFoundError, json.JSONDecodeError) as e:
+        return json.loads(readfile(flag_file))
+    except (NotFoundError, json.JSONDecodeError) as e:
         logging.warning("Failed to load runtime options: %s", e)
     return {}
 
@@ -660,7 +659,7 @@ def set_runtime_options(bastion_dir: str, **kwargs) -> Nested[Any]:
     runtime_options = _load_runtime_options(bastion_dir)
     runtime_options = merge(runtime_options, kwargs)
     flag_file = os.path.join(bastion_dir, "runtime_options")
-    with tf_io.gfile.GFile(flag_file, "w") as f:
+    with fs_open(flag_file, "w") as f:
         json.dump(runtime_options, f)
     logging.info("Updated runtime options: %s", runtime_options)
     return runtime_options
@@ -699,11 +698,11 @@ class Bastion(Configurable):
         self._job_dir = os.path.join(self._output_dir, "jobs")
         # Remote history dir. Ensure trailing slash.
         self._job_history_dir = os.path.join(self._output_dir, "history", "jobs")
-        tf_io.gfile.makedirs(self._job_history_dir)
+        makedirs(self._job_history_dir)
         self._project_history_dir = os.path.join(self._output_dir, "history", "projects")
-        tf_io.gfile.makedirs(self._project_history_dir)
+        makedirs(self._project_history_dir)
         self._scheduler_history_dir = os.path.join(self._output_dir, "history", "scheduler")
-        tf_io.gfile.makedirs(self._scheduler_history_dir)
+        makedirs(self._scheduler_history_dir)
         # Mapping from project_id to previous job verdicts.
         self._project_history_previous_verdicts = {}
         # Jobs that have fully completed.
@@ -733,7 +732,7 @@ class Bastion(Configurable):
         self._event_publisher = maybe_instantiate(cfg.event_publisher)
 
     def _append_to_job_history(self, job: Job, *, msg: str, state: JobLifecycleState):
-        with tf_io.gfile.GFile(os.path.join(self._job_history_dir, f"{job.spec.name}"), "a") as f:
+        with fs_open(os.path.join(self._job_history_dir, f"{job.spec.name}"), "a") as f:
             curr_time = datetime.now(timezone.utc).strftime("%m%d %H:%M:%S")
             f.write(f"{curr_time} {msg}\n")
         # Publish event into queue.
@@ -751,7 +750,7 @@ class Bastion(Configurable):
         self, jobs: dict[str, JobMetadata], schedule_results: BaseScheduler.ScheduleResults
     ):
         now = datetime.now(timezone.utc)
-        with tf_io.gfile.GFile(
+        with fs_open(
             os.path.join(self._scheduler_history_dir, now.strftime("%Y%m%d-%H%M%S")), "a"
         ) as f:
             for job_id, verdict in schedule_results.job_verdicts.items():
@@ -794,8 +793,8 @@ class Bastion(Configurable):
                 )
 
             project_dir = os.path.join(self._project_history_dir, project_id)
-            tf_io.gfile.makedirs(project_dir)
-            with tf_io.gfile.GFile(os.path.join(project_dir, now.strftime("%Y%m%d")), "a") as f:
+            makedirs(project_dir)
+            with fs_open(os.path.join(project_dir, now.strftime("%Y%m%d")), "a") as f:
                 curr_time = now.strftime("%m%d %H:%M:%S")
                 f.write(f"{curr_time}\n")
                 f.write(f"Effective limits: {resource_str(limits)}\n")
@@ -838,7 +837,7 @@ class Bastion(Configurable):
         proc.fd.close()
         # Upload outputs to log dir.
         _catch_with_error_log(
-            tf_io.gfile.copy,
+            copy,
             proc.fd.name,
             os.path.join(self._log_dir, os.path.basename(proc.fd.name)),
             overwrite=True,
@@ -1301,7 +1300,7 @@ class BastionDirectory(Configurable):
     def cancel_job(self, job_name: str):
         try:
             jobspec = os.path.join(self.active_job_dir, job_name)
-            if not tf_io.gfile.exists(jobspec):
+            if not exists(jobspec):
                 raise ValueError(f"Unable to locate jobspec {jobspec}")
             _upload_job_state(
                 job_name,
@@ -1310,7 +1309,7 @@ class BastionDirectory(Configurable):
             )
             logging.info("Job %s is cancelling.", job_name)
             # Poll for jobspec to be removed.
-            while tf_io.gfile.exists(jobspec):
+            while exists(jobspec):
                 logging.info("Waiting for job to stop (which usually takes a few minutes)...")
                 time.sleep(10)
             logging.info("Job is stopped.")
@@ -1321,15 +1320,15 @@ class BastionDirectory(Configurable):
         if not is_valid_job_name(job_name):
             raise ValueError(f"{job_name} is not a valid job name.")
         dst = os.path.join(self.active_job_dir, job_name)
-        if tf_io.gfile.exists(dst):
+        if exists(dst):
             logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")
         else:
             # Upload the job for bastion to pickup.
-            tf_io.gfile.copy(job_spec_file, dst)
+            copy(job_spec_file, dst)
 
     def get_job(self, job_name: str) -> JobSpec:
         job_path = os.path.join(self.active_job_dir, job_name)
-        if not tf_io.gfile.exists(job_path):
+        if not exists(job_path):
             raise ValueError(f"Unable to locate jobspec {job_path}")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1338,13 +1337,13 @@ class BastionDirectory(Configurable):
 
     def update_job(self, job_name: str, *, job_spec: JobSpec) -> JobSpec:
         dst = os.path.join(self.active_job_dir, job_name)
-        if not tf_io.gfile.exists(dst):
+        if not exists(dst):
             raise ValueError(f"Unable to locate jobspec {dst}")
 
         with tempfile.NamedTemporaryFile("w") as f:
             serialize_jobspec(job_spec, f)
             # Upload the job for bastion to pickup.
-            tf_io.gfile.copy(f.name, dst, overwrite=True)
+            copy(f.name, dst, overwrite=True)
         logging.info("Job %s is updating.", job_name)
 
         return job_spec

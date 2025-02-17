@@ -116,7 +116,6 @@ from collections.abc import Sequence
 from typing import Optional
 
 from absl import app, flags, logging
-from tensorflow import io as tf_io
 
 from axlearn.cloud.common.bastion import (
     _LOG_DIR,
@@ -141,6 +140,9 @@ from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
 from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, common_flags
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
+from axlearn.common.file_system import exists, glob
+from axlearn.common.file_system import open as fs_open
+from axlearn.common.file_system import readfile
 
 FLAGS = flags.FLAGS
 
@@ -359,17 +361,13 @@ def _project_quotas_from_file(quota_file: str):
 def _job_history(*, job_name: str, root_dir: str) -> str:
     result = ""
     spec_path_pattern = os.path.join(root_dir, "jobs", "*", job_name)
-    spec_paths = tf_io.gfile.glob(spec_path_pattern)
+    spec_paths = glob(spec_path_pattern)
     if not spec_paths:
         raise FileNotFoundError(f"Job spec not found in {spec_path_pattern}")
     for spec_path in spec_paths:
-        with tf_io.gfile.GFile(spec_path, mode="r") as f:
-            spec = "".join(f.readlines())
-            result += f"<spec path={spec_path}>\n{spec}\n</spec>\n"
+        result += f"<spec path={spec_path}>\n{readfile(spec_path)}\n</spec>\n"
     history_path = os.path.join(root_dir, "history", "jobs", job_name)
-    with tf_io.gfile.GFile(history_path, mode="r") as f:
-        history = "".join(f.readlines())
-        result += f"<history path={history_path}>\n{history}</history>\n"
+    result += f"<history path={history_path}>\n{readfile(history_path)}</history>\n"
     return result
 
 
@@ -380,12 +378,12 @@ def _project_history(*, root_dir: str, project_id: str) -> str:
         "projects",
         project_id,
     )
-    if not tf_io.gfile.exists(project_dir):
+    if not exists(project_dir):
         raise FileNotFoundError(f"Project {project_id} not found at {project_dir}")
-    paths = sorted(tf_io.gfile.glob(os.path.join(project_dir, "*")))
+    paths = sorted(glob(os.path.join(project_dir, "*")))
     entries = []
     for path in paths[-2:]:
-        with tf_io.gfile.GFile(path, mode="r") as f:
+        with fs_open(path, mode="r") as f:
             entry = None
             for line in f:
                 if re.search("^[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}", line):
