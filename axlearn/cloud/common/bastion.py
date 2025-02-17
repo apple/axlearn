@@ -114,7 +114,7 @@ def bastion_job_flags(flag_values: flags.FlagValues = FLAGS):
 
 
 # The following functions, `_download`, `_readfile`, `_listdir`, and `_remove`, can be patched to
-# support alternative storages that cannot be accessed via gfile.
+# support alternative storages that cannot be accessed via file_system.
 #
 # TODO(ruoming): refactor them to a `BastionDirStorage` class.
 def _download(path: str, local_file: str):

@@ -301,7 +301,7 @@ def copy_blobs(from_prefix: str, *, to_prefix: str):
     # pylint: disable-next=import-outside-toplevel
     from axlearn.common import file_system as fs
 
-    # As tf_io.gfile.copy requires a path to a file when reading from cloud storage,
+    # As file_system.copy requires a path to a file when reading from cloud storage,
     # we traverse the `from_prefix` to find and copy all suffixes.
     if not fs.isdir(from_prefix):
         # Copy the file.

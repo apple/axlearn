@@ -18,7 +18,9 @@ from datetime import datetime
 from typing import Optional
 
 from absl import app, flags
-from tensorflow import io as tf_io
+
+from axlearn.common.file_system import makedirs
+from axlearn.common.file_system import open as fs_open
 
 FLAGS = flags.FLAGS
 _Done = object()
@@ -112,8 +114,8 @@ class TfioWriter(BaseWriter):
         output_path = datetime.now().strftime(self._output_path)
         if self._file is None or self._file.name != output_path:
             self._maybe_close()
-            tf_io.gfile.makedirs(os.path.dirname(output_path))
-            self._file = tf_io.gfile.GFile(output_path, mode="a")
+            makedirs(os.path.dirname(output_path))
+            self._file = fs_open(output_path, mode="a")
 
     def _maybe_close(self):
         """Closes the output file if it exists."""
