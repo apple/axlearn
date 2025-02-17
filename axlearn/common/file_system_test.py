@@ -134,6 +134,13 @@ class LocalTest(TestWithTemporaryCWD):
         with fs.open(src) as f:
             self.assertIn("src_file", f.read())
 
+    def test_readfile(self):
+        src = os.path.join(self._temp_root.name, "src_file")
+        with self.assertRaises(fs.NotFoundError):
+            fs.readfile(src)
+        _make_paths([src])
+        self.assertEqual(src, fs.readfile(src))
+
     def test_makedirs(self):
         test_dir = os.path.join(self._temp_root.name, "src_dir")
         self.assertFalse(fs.exists(test_dir))
