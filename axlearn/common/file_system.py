@@ -158,7 +158,7 @@ def open(path: str, mode: str = "r") -> IO:
 @_wrap_tf_errors
 def readfile(path: str) -> str:
     with open(path, mode="r") as f:
-        return f.read()
+        return str(f.read())
 
 
 @_wrap_tf_errors
