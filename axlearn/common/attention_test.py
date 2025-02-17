@@ -5318,6 +5318,37 @@ class KVCacheTest(TestCase):
             k_proj.astype(expect_dtype)[:, :step_len],
         )
 
+    def test_kv_cache_onehot_vs_dynamic(self):
+        test_layer = KVCache.default_config().set(name="test").instantiate(parent=None)
+
+        kv_len = 64
+        kv_shape = KVCache.Shape(2, kv_len, 2, 2)
+        onehot_states = test_layer.init_states(kv_shape, dtype=jnp.float32)
+        dynamic_states = test_layer.init_states(kv_shape, dtype=jnp.float32)
+
+        prng_key = jax.random.PRNGKey(2)
+        k_proj = jax.random.normal(prng_key, shape=kv_shape)
+        v_proj = jax.random.normal(prng_key, shape=kv_shape)
+
+        def extend_step(step_size, cached_states):
+            for i in range(0, kv_len, step_size):
+                k_step = k_proj[:, i : i + step_size]
+                v_step = v_proj[:, i : i + step_size]
+                key_positions = jnp.arange(step_size)[None] + i
+                cached_states, test_output = test_layer.extend_step(
+                    cached_states, k_proj=k_step, v_proj=v_step, key_positions=key_positions
+                )
+            return cached_states, test_output
+
+        onehot_states, onehot_output = extend_step(step_size=1, cached_states=onehot_states)
+        dynamic_states, dynamic_output = extend_step(step_size=32, cached_states=dynamic_states)
+
+        assert_allclose(onehot_states["key"], dynamic_states["key"])
+        assert_allclose(onehot_states["value"], dynamic_states["value"])
+        assert_allclose(onehot_output.k_proj, dynamic_output.k_proj)
+        assert_allclose(onehot_output.v_proj, dynamic_output.v_proj)
+        assert_allclose(onehot_output.key_positions, dynamic_output.key_positions)
+
 
 class PositionalEmbeddingTest(TestCase):
     """Tests PositionalEmbedding."""
