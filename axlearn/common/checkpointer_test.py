@@ -48,6 +48,7 @@ from axlearn.common.checkpointer import (
     restore_tf_savables,
 )
 from axlearn.common.checkpointer_orbax import _GRAIN_INSTALLED, OrbaxCheckpointer
+from axlearn.common.file_system import listdir
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.utils import VDict
@@ -532,7 +533,7 @@ class CheckpointerTest(test_utils.TestCase):
     def test_cleanup_checkpoint(self):
         # Mock the rmtree s.t. it does nothing.
         with (
-            mock.patch("tensorflow.io.gfile.rmtree", side_effect=None),
+            mock.patch("axlearn.common.file_system.rmtree", side_effect=None),
             tempfile.TemporaryDirectory() as temp_dir,
         ):
             # Create a few mock checkpoints.
@@ -590,16 +591,16 @@ class CheckpointerTest(test_utils.TestCase):
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
 
-        orig_tf_listdir = tf.io.gfile.listdir
+        orig_listdir = listdir
 
         def patch_tf_io_behavior(*args):
-            out = orig_tf_listdir(*args)
+            out = orig_listdir(*args)
             return [x + "/" for x in out if not x.endswith("/")]
 
         # pylint: disable=line-too-long
         with (
             _mesh(mesh_shape),
-            mock.patch("tensorflow.io.gfile.listdir", patch_tf_io_behavior)
+            mock.patch("axlearn.common.file_system.listdir", patch_tf_io_behavior)
             if listdir_add_trailing_slash
             else nullcontext(),
             tempfile.TemporaryDirectory() as temp_dir,
