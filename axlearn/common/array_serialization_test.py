@@ -256,13 +256,12 @@ class SerializerTest(parameterized.TestCase):
         async def open_patch(*_, **__):
             return FakeTs()
 
-        async def _copy_to_host_patch(shard_infos: list[_ShardInfo], d2h_future: futures.Future):
+        async def _copy_to_host_patch(shard_infos: list[_ShardInfo]):
             nonlocal concurrent_bytes
             for info in shard_infos:
                 concurrent_bytes += info.data.nbytes
             # In-flight bytes should be lower than the expected max bytes
             self.assertLessEqual(concurrent_bytes, expect_max_concurrent_bytes)
-            d2h_future.set_result(shard_infos)
 
         manager = BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=max_concurrent_gb)
         with (
@@ -328,8 +327,7 @@ class SerializerTest(parameterized.TestCase):
         # single device array. If same, that means all shards should cover all
         # indices of the original array.
         out_array = np.empty_like(single_device_arr)
-        d2h_future = futures.Future()
-        asyncio.run(_slice_shard_and_copy_to_host(shard_infos, d2h_future))
+        asyncio.run(_slice_shard_and_copy_to_host(shard_infos))
         for info in shard_infos:
             out_array[info.index] = info.data
         self.assertTrue(np.all(out_array == np.array(single_device_arr)))
@@ -403,4 +401,29 @@ class SerializerTest(parameterized.TestCase):
 
         self._verify_shard_info(
             single_device_arr, arr, max_data_shard_degree, shard_threshold_bytes
+        )
+
+    @parameterized.parameters(
+        dict(
+            index=(slice(2, 4, None), slice(None, None, None)),
+            expected="1.0",
+        ),
+        dict(
+            index=(slice(None, None, None), slice(2, 3, None), slice(None, None, None)),
+            expected="0.2.0",
+        ),
+        dict(
+            index=(),  # Scalar.
+            expected="0",
+        ),
+        dict(
+            index=(slice(None, None, None),),  # Replicated.
+            expected="0",
+        ),
+    )
+    def test_shard_coordinate(self, index, expected):
+        data = jnp.zeros(())
+        self.assertEqual(
+            _ShardInfo(data=data, index=index, slice_arg=None, replica_count=1).shard_coordinate(),
+            expected,
         )

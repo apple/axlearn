@@ -16,7 +16,6 @@ Reference:
 https://github.com/google/orbax/blob/3cc343c63c769e4b2df44f3e57f6b5b43569df32/checkpoint/orbax/checkpoint/serialization.py
 https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/experimental/array_serialization/serialization.py
 """
-
 import asyncio
 import functools
 import threading
@@ -51,6 +50,21 @@ class _ShardInfo:
     index: tuple[slice, ...]
     slice_arg: Optional[tuple[int, int, int]]
     replica_count: int
+
+    def shard_coordinate(self):
+        """Gets the shard coordinate according to the zarr format used by tensorstore."""
+        coords = []
+        for s in self.index:
+            if s.start is None:
+                coords.append(0)
+                continue
+            size = s.stop - s.start
+            assert s.start % size == 0
+            coords.append(s.start // size)
+        # Special case for scalar.
+        if len(coords) == 0:
+            return "0"
+        return ".".join(str(x) for x in coords)
 
 
 # Tuple (and thus hashable) representation of a slice object (start, end, step).
@@ -145,7 +159,7 @@ def _transfer_to_host(data: Tensor) -> Tensor:
     return data
 
 
-async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo], d2h_future: futures.Future):
+async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo]):
     """Slices each shard according to shard info and then copy the sliced result to host.
 
     The .data field of each shard_info is modified in-place.
@@ -161,9 +175,6 @@ async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo], d2h_futur
         # Ensure that jax.Array's internal numpy array can be zero-copied. This guards
         # against consumers like tensorstore that would otherwise copy silently.
         info.data = np.array(data, copy=False)
-
-    d2h_future.set_result(shard_infos)
-    await asyncio.sleep(0)  # Allow other D2Hs to set result.
 
 
 def _slice_fn(info: _ShardInfo) -> Tensor:
@@ -183,8 +194,13 @@ def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
     """Revises the medadata of a tensorspec based on `shard_infos`."""
     if len(shard_infos) != 0:
         # All shards have the same shape after data-sharding, so using [0] is sufficient.
-        tspec["chunks"] = np.array(np.maximum(1, shard_infos[0].data.shape))
+        tspec["chunks"] = tuple(int(x) for x in np.maximum(1, shard_infos[0].data.shape))
     return tspec
+
+
+class TensorstoreSpecModifier:
+    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
+        ...
 
 
 async def _async_serialize(
@@ -192,7 +208,8 @@ async def _async_serialize(
     tensorstore_spec: dict[str, Any],
     d2h_future: futures.Future,
     *,
-    limiter: Optional[serialization._LimitInFlightBytes] = None,
+    limiter: Optional[serialization._LimitInFlightBytes],
+    tensorstore_spec_modifier: Optional[TensorstoreSpecModifier] = None,
     max_data_shard_degree: int,
     shard_threshold_bytes: int,
 ):
@@ -236,9 +253,15 @@ async def _async_serialize(
         tensorstore_spec["dtype"] = jax.numpy.dtype(arr_inp.dtype).name
 
     # Original `arr_inp` might be deleted after this point.
-    await _slice_shard_and_copy_to_host(shard_infos, d2h_future)
+    await _slice_shard_and_copy_to_host(shard_infos)
     # Fix metadata after slicing to get the right shape.
     _fix_metadata(tensorstore_spec["metadata"], shard_infos)
+    if tensorstore_spec_modifier is not None:
+        tensorstore_spec_modifier(tensorstore_spec, shard_infos=shard_infos)
+
+    # Set future after we updated tensorstore spec.
+    d2h_future.set_result(shard_infos)
+    await asyncio.sleep(0)  # Allow other D2Hs to set result.
 
     # `ts.open` runs twice for process 0 because for the first time, we just get the future to be
     # awaited upon in the background thread. The second one runs with `assume_metadata=True` which
@@ -278,6 +301,7 @@ async def _run_serializer(
     d2h_futures: list[futures.Future],
     *,
     max_concurrent_bytes: Optional[int] = None,
+    tensorstore_spec_modifier: Optional[TensorstoreSpecModifier] = None,
     max_data_shard_degree: int,
     shard_threshold_bytes: int,
 ):
@@ -296,6 +320,7 @@ async def _run_serializer(
             limiter=limiter,
             max_data_shard_degree=max_data_shard_degree,
             shard_threshold_bytes=shard_threshold_bytes,
+            tensorstore_spec_modifier=tensorstore_spec_modifier,
         ),
         arrays,
         tensorstore_specs,
@@ -435,6 +460,23 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
             raise NotImplementedError("max_data_shard_degree cannot be 0.")
         self._shard_threshold_bytes = shard_threshold_bytes or 0
 
+    def _tensorstore_spec_modifier(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
+        """A function that modifies the tensorstore spec for an array in-place.
+
+        This function will be called after tensorstore metadata is populated and the shard infos
+        for the array are computed.
+        """
+        del spec, shard_infos
+
+    def _tensorstore_spec_log_fn(self, specs: list[dict[str, Any]]):
+        """A function that will be called **once** after the tensorstore specs are populated.
+
+        Specifically, this function will be called **once** during the first checkpoint after
+        `self._tensorstore_spec_modifier` is invoked for each array. `specs` is a list of specs
+        corresponding the `arrays` argument in `self.serialize`.
+        """
+        del specs
+
     def serialize(
         self,
         arrays: list[Tensor],
@@ -478,6 +520,7 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
                         arrays,
                         tensorstore_specs,
                         d2h_futures,
+                        tensorstore_spec_modifier=self._tensorstore_spec_modifier,  # type: ignore
                         max_concurrent_bytes=max_concurrent_bytes,
                         max_data_shard_degree=self._max_data_shard_degree,
                         shard_threshold_bytes=self._shard_threshold_bytes,
@@ -501,6 +544,14 @@ class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpoi
                     str(spec),
                 )
             self._logged_spec = True
+            self._tensorstore_spec_log_fn(tensorstore_specs)
 
         logging.info("D2H during save took %fs. Starting async commit.", time.time() - start_t)
         self._start_async_commit(on_commit_callback)
+
+    def stop(self):
+        """Disposes and cleanup any internal resources."""
+
+    def __del__(self):
+        super().__del__()
+        self.stop()
