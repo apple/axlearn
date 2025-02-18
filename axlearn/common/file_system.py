@@ -101,6 +101,12 @@ def listdir(path: str) -> list[str]:
 @_wrap_tf_errors
 def glob(pattern: str) -> list[str]:
     """Analogous to tf.io.gfile.glob."""
+    if isinstance(pattern, (list, tuple)):
+        results = set()
+        for p in pattern:
+            results.update(glob(p))
+        return list(results)
+
     parsed = urlparse(pattern)
 
     # tf.io.gfile.glob is prohibitively slow for gs paths containing many prefixes.
