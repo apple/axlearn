@@ -99,9 +99,9 @@ def listdir(path: str) -> list[str]:
 
 
 @_wrap_tf_errors
-def glob(pattern: str) -> list[str]:
+def glob(pattern: str | list[str]) -> list[str]:
     """Analogous to tf.io.gfile.glob."""
-    if isinstance(pattern, (list, tuple)):
+    if isinstance(pattern, list):
         results = set()
         for p in pattern:
             results.update(glob(p))
