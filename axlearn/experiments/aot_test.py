@@ -16,7 +16,7 @@ import pytest
 from absl.testing import absltest
 
 from axlearn.common import test_utils
-from axlearn.common.aot_compilation import compile_trainer_programs
+from axlearn.common.aot_compilation import compile_trainer_programs, get_devices_for_topology
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.experiments.text.gpt import c4_trainer
 
@@ -38,6 +38,13 @@ class AoTCompilationTest(test_utils.TrainerConfigTestCase):
         )
         compiled_train_step = programs["train_step"]
         self.assertIsNotNone(compiled_train_step)
+
+    @pytest.mark.skip(reason="CI does not support AOT compilation.")
+    def test_get_devices_for_topology(self):
+        with self.assertRaises(NotImplementedError):
+            get_devices_for_topology("invalid", 1)
+
+        self.assertLen(get_devices_for_topology("v4-8", 1), 4)
 
     @pytest.mark.skip(reason="jax0.4.25 has extremely slow cpu compile time.")
     def test_fuji_7b(self):
