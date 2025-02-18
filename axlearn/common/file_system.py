@@ -12,7 +12,7 @@ This module provides a common interface between these options.
 import contextlib
 import functools
 import os
-from typing import IO, TypeVar, Union
+from typing import IO, Sequence, TypeVar, Union
 from urllib.parse import urlparse
 
 import tensorflow as tf
@@ -99,9 +99,9 @@ def listdir(path: str) -> list[str]:
 
 
 @_wrap_tf_errors
-def glob(pattern: str | list[str]) -> list[str]:
+def glob(pattern: Union[str, Sequence[str]]) -> list[str]:
     """Analogous to tf.io.gfile.glob."""
-    if isinstance(pattern, list):
+    if isinstance(pattern, (list, tuple)):
         results = set()
         for p in pattern:
             results.update(glob(p))
