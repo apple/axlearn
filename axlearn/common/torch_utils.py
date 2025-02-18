@@ -82,8 +82,7 @@ if _FAIRSEQ_INSTALLED:
             i_proj=VDict(
                 qkv_proj=dict(
                     weight=torch.stack(qkv_weights, dim=0), bias=torch.stack(qkv_biases, dim=0)
-                ),
-                kv_cache=dict(),
+                )
             ),
             o_proj=dict(
                 weight=src.linear_out.weight.view(-1, src.h, src.d_k), bias=src.linear_out.bias

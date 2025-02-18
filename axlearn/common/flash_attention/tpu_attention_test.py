@@ -19,7 +19,6 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     MaskFnAttentionBias,
-    SlidingWindowAttentionBias,
     ZeroAttentionBias,
     causal_mask,
     sliding_window_causal_mask,
@@ -63,14 +62,14 @@ class TestFlashAttention(TestCase):
         ),
     ]
 
-    @parameterized.product(seq_len=[8, 16, 32, 128], left_context=[4, 8, 16])
-    def test_sliding_window_mask_equivalence(self, seq_len, left_context):
+    @parameterized.product(seq_len=[8, 16, 32, 128], sliding_window_size=[4, 8, 16])
+    def test_sliding_window_mask_equivalence(self, seq_len, sliding_window_size):
         shape = (seq_len, seq_len)
         ref_mask = splash_attention_mask.LocalMask(
-            shape=shape, window_size=(left_context, 0), offset=0
+            shape=shape, window_size=(sliding_window_size, 0), offset=0
         )
 
-        mask_fn = sliding_window_causal_mask(left_context=left_context)
+        mask_fn = sliding_window_causal_mask(sliding_window_size=sliding_window_size)
         mask_array = np.asarray(mask_fn(np.arange(seq_len)[:, None], np.arange(seq_len)[None, :]))
 
         test_mask = splash_attention_mask.NumpyMask(array=mask_array)
@@ -80,19 +79,9 @@ class TestFlashAttention(TestCase):
 
     @parameterized.parameters(
         [ZeroAttentionBias(), splash_attention_mask.FullMask((8, 8))],
+        [CausalAttentionBias(shape=(8, 8)), splash_attention_mask.CausalMask(shape=(8, 8))],
         [
-            CausalAttentionBias(
-                target_positions=jnp.arange(8)[None], source_positions=jnp.arange(8)[None]
-            ),
-            splash_attention_mask.CausalMask(shape=(8, 8)),
-        ],
-        [
-            SlidingWindowAttentionBias(
-                sliding_window_causal_mask(4),
-                left_context=4,
-                target_positions=jnp.arange(8)[None],
-                source_positions=jnp.arange(8)[None],
-            ),
+            MaskFnAttentionBias(sliding_window_causal_mask(4), shape=(8, 8)),
             splash_attention_mask.LocalMask(shape=(8, 8), window_size=(4, 0), offset=0),
         ],
     )
@@ -105,7 +94,7 @@ class TestFlashAttention(TestCase):
         batch_size=[4],
         seq_len=[1024, 32768],
         mask_fn=["zero", "causal", "sliding"],
-        left_context=[1024],
+        sliding_window_size=[1024],
         num_heads=[4],
         per_head_dim=[256],
         mesh_axis_names=[("data", "model")],
@@ -117,7 +106,7 @@ class TestFlashAttention(TestCase):
         num_heads,
         per_head_dim,
         mask_fn,
-        left_context,
+        sliding_window_size,
         mesh_axis_names,
     ):
         if jax.default_backend() == "cpu" and seq_len > 1024:
@@ -154,16 +143,10 @@ class TestFlashAttention(TestCase):
                 if mask_fn == "zero":
                     mask = ZeroAttentionBias()
                 elif mask_fn == "causal":
-                    mask = CausalAttentionBias(
-                        target_positions=jnp.arange(seq_len)[None],
-                        source_positions=jnp.arange(seq_len)[None],
-                    )
+                    mask = CausalAttentionBias(shape=(seq_len, seq_len))
                 elif mask_fn.startswith("sliding"):
-                    mask = SlidingWindowAttentionBias(
-                        sliding_window_causal_mask(left_context),
-                        left_context=left_context,
-                        target_positions=jnp.arange(seq_len)[None],
-                        source_positions=jnp.arange(seq_len)[None],
+                    mask = MaskFnAttentionBias(
+                        sliding_window_causal_mask(sliding_window_size), shape=(seq_len, seq_len)
                     )
 
                 attn = lambda q, k, v: tpu_attention.tpu_flash_attention(
@@ -265,11 +248,7 @@ class TestFlashAttention(TestCase):
         legacy_flash_wrapper = unittest.mock.Mock(wraps=tpu_attention._legacy_tpu_flash_attention)
 
         if mask is not None:
-            mask = MaskFnAttentionBias(
-                mask,
-                target_positions=jnp.arange(query_len)[None],
-                source_positions=jnp.arange(kv_len)[None],
-            )
+            mask = MaskFnAttentionBias(mask, shape=(query_len, kv_len))
         else:
             mask = ZeroAttentionBias()
 

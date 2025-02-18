@@ -663,7 +663,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         cfg = self.config
         init_state, _ = self.transformer.init_states(
             time_step=None,
-            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=jnp.float32),
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim]),
         )
         return dict(transformer_state=init_state)
 

@@ -42,7 +42,7 @@ from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_atten
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
 
-from axlearn.common.attention_bias import NEG_INF, MaskFn
+from axlearn.common.attention import NEG_INF, MaskFn
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Tensor

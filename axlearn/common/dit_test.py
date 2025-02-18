@@ -21,8 +21,8 @@ from absl.testing import absltest, parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
 from torch import nn
 
-from axlearn.common.attention import CausalAttentionBias, enable_sliding_window_attention
-from axlearn.common.attention_bias import NEG_INF
+from axlearn.common.attention_bias import NEG_INF, causal_mask, sliding_window_causal_mask
+from axlearn.common.config import config_for_function
 from axlearn.common.dit import (
     AdaptiveLayerNormModulation,
     DiTAttentionLayer,
@@ -643,8 +643,10 @@ class TestDiTAttn(parameterized.TestCase):
             )
             assert_allclose(layer_output.shape, inputs.shape)
 
-    @parameterized.parameters("causal", "sliding_window")
-    def test_dit_attn_extend_step(self, causal_type):
+    @parameterized.parameters(
+        [causal_mask, config_for_function(sliding_window_causal_mask).set(sliding_window_size=10)]
+    )
+    def test_dit_attn_extend_step(self, mask):
         batch_size = 2
         seq_len = 12
         dim = 32
@@ -662,12 +664,7 @@ class TestDiTAttn(parameterized.TestCase):
             target_dim=dim,
         )
         layer_cfg.attention.num_heads = num_heads
-        if causal_type == "causal":
-            layer_cfg.attention.mask = CausalAttentionBias.default_config()
-        elif causal_type == "sliding_window":
-            layer_cfg.attention = enable_sliding_window_attention(
-                layer_cfg.attention, left_context=10
-            )
+        layer_cfg.attention.mask = mask
 
         layer = layer_cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(prng_key)
@@ -757,10 +754,13 @@ class TestDiTBlock(parameterized.TestCase):
         assert_allclose(layer_output, as_tensor(ref_output))
 
     @parameterized.product(
-        causal_type=["causal", "sliding_window"],
+        mask=[
+            causal_mask,
+            config_for_function(sliding_window_causal_mask).set(sliding_window_size=10),
+        ],
         seq_cond=[False, True],
     )
-    def test_dit_block_extend_step(self, causal_type, seq_cond):
+    def test_dit_block_extend_step(self, mask, seq_cond):
         batch_size = 2
         seq_len = 12
         dim = 32
@@ -775,12 +775,7 @@ class TestDiTBlock(parameterized.TestCase):
 
         layer_cfg = DiTBlock.default_config().set(name="test", input_dim=dim)
         layer_cfg.attention.attention.num_heads = num_heads
-        if causal_type == "causal":
-            layer_cfg.attention.attention.mask = CausalAttentionBias.default_config()
-        elif causal_type == "sliding_window":
-            layer_cfg.attention.attention = enable_sliding_window_attention(
-                layer_cfg.attention.attention, left_context=10
-            )
+        layer_cfg.attention.attention.mask = mask
 
         layer = layer_cfg.instantiate(parent=None)
         prng_key, init_key = jax.random.split(prng_key)
