@@ -3,27 +3,30 @@
 """Tests TPU FlashAttention kernels."""
 from __future__ import annotations
 
+import unittest
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from absl.testing import absltest, parameterized
+from jax.experimental import mesh_utils
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+from jax.experimental.shard_map import shard_map
+from jax.interpreters.pxla import thread_resources
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
-    CompositeAttentionBias,
     MaskFnAttentionBias,
-    SegmentIdAttentionBias,
     SlidingWindowAttentionBias,
-    TensorAttentionBias,
     ZeroAttentionBias,
     causal_mask,
     sliding_window_causal_mask,
 )
 from axlearn.common.flash_attention import tpu_attention
-from axlearn.common.flash_attention.utils import flash_attention_implementation, mha_reference
-from axlearn.common.test_utils import TestCase
+from axlearn.common.flash_attention.utils import mha_reference
+from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 from axlearn.common.utils import Tensor
 
 
@@ -99,6 +102,100 @@ class TestFlashAttention(TestCase):
         self.assertEqual(splash_mask, expected)
 
     @parameterized.product(
+        batch_size=[4],
+        seq_len=[1024, 32768],
+        mask_fn=["zero", "causal", "sliding"],
+        left_context=[1024],
+        num_heads=[4],
+        per_head_dim=[256],
+        mesh_axis_names=[("data", "model")],
+    )
+    def test_forward(
+        self,
+        batch_size,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mask_fn,
+        left_context,
+        mesh_axis_names,
+    ):
+        if jax.default_backend() == "cpu" and seq_len > 1024:
+            pytest.skip(reason="Too slow on CPU.")
+        mesh = (1, 1) if jax.default_backend() == "cpu" else (4, 1)
+        self.assertTrue(is_supported_mesh_shape(mesh))
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
+        q = jax.random.normal(
+            k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
+        )
+        k = jax.random.normal(
+            k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
+        )
+        v = jax.random.normal(
+            k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16
+        )
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            mesh = thread_resources.env.physical_mesh
+
+            def fn(q, k, v):
+                q = jax.lax.with_sharding_constraint(
+                    q, NamedSharding(mesh, PartitionSpec("data", None, "model", None))
+                )
+                k = jax.lax.with_sharding_constraint(
+                    k, NamedSharding(mesh, PartitionSpec("data", None, "model", None))
+                )
+                v = jax.lax.with_sharding_constraint(
+                    v, NamedSharding(mesh, PartitionSpec("data", None, "model", None))
+                )
+
+                softmax_scale = q.shape[-1] ** -0.5
+                if mask_fn == "zero":
+                    mask = ZeroAttentionBias()
+                elif mask_fn == "causal":
+                    mask = CausalAttentionBias(
+                        target_positions=jnp.arange(seq_len)[None],
+                        source_positions=jnp.arange(seq_len)[None],
+                    )
+                elif mask_fn.startswith("sliding"):
+                    mask = SlidingWindowAttentionBias(
+                        sliding_window_causal_mask(left_context),
+                        left_context=left_context,
+                        target_positions=jnp.arange(seq_len)[None],
+                        source_positions=jnp.arange(seq_len)[None],
+                    )
+
+                attn = lambda q, k, v: tpu_attention.tpu_flash_attention(
+                    q,
+                    k,
+                    v,
+                    mask=mask,
+                    softmax_scale=softmax_scale,
+                    interpret=(jax.default_backend() == "cpu"),
+                )
+
+                partitioned_mha = shard_map(
+                    attn,
+                    mesh=mesh,
+                    in_specs=(
+                        PartitionSpec("data", None, "model", None),
+                        PartitionSpec("data", None, "model", None),
+                        PartitionSpec("data", None, "model", None),
+                    ),
+                    out_specs=PartitionSpec("data", None, "model", None),
+                    check_rep=False,
+                )
+
+                return partitioned_mha(q, k, v)
+
+            fn = jax.jit(fn)
+
+        # Trigger compilation.
+        fn(q, k, v)
+        jax.grad(lambda q, k, v: fn(q, k, v).mean(), argnums=(0, 1, 2))(q, k, v)
+
+    @parameterized.product(
         _TEST_CONFIGS,
         query_length_multiplier=[0.5, 1, 2],
         mask=[None, causal_mask, jax_fn_mask],
@@ -123,7 +220,12 @@ class TestFlashAttention(TestCase):
         # pylint: disable=protected-access
         causal = mask in [causal_mask, jax_fn_mask]
 
-        fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
+        fallback_to_legacy = (
+            per_head_dim % 128 != 0
+            or (attention_bias_type is not None)
+            or with_segment_ids
+            or (query_length_multiplier != 1 and mask is not None)
+        )
         print(
             f"{batch_size=}, {kv_len=}, {num_heads=}, \n"
             f"{per_head_dim=}, {query_length_multiplier=}, {mask=}, \n"
@@ -160,48 +262,52 @@ class TestFlashAttention(TestCase):
         def ref_fn(q, k, v, bias, ids):
             return mha_reference(q, k, v, bias, ids, causal=causal, softmax_scale=softmax_scale)
 
-        composite_bias = []
-        if mask is not None:
-            composite_bias.append(
-                MaskFnAttentionBias(
-                    mask,
-                    target_positions=jnp.arange(query_len)[None],
-                    source_positions=jnp.arange(kv_len)[None],
-                )
-            )
-        if attention_bias is not None:
-            composite_bias.append(TensorAttentionBias(attention_bias))
-        if segment_ids is not None:
-            composite_bias.append(SegmentIdAttentionBias(segment_ids))
-        composite_bias = CompositeAttentionBias(composite_bias)
+        legacy_flash_wrapper = unittest.mock.Mock(wraps=tpu_attention._legacy_tpu_flash_attention)
 
-        def fn(q, k, v, bias):
-            specs = flash_attention_implementation(
-                query=q,
-                key=k,
-                value=v,
-                bias=bias,
-                backend="tpu",
-                softmax_scale=softmax_scale,
+        if mask is not None:
+            mask = MaskFnAttentionBias(
+                mask,
+                target_positions=jnp.arange(query_len)[None],
+                source_positions=jnp.arange(kv_len)[None],
             )
-            # Check splash attention is used when it should be.
-            if fallback_to_legacy:
-                self.assertIn("jit_attn", specs.fn.__qualname__)
-            return specs.fn(q, k, v, bias, None, *specs.additional_args)
+        else:
+            mask = ZeroAttentionBias()
+
+        def fn(q, k, v, bias, ids):
+            record_legacy_call = unittest.mock.patch.object(
+                tpu_attention, "_legacy_tpu_flash_attention", legacy_flash_wrapper
+            )
+            with record_legacy_call:
+                return tpu_attention.tpu_flash_attention(
+                    q,
+                    k,
+                    v,
+                    bias,
+                    ids,
+                    mask=mask,
+                    softmax_scale=softmax_scale,
+                    interpret=(jax.default_backend() == "cpu"),
+                )
 
         # Compare outputs.
-        out = fn(q, k, v, composite_bias)
+        out = fn(q, k, v, attention_bias, segment_ids)
         ref_out = ref_fn(q, k, v, attention_bias, segment_ids)
         self.assertNestedAllClose(out, ref_out, atol=0.05)
 
         # Compare grads.
-        grad_out = jax.grad(lambda q, k, v, b: fn(q, k, v, b).mean(), argnums=(0, 1, 2))(
-            q, k, v, composite_bias
+        grad_out = jax.grad(lambda q, k, v, b, s: fn(q, k, v, b, s).mean(), argnums=(0, 1, 2))(
+            q, k, v, attention_bias, segment_ids
         )
         ref_grad_out = jax.grad(
             lambda q, k, v, b, s: ref_fn(q, k, v, b, s).mean(), argnums=(0, 1, 2)
         )(q, k, v, attention_bias, segment_ids)
         self.assertNestedAllClose(grad_out, ref_grad_out, atol=0.05)
+
+        # Check splash attention is used when it should be.
+        if fallback_to_legacy:
+            legacy_flash_wrapper.assert_called()
+        else:
+            legacy_flash_wrapper.assert_not_called()
 
 
 if __name__ == "__main__":
