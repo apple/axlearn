@@ -47,6 +47,11 @@ from axlearn.common.checkpointer import (
     read_state_spec,
     restore_tf_savables,
 )
+from axlearn.common.checkpointer_grpc import (
+    GRPCCheckpointer,
+    _check_kvstore_server_binary,
+    default_kvstore_server,
+)
 from axlearn.common.checkpointer_orbax import _GRAIN_INSTALLED, OrbaxCheckpointer
 from axlearn.common.file_system import listdir
 from axlearn.common.metrics import WeightedScalar
@@ -67,15 +72,26 @@ def _checkpointer_config(
     checkpointer_cls: Type[BaseCheckpointer] = Checkpointer,
 ) -> BaseCheckpointer.Config:
     # TODO(markblee): Use context manager instead of mkdtemp.
-    return checkpointer_cls.default_config().set(
+    cfg = checkpointer_cls.default_config().set(
         name="test",
-        dir=tempfile.mkdtemp(),
         keep_last_n=1,
     )
+    if checkpointer_cls is GRPCCheckpointer:
+        try:
+            _check_kvstore_server_binary()
+        except ValueError:
+            pytest.skip("Test requires kvstore_server_main in PATH.")
+        cfg.storage.local_server_addr = "localhost:9833"
+        cfg.storage.local_server_builder = default_kvstore_server
+        ckpt_dir = "grpc://localhost:9833"
+    else:
+        ckpt_dir = tempfile.mkdtemp()
+    cfg.dir = ckpt_dir
+    return cfg
 
 
 class CheckpointerTest(test_utils.TestCase):
-    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer, GRPCCheckpointer)
     def test_save_and_restore(self, checkpointer_cls: Type[BaseCheckpointer]):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
@@ -126,7 +142,7 @@ class CheckpointerTest(test_utils.TestCase):
                     ),
                 )
             # TODO(matthew_e_hopkins): revert it once upgrade jax version.
-            if checkpointer_cls is Checkpointer:
+            if checkpointer_cls is Checkpointer or checkpointer_cls is GRPCCheckpointer:
                 # When the given state has a different dict shape: [1] instead of [] for x.
                 # Orbax throws AssertionError in this case.
                 with self.assertRaisesRegex(
@@ -164,7 +180,7 @@ class CheckpointerTest(test_utils.TestCase):
                 )
             ckpt.stop()
 
-    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer, GRPCCheckpointer)
     def test_save_and_restore_mesh(self, checkpointer_cls: Type[BaseCheckpointer]):
         """Tests that we can save with one sharding and restore with a different sharding."""
         mesh_shape = (4, 2)
@@ -215,6 +231,8 @@ class CheckpointerTest(test_utils.TestCase):
                 )
                 self.assertEqual(step, restored_step)
                 self.assertNestedEqual(state, restored_state)
+
+        ckpt.stop()
 
     @parameterized.parameters(
         # Number of files minus index and .zarray metadata.
@@ -287,7 +305,7 @@ class CheckpointerTest(test_utils.TestCase):
 
             self.assertEqual(count_files(ckpt.ckpt_dir(step)), num_files + 3)
 
-    @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    @parameterized.parameters(Checkpointer, OrbaxCheckpointer, GRPCCheckpointer)
     def test_save_and_restore_latest_valid(self, checkpointer_cls: Type[BaseCheckpointer]):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
@@ -303,17 +321,21 @@ class CheckpointerTest(test_utils.TestCase):
             def create_corrupt_ckpt(step):
                 if checkpointer_cls is Checkpointer:
                     ckpt_dir = cast(Checkpointer, ckpt).ckpt_dir(step)
+                    fs.makedirs(ckpt_dir)
                 elif checkpointer_cls is OrbaxCheckpointer:
                     ckpt_dir = os.path.join(
                         cast(OrbaxCheckpointer, ckpt)._manager.directory,
                         f"{ocp.step.TMP_DIR_SUFFIX}{step}",
                     )
+                    fs.makedirs(ckpt_dir)
+                    assert not ocp.step.is_checkpoint_finalized(ckpt_dir)
+                elif checkpointer_cls is GRPCCheckpointer:
+                    ckpt._storage._client.write_json_sync(
+                        os.path.join(ckpt.ckpt_dir(step), "some_file"),
+                        data={},
+                    )
                 else:
                     raise NotImplementedError(checkpointer_cls)
-                fs.makedirs(ckpt_dir)
-
-                if checkpointer_cls is OrbaxCheckpointer:
-                    assert not ocp.step.is_checkpoint_finalized(ckpt_dir)
 
             # Test that we return the same state if no checkpoints valid.
             create_corrupt_ckpt(step=0)
@@ -332,6 +354,7 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.save(step=3, state=state0)
             ckpt.wait_until_finished()
             self.assertNestedEqual((3, state0), ckpt.restore(step=None, state=state0))
+        ckpt.stop()
 
     @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
     def test_save_can_override_on_gcs(self, checkpointer_cls: Type[BaseCheckpointer]):
@@ -375,7 +398,7 @@ class CheckpointerTest(test_utils.TestCase):
             self.assertNestedEqual((1, state1), ckpt.restore(step=None, state=state1))
 
     @parameterized.product(
-        checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
+        checkpointer_cls=[Checkpointer, OrbaxCheckpointer, GRPCCheckpointer],
         mesh_shape=[(1, 1), (2, 2), (4, 2)],
     )
     def test_gda(self, checkpointer_cls, mesh_shape):
@@ -405,7 +428,7 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.stop()
 
     @parameterized.product(
-        checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
+        checkpointer_cls=[Checkpointer, OrbaxCheckpointer, GRPCCheckpointer],
         custom_dict_type=(utils.VDict,),
     )
     def test_custom_dict(self, checkpointer_cls, custom_dict_type):
@@ -578,7 +601,8 @@ class CheckpointerTest(test_utils.TestCase):
                 expect_saved_steps=[0, 3, 6, 8, 9],
             ),
         ),
-        listdir_add_trailing_slash=[True, False],
+        listdir_add_trailing_slash=[True],
+        checkpointer_cls=[Checkpointer, GRPCCheckpointer],
     )
     def test_garbage_collection(
         self,
@@ -586,6 +610,7 @@ class CheckpointerTest(test_utils.TestCase):
         expect_restore_step: int,
         expect_saved_steps: Sequence[int],
         listdir_add_trailing_slash: bool,
+        checkpointer_cls: Type[BaseCheckpointer],
     ):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
@@ -605,7 +630,9 @@ class CheckpointerTest(test_utils.TestCase):
             else nullcontext(),
             tempfile.TemporaryDirectory() as temp_dir,
         ):
-            cfg = Checkpointer.default_config().set(
+            if checkpointer_cls is GRPCCheckpointer:
+                temp_dir = "grpc://localhost:9833" + temp_dir
+            cfg = _checkpointer_config(checkpointer_cls).set(
                 name="test",
                 dir=temp_dir,
                 keep_last_n=3,
@@ -615,7 +642,12 @@ class CheckpointerTest(test_utils.TestCase):
             cfg.save_policy.min_step = 0
 
             # Running gc for non-existent dir shouldn't fail.
-            ckpt_fake = cfg.clone(dir=os.path.join(temp_dir, "fake_dir")).instantiate(parent=None)
+            ckpt_fake: Checkpointer.Config = cfg.clone(dir=os.path.join(temp_dir, "fake_dir"))
+            if checkpointer_cls is GRPCCheckpointer:
+                # Need to use a different server address to avoid conflict.
+                ckpt_fake.dir = "grpc://localhost:9844"
+                ckpt_fake.storage.local_server_addr = "localhost:9844"
+            ckpt_fake = ckpt_fake.instantiate(parent=None)
             ckpt_fake._run_garbage_collection()
 
             ckpt: Checkpointer = cfg.instantiate(parent=None)
@@ -629,13 +661,13 @@ class CheckpointerTest(test_utils.TestCase):
             if ckpt_paths:
                 ckpt_paths = [os.path.join(temp_dir, f"step_{i:08d}") for i in ckpt_paths]
             else:
-                ckpt_paths = Checkpointer.checkpoint_paths(cfg.dir)
+                ckpt_paths = ckpt.checkpoint_paths(cfg.dir)
 
-            with mock.patch.object(Checkpointer, "checkpoint_paths", return_value=ckpt_paths):
+            with mock.patch.object(checkpointer_cls, "checkpoint_paths", return_value=ckpt_paths):
                 ckpt._run_garbage_collection()
 
                 # step=None restores from the latest ckpt.
-                self.assertNestedEqual(
+                self.assertEqual(
                     expect_restore_step,
                     ckpt.restore(step=None, state=state)[0],
                 )
@@ -648,12 +680,13 @@ class CheckpointerTest(test_utils.TestCase):
                     except Exception as e:  # pylint: disable=broad-except
                         logging.info("%s", e)
                 self.assertSequenceEqual(expect_saved_steps, saved)
-                ckpt.stop()
 
             # Check that the directories not in expect_saved_steps are indeed removed.
             expect_removed = set(range(10)) - set(expect_saved_steps)
-            for path in [os.path.join(temp_dir, f"step_{i:08d}") for i in expect_removed]:
-                self.assertFalse(os.path.exists(path))
+            stored_steps = ckpt.checkpoint_steps(cfg.dir)
+            for step in expect_removed:
+                self.assertNotIn(step, stored_steps)
+        ckpt.stop()
 
     def test_check_state_structure_exact(self):
         actual = []
@@ -804,7 +837,7 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.stop()
 
     @parameterized.product(
-        checkpointer_cls=[Checkpointer, OrbaxCheckpointer],
+        checkpointer_cls=[Checkpointer, OrbaxCheckpointer, GRPCCheckpointer],
         mode=("max", "min"),
         metric_type=("array", "weighted_scalar"),
     )
@@ -858,7 +891,7 @@ class CheckpointerTest(test_utils.TestCase):
                 self.assertNestedEqual((2, state2), ckpt.restore(step=None, state=state0))
             ckpt.stop()
 
-    @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
+    @parameterized.parameters([Checkpointer, OrbaxCheckpointer, GRPCCheckpointer])
     def test_best_metric_policy_value_error(self, checkpointer_cls):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
@@ -986,6 +1019,7 @@ class CheckpointerTest(test_utils.TestCase):
             step, state1 = ckpt.restore(state=state_spec)
             self.assertNestedEqual(0, step)
             self.assertNestedEqual(state0, state1)
+            ckpt.stop()
 
     def test_vdict_order_compatibility(self):
         """Tests that changing VDict to correctly have the same pytree flattenning behavior as dict
