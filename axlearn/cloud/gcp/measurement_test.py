@@ -111,3 +111,23 @@ class GoodputRecorderTest(parameterized.TestCase):
             with self.assertRaises(Exception):
                 recorder.start_monitoring()
             self.assertIsNone(recorder._monitor)
+
+    def test_non_zero_process_index(self):
+        fv = flags.FlagValues()
+        measurement.define_flags(flag_values=fv)
+        fv.set_default(
+            "recorder_spec",
+            ["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],
+        )
+        fv.mark_as_parsed()
+
+        recorder = GoodputRecorder.from_flags(fv)
+        self.assertIsNone(recorder._monitor)
+
+        with mock.patch("jax.process_index") as mock_process_index:
+            mock_process_index.return_value = 1  # Simulate a non-zero process index
+
+            try:
+                recorder.start_monitoring()
+            except AttributeError:
+                self.fail("AttributeError was raised unexpectedly.")
