@@ -121,6 +121,43 @@ class HostMount(VolumeMount):
     type: str = "Directory"
 
 
+@dataclass
+class _LoadBalancer:
+    """Configures the load balancer which exposes a K8s replicated job.
+        The jobset-controller will take care of creating the load balancer
+        based on the metadata.
+        TODO(liang-he): move the load balancer creation to the Bastion.
+
+    Attributes:
+        service_name: The service name of the load balancer.
+            Default name is <jobset_name>-<replicated_job_name>-service.
+        target_port: The port number of the container which the load
+            balancer targets.
+        port: The port number of the load balancer.
+    """
+
+    def __init__(
+        self, *, jobset_name: str, replicated_job_name: str, target_port: int = 9000, port: int = 80
+    ):
+        """
+        Initializes a LoadBalancer instance.
+
+        Args:
+            jobset_name: Name of the jobset.
+            replicated_job_name: Name of the replicated job.
+            target_port: The container port the load balancer targets. Defaults to 9000.
+            port: The load balancer's exposed port. Defaults to 80.
+        """
+        self.service_name = f"{jobset_name}-{replicated_job_name}-service"
+        self.target_port = target_port
+        self.port = port
+        self.metadata = {
+            "axlearn/replicatedjob-load-balancer-service-name": self.service_name,
+            "axlearn/replicatedjob-load-balancer-target-port": str(self.target_port),
+            "axlearn/replicatedjob-load-balancer-port": str(self.port),
+        }
+
+
 # TODO(markblee): Support a CompositeReplicatedJob, which takes multiple replicated jobs and
 # concatenates their outputs.
 class BaseReplicatedJob(FlagConfigurable):
@@ -236,6 +273,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
                          This is managed by jobset controller.
                       3. For TPU slice, this requires alpha.jobset.sigs.k8s.io/exclusive-topology
                       4. [2024-11-11] Does not work on multi-slice TPU training yet.
+            replicated_job_name: Name of the replicated job. Default value is "job".
         """
 
         reservation: Optional[str] = None
@@ -243,6 +281,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
         priority_class: Optional[str] = None
+        replicated_job_name: str = "job"
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -277,6 +316,9 @@ class TPUReplicatedJob(BaseReplicatedJob):
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
+        self._load_balancer = _LoadBalancer(
+            jobset_name=cfg.name, replicated_job_name=cfg.replicated_job_name
+        )
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
@@ -335,6 +377,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
                 dict(containerPort=8471),  # Port using which TPU VMs communicate.
                 dict(containerPort=8080),  # Port for MXLA coordinator.
                 dict(containerPort=8431),  # Port to export TPU runtime metrics.
+                dict(containerPort=self._load_balancer.target_port),  # Port for load balancer.
             ],
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
@@ -571,6 +614,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
         cfg: TPUReplicatedJob.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         job_spec = dict(
+            metadata=dict(annotations=self._load_balancer.metadata),
             spec=dict(
                 parallelism=system.vms_per_slice,
                 completions=system.vms_per_slice,
@@ -579,7 +623,13 @@ class TPUReplicatedJob(BaseReplicatedJob):
             ),
         )
         # NOTE: the suffix here impacts how long job names can be.
-        return [dict(name="job", replicas=cfg.accelerator.num_replicas, template=job_spec)]
+        return [
+            dict(
+                name=cfg.replicated_job_name,
+                replicas=cfg.accelerator.num_replicas,
+                template=job_spec,
+            )
+        ]
 
 
 # TODO(markblee): Generalize this to support different GPU types without different classes.

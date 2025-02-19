@@ -31,6 +31,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     AcceleratorConfig,
     GCSFuseMount,
     HostMount,
+    _LoadBalancer,
 )
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
@@ -370,6 +371,35 @@ class TPUReplicatedJobTest(TestCase):
             else:
                 self.assertEqual(pod_spec.get("priorityClassName", None), priority_class)
 
+    def test_replicated_job(self):
+        with (
+            self._job_config(
+                CloudBuildBundler,
+            ) as (cfg, bundler_cfg),
+        ):
+            replicated_job: jobset_utils.TPUReplicatedJob = cfg.set(
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+                replicated_job_name="replicatedJob",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            job_spec = replicated_job()[0]["template"]
+            annotations = job_spec["metadata"]["annotations"]
+            # Annotation to create load balancer.
+            self.assertEqual(
+                "test-replicatedJob-service",
+                annotations.get("axlearn/replicatedjob-load-balancer-service-name", {}),
+            )
+            self.assertEqual(
+                "9000",
+                annotations.get("axlearn/replicatedjob-load-balancer-target-port", {}),
+            )
+            self.assertEqual(
+                "80",
+                annotations.get("axlearn/replicatedjob-load-balancer-port", {}),
+            )
+
     def test_mount_dataclass(self):
         # pylint: disable=missing-kwoa
         # pytype: disable=missing-parameter
@@ -384,6 +414,18 @@ class TPUReplicatedJobTest(TestCase):
         m = HostMount(mount_path="test", name="test", host_path="test")
         # pytype: enable=missing-parameter
         self.assertEqual(m.read_only, False)
+
+    def test_load_balancer_class(self):
+        lb1 = _LoadBalancer(jobset_name="jobset1", replicated_job_name="job1")
+        self.assertEqual(lb1.service_name, "jobset1-job1-service")
+        self.assertEqual(lb1.target_port, 9000)
+        self.assertEqual(lb1.port, 80)
+        lb2 = _LoadBalancer(
+            jobset_name="jobset1", replicated_job_name="job2", target_port=8080, port=443
+        )
+        self.assertEqual(lb2.service_name, "jobset1-job2-service")
+        self.assertEqual(lb2.target_port, 8080)
+        self.assertEqual(lb2.port, 443)
 
 
 class A3ReplicatedJobTest(TestCase):
