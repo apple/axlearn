@@ -214,9 +214,7 @@ class LoraFusedQKVLinearTest(TestCase):
         )
 
         # Expect the same output due to zero initialization of one of the LoRA weights.
-        assert_allclose(outputs.query, ref_outputs.query)
-        assert_allclose(outputs.key, ref_outputs.key)
-        assert_allclose(outputs.value, ref_outputs.value)
+        assert_allclose(outputs, ref_outputs)
 
     @parameterized.product(
         layer=(
@@ -260,12 +258,12 @@ class LoraFusedQKVLinearTest(TestCase):
             prng_key=jax.random.PRNGKey(456),
             inputs=(inputs,),
         )
-        q_proj, k_proj, v_proj = outputs.query, outputs.key, outputs.value
+        q_proj, k_proj, v_proj = outputs
         forward_outputs = jnp.stack([q_proj, k_proj, v_proj])
 
         initial_cache_state, init_output = layer.init_states(
             time_step=None,
-            query=TensorSpec([batch_size, seq_len], dtype=jnp.float32),
+            query=TensorSpec([batch_size, seq_len]),
         )
         self.assertIsNone(init_output)
 
@@ -282,7 +280,7 @@ class LoraFusedQKVLinearTest(TestCase):
                 method="extend_step",
             )
             decoder_inputs["cached_states"] = updated_states
-            q_proj, k_proj, v_proj = outputs.query, outputs.key, outputs.value
+            q_proj, k_proj, v_proj = outputs
             k_proj = jnp.expand_dims(k_proj[:, t, :, :], axis=1)
             v_proj = jnp.expand_dims(v_proj[:, t, :, :], axis=1)
 
@@ -356,7 +354,7 @@ class LoraFusedQKVLinearTest(TestCase):
                 method="extend_step",
             )
             decoder_inputs["cached_states"] = updated_states
-            q_proj = outputs.query
+            q_proj, _, _ = outputs
 
             # [batch, tgt_len, 1, 1].
             oh_indices = jax.nn.one_hot(time_step, seq_len)[:, :, None, None]

@@ -53,11 +53,7 @@ from axlearn.common.decoder import Decoder
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
-from axlearn.common.flash_attention.layer import (
-    FlashAttention,
-    default_mha_dim_to_partition_spec,
-    default_output_dim_to_partition_spec,
-)
+from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
 from axlearn.common.optimizer_base import PartitionedGradientTransformation
@@ -96,8 +92,15 @@ def flash_attention_config() -> FlashAttention.Config:
     """Builds a FlashAttention config with sharding config."""
     return FlashAttention.default_config().set(
         causal=True,
-        mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(MESH_AXIS_NAMES),
-        output_dim_to_partition_spec=default_output_dim_to_partition_spec(MESH_AXIS_NAMES),
+        mha_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bsnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), None, None, None),
+        },
+        output_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), "seq", "model", None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), "model", "seq", None),
+        },
     )
 
 
@@ -275,9 +278,6 @@ def model_config(
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if issubclass(stack_cfg.klass, (RepeatedTransformerLayer, StackedTransformerLayer)):
         update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
-    emb_cfg.token_emb.param_partition_spec = ("fsdp", "model")
-    if lm_head_cfg is not None:
-        lm_head_cfg.param_partition_spec = ("fsdp", "model")
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(

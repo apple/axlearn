@@ -205,7 +205,7 @@ class WindowedAttention(MultiheadAttention):
         cfg = self.config
         batch, height, width, _ = query.shape
         query = jnp.reshape(query, (batch, height * width, -1))
-        q_proj, k_proj, v_proj, unused_q_pos, unused_k_pos = self.i_proj(
+        q_proj, k_proj, v_proj = self.i_proj(
             query, key=key, value=value, query_positions=query_positions
         )
         q_proj = self._remat_name(q_proj, "q_proj")

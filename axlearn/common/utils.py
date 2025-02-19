@@ -52,7 +52,7 @@ Nested = Union[_NestedT, dict[str, "Nested[_NestedT]"]]
 
 Tensor = jax.Array
 NestedTree = Union[Any, dict[str, Any]]
-NestedTensor = Union[Tensor, dict[str, Any]]  # DEPRECATED, use Nested[Tensor].
+NestedTensor = Union[Tensor, dict[str, Any]]
 NestedPartitionSpec = Optional[Union[PartitionSpec, dict[str, Any]]]
 
 # The device mesh shape in the form of a tuple of ints.

@@ -495,7 +495,7 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         qkv_proj_cfg.value_dim = cfg.value_dim
         qkv_proj_cfg.num_heads = cfg.num_heads
         qkv_proj_cfg.per_head_dim = cfg.per_head_dim
-        qkv_proj_cfg.kv_cache = cfg.kv_cache
+        qkv_proj_cfg.cache_dtype = cfg.cache_dtype
         self._add_child("layer", qkv_proj_cfg)
         self._add_child(
             "adapter",
@@ -525,8 +525,8 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         else:
             raise ValueError("Key and value should be both None in LoraFusedQKVLinear.")
 
-        q_proj, k_proj, v_proj, query_positions, key_positions = self.layer(
-            query, query_positions=query_positions, key=key, value=value, kv_state=kv_state
+        q_proj, k_proj, v_proj = self.layer(
+            query, key=key, value=value, kv_state=kv_state, query_positions=query_positions
         )
         adapter_outputs = self.adapter(inputs)
 
@@ -542,10 +542,4 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         if cfg.adapter.enable_lora["value"]:
             v_proj = v_proj + adapter_outputs[index]
 
-        return self.Output(
-            query=q_proj,
-            key=k_proj,
-            value=v_proj,
-            query_positions=query_positions,
-            key_positions=key_positions,
-        )
+        return self.Output(query=q_proj, key=k_proj, value=v_proj)

@@ -8,8 +8,8 @@ import jax
 import jax.ad_checkpoint
 import jax.numpy as jnp
 import numpy as np
+from absl import logging
 from jax import lax
-from jax._src.mesh import thread_resources
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 from jax.experimental.pallas.ops.tpu.flash_attention import (
@@ -31,51 +31,21 @@ from jax.experimental.pallas.ops.tpu.splash_attention import (
     splash_attention_kernel,
     splash_attention_mask,
 )
-from jax.sharding import NamedSharding
-from jax.sharding import PartitionSpec as P
 
 from axlearn.common.attention import apply_attention_logit_biases
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     MaskFnAttentionBias,
-    SegmentIdAttentionBias,
-    SlidingWindowAttentionBias,
     ZeroAttentionBias,
     as_attention_bias,
-    split,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
-from axlearn.common.flash_attention.types import FlashAttentionShardMapSpecs
 from axlearn.common.utils import Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
 
 
-def _tpu_flash_arg_check(*, query: Tensor, key: Tensor, value: Tensor, block_size: int):
-    head_dim = query.shape[-1]
-
-    if head_dim != key.shape[-1]:
-        raise ValueError(
-            f"Per-head dimension of query doesn't equal that of key: "
-            f"{head_dim} != {key.shape[-1]}"
-        )
-    if head_dim != value.shape[-1]:
-        raise ValueError(
-            f"Per-head dimension of query doesn't equal that of value: "
-            f"{head_dim} != {value.shape[-1]}"
-        )
-
-    if query.shape[-3] % block_size != 0:
-        raise ValueError(
-            f"Target seq len {query.shape[-3]} must be divisible by block size {block_size}."
-        )
-    if key.shape[-3] % block_size != 0:
-        raise ValueError(
-            f"Source seq len {key.shape[-3]} must be divisible by block size {block_size}."
-        )
-
-
-def legacy_tpu_flash_attention(
+def tpu_flash_attention(
     query: Tensor,  # [batch_size, target_len, num_heads, head_dim]
     key: Tensor,  # [batch_size, source_len, num_heads, head_dim]
     value: Tensor,  # [batch_size, source_len, num_heads, head_dim]
@@ -104,7 +74,8 @@ def legacy_tpu_flash_attention(
         bias: The attention biases, can broadcast to shape
             [batch_size, num_heads, target_len, source_len].
         segment_ids: The id of which segment each token belongs to. Attention is not computed
-            between tokens in different segments. Shape: [batch_size, target_len].
+             between tokens in different segments.
+             Shape:  [batch_size, target_len].
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         softmax_scale: A scaling factor applied to the query.
         block_size: The block size to use for chunking data in the kernel.
@@ -114,15 +85,37 @@ def legacy_tpu_flash_attention(
         The context tensor, of shape [batch_size, target_len, num_heads, head_dim].
 
     Raises:
+        NotImplementedError: If no implementation with support for the arguments is found.
         ValueError: If the head_dim of the query, key, and value are not all equal.
-        ValueError: If the target or source sequence length is not divisible by block_size.
+        ValueError: if the target or source sequence length is not divisible by block_size.`
     """
-    _tpu_flash_arg_check(query=query, key=key, value=value, block_size=block_size)
     if segment_ids is not None:
         assert query.shape[1] == key.shape[1] and query.shape[1] == value.shape[1]
     # Apply the softmax scale outside the kernel (see docstring for why).
     if softmax_scale != 1.0:
         query *= softmax_scale
+
+    head_dim = query.shape[3]
+
+    if head_dim != key.shape[3]:
+        raise ValueError(
+            f"Per-head dimension of query doesn't equal that of key: "
+            f"{head_dim} != {key.shape[3]}"
+        )
+    if head_dim != value.shape[3]:
+        raise ValueError(
+            f"Per-head dimension of query doesn't equal that of value: "
+            f"{head_dim} != {value.shape[3]}"
+        )
+
+    if query.shape[1] % block_size != 0:
+        raise ValueError(
+            f"Target seq len {query.shape[1]} must be divisible by block size {block_size}."
+        )
+    if key.shape[1] % block_size != 0:
+        raise ValueError(
+            f"Source seq len {key.shape[1]} must be divisible by block size {block_size}."
+        )
 
     mask: MaskFnOrZero = as_attention_bias(mask)
 
@@ -130,21 +123,114 @@ def legacy_tpu_flash_attention(
     query = jnp.einsum("btnh->bnth", query)
     key = jnp.einsum("bsnh->bnsh", key)
     value = jnp.einsum("bsnh->bnsh", value)
-    # TODO(tom_gunter): See if we can do better block-size tuning.
-    block_sizes = LegacyBlockSizes(
-        block_q=block_size,
-        block_k_major=block_size,
-        block_k=block_size,
-        block_b=1,
-        block_q_major_dkv=block_size,
-        block_k_major_dkv=block_size,
-        block_k_dkv=block_size,
-        block_q_dkv=block_size,
-        block_k_major_dq=block_size,
-        block_k_dq=block_size,
-        block_q_dq=block_size,
-    )
+    try:
+        check_tpu_splash_attention(
+            target_len=query.shape[2],
+            source_len=key.shape[2],
+            head_dim=query.shape[3],
+            mask=mask,
+            has_segment_ids=(segment_ids is not None),
+            has_bias=(bias is not None),
+        )
+        block_sizes = splash_attention_kernel.BlockSizes(
+            block_q=block_size,
+            block_kv=block_size,
+            block_kv_compute=block_size,
+            block_q_dkv=block_size,
+            block_kv_dkv=block_size,
+            block_kv_dkv_compute=block_size,
+            # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
+            # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
+            # and 1.14x in 539.5b.
+            use_fused_bwd_kernel=True,
+        )
+        context = _tpu_splash_attention(
+            query,
+            key,
+            value,
+            mask=mask,
+            segment_ids=segment_ids,
+            block_sizes=block_sizes,
+            interpret=interpret,
+        )
+        logging.info("Using SplashAttention.")
+    except SplashAttentionUnsupportedError as e:
+        # TODO(tom_gunter): See if we can do better block-size tuning.
+        block_sizes = LegacyBlockSizes(
+            block_q=block_size,
+            block_k_major=block_size,
+            block_k=block_size,
+            block_b=1,
+            block_q_major_dkv=block_size,
+            block_k_major_dkv=block_size,
+            block_k_dkv=block_size,
+            block_q_dkv=block_size,
+            block_k_major_dq=block_size,
+            block_k_dq=block_size,
+            block_q_dq=block_size,
+        )
+        context = _legacy_tpu_flash_attention(
+            query,
+            key,
+            value,
+            bias,
+            segment_ids=segment_ids,
+            mask=mask,
+            block_sizes=block_sizes,
+            interpret=interpret,
+        )
+        logging.warning(
+            "Falling back to legacy flash attention because SplashAttention is not supported.\n"
+            "Reason: %s",
+            e,
+        )
 
+    # Restore num_heads and seq_len axes.
+    return jnp.einsum("bnth->btnh", context)
+
+
+@functools.partial(
+    jax.jit,
+    static_argnames=[
+        "mask",  # Mask objects don't actually contain jax arrays, so they are static.
+        "block_sizes",
+        "interpret",
+    ],
+)
+def _legacy_tpu_flash_attention(
+    query: Tensor,  # [batch_size, num_heads, target_len, head_dim]
+    key: Tensor,  # [batch_size, num_heads, source_len, head_dim]
+    value: Tensor,  # [batch_size, num_heads, source_len, head_dim]
+    bias: Tensor = None,  # [batch_size, num_heads, target_len, source_len]
+    segment_ids: Tensor = None,  # [batch_size, target_len]
+    *,
+    mask: MaskFnOrZero,
+    block_sizes: Optional[LegacyBlockSizes] = None,
+    interpret: bool = False,
+) -> Tensor:  # [batch_size, num_heads, target_len, head_dim].
+    """Wraps JAX's legacy TPU flash-attention.
+
+    If provided, bias, segment_ids, and mask are applied on top of one another.
+
+    Args:
+        query: The query tensor, of shape [batch_size, num_heads, target_len, head_dim].
+        key: The key tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        value: The value tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        bias: The attention biases, of shape [batch_size, num_heads, target_len, source_len].
+        segment_ids: The id of which segment each token belongs to. Attention is not computed
+             between tokens in different segments.
+             Shape:  [batch_size, target_len].
+        mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
+        block_sizes: An object containing values that can be used to tune the performance
+            such as the block size to chunk things into.
+        interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
+
+    Returns:
+        The context tensor, of shape [batch_size, num_heads, target_len, head_dim].
+
+    Raises:
+        NotImplementedError: If a custom (non-causal, non-full) mask is specified.
+    """
     causal = isinstance(mask, CausalAttentionBias)
     if not causal and mask.has_value():
         bias = apply_attention_logit_biases(mask.value(), bias)
@@ -163,11 +249,62 @@ def legacy_tpu_flash_attention(
         interpret=interpret,
     )
 
-    return jnp.einsum("bnth->btnh", context)
+    return context
 
 
 class SplashAttentionUnsupportedError(NotImplementedError):
     """An error indicating splash attention is not supported."""
+
+
+def check_tpu_splash_attention(
+    *,
+    target_len: int,
+    source_len: int,
+    head_dim: int,
+    mask: MaskFnOrZero,
+    has_segment_ids: bool = False,
+    has_bias: bool = False,
+):
+    """Checks if splash attention is supported on TPU for the given arguments.
+
+    Args:
+        target_len: The length of the target sequence.
+        source_len: The length of the source sequence.
+        head_dim: The dimension of each head.
+        mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
+        has_segment_ids: Whether segment_ids is None or not.
+        has_bias: Whether attention involves a bias.
+
+    Raises:
+        SplashAttentionUnsupportedError: If splash attention is not supported for the given
+            arguments.
+    """
+    if has_bias:
+        raise SplashAttentionUnsupportedError("SplashAttention does not support specifying a bias.")
+    with jax.ensure_compile_time_eval():
+        if jnp.any(
+            jnp.asarray([target_len, source_len, head_dim]) % splash_attention_kernel.NUM_LANES != 0
+        ):
+            raise SplashAttentionUnsupportedError(
+                "SplashAttention requires target_len, source_len, head_dim are divisible by"
+                f" {splash_attention_kernel.NUM_LANES}, got {target_len, source_len, head_dim}."
+            )
+    if has_segment_ids:
+        raise SplashAttentionUnsupportedError(
+            "The public API for SplashAttention that we "
+            "currently use does not support segment ids."
+        )
+    if mask.has_value():
+        assert isinstance(mask, MaskFnAttentionBias)
+        if target_len != source_len:
+            raise SplashAttentionUnsupportedError(
+                "Query and key/value must have same length when mask is used."
+            )
+        if isinstance(mask.target_positions, jax.core.Tracer):
+            raise SplashAttentionUnsupportedError(
+                "Non-static value of `target_positions` is not supported.\n"
+                "Are you decoding using SplashAttention? That's not supported."
+            )
 
 
 def _to_splash_mask(
@@ -182,8 +319,10 @@ def _to_splash_mask(
     assert isinstance(mask, MaskFnAttentionBias)
     if isinstance(mask, CausalAttentionBias):
         return splash_attention_mask.CausalMask(shape=mask_shape, shard_count=q_seq_shards)
-    if isinstance(mask, SlidingWindowAttentionBias):
-        left_size = mask.left_context
+    if hasattr(mask.mask, "_sliding_window_size"):
+        # TODO(dhwang2): introduce SlidingWindowAttentionBias instead of "_sliding_window_size".
+        # This is set in sliding_window_causal_mask().
+        left_size = getattr(mask.mask, "_sliding_window_size")
         return splash_attention_mask.LocalMask(
             shape=mask_shape, window_size=(left_size, 0), offset=0, shard_count=q_seq_shards
         )
@@ -199,138 +338,64 @@ def _to_splash_mask(
     return splash_attention_mask.NumpyMask(array=mask_array)
 
 
-def make_tpu_splash_attention(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
+@functools.partial(
+    jax.jit,
+    static_argnames=["block_sizes", "interpret"],
+)
+def _tpu_splash_attention(
+    query: Tensor,  # [batch_size, num_heads, target_len, head_dim]
+    key: Tensor,  # [batch_size, num_heads, source_len, head_dim]
+    value: Tensor,  # [batch_size, num_heads, source_len, head_dim]
     *,
     mask: MaskFnOrZero,
-    softmax_scale: float,
-    block_size: int = 128,
+    segment_ids: Optional[Tensor] = None,  # [batch_size, target_len]
+    block_sizes: Optional[splash_attention_kernel.BlockSizes] = None,
     interpret: bool = False,
-) -> FlashAttentionShardMapSpecs:
+) -> Tensor:  # [batch_size, num_heads, target_len, head_dim].
     """Wraps JAX's sparse TPU flash-attention.
 
     Args:
-        query: The query tensor, of shape [batch_size, target_len, num_heads, head_dim].
-        key: The key tensor, of shape [batch_size, source_len, num_heads, head_dim].
-        value: The value tensor, of shape [batch_size, source_len, num_heads, head_dim].
-        mask: The mask to apply. Support masks are `MaskFnAttentionBias` and
-            `SegmentIdAttentionBias`. Does not support explicit bias.
-        block_size: An integer block size for performance tuning.
+        query: The query tensor, of shape [batch_size, num_heads, target_len, head_dim].
+        key: The key tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        value: The value tensor, of shape [batch_size, num_heads, source_len, head_dim].
+        mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
+        segment_ids: The id of which segment each token belongs to. Attention is not computed
+            between tokens in different segments, [batch_size, target_len].
+        block_sizes: An object containing values that can be used to tune the performance
+            such as the block size to chunk things into.
         interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
 
     Returns:
-        A `FlashAttentionShardMapSpecs`. See the docstring of `FlashAttentionShardMapSpecs`
+        The context tensor, of shape [batch_size, num_heads, target_len, head_dim].
 
     Raises:
-        SplashAttentionUnsupportedError: If splash attention is not supported for the given
-            arguments.
-        ValueError: If the head_dim of the query, key, and value are not all equal.
-        ValueError: If the target or source sequence length is not divisible by block_size.
+        SplashAttentionUnsupportedError: If splash attention does not support the given arguments.
+            This happens if any of the following is true:
+            - bias is not None.
+            - The per_head_dim is not divisible by 128.
+            - segment_ids is not None.
+            - The source and target lengths are different and a nonzero mask is used.
+        TypeError: If mask is not an instance of `MaskFnAttentionBias.
     """
-    target_len = query.shape[1]
-    source_len = key.shape[1]
-    head_dim = query.shape[3]
 
-    mask, _, explicit_bias = split(mask, MaskFnAttentionBias, SegmentIdAttentionBias)
-    if explicit_bias.has_value():
-        raise SplashAttentionUnsupportedError("SplashAttention does not support specifying a bias.")
-    with jax.ensure_compile_time_eval():
-        if jnp.any(
-            jnp.asarray([target_len, source_len, head_dim]) % splash_attention_kernel.NUM_LANES != 0
-        ):
-            raise SplashAttentionUnsupportedError(
-                "SplashAttention requires target_len, source_len, head_dim are divisible by"
-                f" {splash_attention_kernel.NUM_LANES}, got {target_len, source_len, head_dim}."
-            )
-    if mask.has_value():
-        assert isinstance(mask, MaskFnAttentionBias)
-
-    _tpu_flash_arg_check(query=query, key=key, value=value, block_size=block_size)
-
-    num_heads = query.shape[2]
-    mask_shape = (target_len, source_len)
+    # TODO(dhwang2): splash attention can support segment_ids. Support it when needed.
+    del segment_ids
+    num_heads = query.shape[1]
+    mask_shape = (query.shape[2], key.shape[2])
     splash_mask = _to_splash_mask(mask, mask_shape=mask_shape)
-    mesh = thread_resources.env.physical_mesh
-    if "seq" in mesh.shape:
-        sharding = NamedSharding(mesh, P(None, "seq"))
-        q_seq_shards = sharding.mesh.shape["seq"]
-    else:
-        sharding = NamedSharding(mesh, P(None, None))
-        q_seq_shards = 1
+
     kernel = splash_attention_kernel.make_splash_mha(
         mask=splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads),
-        block_sizes=splash_attention_kernel.BlockSizes(
-            block_q=block_size,
-            block_kv=block_size,
-            block_kv_compute=block_size,
-            block_q_dkv=block_size,
-            block_kv_dkv=block_size,
-            block_kv_dkv_compute=block_size,
-            # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
-            # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
-            # and 1.14x in 539.5b.
-            use_fused_bwd_kernel=True,
-        ),
+        block_sizes=block_sizes,
+        # TODO(dhwang2): support "seq" and "model" shard.
         head_shards=1,
-        q_seq_shards=q_seq_shards,
+        q_seq_shards=1,
         interpret=interpret,
         residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
     )
-    # args contains fwd_mask_info, dq_mask_info and dkv_mask_info, corresponding to the first three
-    # positional arguments to `splash_attention_kernel._splash_attention`.
-    args, kwargs = kernel.tree_flatten()
-    specs, _ = kernel.manual_sharding_spec(sharding).tree_flatten()
-
-    def shard_map_fn(q_proj, k_proj, v_proj, bias, _, *args):
-        assert len(args) == 3
-        if softmax_scale != 1.0:
-            q_proj *= softmax_scale
-        _, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
-        # Note: we cannot pass bias to vmap directly since it's possible that not all its tensors
-        # have the same batch dimension, which is required by vmap. For example, `target_positions`
-        # and `source_positions` from MaskFnAttentionBias may have batch dim == 1. Therefore, we
-        # extract the info we need from bias that pass that to vmap instead.
-        seg_ids = None
-        if hasattr(segment_ids, "segment_ids"):
-            seg_ids = segment_ids.segment_ids
-        return jax.vmap(vmap_fn, in_axes=(0, 0, 0, 0) + (None,) * 3)(
-            q_proj, k_proj, v_proj, seg_ids, *args
-        )
-
-    def vmap_fn(q_proj, k_proj, v_proj, kv_seg_ids, *args):
-        if kv_seg_ids is None:
-            seg_ids = None
-        else:
-            # SplashAttention requires q_seg_ids to have the same sequence length q_proj and
-            # kv_seg_ids to have the same sequence length as k|v_proj. Therefore, we pass in a
-            # segment id that's not sharded in the sequence dimension, and manually slice the
-            # sequence dim to populate q_seg_ids.
-            if q_seq_shards == 1:
-                q_shard_idx = 0
-            else:
-                q_shard_idx = jax.lax.axis_index("seq")
-            q_shard_size = kv_seg_ids.shape[0] // q_seq_shards
-            q_seq_ids = jax.lax.dynamic_slice_in_dim(
-                kv_seg_ids, q_shard_idx * q_shard_size, q_shard_size
-            )
-            seg_ids = splash_attention_kernel.SegmentIds(q_seq_ids, kv_seg_ids)
-
-        q_proj = jnp.einsum("tnh->nth", q_proj)
-        k_proj = jnp.einsum("snh->nsh", k_proj)
-        v_proj = jnp.einsum("snh->nsh", v_proj)
-        # pylint: disable-next=missing-kwoa,protected-access
-        out = splash_attention_kernel._splash_attention(
-            *args, q_proj, k_proj, v_proj, seg_ids, **kwargs
-        )
-        return jnp.einsum("nth->tnh", out)
-
-    return FlashAttentionShardMapSpecs(
-        fn=shard_map_fn,
-        additional_in_specs=specs,
-        additional_args=args,
-    )
+    kernel = jax.vmap(kernel)
+    context = kernel(q=query, k=key, v=value)
+    return context
 
 
 # The following code is adapted from jax-ml/jax:
