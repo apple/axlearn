@@ -701,6 +701,12 @@ def sliding_window_causal_mask(sliding_window_size: int) -> MaskFn:
     """Returns a causal MaskFn for sliding window attentions of a given window size.
 
     Implements the `MaskFn` protocol.
+
+    Note: Setting sliding_window_size = 8 results in attending to 9 tokens - it attends to itself
+    and sliding_window_size tokens to the left.
+
+    Args:
+        sliding_window_size: Left context of sliding window mask.
     """
 
     def mask(query_position: Tensor, key_position: Tensor):
@@ -730,8 +736,12 @@ def make_causal_biases(seq_len: int) -> Tensor:
 def make_sliding_window_causal_biases(seq_len: int, sliding_window_size: int) -> Tensor:
     """Generates attention logit biases for sliding window attention.
 
+    Note: Setting sliding_window_size = 8 results in attending to 9 tokens - it attends to itself
+    and sliding_window_size tokens to the left.
+
     Args:
         seq_len: Sequence length.
+        sliding_window_size: Left context of sliding window mask.
 
     Returns:
         A float tensor of shape [seq_len, seq_len] where the value at [i, j] = -inf
