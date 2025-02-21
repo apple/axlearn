@@ -5,6 +5,7 @@
 Some tests are intended to be run on TPU.
 """
 
+import asyncio
 import os
 import queue
 import re
@@ -772,6 +773,7 @@ class CheckpointerTest(test_utils.TestCase):
         run_thread.start()
         run_thread.join()
         self.assertFalse(ckpt._gc_stopping.is_set())
+
         ckpt.stop()  # Stop it explicitly, otherwise test will run forever.
 
         def run_in_context():
@@ -1135,6 +1137,49 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                     ),
                 )
 
+    @parameterized.parameters(jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16)
+    def test_save_and_restore_from_dir_async(self, restore_floats_as: jnp.dtype):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+
+        def make_state(float_dtype):
+            return dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=float_dtype))
+
+        with _mesh(mesh_shape):
+            state = make_state(float_dtype=jnp.float32)
+            storage = TensorStoreStateStorage.default_config().instantiate()
+            with tempfile.TemporaryDirectory() as root_dir:
+                step = 1000
+                # Save ckpt.
+                final_dir = os.path.join(root_dir, f"step_{step:08d}")
+
+                async def save():
+                    storage.save_to_dir(step=step, state=state, ckpt_dir=final_dir)
+                    storage.wait_until_finished()
+
+                asyncio.run(save())
+
+                async def restore():
+                    # Successfully restores with different dtypes.
+                    restored_state = storage.restore_from_dir(
+                        step,
+                        state=make_state(float_dtype=restore_floats_as),
+                        ckpt_dir=final_dir,
+                        validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
+                    )
+                    return restored_state
+
+                restored_state = asyncio.run(restore())
+                self.assertNestedEqual(
+                    restored_state,
+                    (
+                        state
+                        if restore_floats_as is None
+                        else make_state(float_dtype=restore_floats_as)
+                    ),
+                )
+
     def test_save_to_dir_async(self):
         """Tests that serialization happens async."""
         mesh_shape = (1, 1)
@@ -1204,7 +1249,7 @@ class TfIteratorTest(test_utils.TestCase):
                 prev_it = it
                 # Manually increase the delay of executor to test `it` mutation after
                 # call to async_save_tf_savables doesn't affect saving.
-                blocker = executor.submit(lambda: time.sleep(2))
+                blocker = executor.submit(lambda: time.sleep(1))
                 f = async_save_tf_savables({"it": it}, executor=executor, dir=ckpt_path)
                 next(it)  # modify it in place
                 it = iter(ds)  # reset `it`.
