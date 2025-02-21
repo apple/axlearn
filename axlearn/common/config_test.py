@@ -516,6 +516,17 @@ class ConfigTest(parameterized.TestCase):
 
         self.assertEqual(param_shapes(layer1), param_shapes(layer2))
 
+    def test_class_with_tensor_fields(self):
+        @dataclasses.dataclass
+        class Bias:
+            shape: tuple[int, ...]
+            positions: Optional[np.ndarray] = None
+
+        cfg = config.config_for_class(Bias).set(shape=[1, 2])
+        positions = np.asarray([0, 1])
+        bias = cfg.instantiate(positions=positions)
+        np.testing.assert_array_equal(bias.positions, positions)
+
     def test_instantiable_config_from_function_signature(self):
         def load(name: str, *, split: Optional[str] = None, download: bool = True):
             del name, split, download
@@ -549,8 +560,8 @@ class ConfigTest(parameterized.TestCase):
         cfg.var_kwargs = {"a": 1, "b": 2}
         self.assertEqual(cfg.var_kwargs, cfg.instantiate())
 
-        with self.assertRaisesRegex(ValueError, "already specified"):
-            self.assertEqual(cfg.var_kwargs, cfg.instantiate(a=3))
+        # Override the value of 'a' during instantiate().
+        self.assertEqual({"a": 3, "b": 2}, cfg.instantiate(a=3))
 
     @parameterized.parameters(
         # Test some basic cases.

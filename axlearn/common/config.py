@@ -823,13 +823,11 @@ def _attr_field_from_signature_param(param: inspect.Parameter) -> attr.Attribute
 def _prepare_args_and_kwargs(
     kwargs: dict[str, Any], *, sig: inspect.Signature, cfg: InstantiableConfig
 ) -> list:
-    """Fills `kwargs` and `args` with values from `cfg` according to `sig` and returns `args`."""
-    args = []
+    """Fills `kwargs` and `args` with values from `cfg` according to `sig` and returns `args`.
 
-    def insert_to_kwargs(k, v):
-        if k in kwargs:
-            raise ValueError(f"{k} is already specified: {v} vs. {kwargs[k]}")
-        kwargs[k] = v
+    If a value is already set in `kwargs`, does not override it with the value from `cfg`.
+    """
+    args = []
 
     for name, param in sig.parameters.items():
         if name == "self":
@@ -839,12 +837,12 @@ def _prepare_args_and_kwargs(
             args = value
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
             for k, v in value.items():
-                insert_to_kwargs(k, v)
+                kwargs.setdefault(k, v)
         elif param.kind in (
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.KEYWORD_ONLY,
         ):
-            insert_to_kwargs(name, value)
+            kwargs.setdefault(name, value)
         else:
             raise NotImplementedError(f"Unsupported param kind {param.kind}: {name}")
 
@@ -860,6 +858,10 @@ class FunctionConfigBase(InstantiableConfig[T]):
     fn: Callable[..., T]
 
     def instantiate(self, **kwargs) -> T:
+        """Invokes fn.
+
+        The values specified in **kwargs take precedence over those set in the config.
+        """
         _validate_required_fields(self)
         args = _prepare_args_and_kwargs(kwargs, sig=inspect.signature(self.fn), cfg=self)
         return self.fn(*args, **kwargs)
@@ -924,6 +926,10 @@ class ClassConfigBase(InstantiableConfig[T]):
     klass: type[T]
 
     def instantiate(self, **kwargs) -> T:
+        """Instantiates an instance of `T`.
+
+        The field values specified in **kwargs take precedence over those set in the config.
+        """
         _validate_required_fields(self)
         args = _prepare_args_and_kwargs(
             kwargs, sig=inspect.signature(self.klass.__init__), cfg=self
