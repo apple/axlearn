@@ -126,6 +126,11 @@ def default_xla_options(
             xla_tpu_data_parallel_opt_different_sized_ops="true",
             # Group non-blocking DCN collectives into as few stages as possible.
             xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction="true",
+            # Aborting the coordinator after collecting errors from all workers.
+            # All workers will also abort after they detect the coordinator is shutdown.
+            megascale_error_reporter_abort_on_hang="true",
+            # Similar to megascale_error_reporter_abort_on_hang but for unrecoverable errors.
+            megascale_error_reporter_abort_on_error="true",
         )
 
     # Validate options. Will never fail if this function is implemented correctly.
