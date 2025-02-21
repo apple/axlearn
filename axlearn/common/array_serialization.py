@@ -16,6 +16,7 @@ Reference:
 https://github.com/google/orbax/blob/3cc343c63c769e4b2df44f3e57f6b5b43569df32/checkpoint/orbax/checkpoint/serialization.py
 https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/experimental/array_serialization/serialization.py
 """
+
 import asyncio
 import functools
 import threading
@@ -23,12 +24,12 @@ import time
 from collections import defaultdict
 from concurrent import futures
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence, Union
 
 import jax
 import numpy as np
 from absl import logging
-from jax._src import array, config
+from jax._src import array, config, layout, typing
 from jax.experimental.array_serialization import serialization
 
 from axlearn.common.utils import Tensor
@@ -381,6 +382,17 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
     while asynchronously serializing tensors.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._loop_thread.start()
+
+    def __del__(self):
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop_thread.join()
+        return super().__del__()
+
     def serialize(
         self,
         arrays: list[Tensor],
@@ -401,7 +413,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             )
             return await asyncio.gather(*future_writer)
 
-        asyncio.run(_run_serializer())
+        asyncio.run_coroutine_threadsafe(_run_serializer(), self._loop).result()
 
         self._add_futures(
             jax.tree_util.tree_flatten(commit_futures)[0] + (additional_futures or [])
@@ -410,6 +422,35 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # Used in wait_until_finished to check on process != 0, if the checkpoint
         # has finished writing.
         self._start_async_commit(on_commit_callback)
+
+    def deserialize(
+        self,
+        shardings: Sequence[Union[jax.sharding.Sharding, layout.Layout]],
+        tensorstore_specs: Sequence[dict[str, Any]],
+        global_shapes: Optional[Sequence[array.Shape]] = None,
+        dtypes: Optional[Sequence[typing.DTypeLike]] = None,
+        concurrent_gb: int = 32,
+    ):
+        self.wait_until_finished()
+
+        concurrent_bytes = concurrent_gb * 10**9
+
+        async def _run_deserializer():
+            # Object should be created once per process.
+            # pylint: disable-next=protected-access
+            byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
+
+            future_arrays = jax.tree_util.tree_map(
+                functools.partial(serialization.async_deserialize, byte_limiter=byte_limiter),
+                shardings,
+                tensorstore_specs,
+                [None] * len(tensorstore_specs) if global_shapes is None else global_shapes,
+                [None] * len(tensorstore_specs) if dtypes is None else dtypes,
+            )
+            return await asyncio.gather(*future_arrays)
+
+        fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
+        return fut.result()
 
 
 class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
