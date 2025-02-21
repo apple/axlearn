@@ -413,6 +413,10 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             )
             return await asyncio.gather(*future_writer)
 
+        # Note: We need to run the coroutine in another event loop driven by a separate thread.
+        # The current event loop might be already running an async function when `serialize` is
+        # invoked from a coroutine, in which case asyncio.get_running_loop().run_until_complete()
+        # would not be able to execute another coroutine to completion.
         asyncio.run_coroutine_threadsafe(_run_serializer(), self._loop).result()
 
         self._add_futures(
