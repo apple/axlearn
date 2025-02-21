@@ -8,12 +8,14 @@ from typing import Any, Callable, Optional
 import jax
 import numpy as np
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec
 
 from axlearn.common import utils
 from axlearn.common.config import ConfigOr, maybe_instantiate
+from axlearn.common.input_base import InputPartitionFn, partition_by_path_rank
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.update_transformation import ForwardFn, ForwardOutputs
-from axlearn.common.utils import Nested, Tensor, input_partition_spec, with_sharding_constraint
+from axlearn.common.utils import Nested, Tensor
 
 
 def _compute_minibatch_size(input_batch: Nested[Tensor], *, steps: int) -> int:
@@ -57,6 +59,7 @@ def _make_scan_minibatch_inputs(
     param_noise_key: Tensor,
     minibatch_size: int,
     minibatch_index: int,
+    minibatch_partitioner: Optional[InputPartitionFn],
 ) -> tuple[Nested[Tensor], Tensor, Tensor]:
     """Creates minibatch inputs from inputs.
 
@@ -64,32 +67,30 @@ def _make_scan_minibatch_inputs(
     within a scan function body and is meant to slice the inputs
     into `minibatch_size` sized slices to run the ForwardFn on.
 
-    Note that this only preserves the input sharding if the `input_partition_spec`
-    returns the correct partition spec to shard the input slices with.
-
     Args:
         inputs: Same pytree as ForwardFn inputs.
         forward_key: The `forward_key` from the ForwardFn inputs
         param_noise_key: The `param_noise_key` from the ForwardFn inputs
         minibatch_size: Size of the minibatch.
         minibatch_index: Current scan minibatch index.
+        minibatch_partitioner: Applies sharding constraints
+            on each minibatch created.
 
     Returns:
         A tuple of minibatch inputs which of the same structure as `inputs`
         and new (carry) forward_key and param_noise_key.
     """
-    minibatch_input = with_sharding_constraint(
-        jax.tree.map(
-            lambda x: jax.lax.dynamic_slice_in_dim(
-                x,
-                start_index=minibatch_index * minibatch_size,
-                slice_size=minibatch_size,
-                axis=0,
-            ),
-            inputs["input_batch"],
+    minibatch_input = jax.tree.map(
+        lambda x: jax.lax.dynamic_slice_in_dim(
+            x,
+            start_index=minibatch_index * minibatch_size,
+            slice_size=minibatch_size,
+            axis=0,
         ),
-        input_partition_spec(),
+        inputs["input_batch"],
     )
+
+    minibatch_input = minibatch_partitioner(minibatch_input)
     next_forward_key, forward_key = jax.random.split(forward_key)
     next_param_noise_key, param_noise_key = jax.random.split(param_noise_key)
 
@@ -106,6 +107,7 @@ def with_minibatch_steps(
     steps: int,
     metric_accumulator: ConfigOr[MetricAccumulator],
     grad_dtype: Optional[jnp.dtype] = None,
+    minibatch_partitioner: Optional[ConfigOr[InputPartitionFn]] = None,
 ) -> Callable[[ForwardFn], ForwardFn]:
     """Decorate a ForwardFn to accumulate gradients over minibatch steps.
 
@@ -134,15 +136,31 @@ def with_minibatch_steps(
 
     TODO(cemkoc): Investigate the slight difference in loss curves when decorated.
 
+    A minibatch_partitioner is used to partition minibatch inputs to the original_func.
+    Note that if minibatch_partitioner is None, the default minibatch partitioner is used which
+    partitions the minibatch along (("data", "expert", "fsdp"), "seq"). Otherwise the
+    minibatch_partitioner passed in is used.
+
     Args:
         steps: Number of gradient accumulation steps.
         metric_accumulator: A `MetricAccumulator` to accumulate minibatch summaries from the
             forward output.
         grad_dtype: Optional dtype to cast the grads back to after accumulating in fp32.
+        minibatch_partitioner: If not None, contains config for a partitioner that applies
+            additional sharding constraints on each minibatch created.
 
     Returns:
         Decorated ForwardFn.
     """
+
+    # Default partitioner for minibatches.
+    if not minibatch_partitioner:
+        minibatch_partitioner = partition_by_path_rank(
+            path_rank_to_partition={
+                (None, 1): PartitionSpec(("data", "expert", "fsdp")),
+                (None, 2): PartitionSpec(("data", "expert", "fsdp"), "seq"),
+            }
+        )
 
     def decorator(fn: ForwardFn) -> ForwardFn:
         # We define a positional arg only version of the original function
@@ -171,13 +189,29 @@ def with_minibatch_steps(
                 and second is the accumulated grads (if `compute_grad` is True)
                 otherwise None.
             """
+            partitioner = maybe_instantiate(minibatch_partitioner)
             minibatch_size = _compute_minibatch_size(inputs["input_batch"], steps=steps)
+
+            # Create a sample minibatch for the carry buffer creation below
+            (
+                sample_minibatch_inputs,
+                _,
+                _,
+            ) = _make_scan_minibatch_inputs(
+                inputs,
+                forward_key=inputs["forward_key"],
+                param_noise_key=inputs["param_noise_key"],
+                minibatch_size=minibatch_size,
+                minibatch_index=0,
+                minibatch_partitioner=partitioner,
+            )
+
             # Carry initialization for the lax.scan procedure. Since we are passing a
             # `MetricAccumulator` into carry and carry input/output shapes must match
             # we need initialize the `MetricAccumulator` summary with the right PyTree
             # structure.
             _, primal_output_shape = jax.eval_shape(
-                original_func_positional_args, model_params, inputs
+                original_func_positional_args, model_params, sample_minibatch_inputs
             )
             init_primal_out = jax.tree.map(jnp.zeros_like, primal_output_shape)
             init_accumulator = maybe_instantiate(metric_accumulator)
@@ -213,6 +247,7 @@ def with_minibatch_steps(
                     param_noise_key=param_noise_key,
                     minibatch_size=minibatch_size,
                     minibatch_index=minibatch_index,
+                    minibatch_partitioner=partitioner,
                 )
                 minibatch_args = (model_params, minibatch_inputs)
 
