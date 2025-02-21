@@ -1657,8 +1657,8 @@ class DeviceUsage:
     """Usage measurements for a device."""
 
     device_id: int
-    tensorcore_duty_cycle_percent: Optional[float] = None
-    tensorcore_utilization: Optional[float] = None
+    device_duty_cycle_percent: Optional[float] = None
+    device_utilization: Optional[float] = None
     hbm_memory_usage_bytes: Optional[int] = None
     hbm_memory_total_bytes: Optional[int] = None
     hbm_memory_bandwidth_utilization: Optional[float] = None

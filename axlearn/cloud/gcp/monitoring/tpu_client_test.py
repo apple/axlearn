@@ -80,7 +80,9 @@ class FakeTpuGrpcService(tpu_metrics_grpc.RuntimeMetricServiceServicer):
         """Create Gauge from float."""
         return tpu_metrics.Gauge(as_double=val)
 
-    def GetRuntimeMetric(self, request: tpu_metrics.MetricRequest, context):
+    def GetRuntimeMetric(
+        self, request: tpu_metrics.MetricRequest, context
+    ):  # pylint: disable=unused-argument
         """Get the metric from the fake libtpu server."""
         metric_name = tpu_client.MetricName(request.metric_name)
         resp = self._responses[metric_name]
@@ -100,7 +102,9 @@ class FakeTpuGrpcService(tpu_metrics_grpc.RuntimeMetricServiceServicer):
             )
         )
 
-    def ListSupportedMetrics(self, request: tpu_metrics.ListSupportedMetricsRequest, context):
+    def ListSupportedMetrics(
+        self, request: tpu_metrics.ListSupportedMetricsRequest, context
+    ):  # pylint: disable=unused-argument
         """List the supported metrics from the fake libtpu server."""
         # The test supported metrics are based on V5P libtpu.
         supported_metrics = [
@@ -210,7 +214,7 @@ class TestMetrics(parameterized.TestCase):
             expected_usage = [
                 tpu_client.Usage(
                     device_id=i,
-                    tensorcore_duty_cycle_percent=d,
+                    device_duty_cycle_percent=d,
                     hbm_memory_usage_bytes=m,
                     hbm_memory_total_bytes=t,
                 )
@@ -313,8 +317,8 @@ class TestMetricsV2(parameterized.TestCase):
         expected_usage = [
             tpu_client.Usage(
                 device_id=i,
-                tensorcore_duty_cycle_percent=100.0,
-                tensorcore_utilization=1.0 * (1 + i),
+                device_duty_cycle_percent=100.0,
+                device_utilization=1.0 * (1 + i),
                 hbm_memory_total_bytes=int(1.02803439616e11),
                 hbm_memory_usage_bytes=int(6.5e10),
                 hbm_memory_bandwidth_utilization=30.0,

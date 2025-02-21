@@ -22,8 +22,8 @@ class TestMetrics(parameterized.TestCase):
                 device_id=i,
                 hbm_memory_total_bytes=int(1.02803439616e11),
                 hbm_memory_usage_bytes=int(6.5e10),
-                tensorcore_duty_cycle_percent=100.0,
-                tensorcore_utilization=1.0 * (1 + i),
+                device_duty_cycle_percent=100.0,
+                device_utilization=1.0 * (1 + i),
                 hbm_memory_bandwidth_utilization=30.0,
             )
             for i in range(4)

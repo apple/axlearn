@@ -68,10 +68,7 @@ class TPUMonitorClient(DeviceMonitorClient):
     def is_host_idle(self, usages: list[Usage]) -> bool:
         """Check if the TPU device on the host are idle."""
         for usage in usages:
-            if (
-                usage.hbm_memory_bandwidth_utilization <= 0.1
-                and usage.tensorcore_utilization <= 0.1
-            ):
+            if usage.hbm_memory_bandwidth_utilization <= 0.1 and usage.device_utilization <= 0.1:
                 logging.info("TPU device %d is idle.", usage.device_id)
                 return True
         return False
