@@ -54,6 +54,7 @@ def tpu_flash_attention(
     *,
     mask: MaskFnOrZero,
     softmax_scale: float = 1.0,
+    is_decoding: bool = False,
     block_size: int = 128,
     interpret: bool = False,
 ):
@@ -78,6 +79,7 @@ def tpu_flash_attention(
              Shape:  [batch_size, target_len].
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
         softmax_scale: A scaling factor applied to the query.
+        is_decoding: Whether it is in decoding.
         block_size: The block size to use for chunking data in the kernel.
         interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
 
@@ -129,6 +131,7 @@ def tpu_flash_attention(
             source_len=key.shape[2],
             head_dim=query.shape[3],
             mask=mask,
+            is_decoding=is_decoding,
             has_segment_ids=(segment_ids is not None),
             has_bias=(bias is not None),
         )
@@ -262,6 +265,7 @@ def check_tpu_splash_attention(
     source_len: int,
     head_dim: int,
     mask: MaskFnOrZero,
+    is_decoding: bool = False,
     has_segment_ids: bool = False,
     has_bias: bool = False,
 ):
@@ -272,6 +276,7 @@ def check_tpu_splash_attention(
         source_len: The length of the source sequence.
         head_dim: The dimension of each head.
         mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
+        is_decoding: Whether it is in decoding.
         has_segment_ids: Whether segment_ids is None or not.
         has_bias: Whether attention involves a bias.
 
@@ -296,15 +301,15 @@ def check_tpu_splash_attention(
         )
     if mask.has_value():
         assert isinstance(mask, MaskFnAttentionBias)
-        if target_len != source_len:
+        if is_decoding:
+            # TODO(dhwang2): support splash decoding via splash NumPy mask.
             raise SplashAttentionUnsupportedError(
-                "Query and key/value must have same length when mask is used."
+                "Currently, we don't support Splash Attention in extend_step because the query and "
+                "key lengths are different, making it impossible to use the lazy mask."
             )
-        if isinstance(mask.target_positions, jax.core.Tracer):
-            raise SplashAttentionUnsupportedError(
-                "Non-static value of `target_positions` is not supported.\n"
-                "Are you decoding using SplashAttention? That's not supported."
-            )
+        else:
+            if target_len != source_len:
+                raise ValueError(f"{target_len=} and {source_len=} must be same in forward().")
 
 
 def _to_splash_mask(

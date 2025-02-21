@@ -1833,6 +1833,7 @@ class MultiheadAttention(BaseLayer):
         if segment_ids is not None:
             attention_logit_biases += SegmentIdAttentionBias(segment_ids)
         context, probs = self._compute_attention(
+            mode=mode,
             q_proj=q_proj,
             k_proj=k_proj,
             v_proj=v_proj,
@@ -1856,6 +1857,7 @@ class MultiheadAttention(BaseLayer):
     def _compute_attention(
         self,
         *,
+        mode: ForwardMode,
         q_proj: Tensor,
         k_proj: Tensor,
         v_proj: Tensor,
@@ -1864,6 +1866,8 @@ class MultiheadAttention(BaseLayer):
         """Computes attention context and probs.
 
         Args:
+            mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
+                details.
             q_proj: [batch_size, target_length, num_heads, per_head_dim].
             k_proj: [batch_size, source_length, num_heads, per_head_dim].
             v_proj: [batch_size, source_length, num_heads, per_head_dim].
@@ -1873,6 +1877,7 @@ class MultiheadAttention(BaseLayer):
             The context of shape [batch_size, target_length, num_heads, per_head_dim],
             and probs of shape [batch, num_heads, target_length, source_length].
         """
+        del mode
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
@@ -2162,12 +2167,14 @@ class SigmoidAttention(MultiheadAttention):
     def _compute_attention(
         self,
         *,
+        mode: ForwardMode,
         q_proj: Tensor,
         k_proj: Tensor,
         v_proj: Tensor,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
+        del mode
         cfg = self.config
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
