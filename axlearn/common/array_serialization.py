@@ -423,6 +423,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # has finished writing.
         self._start_async_commit(on_commit_callback)
 
+    # Copied from (with modifications)
+    # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
     def deserialize(
         self,
         shardings: Sequence[Union[jax.sharding.Sharding, layout.Layout]],
