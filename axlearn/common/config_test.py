@@ -17,7 +17,7 @@ import numpy as np
 import wrapt
 from absl.testing import absltest, parameterized
 
-from axlearn.common import config, struct
+from axlearn.common import config
 from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
@@ -517,9 +517,9 @@ class ConfigTest(parameterized.TestCase):
         self.assertEqual(param_shapes(layer1), param_shapes(layer2))
 
     def test_class_with_tensor_fields(self):
-        @struct.dataclass
+        @dataclasses.dataclass
         class Bias:
-            shape: tuple[int, ...] = struct.field(kw_only=True, pytree_node=False)
+            shape: tuple[int, ...]
             positions: Optional[np.ndarray] = None
 
         cfg = config.config_for_class(Bias).set(shape=[1, 2])

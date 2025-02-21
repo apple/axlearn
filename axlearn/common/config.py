@@ -829,10 +829,6 @@ def _prepare_args_and_kwargs(
     """
     args = []
 
-    def insert_to_kwargs(k, v):
-        if k not in kwargs:
-            kwargs[k] = v
-
     for name, param in sig.parameters.items():
         if name == "self":
             continue
@@ -841,12 +837,12 @@ def _prepare_args_and_kwargs(
             args = value
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
             for k, v in value.items():
-                insert_to_kwargs(k, v)
+                kwargs.setdefault(k, v)
         elif param.kind in (
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.KEYWORD_ONLY,
         ):
-            insert_to_kwargs(name, value)
+            kwargs.setdefault(name, value)
         else:
             raise NotImplementedError(f"Unsupported param kind {param.kind}: {name}")
 
