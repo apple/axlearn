@@ -108,7 +108,7 @@ class MethodRunner:
                 isinstance(x, jax.Array) and len(x.devices()) == 1
             ) or isinstance(x, np.ndarray)
             all_host_local_inputs = all(
-                is_host_local_input_check(t) for t in jax.tree_util.tree_leaves(input_batch)
+                is_host_local_input_check(t) for t in jax.tree.leaves(input_batch)
             )
 
             if all_host_local_inputs:

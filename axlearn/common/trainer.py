@@ -604,7 +604,7 @@ class SpmdTrainer(Module):
         """Returns a tree of OptParam for Learner.{init,update}."""
         # self._model_param_specs can be incomplete. Complete it first.
         specs = utils.complete_partition_spec_tree(
-            jax.tree_util.tree_structure(model_params), self._model_param_specs
+            jax.tree.structure(model_params), self._model_param_specs
         )
         return jax.tree.map(
             lambda param, spec: OptParam(
@@ -852,7 +852,7 @@ class SpmdTrainer(Module):
         # Log trainer state tree.
         if not self.step and jax.process_index() == 0:
             with fs.open(os.path.join(cfg.dir, "trainer_state_tree.txt"), "w") as f:
-                f.write(str(jax.tree_util.tree_structure(self._trainer_state)))
+                f.write(str(jax.tree.structure(self._trainer_state)))
 
             with fs.open(os.path.join(cfg.dir, "model_analysis.txt"), "w") as f:
                 f.write(model_analysis)

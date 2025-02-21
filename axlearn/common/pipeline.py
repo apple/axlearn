@@ -766,7 +766,7 @@ class Pipeline(BaseLayer):
         cfg: Pipeline.Config = self.config
         self.vlog(1, "carry=%s xs=%s", shapes(carry), shapes(xs))
 
-        carry_leaves = jax.tree_util.tree_leaves(carry)
+        carry_leaves = jax.tree.leaves(carry)
         if not carry_leaves:
             raise ValueError("Expected at least one input leaf.")
         if carry_leaves[0].ndim < 2:
