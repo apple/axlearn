@@ -520,7 +520,7 @@ class ConfigTest(parameterized.TestCase):
         @struct.dataclass
         class Bias:
             shape: tuple[int, ...] = struct.field(kw_only=True, pytree_node=False)
-            positions: Optional[np.array] = None
+            positions: Optional[np.ndarray] = None
 
         cfg = config.config_for_class(Bias).set(shape=[1, 2])
         positions = np.asarray([0, 1])
