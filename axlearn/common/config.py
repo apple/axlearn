@@ -862,8 +862,12 @@ class FunctionConfigBase(InstantiableConfig[T]):
 
         The values specified in **kwargs take precedence over those set in the config.
         """
-        _validate_required_fields(self)
         args = _prepare_args_and_kwargs(kwargs, sig=inspect.signature(self.fn), cfg=self)
+        for k, v in kwargs.items():
+            if isinstance(v, RequiredFieldValue):
+                raise RequiredFieldMissingError(
+                    f"Missing value for required field when instantiating {type(self)}: {k}"
+                )
         return self.fn(*args, **kwargs)
 
 
@@ -930,10 +934,14 @@ class ClassConfigBase(InstantiableConfig[T]):
 
         The field values specified in **kwargs take precedence over those set in the config.
         """
-        _validate_required_fields(self)
         args = _prepare_args_and_kwargs(
             kwargs, sig=inspect.signature(self.klass.__init__), cfg=self
         )
+        for k, v in kwargs.items():
+            if isinstance(v, RequiredFieldValue):
+                raise RequiredFieldMissingError(
+                    f"Missing value for required field when instantiating {type(self)}: {k}"
+                )
         return self.klass(*args, **kwargs)
 
 

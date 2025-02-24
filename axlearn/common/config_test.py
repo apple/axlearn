@@ -520,12 +520,17 @@ class ConfigTest(parameterized.TestCase):
         @dataclasses.dataclass
         class Bias:
             shape: tuple[int, ...]
-            positions: Optional[np.ndarray] = None
+            target_positions: np.ndarray
+            source_positions: Optional[np.ndarray] = None
 
         cfg = config.config_for_class(Bias).set(shape=[1, 2])
-        positions = np.asarray([0, 1])
-        bias = cfg.instantiate(positions=positions)
-        np.testing.assert_array_equal(bias.positions, positions)
+        target_positions = np.asarray([0, 1])
+        source_positions = np.asarray([2, 3])
+        bias = cfg.instantiate(target_positions=target_positions, source_positions=source_positions)
+        np.testing.assert_array_equal(bias.target_positions, target_positions)
+        np.testing.assert_array_equal(bias.source_positions, source_positions)
+        with self.assertRaisesRegex(RequiredFieldMissingError, "target_positions"):
+            cfg.instantiate(source_positions=source_positions)
 
     def test_instantiable_config_from_function_signature(self):
         def load(name: str, *, split: Optional[str] = None, download: bool = True):
@@ -603,6 +608,16 @@ class ConfigTest(parameterized.TestCase):
                 build_and_invoke()
         else:
             self.assertEqual(build_and_invoke(), expected)
+
+    def test_function_with_tensor_fields(self):
+        def fn(axis: int, x: np.ndarray) -> np.ndarray:
+            return x.sum(axis=axis)
+
+        cfg = config.config_for_function(fn).set(axis=0)
+        x = np.asarray([[0, 1, 3], [2, 5, 7]])
+        np.testing.assert_array_equal([2, 6, 10], cfg.instantiate(x=x))
+        with self.assertRaisesRegex(RequiredFieldMissingError, "x"):
+            cfg.instantiate()
 
     def test_config_for_function_has_type_information(self):
         """Tests that type information is available when using `config_for_function`."""
