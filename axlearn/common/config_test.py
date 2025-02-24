@@ -609,6 +609,16 @@ class ConfigTest(parameterized.TestCase):
         else:
             self.assertEqual(build_and_invoke(), expected)
 
+    def test_function_with_tensor_fields(self):
+        def fn(axis: int, x: np.ndarray) -> np.ndarray:
+            return x.sum(axis=axis)
+
+        cfg = config.config_for_function(fn).set(axis=0)
+        x = np.asarray([[0, 1, 3], [2, 5, 7]])
+        np.testing.assert_array_equal([2, 6, 10], cfg.instantiate(x=x))
+        with self.assertRaisesRegex(RequiredFieldMissingError, "x"):
+            cfg.instantiate()
+
     def test_config_for_function_has_type_information(self):
         """Tests that type information is available when using `config_for_function`."""
 
