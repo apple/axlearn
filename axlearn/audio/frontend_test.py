@@ -17,7 +17,7 @@ from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-from axlearn.audio.frontend import LogMelFrontend, normalize_by_mean_std
+from axlearn.audio.frontend import LogMelFrontend, _fft_dtype, normalize_by_mean_std
 from axlearn.audio.frontend_utils import (
     linear_to_log_spectrogram,
     magnitude_spectrogram,
@@ -180,7 +180,8 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
         with self.assertRaisesRegex(ValueError, "output_dim"):
             cfg.set(name="test").instantiate(parent=None)
 
-    def test_small_input(self):
+    @parameterized.product(input_dtype=[jnp.bfloat16, jnp.float32, jnp.float64, jnp.int32])
+    def test_small_input(self, input_dtype):
         sample_rate, batch_size, max_seconds = 16_000, 4, 13
         num_filters = 80
 
@@ -189,7 +190,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             prng_key=jax.random.PRNGKey(123),
             batch_size=batch_size,
             seq_len=max_seconds * sample_rate,
-            dtype=jnp.float64,
+            dtype=input_dtype,
             scale=1.0,
         )
 
@@ -334,7 +335,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
         output_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertSequenceEqual(test_outputs.shape, output_shape)
 
-    @parameterized.parameters([(jnp.float32,), (jnp.bfloat16,)])
+    @parameterized.product(dtype=[jnp.float32, jnp.bfloat16, jnp.int32])
     def test_dtype(self, dtype):
         # Test that the frontend outputs follow the same dtype as inputs.
         sample_rate, batch_size, max_seconds = 16_000, 4, 13
@@ -356,7 +357,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
         )
         test_outputs = self._jit_forward(layer, inputs, paddings)
         test_outputs, test_paddings = test_outputs["outputs"], test_outputs["paddings"]
-        self.assertEqual(test_outputs.dtype, inputs.dtype)
+        self.assertEqual(test_outputs.dtype, _fft_dtype(inputs.dtype))
         self.assertEqual(test_paddings.dtype, paddings.dtype)
 
 
