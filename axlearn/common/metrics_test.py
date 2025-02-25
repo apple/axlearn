@@ -51,8 +51,8 @@ class TestMetricAccumulator(test_utils.TestCase):
         )
 
         chex.assert_trees_all_equal_structs(result, expected)
-        result = jax.tree_util.tree_leaves(result)
-        expected = jax.tree_util.tree_leaves(expected)
+        result = jax.tree.leaves(result)
+        expected = jax.tree.leaves(expected)
         chex.assert_trees_all_close(result, expected)
 
     def test_flatten_unflatten_metric_accumulator(self):
@@ -75,10 +75,10 @@ class TestMetricAccumulator(test_utils.TestCase):
         for s in summaries_copy:
             acc.update(s)
 
-        flat, tree = jax.tree_util.tree_flatten(acc)
-        unflattened = jax.tree_util.tree_unflatten(tree, flat)
-        expected = jax.tree_util.tree_leaves(acc.summaries())
-        result = jax.tree_util.tree_leaves(unflattened.summaries())
+        flat, tree = jax.tree.flatten(acc)
+        unflattened = jax.tree.unflatten(tree, flat)
+        expected = jax.tree.leaves(acc.summaries())
+        result = jax.tree.leaves(unflattened.summaries())
         chex.assert_trees_all_close(result, expected)
 
     @parameterized.parameters(

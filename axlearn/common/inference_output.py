@@ -199,7 +199,7 @@ class OutputRecordWriter(BaseOutputWriter):
             output_batch: A NestedTensor whose leaves must be tensors of shape [batch_size, ...].
         """
         local_data = dict(input=input_batch, output=output_batch)
-        local_batch_size = jax.tree_util.tree_leaves(local_data)[0].shape[0]
+        local_batch_size = jax.tree.leaves(local_data)[0].shape[0]
 
         for i in range(local_batch_size):
             example = jax.tree.map(lambda x, index=i: x[index], local_data)

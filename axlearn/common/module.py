@@ -202,7 +202,7 @@ def propagate_repeated_output_collections(
     # if a repeated layer outputs a scalar summary value, it will have shape [N].
     # Below we split the stacked values and output them separately under scope
     # "{child_name_prefix}{i}" so that scalar summaries can be handled correctly.
-    summary_values = jax.tree_util.tree_leaves(repeated_output_collection.summaries)
+    summary_values = jax.tree.leaves(repeated_output_collection.summaries)
     if summary_values:
         first_summary_value = summary_values[0]
         assert first_summary_value.shape, "Stacked summaries should have a leading stack dimension."

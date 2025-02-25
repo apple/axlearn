@@ -441,7 +441,7 @@ def vectorized_tree_map(fn, tree, *rest):
 
     def vectorized_fn(*nodes):
         if isinstance(nodes[0], VDict):
-            if not jax.tree_util.tree_leaves(nodes[0]):
+            if not jax.tree.leaves(nodes[0]):
                 # This can happen when all VDict values are None and cause issues with jax.vmap.
                 return nodes[0]
             nodes = [dict(**node) for node in nodes]
@@ -469,7 +469,7 @@ def expand_vdicts(tree: NestedTensor) -> NestedTensor:
         if not isinstance(value, VDict):
             return value
 
-        leaves = jax.tree_util.tree_leaves(value)
+        leaves = jax.tree.leaves(value)
         if not leaves:
             # An empty VDict.
             return value
@@ -653,7 +653,7 @@ def complete_partition_spec_tree(
             prefix of treedef.
     """
     proxy = object()
-    dummy = jax.tree_util.tree_unflatten(treedef, [object()] * treedef.num_leaves)
+    dummy = jax.tree.unflatten(treedef, [object()] * treedef.num_leaves)
     axes = []
 
     def replace_none_with_proxy(tree):
@@ -672,7 +672,7 @@ def complete_partition_spec_tree(
     partition_spec_tree_with_proxy = replace_none_with_proxy(partition_spec_tree)
 
     def add_leaves(i, x):
-        axes.extend([i] * len(jax.tree_util.tree_flatten(x)[0]))
+        axes.extend([i] * len(jax.tree.flatten(x)[0]))
 
     try:
         jax.tree.map(add_leaves, partition_spec_tree_with_proxy, dummy)
@@ -680,9 +680,9 @@ def complete_partition_spec_tree(
         logging.info("[complete_partition_spec_tree] ValueError: %s", err)
         logging.info(
             "[complete_partition_spec_tree] partition_spec_tree_with_proxy=%s",
-            jax.tree_util.tree_structure(partition_spec_tree_with_proxy),
+            jax.tree.structure(partition_spec_tree_with_proxy),
         )
-        logging.info("[complete_partition_spec_tree] dummy=%s", jax.tree_util.tree_structure(dummy))
+        logging.info("[complete_partition_spec_tree] dummy=%s", jax.tree.structure(dummy))
         for path, value in flatten_items(partition_spec_tree_with_proxy):
             logging.info(
                 "[complete_partition_spec_tree] partition_spec_tree_with_proxy leaf: %s=%s",
@@ -701,7 +701,7 @@ def complete_partition_spec_tree(
     assert (
         len(axes) == treedef.num_leaves
     ), f"({len(axes)} vs. {treedef.num_leaves}) {axes} {treedef}"
-    return jax.tree_util.tree_unflatten(treedef, axes)
+    return jax.tree.unflatten(treedef, axes)
 
 
 def input_partition_spec() -> PartitionSpec:
@@ -801,9 +801,7 @@ def host_to_global_device_array(
     """
     mesh = thread_resources.env.physical_mesh
     partition_spec = data_partition_type_to_spec(partition)
-    partition_specs = complete_partition_spec_tree(
-        jax.tree_util.tree_structure(host_arrays), partition_spec
-    )
+    partition_specs = complete_partition_spec_tree(jax.tree.structure(host_arrays), partition_spec)
     process_count = jax.process_count()
 
     def make_gda(x, partition_spec):
@@ -1031,7 +1029,7 @@ def cast_floats(
 
 def count_model_params(tree: NestedTensor) -> int:
     """Count the number of parameters in a model."""
-    return sum(x.size for x in jax.tree_util.tree_leaves(tree))
+    return sum(x.size for x in jax.tree.leaves(tree))
 
 
 def check_param_shape_alignment(
@@ -1095,7 +1093,7 @@ def check_jax_type(
         pretty_named_args.update({f"kwargs[{key}]": kwargs[key] for key in kwargs})
 
     for name, arg in pretty_named_args.items():
-        values, _ = jax.tree_util.tree_flatten(arg)
+        values, _ = jax.tree.flatten(arg)
         for value in values:
             if not isinstance(value, (type(None), jax.Array, int, float)):
                 if msg is None:
