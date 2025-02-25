@@ -49,8 +49,7 @@ In pseudo code:
       return carry, ys
 """
 import dataclasses
-from collections.abc import Sequence
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional, Sequence, Union
 
 import jax
 
@@ -91,6 +90,8 @@ class Repeat(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
+        """Config class for the Repeat layer."""
+
         # The config for the sub layer.
         layer: Required[InstantiableConfig] = REQUIRED
         # Repeat layers specified in `layer` this many times.
@@ -101,6 +102,12 @@ class Repeat(BaseLayer):
         drop_output: InstantiableConfig[Callable[[str], bool]] = config_for_function(
             _drop_by_regex
         ).set(rules=["module_outputs.*"])
+        # An optional positive integer or boolean argument for `jax.lax.scan`.
+        # If a positive integer is provided, it determines how many unrolled loop iterations to run
+        # within a single rolled iteration of the loop. If a boolean is provided, it will determine
+        # if the loop is competely unrolled or left completely rolled.
+        # If None, defaults to 1 (same as jax.lax.scan's default value).
+        unroll: Optional[Union[bool, int]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -206,6 +213,7 @@ class Repeat(BaseLayer):
                 ),
                 drop_output=self._drop_output,
                 child_name_prefix="layer",
+                unroll=cfg.unroll if cfg.unroll is not None else 1,
             )
 
         self.get_invocation_context().output_collection.update(layer_output_collection)

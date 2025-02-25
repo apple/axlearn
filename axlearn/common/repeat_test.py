@@ -155,13 +155,14 @@ class RepeatTest(TestCase):
         remat_spec=(None, RematSpec(prevent_cse=False)),
         drop_output=(None, config_for_function(_drop_by_regex).set(rules=["module_outputs.*"])),
         num_layers_total=(4, 6),
+        unroll=(True, False, 1, 2),
     )
-    def test_repeat(self, dtype, remat_spec, drop_output, num_layers_total):
+    def test_repeat(self, dtype, remat_spec, drop_output, num_layers_total, unroll):
         batch_size, num_layers = 14, 4
         cfg = TestEnsemble.default_config().set(
             name="test", num_layers=num_layers_total, dtype=dtype
         )
-        cfg.repeat_layer.set(remat_spec=remat_spec, drop_output=drop_output)
+        cfg.repeat_layer.set(remat_spec=remat_spec, drop_output=drop_output, unroll=unroll)
         layer: TestEnsemble = cfg.instantiate(parent=None)
         self.assertEqual(
             PartitionSpec(None),
