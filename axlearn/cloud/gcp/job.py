@@ -319,6 +319,7 @@ class GKEJob(GCPJob):
             name=cfg.name,
             command=cfg.command,
             accelerator=cfg.accelerator,
+            project=cfg.project,
             env_vars=cfg.env_vars,
             service_account=cfg.service_account,
             enable_pre_provisioner=cfg.enable_pre_provisioner,

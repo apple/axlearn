@@ -25,6 +25,8 @@ from axlearn.cloud.common.types import JobMetadata
 from axlearn.cloud.gcp import bundler, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.jobset_utils import (
+    _ANNOTATION_ADDITIONAL_NODE_NETWORKS,
+    _ANNOTATION_NODE_SERVICE_ACCOUNT,
     _MEMORY_REQUEST_PERCENTAGE,
     _METADATA_GOOGLE_INTERNAL_IP,
     BASTION_JOB_VERSION_LABEL,
@@ -82,7 +84,6 @@ class TPUReplicatedJobTest(TestCase):
         self,
         bundler_cls: type[Bundler],
         reservation: Optional[str] = None,
-        service_account: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
         host_mount_spec: Optional[list[str]] = None,
         priority_class: Optional[str] = None,
@@ -93,8 +94,6 @@ class TPUReplicatedJobTest(TestCase):
             jobset_utils.TPUReplicatedJob.define_flags(fv)
             if reservation:
                 fv.set_default("reservation", reservation)
-            if service_account:
-                fv.set_default("service_account", service_account)
             if host_mount_spec:
                 fv.set_default("host_mount_spec", host_mount_spec)
             if gcsfuse_mount_spec:
@@ -102,6 +101,10 @@ class TPUReplicatedJobTest(TestCase):
             fv.mark_as_parsed()
             cfg = jobset_utils.TPUReplicatedJob.from_flags(fv)
             cfg.accelerator = AcceleratorConfig().set(instance_type="tpu-v4-8")
+            cfg.project = jobset_utils.gcp_settings("project", required=True, fv=fv)
+            cfg.service_account = jobset_utils.gcp_settings(
+                "k8s_service_account", required=True, fv=fv
+            )
             cfg.enable_pre_provisioner = enable_pre_provisioner
             cfg.priority_class = priority_class
             bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
@@ -142,6 +145,11 @@ class TPUReplicatedJobTest(TestCase):
             None,
         ],
         priority_class=[None, "such-high-priority"],
+        additional_node_networks=[
+            None,
+            "network-1:subnet-1",
+            "network-1:subnet-1,network-2:subnet-2",
+        ],
     )
     def test_build_pod(
         self,
@@ -156,6 +164,7 @@ class TPUReplicatedJobTest(TestCase):
         host_mount_spec: Optional[list[str]] = None,
         gcsfuse_mount_spec: Optional[list[str]] = None,
         priority_class: Optional[str] = None,
+        additional_node_networks: Optional[str] = None,
     ):
         with (
             mock.patch.dict("os.environ", env),
@@ -175,6 +184,7 @@ class TPUReplicatedJobTest(TestCase):
                 enable_tpu_smart_repair=enable_tpu_smart_repair,
                 command="test_command",
                 output_dir="FAKE",
+                additional_node_networks=additional_node_networks,
             ).instantiate(bundler=bundler_cfg.instantiate())
             # pylint: disable-next=protected-access
             pod = gke_job._build_pod()
@@ -370,6 +380,23 @@ class TPUReplicatedJobTest(TestCase):
             else:
                 self.assertEqual(pod_spec.get("priorityClassName", None), priority_class)
 
+            if additional_node_networks:
+                self.assertEqual(
+                    additional_node_networks,
+                    annotations.get(_ANNOTATION_ADDITIONAL_NODE_NETWORKS),
+                )
+                self.assertEqual(
+                    f"{cfg.service_account}@{cfg.project}.iam.gserviceaccount.com",
+                    annotations.get(_ANNOTATION_NODE_SERVICE_ACCOUNT),
+                )
+                self.assertTrue(pod_spec.get("hostNetwork", False))
+                self.assertEqual(pod_spec.get("dnsPolicy"), "ClusterFirstWithHostNet")
+            else:
+                self.assertNotIn(_ANNOTATION_ADDITIONAL_NODE_NETWORKS, annotations)
+                self.assertNotIn(_ANNOTATION_NODE_SERVICE_ACCOUNT, annotations)
+                self.assertNotIn("hostNetwork", pod_spec)
+                self.assertNotIn("dnsPolicy", pod_spec)
+
     def test_mount_dataclass(self):
         # pylint: disable=missing-kwoa
         # pytype: disable=missing-parameter
@@ -392,16 +419,17 @@ class A3ReplicatedJobTest(TestCase):
         self,
         bundler_cls: type[Bundler],
         num_replicas: int,
-        service_account: Optional[str] = None,
         env_vars: Optional[dict] = None,
     ):
         with mock_gcp_settings([jobset_utils.__name__, bundler.__name__], mock_settings()):
             fv = flags.FlagValues()
             jobset_utils.A3ReplicatedJob.define_flags(fv)
-            if service_account:
-                fv.set_default("service_account", service_account)
             fv.mark_as_parsed()
             cfg: jobset_utils.A3ReplicatedJob.Config = jobset_utils.A3ReplicatedJob.from_flags(fv)
+            cfg.project = jobset_utils.gcp_settings("project", required=True, fv=fv)
+            cfg.service_account = jobset_utils.gcp_settings(
+                "k8s_service_account", required=True, fv=fv
+            )
             cfg.accelerator = AcceleratorConfig().set(
                 instance_type="gpu-a3-highgpu-8g-256",
                 num_replicas=num_replicas,

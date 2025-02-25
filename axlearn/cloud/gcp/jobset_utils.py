@@ -40,6 +40,12 @@ BASTION_JOB_VERSION_LABEL = "bastion-job-version"
 # https://cloud.google.com/compute/docs/troubleshooting/troubleshoot-metadata-server#failed-request
 _METADATA_GOOGLE_INTERNAL_IP = "169.254.169.254"
 
+# Kubernetes pod annotation keys. Used by TPUReplicatedJob to support multi NIC.
+# Refer to GKE TPU provisioner for more context:
+# https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
+_ANNOTATION_ADDITIONAL_NODE_NETWORKS = "tpu-provisioner.cloud.google.com/additional-node-networks"
+_ANNOTATION_NODE_SERVICE_ACCOUNT = "tpu-provisioner.cloud.google.com/node-service-account"
+
 
 @config_class
 class AcceleratorConfig(ConfigBase):
@@ -138,6 +144,7 @@ class BaseReplicatedJob(FlagConfigurable):
                 This directory is used by the sidecar container to sync outputs to GCS using gsutil.
                 Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
             accelerator: Accelerator configuration.
+            project: GCP Project.
             env_vars: Optional env vars to set.
             gcsfuse_mount: Optional configs for the GCS FUSE sidecar and volume mount.
                 See `GCSFuseMount` for details.
@@ -151,6 +158,7 @@ class BaseReplicatedJob(FlagConfigurable):
         command: Required[str] = REQUIRED
         output_dir: Optional[str] = None
         accelerator: Required[AcceleratorConfig] = REQUIRED
+        project: Required[str] = REQUIRED
         env_vars: dict[str, str] = {}
         gcsfuse_mount: Optional[GCSFuseMount] = None
         host_mounts: Optional[Sequence[HostMount]] = None
@@ -236,6 +244,10 @@ class TPUReplicatedJob(BaseReplicatedJob):
                          This is managed by jobset controller.
                       3. For TPU slice, this requires alpha.jobset.sigs.k8s.io/exclusive-topology
                       4. [2024-11-11] Does not work on multi-slice TPU training yet.
+            additional_node_networks: Optional; comma-separated list of <network-name>:<subnet-name>
+                to attach to the node pool. This is needed to support multiple NIC.
+                Refer to GKE TPU provisioner for more context:
+                https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
         """
 
         reservation: Optional[str] = None
@@ -243,6 +255,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
         priority_class: Optional[str] = None
+        additional_node_networks: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -266,6 +279,9 @@ class TPUReplicatedJob(BaseReplicatedJob):
         cfg.enable_tpu_smart_repair = bool(
             gcp_settings("enable_tpu_smart_repair", required=False, fv=fv)
         )
+        cfg.additional_node_networks = gcp_settings(
+            "additional_node_networks", required=False, fv=fv
+        )
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
@@ -277,6 +293,8 @@ class TPUReplicatedJob(BaseReplicatedJob):
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
+        if cfg.additional_node_networks and not cfg.service_account:
+            raise ValueError("service_account must be set if additional_node_networks is set.")
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
@@ -560,6 +578,18 @@ class TPUReplicatedJob(BaseReplicatedJob):
 
         if cfg.priority_class:
             spec["priorityClassName"] = cfg.priority_class
+
+        # Handles additional network.
+        if cfg.additional_node_networks:
+            node_service_account = f"{cfg.service_account}@{cfg.project}.iam.gserviceaccount.com"
+            annotations.update(
+                {
+                    _ANNOTATION_ADDITIONAL_NODE_NETWORKS: cfg.additional_node_networks,
+                    _ANNOTATION_NODE_SERVICE_ACCOUNT: node_service_account,
+                }
+            )
+            spec["hostNetwork"] = True
+            spec["dnsPolicy"] = "ClusterFirstWithHostNet"
 
         return dict(
             metadata=dict(annotations=annotations, labels=labels),
