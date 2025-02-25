@@ -108,6 +108,25 @@ class TestLogitsTransforms(TestCase):
             jnp.full((batch_size, 1), decoding.NEG_INF),
         )
 
+    def test_stable_top_k_modifier_with_ties(self):
+        batch_size = 2
+        vocab_size = 1024
+        logits = jnp.concatenate(
+            (
+                jnp.full((batch_size, vocab_size - 1), -2 * jnp.pi),
+                jnp.full((batch_size, 1), -10.1),
+            ),
+            axis=-1,
+        )
+        top_k_modified_logits = top_k_logits(1, stable=True)(logits)
+        # Only the first maximum value is returned.
+        self.assertNestedAllClose(top_k_modified_logits[:, 0], logits[:, 0])
+        # Check that the rest of the array is neg inf.
+        self.assertNestedAllClose(
+            top_k_modified_logits[:, 1:],
+            jnp.full((batch_size, vocab_size - 1), decoding.NEG_INF),
+        )
+
     @parameterized.parameters(1e-4, 0.1, 0.5, 0.99)
     def test_top_p_modifier_with_ties(self, p: float):
         batch_size = 3

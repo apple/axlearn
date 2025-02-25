@@ -113,7 +113,7 @@ def top_p_logits(p: float) -> LogitsToLogitsFn:
     return fn
 
 
-def top_k_logits(k: int) -> LogitsToLogitsFn:
+def top_k_logits(k: int, stable: bool = False) -> LogitsToLogitsFn:
     """Build a function that returns logits suitably normalized for top-k sampling.
 
     The returned function does many reductions over the last axis of the input array.
@@ -125,7 +125,8 @@ def top_k_logits(k: int) -> LogitsToLogitsFn:
 
     Args:
         k: The maximum rank of logit to consider for sampling.
-            In the case of ties, we return all logits with the tied value (in total more than k).
+        stable: If false, return all logits with the tied value (in total more than k).
+            Otherwise, return the first k tied values. Currently this only supports for k = 1.
 
     Returns:
         A logits-to-logits function.
@@ -157,7 +158,16 @@ def top_k_logits(k: int) -> LogitsToLogitsFn:
         threshold = -1 * _float32_binary_search(batched_shape, predicate=predicate)
         return jnp.where(logits >= jnp.expand_dims(threshold, -1), logits, NEG_INF)
 
-    return fn
+    def stable_fn(logits: Tensor) -> Tensor:
+        # Returns the first maximum value if there are ties for k = 1.
+        # Note this only supports for k = 1. We may consider to extend to k > 1 in
+        # the future, but the benefits may be limited, as deterministic is usually
+        # not required in those cases.
+        assert k == 1, f"Only support k=1 for stable top_k, but got {k}."
+        mask = jax.nn.one_hot(jnp.argmax(logits, axis=-1), logits.shape[-1], axis=-1)
+        return jnp.where(mask, logits, NEG_INF)
+
+    return stable_fn if stable else fn
 
 
 def _monotonic_int32_to_float32_bit_mask(x: Tensor) -> Tensor:
