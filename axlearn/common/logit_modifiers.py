@@ -172,6 +172,9 @@ def top_k_logits(k: int, break_ties: Literal["all", "lowest-token-id"] = "all") 
             raise NotImplementedError(
                 f"Only support k=1 for break_ties = lowest-token-id, but got {k}."
             )
+        # Note different from numpy.argmax, jnp.argmax doesn't mention it returns
+        # the first maximum value. We assume it follows np.argmax and have a unit
+        # test to check this.
         mask = jax.nn.one_hot(jnp.argmax(logits, axis=-1), logits.shape[-1], axis=-1)
         return jnp.where(mask, logits, NEG_INF)
 
