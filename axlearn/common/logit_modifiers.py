@@ -134,7 +134,7 @@ def top_k_logits(k: int, *, break_ties: Literal["all", "smallest_index"] = "all"
 
     Raises:
         ValueError: If break_ties is invalid.
-        NotImplementedError: If braek_ties = lowest-token-id and k > 1.
+        NotImplementedError: If break_ties == "smallest_index" and k != 1.
     """
 
     def fn(logits: Tensor) -> Tensor:
