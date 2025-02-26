@@ -111,7 +111,7 @@ class TestLogitsTransforms(TestCase):
     @parameterized.product(
         batch_size=[2, 8],
         vocab_size=[512, 1024],
-        break_ties=["all", "lowest-token-id"],
+        break_ties=["all", "smallest_index"],
     )
     def test_top_k_modifier_break_ties(self, batch_size, vocab_size, break_ties):
         logits = jnp.concatenate(
