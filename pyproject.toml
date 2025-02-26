@@ -186,6 +186,7 @@ markers = [
     "tpu: tests needing access to a TPU device.",
     "high_cpu: tests that require a lot of CPU.",
     "fp64: tests that require 64-bit floating point precision.",
+    "for_8_devices: tests that run on host platform device count of 8.",
     "golden_config: golden config tests.",
     "golden_init: golden init tests.",
     "golden_regularizer: golden regularizer scale tests.",

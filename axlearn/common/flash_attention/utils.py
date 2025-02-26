@@ -107,7 +107,7 @@ MultiHeadAttentionImpl = Callable[[Tensor, Tensor, Tensor, Tensor, Optional[Tens
 def flash_attention_implementation(
     backend: Literal["cpu", "tpu", "gpu", "xla", "neuron"],
     *,
-    softmax_scale: float,
+    softmax_scale: float = 1.0,
     block_size: int = 128,
     dropout_rate: Optional[float] = 0.0,
 ) -> MultiHeadAttentionImpl:
@@ -202,7 +202,7 @@ def flash_attention_implementation(
                     mask_fn=mask_fn,
                     kv_seq_len=kv_seq_len,
                     softmax_scale=softmax_scale,
-                    interpret=(backend == "cpu"),
+                    interpret=_interpret(backend),
                 )
 
             key = _repeat_kv_heads(query.shape[2], key)
@@ -237,7 +237,7 @@ def flash_attention_implementation(
                     softmax_scale=softmax_scale,
                     mask_fn=mask.mask if mask.has_value() else None,
                     dropout_rate=dropout_rate,
-                    interpret=(backend == "cpu"),
+                    interpret=_interpret(backend),
                 )
             else:
                 causal, explicit_bias = split(
@@ -276,7 +276,7 @@ def flash_attention_implementation(
                 mask=mask,
                 softmax_scale=softmax_scale,
                 block_size=block_size,
-                interpret=(backend == "cpu"),
+                interpret=_interpret(backend),
             )
 
         elif backend == "neuron":
@@ -332,3 +332,7 @@ def flash_attention_implementation(
         raise NotImplementedError(f"Backend ({backend}) does not have an implementation.")
 
     return jit_attn
+
+
+def _interpret(backend: str):
+    return backend == "cpu"
