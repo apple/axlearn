@@ -113,7 +113,7 @@ def top_p_logits(p: float) -> LogitsToLogitsFn:
     return fn
 
 
-def top_k_logits(k: int, break_ties: Literal["all", "lowest-token-id"] = "all") -> LogitsToLogitsFn:
+def top_k_logits(k: int, *, break_ties: Literal["all", "smallest_index"] = "all") -> LogitsToLogitsFn:
     """Build a function that returns logits suitably normalized for top-k sampling.
 
     The returned function does many reductions over the last axis of the input array.
