@@ -15,7 +15,7 @@ values of `p`.
 
 Reference: <https://github.com/google-research/t5x/blob/79998013/t5x/binary_search.py>
 """
-from typing import Callable
+from typing import Callable, Literal
 
 import jax
 from jax import numpy as jnp
@@ -113,7 +113,9 @@ def top_p_logits(p: float) -> LogitsToLogitsFn:
     return fn
 
 
-def top_k_logits(k: int) -> LogitsToLogitsFn:
+def top_k_logits(
+    k: int, *, break_ties: Literal["all", "smallest_index"] = "all"
+) -> LogitsToLogitsFn:
     """Build a function that returns logits suitably normalized for top-k sampling.
 
     The returned function does many reductions over the last axis of the input array.
@@ -125,10 +127,17 @@ def top_k_logits(k: int) -> LogitsToLogitsFn:
 
     Args:
         k: The maximum rank of logit to consider for sampling.
-            In the case of ties, we return all logits with the tied value (in total more than k).
+        break_ties: Configures top-k behavior in the case of ties:
+            * "all": Return all logits with the tied value (in total more than k).
+            * "smallest_index": Return the k tied values with smallest index.
+              Currently this only supports k = 1.
 
     Returns:
         A logits-to-logits function.
+
+    Raises:
+        ValueError: If break_ties is invalid.
+        NotImplementedError: If break_ties == "smallest_index" and k != 1.
     """
 
     def fn(logits: Tensor) -> Tensor:
@@ -157,7 +166,25 @@ def top_k_logits(k: int) -> LogitsToLogitsFn:
         threshold = -1 * _float32_binary_search(batched_shape, predicate=predicate)
         return jnp.where(logits >= jnp.expand_dims(threshold, -1), logits, NEG_INF)
 
-    return fn
+    def smallest_index_fn(logits: Tensor) -> Tensor:
+        # Returns the maximum value with smallest index when there are ties for k = 1.
+        # Note this only supports for k = 1. We may consider to extend to k > 1 in
+        # the future, but the benefits may be limited as determinism is usually
+        # not required in those cases.
+        if k != 1:
+            raise NotImplementedError(f"Only k=1 supportes for {break_ties=}, but got {k}.")
+        # Note different from numpy.argmax, jnp.argmax doesn't mention it returns
+        # the first maximum value. We assume it follows np.argmax and have a unit
+        # test to check this.
+        mask = jax.nn.one_hot(jnp.argmax(logits, axis=-1), logits.shape[-1], axis=-1)
+        return jnp.where(mask, logits, NEG_INF)
+
+    if break_ties == "all":
+        return fn
+    elif break_ties == "smallest_index":
+        return smallest_index_fn
+    else:
+        raise ValueError(f"Unsupported {break_ties=}")
 
 
 def _monotonic_int32_to_float32_bit_mask(x: Tensor) -> Tensor:
