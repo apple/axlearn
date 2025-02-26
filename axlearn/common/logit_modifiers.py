@@ -125,9 +125,9 @@ def top_k_logits(k: int, *, break_ties: Literal["all", "smallest_index"] = "all"
 
     Args:
         k: The maximum rank of logit to consider for sampling.
-        break_ties: `all`: return all logits with the tied value (in total more than k).
-            `lowest-token-id`: return the k tied values with lowest token id.
-            Currently this only supports for k = 1.
+        break_ties: Configures top-k behavior in the case of ties:
+            * "all": Return all logits with the tied value (in total more than k).
+            * "smallest_index": Return the k tied values with smallest index. Currently this only supports k = 1.
 
     Returns:
         A logits-to-logits function.
