@@ -1137,8 +1137,13 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                     ),
                 )
 
-    @parameterized.parameters(jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16)
-    def test_save_and_restore_from_dir_async(self, restore_floats_as: jnp.dtype):
+    @parameterized.product(
+        restore_floats_as=[jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16],
+        max_concurrent_gb=[None, 1],
+    )
+    def test_save_and_restore_from_dir_async(
+        self, restore_floats_as: jnp.dtype, max_concurrent_gb: Optional[int]
+    ):
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
@@ -1148,7 +1153,11 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
 
         with _mesh(mesh_shape):
             state = make_state(float_dtype=jnp.float32)
-            storage = TensorStoreStateStorage.default_config().instantiate()
+            storage = (
+                TensorStoreStateStorage.default_config()
+                .set(max_concurrent_gb=max_concurrent_gb)
+                .instantiate()
+            )
             with tempfile.TemporaryDirectory() as root_dir:
                 step = 1000
                 # Save ckpt.
