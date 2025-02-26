@@ -108,9 +108,12 @@ class TestLogitsTransforms(TestCase):
             jnp.full((batch_size, 1), decoding.NEG_INF),
         )
 
-    def test_limit_top_k_modifier_with_ties(self):
-        batch_size = 2
-        vocab_size = 1024
+    @parameterized.product(
+        batch_size=[2, 8],
+        vocab_size=[512, 1024],
+        break_ties=["all", "lowest-token-id"],
+    )
+    def test_top_k_modifier_break_ties(self, batch_size, vocab_size, break_ties):
         logits = jnp.concatenate(
             (
                 jnp.full((batch_size, vocab_size - 1), -2 * jnp.pi),
@@ -118,13 +121,15 @@ class TestLogitsTransforms(TestCase):
             ),
             axis=-1,
         )
-        top_k_modified_logits = top_k_logits(1, limit_to_k=True)(logits)
-        # Only the first maximum value is returned.
-        self.assertNestedAllClose(top_k_modified_logits[:, 0], logits[:, 0])
+        top_k_modified_logits = top_k_logits(1, break_ties=break_ties)(logits)
+        num_returned_logits = vocab_size - 1 if break_ties == "all" else 1
+        self.assertNestedAllClose(
+            top_k_modified_logits[:, :num_returned_logits], logits[:, :num_returned_logits]
+        )
         # Check that the rest of the array is neg inf.
         self.assertNestedAllClose(
-            top_k_modified_logits[:, 1:],
-            jnp.full((batch_size, vocab_size - 1), decoding.NEG_INF),
+            top_k_modified_logits[:, num_returned_logits:],
+            jnp.full((batch_size, vocab_size - num_returned_logits), decoding.NEG_INF),
         )
 
     @parameterized.parameters(1e-4, 0.1, 0.5, 0.99)
