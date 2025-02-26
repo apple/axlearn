@@ -62,7 +62,9 @@ def _is_supported(*, platform: str, mesh_shape: MeshShape) -> bool:
 def _ordered_devices(mesh_shape: MeshShape, process_shape: MeshShape) -> np.ndarray:
     """Returns devices of shape `mesh_shape` with consistent host ordering.
 
-    process_shape indicates how the hosts should be laid out.
+    `process_shape` indicates how the hosts should be laid out. For example, if `mesh_shape` is
+    (4,4) and `process_shape` is (2,2), the top-left quadrant will be assigned device IDs from
+    process 0, the top-right quadrant from process 1, etc.
     """
     assert len(mesh_shape) == len(process_shape), "ndim should match"
 

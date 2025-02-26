@@ -3,16 +3,61 @@
 """Utility to help dispatching input batches from hosts to devices."""
 
 import copy
+import math
 from collections.abc import Sequence
+from functools import cached_property
 from typing import Optional
 
 import jax
 import numpy as np
 from jax import numpy as jnp
+from jax._src.mesh import thread_resources
+from jax._src.sharding_impls import get_process_index_and_count
+from jax.sharding import PartitionSpec
 
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import PHYSICAL_TO_LOGICAL_DISPATCH_KEY, Nested, Tensor
+from axlearn.common.utils import (
+    PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
+    Nested,
+    Tensor,
+    input_partition_spec,
+)
+
+
+class BaseInputDispatcher(Module):
+    """Base input dispatch interface."""
+
+    @config_class
+    class Config(Module.Config):
+        """Configuration for BaseInputDispatcher."""
+
+        global_logical_batch_size: Required[int] = REQUIRED
+
+    @property
+    def num_logical_feeds(self) -> int:
+        raise NotImplementedError(type(self))
+
+    @property
+    def logical_feed_index(self) -> int:
+        raise NotImplementedError(type(self))
+
+    @property
+    def feed_logical_batch_size(self) -> int:
+        raise NotImplementedError(type(self))
+
+    @property
+    def partition_spec(self) -> PartitionSpec:
+        raise NotImplementedError(type(self))
+
+    def feed_read_config(self) -> dict[str, int]:
+        raise NotImplementedError(type(self))
+
+    def logical_to_physical_batch(self, logical_feed_batch: Nested[Tensor]) -> Nested[Tensor]:
+        raise NotImplementedError(type(self))
+
+    def physical_to_logical_batch(self, global_physical_batch: Nested[Tensor]) -> Nested[Tensor]:
+        raise NotImplementedError(type(self))
 
 
 class InputDispatcher(Module):
@@ -72,23 +117,19 @@ class InputDispatcher(Module):
         cfg = self.config
         if cfg.global_logical_batch_size % self.num_logical_feeds != 0:
             raise ValueError(
-                f"global_logical_batch_size {cfg.global_logical_batch_size} must be "
-                f"divisible by num_logical_feeds {self.num_logical_feeds}"
+                f"{cfg.global_logical_batch_size=} must be divisible by {self.num_logical_feeds=}"
             )
         if cfg.global_physical_batch_size % cfg.num_physical_feeds != 0:
             raise ValueError(
-                f"global_logical_batch_size {cfg.global_physical_batch_size} must be "
-                f"divisible by num_logical_feeds {self.num_physical_feeds}"
+                f"{cfg.global_physical_batch_size=} must be divisible by {cfg.num_physical_feeds=}"
             )
         if self.feed_physical_batch_size < self.feed_logical_batch_size:
             raise ValueError(
-                f"feed_physical_batch_size {self.feed_physical_batch_size} must be "
-                f">= feed_logical_batch_size {self.feed_logical_batch_size}"
+                f"{self.feed_physical_batch_size=} must be >= {self.feed_logical_batch_size=}"
             )
         if not 0 <= cfg.physical_feed_index < cfg.num_physical_feeds:
             raise ValueError(
-                f"physical_feed_index {cfg.physical_feed_index} must be "
-                f"in range [0, {cfg.num_physical_feeds})"
+                f"{cfg.physical_feed_index=} must be in range [0, {cfg.num_physical_feeds})"
             )
         if not all(0 <= ix < cfg.num_physical_feeds for ix in cfg.logical_feed_indices):
             raise ValueError(
@@ -96,7 +137,7 @@ class InputDispatcher(Module):
                 f"in range [0, {cfg.num_physical_feeds})"
             )
         if len(set(cfg.logical_feed_indices)) != len(cfg.logical_feed_indices):
-            raise ValueError(f"logical_feed_indices must be unique: {cfg.logical_feed_indices}")
+            raise ValueError(f"{cfg.logical_feed_indices=} must be unique")
 
     @property
     def num_logical_feeds(self) -> int:
@@ -117,6 +158,10 @@ class InputDispatcher(Module):
     def feed_physical_batch_size(self) -> int:
         cfg = self.config
         return cfg.global_physical_batch_size // cfg.num_physical_feeds
+
+    @property
+    def partition_spec(self) -> PartitionSpec:
+        return input_partition_spec()
 
     def feed_read_config(self) -> dict[str, int]:
         """Generates the read configuration for the local physical feed.
@@ -251,3 +296,101 @@ class InputDispatcher(Module):
             return data
 
         return traverse_and_dispatch(global_physical_batch)
+
+
+# TODO(markblee): Lift this restriction.
+def _validate_batch_partitioned(partition_spec: PartitionSpec):
+    """Asserts that `partition_spec` only partitions along batch dim."""
+
+    if not partition_spec:
+        raise ValueError(f"{partition_spec=} cannot be empty.")
+
+    # Currently, input pipelines only support the batch axis.
+    if any(spec is not None for spec in jax.tree.leaves(partition_spec[1:])):
+        raise NotImplementedError(
+            "Partitioning along non-batch dims is currently not supported by input dispatch: "
+            f"{partition_spec}"
+        )
+
+
+class SpmdInputDispatcher(Module):
+    """A variant of InputDispatcher which is mesh/topology aware.
+
+    Specifically, given a global shape and input shardings, we infer the layout of the processes
+    (input feeds) across the mesh, and assign each process a corresponding feed index and
+    process-local shape that the process should produce.
+
+    These process-local inputs can then be directly used to assemble a global array under the target
+    sharding without a separate dispatch step.
+    """
+
+    @config_class
+    class Config(Module.Config):
+        """Configuration for SpmdInputDispatcher.
+
+        Attributes:
+            partition_spec: A PyTree specifying how inputs should be partitioned.
+            global_logical_batch_size: Global logical batch size.
+        """
+
+        partition_spec: Required[PartitionSpec] = REQUIRED
+        global_logical_batch_size: Required[int] = REQUIRED
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        cfg: SpmdInputDispatcher.Config = self.config
+
+        mesh = thread_resources.env.physical_mesh
+        if mesh.empty:
+            raise ValueError("Expected to be initialized within the context of a mesh.")
+
+        # TODO(markblee): For simplicity, we currently restrict to batch-only partitioning, since
+        # input implementations currently do not support other configurations. Specifically, we can
+        # extend `feed_read_config` to return not just an index but a tuple of indices indicating
+        # the position of the feed along dims != 0.
+        _validate_batch_partitioned(cfg.partition_spec)
+        self._partition_spec = cfg.partition_spec
+        logical_sharding = jax.NamedSharding(mesh, cfg.partition_spec)
+
+        # Validate that batch partitioning is consistent with logical batch size.
+        num_partitions = math.prod(
+            mesh.shape[axis] for axis in jax.tree.leaves(logical_sharding.spec[0])
+        )
+        if cfg.global_logical_batch_size % num_partitions != 0:
+            raise ValueError(
+                f"{cfg.partition_spec=} attempts to divide batch over {num_partitions=}, "
+                f"which is incompatible with {cfg.global_logical_batch_size=}."
+            )
+
+        # Infer the physical feeds and feed index along dim=0.
+        feed_index, feed_count = get_process_index_and_count(
+            logical_sharding, dim=0, ndims=len(mesh.shape)
+        )
+        self._num_logical_feeds = feed_count
+        self._logical_feed_index = feed_index
+
+    @property
+    def num_logical_feeds(self) -> int:
+        return self._num_logical_feeds
+
+    @property
+    def logical_feed_index(self) -> int:
+        return self._logical_feed_index
+
+    @cached_property
+    def feed_logical_batch_size(self) -> int:
+        cfg: SpmdInputDispatcher.Config = self.config
+        return cfg.global_logical_batch_size // self._num_logical_feeds
+
+    @property
+    def partition_spec(self) -> PartitionSpec:
+        return self._partition_spec
+
+    def feed_read_config(self) -> dict[str, int]:
+        return dict(num_shards=self._num_logical_feeds, shard_index=self._logical_feed_index)
+
+    def logical_to_physical_batch(self, logical_feed_batch: Nested[Tensor]) -> Nested[Tensor]:
+        return jax.tree.map(lambda x: x, logical_feed_batch)
+
+    def physical_to_logical_batch(self, physical_feed_batch: Nested[Tensor]) -> Nested[Tensor]:
+        return jax.tree.map(lambda x: x, physical_feed_batch)
