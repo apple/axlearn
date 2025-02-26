@@ -308,6 +308,14 @@ class TPUReplicatedJob(BaseReplicatedJob):
             "not all TPU types support this flag.",
             **common_kwargs,
         )
+        # Only supported in clusters with PriorityClass setup.
+        # TODO(ethanli): infer it from the JobMetadata.priority.
+        flags.DEFINE_string(
+            "priority_class",
+            None,
+            "The GKE PriorityClass for the job.",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
