@@ -773,7 +773,7 @@ def data_partition_type_to_spec(partition: DataPartitionType) -> PartitionSpec:
     if partition == DataPartitionType.FULL:
         return input_partition_spec()
     elif partition == DataPartitionType.REPLICATED:
-        return None
+        return PartitionSpec(None)
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
@@ -781,7 +781,7 @@ def data_partition_type_to_spec(partition: DataPartitionType) -> PartitionSpec:
 def host_to_global_device_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
-    partition: DataPartitionType = DataPartitionType.FULL,
+    partition: Union[PartitionSpec, DataPartitionType] = DataPartitionType.FULL,
 ) -> NestedTensor:
     """Converts the given host device arrays to global device arrays.
 
@@ -789,7 +789,8 @@ def host_to_global_device_array(
 
     Args:
         host_arrays: A nested tree of device arrays in host memory. Usually these present the
-            per-host portion of the global input batch.
+            per-host portion of the global input batch. We currently assume that per-host portions
+            form a uniform sharding across the batch.
         partition: How the global array should be partitioned.
 
     Returns:
@@ -799,10 +800,17 @@ def host_to_global_device_array(
     Raises:
         NotImplementedError: if the given `partition` type is not supported.
     """
+    if isinstance(partition, DataPartitionType):
+        logging.log_first_n(
+            logging.WARNING,
+            "Passing DataPartitionType is deprecated. Please specify a PartitionSpec directly.",
+            n=1,
+        )
+        partition = data_partition_type_to_spec(partition)
+
     mesh = thread_resources.env.physical_mesh
-    partition_spec = data_partition_type_to_spec(partition)
     partition_specs = complete_partition_spec_tree(
-        jax.tree_util.tree_structure(host_arrays), partition_spec
+        jax.tree_util.tree_structure(host_arrays), partition
     )
     process_count = jax.process_count()
 
@@ -811,6 +819,8 @@ def host_to_global_device_array(
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
             global_shape = (x.shape[0], *x.shape[1:])
+        elif isinstance(partition, PartitionSpec):
+            global_shape = None  # Allow jax to infer.
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
         return jax.make_array_from_process_local_data(
