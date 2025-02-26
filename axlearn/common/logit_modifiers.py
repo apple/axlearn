@@ -170,7 +170,7 @@ def top_k_logits(k: int, *, break_ties: Literal["all", "smallest_index"] = "all"
         # not required in those cases.
         if k != 1:
             raise NotImplementedError(
-                f"Only support k=1 for break_ties = lowest-token-id, but got {k}."
+                f"Only k=1 supportes for {break_ties=}, but got {k}."
             )
         # Note different from numpy.argmax, jnp.argmax doesn't mention it returns
         # the first maximum value. We assume it follows np.argmax and have a unit
