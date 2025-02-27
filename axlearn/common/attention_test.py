@@ -4183,7 +4183,10 @@ class TestStackedTransformerLayerWithKVState(NonUniformStack):
         layer_kwargs: dict[str, Any],
         *,
         all_layer_outputs: list[BaseTransformerLayer.Output],
+        external_self_attention_kv_state: Optional[KVState] = None,
     ):
+        del external_self_attention_kv_state
+
         layer_index = len(all_layer_outputs)
         if layer_index == 1:
             layer_kwargs["self_attention_kv_state"] = all_layer_outputs[-1].self_attention_kv_state
@@ -4585,6 +4588,51 @@ class StackedTransformerTest(BaseTransformerTest):
                 jnp.min(jnp.abs(base_output[i].data - test_output[i].data)),
                 0.0,
             )
+
+    def test_passthrough_update_layer_kwargs(self):
+        num_heads = 2
+        input_dim = 4
+        hidden_dim = 8
+        num_layers = 3
+
+        cfg = StackedTransformerLayer.default_config().set(name="test")
+        cfg.input_dim = input_dim
+        cfg.num_layers = num_layers
+
+        transformer_cfg = TransformerLayer.default_config()
+        transformer_cfg.self_attention.attention.num_heads = num_heads
+        transformer_cfg.feed_forward.hidden_dim = hidden_dim
+        cfg.layer = transformer_cfg
+
+        layer: StackedTransformerLayer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        input_all_layer_outputs = [BaseTransformerLayer.Output(data=jnp.ones([2, 3]))]
+        expected_all_layer_outputs = [BaseTransformerLayer.Output(data=jnp.ones([2, 3]))]
+        k_proj = jnp.zeros([3, 3])
+        v_proj = jnp.ones([3, 3])
+        input_self_attention_kv_state = KVState(k_proj=k_proj, v_proj=v_proj)
+        expected_self_attention_kv_state = KVState(k_proj=k_proj, v_proj=v_proj)
+        F(
+            layer,
+            prng_key=jax.random.PRNGKey(0),
+            state=state,
+            inputs=dict(
+                layer_kwargs={},
+                all_layer_outputs=[],
+                external_self_attention_kv_state=input_self_attention_kv_state,
+            ),
+            method="_update_layer_kwargs",
+            is_training=True,
+        )
+        self.assertNestedAllClose(
+            input_all_layer_outputs,
+            expected_all_layer_outputs,
+        )
+        self.assertNestedAllClose(
+            input_self_attention_kv_state,
+            expected_self_attention_kv_state,
+        )
 
     def test_update_layer_kwargs(self):
         batch_size = 2
