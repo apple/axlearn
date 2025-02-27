@@ -3603,6 +3603,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         """
         all_layer_outputs = []
         all_layer_states = []
+        external_self_attention_kv_state = layer_kwargs.get("self_attention_kv_state")
 
         # True iff we are initializing an empty cache (i.e., not prefilling).
         cache_init = mode == ForwardMode.INIT_STATES and cached_states is None
@@ -3612,7 +3613,11 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             if self._update_data is not None:
                 data = self._update_data(data, all_layer_outputs)
             # TODO(markblee): Consider folding into _update_data.
-            self._update_layer_kwargs(layer_kwargs, all_layer_outputs=all_layer_outputs)
+            self._update_layer_kwargs(
+                layer_kwargs,
+                all_layer_outputs=all_layer_outputs,
+                external_self_attention_kv_state=external_self_attention_kv_state,
+            )
 
             if mode == ForwardMode.FORWARD:
                 layer_states, layer_outputs = None, layer(data, **layer_kwargs)
@@ -3668,6 +3673,7 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
         layer_kwargs: dict[str, Any],
         *,
         all_layer_outputs: list[BaseTransformerLayer.Output],
+        external_self_attention_kv_state: Optional[KVState] = None,
     ):
         """Updates `layer_kwargs` using other args.
 
@@ -3678,6 +3684,8 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
             layer_kwargs: a dictionary of arguments that can be used by individual layers.
             all_layer_outputs: a list of BaseTransformerLayer.Output that is appended with
                 the output of each constituent layer in the stack.
+            external_self_attention_kv_state: A KVState that this function processes
+                to populate (if needed) the self_attention_kv_state within `layer_kwargs`.
         """
         pass  # Do nothing by default.
 
