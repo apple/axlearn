@@ -560,7 +560,9 @@ class TensorStoreStateStorage(StateStorage):
         )
         return self._restore_tensorstore_state(state, ckpt_dir=ckpt_dir, spec=spec)
 
-    def _restore_tensorstore_state(self, state, *, ckpt_dir: str, spec: CheckpointSpec):
+    def _restore_tensorstore_state(
+        self, state, *, ckpt_dir: str, spec: CheckpointSpec, sync: bool = True
+    ):
         restored_gda_values = self._manager.deserialize(
             shardings=spec.shardings,
             tensorstore_specs=spec.tensorstore_specs,
@@ -584,7 +586,8 @@ class TensorStoreStateStorage(StateStorage):
         restored_state = jax.tree_util.tree_unflatten(
             jax.tree_util.tree_structure(state), state_leaves
         )
-        multihost_utils.sync_global_devices(ckpt_dir)
+        if sync:
+            multihost_utils.sync_global_devices(ckpt_dir)
         return restored_state
 
     def stop(self):
@@ -906,7 +909,11 @@ class Checkpointer(BaseCheckpointer):
     def _all_checkpoint_paths(cls, base_dir: str) -> list[str]:
         """Like `checkpoint_paths`, but also include non-committed checkpoints."""
         try:
-            return [path for path in fs.listdir(base_dir) if path.startswith(STEP_PREFIX)]
+            return [
+                os.path.join(base_dir, path.rstrip("/"))
+                for path in fs.listdir(base_dir)
+                if path.startswith(STEP_PREFIX)
+            ]
         except fs.NotFoundError:
             return []
 
@@ -918,7 +925,7 @@ class Checkpointer(BaseCheckpointer):
         # gcs when there are many checkpoint files, even if using a "native" solution like
         # `google-cloud-python` SDK.
         paths = cls._all_checkpoint_paths(base_dir)
-        paths = [os.path.join(base_dir, path, "index") for path in paths]
+        paths = [os.path.join(path, "index") for path in paths]
         with futures.ThreadPoolExecutor() as pool:
             index_exists = pool.map(fs.exists, paths)
         return [os.path.dirname(path) for path, committed in zip(paths, index_exists) if committed]
@@ -1042,12 +1049,12 @@ class Checkpointer(BaseCheckpointer):
         remaining_dirs, gc_dirs = [], []
 
         try:
-            step_dirs = [step.rstrip("/") for step in self._all_checkpoint_paths(cfg.dir)]
+            step_dirs = self._all_checkpoint_paths(cfg.dir)
         except fs.NotFoundError:
             step_dirs = []
 
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
-        dirs = sorted([os.path.join(cfg.dir, step) for step in step_dirs], reverse=True)
+        dirs = sorted(step_dirs, reverse=True)
         committed_dirs = set(self.checkpoint_paths(cfg.dir))
 
         # Collect the recent non-committed checkpoints, since any of them could be in-progress.

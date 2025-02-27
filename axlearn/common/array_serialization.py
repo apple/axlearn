@@ -459,7 +459,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         return fut.result()
 
 
-class BoundedDataShardedAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
+class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
     """Similar to GlobalAsyncCheckpointManager but with few improvements:
 
     1. Writing to tensorstore requires no host-to-host copy most of the time. This reduces host
