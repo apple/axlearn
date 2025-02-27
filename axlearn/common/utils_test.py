@@ -909,8 +909,15 @@ class TreeUtilsTest(TestCase):
         with self.assertRaises(ValueError):
             tree_merge(primary, secondary={"a": {"c": {"e": 456}}})
 
-        out = tree_merge(primary, secondary={"a": {"c": {"e": 456}}}, override_fn=lambda f, s: s)
-        self.assertEqual(out, {"a": {"b": {}, "c": {"e": 456}, "g": {"e": 123}}, "empty": ()})
+        with self.assertRaises(ValueError):
+            # c is not a VDict.
+            tree_merge(primary, secondary={"a": {"c": {"e": 456}}}, override_fn=lambda f, s: s)
+        out = tree_merge(
+            primary, secondary={"a": {"c": VDict({"e": 456})}}, override_fn=lambda f, s: s
+        )
+        self.assertEqual(
+            out, {"a": {"b": {}, "c": VDict({"e": 456}), "g": {"e": 123}}, "empty": ()}
+        )
 
         # Non-empty leaves overrides empty leaves.
         out = tree_merge(primary, secondary={"empty": 1})

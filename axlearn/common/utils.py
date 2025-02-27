@@ -1412,7 +1412,7 @@ def tree_merge(
     secondary: Nested[Any],
     override_fn: Callable[[Any, Any], Any] = tree_merge_default_override_fn,
 ) -> Nested[Any]:
-    """Merge `secondary` into `primary`. The result contains shallow copies of subtrees from both.
+    """Merge `secondary` into `primary`. The result contains deep copies of subtrees from both.
 
     Two trees are mergable if there does not exists a path in `secondary` that is a subpath of any
     path in `primary`. If there are identical path with different leaves, `override_fn` is used to
@@ -1423,15 +1423,21 @@ def tree_merge(
     """
     if isinstance(primary, dict) ^ isinstance(secondary, dict):
         raise ValueError(f"Trying to merge incompatible subtrees: {primary=}, {secondary=}")
+    # Use the override function if primary or secondary is a leaf.
     if not (isinstance(primary, dict) or isinstance(secondary, dict)):
-        return override_fn(primary, secondary)
+        return copy.deepcopy(override_fn(primary, secondary))
+    # pylint: disable-next=unidiomatic-typecheck
+    if type(primary) != type(secondary):
+        raise ValueError(
+            f"Incompatible subtree types: primary={type(primary)}, secondary={type(secondary)}"
+        )
     # Use type() so that if primary is a VDict, out_tree is also a VDict.
     out_tree = type(primary)(primary)
     for k in secondary:
         if k in primary:
             out_tree[k] = tree_merge(primary[k], secondary=secondary[k], override_fn=override_fn)
         else:
-            out_tree[k] = secondary[k]
+            out_tree[k] = copy.deepcopy(secondary[k])
     return out_tree
 
 
