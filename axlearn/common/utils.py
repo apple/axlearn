@@ -1386,7 +1386,7 @@ def prune_tree(
     return in_tree
 
 
-def tree_merge_default_override_fn(primary: Any, secondary: Any):
+def tree_merge_default_leaf_merge_fn(primary: Any, secondary: Any):
     is_primary_empty = False
     is_secondary_empty = False
     try:
@@ -1410,22 +1410,22 @@ def tree_merge(
     primary: Nested[Any],
     *,
     secondary: Nested[Any],
-    override_fn: Callable[[Any, Any], Any] = tree_merge_default_override_fn,
+    leaf_merge_fn: Callable[[Any, Any], Any] = tree_merge_default_leaf_merge_fn,
 ) -> Nested[Any]:
     """Merge `secondary` into `primary`. The result contains deep copies of subtrees from both.
 
     Two trees are mergable if there does not exists a path in `secondary` that is a subpath of any
-    path in `primary`. If there are identical path with different leaves, `override_fn` is used to
+    path in `primary`. If there are identical path with different leaves, `leaf_merge_fn` is used to
     determine which leaf is kept in the resulting tree.
 
-    The default `override_fn` choses the non-empty leaf. If both leaves are non-empty, an error
+    The default `leaf_merge_fn` choses the non-empty leaf. If both leaves are non-empty, an error
     will be raised.
     """
     if isinstance(primary, dict) ^ isinstance(secondary, dict):
         raise ValueError(f"Trying to merge incompatible subtrees: {primary=}, {secondary=}")
     # Use the override function if primary or secondary is a leaf.
     if not (isinstance(primary, dict) or isinstance(secondary, dict)):
-        return copy.deepcopy(override_fn(primary, secondary))
+        return copy.deepcopy(leaf_merge_fn(primary, secondary))
     # pylint: disable-next=unidiomatic-typecheck
     if type(primary) != type(secondary):
         raise ValueError(
@@ -1435,7 +1435,9 @@ def tree_merge(
     out_tree = type(primary)(primary)
     for k in secondary:
         if k in primary:
-            out_tree[k] = tree_merge(primary[k], secondary=secondary[k], override_fn=override_fn)
+            out_tree[k] = tree_merge(
+                primary[k], secondary=secondary[k], leaf_merge_fn=leaf_merge_fn
+            )
         else:
             out_tree[k] = copy.deepcopy(secondary[k])
     return out_tree
