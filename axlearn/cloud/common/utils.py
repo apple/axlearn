@@ -14,9 +14,10 @@ from typing import Any, Callable, Optional, Union
 
 import pkg_resources
 import psutil
-from absl import app, logging
+from absl import app, flags, logging
 
 from axlearn.cloud import ROOT_MODULE_NAME
+from axlearn.common.config import Configurable
 
 
 class FilterDiscoveryLogging(pylogging.Filter):
@@ -300,7 +301,7 @@ def copy_blobs(from_prefix: str, *, to_prefix: str):
     # pylint: disable-next=import-outside-toplevel
     from axlearn.common import file_system as fs
 
-    # As tf_io.gfile.copy requires a path to a file when reading from cloud storage,
+    # As file_system.copy requires a path to a file when reading from cloud storage,
     # we traverse the `from_prefix` to find and copy all suffixes.
     if not fs.isdir(from_prefix):
         # Copy the file.
@@ -384,3 +385,21 @@ class Table:
     def __repr__(self) -> str:
         """Formats the table for printing."""
         return format_table(headings=self.headings, rows=self.rows)
+
+
+class FlagConfigurable(Configurable):
+    """A Configurable object that also supports flag-based configuration."""
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        """Subclasses can override this method to define absl flags to be read by `from_flags()`."""
+        del fv
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        """Populate config partially using parsed absl flags."""
+        flag_values = {**fv.flag_values_dict(), **kwargs}
+        cfg = cls.default_config()
+        return cfg.set(
+            **{field: flag_values[field] for field in cfg.keys() if field in flag_values}
+        )

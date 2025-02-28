@@ -247,7 +247,7 @@ def pre_emphasis(x: Tensor, *, coeff: Tensor) -> Tensor:
     Returns:
         Frames of shape `[..., frame_size-1]`.
     """
-    return x[..., 1:] - coeff * x[..., :-1]
+    return x[..., 1:] - jnp.astype(coeff, x.dtype) * x[..., :-1]
 
 
 def window_coffs(window_size: int, *, window_type: WindowType, periodic: bool = True) -> Tensor:

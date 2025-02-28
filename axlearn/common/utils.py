@@ -1657,8 +1657,8 @@ class DeviceUsage:
     """Usage measurements for a device."""
 
     device_id: int
-    tensorcore_duty_cycle_percent: Optional[float] = None
-    tensorcore_utilization: Optional[float] = None
+    device_duty_cycle_percent: Optional[float] = None
+    device_utilization: Optional[float] = None
     hbm_memory_usage_bytes: Optional[int] = None
     hbm_memory_total_bytes: Optional[int] = None
     hbm_memory_bandwidth_utilization: Optional[float] = None
@@ -1696,3 +1696,19 @@ def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
                 f"Input is expected to contain '{path}'; "
                 f"instead, it contains: '{jax.tree_structure(x)}'."
             ) from e
+
+
+def prune_empty(in_tree: Nested[Tensor]) -> Nested[Tensor]:
+    """Returns a shallow copy of the input tree with empty subtrees pruned.
+
+    If a tree would be made empty by removal of its subtrees, it will also be pruned.
+    This is a shallow copy because leaf nodes (non-dict values) are not deep-copied.
+
+    Args:
+        in_tree: the input tree to be pruned.
+
+    Returns:
+        The pruned copy of the input tree.
+    """
+    # Note that falsey values or empty Tensors are not considered empty.
+    return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)

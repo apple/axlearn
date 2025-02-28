@@ -115,8 +115,20 @@ def _log_mel_spectrogram(
 
 def _pre_emphasis(coeff: float) -> StageFn:
     """Returns a StageFn that applies pre-emphasis."""
-    # Native python float is fp64, explicitly cast it to fp32.
-    return functools.partial(pre_emphasis, coeff=jnp.array(coeff, dtype=jnp.float32))
+    return functools.partial(pre_emphasis, coeff=jnp.array(coeff))
+
+
+def _fft_dtype(input_dtype: jnp.dtype) -> jnp.dtype:
+    if input_dtype in (jnp.bfloat16, jnp.float32, jnp.float64):
+        return input_dtype
+    elif input_dtype == jnp.int16:
+        return jnp.bfloat16
+    elif input_dtype == jnp.int32:
+        return jnp.float32
+    elif input_dtype == jnp.int64:
+        return jnp.float64
+    else:
+        raise ValueError(f"{input_dtype=} is not supported.")
 
 
 class LogMelFrontend(BaseFrontend):
@@ -210,7 +222,7 @@ class LogMelFrontend(BaseFrontend):
         """Computes log-mel spectrogram features.
 
         Args:
-            frames: Tensor of dtype float32 and shape [batch, num_frames, frame_size].
+            frames: Tensor of shape [batch, num_frames, frame_size].
             frames_paddings: A 0/1 Tensor of shape [batch, num_frames].
 
         Returns:
@@ -225,7 +237,7 @@ class LogMelFrontend(BaseFrontend):
         frames = windowing(frames, window_type=WindowType.HANN)
         # FFT and construct spectrogram.
         # [batch_size, num_frames, fft_size] -> [batch, num_frames, num_filters].
-        outputs = self._spectrogram(self._fft(frames), dtype=frames.dtype)
+        outputs = self._spectrogram(self._fft(frames), dtype=_fft_dtype(frames.dtype))
         if self._output_transformation is not None:
             outputs = self._output_transformation(outputs)
         outputs = outputs * (1 - einops.rearrange(frames_paddings, "b t -> b t 1"))

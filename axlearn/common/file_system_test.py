@@ -86,6 +86,20 @@ class LocalTest(TestWithTemporaryCWD):
             ],
             fs.glob(os.path.join(self._temp_root.name, "test_dir/*_file")),
         )
+        # Globbing multiple patterns.
+        self.assertCountEqual(
+            [
+                os.path.join(self._temp_root.name, "test_file"),
+                os.path.join(self._temp_root.name, "test_dir"),
+                os.path.join(self._temp_root.name, "other_file"),
+            ],
+            fs.glob(
+                [
+                    os.path.join(self._temp_root.name, "test_*"),
+                    os.path.join(self._temp_root.name, "*_file"),
+                ]
+            ),
+        )
         # Globbing a non-existent path is different from listdir.
         self.assertEqual([], fs.glob(os.path.join(self._temp_root.name, "fake_dir")))
         self.assertEqual([], fs.glob(os.path.join(self._temp_root.name, "fake_dir/*_file")))
@@ -133,6 +147,13 @@ class LocalTest(TestWithTemporaryCWD):
         _make_paths([src])
         with fs.open(src) as f:
             self.assertIn("src_file", f.read())
+
+    def test_readfile(self):
+        src = os.path.join(self._temp_root.name, "src_file")
+        with self.assertRaises(fs.NotFoundError):
+            fs.readfile(src)
+        _make_paths([src])
+        self.assertEqual(src, fs.readfile(src))
 
     def test_makedirs(self):
         test_dir = os.path.join(self._temp_root.name, "src_dir")

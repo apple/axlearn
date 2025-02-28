@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "axlearn"
-version = "0.1.5"
+version = "0.1.6"
 description = "AXLearn"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,8 +24,8 @@ core = [
     "chex==0.1.88",
     "einops==0.8.0",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.4.37",
-    "jaxlib==0.4.36",  # jax 0.4.37 is patch release, no corresponding jaxlib release
+    "jax==0.4.38",
+    "jaxlib==0.4.38",
     "ml-dtypes==0.4.1",
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -106,7 +106,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.37",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.4.38",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
@@ -130,7 +130,8 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==2.1.0",
-    "jax[cuda12]==0.4.37",
+    "jax[cuda12]==0.4.38",
+    "nvidia-ml-py==12.560.30",
 ]
 # Open API inference.
 open_api = [
@@ -150,7 +151,7 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.6.4",
+    "orbax-checkpoint==0.11.1",
 ]
 # Grain input processing. Currently does not support macos.
 grain = [
@@ -185,6 +186,7 @@ markers = [
     "tpu: tests needing access to a TPU device.",
     "high_cpu: tests that require a lot of CPU.",
     "fp64: tests that require 64-bit floating point precision.",
+    "for_8_devices: tests that run on host platform device count of 8.",
     "golden_config: golden config tests.",
     "golden_init: golden init tests.",
     "golden_regularizer: golden regularizer scale tests.",

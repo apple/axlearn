@@ -516,6 +516,22 @@ class ConfigTest(parameterized.TestCase):
 
         self.assertEqual(param_shapes(layer1), param_shapes(layer2))
 
+    def test_class_with_tensor_fields(self):
+        @dataclasses.dataclass
+        class Bias:
+            shape: tuple[int, ...]
+            target_positions: np.ndarray
+            source_positions: Optional[np.ndarray] = None
+
+        cfg = config.config_for_class(Bias).set(shape=[1, 2])
+        target_positions = np.asarray([0, 1])
+        source_positions = np.asarray([2, 3])
+        bias = cfg.instantiate(target_positions=target_positions, source_positions=source_positions)
+        np.testing.assert_array_equal(bias.target_positions, target_positions)
+        np.testing.assert_array_equal(bias.source_positions, source_positions)
+        with self.assertRaisesRegex(RequiredFieldMissingError, "target_positions"):
+            cfg.instantiate(source_positions=source_positions)
+
     def test_instantiable_config_from_function_signature(self):
         def load(name: str, *, split: Optional[str] = None, download: bool = True):
             del name, split, download
@@ -549,8 +565,8 @@ class ConfigTest(parameterized.TestCase):
         cfg.var_kwargs = {"a": 1, "b": 2}
         self.assertEqual(cfg.var_kwargs, cfg.instantiate())
 
-        with self.assertRaisesRegex(ValueError, "already specified"):
-            self.assertEqual(cfg.var_kwargs, cfg.instantiate(a=3))
+        # Override the value of 'a' during instantiate().
+        self.assertEqual({"a": 3, "b": 2}, cfg.instantiate(a=3))
 
     @parameterized.parameters(
         # Test some basic cases.
@@ -592,6 +608,16 @@ class ConfigTest(parameterized.TestCase):
                 build_and_invoke()
         else:
             self.assertEqual(build_and_invoke(), expected)
+
+    def test_function_with_tensor_fields(self):
+        def fn(axis: int, x: np.ndarray) -> np.ndarray:
+            return x.sum(axis=axis)
+
+        cfg = config.config_for_function(fn).set(axis=0)
+        x = np.asarray([[0, 1, 3], [2, 5, 7]])
+        np.testing.assert_array_equal([2, 6, 10], cfg.instantiate(x=x))
+        with self.assertRaisesRegex(RequiredFieldMissingError, "x"):
+            cfg.instantiate()
 
     def test_config_for_function_has_type_information(self):
         """Tests that type information is available when using `config_for_function`."""
@@ -933,6 +959,71 @@ class ConfigTest(parameterized.TestCase):
         cfg_clone = cfg.clone(b=345)
         self.assertEqual(123, cfg_clone.a)
         self.assertEqual("default", cfg_clone.b)
+
+    def test_get_recursively(self):
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
+
+                value: int = 0
+
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
+
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
+
+        cfg = Test.default_config()
+
+        # Test getting nested value.
+        self.assertEqual(cfg.get_recursively(["nested", "value"]), 0)
+
+        # Test getting top-level value.
+        self.assertEqual(cfg.get_recursively(["value"]), 1)
+
+        # Test getting non-existent value.
+        with self.assertRaises(AttributeError):
+            cfg.get_recursively(["non_existent"])
+
+        # Test getting empty path, should return self.
+        self.assertEqual(cfg.get_recursively([]), cfg)
+
+    def test_set_recursively(self):
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
+
+                value: int = 0
+
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
+
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
+
+        cfg = Test.default_config()
+
+        # Test setting nested value.
+        cfg.set_recursively(["nested", "value"], value=10)
+        self.assertEqual(cfg.nested.value, 10)
+
+        # Test setting top-level value.
+        cfg.set_recursively(["value"], value=5)
+        self.assertEqual(cfg.value, 5)
+
+        # Test setting non-existent value.
+        with self.assertRaises(AttributeError):
+            cfg.set_recursively(["non_existent"], value=20)
+
+        # Test setting empty path.
+        with self.assertRaises(ValueError):
+            cfg.set_recursively([], value=20)
 
 
 if __name__ == "__main__":

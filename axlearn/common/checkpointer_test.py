@@ -5,6 +5,7 @@
 Some tests are intended to be run on TPU.
 """
 
+import asyncio
 import os
 import queue
 import re
@@ -48,6 +49,7 @@ from axlearn.common.checkpointer import (
     restore_tf_savables,
 )
 from axlearn.common.checkpointer_orbax import _GRAIN_INSTALLED, OrbaxCheckpointer
+from axlearn.common.file_system import listdir
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.utils import VDict
@@ -142,7 +144,7 @@ class CheckpointerTest(test_utils.TestCase):
             else:
                 with self.assertRaisesRegex(
                     (AssertionError, ValueError),
-                    "Cannot intersect index domain",
+                    "Cannot intersect index domain|not compatible",
                 ):
                     ckpt.restore(
                         step=None,
@@ -532,7 +534,7 @@ class CheckpointerTest(test_utils.TestCase):
     def test_cleanup_checkpoint(self):
         # Mock the rmtree s.t. it does nothing.
         with (
-            mock.patch("tensorflow.io.gfile.rmtree", side_effect=None),
+            mock.patch("axlearn.common.file_system.rmtree", side_effect=None),
             tempfile.TemporaryDirectory() as temp_dir,
         ):
             # Create a few mock checkpoints.
@@ -590,16 +592,16 @@ class CheckpointerTest(test_utils.TestCase):
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
 
-        orig_tf_listdir = tf.io.gfile.listdir
+        orig_listdir = listdir
 
         def patch_tf_io_behavior(*args):
-            out = orig_tf_listdir(*args)
+            out = orig_listdir(*args)
             return [x + "/" for x in out if not x.endswith("/")]
 
         # pylint: disable=line-too-long
         with (
             _mesh(mesh_shape),
-            mock.patch("tensorflow.io.gfile.listdir", patch_tf_io_behavior)
+            mock.patch("axlearn.common.file_system.listdir", patch_tf_io_behavior)
             if listdir_add_trailing_slash
             else nullcontext(),
             tempfile.TemporaryDirectory() as temp_dir,
@@ -771,6 +773,7 @@ class CheckpointerTest(test_utils.TestCase):
         run_thread.start()
         run_thread.join()
         self.assertFalse(ckpt._gc_stopping.is_set())
+
         ckpt.stop()  # Stop it explicitly, otherwise test will run forever.
 
         def run_in_context():
@@ -1134,6 +1137,58 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
                     ),
                 )
 
+    @parameterized.product(
+        restore_floats_as=[jnp.float32, jnp.bfloat16, jnp.int32, jnp.int16],
+        max_concurrent_gb=[None, 1],
+    )
+    def test_save_and_restore_from_dir_async(
+        self, restore_floats_as: jnp.dtype, max_concurrent_gb: Optional[int]
+    ):
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+
+        def make_state(float_dtype):
+            return dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=float_dtype))
+
+        with _mesh(mesh_shape):
+            state = make_state(float_dtype=jnp.float32)
+            storage = (
+                TensorStoreStateStorage.default_config()
+                .set(max_concurrent_gb=max_concurrent_gb)
+                .instantiate()
+            )
+            with tempfile.TemporaryDirectory() as root_dir:
+                step = 1000
+                # Save ckpt.
+                final_dir = os.path.join(root_dir, f"step_{step:08d}")
+
+                async def save():
+                    storage.save_to_dir(step=step, state=state, ckpt_dir=final_dir)
+                    storage.wait_until_finished()
+
+                asyncio.run(save())
+
+                async def restore():
+                    # Successfully restores with different dtypes.
+                    restored_state = storage.restore_from_dir(
+                        step,
+                        state=make_state(float_dtype=restore_floats_as),
+                        ckpt_dir=final_dir,
+                        validation=CheckpointValidationType.EXACT_UP_TO_DTYPE,
+                    )
+                    return restored_state
+
+                restored_state = asyncio.run(restore())
+                self.assertNestedEqual(
+                    restored_state,
+                    (
+                        state
+                        if restore_floats_as is None
+                        else make_state(float_dtype=restore_floats_as)
+                    ),
+                )
+
     def test_save_to_dir_async(self):
         """Tests that serialization happens async."""
         mesh_shape = (1, 1)
@@ -1203,7 +1258,7 @@ class TfIteratorTest(test_utils.TestCase):
                 prev_it = it
                 # Manually increase the delay of executor to test `it` mutation after
                 # call to async_save_tf_savables doesn't affect saving.
-                blocker = executor.submit(lambda: time.sleep(2))
+                blocker = executor.submit(lambda: time.sleep(1))
                 f = async_save_tf_savables({"it": it}, executor=executor, dir=ckpt_path)
                 next(it)  # modify it in place
                 it = iter(ds)  # reset `it`.

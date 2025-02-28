@@ -108,6 +108,30 @@ class TestLogitsTransforms(TestCase):
             jnp.full((batch_size, 1), decoding.NEG_INF),
         )
 
+    @parameterized.product(
+        batch_size=[2, 8],
+        vocab_size=[512, 1024],
+        break_ties=["all", "smallest_index"],
+    )
+    def test_top_k_modifier_break_ties(self, batch_size, vocab_size, break_ties):
+        logits = jnp.concatenate(
+            (
+                jnp.full((batch_size, vocab_size - 1), -2 * jnp.pi),
+                jnp.full((batch_size, 1), -10.1),
+            ),
+            axis=-1,
+        )
+        top_k_modified_logits = top_k_logits(1, break_ties=break_ties)(logits)
+        num_returned_logits = vocab_size - 1 if break_ties == "all" else 1
+        self.assertNestedAllClose(
+            top_k_modified_logits[:, :num_returned_logits], logits[:, :num_returned_logits]
+        )
+        # Check that the rest of the array is neg inf.
+        self.assertNestedAllClose(
+            top_k_modified_logits[:, num_returned_logits:],
+            jnp.full((batch_size, vocab_size - num_returned_logits), decoding.NEG_INF),
+        )
+
     @parameterized.parameters(1e-4, 0.1, 0.5, 0.99)
     def test_top_p_modifier_with_ties(self, p: float):
         batch_size = 3

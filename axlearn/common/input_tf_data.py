@@ -973,11 +973,18 @@ def identity() -> DatasetToDatasetFn:
     return fn
 
 
-def skip_on_error() -> DatasetToDatasetFn:
-    """Silently skip examples in the dataset that raise an error."""
+def skip_on_error(*, log_warning: bool = False) -> DatasetToDatasetFn:
+    """Silently skip examples in the dataset that raise an error.
+
+    Args:
+        log_warning: If True, log warnings to stderr.
+
+    Returns:
+        DatasetToDatasetFn that skips any errors.
+    """
 
     def fn(ds: tf.data.Dataset) -> tf.data.Dataset:
-        return ds.apply(tf.data.experimental.ignore_errors())
+        return ds.apply(tf.data.experimental.ignore_errors(log_warning=log_warning))
 
     return fn
 

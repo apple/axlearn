@@ -121,7 +121,7 @@ def main(_):
     )
 
     start_time = time.time()
-    current_goodput = goodput_calculator.get_job_goodput()
+    current_goodput, *_ = goodput_calculator.get_job_goodput()
     end_time = time.time()
 
     print(f"Job goodput: {current_goodput:.4f}%")

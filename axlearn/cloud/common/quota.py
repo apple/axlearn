@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import toml
-from tensorflow import io as tf_io
 
 from axlearn.cloud.common.types import ProjectResourceMap, ResourceMap
+from axlearn.common.file_system import readfile
 
 QUOTA_CONFIG_PATH = "project-quotas/project-quotas.config"
 
@@ -73,18 +73,17 @@ def get_resource_limits(path: str) -> UserQuotaInfo:
     Raises:
         ValueError: If unable to parse quota config file.
     """
-    with tf_io.gfile.GFile(path, mode="r") as f:
-        cfg = toml.loads(f.read())
-        if cfg["toml-schema"]["version"] == "1":
-            total_resources = cfg["total_resources"]
-            if not isinstance(total_resources, Sequence):
-                total_resources = [total_resources]
-            return UserQuotaInfo(
-                total_resources=total_resources,
-                project_resources=cfg["project_resources"],
-                project_membership=cfg["project_membership"],
-            )
-        raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")
+    cfg = toml.loads(readfile(path))
+    if cfg["toml-schema"]["version"] == "1":
+        total_resources = cfg["total_resources"]
+        if not isinstance(total_resources, Sequence):
+            total_resources = [total_resources]
+        return UserQuotaInfo(
+            total_resources=total_resources,
+            project_resources=cfg["project_resources"],
+            project_membership=cfg["project_membership"],
+        )
+    raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")
 
 
 def get_user_projects(path: str, user_id: str) -> list[str]:

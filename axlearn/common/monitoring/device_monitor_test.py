@@ -34,7 +34,7 @@ class MockDeviceMonitorClient(DeviceMonitorClient):
         # Make sure the usages are empty.
         return (
             usages[0].hbm_memory_bandwidth_utilization <= 0.1
-            and usages[0].tensorcore_utilization <= 0.1
+            and usages[0].device_utilization <= 0.1
         )
 
 
@@ -46,8 +46,8 @@ class TestDeviceMonitor(parameterized.TestCase):
         fake_usage = [
             Usage(
                 device_id=0,
-                tensorcore_duty_cycle_percent=100.0,
-                tensorcore_utilization=1.0,
+                device_duty_cycle_percent=100.0,
+                device_utilization=1.0,
                 hbm_memory_total_bytes=100,
                 hbm_memory_usage_bytes=50,
                 hbm_memory_bandwidth_utilization=30.0,
@@ -71,8 +71,8 @@ class TestDeviceMonitor(parameterized.TestCase):
         fake_usage = [
             Usage(
                 device_id=0,
-                tensorcore_duty_cycle_percent=0.0,
-                tensorcore_utilization=0.0,
+                device_duty_cycle_percent=0.0,
+                device_utilization=0.0,
                 hbm_memory_total_bytes=100,
                 hbm_memory_usage_bytes=50,
                 hbm_memory_bandwidth_utilization=0.0,

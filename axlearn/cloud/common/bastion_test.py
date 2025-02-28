@@ -889,7 +889,7 @@ class BastionTest(parameterized.TestCase):
             send_signal=mock.DEFAULT,
         )
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             exists=mock.Mock(return_value=user_state_exists),
             copy=mock.DEFAULT,
             remove=mock.DEFAULT,
@@ -1003,7 +1003,7 @@ class BastionTest(parameterized.TestCase):
             _upload_job_state=mock.DEFAULT,
         )
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             exists=mock.MagicMock(side_effect=mock_tfio_exists),
             copy=mock.DEFAULT,
         )
@@ -1224,7 +1224,7 @@ class BastionTest(parameterized.TestCase):
             send_signal=mock.DEFAULT,
         )
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             exists=mock.DEFAULT,
             copy=mock.DEFAULT,
             remove=mock.DEFAULT,
@@ -1378,7 +1378,7 @@ class BastionTest(parameterized.TestCase):
         rescheduled = ["rescheduled"]
 
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             remove=mock.DEFAULT,
         )
         with self._patch_bastion() as mock_bastion, patch_tfio as mock_tfio:
@@ -1584,7 +1584,7 @@ class BastionDirectoryTest(parameterized.TestCase):
         self.assertEqual("test-dir/jobs/states", bastion_dir.job_states_dir)
         self.assertEqual("test-dir/jobs/user_states", bastion_dir.user_states_dir)
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             exists=mock.MagicMock(return_value=spec_exists),
             copy=mock.DEFAULT,
         )
@@ -1609,7 +1609,7 @@ class BastionDirectoryTest(parameterized.TestCase):
             bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
         )
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             exists=mock.MagicMock(side_effect=[spec_exists, False]),
             copy=mock.DEFAULT,
         )
@@ -1636,7 +1636,7 @@ class BastionDirectoryTest(parameterized.TestCase):
         )
 
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             exists=mock.MagicMock(return_value=spec_exists),
             copy=mock.DEFAULT,
         )
@@ -1670,7 +1670,7 @@ class BastionDirectoryTest(parameterized.TestCase):
         )
 
         patch_tfio = mock.patch.multiple(
-            f"{bastion.__name__}.tf_io.gfile",
+            f"{bastion.__name__}",
             exists=mock.MagicMock(return_value=spec_exists),
             copy=mock.DEFAULT,
         )

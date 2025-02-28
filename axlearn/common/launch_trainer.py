@@ -57,7 +57,7 @@ flags.DEFINE_integer(
 flags.DEFINE_enum(
     "device_monitor",
     "none",
-    ["none", "tpu"],
+    ["none", "tpu", "gpu"],
     "Whether to enable the device monitor. "
     "The device monitor collects the system metrics and logs them periodically. "
     "The device monitor also logs the idle status of the devices on the host, "
@@ -116,6 +116,15 @@ def get_trainer_config(
         from axlearn.cloud.gcp.monitoring.tpu_device_monitor import create_tpu_monitor
 
         trainer_config.device_monitor = create_tpu_monitor()
+    elif flag_values.device_monitor == "gpu":
+        # pylint: disable-next=wrong-import-position,import-outside-toplevel
+        from axlearn.common.monitoring.gpu_device_monitor import create_gpu_monitor
+
+        trainer_config.device_monitor = create_gpu_monitor()
+    if hasattr(trainer_config.checkpointer, "trainer_dir"):
+        # Set trainer_dir if not already set.
+        if not isinstance(trainer_config.checkpointer.trainer_dir, str):
+            trainer_config.checkpointer.trainer_dir = trainer_config.dir
     return trainer_config
 
 

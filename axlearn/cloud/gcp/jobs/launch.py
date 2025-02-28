@@ -181,6 +181,8 @@ class BaseBastionManagedJob(Job):
     class Config(Job.Config):
         """Configures BaseBastionManagedJob."""
 
+        # Used along with project to identify `gcp_settings`.
+        env_id: Optional[str] = None
         # Where to run the remote job.
         zone: Required[str] = REQUIRED
         # Instance type to launch.
@@ -363,12 +365,14 @@ class BaseBastionManagedJob(Job):
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
-            f"--zone={cfg.zone} --gcp_api={gcp_api}\n"
+            f"--env_id={cfg.env_id} --gcp_api={gcp_api}\n"
             "\nCheck job history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
+            f"{infer_cli_name()} gcp bastion history "
+            f"--name={cfg.bastion_name} --env_id={cfg.env_id} "
             f"--job_name={cfg.name}"
             "\nCheck project history with:\n"
-            f"{infer_cli_name()} gcp bastion history --name={cfg.bastion_name} --zone={cfg.zone} "
+            f"{infer_cli_name()} gcp bastion history "
+            f"--name={cfg.bastion_name} --env_id={cfg.env_id} "
             f"{cfg.project_id or ''}"
         )
         return jobspec

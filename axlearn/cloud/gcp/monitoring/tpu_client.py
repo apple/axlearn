@@ -37,6 +37,8 @@ TPU_DEVICE_PLUGIN_METRICS_SERVER_ADDR = "localhost:2112"
 
 
 # Interface names for libtpu metrics.
+# Reference:
+# https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/blob/7d2b2921fc9393a3dec7be5440e25132c217549b/tpu_info/tpu_info/metrics.py#L29
 class MetricName(enum.Enum):
     """Metric names defined in libtpu."""
 
@@ -131,7 +133,7 @@ def get_chip_metrics(
     def sorted_metric_response(
         metric_name: str,
     ) -> list[tpu_metrics.Metric]:
-        # Manually annotate type until GRPC supports annotations
+        # Manually annotate type until GRPC supports annotations.
         # See https://github.com/grpc/grpc/issues/29041
         resp: tpu_metrics.MetricResponse = client.GetRuntimeMetric(
             tpu_metrics.MetricRequest(metric_name=metric_name)
@@ -153,7 +155,7 @@ def get_chip_metrics(
                 metric_results[i].hbm_memory_usage_bytes = metric.gauge.as_int
         elif metric_name == MetricName.TENSORCORE_DUTY_CYCLE_PERCENT:
             for i, metric in enumerate(metric_result):
-                metric_results[i].tensorcore_duty_cycle_percent = metric.gauge.as_double
+                metric_results[i].device_duty_cycle_percent = metric.gauge.as_double
 
     return metric_results
 
@@ -227,9 +229,9 @@ def get_chip_metrics_v2(
                         elif family.name == MetricV2Name.HBM_MEMORY_USAGE_BYTES.value:
                             metric_results[i].hbm_memory_usage_bytes = metric[2]
                         elif family.name == MetricV2Name.TENSORCORE_DUTY_CYCLE_PERCENT.value:
-                            metric_results[i].tensorcore_duty_cycle_percent = metric[2]
+                            metric_results[i].device_duty_cycle_percent = metric[2]
                         elif family.name == MetricV2Name.TENSORCORE_UTILIZATION.value:
-                            metric_results[i].tensorcore_utilization = metric[2]
+                            metric_results[i].device_utilization = metric[2]
                         elif family.name == MetricV2Name.HBM_MEMORY_BANDWIDTH_UTILIZATION.value:
                             metric_results[i].hbm_memory_bandwidth_utilization = metric[2]
 

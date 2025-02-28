@@ -28,6 +28,7 @@ from axlearn.common.input_grain import (
     rekey,
     sample_from_datasets,
     shard_dataset,
+    shard_dataset_with_proportion,
     trim_and_pack_dataset,
     unbatch,
 )
@@ -85,37 +86,65 @@ class UtilsTest(TestCase):
         dict(
             sources=[slice(0, 10, 2), slice(1, 5, 2)],
             weights=[1, 1],
+            is_iter_dataset=[False, False],
             take=10,
             expected=[0, 1, 2, 3, 4, 1, 6, 3, 8, 1],
         ),
         dict(
             sources=[slice(0, 10, 2), slice(1, 5, 2)],
             weights=[2, 1],
+            is_iter_dataset=[False, False],
             take=10,
             expected=[0, 2, 1, 4, 6, 3, 8, 0, 2, 1],
         ),
         dict(
             sources=[slice(0, 10, 2), slice(1, 5, 2)],
             weights=[1, 1e-9],
+            is_iter_dataset=[False, False],
             take=10,
             expected=[0, 2, 4, 6, 8, 0, 2, 4, 6, 8],
+        ),
+        # IterDataset
+        dict(
+            sources=[slice(0, 10, 2), slice(1, 5, 2)],
+            weights=[1, 1],
+            is_iter_dataset=[True, True],
+            take=10,
+            expected=[0, 1, 2, 3, 4, 1, 6, 3, 8, 1],
+        ),
+        # Mixture of IterDataset and MapDataset.
+        dict(
+            sources=[slice(0, 10, 2), slice(1, 5, 2)],
+            weights=[1, 1],
+            is_iter_dataset=[True, False],
+            take=10,
+            expected=[0, 1, 2, 3, 4, 1, 6, 3, 8, 1],
         ),
     )
     def test_sample_from_datasets(
         self,
         sources: list[slice],
         weights: list[int],
+        is_iter_dataset: list[bool],
         take: Optional[int],
         expected: list[int],
     ):
+        sources = [
+            range_dataset(start=src.start, stop=src.stop, step=src.step).repeat() for src in sources
+        ]
+        sources = [
+            source.to_iter_dataset() if should_convert else source
+            for source, should_convert in zip(sources, is_iter_dataset)
+        ]
         ds = sample_from_datasets(
-            sources=[
-                range_dataset(start=src.start, stop=src.stop, step=src.step) for src in sources
-            ],
+            sources=sources,
             weights=weights,
         )
-        ds = ds.slice(slice(0, take))
-        self.assertCountEqual(expected, list(ds))
+        ds_iter = iter(ds)
+        result = []
+        for _ in range(take):
+            result.append(next(ds_iter))
+        self.assertCountEqual(expected, list(result))
 
     def test_sample_from_datasets_errors(self):
         ds = range_dataset(start=0, stop=2)
@@ -124,17 +153,12 @@ class UtilsTest(TestCase):
         repeated_ds = sample_from_datasets(sources=[ds], weights=[1]).slice(slice(0, 4))
         self.assertEqual([0, 1, 0, 1], list(repeated_ds))
 
-        # Make sure that non-map dataset raises.
-        with self.assertRaisesRegex(ValueError, "MapDataset"):
-            ds = ds.to_iter_dataset()
-            sample_from_datasets(sources=[ds], weights=[1])
-
     def test_shuffle_dataset(self):
         # Test without repeat.
         ds = sample_from_datasets(
             sources=[
-                range_dataset(start=0, stop=10, step=2),
-                range_dataset(start=1, stop=5, step=2),
+                range_dataset(start=0, stop=10, step=2).repeat(),
+                range_dataset(start=1, stop=5, step=2).repeat(),
             ],
             weights=[2, 1],
         )
@@ -174,7 +198,7 @@ class UtilsTest(TestCase):
 
     def test_batch(self):
         # [0, 1, 2, 3, 4].
-        ds = range_dataset(start=0, stop=5, seed=123)
+        ds = range_dataset(start=0, stop=5, seed=123).repeat()
         # [1, 2, 3, 4, 5].
         other_ds = ds.map(_PlusOne())
         # [0, 1, 2, 1, 3, 4, 2, 5, 1, 3, ...].
@@ -505,6 +529,38 @@ class InputTest(parameterized.TestCase):
             self.assertSameElements(
                 list(range(epoch_len))[slice(process_index, None, process_count)], examples
             )
+
+    @parameterized.parameters(
+        # A single shard case.
+        dict(range_start=0, range_end=1, period=1),
+        # Two-shard cases.
+        dict(range_start=0, range_end=1, period=2),
+        dict(range_start=1, range_end=2, period=2),
+        # Non-even shard cases.
+        dict(range_start=0, range_end=3, period=8),
+        dict(range_start=3, range_end=8, period=8),
+        # 3-shard case.
+        dict(range_start=0, range_end=2, period=13),
+        dict(range_start=2, range_end=7, period=13),
+        dict(range_start=7, range_end=13, period=13),
+    )
+    def test_shard_dataset_with_proportion(self, range_start, range_end, period):
+        epoch_len = 20
+        num_epochs = 5
+        ds = range_dataset(start=0, stop=epoch_len, seed=123)
+        ds = shard_dataset_with_proportion(
+            ds, range_start=range_start, range_end=range_end, period=period
+        ).repeat(num_epochs=num_epochs)
+
+        executed_results = list(ds)
+
+        expected_result = []
+        for index in range(epoch_len * num_epochs):
+            index_inside_epoch = index % epoch_len
+            if range_start <= index_inside_epoch % period < range_end:
+                expected_result.append(index_inside_epoch)
+
+        self.assertEqual(executed_results, expected_result)
 
     def test_batches(self):
         """Test that we validate per-feed logical batch size."""

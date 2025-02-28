@@ -122,6 +122,7 @@ from axlearn.common.utils import (
     TensorSpec,
     VDict,
     as_tensor,
+    cast_floats,
     flatten_items,
     save_and_offload_only_these_names_regex,
     shapes,
@@ -1562,19 +1563,27 @@ class QKVLinearTest(TestCase):
                 # Check that the outputs are close for all pairs.
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
-    @parameterized.parameters(
-        (attention.QKVLinear, 1),
-        (attention.FusedQKVLinear, 1),
-        (attention.GroupedQKVLinear, 1),
-        (attention.FusedGroupedQKVLinear, 1),
-        (attention.RoFormerQKVLinear, 1),
-        (attention.QKVLinear, 2),
-        (attention.FusedQKVLinear, 3),
-        (attention.GroupedQKVLinear, 4),
-        (attention.FusedGroupedQKVLinear, 3),
-        (attention.RoFormerQKVLinear, 2),
+    @parameterized.product(
+        [
+            dict(layer_cls=attention.QKVLinear, extend_step_len=1),
+            dict(layer_cls=attention.FusedQKVLinear, extend_step_len=1),
+            dict(layer_cls=attention.GroupedQKVLinear, extend_step_len=1),
+            dict(layer_cls=attention.FusedGroupedQKVLinear, extend_step_len=1),
+            dict(layer_cls=attention.RoFormerQKVLinear, extend_step_len=1),
+            dict(layer_cls=attention.QKVLinear, extend_step_len=2),
+            dict(layer_cls=attention.FusedQKVLinear, extend_step_len=3),
+            dict(layer_cls=attention.GroupedQKVLinear, extend_step_len=4),
+            dict(layer_cls=attention.FusedGroupedQKVLinear, extend_step_len=3),
+            dict(layer_cls=attention.RoFormerQKVLinear, extend_step_len=2),
+        ],
+        cache_dtype=[None, jnp.bfloat16],
     )
-    def test_repeated_extend_step(self, layer_cls: type[attention.BaseQKVLinear], extend_step_len):
+    def test_repeated_extend_step(
+        self,
+        layer_cls: type[attention.BaseQKVLinear],
+        extend_step_len: int,
+        cache_dtype: Optional[jnp.dtype],
+    ):
         """Tests that calling QKVLinear.extend_step() multiple times with the
         same time_step results in the same output."""
         model_dim = 8
@@ -1586,10 +1595,12 @@ class QKVLinearTest(TestCase):
             value_dim=model_dim,
             num_heads=num_heads,
             per_head_dim=per_head_dim,
+            cache_dtype=cache_dtype,
         )
         cfg = layer_cls.default_config().set(**layer_kwargs)
         maybe_set_config(cfg, num_kv_heads=num_heads, rotary_value=False)
         layer = cfg.set(name="test").instantiate(parent=None)
+        expect_dtype = cache_dtype or layer.dtype()
 
         # Construct base layer state.
         layer_state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
@@ -1609,6 +1620,8 @@ class QKVLinearTest(TestCase):
         cache_state, init_output = layer.init_states(
             time_step=None, query=TensorSpec([batch_size, tgt_len])
         )
+        self.assertEqual(cache_state["key"].dtype, expect_dtype)
+        self.assertEqual(cache_state["value"].dtype, expect_dtype)
         self.assertIsNone(init_output)
         step_querys = []
         step_keys = step_values = None
@@ -1624,10 +1637,12 @@ class QKVLinearTest(TestCase):
             step_querys.append(step_output.query)
             step_keys = step_output.key
             step_values = step_output.value
+            self.assertEqual(cache_state["key"].dtype, expect_dtype)
+            self.assertEqual(cache_state["value"].dtype, expect_dtype)
 
         self.assertNestedAllClose(fwd_output.query, jnp.concat(step_querys, axis=1))
-        self.assertNestedAllClose(fwd_output.key, step_keys)
-        self.assertNestedAllClose(fwd_output.value, step_values)
+        self.assertNestedAllClose(cast_floats(fwd_output.key, cache_dtype), step_keys)
+        self.assertNestedAllClose(cast_floats(fwd_output.value, cache_dtype), step_values)
 
     @parameterized.parameters(jnp.float32, jnp.float16, jnp.bfloat16)
     def test_dtypes_inherited_from_parent(self, dtype: jnp.dtype):
@@ -2754,7 +2769,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertTrue(jnp.all(time_step == initial_states["i_proj"]["time_step"]))
         for proj in ["key", "value"]:
             self.assertEqual(
-                (batch_size, tgt_len, num_kv_heads or num_heads, model_dim // num_heads),
+                (batch_size, num_kv_heads or num_heads, model_dim // num_heads, tgt_len),
                 initial_states["i_proj"][proj].shape,
             )
             self.assertEqual(

@@ -5,13 +5,16 @@
 import jax
 from absl.testing import absltest
 
-from axlearn.common import test_utils
+from axlearn.common import causal_lm, test_utils
+from axlearn.common.attention import RepeatedTransformerLayer, StackedTransformerLayer
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulationModifier,
     MeshShapeModifier,
+    ModuleConfigModifier,
+    PartitionSpecModifier,
     RematSpecModifier,
 )
 from axlearn.common.trainer_test import DummyModel
@@ -61,7 +64,87 @@ class RematSpecModifierTest(test_utils.TestCase):
             .instantiate()
         )
         # Ensure that the exception is working.
-        with self.assertRaisesRegex(ValueError, "unknown is not found in.*"):
+        with self.assertRaisesRegex(AttributeError, r"unknown \(keys are *"):
+            _ = cfg_modifier(cfg)
+
+
+class ModuleConfigModifierTest(test_utils.TestCase):
+    def test_model_config_override(self):
+        cfg = SpmdTrainer.default_config().set(model=causal_lm.Model.default_config())
+        self.assertTrue(
+            str(cfg.model.decoder.transformer) == str(StackedTransformerLayer.default_config())
+        )
+
+        cfg_modifier = (
+            ModuleConfigModifier.default_config()
+            .set(
+                target_config="model.decoder.transformer",
+                modification=RepeatedTransformerLayer.default_config(),
+            )
+            .instantiate()
+        )
+
+        cfg = cfg_modifier(cfg)
+        # The default StackedTransformerLayer should have changed to RepeatedTransformerLayer
+        self.assertTrue(
+            str(cfg.model.decoder.transformer) == str(RepeatedTransformerLayer.default_config())
+        )
+        cfg_modifier = (
+            ModuleConfigModifier.default_config()
+            .set(
+                target_config="model.decoder.unknown",
+                modification=RepeatedTransformerLayer.default_config(),
+            )
+            .instantiate()
+        )
+        # Ensure that the exception is working.
+        with self.assertRaisesRegex(AttributeError, r"unknown \(keys are *"):
+            _ = cfg_modifier(cfg)
+
+
+class PartitionSpecModifierTest(test_utils.TestCase):
+    def test_partition_spec_override(self):
+        cfg = SpmdTrainer.default_config().set(model=DummyModel.default_config())
+        cfg_modifier = (
+            PartitionSpecModifier.default_config()
+            .set(
+                partition_specs={
+                    "model.linear": {"param_partition_spec": ("model", ("expert", "fsdp", "seq"))},
+                },
+            )
+            .instantiate()
+        )
+        cfg = cfg_modifier(cfg)
+        self.assertTrue(
+            str(cfg.model.linear.param_partition_spec), """("model", ("expert", "fsdp", "seq")"""
+        )
+        cfg_modifier = (
+            PartitionSpecModifier.default_config()
+            .set(
+                partition_specs={
+                    "model.linear": {"param_partition_spec": ("model", ("expert", "fsdp", "seq"))},
+                    "model.unknown": {"param_partition_spec": ("model", ("expert", "fsdp", "seq"))},
+                },
+            )
+            .instantiate()
+        )
+        # Ensure that the exception is working.
+        with self.assertRaisesRegex(AttributeError, r"unknown \(keys are *"):
+            _ = cfg_modifier(cfg)
+
+        cfg_modifier = (
+            PartitionSpecModifier.default_config()
+            .set(
+                partition_specs={
+                    "model.linear": {
+                        "param_partition_spec": ("model", ("expert", "fsdp", "seq")),
+                        "unknown_partition_spec": ("model", ("expert", "fsdp", "seq")),
+                    },
+                },
+            )
+            .instantiate()
+        )
+        with self.assertRaisesRegex(AttributeError, "unknown_partition_spec *"):
             _ = cfg_modifier(cfg)
 
 

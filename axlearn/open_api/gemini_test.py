@@ -5,7 +5,7 @@
 import json
 import sys
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from axlearn.open_api.mock_utils import mock_openai_package, mock_vertexai_package
 
@@ -126,6 +126,29 @@ class TestConvertOpenAIMessagesToGemini(unittest.TestCase):
             role="user", parts=[text_part_instance, image_part_instance]
         )
         self.assertEqual(result, [content_instance])
+
+    def test_convert_system_message(self):
+        messages = [
+            {"role": "system", "content": "System message."},
+            {"role": "user", "content": "User message."},
+        ]
+
+        part_instance = MagicMock()
+        self.mock_part.from_text.return_value = part_instance
+
+        content_instance = MagicMock()
+        self.mock_content.return_value = content_instance
+
+        result = _convert_openai_messages_to_gemini(messages)
+        # mock_part
+        self.mock_part.from_text.assert_has_calls([call("System message."), call("User message.")])
+        self.mock_content.assert_has_calls(
+            [
+                call(role="user", parts=[part_instance]),
+                call(role="user", parts=[part_instance]),
+            ]
+        )
+        self.assertEqual(result, [content_instance, content_instance])
 
     def test_convert_assistant_message(self):
         messages = [{"role": "assistant", "content": "Sure, I can help with that."}]

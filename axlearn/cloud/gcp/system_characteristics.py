@@ -334,6 +334,15 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
         "16x20x28", 2240, "tpu-v5p-slice", "ct5p-hightpu-4t", 4, AcceleratorType["TPU"], "v5p-17920"
     ),
     # v5litepod
+    "v5litepod-8": _SystemCharacteristics(
+        "2x4",
+        2,
+        "tpu-v5-lite-podslice",
+        "ct5lp-hightpu-4t",
+        4,
+        AcceleratorType["TPU"],
+        "v5litepod-8",
+    ),
     "v5litepod-16": _SystemCharacteristics(
         "4x4",
         4,

@@ -12,7 +12,7 @@ This module provides a common interface between these options.
 import contextlib
 import functools
 import os
-from typing import IO, TypeVar, Union
+from typing import IO, Sequence, TypeVar, Union
 from urllib.parse import urlparse
 
 import tensorflow as tf
@@ -99,8 +99,14 @@ def listdir(path: str) -> list[str]:
 
 
 @_wrap_tf_errors
-def glob(pattern: str) -> list[str]:
+def glob(pattern: Union[str, Sequence[str]]) -> list[str]:
     """Analogous to tf.io.gfile.glob."""
+    if isinstance(pattern, (list, tuple)):
+        results = set()
+        for p in pattern:
+            results.update(glob(p))
+        return list(results)
+
     parsed = urlparse(pattern)
 
     # tf.io.gfile.glob is prohibitively slow for gs paths containing many prefixes.
@@ -153,6 +159,12 @@ def copy(src: str, dst: str, overwrite: bool = False):
 def open(path: str, mode: str = "r") -> IO:
     """Analogous to tf.io.gfile.GFile."""
     return tf.io.gfile.GFile(path, mode)
+
+
+@_wrap_tf_errors
+def readfile(path: str) -> str:
+    with open(path, mode="r") as f:
+        return str(f.read())
 
 
 @_wrap_tf_errors

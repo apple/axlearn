@@ -405,8 +405,9 @@ class DiTAttentionLayer(BaseLayer):
         shift: Optional[Tensor] = None,
         scale: Optional[Tensor] = None,
         gate: Optional[Tensor] = None,
-        query_positions: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> Tensor:
         """The forward function of DiTAttentionLayer.
 
@@ -418,7 +419,12 @@ class DiTAttentionLayer(BaseLayer):
                 target_dim] and shift should be provided.
             gate: If provided, applying before the residual addition with shape
                 [batch_size, 1|num_length, target_dim].
-            attention_logit_biases: Optional Tensor representing the self attention biases.
+            attention_logit_biases: Optional Tensor representing the self attention biases with
+                shape [batch_size, num_length, num_length].
+            segment_ids: Optional int Tensor representing the segment each token belongs to with
+                shape [batch_size, num_length].
+            query_positions: Optional Tensor representing the query positions when computing the
+                attention with shape [batch_size, num_length]
 
         Returns:
             A tensor with shape [batch_size, num_length, target_dim].
@@ -442,7 +448,10 @@ class DiTAttentionLayer(BaseLayer):
             x = modulate(x=x, shift=shift, scale=scale)
 
         x = self.attention(
-            query=x, query_positions=query_positions, attention_logit_biases=attention_logit_biases
+            query=x,
+            attention_logit_biases=attention_logit_biases,
+            segment_ids=segment_ids,
+            query_positions=query_positions,
         ).data
 
         if cfg.structure == "postnorm":

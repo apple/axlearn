@@ -1022,7 +1022,7 @@ class _Functional:
             ValueError: If there are circular references in args, kwargs, or context.
         """
         call = getattr(self.method_fn, "__qualname__", None) or getattr(self.method_fn, "__name__")
-        logging.vlog(1, "functional: %s.%s %s(*%s, **%s)", call, self.method_fn, args, kwargs)
+        logging.vlog(1, "functional: %s.%s (*%s, **%s)", call, self.method_fn, args, kwargs)
 
         # Copy to prevent method_fn from mutating the original.
         # Some badly behaved tests call F() with an InvocationContext.state that contains
@@ -1107,6 +1107,7 @@ def scan_in_context(
     xs: NestedTensor,
     drop_output: Optional[Callable[[str], bool]] = None,
     child_name_prefix: str = "iter",
+    unroll: Union[int, bool] = 1,
 ) -> tuple[NestedTensor, NestedTensor]:
     """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
 
@@ -1128,6 +1129,10 @@ def scan_in_context(
             meaning nothing is dropped.
         child_name_prefix: The child name prefix used for children to be added to
             `target_output_collection`.
+        unroll: If a positive integer is provided, it determines how many unrolled loop iterations
+            to run within a single rolled iteration of the loop. If a boolean is provided, it will
+            determine if the loop is competely unrolled (i.e. unroll=True) or left completely rolled
+            (i.e. unroll=False).
 
     Returns:
         The scan outputs (carry, ys):
@@ -1166,7 +1171,7 @@ def scan_in_context(
 
         return carry_i, dict(y_i=y_i, output_collection=output_collection_i)
 
-    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs)
+    carry, scan_ys = jax.lax.scan(scan_fn, init=carry, xs=xs, unroll=unroll)
     propagate_repeated_output_collections(
         scan_ys.pop("output_collection"),
         child_name_prefix=child_name_prefix,

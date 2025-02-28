@@ -94,7 +94,7 @@ class DeviceMonitor(Configurable):
         if self.config.check_interval_in_sec > 0:
             self._monitor_stopping = threading.Event()
             self._monitor_thread = threading.Thread(
-                name="tpu_device_monitor",
+                name="device_monitor",
                 target=self._monitor_loop,
             )
             self._monitor_thread.start()
@@ -115,4 +115,4 @@ class DeviceMonitor(Configurable):
             self._idle = self._check_host_and_log_metrics()
             if self._monitor_stopping.wait(timeout=self.config.check_interval_in_sec):
                 break
-        logging.info("mointor loop exit.")
+        logging.info("monitor loop exit.")

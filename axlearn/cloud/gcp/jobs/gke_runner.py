@@ -48,16 +48,14 @@ from axlearn.cloud.common.utils import (
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import (
-    BASTION_JOB_VERSION_LABEL,
-    GCPJob,
-    GKEJob,
-    GPUGKEA3HighJob,
-    GPUGKEA3UltraJob,
-    TPUGKEJob,
-)
+from axlearn.cloud.gcp.job import GCPJob, GKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
+from axlearn.cloud.gcp.jobset_utils import (
+    BASTION_JOB_VERSION_LABEL,
+    A3HighReplicatedJob,
+    A3UltraReplicatedJob,
+)
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
     delete_node_pools,
@@ -150,6 +148,11 @@ class GKERunnerJob(GCPJob):
             raise ValueError(f"A GKERunnerJob should subclass {cls} and define `inner`.")
 
     @classmethod
+    def with_inner(cls, inner: type[GKEJob]):
+        cls.inner = inner
+        return cls
+
+    @classmethod
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
@@ -211,6 +214,9 @@ class GKERunnerJob(GCPJob):
         super().__init__(cfg)
         cfg = self.config
         # Instantiate inner job impl.
+        # TODO(markblee): Reduce the number of pass-through args. Some of these fields can be
+        # directly initialized within `inner` and read from `cfg.inner`. This minimizes config
+        # duplication/ambiguity about where values are read from.
         self._inner: GKEJob = cfg.inner.set(
             name=cfg.name,
             bundler=cfg.bundler,
@@ -534,23 +540,13 @@ class TPUGKERunnerJob(GKERunnerJob):
         return cfg
 
 
-class GPUGKERunnerJob(GKERunnerJob):
-    """A GKERunnerJob that uses GPUGKEJob."""
-
-    @classmethod
-    def class_from_instance_type(cls, instance_type: str):
-        if instance_type.startswith("gpu-a3-high"):
-            cls.inner = GPUGKEA3HighJob
-        elif instance_type.startswith("gpu-a3-ultra"):
-            cls.inner = GPUGKEA3UltraJob
-        return cls
-
-
 def _get_runner_or_exit(instance_type: str):
     if instance_type.startswith("tpu"):
         return TPUGKERunnerJob
-    elif instance_type.startswith("gpu-a3"):
-        return GPUGKERunnerJob.class_from_instance_type(instance_type)
+    elif instance_type.startswith("gpu-a3-ultra"):
+        return GKERunnerJob.with_inner(GKEJob.with_builder(A3UltraReplicatedJob))
+    elif instance_type.startswith("gpu-a3-high"):
+        return GKERunnerJob.with_inner(GKEJob.with_builder(A3HighReplicatedJob))
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")
 

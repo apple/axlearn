@@ -16,8 +16,25 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
     TensorAttentionBias,
+    sliding_window_causal_mask,
 )
 from axlearn.common.utils import Tensor
+
+
+class MaskTest(test_utils.TestCase):
+    @parameterized.parameters(
+        [0, [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 1, 0], [0, 0, 0, 0, 1]]],
+        [2, [[1, 0, 0, 0, 0], [1, 1, 0, 0, 0], [1, 1, 1, 0, 0], [0, 1, 1, 1, 0], [0, 0, 1, 1, 1]]],
+        [4, [[1, 0, 0, 0, 0], [1, 1, 0, 0, 0], [1, 1, 1, 0, 0], [1, 1, 1, 1, 0], [1, 1, 1, 1, 1]]],
+    )
+    def test_sliding_window_mask(self, left_context, expected):
+        mask_fn = sliding_window_causal_mask(sliding_window_size=left_context)
+        step_len = 5
+        target_positions = jnp.arange(step_len)[:, None]
+        source_positions = jnp.arange(step_len)[None, :]
+        bool_mask = mask_fn(target_positions, source_positions)
+        out_mask = bool_mask.astype(jnp.int32)
+        self.assertEqual(out_mask.tolist(), expected)
 
 
 class AttentionBiasTest(test_utils.TestCase):
@@ -134,6 +151,8 @@ class AttentionBiasTest(test_utils.TestCase):
         bias_and_residual = bias.bias_and_residual(attention_bias.CausalAttentionBias)
         self.assertTrue(bias_and_residual.has_value())
         bias_and_residual = bias.bias_and_residual(attention_bias.MaskFnAttentionBias)
+        self.assertTrue(bias_and_residual.has_value())
+        bias_and_residual = bias.bias_and_residual(attention_bias.ZeroAttentionBias)
         self.assertTrue(bias_and_residual.has_value())
 
     def test_composite_attention_bias_zero(self):

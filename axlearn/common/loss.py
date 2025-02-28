@@ -29,7 +29,7 @@
 """Loss functions."""
 # pylint: disable=too-many-lines
 import enum
-from typing import Optional
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -454,7 +454,7 @@ def asymmetric_contrastive_loss_from_logits(
     logits: Tensor,
     *,
     key_paddings: Tensor = None,
-    temperature: float = 1.0,
+    temperature: Union[Tensor, float] = 1.0,
     soft_labels: Optional[Tensor] = None,
 ) -> Tensor:
     """Asymmetric contrastive loss from logits.
@@ -522,7 +522,7 @@ def asymmetric_contrastive_loss_from_features(
     *,
     negative_keys: Tensor = None,
     negative_key_paddings: Tensor = None,
-    temperature: float = 1.0,
+    temperature: Union[Tensor, float] = 1.0,
     soft_labels: Optional[Tensor] = None,
 ):
     """Asymmetric contrastive loss from features.
@@ -578,7 +578,7 @@ def symmetric_contrastive_loss_from_logits(  # pylint: disable=missing-param-doc
     *,
     y_as_key_paddings: Tensor = None,
     x_as_key_paddings: Tensor = None,
-    temperature: float = 1.0,
+    temperature: Union[float, Tensor] = 1.0,
     y_as_key_soft_labels: Optional[Tensor] = None,
     x_as_key_soft_labels: Optional[Tensor] = None,
 ):
@@ -628,7 +628,7 @@ def symmetric_contrastive_loss_from_features(
     y_negatives: Tensor = None,
     x_negative_paddings: Tensor = None,
     y_negative_paddings: Tensor = None,
-    temperature: float = 1.0,
+    temperature: Union[Tensor, float] = 1.0,
     y_as_key_soft_labels: Optional[Tensor] = None,
     x_as_key_soft_labels: Optional[Tensor] = None,
 ):

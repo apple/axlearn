@@ -10,6 +10,7 @@ from axlearn.common.config import (
     REQUIRED,
     ConfigModifier,
     ConfigOr,
+    Configurable,
     Required,
     config_class,
     maybe_instantiate,
@@ -17,7 +18,7 @@ from axlearn.common.config import (
 from axlearn.common.gradient_accumulation import with_minibatch_steps
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.utils import HybridMeshShape, MeshShape
+from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
 
 
 class GradientAccumulationModifier(ConfigModifier):
@@ -100,18 +101,8 @@ class RematSpecModifier(ConfigModifier):
         """
 
         for module_name, remat_spec in self._remat_policies.items():
-            # Here we assume x.y.z format.
-            # One example would be model.decoder.transformer.layer.
-            target_modules = module_name.split(".")
-            curr_module = cfg
-            for target_module in target_modules:
-                if not hasattr(curr_module, target_module):
-                    raise ValueError(f"{target_module} is not found in {curr_module}.")
-                curr_module = getattr(curr_module, target_module)
-            # Here we assume all modules have remat_spec attribute.
-            if not hasattr(curr_module, "remat_spec"):
-                raise ValueError(f"{curr_module} does not have remat_spec attribute")
-            curr_module.remat_spec = remat_spec
+            cfg.set_recursively(module_name.split(".") + ["remat_spec"], value=remat_spec)
+
         return cfg
 
 
@@ -143,6 +134,113 @@ class MeshShapeModifier(ConfigModifier):
             The modified trainer config.
         """
         cfg.mesh_shape = self._mesh_shape
+        return cfg
+
+
+class ModuleConfigModifier(ConfigModifier):
+    """Update the model config for the trainer config."""
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configure ModuleConfigModifier.
+
+        Attributes:
+            target_config: Target module path
+                (e.g. `model.decoder.transformer.layer`) to be modified.
+            modification: The new config to replace the target module's config.
+        """
+
+        target_config: Required[str] = REQUIRED
+        modification: Required[Configurable.Config] = REQUIRED
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        self._target_config = self.config.target_config
+        self._modification = self.config.modification
+
+    def _merge_configs(
+        self, target_cfg: Configurable.Config, found_module: Configurable.Config
+    ) -> Configurable.Config:
+        """Merge configurations from the config being replaced on a best effort basis.
+
+        Merge Rules:
+            - Klass is not changed, use target cfg.
+            - If field exists in both then use from class being replaced.
+            - Otherwise keep the value from target_cfg.
+
+        Args:
+            target_cfg: Configuration that will replace found_module.
+            found_module: Existing configuration whose class will be replaced
+                but it's confguration will be merged with target_cfg.
+
+        Returns:
+            The modified config.
+
+        """
+        for key in target_cfg.keys():
+            if key == "klass":
+                continue
+            elif hasattr(found_module, key) and hasattr(target_cfg, key):
+                setattr(target_cfg, key, getattr(found_module, key))
+        return target_cfg
+
+    def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
+        """Overwrite the model config of the specified modules.
+
+        Args:
+            cfg: The trainer config to be modified.
+
+        Raises:
+            ValueError: The target module is not found.
+
+        Returns:
+            The modified trainer config.
+        """
+
+        found_module = cfg.get_recursively(self._target_config.split("."))
+        self._modification = self._merge_configs(self._modification, found_module)
+        cfg.set_recursively(self._target_config.split("."), value=self._modification)
+        return cfg
+
+
+class PartitionSpecModifier(ConfigModifier):
+    """Update the partition spec attribute for the specified modules."""
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configure PartitionSpecModifier.
+
+        Attributes:
+            partition_specs: A nested mapping from module path
+                (e.g. `model.decoder.transformer.layer`) to another
+                mapping of model attribute to PartitionSpec.
+        """
+
+        partition_specs: Required[Dict[str, PartitionSpec]] = REQUIRED
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        self._attribute_dicts = self.config.partition_specs
+
+    def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
+        """Update the partition_spec attributes for the specified modules.
+
+        Args:
+            cfg: The trainer config to be modified.
+
+        Raises:
+            ValueError: The target module is not found.
+            ValueError: The partition_spec attribute is not found.
+
+        Returns:
+            The modified trainer config.
+        """
+        for module_name, partition_spec_dict in self._attribute_dicts.items():
+            for partition_spec_name, partition_spec in partition_spec_dict.items():
+                cfg.set_recursively(
+                    module_name.split(".") + [partition_spec_name], value=partition_spec
+                )
+
         return cfg
 
 

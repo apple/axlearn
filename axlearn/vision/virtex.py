@@ -25,12 +25,16 @@ from axlearn.common.decoding import BeamSearchOutputs
 from axlearn.common.layers import Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context
-from axlearn.common.utils import NestedTensor, get_recursively, tree_paths, validate_contains_paths
+from axlearn.common.utils import (
+    NestedTensor,
+    Tensor,
+    get_recursively,
+    tree_paths,
+    validate_contains_paths,
+)
 from axlearn.common.vision_transformer import VisionTransformer as ViTModel
 from axlearn.common.vision_transformer import named_model_configs as vit_named_model_configs
 from axlearn.vision.resnet import ResNet
-
-Tensor = jnp.ndarray
 
 
 class ImageBackboneModelMixin(Module):

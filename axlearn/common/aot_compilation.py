@@ -8,7 +8,7 @@ https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 
 import os
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import jax
 import jax.random
@@ -46,6 +46,9 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
     "v6e-128": SystemCharacteristics("tpu", "v6e:8x16", "default", (2, 2, 1), 128),
     "v6e-256": SystemCharacteristics("tpu", "v6e:16x16", "default", (2, 2, 1), 256),
     # v5e
+    "v5e-1": SystemCharacteristics("tpu", "v5e:1x1", "default", (1, 1, 1), 1),
+    "v5e-4": SystemCharacteristics("tpu", "v5e:2x2", "default", (2, 2, 1), 4),
+    "v5e-8": SystemCharacteristics("tpu", "v5e:2x4", "default", (2, 2, 1), 8),
     "v5e-16": SystemCharacteristics("tpu", "v5e:4x4", "default", (2, 2, 1), 16),
     "v5e-32": SystemCharacteristics("tpu", "v5e:4x8", "default", (2, 2, 1), 32),
     "v5e-64": SystemCharacteristics("tpu", "v5e:8x8", "default", (2, 2, 1), 64),
@@ -163,29 +166,19 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
 }
 
 
-def compile_trainer_programs(
-    trainer_config: SpmdTrainer.Config,
-    *,
-    topology: str,
-    topology_num_slices: int = 1,
-    compiler_options: Optional[dict[str, Union[str, bool]]] = None,
-) -> dict[str, jax.stages.Compiled]:
-    """Returns compiled XLA programs for the given trainer.
+def get_devices_for_topology(
+    topology: str, topology_num_slices: int = 1
+) -> Tuple[List[jax.Device], int]:
+    """Returns a list of XLA devices for the given topology.
 
     Args:
-        trainer_config: The trainer config.
         topology: A string representing the TPU topology, e.g., "v4-8". Must be a key in
             USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
             If None, use CPU devices.
         topology_num_slices: The number of TPU slices.
-        compiler_options: Options to pass to XLA. See `compiler_options.py` for examples.
 
     Returns:
-        A dict containing the following programs:
-        * "train_step": a program to run a single training step.
-
-    Raises:
-        NotImplementedError: if `topology` is not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
+        A list of devices, and number of devices per slice.
     """
     if topology is not None:
         if topology not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
@@ -206,6 +199,71 @@ def compile_trainer_programs(
         topology_devices = jax.devices()
         assert topology_num_slices == 1
         devices_per_slice = len(topology_devices)
+    return topology_devices, devices_per_slice
+
+
+def reshape_devices(
+    *,
+    devices: List[jax.Device],
+    mesh_shape: Union[MeshShape, HybridMeshShape],
+    devices_per_slice: int,
+    num_slices: int,
+) -> tuple[np.ndarray, Union[MeshShape, HybridMeshShape]]:
+    """Reshape device list based on mesh_shape.
+
+    Args:
+        devices: A list of devices.
+        mesh_shape: Mesh shape of the devices. Missing specifications (-1) will be inferred.
+        devices_per_slice: Number of devices per slice.
+        num_slices: Number of slices.
+
+    Returns:
+        A shaped ndarray of devices, and the inferred mesh shape.
+    """
+    if isinstance(mesh_shape, MeshShape):
+        mesh_shape = infer_mesh_shape(mesh_shape, num_devices=devices_per_slice * num_slices)
+        devices = np.reshape(devices, mesh_shape)
+    elif isinstance(mesh_shape, HybridMeshShape):
+        mesh_shape = HybridMeshShape(
+            ici_mesh_shape=infer_mesh_shape(
+                mesh_shape.ici_mesh_shape, num_devices=devices_per_slice
+            ),
+            dcn_mesh_shape=infer_mesh_shape(mesh_shape.dcn_mesh_shape, num_devices=num_slices),
+        )
+        devices = np.reshape(
+            devices,
+            tuple(x * y for x, y in zip(mesh_shape.ici_mesh_shape, mesh_shape.dcn_mesh_shape)),
+        )
+    else:
+        raise ValueError(f"Unknown mesh_shape type: {type(mesh_shape)}")
+    return devices, mesh_shape
+
+
+def compile_trainer_programs(
+    trainer_config: SpmdTrainer.Config,
+    *,
+    topology: str,
+    topology_num_slices: int = 1,
+    compiler_options: Optional[Dict[str, Union[str, bool]]] = None,
+) -> Dict[str, jax.stages.Compiled]:
+    """Returns compiled XLA programs for the given trainer.
+
+    Args:
+        trainer_config: The trainer config.
+        topology: A string representing the TPU topology, e.g., "v4-8". Must be a key in
+            USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
+            If None, use CPU devices.
+        topology_num_slices: The number of TPU slices.
+        compiler_options: Options to pass to XLA. See `compiler_options.py` for examples.
+
+    Returns:
+        A dict containing the following programs:
+        * "train_step": a program to run a single training step.
+
+    Raises:
+        NotImplementedError: if `topology` is not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
+    """
+    topology_devices, devices_per_slice = get_devices_for_topology(topology, topology_num_slices)
 
     cfg = trainer_config.clone(dir="NOT_USED")
     cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
@@ -214,25 +272,14 @@ def compile_trainer_programs(
         len(cfg.mesh_axis_names) - 1
     )
 
-    if isinstance(cfg.mesh_shape, MeshShape):
-        cfg.mesh_shape = infer_mesh_shape(cfg.mesh_shape, num_devices=len(topology_devices))
-        topology_devices = np.reshape(topology_devices, cfg.mesh_shape)
-    else:
-        assert isinstance(cfg.mesh_shape, HybridMeshShape)
-        cfg.mesh_shape = HybridMeshShape(
-            ici_mesh_shape=infer_mesh_shape(
-                cfg.mesh_shape.ici_mesh_shape, num_devices=devices_per_slice
-            ),
-            dcn_mesh_shape=infer_mesh_shape(
-                cfg.mesh_shape.dcn_mesh_shape, num_devices=topology_num_slices
-            ),
-        )
-        topology_devices = np.reshape(
-            topology_devices,
-            tuple(
-                x * y for x, y in zip(cfg.mesh_shape.ici_mesh_shape, cfg.mesh_shape.dcn_mesh_shape)
-            ),
-        )
+    topology_devices, mesh_shape = reshape_devices(
+        devices=topology_devices,
+        mesh_shape=cfg.mesh_shape,
+        devices_per_slice=devices_per_slice,
+        num_slices=topology_num_slices,
+    )
+    cfg.mesh_shape = mesh_shape
+
     trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
     compiled_train_step = trainer.compile_train_step(compiler_options=compiler_options)
     return {"train_step": compiled_train_step}

@@ -70,7 +70,7 @@ import types
 from collections import defaultdict
 from collections.abc import Collection, Iterable
 from functools import cache
-from typing import Any, Callable, Generic, Optional, TypeVar, Union
+from typing import Any, Callable, Generic, Optional, Sequence, TypeVar, Union
 
 # attr provides similar features as Python dataclass. Unlike
 # dataclass, however, it provides a richer set of features to regulate
@@ -151,6 +151,7 @@ class RequiredFieldValue:
         return "REQUIRED"
 
 
+# TODO(markblee): Raise if trying to set attributes on REQUIRED.
 REQUIRED = RequiredFieldValue()
 Required = Union[T, RequiredFieldValue, Any]
 
@@ -394,6 +395,42 @@ class ConfigBase:
             setattr(self, k, v)
         return self
 
+    def get_recursively(self, path: Sequence[str]) -> Any:
+        """Recursively find the target key in the config and return its value.
+
+        Args:
+            path: A sequence of keys for indexing to get the target value.
+
+        Raises:
+            AttributeError: If key in path is not found.
+
+        Returns:
+            value at the path or self if path is empty.
+        """
+        current = self
+
+        for key in path:
+            # TODO(markblee): Maybe use cfg.visit instead of getattr.
+            current = getattr(current, key)
+
+        return current
+
+    def set_recursively(self, path: Sequence[str], *, value: Any):
+        """Recursively find the target key in the config and set its value.
+
+        Args:
+            path: A sequence of keys for indexing to set the target value.
+            new_value: New value to replace the target value.
+
+        Raises:
+            ValueError: if Path is empty.
+            AttributeError: If key in path is not found.
+        """
+        if not path:
+            raise ValueError("Path is empty.")
+        parent = self.get_recursively(path[:-1])
+        setattr(parent, path[-1], value)
+
     def clone(self, **kwargs):
         """Returns a clone of the original config with the optional keyword overrides.
 
@@ -602,7 +639,7 @@ class ConfigBase:
     def _key_error_string(self, name: str) -> str:
         similar = similar_names(name, list(self.keys()))
         if similar:
-            return f'{name} (did you mean: [{", ".join(similar)}])'
+            return f"{name} (did you mean: [{', '.join(similar)}])"
         return f"{name} (keys are {self.keys()})"
 
 
@@ -786,13 +823,11 @@ def _attr_field_from_signature_param(param: inspect.Parameter) -> attr.Attribute
 def _prepare_args_and_kwargs(
     kwargs: dict[str, Any], *, sig: inspect.Signature, cfg: InstantiableConfig
 ) -> list:
-    """Fills `kwargs` and `args` with values from `cfg` according to `sig` and returns `args`."""
-    args = []
+    """Fills `kwargs` and `args` with values from `cfg` according to `sig` and returns `args`.
 
-    def insert_to_kwargs(k, v):
-        if k in kwargs:
-            raise ValueError(f"{k} is already specified: {v} vs. {kwargs[k]}")
-        kwargs[k] = v
+    If a value is already set in `kwargs`, does not override it with the value from `cfg`.
+    """
+    args = []
 
     for name, param in sig.parameters.items():
         if name == "self":
@@ -802,12 +837,12 @@ def _prepare_args_and_kwargs(
             args = value
         elif param.kind == inspect.Parameter.VAR_KEYWORD:
             for k, v in value.items():
-                insert_to_kwargs(k, v)
+                kwargs.setdefault(k, v)
         elif param.kind in (
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.KEYWORD_ONLY,
         ):
-            insert_to_kwargs(name, value)
+            kwargs.setdefault(name, value)
         else:
             raise NotImplementedError(f"Unsupported param kind {param.kind}: {name}")
 
@@ -823,8 +858,16 @@ class FunctionConfigBase(InstantiableConfig[T]):
     fn: Callable[..., T]
 
     def instantiate(self, **kwargs) -> T:
-        _validate_required_fields(self)
+        """Invokes fn.
+
+        The values specified in **kwargs take precedence over those set in the config.
+        """
         args = _prepare_args_and_kwargs(kwargs, sig=inspect.signature(self.fn), cfg=self)
+        for k, v in kwargs.items():
+            if isinstance(v, RequiredFieldValue):
+                raise RequiredFieldMissingError(
+                    f"Missing value for required field when instantiating {type(self)}: {k}"
+                )
         return self.fn(*args, **kwargs)
 
 
@@ -887,10 +930,18 @@ class ClassConfigBase(InstantiableConfig[T]):
     klass: type[T]
 
     def instantiate(self, **kwargs) -> T:
-        _validate_required_fields(self)
+        """Instantiates an instance of `T`.
+
+        The field values specified in **kwargs take precedence over those set in the config.
+        """
         args = _prepare_args_and_kwargs(
             kwargs, sig=inspect.signature(self.klass.__init__), cfg=self
         )
+        for k, v in kwargs.items():
+            if isinstance(v, RequiredFieldValue):
+                raise RequiredFieldMissingError(
+                    f"Missing value for required field when instantiating {type(self)}: {k}"
+                )
         return self.klass(*args, **kwargs)
 
 

@@ -30,11 +30,13 @@ from axlearn.common.array_serialization import (
 )
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     Configurable,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import (
@@ -285,6 +287,11 @@ class StateStorage(Configurable):
     def stop(self):
         """Stops and disposes resources."""
         raise NotImplementedError(type(self))
+
+
+class IndexFileWriter(Protocol):
+    def __call__(self, ckpt_dir: str, index: Any):
+        ...
 
 
 def write_index_file(*, ckpt_dir: str, index: Any):
@@ -551,7 +558,11 @@ class TensorStoreStateStorage(StateStorage):
         maybe_restore_grain_savables(
             spec.grain_ckpt_map, dir=os.path.join(ckpt_dir, f"grain_{jax.process_index()}")
         )
+        return self._restore_tensorstore_state(state, ckpt_dir=ckpt_dir, spec=spec)
 
+    def _restore_tensorstore_state(
+        self, state, *, ckpt_dir: str, spec: CheckpointSpec, sync: bool = True
+    ):
         restored_gda_values = self._manager.deserialize(
             shardings=spec.shardings,
             tensorstore_specs=spec.tensorstore_specs,
@@ -575,7 +586,8 @@ class TensorStoreStateStorage(StateStorage):
         restored_state = jax.tree_util.tree_unflatten(
             jax.tree_util.tree_structure(state), state_leaves
         )
-        multihost_utils.sync_global_devices(ckpt_dir)
+        if sync:
+            multihost_utils.sync_global_devices(ckpt_dir)
         return restored_state
 
     def stop(self):
@@ -890,6 +902,20 @@ class Checkpointer(BaseCheckpointer):
         storage: StateStorage.Config = TensorStoreStateStorage.default_config()
         # A config that instantiates an optional SummaryWriter, and is used to log checkpoints.
         summary_writer: Optional[SummaryWriter.Config] = None
+        # An optional custom index file writer that writes after checkpoint write is complete.
+        index_writer: Optional[ConfigOr[IndexFileWriter]] = None
+
+    @classmethod
+    def _all_checkpoint_paths(cls, base_dir: str) -> list[str]:
+        """Like `checkpoint_paths`, but also include non-committed checkpoints."""
+        try:
+            return [
+                os.path.join(base_dir, path.rstrip("/"))
+                for path in fs.listdir(base_dir)
+                if path.startswith(STEP_PREFIX)
+            ]
+        except fs.NotFoundError:
+            return []
 
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> list[str]:
@@ -898,14 +924,8 @@ class Checkpointer(BaseCheckpointer):
         # concurrent `exists` check for the index file can be several times faster than `glob` on
         # gcs when there are many checkpoint files, even if using a "native" solution like
         # `google-cloud-python` SDK.
-        try:
-            paths = fs.listdir(base_dir)
-        except fs.NotFoundError:
-            return []
-
-        paths = [
-            os.path.join(base_dir, path, "index") for path in paths if path.startswith(STEP_PREFIX)
-        ]
+        paths = cls._all_checkpoint_paths(base_dir)
+        paths = [os.path.join(path, "index") for path in paths]
         with futures.ThreadPoolExecutor() as pool:
             index_exists = pool.map(fs.exists, paths)
         return [os.path.dirname(path) for path, committed in zip(paths, index_exists) if committed]
@@ -938,6 +958,10 @@ class Checkpointer(BaseCheckpointer):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg: Checkpointer.Config = self.config
+        if cfg.index_writer is None:
+            self._index_writer = write_index_file
+        else:
+            self._index_writer = maybe_instantiate(cfg.index_writer)
 
         self._storage: StateStorage = cfg.storage.instantiate()
         self._gc_stopping = None
@@ -1002,7 +1026,7 @@ class Checkpointer(BaseCheckpointer):
             raise ValueError(f"Out-of-range: {step}")
         ckpt_dir = self.ckpt_dir(step)
         self._storage.save_to_dir(
-            step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=write_index_file
+            step=step, state=state, ckpt_dir=ckpt_dir, on_commit_callback=self._index_writer
         )
         if "summary_writer" in self.children:
             self.summary_writer.log_checkpoint(
@@ -1025,14 +1049,12 @@ class Checkpointer(BaseCheckpointer):
         remaining_dirs, gc_dirs = [], []
 
         try:
-            step_dirs = [
-                step.rstrip("/") for step in fs.listdir(cfg.dir) if step.startswith(STEP_PREFIX)
-            ]
+            step_dirs = self._all_checkpoint_paths(cfg.dir)
         except fs.NotFoundError:
             step_dirs = []
 
         # Gather all candidate checkpoint dirs, as well as all committed checkpoint dirs.
-        dirs = sorted([os.path.join(cfg.dir, step) for step in step_dirs], reverse=True)
+        dirs = sorted(step_dirs, reverse=True)
         committed_dirs = set(self.checkpoint_paths(cfg.dir))
 
         # Collect the recent non-committed checkpoints, since any of them could be in-progress.
@@ -1096,6 +1118,10 @@ class Checkpointer(BaseCheckpointer):
         """See `BaseCheckpointer.wait_until_finished` docstring for details."""
         self._storage.wait_until_finished()
 
+    def _index_exists(self, ckpt_dir: str):
+        ckpt_index = os.path.join(ckpt_dir, "index")
+        return fs.exists(ckpt_index)
+
     def restore(
         self,
         *,
@@ -1111,7 +1137,7 @@ class Checkpointer(BaseCheckpointer):
 
         def validate_and_restore(*, step: int, ckpt_dir: str):
             ckpt_index = os.path.join(ckpt_dir, "index")
-            if not fs.exists(ckpt_index):
+            if not self._index_exists(ckpt_dir):
                 raise ValueError(
                     f"Checkpoint {ckpt_dir} is incomplete -- expected {ckpt_index} to be present."
                 )
