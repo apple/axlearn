@@ -288,13 +288,13 @@ class GPUGKEJobTest(TestCase):
             [job.__name__, jobset_utils.__name__, bundler.__name__], mock_settings()
         ):
             fv = flags.FlagValues()
-            job.GPUGKEA3HighJob.define_flags(fv)
+            job.GPUGKEJob.define_flags(fv)
             if service_account:
                 fv.set_default("service_account", service_account)
             if num_replicas:
                 fv.set_default("num_replicas", num_replicas)
             fv.mark_as_parsed()
-            cfg = job.GPUGKEA3HighJob.from_flags(fv)
+            cfg = job.GPUGKEJob.from_flags(fv)
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "gpu-a3-highgpu-8g-256"
             cfg.queue = queue
@@ -343,49 +343,13 @@ class GPUGKEJobTest(TestCase):
                 retry_interval=1,
                 name="test",
             )
-            gke_job: job.GPUGKEA3HighJob = cfg.instantiate()
-            job_cfg: job.GPUGKEA3HighJob.Config = gke_job.config
+            gke_job: job.GPUGKEJob = cfg.instantiate()
+            job_cfg: job.GPUGKEJob.Config = gke_job.config
             self.assertEqual("gpu-a3-highgpu-8g-256", job_cfg.accelerator.instance_type)
             if num_replicas is None:
                 self.assertEqual(1, job_cfg.accelerator.num_replicas)
             else:
                 self.assertEqual(num_replicas, job_cfg.accelerator.num_replicas)
-
-    @parameterized.product(
-        env_vars=[dict(), dict(XLA_FLAGS="--should-overwrite-all")],
-        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
-        num_replicas=[None, 1, 32],
-    )
-    def test_build_pod(
-        self,
-        bundler_cls,
-        env_vars: Optional[dict] = None,
-        num_replicas: Optional[int] = None,
-    ):
-        with self._job_config(bundler_cls, env_vars=env_vars, num_replicas=num_replicas) as cfg:
-            gke_job: job.GPUGKEA3HighJob = cfg.set(
-                name="test",
-            ).instantiate()
-            # pylint: disable-next=protected-access
-            pod = gke_job._build_pod()
-            pod_spec = pod["spec"]
-
-            self.assertEqual(len(pod_spec["containers"]), 2)
-            containers = {container["name"]: container for container in pod_spec["containers"]}
-            self.assertIn("tcpx-daemon", containers)
-            main_container = containers["test"]
-            main_container_env = main_container["env"]
-            main_container_env_vars = {env["name"]: env for env in main_container_env}
-            self.assertEqual(main_container["resources"]["limits"]["nvidia.com/gpu"], "8")
-            expected_num_replicas = 1 if num_replicas is None else num_replicas
-            self.assertEqual(
-                main_container_env_vars["NUM_PROCESSES"]["value"], f"{expected_num_replicas}"
-            )
-            # Verify that default XLA flags can be overwritten by user.
-            if env_vars and env_vars.get("XLA_FLAGS"):
-                self.assertEqual(
-                    main_container_env_vars["XLA_FLAGS"]["value"], env_vars["XLA_FLAGS"]
-                )
 
     @parameterized.product(
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
@@ -397,9 +361,7 @@ class GPUGKEJobTest(TestCase):
         queue: Optional[str] = None,
     ):
         with self._job_config(bundler_cls, queue=queue) as cfg:
-            gke_job: job.GPUGKEA3HighJob = cfg.set(
-                name="test",
-            ).instantiate()
+            gke_job: job.GPUGKEJob = cfg.set(name="test").instantiate()
             # pylint: disable-next=protected-access
             jobset = gke_job._build_jobset()
             jobset_annotations = jobset["metadata"]["annotations"]
