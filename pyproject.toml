@@ -159,7 +159,6 @@ grain = [
 ]
 # Audio dependencies.
 audio = [
-    "einops==0.8.0",
     "levenshtein==0.25.1",
 ]
 
