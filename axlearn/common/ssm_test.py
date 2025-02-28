@@ -424,7 +424,7 @@ class MambaMixerLayerTest(TestCase):
         )
         initial_state, initial_output = layer.init_states(
             time_step=None,
-            query=TensorSpec([batch_size, tgt_len]),
+            query=TensorSpec([batch_size, tgt_len], dtype=dtype),
         )
         self.assertIsNone(initial_output)
         for k in ["conv_input", "state"]:
@@ -552,9 +552,9 @@ def _test_extend_step(layer_cfg: InstantiableConfig, *, model_dim: int, dtype: j
         inputs=inputs,
     )
     if isinstance(layer, MambaMixerLayer):
-        init_kwargs = dict(query=TensorSpec([batch_size, tgt_len]))
+        init_kwargs = dict(query=TensorSpec([batch_size, tgt_len], dtype=dtype))
     else:
-        init_kwargs = dict(data=TensorSpec([batch_size, tgt_len]))
+        init_kwargs = dict(data=TensorSpec([batch_size, tgt_len], dtype=dtype))
     initial_state, initial_output = layer.init_states(time_step=None, **init_kwargs)
     assert initial_output is None
     inputs = dict(cached_states=initial_state)

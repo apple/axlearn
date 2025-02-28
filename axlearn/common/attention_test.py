@@ -79,11 +79,12 @@ from axlearn.common.attention import (
 )
 from axlearn.common.attention_bias import (
     NEG_INF,
+    CausalAttentionBias,
+    SlidingWindowAttentionBias,
     bool_to_bias,
     causal_mask,
     make_causal_biases,
     make_sliding_window_causal_biases,
-    sliding_window_causal_mask,
 )
 from axlearn.common.base_layer import (
     BaseLayer,
@@ -1619,7 +1620,7 @@ class QKVLinearTest(TestCase):
         )
 
         cache_state, init_output = layer.init_states(
-            time_step=None, query=TensorSpec([batch_size, tgt_len])
+            time_step=None, query=TensorSpec([batch_size, tgt_len], dtype=cache_dtype)
         )
         self.assertEqual(cache_state["key"].dtype, expect_dtype)
         self.assertEqual(cache_state["value"].dtype, expect_dtype)
@@ -1691,7 +1692,7 @@ class QKVLinearTest(TestCase):
             state=state,
             inputs=dict(
                 time_step=None,
-                query=TensorSpec([target_batch_size, target_max_len]),
+                query=TensorSpec([target_batch_size, target_max_len], dtype=dtype),
             ),
             method="init_states",
             is_training=False,
@@ -2401,9 +2402,7 @@ class MultiheadAttentionTest(TestCase):
         sliding_window_size = 2
         test_cfg = ref_cfg.clone(
             causal=False,
-            mask=config_for_function(sliding_window_causal_mask).set(
-                sliding_window_size=sliding_window_size
-            ),
+            mask=SlidingWindowAttentionBias.default_config(sliding_window_size=sliding_window_size),
         )
         test_layer = test_cfg.instantiate(parent=None)
 
@@ -2588,7 +2587,7 @@ class MultiheadAttentionTest(TestCase):
 
         initial_state, initial_output = layer.init_states(
             time_step=None,
-            query=TensorSpec([batch_size, tgt_len]),
+            query=TensorSpec([batch_size, tgt_len], dtype=dtype),
             kv_state=kv_state,
             # This is unused for initializing state from scratch.
             attention_logit_biases=None,
@@ -3148,7 +3147,10 @@ class MultiheadAttentionTest(TestCase):
             q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             v_proj=jnp.full(qkv_shape, fill_value=qkv_value),
-            attention_logit_biases=attention_bias.CausalAttentionBias(shape=(seq_len, seq_len)),
+            attention_logit_biases=attention_bias.CausalAttentionBias(
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
+            ),
         )
 
         # Get outputs.
@@ -3398,7 +3400,7 @@ class TransformerAttentionLayerTest(TestCase):
         cfg: TransformerAttentionLayer.Config = TransformerAttentionLayer.default_config().set(
             **layer_kwargs
         )
-        cfg.attention.set(num_heads=2, mask=causal_mask)
+        cfg.attention.set(num_heads=2, mask=CausalAttentionBias.default_config())
         layer: TransformerAttentionLayer = cfg.set(name="test").instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=init_prng)
 
@@ -3696,7 +3698,7 @@ class BaseTransformerTest(TestCase):
                     layer,
                     inputs=dict(
                         time_step=None,
-                        data=TensorSpec([batch_size, tgt_len]),
+                        data=TensorSpec([batch_size, tgt_len], dtype=target.dtype),
                         **input_kwargs,
                     ),
                     state=layer_params,
@@ -4311,7 +4313,7 @@ class StackedTransformerTest(BaseTransformerTest):
         )
         initial_state, initial_output = layer.init_states(
             time_step=None,
-            data=TensorSpec([batch_size, tgt_len]),
+            data=TensorSpec([batch_size, tgt_len], dtype=target.dtype),
         )
         self.assertIsNone(initial_output)
         inputs = dict(

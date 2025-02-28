@@ -33,12 +33,13 @@ from typing import (
     final,
 )
 
+import einops
 import jax
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
 from axlearn.common import struct
-from axlearn.common.config import ConfigOr, maybe_instantiate
+from axlearn.common.config import ClassConfigBase, ConfigOr, config_for_class, maybe_instantiate
 from axlearn.common.utils import Tensor
 
 NEG_INF = -1e15
@@ -491,20 +492,25 @@ class MaskFnAttentionBias(BoolAttentionBias):
 
     # The function defining the contents of the mask.
     mask: MaskFn = struct.field(pytree_node=False)
-    # The shape [target_len, source_len] of the mask.
-    shape: tuple[int, ...] = struct.field(kw_only=True, pytree_node=False)
+
     # The positions in the query sequence that the mask should be computed for.
     # I.e., `self.value()[batch, num_heads, i]` is the mask specifying what the query token at
     # `target_positions[batch, i]`  may attend to.
-    # If None, set `target_positions[batch, i] = i`.
-    # Shape: [batch] or [batch, target_len]`.
     # This is typically used during decoding to specify the locations in the sequence being
-    # being decoded. E.g., if we are decoding position 5 and 7 of the first and second batch
-    # entry respectively, we would set `target_positions = jnp.asarray([5, 7])`.
+    # being decoded.
+    # E.g., if we are decoding position 5 and 7 of the first and second batch entry respectively,
+    # we would set `target_positions = jnp.arange(steps)[None] + jnp.asarray([5, 7])`.
     # The motivation for supporting such shapes is for use cases where time_step in transformers
     # is not necessarily contiguous. E.g., speculative decoding, non-contiguous prompts,
     # various papers that need it.
-    target_positions: Optional[Tensor] = None
+    # The index in the sequence of query vectors, [1|batch, target_len].
+    target_positions: Tensor = struct.field(kw_only=True)
+    # The index in the sequence of key vectors, [1|batch, source_len].
+    source_positions: Tensor = struct.field(kw_only=True)
+
+    @classmethod
+    def default_config(cls, mask: MaskFn) -> ClassConfigBase["MaskFnAttentionBias"]:
+        return config_for_class(MaskFnAttentionBias).set(mask=mask)
 
     def _bool_value(self) -> Optional[Tensor]:
         """Return a tensor with the boolean values from `self.mask` before they have been converted
@@ -513,29 +519,15 @@ class MaskFnAttentionBias(BoolAttentionBias):
         Shape: [batch, target_len, source_len].
 
         Raises:
-            NotImplementedError. If `target_positions.ndim not in [1,2]`.
+            ValueError. If `(target|source)_positions.ndim not == 2`.
         """
-        target_positions, source_positions = jnp.indices(self.shape, sparse=True)
-        # Shape: [1, target_len, 1], [1, 1, source_len].
-        target_positions, source_positions = target_positions[None], source_positions[None]
-        if self.target_positions is not None:
-            target_positions = self.target_positions
-            if target_positions.ndim not in [1, 2]:
-                raise NotImplementedError(f"Shape of target_positions: {target_positions.shape}.")
-            if target_positions.ndim == 1:
-                # Shape: [batch, 1] + [target_len] = [batch, target_len]
-                # pylint: disable-next=unsubscriptable-object
-                target_positions = target_positions[:, None] + jnp.arange(self.shape[0])
-            elif target_positions.ndim == 2:
-                shape_with_batch_dim = (1, *self.shape)
-                # Raise an exception if shapes aren't compatible. We don't use the output.
-                jnp.broadcast_shapes(
-                    (target_positions.shape[0], 1, target_positions.shape[1]), shape_with_batch_dim
-                )
-            else:
-                raise NotImplementedError(f"Invalid value {target_positions.ndim=}.")
-            target_positions = target_positions[..., None]  # Shape: [batch, target_len, 1].
-
+        target_positions, source_positions = self.target_positions, self.source_positions
+        if target_positions.ndim != source_positions.ndim != 2:
+            raise ValueError(
+                f"{target_positions.shape=} or {source_positions.shape=} is not rank 2."
+            )
+        target_positions = einops.rearrange(target_positions, "b t -> b t 1")
+        source_positions = einops.rearrange(source_positions, "b s -> b 1 s")
         return self.mask(target_positions, source_positions)  # pylint: disable=not-callable
 
     @classmethod
@@ -543,6 +535,9 @@ class MaskFnAttentionBias(BoolAttentionBias):
         cls, biases: Sequence["MaskFnAttentionBias"]
     ) -> Optional["MaskFnAttentionBias"]:
         """Constructs a single combined `MaskFnAttentionBias` from a Sequence of them.
+
+        All biases use the same query and key, so target_positions and source_positions are same
+        per bias.
 
         The sequence is first filtered to remove biases that are detected as all zero.
 
@@ -558,20 +553,26 @@ class MaskFnAttentionBias(BoolAttentionBias):
             return super().from_sequence(biases)
         except NotImplementedError:
             pass
-        for bias in biases:
-            if bias.target_positions is not None:
-                raise ValueError(f"target_positions was not None for {bias}.")
 
         # Combine masks.
         mask = lambda query_position, key_position: jnp.all(
             jnp.stack([b.mask(query_position, key_position) for b in biases]), axis=0
         )
-        return MaskFnAttentionBias(mask=mask, shape=biases[0].shape)
+        return MaskFnAttentionBias(
+            mask=mask,
+            target_positions=biases[0].target_positions,
+            source_positions=biases[0].source_positions,
+        )
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
     ) -> Union[BaseAttentionBias, PartitionSpec]:
-        return PartitionSpec(*mha_dim_to_partition_spec["bnts"][0:1])
+        batch = mha_dim_to_partition_spec["bnts"][0]
+        return dataclasses.replace(
+            self,
+            target_positions=PartitionSpec(None if self.target_positions.shape[0] == 1 else batch),
+            source_positions=PartitionSpec(None if self.source_positions.shape[0] == 1 else batch),
+        )
 
 
 @struct.dataclass
@@ -643,6 +644,10 @@ class CausalAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-error
     mask: Optional[MaskFn] = struct.field(pytree_node=False, default=causal_mask)
 
     @classmethod
+    def default_config(cls) -> ClassConfigBase[MaskFnAttentionBias]:
+        return config_for_class(CausalAttentionBias)
+
+    @classmethod
     def from_sequence(
         cls, biases: Sequence["CausalAttentionBias"]
     ) -> Optional["CausalAttentionBias"]:
@@ -651,6 +656,23 @@ class CausalAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-error
         except NotImplementedError:
             pass
         return biases[0]
+
+
+@struct.dataclass
+@final
+class SlidingWindowAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-error
+    """A sliding window attention mask."""
+
+    # A left context size for sliding window attention. Total window size = sliding_window_size + 1
+    sliding_window_size: int = struct.field(kw_only=True, pytree_node=False)
+
+    @classmethod
+    # pylint: disable-next=arguments-renamed
+    def default_config(cls, sliding_window_size: int) -> ClassConfigBase[MaskFnAttentionBias]:
+        return config_for_class(SlidingWindowAttentionBias).set(
+            mask=sliding_window_causal_mask(sliding_window_size=sliding_window_size),
+            sliding_window_size=sliding_window_size,
+        )
 
 
 @struct.dataclass
@@ -712,12 +734,10 @@ def sliding_window_causal_mask(sliding_window_size: int) -> MaskFn:
     """
 
     def mask(query_position: Tensor, key_position: Tensor):
-        return query_position - key_position <= sliding_window_size
+        pos_mask = query_position - key_position <= sliding_window_size
+        return pos_mask
 
     fun = and_masks(causal_mask, mask)
-    # Flash attention needs to recognize sliding window size in _to_splash_mask().
-    # pylint: disable-next=protected-access
-    fun._sliding_window_size = sliding_window_size
     return fun
 
 

@@ -189,7 +189,8 @@ def flash_attention_implementation(
                 if mask is None or mask.target_positions is None:
                     raise RuntimeError("Cannot retrive MaskFnAttentionBias or target_positions.")
                 mask_fn = mask.mask
-                kv_seq_len = mask.target_positions + 1
+                query_time_step = mask.target_positions[:, -1]
+                kv_seq_len = query_time_step + 1
                 logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
 
                 bias = explicit_bias.value()

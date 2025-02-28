@@ -20,7 +20,7 @@ from jax.sharding import Mesh
 
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
-    MaskFnAttentionBias,
+    SlidingWindowAttentionBias,
     ZeroAttentionBias,
     sliding_window_causal_mask,
 )
@@ -113,11 +113,17 @@ class TestFlashAttention(TestCase):
         if bias_type == "full":
             bias = ZeroAttentionBias()
         elif bias_type == "causal":
-            bias = CausalAttentionBias(shape=(seq_len, seq_len))
+            bias = CausalAttentionBias(
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
+            )
         else:
             assert bias_type == "sliding"
-            bias = MaskFnAttentionBias(
-                mask=sliding_window_causal_mask(sliding_window_size=4), shape=(seq_len, seq_len)
+            bias = SlidingWindowAttentionBias(
+                mask=sliding_window_causal_mask(sliding_window_size=4),
+                sliding_window_size=4,
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
             )
 
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
@@ -167,11 +173,17 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
         if bias_type == "causal":
-            bias = CausalAttentionBias(shape=(seq_len, seq_len))
+            bias = CausalAttentionBias(
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
+            )
         else:
             assert bias_type == "sliding"
-            bias = MaskFnAttentionBias(
-                mask=sliding_window_causal_mask(sliding_window_size=4), shape=(seq_len, seq_len)
+            bias = SlidingWindowAttentionBias(
+                mask=sliding_window_causal_mask(sliding_window_size=4),
+                sliding_window_size=4,
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
             )
 
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
@@ -199,15 +211,16 @@ class TestFlashAttention(TestCase):
                 for t in range(0, query_len, step_len):
                     if bias_type == "causal":
                         bias_step = CausalAttentionBias(
-                            shape=(step_len, seq_len),
-                            target_positions=jnp.full([batch], fill_value=t),
+                            target_positions=jnp.arange(step_len)[None] + t,
+                            source_positions=jnp.arange(seq_len)[None],
                         )
                     else:
                         assert bias_type == "sliding"
-                        bias_step = MaskFnAttentionBias(
+                        bias_step = SlidingWindowAttentionBias(
                             mask=sliding_window_causal_mask(sliding_window_size=4),
-                            shape=(step_len, seq_len),
-                            target_positions=jnp.full([batch], fill_value=t),
+                            sliding_window_size=4,
+                            target_positions=jnp.arange(step_len)[None] + t,
+                            source_positions=jnp.arange(seq_len)[None],
                         )
 
                     query_step = query[:, t : t + step_len]

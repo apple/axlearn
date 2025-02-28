@@ -81,6 +81,7 @@ from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 import chex
 import einops
 import jax
+from absl import logging
 from jax import numpy as jnp
 
 from axlearn.common import ops, param_init
@@ -88,7 +89,6 @@ from axlearn.common.attention_bias import (
     NEG_INF,
     BaseAttentionBias,
     CausalAttentionBias,
-    MaskFn,
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
     as_attention_bias,
@@ -104,7 +104,7 @@ from axlearn.common.base_layer import (
 )
 from axlearn.common.config import (
     REQUIRED,
-    ConfigOr,
+    ClassConfigBase,
     FunctionConfigBase,
     InstantiableConfig,
     Required,
@@ -1649,13 +1649,13 @@ class MultiheadAttention(BaseLayer):
         atten_logit_cap: Optional[float] = None
         # A function to compute the boolean mask to apply when computing the attention
         # where True means "attend" and False means "do not attend".
-        # Set to `causal_mask` for causal masking.
+        # Set to `CausalAttentionBias.default_config()` for causal masking.
         # When used with certain flash attention implementations, more efficient
         # code paths may be used. (See the FlashAttention docstring for more details.)
         # This field may not be specified if `causal` (deprecated) is specified.
         # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
-        mask: ConfigOr[Optional[MaskFn]] = None
-        # Deprecated. Use `mask=causal_mask` instead.
+        mask: Optional[ClassConfigBase[MaskFnAttentionBias]] = None
+        # Deprecated. Use `mask=CausalAttentionBias.default_config()` instead.
         # If True, applies causal masking. `key` and `value` must be None.
         # May not be specified if `mask` is already specified.
         # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
@@ -1668,9 +1668,22 @@ class MultiheadAttention(BaseLayer):
         if cfg.causal and cfg.mask is not None:
             raise NotImplementedError("Cannot specify `causal` when using `mask`.")
         if cfg.causal:
-            self._mask_fn = causal_mask
+            self._mask_tpl = CausalAttentionBias.default_config()
         else:
-            self._mask_fn = maybe_instantiate(cfg.mask)
+            # For backward compatibility. mask=causal_mask is DEPRECATED.
+            if cfg.mask is causal_mask:
+                logging.warning("Use CausalAttentionBias.default_config(), instead of causal_mask.")
+                mask_tpl = CausalAttentionBias.default_config()
+            else:
+                mask_tpl = cfg.mask
+            self._mask_tpl = mask_tpl
+        if self._mask_tpl is not None:
+            is_valid_tpl = isinstance(self._mask_tpl, ClassConfigBase) and issubclass(
+                self._mask_tpl.klass, MaskFnAttentionBias
+            )
+            if not is_valid_tpl:
+                raise ValueError(f"{self._mask_tpl=} must be ClassConfigBase[MaskFnAttentionBias].")
+
         # Configure inputs to multi-headed QKV projection.
         i_proj_cfg = cfg.input_linear
         i_proj_cfg.query_dim = cfg.query_dim
@@ -1809,28 +1822,20 @@ class MultiheadAttention(BaseLayer):
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
         self.vlog(3, "atten.v_proj=%s", v_proj.sum())
         attention_logit_biases = as_attention_bias(attention_logit_biases)
-        if self._mask_fn is not None:
-            target_positions = None
+        if self._mask_tpl is not None:
+            # TODO(dhwang2): KVCache refactoring will remove this query_positions and key_positions
+            # hard coding.
+            if query_positions is None:
+                query_positions = jnp.arange(q_proj.shape[1])[None]
+            key_positions = jnp.arange(k_proj.shape[1])[None]
             if mode == ForwardMode.EXTEND_STEP:
-                target_positions = cached_states["i_proj"]["time_step"]
-            if self._mask_fn is causal_mask:
-                # Needed for legacy flash attention implementations that don't have
-                # sparse mask support.
-                # E.g., the legacy tpu flash attention, all current gpu flash attention
-                # implementations.
-                attention_logit_biases += CausalAttentionBias(
-                    shape=(q_proj.shape[1], k_proj.shape[1]),
-                    target_positions=target_positions,
-                    dtype=q_proj.dtype,
-                )
-            else:
-                attention_logit_biases += MaskFnAttentionBias(
-                    self._mask_fn,
-                    shape=(q_proj.shape[1], k_proj.shape[1]),
-                    target_positions=target_positions,
-                    dtype=q_proj.dtype,
-                )
+                time_step = cached_states["i_proj"]["time_step"]
+                query_positions = query_positions + time_step[:, None]  # [batch, steps]
+            attention_logit_biases += self._mask_tpl.instantiate(
+                target_positions=query_positions, source_positions=key_positions, dtype=q_proj.dtype
+            )
         if segment_ids is not None:
+            assert mode == ForwardMode.FORWARD, "segment_ids must be None in inference."
             attention_logit_biases += SegmentIdAttentionBias(segment_ids)
         context, probs = self._compute_attention(
             mode=mode,

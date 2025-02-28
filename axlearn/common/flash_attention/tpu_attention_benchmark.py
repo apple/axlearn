@@ -33,10 +33,10 @@ import jax
 import jax.numpy as jnp
 
 from axlearn.common.attention_bias import (
+    CausalAttentionBias,
     CompositeAttentionBias,
-    MaskFnAttentionBias,
+    SlidingWindowAttentionBias,
     TensorAttentionBias,
-    causal_mask,
     sliding_window_causal_mask,
 )
 from axlearn.common.flash_attention.utils import flash_attention_implementation, mha_reference
@@ -130,10 +130,17 @@ def _benchmark(
 
     mask = None
     if causal and sliding_window_size is None:
-        mask = causal_mask
+        mask = CausalAttentionBias(
+            target_positions=jnp.arange(seq_len)[None],
+            source_positions=jnp.arange(seq_len)[None],
+        )
     elif causal:
-        mask = sliding_window_causal_mask(sliding_window_size)
-    mask = MaskFnAttentionBias(mask, shape=(seq_len, seq_len))
+        mask = SlidingWindowAttentionBias(
+            sliding_window_causal_mask(sliding_window_size),
+            sliding_window_size=sliding_window_size,
+            target_positions=jnp.arange(seq_len)[None],
+            source_positions=jnp.arange(seq_len)[None],
+        )
     if use_bias:
         bias = CompositeAttentionBias([mask, TensorAttentionBias(bias)])
     else:

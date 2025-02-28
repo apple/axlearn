@@ -263,7 +263,7 @@ class LoraFusedQKVLinearTest(TestCase):
 
         initial_cache_state, init_output = layer.init_states(
             time_step=None,
-            query=TensorSpec([batch_size, seq_len]),
+            query=TensorSpec([batch_size, seq_len], dtype=q_proj.dtype),
         )
         self.assertIsNone(init_output)
 
