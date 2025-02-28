@@ -1,5 +1,6 @@
 # Copyright © 2024 Apple Inc.
 """Test module for gradient_accumulation.py"""
+
 import chex
 import jax
 import jax.numpy as jnp
