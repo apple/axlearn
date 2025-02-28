@@ -44,6 +44,7 @@ from axlearn.common.attention import (
     BaseStackedTransformerLayer,
     BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
+    ForwardMode,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
     KVState,
@@ -2906,7 +2907,8 @@ class MultiheadAttentionTest(TestCase):
             bias=bias,
         )
 
-    def test_gqa_against_mha(self):
+    @parameterized.product(mode=[ForwardMode.FORWARD, ForwardMode.EXTEND_STEP])
+    def test_gqa_against_mha(self, mode):
         model_dim = 16
         num_heads = 4
         num_kv_heads = 2
@@ -2948,7 +2950,11 @@ class MultiheadAttentionTest(TestCase):
             is_training=False,
             prng_key=prng_key,
             inputs=dict(
-                q_proj=q, k_proj=k, v_proj=v, attention_logit_biases=attention_logit_biases
+                mode=mode,
+                q_proj=q,
+                k_proj=k,
+                v_proj=v,
+                attention_logit_biases=attention_logit_biases,
             ),
         )
 
@@ -2962,7 +2968,11 @@ class MultiheadAttentionTest(TestCase):
             is_training=False,
             prng_key=prng_key,
             inputs=dict(
-                q_proj=q, k_proj=k, v_proj=v, attention_logit_biases=attention_logit_biases
+                mode=mode,
+                q_proj=q,
+                k_proj=k,
+                v_proj=v,
+                attention_logit_biases=attention_logit_biases,
             ),
         )
 
@@ -3091,26 +3101,29 @@ class MultiheadAttentionTest(TestCase):
         self.assertIn(str(key_scale_factor), hlo)
         self.assertNotIn(str(query_scale_factor * key_scale_factor), hlo)
 
-    @parameterized.parameters(
+    @parameterized.product(
         [
-            (
-                1.0,
-                jax.nn.sigmoid((1.0 * 1.0) * 2 - jnp.log(6)),
-                6,
+            dict(
+                qkv_value=1.0,
+                expected_value=jax.nn.sigmoid((1.0 * 1.0) * 2 - jnp.log(6)),
+                seq_len=6,
             ),
-            (
-                1.0,
-                jax.nn.sigmoid((1.0 * 1.0) * 2 - jnp.log(4)),
-                4,
+            dict(
+                qkv_value=1.0,
+                expected_value=jax.nn.sigmoid((1.0 * 1.0) * 2 - jnp.log(4)),
+                seq_len=4,
             ),
-            (
-                2.0,
-                jax.nn.sigmoid((2.0 * 2.0) * 2 - jnp.log(6)),
-                6,
+            dict(
+                qkv_value=2.0,
+                expected_value=jax.nn.sigmoid((2.0 * 2.0) * 2 - jnp.log(6)),
+                seq_len=6,
             ),
-        ]
+        ],
+        mode=[ForwardMode.FORWARD, ForwardMode.EXTEND_STEP],
     )
-    def test_sigmoid_compute_attention(self, qkv_value: float, expected_value: float, seq_len: int):
+    def test_sigmoid_compute_attention(
+        self, qkv_value: float, expected_value: float, seq_len: int, mode: ForwardMode
+    ):
         model_dim = 16
         num_heads = 4
         batch_size = 2
@@ -3131,6 +3144,7 @@ class MultiheadAttentionTest(TestCase):
 
         qkv_shape = [batch_size, seq_len, num_heads, num_heads]
         inputs = dict(
+            mode=mode,
             q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
             v_proj=jnp.full(qkv_shape, fill_value=qkv_value),

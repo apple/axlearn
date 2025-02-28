@@ -176,7 +176,8 @@ class TestFlashAttention(TestCase):
 
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
-                test_fn = utils.flash_attention_implementation(backend)
+                fwd_fn = utils.flash_attention_implementation(backend)
+                decode_fn = utils.flash_attention_implementation(backend, is_decoding=True)
 
                 query, key, value = _get_inputs(
                     batch=batch,
@@ -188,7 +189,7 @@ class TestFlashAttention(TestCase):
                 )
                 prng_key = jax.random.PRNGKey(0)
 
-                fwd_out = test_fn(query, key, value, bias, prng_key)
+                fwd_out = fwd_fn(query, key, value, bias, prng_key)
                 # Limit generation length to 16 to save test time.
                 query_len = 16
                 query = query[:, :query_len]
@@ -210,7 +211,7 @@ class TestFlashAttention(TestCase):
                         )
 
                     query_step = query[:, t : t + step_len]
-                    decoding_out = test_fn(query_step, key, value, bias_step, prng_key)
+                    decoding_out = decode_fn(query_step, key, value, bias_step, prng_key)
                     decoding_output.append(decoding_out)
                 decoding_output = jnp.concatenate(decoding_output, axis=1)
                 self.assertNestedAllClose(fwd_out, decoding_output, atol=0.01)
