@@ -28,7 +28,13 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common.attention import Dropout, GroupedQKVLinear, GroupedQueryAttention, QKVLinear
+from axlearn.common.attention import (
+    Dropout,
+    GroupedQKVLinear,
+    GroupedQueryAttention,
+    KVCache,
+    QKVLinear,
+)
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     CompositeAttentionBias,
@@ -121,7 +127,7 @@ def _prepare_layers(
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
 
     if inference:
-        ref_cfg.input_linear.set(dtype=jnp.bfloat16)
+        ref_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
     test_cfg = (
         FlashAttention.default_config()
         .set(**kwargs)
@@ -132,7 +138,7 @@ def _prepare_layers(
         )
     )
     if inference:
-        test_cfg.input_linear.set(dtype=jnp.bfloat16)
+        test_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
 
     ref_cfg.set(mask=mask)
     test_cfg.set(mask=mask)
@@ -825,12 +831,12 @@ class TestFlashAttention(TestCase):
             if dtype is jnp.float32:
                 # Float32 inference still uses bfloat16 kv cache.
                 for k in ["key", "value"]:
-                    self.assertEqual(ref_initial_state["i_proj"][k].dtype, jnp.bfloat16)
-                    self.assertEqual(initial_state["i_proj"][k].dtype, jnp.bfloat16)
+                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                    self.assertEqual(initial_state["kv_cache"][k].dtype, jnp.bfloat16)
             else:
                 for k in ["key", "value"]:
-                    self.assertEqual(ref_initial_state["i_proj"][k].dtype, dtype)
-                    self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
+                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
+                    self.assertEqual(initial_state["kv_cache"][k].dtype, dtype)
 
             # Prepare decoding inputs.
             inputs = dict(
