@@ -231,8 +231,6 @@ model.decoder.transformer.layer.remat_spec['prevent_cse']: False
 model.decoder.transformer.layer.remat_spec['policy']: 'jax._src.ad_checkpoint.dots_saveable'
 model.decoder.transformer.layer.self_attention.attention.causal: True
 model.decoder.transformer.layer.self_attention.attention.dropout.klass: 'axlearn.common.layers.Dropout'
-model.decoder.transformer.layer.self_attention.attention.input_linear.cache_dtype: 'jax.numpy.bfloat16'
-model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.cache_dtype: 'jax.numpy.bfloat16'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.klass: 'axlearn.common.attention.FusedGroupedQKVLinear'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.bias: False
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.klass: 'axlearn.common.attention.MultiheadInputLinear'
@@ -251,6 +249,8 @@ model.decoder.transformer.layer.self_attention.attention.key_scale.norm.eps: 1e-
 model.decoder.transformer.layer.self_attention.attention.key_scale.norm.forward_dtype: None
 model.decoder.transformer.layer.self_attention.attention.key_scale.norm.klass: 'axlearn.common.layers.RMSNorm'
 model.decoder.transformer.layer.self_attention.attention.klass: 'axlearn.common.flash_attention.layer.FlashAttention'
+model.decoder.transformer.layer.self_attention.attention.kv_cache.cache_dtype: 'jax.numpy.bfloat16'
+model.decoder.transformer.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.attention.KVCache'
 model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][0][0]: 'data'
 model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][0][1]: 'expert'
 model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][0][2]: 'fsdp'

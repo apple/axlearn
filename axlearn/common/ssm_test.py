@@ -30,6 +30,7 @@ from jax.sharding import Mesh, PartitionSpec
 from transformers.activations import ACT2FN
 from transformers.configuration_utils import PretrainedConfig
 
+from axlearn.common.attention import KVCache
 from axlearn.common.attention_bias import make_causal_biases
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.module import functional as F
@@ -930,7 +931,9 @@ class StackedMixedSSMTransformerTest(TestCase):
         cfg.ssm_layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
         cfg.layer.feed_forward.hidden_dim = hidden_dim
         cfg.layer.self_attention.attention.num_heads = num_heads
-        cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
+        cfg.layer.self_attention.attention.set(
+            kv_cache=KVCache.default_config().set(cache_dtype=dtype)
+        )
         _test_extend_step(cfg, model_dim=model_dim, dtype=dtype)
 
     @parameterized.parameters(jnp.float32, jnp.bfloat16)
@@ -953,7 +956,9 @@ class StackedMixedSSMTransformerTest(TestCase):
         cfg.ssm_layer.mamba_layer.set(dtype=dtype, cache_dtype=None)
         cfg.layer.feed_forward.hidden_dim = hidden_dim
         cfg.layer.self_attention.attention.num_heads = num_heads
-        cfg.layer.self_attention.attention.input_linear.set(dtype=dtype, cache_dtype=None)
+        cfg.layer.self_attention.attention.set(
+            kv_cache=KVCache.default_config().set(cache_dtype=dtype)
+        )
         _test_prefill_states(cfg, model_dim=model_dim, dtype=dtype)
 
 
