@@ -69,3 +69,12 @@ while [ ${#TEST_PIDS[@]} -ne 0 ]; do
   wait -n -p PID ${!TEST_PIDS[@]} || exit_if_error $? "Test failed."
   unset TEST_PIDS[$PID]
 done
+
+# Simulate 4- and 8-device environment to run Flash Attention layer tests.
+# Run at the end to avoid OOM.
+for num_devices in 4 8; do
+    XLA_FLAGS="--xla_force_host_platform_device_count=${num_devices}" pytest \
+        --durations=100 -v -n auto \
+        -m "not (gs_login or tpu or high_cpu or fp64)" axlearn/common/flash_attention/layer_test.py \
+        --dist worksteal
+done
