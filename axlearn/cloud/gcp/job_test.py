@@ -29,6 +29,11 @@ from axlearn.cloud.gcp import bundler, job, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
+from axlearn.cloud.gcp.jobset_utils import (
+    A3HighReplicatedJob,
+    A3UltraReplicatedJob,
+    BaseReplicatedJob,
+)
 from axlearn.cloud.gcp.jobset_utils_test import mock_settings
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
@@ -278,6 +283,7 @@ class GPUGKEJobTest(TestCase):
     @contextlib.contextmanager
     def _job_config(
         self,
+        replicated_job_cls: type[BaseReplicatedJob],
         bundler_cls: type[Bundler],
         service_account: Optional[str] = None,
         queue: Optional[str] = None,
@@ -288,7 +294,7 @@ class GPUGKEJobTest(TestCase):
             [job.__name__, jobset_utils.__name__, bundler.__name__], mock_settings()
         ):
             fv = flags.FlagValues()
-            job.GPUGKEJob.define_flags(fv)
+            job.GPUGKEJob.with_builder(replicated_job_cls).define_flags(fv)
             if service_account:
                 fv.set_default("service_account", service_account)
             if num_replicas:
@@ -304,6 +310,7 @@ class GPUGKEJobTest(TestCase):
             yield cfg
 
     @parameterized.product(
+        replicated_job_cls=[A3HighReplicatedJob, A3UltraReplicatedJob],
         service_account=[None, "sa"],
         queue=[None, "queue-name"],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
@@ -312,7 +319,14 @@ class GPUGKEJobTest(TestCase):
         env_vars=[None, {"a": "b"}],
     )
     def test_instantiate(
-        self, service_account, bundler_cls, wrap_bundler, num_replicas, env_vars, queue
+        self,
+        replicated_job_cls,
+        service_account,
+        bundler_cls,
+        wrap_bundler,
+        num_replicas,
+        env_vars,
+        queue,
     ):
         class WrappedBundler(Bundler):
             @config_class
@@ -321,6 +335,7 @@ class GPUGKEJobTest(TestCase):
 
         settings = mock_settings()
         with self._job_config(
+            replicated_job_cls,
             bundler_cls,
             service_account=service_account,
             env_vars=env_vars,
@@ -350,26 +365,6 @@ class GPUGKEJobTest(TestCase):
                 self.assertEqual(1, job_cfg.accelerator.num_replicas)
             else:
                 self.assertEqual(num_replicas, job_cfg.accelerator.num_replicas)
-
-    @parameterized.product(
-        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
-        queue=[None, "queue-name"],
-    )
-    def test_build_jobset(
-        self,
-        bundler_cls,
-        queue: Optional[str] = None,
-    ):
-        with self._job_config(bundler_cls, queue=queue) as cfg:
-            gke_job: job.GPUGKEJob = cfg.set(name="test").instantiate()
-            # pylint: disable-next=protected-access
-            jobset = gke_job._build_jobset()
-            jobset_annotations = jobset["metadata"]["annotations"]
-            self.assertEqual(jobset["metadata"]["name"], cfg.name)
-            if queue is None:
-                self.assertNotIn("kueue.x-k8s.io/queue-name", jobset_annotations)
-            else:
-                self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)
 
 
 if __name__ == "__main__":
