@@ -40,30 +40,82 @@ class MaskTest(test_utils.TestCase):
 class AttentionBiasTest(test_utils.TestCase):
     @parameterized.parameters(
         [attention_bias.ZeroAttentionBias(), False],
-        [attention_bias.CausalAttentionBias(shape=(5, 5)), True],
-        [attention_bias.MaskFnAttentionBias(attention_bias.causal_mask, shape=(5, 5)), True],
+        [
+            attention_bias.CausalAttentionBias(
+                target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+            ),
+            True,
+        ],
+        [
+            attention_bias.MaskFnAttentionBias(
+                attention_bias.causal_mask,
+                target_positions=jnp.arange(5)[None],
+                source_positions=jnp.arange(5)[None],
+            ),
+            True,
+        ],
+        [
+            attention_bias.SlidingWindowAttentionBias(
+                attention_bias.sliding_window_causal_mask(sliding_window_size=3),
+                sliding_window_size=3,
+                target_positions=jnp.arange(5)[None],
+                source_positions=jnp.arange(5)[None],
+            ),
+            True,
+        ],
         [attention_bias.TensorAttentionBias.from_tensor(jnp.ones((5, 5))), True],
     )
     def test_has_bias(self, bias, expected):
         self.assertEqual(bias.has_value(), expected)
 
     def test_causal_attention_bias(self):
-        bias = attention_bias.CausalAttentionBias(shape=(5, 5))
+        bias = attention_bias.CausalAttentionBias(
+            target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+        )
         chex.assert_trees_all_close(bias.value(), attention_bias.make_causal_biases(5)[None, None])
         self.assertIsInstance(bias, attention_bias.CausalAttentionBias)
 
-        bias = attention_bias.MaskFnAttentionBias(attention_bias.causal_mask, shape=(5, 5))
+        bias = attention_bias.MaskFnAttentionBias(
+            attention_bias.causal_mask,
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+        )
         self.assertNotIsInstance(bias, attention_bias.CausalAttentionBias)
+
+    def test_sliding_window_attention_bias(self):
+        bias = attention_bias.SlidingWindowAttentionBias(
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+            mask=attention_bias.sliding_window_causal_mask(sliding_window_size=3),
+            sliding_window_size=3,
+        )
+        chex.assert_trees_all_close(
+            bias.value(),
+            attention_bias.make_sliding_window_causal_biases(5, sliding_window_size=3)[None, None],
+        )
+        self.assertIsInstance(bias, attention_bias.SlidingWindowAttentionBias)
+
+        bias = attention_bias.MaskFnAttentionBias(
+            attention_bias.sliding_window_causal_mask(sliding_window_size=3),
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+        )
+        self.assertNotIsInstance(bias, attention_bias.SlidingWindowAttentionBias)
 
     def test_zero_attention_bias(self):
         bias = attention_bias.ZeroAttentionBias()
         self.assertEqual(bias.value(), None)
 
-        bias = attention_bias.MaskFnAttentionBias(None, shape=(5, 5))
+        bias = attention_bias.MaskFnAttentionBias(
+            None, target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+        )
         self.assertNotIsInstance(bias, attention_bias.ZeroAttentionBias)
 
         self.assertNotIsInstance(
-            attention_bias.CausalAttentionBias(shape=(5, 5)), attention_bias.ZeroAttentionBias
+            attention_bias.CausalAttentionBias(
+                target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+            ),
+            attention_bias.ZeroAttentionBias,
         )
 
     def test_base_attention_bias_value(self):
@@ -113,8 +165,12 @@ class AttentionBiasTest(test_utils.TestCase):
         [
             attention_bias.CompositeAttentionBias(
                 [
-                    attention_bias.CausalAttentionBias(shape=(5, 5)),
-                    attention_bias.CausalAttentionBias(shape=(5, 5)),
+                    attention_bias.CausalAttentionBias(
+                        target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+                    ),
+                    attention_bias.CausalAttentionBias(
+                        target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+                    ),
                 ]
             ),
             True,
@@ -122,7 +178,9 @@ class AttentionBiasTest(test_utils.TestCase):
         [
             attention_bias.CompositeAttentionBias(
                 [
-                    attention_bias.CausalAttentionBias(shape=(5, 5)),
+                    attention_bias.CausalAttentionBias(
+                        target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+                    ),
                     attention_bias.ZeroAttentionBias(),
                 ]
             ),
@@ -132,7 +190,9 @@ class AttentionBiasTest(test_utils.TestCase):
             attention_bias.CompositeAttentionBias(
                 [
                     attention_bias.ZeroAttentionBias(),
-                    attention_bias.CausalAttentionBias(shape=(5, 5)),
+                    attention_bias.CausalAttentionBias(
+                        target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+                    ),
                 ]
             ),
             True,
@@ -144,8 +204,14 @@ class AttentionBiasTest(test_utils.TestCase):
     def test_bias_and_residual_has_bias(self):
         bias = attention_bias.CompositeAttentionBias(
             [
-                attention_bias.CausalAttentionBias(shape=(5, 5)),
-                attention_bias.MaskFnAttentionBias(attention_bias.causal_mask, shape=(5, 5)),
+                attention_bias.CausalAttentionBias(
+                    target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+                ),
+                attention_bias.MaskFnAttentionBias(
+                    attention_bias.causal_mask,
+                    target_positions=jnp.arange(5)[None],
+                    source_positions=jnp.arange(5)[None],
+                ),
             ]
         )
         bias_and_residual = bias.bias_and_residual(attention_bias.CausalAttentionBias)
@@ -167,11 +233,18 @@ class AttentionBiasTest(test_utils.TestCase):
 
     def test_composite_attention_bias(self):
         # Test value().
-        b1 = attention_bias.CausalAttentionBias(shape=(5, 5))
+        b1 = attention_bias.CausalAttentionBias(
+            target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+        )
         # Opposite of causal mask.
-        b2 = attention_bias.MaskFnAttentionBias(shape=(5, 5), mask=lambda q, k: q < k)
+        b2 = attention_bias.MaskFnAttentionBias(
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+            mask=lambda q, k: q < k,
+        )
         expected = attention_bias.MaskFnAttentionBias(
-            shape=(5, 5),
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
             mask=lambda q, k: jnp.zeros(jnp.broadcast_shapes(q.shape, k.shape), dtype=bool),
         )
         bias = attention_bias.CompositeAttentionBias([b1, b2])
@@ -205,9 +278,15 @@ class AttentionBiasTest(test_utils.TestCase):
 
     def test_bias_and_residual_repeated_call(self):
         """Test repeated calls to `bias_and_residual()`."""
-        b1 = attention_bias.CausalAttentionBias(shape=(5, 5))
+        b1 = attention_bias.CausalAttentionBias(
+            target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+        )
         # Opposite of causal mask.
-        b2 = attention_bias.MaskFnAttentionBias(shape=(5, 5), mask=lambda q, k: q < k)
+        b2 = attention_bias.MaskFnAttentionBias(
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+            mask=lambda q, k: q < k,
+        )
         bias = attention_bias.CompositeAttentionBias([b2, b1])
         causal_bias, residual = bias.bias_and_residual(attention_bias.CausalAttentionBias)
         mask_fn_bias, residual = residual.bias_and_residual(attention_bias.MaskFnAttentionBias)
@@ -223,9 +302,15 @@ class AttentionBiasTest(test_utils.TestCase):
         self.assertIs(bias_and_residual.residual.value(), None)
 
     def test_split(self):
-        b1 = attention_bias.CausalAttentionBias(shape=(5, 5))
+        b1 = attention_bias.CausalAttentionBias(
+            target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+        )
         # Opposite of causal mask.
-        b2 = attention_bias.MaskFnAttentionBias(shape=(5, 5), mask=lambda q, k: q < k)
+        b2 = attention_bias.MaskFnAttentionBias(
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+            mask=lambda q, k: q < k,
+        )
         bias = attention_bias.CompositeAttentionBias([b2, b1])
         causal_bias, mask_fn_bias, residual = attention_bias.split(
             bias, attention_bias.CausalAttentionBias, attention_bias.MaskFnAttentionBias
@@ -247,9 +332,21 @@ class AttentionBiasTest(test_utils.TestCase):
         self.assertIs(residual.value(), None)
 
     @parameterized.product(
-        causal=[None, attention_bias.CausalAttentionBias(shape=(3, 3))],
+        causal=[
+            None,
+            attention_bias.CausalAttentionBias(
+                target_positions=jnp.arange(3)[None], source_positions=jnp.arange(3)[None]
+            ),
+        ],
         segment_ids=[None, attention_bias.SegmentIdAttentionBias(jnp.asarray([1, 2, 3]))],
-        mask=[None, attention_bias.MaskFnAttentionBias(mask=lambda q, k: q < k, shape=(3, 3))],
+        mask=[
+            None,
+            attention_bias.MaskFnAttentionBias(
+                mask=lambda q, k: q < k,
+                target_positions=jnp.arange(3)[None],
+                source_positions=jnp.arange(3)[None],
+            ),
+        ],
     )
     def test_split_subsets(
         self,
@@ -303,9 +400,15 @@ class AttentionBiasTest(test_utils.TestCase):
 
     def test_mask_fn_attention_bias_from_sequence(self):
         """Tests `MaskFnAttentionBias.from_sequence()`."""
-        b1 = attention_bias.CausalAttentionBias(shape=(5, 5))
+        b1 = attention_bias.CausalAttentionBias(
+            target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
+        )
         # Opposite of causal mask.
-        b2 = attention_bias.MaskFnAttentionBias(shape=(5, 5), mask=lambda q, k: q < k)
+        b2 = attention_bias.MaskFnAttentionBias(
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+            mask=lambda q, k: q < k,
+        )
 
         self.assertNestedEqual(
             attention_bias.MaskFnAttentionBias.from_sequence([b1, b2]).value(), (b1 + b2).value()
@@ -317,13 +420,21 @@ class AttentionBiasTest(test_utils.TestCase):
         self.assertIs(attention_bias.MaskFnAttentionBias.from_sequence([]), None)
 
     def test_mask_fn_attention_bias(self):
-        bias = attention_bias.MaskFnAttentionBias(mask=lambda q, k: q >= k, shape=(5, 5))
+        bias = attention_bias.MaskFnAttentionBias(
+            mask=lambda q, k: q >= k,
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+        )
         self.assertNestedEqual(
             bias.value(), jnp.asarray(attention_bias.make_causal_biases(5))[None, None]
         )
 
+        target_positions = jnp.arange(4)[None] + jnp.asarray([3, 1])[:, None]
+        source_positions = jnp.arange(7)[None]
         bias = attention_bias.MaskFnAttentionBias(
-            mask=lambda q, k: q >= k, shape=(4, 7), target_positions=jnp.asarray([3, 1])
+            mask=lambda q, k: q >= k,
+            target_positions=target_positions,
+            source_positions=source_positions,
         )
         expected = jnp.asarray(
             [
@@ -349,8 +460,8 @@ class AttentionBiasTest(test_utils.TestCase):
         """Tests mask_fn_attention_bias` when `target_positions.ndim == 2."""
         bias = attention_bias.MaskFnAttentionBias(
             mask=attention_bias.causal_mask,
-            shape=(5, 5),
             target_positions=jnp.asarray([[0, 1, 2, 3, 4], [4, 3, 2, 1, 0]]),
+            source_positions=jnp.arange(5)[None],
         )
         expected = jnp.asarray(
             [
@@ -376,11 +487,15 @@ class AttentionBiasTest(test_utils.TestCase):
             self.assertEqual(source_positions.shape, (1, 1, source_len))
             return attention_bias.causal_mask(target_positions, source_positions)
 
+        target_positions = jnp.arange(target_len)[None] + time_step[:, None]
+        source_positions = jnp.arange(source_len)[None]
         bias = attention_bias.MaskFnAttentionBias(
-            mask=mask_fn, shape=(target_len, source_len), target_positions=time_step
+            mask=mask_fn, target_positions=target_positions, source_positions=source_positions
         )
         ref_bias = attention_bias.MaskFnAttentionBias(
-            attention_bias.causal_mask, shape=(target_len, source_len), target_positions=time_step
+            attention_bias.causal_mask,
+            target_positions=target_positions,
+            source_positions=source_positions,
         )
         chex.assert_trees_all_close(bias.value(), ref_bias.value())
 
