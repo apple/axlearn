@@ -236,8 +236,7 @@ class HostArrayTest(TestCase):
         mesh_shape=[(-1, 2), (2, -1)],
         process_shape=[(2, 1), (4, 4), (1, 8)],
     )
-    # NOTE: while annotated with `for_8_devices`, this runs on other configurations.
-    @pytest.mark.for_8_devices
+    @pytest.mark.tpu
     def test_host_to_global_multiple_dims(
         self, platform: str, mesh_shape: tuple, process_shape: tuple
     ):
@@ -299,12 +298,16 @@ class HostArrayTest(TestCase):
     @parameterized.product(
         platform=["cpu", "tpu"],
         mesh_shape=[(-1, 2), (2, -1)],
-        process_shape=[(2, 1), (4, 4), (1, 8)],
+        process_shapes=[
+            {"x": (2, 1)},
+            {"x": (4, 4)},
+            {"x": (1, 8)},
+            {"x": (8, 4), "y": (4, 8)},  # Test a case with mixed shapes.
+        ],
     )
-    # NOTE: while annotated with `for_8_devices`, this runs on other configurations.
-    @pytest.mark.for_8_devices
+    @pytest.mark.tpu
     def test_global_to_host_multiple_dims(
-        self, platform: str, mesh_shape: tuple, process_shape: tuple
+        self, platform: str, mesh_shape: tuple, process_shapes: dict[str, tuple]
     ):
         """Test a case where we form the global batch with uniform sharding over multiple dims."""
 
@@ -321,16 +324,20 @@ class HostArrayTest(TestCase):
             pytest.skip(reason="Requires even number of processes.")
 
         # Build an array that can be sharded over multiple dims.
-        process_arrays = [
-            [
-                jax.random.uniform(jax.random.PRNGKey(i), shape=process_shape),
-                jax.random.uniform(jax.random.PRNGKey(i + 1), shape=process_shape),
+        process_arrays = {}
+        for k, shape in process_shapes.items():
+            process_arrays[k] = [
+                [
+                    jax.random.uniform(jax.random.PRNGKey(i), shape=shape),
+                    jax.random.uniform(jax.random.PRNGKey(i + 1), shape=shape),
+                ]
+                for i in range(0, process_count, 2)
             ]
-            for i in range(0, process_count, 2)
-        ]
-        global_array = jnp.concatenate(
-            [jnp.concatenate(row, axis=1) for row in process_arrays], axis=0
-        )
+        global_arrays = {}
+        for k, arrays in process_arrays.items():
+            global_arrays[k] = jnp.concatenate(
+                [jnp.concatenate(row, axis=1) for row in arrays], axis=0
+            )
 
         # Build a mesh with consistent host tiling.
         devices = _ordered_devices(mesh_shape, (process_count // 2, 2))
@@ -340,9 +347,10 @@ class HostArrayTest(TestCase):
         partition = PartitionSpec("x", "y")
 
         # Partition should divide global_shape evenly.
-        partitions = _infer_num_partitions(global_array.shape, mesh=mesh, partition=partition)
-        if any(dim % num_parts != 0 for dim, num_parts in zip(global_array.shape, partitions)):
-            pytest.skip(reason="Incompatible global_shape/partitioning.")
+        for k, global_array in global_arrays.items():
+            partitions = _infer_num_partitions(global_array.shape, mesh=mesh, partition=partition)
+            if any(dim % num_parts != 0 for dim, num_parts in zip(global_array.shape, partitions)):
+                pytest.skip(reason="Incompatible global_shape/partitioning.")
 
         process_index = jax.process_index()
 
@@ -354,16 +362,15 @@ class HostArrayTest(TestCase):
             def shard(x):
                 return x
 
-            global_array = shard(global_array)
-            local_array = global_to_host_array(global_array)
-            self.assertEqual(local_array.shape, process_shape)
-            self.assertNestedAllClose(
-                local_array, process_arrays[process_index // 2][process_index % 2]
-            )
-            restored_array = host_to_global_device_array(local_array, partition=out_sharding.spec)
-            self.assertNestedAllClose(
-                replicate_to_local_data(restored_array), replicate_to_local_data(global_array)
-            )
+            sharded_global_arrays = shard(global_arrays)
+            local_arrays = global_to_host_array(sharded_global_arrays)
+            for k, local_array in local_arrays.items():
+                self.assertEqual(local_array.shape, process_shapes[k])
+                self.assertNestedAllClose(
+                    local_array, process_arrays[k][process_index // 2][process_index % 2]
+                )
+            restored_arrays = host_to_global_device_array(local_arrays, partition=out_sharding.spec)
+            self.assertNestedAllClose(replicate_to_local_data(restored_arrays), global_arrays)
 
 
 if __name__ == "__main__":

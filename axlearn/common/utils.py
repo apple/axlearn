@@ -606,7 +606,7 @@ def as_numpy_array(x: Any):
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
-def with_sharding_constraint(x, shardings):
+def with_sharding_constraint(x: Tensor, shardings):
     mesh = thread_resources.env.physical_mesh
     if mesh.empty or mesh.size == 1:
         return x
@@ -847,8 +847,7 @@ def global_to_host_array(
 
     Args:
         global_arrays: A nested Tensor.
-            Each leaf Tensor must have shape [global_batch_size, ...] with identical
-            shapes, and must be uniformly partitioned across each dim.
+            Each leaf Tensor must be uniformly partitioned across each dim.
         partition: Deprecated.
 
     Returns:
@@ -860,25 +859,33 @@ def global_to_host_array(
     if partition is not None:
         logging.log_first_n(logging.WARNING, "Specifying partition is deprecated.", n=1)
 
-    def to_tuple(index: tuple[slice, ...], global_shape: Sequence[int]) -> tuple[tuple, ...]:
-        """Converts tuple of slices to tuple of tuples."""
-        return tuple((s.start or 0, s.stop or global_shape[dim]) for dim, s in enumerate(index))
-
     def index_to_shard(
         shards: list[jax.Shard], global_shape: Sequence[int]
     ) -> dict[tuple, jax.Shard]:
-        """Returns a mapping from (sorted) indices to shards. Indicies are into global_shape."""
-        index_to_shard = list((to_tuple(shard.index, global_shape), shard) for shard in shards)
+        """Returns a mapping from (sorted) indices to shards.
+
+        Each key is a tuple of length `len(global_shape)`.
+        Each element of the tuple is a `(start, limit)` tuple, specifying the start and limit
+        indices of the shard along the global shape dim.
+        """
+        index_to_shard = []
+        for shard in shards:
+            index = tuple(
+                (s.start or 0, s.stop or global_shape[dim]) for dim, s in enumerate(shard.index)
+            )
+            index_to_shard.append((index, shard))
         index_to_shard.sort(key=lambda x: x[0])
         return dict(index_to_shard)
 
     def get_local_array(value: Tensor) -> np.ndarray:
+        # Note that we ensure consistent ordering of addressable shards by sorting by index below.
         local_shards: list[jax.Shard] = value.addressable_shards
         if not local_shards:
             raise ValueError(f"No local shards for {value}")
-        # If local_shape matches global_shape, i.e. replicated, return any shard.
-        if local_shards[0].data.shape == value.shape:
-            return local_shards[0].data
+
+        # If value is replicated, return any shard.
+        if value.is_fully_replicated:
+            return np.asarray(local_shards[0].data)
 
         # A mapping from (unique) global index to local shards.
         global_index_to_local_shard = index_to_shard(local_shards, value.shape)
@@ -888,7 +895,7 @@ def global_to_host_array(
         # For each dim, we bucket global slices into the corresponding local slice index.
         for dim, slices in enumerate(dim_to_local_slices):
             global_to_local = {}
-            for global_index in global_index_to_local_shard.keys():
+            for global_index in global_index_to_local_shard:
                 global_slice = global_index[dim]
                 size = global_slice[1] - global_slice[0]
                 if global_slice not in global_to_local:
