@@ -16,7 +16,7 @@ from axlearn.common.quantized_dot_general.layers import (
     QuantizedDotGeneral,
     set_quantized_dot_general_recursively,
 )
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 
 
 class TestQuantizedDotGeneral(TestCase):
@@ -98,3 +98,43 @@ class TestQuantizedDotGeneral(TestCase):
             clipping_config,
             quantized_dot_general_config.activation_clipping,
         )
+
+    @parameterized.product(b=[8], d=[16], h=[32])
+    def test_einsum_maybe_quantized_fp8(self, b, d, h):
+        if jax.default_backend() != "gpu":
+            self.skipTest("Need H100 GPUs for fp8 compute.")
+        if not is_supported_mesh_shape((8, 1)):
+            return
+        with Mesh(mesh_utils.create_device_mesh((8, 1)), ("data", "fsdp")):
+            q_dot_cfg: QuantizedDotGeneral.Config = QuantizedDotGeneral.default_config()
+            q_dot_cfg.quantization_type = DotGeneralQuantizationType.FP_8
+            q_dot_cfg.name = "quantized_dot_general_layer"
+            q_dot_cfg.fp8_amax_history_length = 0
+            quantized_dot_general_layer: QuantizedDotGeneral = q_dot_cfg.instantiate(parent=None)
+            params = quantized_dot_general_layer.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(123)
+            )
+            inputs = [
+                "bd,dh->bh",
+                jax.random.normal(
+                    jax.random.PRNGKey(0),
+                    [b, d],
+                    dtype=jnp.bfloat16,
+                ),
+                jax.random.normal(
+                    jax.random.PRNGKey(1),
+                    [d, h],
+                    dtype=jnp.bfloat16,
+                ),
+            ]
+
+            output, _ = F(
+                quantized_dot_general_layer,
+                prng_key=jax.random.PRNGKey(5),
+                state=params,
+                inputs=dict(zip(("subscripts", "activation", "kernel"), inputs)),
+                is_training=True,
+                method="einsum_maybe_quantized",
+            )
+            reference = jnp.einsum(*inputs)
+            self.assertNestedAllClose(output, reference, atol=0.25, rtol=0.2)
