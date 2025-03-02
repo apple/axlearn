@@ -22,6 +22,7 @@ from axlearn.common.utils import (
 )
 
 
+# TODO(markblee): Consolidate with utils_test.
 class GDATest(TestCase):
     def _test_host_array_to_gda(self, mesh_shape, per_host_batch_size, data_partition):
         logging.info(

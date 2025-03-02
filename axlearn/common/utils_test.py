@@ -17,7 +17,6 @@ import jaxlib
 import numpy as np
 import pytest
 import tensorflow as tf
-import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
@@ -240,6 +239,9 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_tensor(self):
+        # pylint: disable-next=import-outside-toplevel
+        import torch
+
         # From a number.
         self.assertTensorEqual(jnp.ones([], dtype=jnp.int32), as_tensor(1))
         # From a numpy array.
@@ -341,6 +343,9 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_numpy_array(self):
+        # pylint: disable-next=import-outside-toplevel
+        import torch
+
         # From a number.
         self.assertNumpyArrayEqual(np.ones([], dtype=np.int64), as_numpy_array(1))
         # From a numpy array.

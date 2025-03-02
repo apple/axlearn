@@ -768,21 +768,26 @@ class DataPartitionType(Enum):
     REPLICATED = "replicated"
 
 
-def data_partition_type_to_spec(partition: DataPartitionType) -> PartitionSpec:
+def data_partition_type_to_spec(
+    partition: Union[DataPartitionType, PartitionSpec],
+) -> PartitionSpec:
     """Returns a PartitionSpec for the given partition type."""
     if partition == DataPartitionType.FULL:
         return input_partition_spec()
     elif partition == DataPartitionType.REPLICATED:
         return PartitionSpec(None)
+    elif isinstance(partition, PartitionSpec):
+        return partition
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
 
+# TODO(markblee): Rename to `host_to_global_array` for consistency with `global_to_host_array`.
 def host_to_global_device_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
     partition: Union[PartitionSpec, DataPartitionType] = DataPartitionType.FULL,
-) -> NestedTensor:
+) -> Nested[Tensor]:
     """Converts the given host device arrays to global device arrays.
 
     Must be called within the context of a Mesh.
@@ -798,7 +803,7 @@ def host_to_global_device_array(
         leaves. Each global device array is partitioned according to `partition`.
 
     Raises:
-        NotImplementedError: if the given `partition` type is not supported.
+        NotImplementedError: If the given `partition` type is not supported.
     """
     if isinstance(partition, DataPartitionType):
         logging.log_first_n(
@@ -806,15 +811,15 @@ def host_to_global_device_array(
             "Passing DataPartitionType is deprecated. Please specify a PartitionSpec directly.",
             n=1,
         )
-        partition = data_partition_type_to_spec(partition)
 
     mesh = thread_resources.env.physical_mesh
     partition_specs = complete_partition_spec_tree(
-        jax.tree_util.tree_structure(host_arrays), partition
+        jax.tree_util.tree_structure(host_arrays),
+        data_partition_type_to_spec(partition),
     )
     process_count = jax.process_count()
 
-    def make_gda(x, partition_spec):
+    def make_gda(x: np.ndarray, partition_spec: PartitionSpec):
         if partition == DataPartitionType.FULL:
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
@@ -832,65 +837,86 @@ def host_to_global_device_array(
     return jax.tree.map(make_gda, host_arrays, partition_specs)
 
 
+# TODO(markblee): Remove partition arg.
 def global_to_host_array(
-    global_arrays: NestedTensor, *, partition: DataPartitionType = DataPartitionType.FULL
-) -> NestedTensor:
-    """Extracts host addressable rows from each Tensor in `global_arrays`.
+    global_arrays: Nested[Tensor],
+    *,
+    partition: Optional[DataPartitionType] = DataPartitionType.FULL,
+) -> Nested[Tensor]:
+    """Extracts host addressable data from each Tensor in `global_arrays`.
 
     Args:
-        global_arrays: A NestedTensor.
+        global_arrays: A nested Tensor.
             Each leaf Tensor must have shape [global_batch_size, ...] with identical
-            global_batch_size across tensors.
-            The tensors must be partitioned in the same way and can be partitioned only along the
-            batch axis.
-        partition: How the global array should be partitioned.
+            shapes, and must be uniformly partitioned across each dim.
+        partition: Deprecated.
 
     Returns:
-        A NestedTensor with the same structure as `global_array`. Each leaf Tensor will have shape
-        [host_batch_size, ...] where `host_batch_size` will be equal to `global_batch_size` if the
-        global Tensors are replicated or `global_batch_size // process_count` if the global Tensors
-        are partitioned across hosts.
+        A nested Tensor with the same structure as `global_array`. Each leaf Tensor will have shape
+        `process_shape` where `process_shape` will be equal to `global_shape` if the global Tensors
+        are replicated. If the global Tensors are partitioned across hosts, the `process_shape` will
+        represent the host-local portion.
     """
+    if partition is not None:
+        logging.log_first_n(logging.WARNING, "Specifying partition is deprecated.", n=1)
 
-    def sort_global_shards(global_shards: list[jax.Shard]) -> list[jax.Shard]:
-        # We should sort jax.Array.global_shards by using this function to guarantee
-        # round-trip equality of host_to_global_device_array and global_to_host_array.
-        # Shards are sorted in-place.
-        global_shards.sort(key=lambda shard: shard.index)
-        return global_shards
+    def to_tuple(index: tuple[slice, ...], global_shape: Sequence[int]) -> tuple[tuple, ...]:
+        """Converts tuple of slices to tuple of tuples."""
+        return tuple((s.start or 0, s.stop or global_shape[dim]) for dim, s in enumerate(index))
 
-    global_array_items = flatten_items(global_arrays)
-    if not global_array_items:
-        return global_arrays  # no leaf Tensor.
-    first_path, first_value = global_array_items[0]
-    sorted_first_value_shards = sort_global_shards(first_value.global_shards)
-    first_value_shard_is_local = [shard.data is not None for shard in sorted_first_value_shards]
-    batch_size = first_value.shape[0]
+    def index_to_shard(
+        shards: list[jax.Shard], global_shape: Sequence[int]
+    ) -> dict[tuple, jax.Shard]:
+        """Returns a mapping from (sorted) indices to shards. Indicies are into global_shape."""
+        index_to_shard = list((to_tuple(shard.index, global_shape), shard) for shard in shards)
+        index_to_shard.sort(key=lambda x: x[0])
+        return dict(index_to_shard)
 
-    def get_local_array(path: str, value: Tensor) -> Tensor:
-        if value.shape[0] != batch_size:
-            raise ValueError(
-                f"Value batch size mismatch: {batch_size} @ {first_path} vs. "
-                f"{value.shape[0]} @ {path} of {shapes(global_arrays)}"
-            )
-        sorted_value_shards = sort_global_shards(value.global_shards)
-        value_shard_is_local = [shard.data is not None for shard in sorted_value_shards]
-        if value_shard_is_local != first_value_shard_is_local:
-            raise ValueError(
-                f"Value shard mismatch: {first_value_shard_is_local} @ {first_path} vs. "
-                f"{value_shard_is_local} @ {path}"
-            )
-        local_data = [shard.data for shard in sorted_value_shards if shard.data is not None]
-        if not local_data:
-            raise ValueError(f"No local shard found: {sorted_value_shards}.")
-        if partition == DataPartitionType.FULL:
-            return np.concatenate(local_data, axis=0)
-        elif partition == DataPartitionType.REPLICATED:
-            return local_data[0]
-        else:
-            raise NotImplementedError(f"Unsupported partition: {partition}")
+    def get_local_array(value: Tensor) -> np.ndarray:
+        local_shards: list[jax.Shard] = value.addressable_shards
+        if not local_shards:
+            raise ValueError(f"No local shards for {value}")
+        # If local_shape matches global_shape, i.e. replicated, return any shard.
+        if local_shards[0].data.shape == value.shape:
+            return local_shards[0].data
 
-    return jax.tree.map(get_local_array, tree_paths(global_arrays), global_arrays)
+        # A mapping from (unique) global index to local shards.
+        global_index_to_local_shard = index_to_shard(local_shards, value.shape)
+        # A mapping from dim -> local slices.
+        dim_to_local_slices: list[list[slice]] = [[] for _ in range(value.ndim)]
+
+        # For each dim, we bucket global slices into the corresponding local slice index.
+        for dim, slices in enumerate(dim_to_local_slices):
+            global_to_local = {}
+            for global_index in global_index_to_local_shard.keys():
+                global_slice = global_index[dim]
+                size = global_slice[1] - global_slice[0]
+                if global_slice not in global_to_local:
+                    # This exploits the fact that global slices are already sorted.
+                    bucket_idx = len(global_to_local)
+                    global_to_local[global_slice] = bucket_idx
+                else:
+                    # Along a given dim, global slices can appear multiples times if the array is
+                    # replicated along a different dim, in which case the local slice is the same.
+                    bucket_idx = global_to_local[global_slice]
+
+                # We require uniform sharding along each dim.
+                assert not slices or (slices[-1].stop - slices[-1].start) == size
+                start = bucket_idx * size
+                slices.append(slice(start, start + size))
+
+        # The local shape can be inferred from the last offset along each dim.
+        local_shape = tuple(local_slices[-1].stop for local_slices in dim_to_local_slices)
+
+        # Build the final output array.
+        output = np.empty(local_shape, dtype=value.dtype)
+        for local_index, local_shard in zip(
+            zip(*dim_to_local_slices), global_index_to_local_shard.values()
+        ):
+            output[tuple(local_index)] = local_shard.data
+        return output
+
+    return jax.tree.map(get_local_array, global_arrays)
 
 
 def get_recursively(
