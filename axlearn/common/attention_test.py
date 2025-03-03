@@ -2296,6 +2296,7 @@ class MultiheadAttentionTest(TestCase):
             attention.FusedGroupedQKVLinear.default_config().set(num_kv_heads=4),
         ),
         bias=(True, False),
+        use_legacy_attention_logit_biases=(True, False),
     )
     def test_gqa_forward(
         self,
@@ -2304,6 +2305,7 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap: float,
         input_linear: attention.BaseQKVLinear.Config,
         bias: bool,
+        use_legacy_attention_logit_biases: bool,
     ):
         """When num_kv_heads=num_heads, GQA should be equivalent to MHA."""
         model_dim = 16
@@ -2324,7 +2326,8 @@ class MultiheadAttentionTest(TestCase):
         base_layer = base_cfg.set(name="base").instantiate(parent=None)
         base_state = base_layer.initialize_parameters_recursively(prng_key=init_key)
         # Initialize GroupedQueryAttenion.
-        cfg = attention.GroupedQueryAttention.default_config().set(**layer_kwargs)
+        mask = None if use_legacy_attention_logit_biases else CausalAttentionBias.default_config()
+        cfg = attention.GroupedQueryAttention.default_config().set(**layer_kwargs, mask=mask)
         if input_linear is not None:
             cfg.set(input_linear=input_linear)
         set_bias_recursively(cfg, bias=bias)
@@ -2340,7 +2343,7 @@ class MultiheadAttentionTest(TestCase):
 
         # Dummy inputs.
         batch_size, tgt_len = 2, 6
-        inputs = dict(
+        base_inputs = dict(
             query=jax.random.normal(
                 jax.random.PRNGKey(124),
                 [batch_size, tgt_len, model_dim],
@@ -2350,6 +2353,9 @@ class MultiheadAttentionTest(TestCase):
             value=None,
             attention_logit_biases=attention_bias.make_causal_biases(tgt_len),
         )
+        test_inputs = base_inputs.copy()
+        if not use_legacy_attention_logit_biases:
+            test_inputs["attention_logit_biases"] = None
         # Get outputs.
         forward_key = jax.random.PRNGKey(456)
         base_outputs, _ = F(
@@ -2357,14 +2363,14 @@ class MultiheadAttentionTest(TestCase):
             state=base_state,
             is_training=False,
             prng_key=forward_key,
-            inputs=inputs,
+            inputs=base_inputs,
         )
         test_outputs, _ = F(
             test_layer,
             state=test_state,
             is_training=False,
             prng_key=forward_key,
-            inputs=inputs,
+            inputs=test_inputs,
         )
         self.assertNestedAllClose(base_outputs, test_outputs)
 
@@ -2412,14 +2418,12 @@ class MultiheadAttentionTest(TestCase):
             # Make key and value distinct from query. Otherwise, it is equivalent
             # to the query only case.
             key = value = query + 0.1
-        attention_logit_biases = attention_bias.make_causal_biases(tgt_len)
         return_aux = {"probs"}
         inputs = dict(
             query=query,
             key=key,
             value=value,
             kv_state=kv_state,
-            attention_logit_biases=attention_logit_biases,
             return_aux=return_aux,
         )
         forward_outputs, _ = F(
@@ -2434,8 +2438,6 @@ class MultiheadAttentionTest(TestCase):
             time_step=None,
             query=TensorSpec([batch_size, tgt_len], dtype=dtype),
             kv_state=kv_state,
-            # This is unused for initializing state from scratch.
-            attention_logit_biases=None,
         )
         self.assertIsNone(initial_output)
         if kv_state is None:
@@ -2453,7 +2455,6 @@ class MultiheadAttentionTest(TestCase):
                 inputs["key"] = key[:, t : t + extend_step_len, :]
             if value is not None:
                 inputs["value"] = value[:, t : t + extend_step_len, :]
-            inputs["attention_logit_biases"] = attention_logit_biases[t : t + extend_step_len, :]
             (cached_states, extend_step_outputs), _ = F(
                 layer,
                 state=layer_params,
@@ -2474,8 +2475,9 @@ class MultiheadAttentionTest(TestCase):
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
-        bias=(True, False),
         input_linear=(QKVLinear, RoFormerQKVLinear, QLinear),
+        bias=(True, False),
+        causal_type=("causal", "sliding_window"),
         extend_step_len=(1, 4),
     )
     def test_extend_step(
@@ -2485,8 +2487,11 @@ class MultiheadAttentionTest(TestCase):
         atten_logit_cap: float,
         input_linear: attention.BaseQKVLinear,
         bias: bool,
+        causal_type: str,
         extend_step_len: int,
     ):
+        if input_linear == QLinear and causal_type == "sliding_window":
+            pytest.skip("QLinear doesn't support sliding window mask.")
         model_dim = 16
         num_heads = 4
         if input_linear == attention.RoFormerQKVLinear:
@@ -2498,6 +2503,12 @@ class MultiheadAttentionTest(TestCase):
             atten_logit_cap=atten_logit_cap,
             input_linear=input_linear,
         )
+        if causal_type == "causal":
+            cfg.mask = CausalAttentionBias.default_config()
+        elif causal_type == "sliding_window":
+            cfg.mask = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
+        else:
+            raise ValueError(f"{causal_type} is not supportd.")
         self._test_extend_step(
             cfg,
             model_dim=model_dim,
@@ -2514,6 +2525,7 @@ class MultiheadAttentionTest(TestCase):
         num_kv_heads=(1, 2, 4),
         input_linear=(attention.GroupedQKVLinear, attention.FusedGroupedQKVLinear),
         bias=(True, False),
+        causal_type=("causal", "sliding_window"),
         extend_step_len=(1, 4),
     )
     def test_gqa_extend_step(
@@ -2524,6 +2536,7 @@ class MultiheadAttentionTest(TestCase):
         num_kv_heads: int,
         input_linear: type[attention.BaseQKVLinear],
         bias: bool,
+        causal_type: str,
         extend_step_len: int,
     ):
         model_dim = 16
@@ -2533,6 +2546,12 @@ class MultiheadAttentionTest(TestCase):
             atten_logit_cap=atten_logit_cap,
             input_linear=input_linear.default_config().set(num_kv_heads=num_kv_heads),
         )
+        if causal_type == "causal":
+            cfg.mask = CausalAttentionBias.default_config()
+        elif causal_type == "sliding_window":
+            cfg.mask = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
+        else:
+            raise ValueError(f"{causal_type} is not supportd.")
         self._test_extend_step(
             cfg,
             model_dim=model_dim,
