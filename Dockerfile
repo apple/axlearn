@@ -96,42 +96,10 @@ COPY . .
 ################################################################################
 # GPU container spec.                                                          #
 ################################################################################
+FROM base AS gpu
 
-# Using `FROM base as GPU` causes INTERNAL: No valid engine configs for Matmul error.
-# So we're using the NVIDIA provided cuda image instead which works.
-FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu22.04 as gpu
-
-# Copy from original base
-# Install curl and gpupg first so that we can use them to install google-cloud-cli.
-# Any RUN apt-get install step needs to have apt-get update otherwise stale package
-# list may occur when previous apt-get update step is cached. See here for more info:
-# https://docs.docker.com/build/building/best-practices/#apt-get
-RUN apt-get update && apt-get install -y curl gnupg
-
-RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
-    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    apt-get update -y && \
-    apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli \
-      gcc g++ python3 python3-venv ibverbs-utils glibc-tools
-
-RUN ln -s /usr/bin/python3 /usr/bin/python
-
-# Setup.
-RUN mkdir -p /root
-WORKDIR /root
-# Introduce the minimum set of files for install.
-COPY README.md README.md
-COPY pyproject.toml pyproject.toml
-RUN mkdir axlearn && touch axlearn/__init__.py
-# Setup venv to suppress pip warnings.
-ENV VIRTUAL_ENV=/opt/venv
-RUN python -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-# Install dependencies.
-RUN pip install flit
-RUN pip install --upgrade pip
-
+# Needed for NVIDIA CX7 based RDMA (not cloud specific).
+RUN apt-get update && apt-get install -y ibverbs-utils
 
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
