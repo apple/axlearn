@@ -20,13 +20,12 @@ Reference: https://jax.readthedocs.io/en/latest/aot.html
 import pickle
 from typing import Optional
 
-import prefixed
 from absl import app, flags, logging
 from jax.experimental.serialize_executable import serialize
 
 from axlearn.common import compiler_options
 from axlearn.common.aot_compilation import compile_trainer_programs
-from axlearn.common.trainer import SpmdTrainer, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, aot_model_analysis, select_mesh_config
 from axlearn.common.utils import set_data_dir
 from axlearn.common.utils_spmd import setup
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
@@ -67,18 +66,7 @@ def _compile_and_dump_programs(
         print(f"== Text: {program_name} ==")
         print(program.as_text())
         print()
-        print(f"== Cost analysis {program_name} ==")
-        print(program.cost_analysis())
-        print()
-        print(f"== Memory analysis {program_name} ==")
-        memory_analysis = program.memory_analysis()
-        for k in dir(memory_analysis):
-            v = getattr(memory_analysis, k)
-            if k.startswith("_"):
-                continue
-            if "bytes" in k:
-                v = f"{prefixed.Float(v):!.3K}B"
-            print(f"\t{k}: {v}")
+        print(aot_model_analysis(program))
         print()
 
         # Serialization does not work for CPU devices:

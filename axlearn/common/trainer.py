@@ -1143,7 +1143,9 @@ class SpmdTrainer(Module):
             # Note(Jan 2022):
             # pjit currently requires all parameters to be specified as positional args.
             lowered_train_step = jit_train_step.lower(trainer_state, input_batch)
-            return lowered_train_step.compile(compiler_options=compiler_options)
+            compiled = lowered_train_step.compile(compiler_options=compiler_options)
+            logging.log_first_n(logging.INFO, aot_model_analysis(compiled), 1)
+            return compiled
 
     def _train_step(
         self,
@@ -1287,3 +1289,88 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
                 # Override configs from ConfigModifier.
                 mesh_rule_fn = maybe_instantiate(mesh_rule)
                 trainer_config = mesh_rule_fn(trainer_config)
+
+
+def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
+    """Performs the model analysis on the AOT compiled JAX program.
+
+    Refer to https://docs.jax.dev/en/latest/jax.stages.html#jax.stages.Compiled
+
+    Note: memory_analysis() and cost_analysis() are internal statistics used by the XLA compiler,
+    and there is no official documentation for them.
+    The human-readable interpretation provided here is based on best guesses from reviewing
+    the XLA source code. If there are any inaccuracies, please update accordingly.
+    * memory_analysis:
+    https://github.com/openxla/xla/blob/101045ad079d17701986060666feda0e70d6c4cf/xla/pjrt/pjrt_executable.h#L284
+    * cost_analysis:
+    https://github.com/openxla/xla/blob/101045ad079d17701986060666feda0e70d6c4cf/xla/service/hlo_cost_analysis.h#L41
+
+    Args:
+        compiled: The compiled JAX program.
+
+    Returns:
+        memory_analysis: String, model analysis results.
+    """
+    # e.g. _CheckifyCompiledFnWrapper doesn't have memory_analysis attribute.
+    if not hasattr(compiled, "memory_analysis"):
+        return ""
+
+    def m_or_g(x, suffix=""):
+        if x is None:
+            return None
+        m = 1024**2
+        g = 1024**3
+        if x > g:
+            return f"{x / g:.1f}G{suffix}"
+        else:
+            return f"{x / m:.1f}M{suffix}"
+
+    mb_or_gb = lambda x: m_or_g(x, "B")
+    analysis_results = ""
+    mem_stats = compiled.memory_analysis()
+    # According to the doc, some platforms may not support it.
+    if mem_stats is not None:
+        analysis_results += "======= Memory Analysis ==================================\n"
+        try:
+            total_hbm = (
+                mem_stats.argument_size_in_bytes
+                + mem_stats.output_size_in_bytes
+                + mem_stats.temp_size_in_bytes
+                + mem_stats.generated_code_size_in_bytes
+            )
+            analysis_results += (
+                f"Input memory: {mb_or_gb(mem_stats.argument_size_in_bytes)}\n"
+                + f"Output memory: {mb_or_gb(mem_stats.output_size_in_bytes)}\n"
+                + f"Temp memory: {mb_or_gb(mem_stats.temp_size_in_bytes)}\n"
+                + f"Code memory: {mb_or_gb(mem_stats.generated_code_size_in_bytes)}\n"
+                + f"Total HBM memory: {mb_or_gb(total_hbm)}\n"
+            )
+        except AttributeError:
+            # Some platforms may return different format.
+            analysis_results += f"{mem_stats}\n"
+
+    cost_stats = compiled.cost_analysis()
+    if cost_stats:
+        cost_stats = cost_stats[0]
+        analysis_results += (
+            "======= Cost Analysis ====================================\n"
+            + f"FLOPS: {m_or_g(cost_stats.get('flops'))}\n"
+            + f"The number of exp/log/sin/cos ops: {m_or_g(cost_stats.get('transcendentals'))}\n"
+            + f"The total memory traffic: {mb_or_gb(cost_stats.get('bytes accessed'))}\n"
+            + f"  HBM access: {mb_or_gb(cost_stats.get('bytes accessed0{}'))}\n"
+            + f"  L2 cache access: {mb_or_gb(cost_stats.get('bytes accessed1{}'))}\n"
+            + f"  Register usage: {mb_or_gb(cost_stats.get('bytes accessed2{}'))}\n"
+            + f"  Output data transferred: {mb_or_gb(cost_stats.get('bytes accessedout{}'))}\n"
+            + "Hardware utilization scores\n"
+            + f"  Tensor Cores / MatMul units: {cost_stats.get('utilization0{}')}\n"
+            + f"  ALU (Arithmetic Logic Unit): {cost_stats.get('utilization1{}')}\n"
+            + f"  Memory Load/Store Units: {cost_stats.get('utilization2{}')}\n"
+            + f"  L1 Cache Operations: {cost_stats.get('utilization3{}')}\n"
+            + f"  L2 Cache Operations: {cost_stats.get('utilization4{}')}\n"
+            + f"  Special Function Units (exp/log/sin/cos): {cost_stats.get('utilization5{}')}\n"
+            + f"  Integer Units (for indexing, loop counters): {cost_stats.get('utilization6{}')}\n"
+            + f"  Branch Divergence (Control Flow Processing): {cost_stats.get('utilization7{}')}\n"
+            + f"  Load Balancing / Dispatch): {cost_stats.get('utilization8{}')}\n"
+            + f"  Texture Units (or Rarely Used Compute Units): {cost_stats.get('utilization9{}')}"
+        )
+    return analysis_results
