@@ -760,10 +760,10 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
 
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
         sinusoidal_pos_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
-        sinusoidal_pos = sinusoidal_pos_layer(as_torch_tensor(token_ids).shape)[None, None, :, :]
-        query = np.random.random([batch_size, num_heads, max_len, dim])
-        key = np.random.random([batch_size, num_heads, max_len, dim])
-        value = np.random.random([batch_size, num_heads, max_len, dim])
+        sinusoidal_pos = sinusoidal_pos_layer(as_torch_tensor(token_ids).shape)[None, :, None, :]
+        query = np.random.random([batch_size, max_len, num_heads, dim])
+        key = np.random.random([batch_size, max_len, num_heads, dim])
+        value = np.random.random([batch_size, max_len, num_heads, dim])
         ref_layer = hf_roformer.RoFormerSelfAttention.apply_rotary_position_embeddings
         test_layer = apply_rotary_position_embeddings
         if rotary_value:
@@ -1233,16 +1233,16 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             xq=torch.Tensor(query), xk=torch.Tensor(key), freqs_cis=llama_rope
         )
         axlearn_q, axlearn_k, _ = attention.apply_rotary_position_embeddings(
-            query=jnp.asarray(query),
-            key=jnp.asarray(key),
-            value=jnp.asarray(value),
-            sinusoidal_pos=axlearn_rope,
+            query=jnp.asarray(query)[:, :, None],  # [B, T, D] -> [B, T, 1, D]
+            key=jnp.asarray(key)[:, :, None],
+            value=jnp.asarray(value)[:, :, None],
+            sinusoidal_pos=axlearn_rope[:, :, None],
             rotary_key=True,
             rotary_value=False,
         )
 
-        assert_allclose(as_tensor(llama_q.reshape(batch_size, max_len, -1)), axlearn_q, atol=5e-6)
-        assert_allclose(as_tensor(llama_k.reshape(batch_size, max_len, -1)), axlearn_k, atol=5e-6)
+        assert_allclose(as_tensor(llama_q.reshape(*axlearn_q.shape)), axlearn_q, atol=5e-6)
+        assert_allclose(as_tensor(llama_k.reshape(*axlearn_k.shape)), axlearn_k, atol=5e-6)
 
     def test_against_llama_for_attention(self):
         max_len = 100

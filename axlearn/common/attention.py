@@ -1214,13 +1214,15 @@ def _rotary_sinusoidal_positional_embeddings(
     """
     if dim % 2 != 0:
         raise ValueError(f"dim: {dim} should be a multiplier of 2.")
-    exponents = jnp.arange(dim).astype(jnp.float32)
-    pos_array = positions.astype(jnp.float32)
-    exponents = jnp.power(theta, 2 * (exponents // 2) / dim)
-    position_enc = jnp.expand_dims(pos_array, 2) / jnp.expand_dims(exponents, [0, 1])
+    dim_array = jnp.arange(dim // 2).astype(jnp.float32)
+    pos_array = positions.astype(jnp.float32)  # [batch_size, seq_len]
+    exponents = jnp.power(theta, 2 * dim_array / dim)  # 10000 ** (2i / dim), [dim/2]
+    position_enc = einops.rearrange(pos_array, "b t -> b t 1") / einops.rearrange(
+        exponents, "d -> 1 1 d"
+    )  # [batch_size, seq_len, dim/2]
 
-    rope_part_1 = jnp.sin(position_enc[:, :, 0::2])
-    rope_part_2 = jnp.cos(position_enc[:, :, 1::2])
+    rope_part_1 = jnp.sin(position_enc)
+    rope_part_2 = jnp.cos(position_enc)
     rope = jnp.concatenate((rope_part_1, rope_part_2), axis=-1)
     return rope
 
@@ -1312,31 +1314,28 @@ def apply_rotary_position_embeddings(
         Rotary position affined value embeddings with shape [batch_size, seq_len, num_heads, dim]
             if rotary_value == True, else original value embeddings
     """
-    # sin [batch_size, num_heads, sequence_length, embed_size_per_head//2]
-    # cos [batch_size, num_heads, sequence_length, embed_size_per_head//2]
+    # sin/cos: [batch_size, seq_len, 1, dim/2]
     sin, cos = jnp.split(sinusoidal_pos, 2, axis=-1)
+    # Note: '...' is used instead of 'b s n' because downstream uses it with different ranks.
     # sin [θ0,θ1,θ2......θd/2-1] -> sin_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    sin_pos = jnp.reshape(jnp.stack([sin, sin], axis=-1), sinusoidal_pos.shape)
+    sin_pos = einops.repeat(sin, "... h -> ... (h k)", k=2)
     # cos [θ0,θ1,θ2......θd/2-1] -> cos_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    cos_pos = jnp.reshape(jnp.stack([cos, cos], axis=-1), sinusoidal_pos.shape)
+    cos_pos = einops.repeat(cos, "... h -> ... (h k)", k=2)
+
+    def rotate_half(x):
+        return einops.rearrange(
+            jnp.stack([-x[..., 1::2], x[..., ::2]], axis=-1), "... h k -> ... (h k)", k=2
+        )
+
     # rotate_half_query_layer [-q1,q0,-q3,q2......,-qd-1,qd-2]
-    rotate_half_query = jnp.reshape(
-        jnp.stack([-query[..., 1::2], query[..., ::2]], axis=-1), query.shape
-    )
-    query = query * cos_pos + rotate_half_query * sin_pos
+    query = query * cos_pos + rotate_half(query) * sin_pos
 
     if rotary_key:
         # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
-        rotate_half_key = jnp.reshape(
-            jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape
-        )
-        key = key * cos_pos + rotate_half_key * sin_pos
+        key = key * cos_pos + rotate_half(key) * sin_pos
     if rotary_value:
         # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
-        rotate_half_value = jnp.reshape(
-            jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
-        )
-        value = value * cos_pos + rotate_half_value * sin_pos
+        value = value * cos_pos + rotate_half(value) * sin_pos
     return query, key, value
 
 
