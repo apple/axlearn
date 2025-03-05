@@ -24,7 +24,7 @@ from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import BaseCheckpointer, Checkpointer
-from axlearn.common.compiler_options import infer_xsc_compiler_options
+from axlearn.common.compiler_options import infer_xla_performance_flags, infer_xsc_compiler_options
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -994,24 +994,28 @@ class SpmdTrainer(Module):
             and self._compiled_train_step is not None
         ):
             return self._compiled_train_step
-        if not with_xsc:
-            self._compiled_train_step = self.compile_train_step(
-                trainer_state=trainer_state, input_batch=input_batch
-            )
-            return self._compiled_train_step
+        cfg: SpmdTrainer.Config = self.config
         # Get device kinds and assert that they are homogenous.
         device_kinds = set(d.device_kind for d in jax.devices())
         if len(device_kinds) != 1:
             raise RuntimeError(f"Heterogenous device kinds ({device_kinds}) are not supported.")
+        device_kind = device_kinds.pop()
+        options = infer_xla_performance_flags(
+            mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
+        )
+        if not with_xsc:
+            self._compiled_train_step = self.compile_train_step(
+                trainer_state=trainer_state, input_batch=input_batch, compiler_options=options
+            )
+            return self._compiled_train_step
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
+
         compiled_jit_train_step_fn = self.compile_train_step(
             trainer_state=trainer_state,
             input_batch=input_batch,
-            compiler_options=infer_xsc_compiler_options(
-                halt_on_detection=True,
-                repeat_count=1,
-                # Replicate LLO if running on single-core-per-chip device-kind.
-                replicate_llo=device_kinds.pop() in ["TPU v5e", "TPU v6e"],
+            compiler_options=options
+            | infer_xsc_compiler_options(
+                halt_on_detection=True, repeat_count=1, device_kind=device_kind
             ),
         )
         return compiled_jit_train_step_fn

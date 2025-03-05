@@ -510,7 +510,7 @@ class TrainerTest(test_utils.TestCase):
         original_compile_train_step_fn = trainer.compile_train_step
 
         def mock_compile_train_step(*args, compiler_options=None, **kwargs):
-            if compiler_options is not None:
+            if compiler_options:
                 compiled_with_options_call_count[0] += 1
             return original_compile_train_step_fn(
                 *args, compiler_options=compiler_options, **kwargs
