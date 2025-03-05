@@ -1,10 +1,12 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests correlation metrics."""
+
 # pylint: disable=no-self-use
 import evaluate
 import jax
 import jax.numpy as jnp
+import pytest
 from absl.testing import parameterized
 from scipy.stats import pearsonr as scipy_pearson_corrcoef
 from scipy.stats import rankdata as scipy_rankdata
@@ -37,18 +39,25 @@ class TestMetrics(TestWithTemporaryCWD):
         expected = sklearn_matthews_corrcoef(pred, label, sample_weight=weight)
         assert_allclose(expected, actual)
 
-        # Test equivalence with hf.
-        actual = jit_matthews_corrcoef(pred, label)
-        metric = evaluate.load("glue", config_name="cola")
-        expected = metric.compute(predictions=pred, references=label)["matthews_correlation"]
-        assert_allclose(expected, actual)
-
         # Test a case where number of unique labels is smaller than batch size.
         # In this case, we pad uniques with nans.
         pred = jnp.array([-1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2])
         label = jnp.array([1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
         actual = jit_matthews_corrcoef(pred, label)
         expected = sklearn_matthews_corrcoef(pred, label)
+        assert_allclose(expected, actual)
+
+    @parameterized.product(batch_size=[100, 500, 1000, 5000, 10000], num_classes=[2, 10, 20, 30])
+    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    def test_matthews_corrcoef_hf(self, batch_size, num_classes):
+        pred = jax.random.randint(jax.random.PRNGKey(123), [batch_size], 0, num_classes)
+        label = jax.random.randint(jax.random.PRNGKey(321), [batch_size], 0, num_classes)
+
+        # Test equivalence with hf.
+        jit_matthews_corrcoef = jax.jit(matthews_corrcoef)
+        actual = jit_matthews_corrcoef(pred, label)
+        metric = evaluate.load("glue", config_name="cola")
+        expected = metric.compute(predictions=pred, references=label)["matthews_correlation"]
         assert_allclose(expected, actual)
 
     def test_matthews_corrcoef_validation(self):
@@ -71,11 +80,6 @@ class TestMetrics(TestWithTemporaryCWD):
         expected = scipy_pearson_corrcoef(pred, label)[0]
         assert_allclose(expected, actual)
 
-        # Test equivalence with hf.
-        hf_metric = evaluate.load("glue", config_name="stsb")
-        expected = hf_metric.compute(predictions=pred, references=label)["pearson"]
-        assert_allclose(expected, actual)
-
         # Test equivalence with hf and scipy with mask.
         # We do so by adding (ignored) padding and verifying the result is the same.
         mask = jnp.concatenate([jnp.ones_like(pred), jnp.zeros(10)])
@@ -90,6 +94,22 @@ class TestMetrics(TestWithTemporaryCWD):
 
         # Test when everything is masked.
         self.assertEqual(pearson_corrcoef(pred, label, weight=jnp.zeros_like(pred)), 0)
+
+    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    def test_pearson_corrcoef_hf(self):
+        batch_size = 100
+        num_classes = 30
+
+        pred = jax.random.randint(jax.random.PRNGKey(123), [batch_size], 0, num_classes)
+        label = jax.random.randint(jax.random.PRNGKey(321), [batch_size], 0, num_classes)
+
+        jit_pearson_corrcoef = jax.jit(pearson_corrcoef)
+        actual = jit_pearson_corrcoef(pred, label)
+
+        # Test equivalence with hf.
+        hf_metric = evaluate.load("glue", config_name="stsb")
+        expected = hf_metric.compute(predictions=pred, references=label)["pearson"]
+        assert_allclose(expected, actual)
 
     def test_rankdata(self):
         batch_size = 100
@@ -116,11 +136,6 @@ class TestMetrics(TestWithTemporaryCWD):
         expected = scipy_spearman_corrcoef(pred, label).correlation
         assert_allclose(expected, actual)
 
-        # Test equivalence with hf.
-        hf_metric = evaluate.load("glue", config_name="stsb")
-        expected = hf_metric.compute(predictions=pred, references=label)["spearmanr"]
-        assert_allclose(expected, actual)
-
         # Test equivalence with scipy with mask
         mask = jnp.concatenate([jnp.ones_like(pred), jnp.zeros(10)])
         pred = jnp.concatenate(
@@ -130,6 +145,21 @@ class TestMetrics(TestWithTemporaryCWD):
             [label, jax.random.uniform(jax.random.PRNGKey(222), [10], minval=0, maxval=5)]
         )
         actual = jit_spearman_corrcoef(pred, label, mask=mask)
+        assert_allclose(expected, actual)
+
+    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    def test_spearman_corrcoef_hf(self):
+        batch_size = 100
+
+        pred = jax.random.uniform(jax.random.PRNGKey(123), [batch_size], minval=0, maxval=5)
+        label = jax.random.uniform(jax.random.PRNGKey(321), [batch_size], minval=0, maxval=5)
+
+        jit_spearman_corrcoef = jax.jit(spearman_corrcoef)
+        actual = jit_spearman_corrcoef(pred, label)
+
+        # Test equivalence with hf.
+        hf_metric = evaluate.load("glue", config_name="stsb")
+        expected = hf_metric.compute(predictions=pred, references=label)["spearmanr"]
         assert_allclose(expected, actual)
 
     def test_pearson_corrcoef_validation(self):
