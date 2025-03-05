@@ -196,7 +196,8 @@ class ModuleConfigModifier(ConfigModifier):
         Returns:
             The modified trainer config.
         """
-
+        # TODO(huilgolr): fix this for alternating dense and sparse layers
+        # Ref: https://github.com/rahul003/axlearn/pull/9/files
         found_module = cfg.get_recursively(self._target_config.split("."))
         self._modification = self._merge_configs(self._modification, found_module)
         cfg.set_recursively(self._target_config.split("."), value=self._modification)
