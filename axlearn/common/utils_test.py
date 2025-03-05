@@ -25,7 +25,12 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import learner, optimizers, serialization, struct, utils
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
-from axlearn.common.config import config_class, config_for_function, similar_names
+from axlearn.common.config import (
+    config_class,
+    config_for_function,
+    maybe_instantiate,
+    similar_names,
+)
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
@@ -48,12 +53,15 @@ from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
     NestedTensor,
+    PerParamFn,
     StackedKeyArray,
     Tensor,
     VDict,
     as_numpy_array,
     as_tensor,
+    canonicalize_per_param_dtype,
     cast_floats,
+    cast_floats_per_param,
     check_jax_type,
     check_param_shape_alignment,
     complete_partition_spec_tree,
@@ -70,6 +78,7 @@ from axlearn.common.utils import (
     infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    per_param_dtype_by_path,
     prune_empty,
     prune_tree,
     pytree_children,
@@ -717,6 +726,91 @@ class TreeUtilsTest(TestCase):
         jax.tree.map(check_type, out_tree)
 
         self.assertEqual(out_tree["w2"].dtype, in_tree["w2"].dtype)
+
+    @parameterized.parameters(
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                update_rules=[
+                    ("w1", jnp.float32),
+                ],
+                default_dtype=jnp.bfloat16,
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": jnp.bfloat16,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path),
+            {
+                "w1": None,
+                "w2": None,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                update_rules=[
+                    ("w1", jnp.float32),
+                ],
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": None,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                default_dtype=jnp.float32,
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": jnp.float32,
+            },
+        ),
+    )
+    def test_per_param_train_dtype_by_path(self, config, cast_dtype):
+        tree = {
+            "w1": jnp.ones(2, dtype=jnp.bfloat16),
+            "w2": jnp.ones(3, dtype=jnp.bfloat16),
+        }
+        per_param_train_dtype_by_path_fn = config.instantiate()
+        out_tree = per_param_train_dtype_by_path_fn(tree)
+        self.assertEqual(out_tree, cast_dtype)
+
+    @parameterized.parameters(
+        None,
+        jnp.float32,
+        config_for_function(per_param_dtype_by_path).set(
+            update_rules=[
+                ("^.*w1.*$", jnp.float32),
+            ],
+            default_dtype=jnp.bfloat16,
+        ),
+    )
+    def test_canonicalize_per_param_dtype(self, train_dtype):
+        canonicalized_train_dtype = maybe_instantiate(canonicalize_per_param_dtype(train_dtype))
+        self.assertIsInstance(canonicalized_train_dtype, PerParamFn)
+
+    @parameterized.parameters(
+        (
+            {"w1": None},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+        ),
+        (
+            {"w1": jnp.float32},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.float32)},
+        ),
+        (
+            {"w1": jnp.float32, "w2": jnp.bfloat16},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16), "w2": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.float32), "w2": jnp.ones(2, dtype=jnp.bfloat16)},
+        ),
+    )
+    def test_cast_floats_per_param(self, per_param_train_dtype, in_tree, casted_tree):
+        out_tree = cast_floats_per_param(in_tree, per_param_train_dtype)
+        jax.tree.map(self.assertTensorEqual, out_tree, casted_tree)
 
     def test_count_model_params(self):
         tree = {

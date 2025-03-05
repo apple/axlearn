@@ -52,8 +52,10 @@ from axlearn.common.utils import (
     Nested,
     NestedTensor,
     PartitionSpec,
+    PerParamFn,
     Tensor,
     TensorSpec,
+    canonicalize_per_param_dtype,
     count_model_params,
     flatten_items,
     match_regex_rules,
@@ -174,9 +176,14 @@ class SpmdTrainer(Module):
         # of golden configs.
         prune_empty_state_updates: bool = True
 
-        # Cast float inputs and model parameters to this dtype for the train step.
-        # If None, we do not cast.
-        train_dtype: Optional[jnp.dtype] = None
+        # Cast float inputs and model parameters to dtype for the train step.
+        # This parameter can either be:
+        # 1. A `jnp.dtype`, where both float inputs and model parameters will
+        #    be cast to this dtype.
+        # 2. A `ConfigOr[PerParamFn[jnp.dtype]]`, allowing different dtypes to be applied to
+        #    different parameters during training.
+        # If not provided, the default value is `None`, no casting applied.
+        train_dtype: Optional[Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]]] = None
 
         # If > 0, run a watchdog thread to print the thread stack traces if step does not
         # increment within this interval.
@@ -243,8 +250,9 @@ class SpmdTrainer(Module):
                 cfg.model.param_init,
             )
 
-        if cfg.train_dtype is not None:
-            utils.validate_float_dtype(cfg.train_dtype)
+        self._per_param_train_dtype = maybe_instantiate(
+            canonicalize_per_param_dtype(cfg.train_dtype)
+        )
 
         # Create the device mesh.
         if devices is None:
@@ -1162,7 +1170,8 @@ class SpmdTrainer(Module):
         )
 
         def train_cast(in_tree):
-            return utils.cast_floats(in_tree, to_dtype=cfg.train_dtype)
+            per_param_train_dtype = self._per_param_train_dtype(in_tree)
+            return utils.cast_floats_per_param(in_tree, per_param_train_dtype)
 
         # A nested tree of booleans.
         should_compute_gradients = self.learner.should_update_with_optimizers(state.model)
