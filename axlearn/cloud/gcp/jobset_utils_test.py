@@ -113,8 +113,13 @@ class TPUReplicatedJobTest(TestCase):
 
     @parameterized.product(
         [
-            dict(env={}, reservation=None, expect_reserved=False),
-            dict(env={"BASTION_TIER": "0"}, reservation=None, expect_reserved=False),
+            dict(env={}, reservation=None, reservation_project=None, expect_reserved=False),
+            dict(
+                env={"BASTION_TIER": "0"},
+                reservation=None,
+                reservation_project=None,
+                expect_reserved=False,
+            ),
             dict(
                 env={
                     "BASTION_TIER": "0",
@@ -122,16 +127,29 @@ class TPUReplicatedJobTest(TestCase):
                     BASTION_JOB_VERSION_ENV_VAR: "1",
                 },
                 reservation="test-reservation",
+                reservation_project=None,
+                expect_reserved=True,
+            ),
+            dict(
+                env={
+                    "BASTION_TIER": "0",
+                    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR: _create_serialized_job_spec(1, "user-1"),
+                    BASTION_JOB_VERSION_ENV_VAR: "1",
+                },
+                reservation="test-reservation",
+                reservation_project="test-reservation-project",
                 expect_reserved=True,
             ),
             dict(
                 env={"BASTION_TIER": "1", BASTION_JOB_VERSION_ENV_VAR: "2"},
                 reservation="test-reservation",
+                reservation_project=None,
                 expect_reserved=False,
             ),
             dict(
                 env={_BASTION_SERIALIZED_JOBSPEC_ENV_VAR: _create_serialized_job_spec(5, "user-2")},
                 reservation="test-reservation",
+                reservation_project=None,
                 expect_reserved=False,
             ),
         ],
@@ -159,6 +177,7 @@ class TPUReplicatedJobTest(TestCase):
         enable_ici_resiliency: bool,
         env: dict,
         reservation: Optional[str] = None,
+        reservation_project: Optional[str] = None,
         enable_pre_provisioner: Optional[bool] = None,
         location_hint: Optional[str] = None,
         enable_tpu_smart_repair: bool = False,
@@ -178,6 +197,7 @@ class TPUReplicatedJobTest(TestCase):
         ):
             gke_job: jobset_utils.TPUReplicatedJob = cfg.set(
                 reservation=reservation,
+                reservation_project=reservation_project,
                 enable_tpu_ici_resiliency=enable_ici_resiliency,
                 enable_pre_provisioner=enable_pre_provisioner,
                 location_hint=location_hint,
@@ -209,6 +229,13 @@ class TPUReplicatedJobTest(TestCase):
                 self.assertEqual(
                     reservation, node_selector.get("cloud.google.com/reservation-name", None)
                 )
+                if reservation_project is not None:
+                    self.assertEqual(
+                        reservation_project,
+                        node_selector.get("cloud.google.com/reservation-project", None),
+                    )
+                else:
+                    self.assertNotIn("cloud.google.com/reservation-project", node_selector)
                 self.assertNotIn("cloud.google.com/gke-spot", node_selector)
                 self.assertEqual([], pod_spec.get("tolerations", []))
                 self.assertEqual("reserved", labels.get("bastion-tier", None))
