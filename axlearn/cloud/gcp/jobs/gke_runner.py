@@ -149,8 +149,7 @@ class GKERunnerJob(GCPJob):
 
     @classmethod
     def with_inner(cls, inner: type[GKEJob]):
-        cls.inner = inner
-        return cls
+        return type(f"{cls.__name__}_{inner.__name__}", (cls,), {"inner": inner})
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues = FLAGS):

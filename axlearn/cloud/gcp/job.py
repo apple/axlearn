@@ -305,8 +305,7 @@ class GKEJob(GCPJob):
 
     @classmethod
     def with_builder(cls, builder: type[BaseReplicatedJob]):
-        cls.builder = builder
-        return cls
+        return type(f"{cls.__name__}_{builder.__name__}", (cls,), {"builder": builder})
 
     def __init__(self, cfg):
         bundler_cfg = cfg.bundler
