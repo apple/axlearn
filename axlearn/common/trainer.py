@@ -1143,7 +1143,9 @@ class SpmdTrainer(Module):
             # Note(Jan 2022):
             # pjit currently requires all parameters to be specified as positional args.
             lowered_train_step = jit_train_step.lower(trainer_state, input_batch)
-            return lowered_train_step.compile(compiler_options=compiler_options)
+            compiled = lowered_train_step.compile(compiler_options=compiler_options)
+            logging.log_first_n(logging.INFO, aot_model_analysis(compiled), 1)
+            return compiled
 
     def _train_step(
         self,
@@ -1287,3 +1289,66 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
                 # Override configs from ConfigModifier.
                 mesh_rule_fn = maybe_instantiate(mesh_rule)
                 trainer_config = mesh_rule_fn(trainer_config)
+
+
+def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
+    """Performs the model analysis on the AOT compiled JAX program.
+
+    Refer to https://docs.jax.dev/en/latest/jax.stages.html#jax.stages.Compiled
+
+    Args:
+        compiled (jax.stages.Compiled): The compiled JAX program.
+
+    Returns:
+        memory_analysis: String, model analysis results.
+    """
+    # e.g. _CheckifyCompiledFnWrapper doesn't have memory_analysis attribute.
+    if not hasattr(compiled, "memory_analysis"):
+        return ""
+
+    to_mb_gb = lambda x: f"{x / (1024**2):.1f} MB / {x / (1024**3):.2f} GB"
+    to_m_g = lambda x: f"{x / (1024**2):.1f} M / {x / (1024**3):.2f} G"
+    analysis_results = ""
+    mem_stats = compiled.memory_analysis()
+    # According to the doc, some platforms may not support it.
+    if mem_stats is not None:
+        total_hbm = (
+            mem_stats.argument_size_in_bytes
+            + mem_stats.output_size_in_bytes
+            + mem_stats.temp_size_in_bytes
+            + mem_stats.generated_code_size_in_bytes
+        )
+        analysis_results += (
+            "======= Memory Analysis ==================================\n"
+            + f"Input memory: {to_mb_gb(mem_stats.argument_size_in_bytes)}\n"
+            + f"Output memory: {to_mb_gb(mem_stats.output_size_in_bytes)}\n"
+            + f"Temp memory: {to_mb_gb(mem_stats.temp_size_in_bytes)}\n"
+            + f"Code memory: {to_mb_gb(mem_stats.generated_code_size_in_bytes)}\n"
+            + f"Total HBM memory: {to_mb_gb(total_hbm)}\n"
+        )
+
+    cost_stats = compiled.cost_analysis()
+    if cost_stats is not None:
+        cost_stats = cost_stats[0]
+        analysis_results += (
+            "======= Cost Analysis ====================================\n"
+            + f"FLOPS: {to_m_g(cost_stats['flops'])}\n"
+            + f"The number of exp/log/sin/cos ops: {to_m_g(cost_stats['transcendentals'])}\n"
+            + f"The total memory traffic: {to_mb_gb(cost_stats['bytes accessed'])}\n"
+            + f"  HBM access: {to_mb_gb(cost_stats['bytes accessed0{}'])}\n"
+            + f"  L2 cache access: {to_mb_gb(cost_stats['bytes accessed1{}'])}\n"
+            + f"  Register usage: {to_mb_gb(cost_stats['bytes accessed2{}'])}\n"
+            + f"  Output data transferred: {to_mb_gb(cost_stats['bytes accessedout{}'])}\n"
+            + "Hardware utilization scores\n"
+            + f"  Tensor Cores / MatMul units: {cost_stats['utilization0{}']}\n"
+            + f"  ALU (Arithmetic Logic Unit): {cost_stats['utilization1{}']}\n"
+            + f"  Memory Load/Store Units: {cost_stats['utilization2{}']}\n"
+            + f"  L1 Cache Operations: {cost_stats['utilization3{}']}\n"
+            + f"  L2 Cache Operations: {cost_stats['utilization4{}']}\n"
+            + f"  Special Function Units (exp/log/sin/cos): {cost_stats['utilization5{}']}\n"
+            + f"  Integer Units (for indexing, loop counters): {cost_stats['utilization6{}']}\n"
+            + f"  Branch Divergence (Control Flow Processing): {cost_stats['utilization7{}']}\n"
+            + f"  Load Balancing / Dispatch): {cost_stats['utilization8{}']}\n"
+            + f"  Texture Units (or Rarely Used Compute Units): {cost_stats['utilization9{}']}"
+        )
+    return analysis_results
