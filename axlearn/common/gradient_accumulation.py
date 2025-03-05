@@ -55,20 +55,18 @@ def _make_scan_minibatch_inputs(
     *,
     forward_key: Tensor,
     param_noise_key: Tensor,
-    minibatch_size: int,
     minibatch_index: int,
 ) -> tuple[Nested[Tensor], Tensor, Tensor]:
     """Creates minibatch inputs from inputs.
 
     This is a utility function that is only meant to be called from
-    within a scan function body and is meant to slice the inputs
-    into `minibatch_size` sized slices to run the ForwardFn on.
+    within a scan function body and is meant to return sliced minibatches
+    to run the ForwardFn on.
 
     Args:
         inputs: Same pytree as ForwardFn inputs.
         forward_key: The `forward_key` from the ForwardFn inputs
         param_noise_key: The `param_noise_key` from the ForwardFn inputs
-        minibatch_size: Size of the minibatch.
         minibatch_index: Current scan minibatch index.
 
     Returns:
@@ -76,12 +74,7 @@ def _make_scan_minibatch_inputs(
         and new (carry) forward_key and param_noise_key.
     """
     minibatch_input = jax.tree.map(
-        lambda x: jax.lax.dynamic_slice_in_dim(
-            x,
-            start_index=minibatch_index * minibatch_size,
-            slice_size=minibatch_size,
-            axis=0,
-        ),
+        lambda x: x[minibatch_index],
         inputs["input_batch"],
     )
 
@@ -168,6 +161,37 @@ def with_minibatch_steps(
             """
             minibatch_size = _compute_minibatch_size(inputs["input_batch"], steps=steps)
 
+            def reshape_for_scan(x: Tensor):
+                """Helper function that adds a minibatch dimension while evenly dividing
+                batches across gradient accumulation iterations.
+
+                Input dimension is [GBS, seq], this first reshaped to [MBS, steps, seq],
+                then transposed to [steps, MBS, seq] this ensures that batches picked
+                up from the global batch in a staggered pattern.
+
+                The main benefit is that this avoids extra communication incurred in reshard
+                for every minibatch.
+
+                Args:
+                    x: Tensor to be reshaped.
+
+                Returns:
+                    The reshaped tensor.
+                """
+                if x.shape[0] % minibatch_size != 0:
+                    raise ValueError(
+                        f"minibatch_size {minibatch_size} does not evenly divide "
+                        f"global batch size of {x.shape[0]}"
+                    )
+
+                x = x.reshape(minibatch_size, -1, *x.shape[1:])
+                # Set up transpose to swap the first two dimensions.
+                dims = list(range(x.ndim))
+                dims[0], dims[1] = dims[1], dims[0]
+                return x.transpose(dims)
+
+            inputs["input_batch"] = jax.tree_map(reshape_for_scan, inputs["input_batch"])
+
             # Create a sample minibatch for the carry buffer creation below
             (
                 sample_minibatch_inputs,
@@ -177,7 +201,6 @@ def with_minibatch_steps(
                 inputs,
                 forward_key=inputs["forward_key"],
                 param_noise_key=inputs["param_noise_key"],
-                minibatch_size=minibatch_size,
                 minibatch_index=0,
             )
 
@@ -220,7 +243,6 @@ def with_minibatch_steps(
                     inputs,
                     forward_key=forward_key,
                     param_noise_key=param_noise_key,
-                    minibatch_size=minibatch_size,
                     minibatch_index=minibatch_index,
                 )
                 minibatch_args = (model_params, minibatch_inputs)
