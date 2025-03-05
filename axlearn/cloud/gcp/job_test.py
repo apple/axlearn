@@ -300,7 +300,7 @@ class GPUGKEJobTest(TestCase):
             if num_replicas:
                 fv.set_default("num_replicas", num_replicas)
             fv.mark_as_parsed()
-            cfg = job.GPUGKEJob.from_flags(fv)
+            cfg = job.GPUGKEJob.with_builder(replicated_job_cls).from_flags(fv)
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             cfg.accelerator.instance_type = "gpu-a3-highgpu-8g-256"
             cfg.queue = queue
