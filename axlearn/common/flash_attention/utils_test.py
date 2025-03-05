@@ -20,7 +20,7 @@ from jax.sharding import Mesh
 
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
-    MaskFnAttentionBias,
+    SlidingWindowAttentionBias,
     ZeroAttentionBias,
     sliding_window_causal_mask,
 )
@@ -113,11 +113,17 @@ class TestFlashAttention(TestCase):
         if bias_type == "full":
             bias = ZeroAttentionBias()
         elif bias_type == "causal":
-            bias = CausalAttentionBias(shape=(seq_len, seq_len))
+            bias = CausalAttentionBias(
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
+            )
         else:
             assert bias_type == "sliding"
-            bias = MaskFnAttentionBias(
-                mask=sliding_window_causal_mask(sliding_window_size=4), shape=(seq_len, seq_len)
+            bias = SlidingWindowAttentionBias(
+                mask=sliding_window_causal_mask(sliding_window_size=4),
+                sliding_window_size=4,
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
             )
 
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
@@ -167,16 +173,23 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
         if bias_type == "causal":
-            bias = CausalAttentionBias(shape=(seq_len, seq_len))
+            bias = CausalAttentionBias(
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
+            )
         else:
             assert bias_type == "sliding"
-            bias = MaskFnAttentionBias(
-                mask=sliding_window_causal_mask(sliding_window_size=4), shape=(seq_len, seq_len)
+            bias = SlidingWindowAttentionBias(
+                mask=sliding_window_causal_mask(sliding_window_size=4),
+                sliding_window_size=4,
+                target_positions=jnp.arange(seq_len)[None],
+                source_positions=jnp.arange(seq_len)[None],
             )
 
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
-                test_fn = utils.flash_attention_implementation(backend)
+                fwd_fn = utils.flash_attention_implementation(backend)
+                decode_fn = utils.flash_attention_implementation(backend, is_decoding=True)
 
                 query, key, value = _get_inputs(
                     batch=batch,
@@ -188,7 +201,7 @@ class TestFlashAttention(TestCase):
                 )
                 prng_key = jax.random.PRNGKey(0)
 
-                fwd_out = test_fn(query, key, value, bias, prng_key)
+                fwd_out = fwd_fn(query, key, value, bias, prng_key)
                 # Limit generation length to 16 to save test time.
                 query_len = 16
                 query = query[:, :query_len]
@@ -198,19 +211,20 @@ class TestFlashAttention(TestCase):
                 for t in range(0, query_len, step_len):
                     if bias_type == "causal":
                         bias_step = CausalAttentionBias(
-                            shape=(step_len, seq_len),
-                            target_positions=jnp.full([batch], fill_value=t),
+                            target_positions=jnp.arange(step_len)[None] + t,
+                            source_positions=jnp.arange(seq_len)[None],
                         )
                     else:
                         assert bias_type == "sliding"
-                        bias_step = MaskFnAttentionBias(
+                        bias_step = SlidingWindowAttentionBias(
                             mask=sliding_window_causal_mask(sliding_window_size=4),
-                            shape=(step_len, seq_len),
-                            target_positions=jnp.full([batch], fill_value=t),
+                            sliding_window_size=4,
+                            target_positions=jnp.arange(step_len)[None] + t,
+                            source_positions=jnp.arange(seq_len)[None],
                         )
 
                     query_step = query[:, t : t + step_len]
-                    decoding_out = test_fn(query_step, key, value, bias_step, prng_key)
+                    decoding_out = decode_fn(query_step, key, value, bias_step, prng_key)
                     decoding_output.append(decoding_out)
                 decoding_output = jnp.concatenate(decoding_output, axis=1)
                 self.assertNestedAllClose(fwd_out, decoding_output, atol=0.01)

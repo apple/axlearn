@@ -17,7 +17,6 @@ import jaxlib
 import numpy as np
 import pytest
 import tensorflow as tf
-import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
@@ -240,6 +239,9 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_tensor(self):
+        # pylint: disable-next=import-outside-toplevel
+        import torch
+
         # From a number.
         self.assertTensorEqual(jnp.ones([], dtype=jnp.int32), as_tensor(1))
         # From a numpy array.
@@ -341,6 +343,9 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_numpy_array(self):
+        # pylint: disable-next=import-outside-toplevel
+        import torch
+
         # From a number.
         self.assertNumpyArrayEqual(np.ones([], dtype=np.int64), as_numpy_array(1))
         # From a numpy array.
@@ -1763,8 +1768,8 @@ class HybridMeshShapeTest(TestCase):
 class HostToGlobalArrayTest(TestCase):
     """Tests host_to_global_device_array."""
 
-    @pytest.mark.tpu
-    def test_partition_full(self):
+    @pytest.mark.for_8_devices
+    def test_one_per_device(self):
         """Test a case where each process produces a slice."""
         device_count = jax.device_count()
         process_count = jax.process_count()
@@ -1788,9 +1793,46 @@ class HostToGlobalArrayTest(TestCase):
             self.assertEqual(jnp.mean(expected), jnp.mean(global_x))
             self.assertNestedEqual(expected, replicate_to_local_data(global_x))
 
+    @pytest.mark.for_8_devices
+    def test_one_per_process(self):
+        """Test a case where every process produces a slice.
+
+        This is recommended to run on >1 process, e.g. v5e-16.
+        """
+
+        device_count = jax.device_count()
+        process_count = jax.process_count()
+        print(f"{device_count=}, {process_count=}")
+        assert device_count > 1
+
+        # Build an array that has dim=0 smaller than num devices, but still >= num processes.
+        global_shape = (device_count // 2, 2)
+        assert global_shape[0] % process_count == 0
+        process_shape = global_shape[0] // process_count
+
+        feed_index = jax.process_index()
+        global_array = jax.random.uniform(jax.random.PRNGKey(123), shape=global_shape)
+
+        with jax.sharding.Mesh(np.array(jax.devices()).reshape(device_count // 2, 2), ("x", "y")):
+            # Shard dim=0 only along data.
+            logical_sharding = PartitionSpec("x")
+
+            # Each process has a slice.
+            local_x = global_array[feed_index * process_shape : (feed_index + 1) * process_shape]
+            batch = host_to_global_device_array(local_x, partition=logical_sharding)
+
+            # Check that sharding is as expected.
+            self.assertEqual(logical_sharding, batch.sharding.spec)
+
+            # Check that contents are as expected.
+            self.assertNestedEqual(global_array, replicate_to_local_data(batch))
+
     @pytest.mark.tpu
     def test_every_other_process(self):
-        """Test a case where every other process produces a slice."""
+        """Test a case where every other process produces a slice.
+
+        In this case, we require a dispatch step.
+        """
 
         device_count = jax.device_count()
         process_count = jax.process_count()

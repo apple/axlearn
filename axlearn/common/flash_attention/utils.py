@@ -108,6 +108,7 @@ def flash_attention_implementation(
     backend: Literal["cpu", "tpu", "gpu", "xla", "neuron"],
     *,
     softmax_scale: float = 1.0,
+    is_decoding: bool = False,
     block_size: int = 128,
     dropout_rate: Optional[float] = 0.0,
 ) -> MultiHeadAttentionImpl:
@@ -116,9 +117,11 @@ def flash_attention_implementation(
     Args:
         backend: A valid XLA backend name. 'cpu' intended for testing only.
         softmax_scale: A scalar value applied to the logits before softmax.
+        is_decoding: Whether it is in decoding.
         block_size: The size of the computation-block unit, only applies to the 'tpu' backend.
             A multiple of 128, and should be less than the target sequence length.
             Smaller values are more memory efficient but less compute efficient.
+        dropout_rate: The optional dropout rate.
 
     Returns:
         A jitted function implementing multi-head attention for the given backend.
@@ -142,16 +145,18 @@ def flash_attention_implementation(
     ) -> Tensor:
         # Fall back to plain MHA implementation when the seq_len is not be divisible by
         # block size.
-        is_gpu_decoding = query.shape[1] == 1 and backend == "gpu"
-        if not is_gpu_decoding and query.shape[1] % block_size != 0:
-            backend = "xla"
+        is_single_step_gpu_decoding = is_decoding and query.shape[1] == 1 and backend == "gpu"
         # For non-GPU decoding, fall back to non-flash implementation and merge all biases
         # into a dense floating point bias tensor since that implementation does not
         # support target_positions.
-        if not is_gpu_decoding and query.shape[1] == 1:
-            # TODO(senyut): Support TPU decoding.
-            backend = "xla"
-            bias = TensorAttentionBias(bias.value())
+        if not is_single_step_gpu_decoding:
+            if is_decoding:
+                # TODO(senyut): Support TPU decoding.
+                backend = "xla"
+                bias = TensorAttentionBias(bias.value())
+            if query.shape[1] % block_size != 0:
+                backend = "xla"
+
         if dropout_rate != 0.0 and backend not in ("gpu", "xla", "cpu"):
             raise NotImplementedError("Dropout is only implemented for GPU, CPU and XLA.")
 
@@ -177,14 +182,15 @@ def flash_attention_implementation(
         if backend == "gpu":
             # TODO(hanzhi-zhou): supports small q sequence length for future use cases such as
             # speculative decoding.
-            if query.shape[1] == 1:
+            if is_single_step_gpu_decoding:
                 # Decoding case. We should not repeat kv heads to match q heads for FlashDecoding.
                 # Note: decoding is always causal. Discard the causal mask if present.
                 mask, explicit_bias = split(bias, MaskFnAttentionBias)
                 if mask is None or mask.target_positions is None:
                     raise RuntimeError("Cannot retrive MaskFnAttentionBias or target_positions.")
                 mask_fn = mask.mask
-                kv_seq_len = mask.target_positions + 1
+                query_time_step = mask.target_positions[:, -1]
+                kv_seq_len = query_time_step + 1
                 logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
 
                 bias = explicit_bias.value()
@@ -271,6 +277,7 @@ def flash_attention_implementation(
                 query,
                 key,
                 value,
+                is_decoding=is_decoding,
                 bias=explicit_bias.value(),
                 segment_ids=get_segment_ids(segment_ids),
                 mask=mask,

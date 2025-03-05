@@ -12,7 +12,7 @@ from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
-from axlearn.common.attention import Dropout, GroupedQueryAttention
+from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
 from axlearn.common.config import REQUIRED, ConfigBase, ConfigModifier, Required, config_class
 from axlearn.common.flash_attention.utils import (
@@ -150,6 +150,7 @@ class FlashAttention(GroupedQueryAttention):
     def _compute_attention(
         self,
         *,
+        mode: ForwardMode,
         q_proj: Tensor,
         k_proj: Tensor,
         v_proj: Tensor,
@@ -167,9 +168,15 @@ class FlashAttention(GroupedQueryAttention):
 
         attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
+        # Note: prefill (INIT_STATE) is not is_decoding because query and key have the same shape.
+        # Note: this is a heuristic and it is possible (although not currently common) to do
+        # an extend_step even if we aren't in decoding. A more robust method could instead directly
+        # look at whether we need gradients or not, which could be done by adding a custom_vjp.
+        is_decoding = mode == ForwardMode.EXTEND_STEP
         jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
             backend=backend,
             softmax_scale=1.0,
+            is_decoding=is_decoding,
             block_size=cfg.tpu_block_size,
             dropout_rate=cfg.dropout.rate,
         )

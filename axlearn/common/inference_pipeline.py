@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """An inference pipeline consists of an input, a runner, and an output writer."""
+
 import time
 from typing import Optional
 
@@ -126,9 +127,7 @@ class InferencePipeline(Module):
                     input_batch, partition=cfg.runner.input_batch_partition_spec
                 )
             output: MethodRunner.Output = method_runner(global_input_batch)
-            output_batch = utils.global_to_host_array(
-                output.output_batch, partition=cfg.runner.input_batch_partition_spec
-            )
+            output_batch = utils.global_to_host_array(output.output_batch)
             if len(input_batch_str_tensors) != 0:
                 input_batch = merge_with_string_tensors(input_batch, input_batch_str_tensors)
             self.output_writer.write(
