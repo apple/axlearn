@@ -872,7 +872,12 @@ class MainTest(parameterized.TestCase):
             with self.assertRaisesRegex(type(expected), str(expected)):
                 _get_runner_or_exit(instance_type)
         else:
-            self.assertEqual(expected, _get_runner_or_exit(instance_type))
+            actual_runner = _get_runner_or_exit(instance_type)
+            # For GPU cases, check that it is a subclass of GKERunnerJob.
+            if instance_type.startswith("gpu-"):
+                self.assertTrue(issubclass(actual_runner, expected))
+            else:
+                self.assertEqual(expected, actual_runner)
 
     @parameterized.product(
         [
