@@ -27,7 +27,10 @@ mkdir -p "$TEST_ARTIFACTS_PATH"
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
 PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/profiles
-export XLA_FLAGS="--xla_dump_hlo_as_text --xla_dump_hlo_snapshots --xla_dump_hlo_as_proto --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
+
+export XLA_FLAGS="--xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
+# export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_snapshots"
+# export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_as_proto"
 
 # PJRT Flags 
 export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=1
@@ -37,6 +40,7 @@ export NEURON_FSDP=1
 export NEURON_FSDP_NUM_LAYER_COALESCE=-1
 export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
 export NEURON_HLO_ANALYZER=1
+export NEURON_DISABLE_BOUNDARY_MARKER=1
 
 # Neuron runtime flags
 export NEURON_RT_DBG_CC_DMA_PACKET_SIZE=4096 && export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
@@ -70,6 +74,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --tensorizer-options='--enable-hoist-
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
 # export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-compiler-debug-mode=penguin"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 
 # use to add debug logging at module level in xla
 # export TF_CPP_MIN_LOG_LEVEL=0
@@ -169,7 +174,7 @@ else
 	export MIXTRAL_MOE=$1
 	export NUM_LAYERS=$2
 	python -m axlearn.common.launch_trainer_main \
-		--module=text.gpt.c4_trainer --config=envy-Mistral-toy \
+		--module=text.gpt.c4_trainer --config=envy-Mistral-8x7B \
 		--trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
 		--jax_backend=$jax_backend --mesh_selector=neuron-trn2.48xlarge-64 \
 		--distributed_coordinator=$MASTER_ADDR:$JAX_COORDINATOR_PORT --num_processes=$num_nodes \
