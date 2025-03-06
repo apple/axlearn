@@ -104,6 +104,7 @@ RUN apt-get update && apt-get install -y ibverbs-utils
 
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+ENV JAX_TRACEBACK_FILTERING=off
 RUN pip install .[core,gpu]
 COPY . .
 RUN pip install -U "jax[gpu]==0.5.1" "jax==0.5.1" "jaxlib==0.5.1"
