@@ -522,3 +522,68 @@ class A3HighReplicatedJobTest(TestCase):
                 self.assertEqual(
                     main_container_env_vars["XLA_FLAGS"]["value"], env_vars["XLA_FLAGS"]
                 )
+
+
+class A3UltrahReplicatedJobTest(TestCase):
+    @contextlib.contextmanager
+    def _job_config(
+        self,
+        bundler_cls: type[Bundler],
+        num_replicas: int,
+        env_vars: Optional[dict] = None,
+    ):
+        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__], mock_settings()):
+            fv = flags.FlagValues()
+            jobset_utils.A3UltraReplicatedJob.define_flags(fv)
+            fv.mark_as_parsed()
+            cfg: jobset_utils.A3UltraReplicatedJob.Config = (
+                jobset_utils.A3UltraReplicatedJob.from_flags(fv)
+            )
+            cfg.project = jobset_utils.gcp_settings("project", required=True, fv=fv)
+            cfg.service_account = jobset_utils.gcp_settings(
+                "k8s_service_account", required=True, fv=fv
+            )
+            cfg.accelerator = AcceleratorConfig().set(
+                instance_type="gpu-a3-ultragpu-8g-256",
+                num_replicas=num_replicas,
+            )
+            cfg.command = "test-command"
+            cfg.env_vars = env_vars if env_vars is not None else {}
+            bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+            yield cfg, bundler_cfg
+
+    @parameterized.product(
+        env_vars=[dict(), dict(XLA_FLAGS="--should-overwrite-all")],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        num_replicas=[1, 32],
+    )
+    def test_build_pod(
+        self,
+        bundler_cls,
+        num_replicas: int,
+        env_vars: Optional[dict] = None,
+    ):
+        with self._job_config(bundler_cls, env_vars=env_vars, num_replicas=num_replicas) as (
+            cfg,
+            bundler_cfg,
+        ):
+            gke_job: jobset_utils.A3UltraReplicatedJob = cfg.set(name="test").instantiate(
+                bundler=bundler_cfg.instantiate()
+            )
+            # pylint: disable-next=protected-access
+            pod = gke_job._build_pod()
+            pod_spec = pod["spec"]
+
+            self.assertEqual(len(pod_spec["containers"]), 1)
+            self.assertEqual(len(pod_spec["initContainers"]), 0)
+            containers = {container["name"]: container for container in pod_spec["containers"]}
+            main_container = containers["test"]
+            main_container_env = main_container["env"]
+            main_container_env_vars = {env["name"]: env for env in main_container_env}
+            self.assertEqual(main_container["resources"]["limits"]["nvidia.com/gpu"], "8")
+            self.assertEqual(main_container_env_vars["NUM_PROCESSES"]["value"], f"{num_replicas}")
+            # Verify that default XLA flags can be overwritten by user.
+            if env_vars and env_vars.get("XLA_FLAGS"):
+                self.assertEqual(
+                    main_container_env_vars["XLA_FLAGS"]["value"], env_vars["XLA_FLAGS"]
+                )
