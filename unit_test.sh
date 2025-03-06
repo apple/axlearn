@@ -58,5 +58,10 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 echo "setup env vars"
-source ../jaxmoe/bin/activate
-pytest axlearn/common/mixture_of_experts_neuron_test.py
+if [ "$1" = "unit" ]; then
+    echo "Running Unit Test"
+    pytest axlearn/common/mixture_of_experts_neuron_unit_test.py
+else
+    echo "Running Integ Test"
+    pytest axlearn/common/mixture_of_experts_neuron_test.py
+fi
