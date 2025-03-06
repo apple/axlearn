@@ -790,8 +790,8 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_enable_all_gather_combine_by_dim=false",
             "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
             "--xla_disable_hlo_passes=rematerialization",
-            "--xla_gpu_enable_while_loop_double_buffering=true"
-            "--xla_gpu_enable_command_buffer=true",
+            "--xla_gpu_enable_while_loop_double_buffering=true",
+            "--xla_gpu_enable_command_buffer=\"FUSION, CUBLAS, CUSTOM_CALL, CUDNN\"",
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
 
