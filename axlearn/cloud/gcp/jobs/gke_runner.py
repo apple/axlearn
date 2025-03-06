@@ -547,7 +547,7 @@ def _get_runner_or_exit(instance_type: str):
     elif instance_type.startswith("gpu-a3-high"):
         return GKERunnerJob.with_inner(GKEJob.with_builder(A3HighReplicatedJob))
     elif instance_type.startswith("a4-highgpu"):
-        return GKERunnerJob.with_inner(GKEJob.with_builder(A3HighReplicatedJob))
+        return GKERunnerJob.with_inner(GKEJob.with_builder(A3UltraReplicatedJob))
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")
 
