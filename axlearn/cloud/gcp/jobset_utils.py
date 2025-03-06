@@ -807,7 +807,7 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
                 # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
-                "NCCL_DEBUG": "TRACE",
+                "NCCL_DEBUG": "INFO",
                 "NCCL_SOCKET_IFNAME": "=eth0,eth1",
                 "NCCL_CROSS_NIC": "0",
                 "NCCL_NET_GDR_LEVEL": "PIX",
