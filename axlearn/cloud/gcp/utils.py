@@ -6,7 +6,8 @@ import enum
 import functools
 import os
 import re
-import subprocess
+
+#import subprocess
 import sys
 from collections import defaultdict
 from collections.abc import Sequence
@@ -73,13 +74,14 @@ def running_from_vm() -> bool:
     Reference:
     https://cloud.google.com/compute/docs/instances/detect-compute-engine#use_the_metadata_server_to_detect_if_a_vm_is_running_in
     """
-    out = subprocess.run(
-        ["curl", "-s", "metadata.google.internal", "-i"],  # Curl silently.
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
+    # out = subprocess.run(
+    #     ["curl", "-s", "metadata.google.internal", "-i"],  # Curl silently.
+    #     check=False,
+    #     capture_output=True,
+    #     text=True,
+    # )
+    # return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
+    return False
 
 
 def running_from_k8s() -> bool:
