@@ -234,13 +234,18 @@ def bench_flash_attention(
     )
     # Bias is not supported in pallas, so we don't include it here.
     bias = None
-    if sw_sz != -1 and not is_decode:
+    if sw_sz != -1:
         mask_fn = sliding_window_causal_mask(sw_sz)
         # We convert mask into a bias tensor for jax and cudnn.
         assert bias is None
-        mask = mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :])
-        bias = jnp.zeros((1, 1, seq_len, seq_len), dtype=jnp.float16)
-        bias = jnp.where(mask, bias, NEG_INF)
+        if not is_decode:
+            bias = jnp.zeros((1, 1, seq_len, seq_len), dtype=jnp.float16)
+            bias = jnp.where(
+                mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]), bias, NEG_INF
+            )
+        else:
+            bias = jnp.zeros((1, 1, 1, seq_len), dtype=jnp.float16)
+            bias = bias.at[:, :, :, :-sw_sz].set(NEG_INF)
     else:
         mask_fn = causal_mask
     if "axlearn" in library:
@@ -287,8 +292,6 @@ def bench_flash_attention(
         else:
             fn = partial(cudnn_dot_product_attention, causal=not is_decode)
     else:
-        k = k.repeat(num_heads // num_kv_heads, axis=2)
-        v = v.repeat(num_heads // num_kv_heads, axis=2)
         args = (q, k, v, bias)
 
         if use_bwd:

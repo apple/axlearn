@@ -75,6 +75,11 @@ def _attn_forward_kernel(
 ):
     _, head_dim = q_ref.shape
     split_k_seq_len, _ = k_ref.shape
+    precision = (
+        lax.Precision.HIGHEST
+        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
+        else lax.Precision.DEFAULT
+    )
     prog_i, prog_j = pl.program_id(1), pl.program_id(2)
     q_mask = (block_h * prog_i + jnp.arange(block_h) < qhead_per_kvhead)[:, None]
 
@@ -98,7 +103,7 @@ def _attn_forward_kernel(
             def compute():
                 curr_k_slice = pl.ds(start_k * block_k, block_k)
                 k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
-                qk = pl.dot(q, k.T, allow_tf32=False)  # [block_h, block_k]
+                qk = pl.dot(q, k.T, precision=precision)  # [block_h, block_k]
                 if bias_ref is not None:
                     qk += pl.load(
                         bias_ref, (slice(None), curr_k_slice), mask=mask[None, :], other=0.0
@@ -115,7 +120,7 @@ def _attn_forward_kernel(
                 l_curr = s_curr.sum(axis=-1)
                 l_next = l_prev_corr + l_curr
                 v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
-                o_curr = pl.dot(s_curr.astype(v.dtype), v, allow_tf32=False)
+                o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
 
                 # Flash2 unscaled_o.
                 o_next = correction[:, None] * o_prev + o_curr

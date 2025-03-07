@@ -2091,6 +2091,44 @@ class MultiheadAttention(BaseLayer):
         return config_for_function(constant_scale_fn).set(value=1)
 
 
+def compute_gqa_logits(q_proj: Tensor, k_proj: Tensor) -> Tensor:
+    """Compute attention logits.
+
+    Args:
+        q_proj: query tensor, [batch, target_length, num_heads, per_head_dim].
+        k_proj: key tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+    Returns:
+        logits: [batch, num_heads, target_length, source_length].
+    """
+    kv_heads = k_proj.shape[2]
+    num_head_group = q_proj.shape[2] // kv_heads
+    assert q_proj.shape[2] % kv_heads == 0
+    q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
+    k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
+    logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
+    return einops.rearrange(logits, "b k g t s -> b (k g) t s")
+
+
+def compute_gqa_context(probs: Tensor, v_proj: Tensor) -> Tensor:
+    """Compute attention context.
+
+    Args:
+        probs: probs tensor, [batch, num_heads, target_length, source_length].
+        v_proj: value tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+    Returns:
+        context: [batch, target_length, num_heads, per_head_dim].
+    """
+    kv_heads = v_proj.shape[2]
+    num_head_group = probs.shape[1] // kv_heads
+    assert probs.shape[1] % kv_heads == 0
+    probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
+    v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
+    context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
+    return einops.rearrange(context, "b t k g h -> b t (k g) h")
+
+
 class GroupedQueryAttention(MultiheadAttention):
     """A Grouped-Query Attention (GQA) layer.
 
@@ -2129,12 +2167,7 @@ class GroupedQueryAttention(MultiheadAttention):
         if num_head_group == 1:
             return super()._compute_logits(q_proj=q_proj, k_proj=k_proj)
 
-        q_proj = self.scale_query(q_proj)
-        k_proj = self.scale_key(k_proj)
-        q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
-        k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
-        logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
-        return einops.rearrange(logits, "b k g t s -> b (k g) t s")
+        return compute_gqa_logits(self.scale_query(q_proj), self.scale_key(k_proj))
 
     def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
         """Compute attention context.
@@ -2151,10 +2184,7 @@ class GroupedQueryAttention(MultiheadAttention):
         if num_head_group == 1:
             return super()._compute_context(probs=probs, v_proj=v_proj)
 
-        probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
-        v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
-        context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
-        return einops.rearrange(context, "b t k g h -> b t (k g) h")
+        return compute_gqa_context(probs, v_proj)
 
 
 class SigmoidAttention(MultiheadAttention):

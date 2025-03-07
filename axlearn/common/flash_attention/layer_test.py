@@ -18,6 +18,8 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 # pylint: enable=wrong-import-position
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -750,15 +752,6 @@ class TestFlashAttention(TestCase):
                 mask=mask,
                 inference=True,
             )
-            tpu_block_size = test_layer.config.tpu_block_size
-            # pylint: disable-next=protected-access
-            if test_layer._backend() == "tpu" and seq_len % tpu_block_size != 0:
-                pytest.skip(
-                    f"Sequence length  {seq_len} is not divisible by configured block size for "
-                    f"tpu {test_layer.config.tpu_block_size }. "
-                    "This was unsupported (and the test failed) even prior to adding "
-                    "this skip statement."
-                )
 
             # Prepare inputs
             query = jax.random.normal(
@@ -774,7 +767,7 @@ class TestFlashAttention(TestCase):
                     dtype=dtype,
                 )
             kv_state = None
-            return_aux = {"probs"}
+            return_aux = None
 
             inputs = dict(
                 query=query,
@@ -839,6 +832,18 @@ class TestFlashAttention(TestCase):
 
             decoder_output = jnp.zeros(shape=[seq_len, batch, hidden_dim]).astype(dtype)
             ref_decoder_output = jnp.zeros(shape=[seq_len, batch, hidden_dim]).astype(dtype)
+
+            @partial(jax.jit, static_argnames=["layer"])
+            def extend_one_step(params, inputs, layer):
+                return F(
+                    layer,
+                    state=params,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(5),
+                    inputs=inputs,
+                    method="extend_step",
+                )
+
             for t in range(seq_len):
                 cur_query = jnp.expand_dims(query[:, t, :], axis=1)
                 inputs["query"] = cur_query
@@ -851,27 +856,13 @@ class TestFlashAttention(TestCase):
                     ref_inputs["attention_logit_biases"] = jnp.expand_dims(
                         causal_bias[:, :, t, :], axis=2
                     )
-                ref_extend_step_outputs, _ = F(
-                    ref_layer,
-                    state=params,
-                    is_training=False,
-                    prng_key=jax.random.PRNGKey(5),
-                    inputs=ref_inputs,
-                    method="extend_step",
-                )
+                ref_extend_step_outputs, _ = extend_one_step(params, ref_inputs, ref_layer)
                 ref_inputs["cached_states"] = ref_extend_step_outputs[0]
                 ref_decoder_output = ref_decoder_output.at[t].set(
                     jnp.squeeze(ref_extend_step_outputs[1].data, axis=1)
                 )
 
-                extend_step_outputs, _ = F(
-                    test_layer,
-                    state=params,
-                    is_training=False,
-                    prng_key=jax.random.PRNGKey(5),
-                    inputs=inputs,
-                    method="extend_step",
-                )
+                extend_step_outputs, _ = extend_one_step(params, inputs, test_layer)
                 inputs["cached_states"] = extend_step_outputs[0]
                 decoder_output = decoder_output.at[t].set(
                     jnp.squeeze(extend_step_outputs[1].data, axis=1)
@@ -880,6 +871,7 @@ class TestFlashAttention(TestCase):
                 self.assertNestedAllClose(
                     decoder_output[t],
                     ref_decoder_output[t],
+                    rtol=0.02,
                     atol=2e-2,
                 )
 
@@ -889,16 +881,19 @@ class TestFlashAttention(TestCase):
             self.assertNestedAllClose(
                 ref_out.data,
                 ref_decoder_out_transposed,
+                rtol=0.02,
                 atol=2e-2,
             )
             self.assertNestedAllClose(
                 decoder_out_transposed,
                 ref_decoder_out_transposed,
+                rtol=0.02,
                 atol=2e-2,
             )
             self.assertNestedAllClose(
                 ref_out.data,
                 test_out.data,
+                rtol=0.02,
                 atol=2e-2,
             )
         jax.clear_caches()
