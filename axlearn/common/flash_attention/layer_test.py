@@ -81,7 +81,7 @@ def _fake_inputs(
         bias = jax.random.bernoulli(
             jax.random.PRNGKey(3), p=0.5, shape=[batch, num_heads, query_len, kv_len]
         )
-        bias = bool_to_bias(bias).astype(input_dtype)
+        bias = bool_to_bias(bias)
         bias = TensorAttentionBias(bias)
     else:
         bias = CompositeAttentionBias([])
