@@ -27,7 +27,17 @@ import traceback
 import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    NamedTuple,
+    Optional,
+    Protocol,
+    TypeVar,
+    Union,
+    runtime_checkable,
+)
 
 import jax
 import numpy as np
@@ -43,7 +53,14 @@ from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
-from axlearn.common.config import ConfigOr, is_named_tuple, maybe_instantiate, register_validator
+from axlearn.common.config import (
+    ConfigOr,
+    FunctionConfigBase,
+    config_for_function,
+    is_named_tuple,
+    maybe_instantiate,
+    register_validator,
+)
 
 # New code should use Nested[XX] instead of NestedXX.
 # Old definitions are provided for backwards compatibility.
@@ -54,6 +71,8 @@ Tensor = jax.Array
 NestedTree = Union[Any, dict[str, Any]]
 NestedTensor = Union[Tensor, dict[str, Any]]  # DEPRECATED, use Nested[Tensor].
 NestedPartitionSpec = Optional[Union[PartitionSpec, dict[str, Any]]]
+
+T = TypeVar("T")
 
 # The device mesh shape in the form of a tuple of ints.
 # We avoid subscripting Sequence[int] so it can be used for isinstance checks.
@@ -1070,6 +1089,162 @@ def cast_floats(
         return x
 
     return jax.tree.map(cast, in_tree)
+
+
+@runtime_checkable
+class PerParamFn(Protocol[T]):
+    """A callable that operates on each parameter."""
+
+    def __call__(self, params: Union[Nested[Tensor], Nested[TensorSpec]]) -> Nested[T]:
+        """This protocol requires a callable that accepts either a nested Tensor or
+        a nested TensorSpec as input and returns a processed value for each parameter.
+
+        Args:
+            params: A value of type NestedTensor or NestedTensorSpec.
+
+        Returns:
+            A value of type Nested[T], which is the processed value for each parameter.
+        """
+
+
+def per_param_dtype_by_path(
+    default_dtype: Optional[jnp.dtype] = None,
+    *,
+    update_rules: Optional[Sequence[tuple[str, Optional[jnp.dtype]]]] = None,
+) -> PerParamFn[jnp.dtype]:
+    """Returns a function that assigns a dtype to each parameter based on the provided update
+    rules. Each rule consists of a regex pattern that matches a parameter path, and a dtype to
+    assign the parameter to. If no rule matches, the parameter is assigned to the provided
+    `default_dtype`. If `default_dtype` is None, keep the original dtype as it is.
+
+    Args:
+        default_dtype: The dtype to use if none of the regex patterns match
+            the parameter path.
+        update_rules: A list of (regex, dtype) pairs. The first regex pattern fully matching the
+            parameter path determines the dtype for the parameter.
+
+    Returns:
+        A function assigns each parameter to the appropriate dtype based on the update rules
+        or the default dtype.
+
+    Example:
+        tree = {
+            'conv1_weights': jnp.ones((3, 3), dtype=jnp.float32),
+            'conv2_weights': jnp.ones((3, 3), dtype=jnp.float32),
+            'fc1_weights': jnp.ones((10, 10), dtype=jnp.float32),
+            'fc2_weights': jnp.ones((10, 10), dtype=jnp.float32),
+        }
+        default_dtype = jnp.float32
+        update_rules = [
+            ("^fc.*", jnp.bfloat16),
+        ]
+        cast_fn = per_param_dtype_by_path(default_dtype, update_rules)
+        per_param_dtype = cast_fn(tree)
+        Result:
+        per_param_dtype = {
+            'conv1_weights': jnp.float32,
+            'conv2_weights': jnp.float32,
+            'fc1_weights': jnp.bfloat16,
+            'fc2_weights': jnp.bfloat16,
+        }
+    """
+
+    def fn(
+        tree: Union[Nested[Tensor], Nested[TensorSpec]]
+    ) -> Union[Nested[Tensor], Nested[TensorSpec]]:
+        if update_rules is None:
+            return jax.tree.map(lambda x: default_dtype, tree_paths(tree))
+
+        return jax.tree.map(
+            lambda path: match_regex_rules(path, rules=update_rules, default_value=default_dtype),
+            tree_paths(tree),
+        )
+
+    return fn
+
+
+def cast_floats_per_param(
+    in_tree: Union[NestedTensor, NestedTensorSpec],
+    per_param_dtype: Nested[jnp.dtype],
+) -> Union[NestedTensor, NestedTensorSpec]:
+    """Cast each parameter in a tree to a specified dtype.
+
+    Args:
+        in_tree: The input values, which is a NestedTensor or NestedTensorSpec.
+        per_param_dtype: Target dtype for each parameter in the `tree`.
+            If None, no casting and will keep the original dtype.
+
+    Returns:
+        Union[NestedTensor, NestedTensorSpec]: A tree with the same shape as `in_tree`,
+            but with all tensors or tensor specs cast to the specified data type.
+
+    Raises:
+        ValueError: If an unsupported dtype is provided in `per_param_dtype`.
+    """
+
+    def cast_per_param(
+        x: Union[Tensor, TensorSpec], to_dtype: jnp.dtype
+    ) -> Union[Tensor, TensorSpec]:
+        if to_dtype is None:
+            return x
+
+        if to_dtype not in _supported_float_dtypes:
+            raise ValueError(f"to_dtype must be one of {_supported_float_dtypes}")
+
+        from_dtype = jnp.float32 if to_dtype == jnp.bfloat16 else jnp.bfloat16
+
+        if x.dtype == from_dtype:
+            if isinstance(x, TensorSpec):
+                return dataclasses.replace(x, dtype=to_dtype)
+            else:
+                return x.astype(to_dtype)
+
+        return x
+
+    return jax.tree.map(cast_per_param, in_tree, per_param_dtype)
+
+
+def canonicalize_per_param_dtype(
+    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]]
+) -> ConfigOr[PerParamFn[jnp.dtype]]:
+    """Canonicalize the input `param_dtype` to a consistent format of
+    `ConfigOr[PerParamFn[jnp.dtype]]`, which handles three possible cases:
+
+    1. If `param_dtype` is `None`, it returns a configuration of default
+       per_param_dtype_by_path function.
+    2. If `param_dtype` is a `jnp.dtype`, it returns a configuration of
+       per_param_dtype_by_path with `param_dtype` as `default_dtype`.
+    3. If `param_dtype` is already an instance of `ConfigOr[PerParamFn[jnp.dtype]]`,
+       it returns the `param_dtype` as it is.
+
+    Args:
+        param_dtype: A `jnp.dtype` or a `ConfigOr[PerParamFn[jnp.dtype]]`.
+
+    Returns:
+        ConfigOr[PerParamFn[jnp.dtype]]: A ConfigOr[PerParamFn[jnp.dtype]] that wraps the
+        `param_dtype` as `default_dtype` or return `param_dtype` directly if it is already
+        an instance of `ConfigOr[PerParamFn[jnp.dtype]]`.
+
+    Raises:
+        ValueError: If `param_dtype` does not match any of the required types.
+    """
+
+    if param_dtype is None:
+        return config_for_function(per_param_dtype_by_path)
+    # Check if param_dtype is an instance of jnp.dtype
+    elif hasattr(param_dtype, "dtype") and isinstance(param_dtype.dtype, jnp.dtype):
+        return config_for_function(per_param_dtype_by_path).set(
+            default_dtype=param_dtype,
+        )
+    # Check if param_dtype is an instance of ConfigOr[PerParamFn[jnp.dtype]]
+    elif isinstance(param_dtype, PerParamFn) or (
+        isinstance(param_dtype, FunctionConfigBase) and isinstance(param_dtype.fn, PerParamFn)
+    ):
+        return param_dtype
+    raise ValueError(
+        f"{param_dtype} does not match any required types, should be "
+        "jnp.dtype or ConfigOr[PerParamFn[jnp.dtype]]."
+    )
 
 
 def count_model_params(tree: NestedTensor) -> int:
