@@ -767,6 +767,7 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         volume_mounts = [
             {"name": "shared-memory", "mountPath": "/dev/shm"},
             {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
+            # Config files for ibverb and dependency binaries.
             {"name": "gib", "mountPath": "/usr/local/gib"},
         ]
 
@@ -776,7 +777,7 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         env_vars["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib64"
 
         default_xla_flags = [
-            # Maxtext XLA flags:
+            # Maxtext XLA flags were used as reference:
             # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
             "--xla_gpu_enable_latency_hiding_scheduler=true",
             "--xla_gpu_enable_triton_gemm=false",
@@ -797,7 +798,6 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         # NCCL flags needed
         env_vars.update(
             {
-                # Enable auto PGLE available in jax 0.4.33
                 "JAX_ENABLE_PGLE": "True",
                 "JAX_PGLE_PROFILING_RUNS": "3",
                 # This is needed for flash attention + auto PGLE to work
