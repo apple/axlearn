@@ -122,7 +122,7 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
 }
 
 def get_ffn_layer_types():
-    ffn_type = os.getenv("MIXTRAL_MOE", "1")
+    ffn_type = os.getenv("AXLEARN_MIXTRAL_MOE", "1")
     if ffn_type == "0":
         ffn_layer_types = ["dense"]
     elif ffn_type == "1":
@@ -456,10 +456,11 @@ def get_trainer_kwargs(
     elif model_size in ["Mistral-8x7B", "Mistral-toy"]:
         # Num of parameters: 47B.
         ffn_layer_types = get_ffn_layer_types()
-        neuron_mesh = mesh_shape_from_axes(fsdp=-1, model=4)
+        tp_degree=int(os.getenv("AXLEARN_TP_DEGREE", 4))
+        neuron_mesh = mesh_shape_from_axes(fsdp=-1, model=tp_degree)
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=int(os.getenv("NUM_LAYERS", 4)),
+                num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4)),
                 hidden_dim=32 * 32 if model_size == "Mistral-toy" else 32 * 128,
                 ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=128),
                 num_heads=32,
@@ -510,6 +511,11 @@ def get_trainer_kwargs(
                             #         "model.decoder.transformer.layer": RematSpec(
                             #             prevent_cse=True,
                             #             policy=jax_remat_policies.nothing_saveable,
+                            #         ),
+                            #     } if os.getenv('AXLEARN_REMAT_LAYER', 'True') == 'True' else {
+                            #         "model.decoder.transformer.layer": RematSpec(
+                            #             prevent_cse=True,
+                            #             policy=jax_remat_policies.everything_saveable,
                             #         ),
                             #     }
                             # ),

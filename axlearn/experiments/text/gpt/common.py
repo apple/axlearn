@@ -9,7 +9,7 @@ functions are used to build the args for `get_get_trainer_config_fn`, including 
 
 See c4_trainer.py for how they are used.
 """
-
+import os
 import math
 from collections.abc import Sequence
 from typing import Literal, Optional, Protocol, Union
@@ -281,8 +281,9 @@ def model_config(
         layer_cfg.self_attention.attention.input_linear = attention_qkv_linear
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
-    if issubclass(stack_cfg.klass, (RepeatedTransformerLayer, StackedTransformerLayer)):
-        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
+    # if os.getenv('AXLEARN_REMAT_LAYER', 'True') == 'True':
+    #     if issubclass(stack_cfg.klass, (RepeatedTransformerLayer, StackedTransformerLayer)):
+    #         update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
     # Stack.
     # transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     # Shard some FFN and attention weights over multiple axes.
