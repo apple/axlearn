@@ -228,7 +228,8 @@ def flash_attention_implementation(
             if (
                 segment_ids.has_value()
                 or mask.has_value()
-                or jnp.float32 in (query.dtype, key.dtype, value.dtype)
+                # Remove this to prevent Triton kernel usage
+                # or jnp.float32 in (query.dtype, key.dtype, value.dtype)
                 or query.shape[1] != key.shape[1]
             ):
                 logging.warning("Flash attention falling back to Triton GPU kernel.")
