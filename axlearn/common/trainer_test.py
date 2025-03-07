@@ -50,7 +50,7 @@ from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, TrainerState, aot_model_analysis, select_mesh_config
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulationModifier,
@@ -586,6 +586,10 @@ class TrainerTest(test_utils.TestCase):
         compiled_with_input_batch = trainer.compile_train_step(input_batch=input_batch)
         # In a single-host environment, both compiled functions should match.
         self.assertEqual(compiled_without_args.as_text(), compiled_with_input_batch.as_text())
+        self.assertEqual(
+            aot_model_analysis(compiled_without_args),
+            aot_model_analysis(compiled_with_input_batch),
+        )
 
         # A version compiled with non-default compiled args should be different.
         compiled_with_compiler_options = trainer.compile_train_step(
@@ -599,6 +603,10 @@ class TrainerTest(test_utils.TestCase):
         )
         self.assertEqual(
             compiled_without_args.as_text(), compiled_with_trainer_state_and_input_batch.as_text()
+        )
+        self.assertEqual(
+            aot_model_analysis(compiled_without_args),
+            aot_model_analysis(compiled_with_trainer_state_and_input_batch),
         )
 
     @parameterized.parameters(
