@@ -257,7 +257,7 @@ class Input(Module):
             batch_partitions = math.prod(
                 mesh.shape[axis] for axis in jax.tree.leaves(self._partition_spec[0])
             )
-            # Warn if an invalid constraint is applied, since by default this would silently be
+            # Warn if an invalid constraint is applied, since by default this can silently be
             # ignored, potentially leading to unexpected OOMs.
             if value.shape[0] % batch_partitions != 0:
                 logging.warning(

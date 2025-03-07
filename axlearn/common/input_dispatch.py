@@ -60,7 +60,7 @@ class BaseInputDispatcher(Module):
         raise NotImplementedError(type(self))
 
 
-class InputDispatcher(Module):
+class InputDispatcher(BaseInputDispatcher):
     """A Module to dispatch per-feed logical input batches to global logical batches on device.
 
     The dispatch process consists of three steps:
@@ -79,10 +79,8 @@ class InputDispatcher(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(BaseInputDispatcher.Config):
         """Configuration for InputDispatcher."""
-
-        global_logical_batch_size: Required[int] = REQUIRED
 
         # Usually left unset. Defaults to
         # max(feed_logical_batch_size * num_physical_feeds, jax.device_count()).
@@ -298,22 +296,7 @@ class InputDispatcher(Module):
         return traverse_and_dispatch(global_physical_batch)
 
 
-# TODO(markblee): Lift this restriction.
-def _validate_batch_partitioned(partition_spec: PartitionSpec):
-    """Asserts that `partition_spec` only partitions along batch dim."""
-
-    if not partition_spec:
-        raise ValueError(f"{partition_spec=} cannot be empty.")
-
-    # Currently, input pipelines only support the batch axis.
-    if any(spec is not None for spec in jax.tree.leaves(partition_spec[1:])):
-        raise NotImplementedError(
-            "Partitioning along non-batch dims is currently not supported by input dispatch: "
-            f"{partition_spec}"
-        )
-
-
-class SpmdInputDispatcher(Module):
+class SpmdInputDispatcher(BaseInputDispatcher):
     """A variant of InputDispatcher which is mesh/topology aware.
 
     Specifically, given a global shape and input shardings, we infer the layout of the processes
@@ -325,16 +308,14 @@ class SpmdInputDispatcher(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(BaseInputDispatcher.Config):
         """Configuration for SpmdInputDispatcher.
 
         Attributes:
             partition_spec: A PyTree specifying how inputs should be partitioned.
-            global_logical_batch_size: Global logical batch size.
         """
 
         partition_spec: Required[PartitionSpec] = REQUIRED
-        global_logical_batch_size: Required[int] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -344,11 +325,19 @@ class SpmdInputDispatcher(Module):
         if mesh.empty:
             raise ValueError("Expected to be initialized within the context of a mesh.")
 
+        if not cfg.partition_spec:
+            raise ValueError(f"{cfg.partition_spec=} cannot be empty.")
+
         # TODO(markblee): For simplicity, we currently restrict to batch-only partitioning, since
         # input implementations currently do not support other configurations. Specifically, we can
         # extend `feed_read_config` to return not just an index but a tuple of indices indicating
         # the position of the feed along dims != 0.
-        _validate_batch_partitioned(cfg.partition_spec)
+        if any(spec is not None for spec in jax.tree.leaves(cfg.partition_spec[1:])):
+            raise NotImplementedError(
+                "Partitioning along non-batch dims is currently not supported by input dispatch: "
+                f"{cfg.partition_spec}"
+            )
+
         self._partition_spec = cfg.partition_spec
         logical_sharding = jax.NamedSharding(mesh, cfg.partition_spec)
 
@@ -392,5 +381,5 @@ class SpmdInputDispatcher(Module):
     def logical_to_physical_batch(self, logical_feed_batch: Nested[Tensor]) -> Nested[Tensor]:
         return jax.tree.map(lambda x: x, logical_feed_batch)
 
-    def physical_to_logical_batch(self, physical_feed_batch: Nested[Tensor]) -> Nested[Tensor]:
-        return jax.tree.map(lambda x: x, physical_feed_batch)
+    def physical_to_logical_batch(self, global_physical_batch: Nested[Tensor]) -> Nested[Tensor]:
+        return jax.tree.map(lambda x: x, global_physical_batch)
