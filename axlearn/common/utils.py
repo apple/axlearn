@@ -1098,8 +1098,10 @@ class PerParamFn(Protocol[T]):
     def __call__(self, params: Union[Nested[Tensor], Nested[TensorSpec]]) -> Nested[T]:
         """This protocol requires a callable that accepts either a nested Tensor or
         a nested TensorSpec as input and returns a processed value for each parameter.
+
         Args:
             params: A value of type NestedTensor or NestedTensorSpec.
+
         Returns:
             A value of type Nested[T], which is the processed value for each parameter.
         """
@@ -1114,14 +1116,17 @@ def per_param_dtype_by_path(
     rules. Each rule consists of a regex pattern that matches a parameter path, and a dtype to
     assign the parameter to. If no rule matches, the parameter is assigned to the provided
     `default_dtype`. If `default_dtype` is None, keep the original dtype as it is.
+
     Args:
         default_dtype: The dtype to use if none of the regex patterns match
             the parameter path.
         update_rules: A list of (regex, dtype) pairs. The first regex pattern fully matching the
             parameter path determines the dtype for the parameter.
+
     Returns:
         A function assigns each parameter to the appropriate dtype based on the update rules
         or the default dtype.
+
     Example:
         tree = {
             'conv1_weights': jnp.ones((3, 3), dtype=jnp.float32),
@@ -1163,13 +1168,16 @@ def cast_floats_per_param(
     per_param_dtype: Nested[jnp.dtype],
 ) -> Union[NestedTensor, NestedTensorSpec]:
     """Cast each parameter in a tree to a specified dtype.
+
     Args:
         in_tree: The input values, which is a NestedTensor or NestedTensorSpec.
         per_param_dtype: Target dtype for each parameter in the `tree`.
             If None, no casting and will keep the original dtype.
+
     Returns:
         Union[NestedTensor, NestedTensorSpec]: A tree with the same shape as `in_tree`,
             but with all tensors or tensor specs cast to the specified data type.
+
     Raises:
         ValueError: If an unsupported dtype is provided in `per_param_dtype`.
     """
@@ -1201,18 +1209,22 @@ def canonicalize_per_param_dtype(
 ) -> ConfigOr[PerParamFn[jnp.dtype]]:
     """Canonicalize the input `param_dtype` to a consistent format of
     `ConfigOr[PerParamFn[jnp.dtype]]`, which handles three possible cases:
+
     1. If `param_dtype` is `None`, it returns a configuration of default
        per_param_dtype_by_path function.
     2. If `param_dtype` is a `jnp.dtype`, it returns a configuration of
        per_param_dtype_by_path with `param_dtype` as `default_dtype`.
     3. If `param_dtype` is already an instance of `ConfigOr[PerParamFn[jnp.dtype]]`,
        it returns the `param_dtype` as it is.
+
     Args:
         param_dtype: A `jnp.dtype` or a `ConfigOr[PerParamFn[jnp.dtype]]`.
+
     Returns:
         ConfigOr[PerParamFn[jnp.dtype]]: A ConfigOr[PerParamFn[jnp.dtype]] that wraps the
         `param_dtype` as `default_dtype` or return `param_dtype` directly if it is already
         an instance of `ConfigOr[PerParamFn[jnp.dtype]]`.
+
     Raises:
         ValueError: If `param_dtype` does not match any of the required types.
     """
