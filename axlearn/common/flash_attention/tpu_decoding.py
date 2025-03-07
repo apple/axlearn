@@ -173,11 +173,12 @@ def tpu_decoding(
     """
     if q.shape[1] != 1:
         raise ValueError("Multi-step decoding is not supported yet.")
+    # Pallas TPU doesn't support pl.load(..., mask=xxx), so we kv len must divide block size.
+    # However, we can reduce the block size to support the case where
+    # padded_kv_seq_len < block_size.
+    block_size = min(block_size, k.shape[1])
     if k.shape[1] % block_size != 0:
         raise ValueError(f"KV sequence length {k.shape[1]} must be divisible by {block_size=}.")
-    assert q.shape[1] == 1
-    # Pallas TPU doesn't support pl.load(..., mask=xxx), so we kv len must divide block size.
-    block_size = min(block_size, k.shape[1])
     orig_q_shape = q.shape
     q_seq_len = q.shape[1]
     block_kv = block_size
