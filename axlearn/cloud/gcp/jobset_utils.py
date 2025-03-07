@@ -745,6 +745,122 @@ class GPUReplicatedJob(BaseReplicatedJob):
         return [dict(name="job", replicas=1, template=job_spec)]
 
 
+class A4HighReplicatedJob(GPUReplicatedJob):
+    """Builds a replicated job spec for A4 High GPU job, to be used with JobSet API."""
+
+    def _build_volumes(self) -> list[Any | dict[str, Nested]]:
+        return super()._build_volumes() + [
+            {
+                "name": "gib",
+                "hostPath": {"path": "/home/kubernetes/bin/gib"},
+            },
+        ]
+
+    def _build_main_container(self) -> Nested[Any]:
+        """Builds the config for the container running the job.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: GPUReplicatedJob.Config = self.config
+
+        volume_mounts = [
+            {"name": "shared-memory", "mountPath": "/dev/shm"},
+            {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
+            {"name": "gib", "mountPath": "/usr/local/gib"},
+        ]
+
+        env_vars: dict[str, str] = {}
+        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
+        env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
+        env_vars["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib64"
+
+        default_xla_flags = [
+            # Maxtext XLA flags:
+            # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
+            "--xla_gpu_enable_triton_gemm=false",
+            "--xla_gpu_graph_level=0",
+            "--xla_gpu_enable_highest_priority_async_stream=true",
+            "--xla_gpu_all_reduce_combine_threshold_bytes=67108864",
+            "--xla_gpu_all_gather_combine_threshold_bytes=134217728",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=67108864",
+            "--xla_gpu_enable_pipelined_all_gather=true",
+            "--xla_gpu_enable_pipelined_reduce_scatter=true",
+            "--xla_gpu_enable_pipelined_all_reduce=true",
+            "--xla_gpu_enable_while_loop_double_buffering=true",
+            "--xla_gpu_enable_all_gather_combine_by_dim=false",
+            "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
+            "--xla_disable_hlo_passes=rematerialization",
+        ]
+        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+
+        # NCCL flags needed
+        env_vars.update(
+            {
+                # Enable auto PGLE available in jax 0.4.33
+                "JAX_ENABLE_PGLE": "True",
+                "JAX_PGLE_PROFILING_RUNS": "3",
+                # This is needed for flash attention + auto PGLE to work
+                "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                "NVTE_FUSED_ATTN": "1",
+                # Needed to help resolve GPU OOM on fuji v2 70B
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
+                "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+                "NCCL_DEBUG": "WARN",
+                "NCCL_SOCKET_IFNAME": "=eth0,eth1",
+                "NCCL_CROSS_NIC": "0",
+                "NCCL_NET_GDR_LEVEL": "PIX",
+                "NCCL_P2P_NET_CHUNKSIZE": "65536",
+                "NCCL_P2P_PCI_CHUNKSIZE": "65536",
+                "NCCL_P2P_NVL_CHUNKSIZE": "262144",
+                "NCCL_NVLS_CHUNKSIZE": "524288",
+                "NCCL_IB_GID_INDEX": "3",
+                "NCCL_IB_ADAPTIVE_ROUTING": "1",
+                "NCCL_IB_QPS_PER_CONNECTION": "4",
+                "NCCL_IB_TC": "52",
+                "NCCL_IB_FIFO_TC": "84",
+                "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE": (
+                    "/usr/local/gib/configs/guest_config.txtpb"
+                ),
+                "NCCL_TUNER_CONFIG_PATH": "/usr/local/gib/configs/tuner_config.txtpb",
+            }
+        )
+
+        # Override env vars with user provided env vars.
+        env_vars.update(cfg.env_vars)
+        # K8s expects each env variable to be a dict.
+        k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "PROCESS_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": (
+                            "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+                        ),
+                    }
+                },
+            },
+        )
+
+        command = ["bash", "-c", cfg.command]
+        return dict(
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            ports=[
+                dict(containerPort=8080),  # Port for MXLA coordinator.
+            ],
+            securityContext=dict(privileged=True),
+            # TODO(markblee): Improve SIGTERM behavior for command.
+            command=command,
+            resources=dict(limits={"nvidia.com/gpu": "8"}),
+            env=k8s_env_vars,
+            volumeMounts=volume_mounts,
+        )
+
+
+
 class A3UltraReplicatedJob(GPUReplicatedJob):
     """Builds a replicated job spec for A3 Ultra GPU job, to be used with JobSet API."""
 
@@ -791,7 +907,6 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
             "--xla_disable_hlo_passes=rematerialization",
             "--xla_gpu_enable_while_loop_double_buffering=true",
-            "--xla_gpu_enable_command_buffer=FUSION",
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
 
