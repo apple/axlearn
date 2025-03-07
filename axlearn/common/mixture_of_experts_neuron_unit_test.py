@@ -25,10 +25,11 @@ from axlearn.common.utils_neuron import get_training_configs
 MODULE_UNIT_TEST_ATOL=1e-6
 MODULE_UNIT_TEST_RTOL=1e-3
 
-test_configs = get_training_configs()
+test_configs = get_training_configs(is_unit=True)
+print(test_configs)
 
 # pylint: disable=no-self-use,protected-access
-class TestImplCorrectnessInteg(TestCase):
+class TestImplCorrectnessUnit(TestCase):
 
     def _fwd_call(self, layer, state, inputs):
         return F(

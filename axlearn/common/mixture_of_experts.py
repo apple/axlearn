@@ -1026,6 +1026,10 @@ class TopKGatingGather(TopKGating):
             # expert_mask: [O, G, S*topk, E]
             expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
 
+        # Only use top 1 tokens for calculationg aux loss.
+        with jax.named_scope("aux_loss"):
+            aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
+
         with jax.named_scope("position_in_expert"):
             # Compute cumulative sums of assignment
             # indicators for each expert, i.e. index e \in 0..E-1 independently.
@@ -1089,9 +1093,6 @@ class TopKGatingGather(TopKGating):
             zero_tensor = jnp.zeros(1, dtype=token_permutation_idx.dtype)
             token_permutation_idx = jnp.maximum(token_permutation_idx, zero_tensor)
             token_assignments = jnp.maximum(token_assignments, zero_tensor)
-            
-        with jax.named_scope("aux_loss"):
-            aux_loss = self.compute_aux_loss(self.config, expert_mask_pre_capacity_drop, raw_gates)
         
         with jax.named_scope("z_loss"):
             router_z_loss = _router_z_loss(logits)
