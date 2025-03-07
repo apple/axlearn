@@ -24,7 +24,6 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.jobset_utils import (
-    A3ReplicatedJob,
     AcceleratorConfig,
     BaseReplicatedJob,
     TPUReplicatedJob,
@@ -304,6 +303,10 @@ class GKEJob(GCPJob):
         cfg.builder = cls.builder.from_flags(fv, **kwargs)
         return cfg
 
+    @classmethod
+    def with_builder(cls, builder: type[BaseReplicatedJob]):
+        return type(f"{cls.__name__}_{builder.__name__}", (cls,), {"builder": builder})
+
     def __init__(self, cfg):
         bundler_cfg = cfg.bundler
         bundler_cfg = getattr(bundler_cfg, "inner", bundler_cfg)
@@ -395,9 +398,11 @@ class GPUGKEJob(GKEJob):
     """A GPU job represented as a k8s JobSet.
 
     See also `gke_runner` as an example.
+
+    Builder is set dynamically based on the instance type.
+    e.g. GKEJob.with_builder(A3UltraReplicatedJob))
     """
 
-    builder = A3ReplicatedJob
     Config = GKEJob.Config
 
 

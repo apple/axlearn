@@ -99,6 +99,9 @@ COPY . .
 
 FROM base AS gpu
 
+# Needed for NVIDIA CX7 based RDMA (not cloud specific).
+RUN apt-get update && apt-get install -y ibverbs-utils
+
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 RUN pip install .[core,gpu]
