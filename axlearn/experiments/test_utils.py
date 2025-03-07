@@ -39,6 +39,7 @@ def named_parameters(
     module: ModuleType,
     *,
     match_by_name: Optional[str] = None,
+    attr_name: str = "named_trainer_configs",
     data_dir: str = "$DATA_DIR",
 ) -> list[tuple[str, ModuleType, str, TrainerConfigFn]]:
     """Obtains the named parameters for golden config test.
@@ -46,6 +47,7 @@ def named_parameters(
     Args:
         module: A module.
         match_by_name: A string which will be used for selecting config_names for golden config.
+        attr_name: The attribute name to get the named configs from module.
         data_dir: The data_dir to set when fetching the configs.
 
     Returns:
@@ -57,7 +59,7 @@ def named_parameters(
     """
     with set_data_dir(data_dir):
         final_named_trainer_configs = {}
-        named_trainer_configs = getattr(module, "named_trainer_configs")()
+        named_trainer_configs = getattr(module, attr_name)()
         if match_by_name:
             # If match_by_name is not None, filter config_names based on match_by_name.
             for name in named_trainer_configs.keys():
