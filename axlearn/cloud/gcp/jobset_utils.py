@@ -803,7 +803,6 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
                 # This is needed for flash attention + auto PGLE to work
                 "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
