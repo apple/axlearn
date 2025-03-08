@@ -2,22 +2,24 @@
 
 """Base Input interface."""
 
+import math
 import re
-from typing import Iterable, Iterator, NamedTuple, Optional, Protocol, Sequence, Union
+from typing import Iterable, Iterator, NamedTuple, Optional, Protocol, Union
 
 import jax
 from absl import logging
 from jax._src.mesh import thread_resources
 from jax.sharding import PartitionSpec
 
-from axlearn.common.config import ConfigOr, config_class, maybe_instantiate
-from axlearn.common.input_dispatch import InputDispatcher
+from axlearn.common.config import ConfigOr, config_class, maybe_instantiate, maybe_set_config
+from axlearn.common.input_dispatch import BaseInputDispatcher, InputDispatcher
 from axlearn.common.module import Module
 from axlearn.common.utils import (
     Nested,
     Tensor,
     as_numpy_array,
     dispatch_input_batch,
+    input_partition_spec,
     tree_paths,
     with_sharding_constraint,
 )
@@ -48,7 +50,7 @@ class PathAndRank(NamedTuple):
 def partition_by_path_rank(
     path_rank_to_partition: dict[PathAndRank, PartitionSpec],
 ) -> InputPartitionFn:
-    """Partitions the keys in the input batch by Tensor path and rank (ndim).
+    """Partitions the paths in the input batch by regex and rank (ndim).
 
     If not within a mesh, the partition fn is a no-op.
 
@@ -139,7 +141,9 @@ class Input(Module):
             ...
 
         for per_feed_physical_batch in input.batches(input_iter):
-            global_physical_batch = host_to_global_device_array(per_feed_physical_batch)
+            global_physical_batch = host_to_global_device_array(
+                per_feed_physical_batch, partition=input.partition_spec
+            )
             ... = pjit(train_step)(global_physical_batch)
         ```
     """
@@ -149,21 +153,34 @@ class Input(Module):
         """Configures Input.
 
         Attributes:
+            partition_spec: If not None, configures the partition specs for the input batch used in
+                `host_to_global_device_array` and `jit`. Note that these specs may be different from
+                those constrained by `input_partitioner`, as they depend on the host-local shapes of
+                each input feed. For example, it is common to first form global batches from
+                uniformly batch-sharded host-local arrays by only configuring the batch axes of
+                `partition_spec`, and then further partition the batches within `jit` via
+                `input_partitioner`.
+                If None, defaults to `input_partition_spec()`.
             input_dispatcher: If not None, creates an InputDispatcher and uses it for dispatching
                 per-feed batches to global batches.
             input_partitioner: If not None, applies additional sharding constraints on each input
                 batch during `dispatch_global_batch`.
         """
 
+        partition_spec: Optional[PartitionSpec] = None
         input_dispatcher: Optional[InputDispatcher.Config] = None
         input_partitioner: Optional[ConfigOr[InputPartitionFn]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+        self._partition_spec = cfg.partition_spec or input_partition_spec()
         if cfg.input_dispatcher is not None:
-            self.input_dispatcher: InputDispatcher = (  # pytype: disable=annotation-type-mismatch
-                self._add_child("input_dispatcher", cfg.input_dispatcher)
+            self.input_dispatcher: BaseInputDispatcher = (
+                self._add_child(  # pytype: disable=annotation-type-mismatch
+                    "input_dispatcher",
+                    maybe_set_config(cfg.input_dispatcher, partition_spec=cfg.partition_spec),
+                )
             )
         self._input_partitioner: Optional[InputPartitionFn] = maybe_instantiate(
             cfg.input_partitioner
@@ -224,12 +241,7 @@ class Input(Module):
                 input_batch = self.input_dispatcher.logical_to_physical_batch(input_batch)
             yield input_batch
 
-    def dispatch_global_batch(
-        self,
-        global_physical_batch: Nested[Tensor],
-        *,
-        batch_axis_names: Union[str, Sequence[str]] = "data",
-    ) -> Nested[Tensor]:
+    def dispatch_global_batch(self, global_physical_batch: Nested[Tensor]) -> Nested[Tensor]:
         """Converts a global physical batch to a global logical batch.
 
         The leaves of the output logical batch are partitioned across `batch_axis_names` along the
@@ -240,22 +252,39 @@ class Input(Module):
         constraining `batch_axis_names`.
         """
 
-        def constrain_batch_axis(batch):
-            return jax.tree.map(
-                lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)),
-                batch,
+        def constrain_batch_axis(path: str, value: Tensor):
+            mesh = thread_resources.env.physical_mesh
+            batch_partitions = math.prod(
+                mesh.shape[axis] for axis in jax.tree.leaves(self._partition_spec[0])
             )
+            # Warn if an invalid constraint is applied, since by default this can silently be
+            # ignored, potentially leading to unexpected OOMs.
+            if value.shape[0] % batch_partitions != 0:
+                logging.warning(
+                    "Attempting to constrain path=%s (with batch dim %d) over %d partitions (%s).",
+                    path,
+                    value.shape[0],
+                    batch_partitions,
+                    self._partition_spec,
+                )
+            return with_sharding_constraint(value, self._partition_spec)
 
         if "input_dispatcher" in self.children:
             global_logical_batch = self.input_dispatcher.physical_to_logical_batch(
-                constrain_batch_axis(global_physical_batch)
+                jax.tree.map(
+                    constrain_batch_axis,
+                    tree_paths(global_physical_batch),
+                    global_physical_batch,
+                )
             )
         else:
             global_logical_batch = dispatch_input_batch(
-                global_physical_batch, batch_axis_names=batch_axis_names
+                global_physical_batch, batch_axis_names=self._partition_spec[0]
             )
 
-        global_logical_batch = constrain_batch_axis(global_logical_batch)
+        global_logical_batch = jax.tree.map(
+            constrain_batch_axis, tree_paths(global_logical_batch), global_logical_batch
+        )
 
         # Further constrain based on user-configured partitioning rules.
         if self._input_partitioner is not None:
@@ -269,3 +298,17 @@ class Input(Module):
         This is used e.g. for AOT compilation and is not strictly required for training.
         """
         raise NotImplementedError(type(self))
+
+    @property
+    def partition_spec(self) -> PartitionSpec:
+        """Returns the input partition spec for `host_to_global_device_array` and for `jit`.
+
+        Depending on the dispatch implementation, it may be possible to directly form the global
+        logical batch from feed logical batches via `host_to_global_device_array`. In these cases,
+        we can use an input partition spec that follows `cfg.partition_spec`.
+
+        In all other cases we default to `input_partition_spec()`.
+        """
+        if "input_dispatcher" in self.children:
+            return self.input_dispatcher.partition_spec
+        return input_partition_spec()

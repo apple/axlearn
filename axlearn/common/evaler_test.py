@@ -43,6 +43,7 @@ from axlearn.common.inference_output import (
     OutputRecordWriter,
     TfExampleRecordSink,
 )
+from axlearn.common.input_base import Input
 from axlearn.common.layers import Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import REQUIRED, Module, OutputCollection, Required
@@ -63,11 +64,11 @@ _EXAMPLE_SHAPE = [
 ]
 
 
-class DummyInput(Module):
+class DummyInput(Input):
     """A dummy input."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Input.Config):
         """Configures DummyInput."""
 
         is_training: Required[bool] = REQUIRED

@@ -30,6 +30,7 @@ from enum import Enum
 from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, TypeVar, Union
 
 import jax
+import jax.flatten_util
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
@@ -733,6 +734,8 @@ def dispatch_input_batch(
     The dispatchings are applied to all nested dicts which contain a special dispatching key in
     their root.
 
+    This is deprecated in favor of `axlearn.common.input_dispatch`.
+
     Args:
         input_batch: The input batch, where the first dimension of each leaf is the batch dim.
         batch_axis_names: The name(s) of the batch axes.
@@ -743,6 +746,12 @@ def dispatch_input_batch(
             N.B. some internal key-value pairs (like PHYSICAL_TO_LOGICAL_DISPATCH_KEY)
             may be dropped after use if present.
     """
+    logging.log_first_n(
+        logging.WARNING,
+        "dispatch_input_batch is deprecated. Please use `axlearn.common.input_dispatch` instead.",
+        n=1,
+    )
+
     # Constrain the input batch.
     input_batch = jax.tree.map(
         lambda x: with_sharding_constraint(x, PartitionSpec(batch_axis_names)), input_batch

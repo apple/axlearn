@@ -154,7 +154,10 @@ class InputTest(TestCase):
             "target_labels": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "target_num_bytes": jnp.ones((batch_size,), dtype=jnp.int32),
         }
-        input_cfg = Input.default_config().set(name="test")
+        input_cfg = Input.default_config().set(
+            name="test",
+            partition_spec=PartitionSpec("data"),
+        )
 
         with jax.sharding.Mesh(
             np.array(jax.devices()).reshape(2, 2)[..., None],
