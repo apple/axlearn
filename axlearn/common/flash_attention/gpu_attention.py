@@ -43,6 +43,7 @@ from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
 
 from axlearn.common.attention_bias import NEG_INF, MaskFn
+from axlearn.common.flash_attention.common import build_mask, query_iterator_indices
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Tensor
@@ -72,60 +73,6 @@ def _segment_mask(
     # [B, 1, S] or [1, S]
     kv_segment_ids = jnp.expand_dims(kv_segment_ids, axis=-2)
     return jnp.equal(q_segment_ids, kv_segment_ids).astype(jnp.bool_)
-
-
-def _build_mask(
-    mask_fn: MaskFn, *, q_seq_len: int, kv_seq_len: int, block_q: int, block_k: int
-) -> np.ndarray:
-    """build the iteration map where True means the block is not empty.
-
-    Returns:
-        A boolean array of shape (num_q_blocks, num_kv_blocks) where True means
-    the block is not empty.
-    """
-    # Initialize the iteration map where True means the block is not empty.
-    num_q_blocks = pl.cdiv(q_seq_len, block_q)
-    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
-    block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
-    # # Initialize the scan begin and end indices.
-    rows = np.arange(q_seq_len, dtype=np.int32)
-    cols = np.arange(kv_seq_len, dtype=np.int32)
-    # Run a compile-time evaluation to get the mask array.
-    # TODO(kelvin-zou): use a block-wise mask function to avoid the compile-time
-    # high memory usage.
-    with jax.ensure_compile_time_eval():
-        mask_array = np.asarray(mask_fn(rows[:, None], cols[None, :]))
-    for i in range(0, q_seq_len, block_q):
-        for j in range(0, kv_seq_len, block_k):
-            # Extract the block
-            block = mask_array[i : i + block_q, j : j + block_k]
-            # All empty means skipping
-            if not block.any():
-                block_mask_map[i // block_q, j // block_k] = False
-    return block_mask_map
-
-
-def _query_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]:
-    """build the iteration begin/end indices for the query dimension.
-
-    Returns:
-        Index_offset (num_q_blocks, num_kv_blocks) tensor where index_offset[i][j]
-    to store the first jth available block index for ith query block, and the unused
-    blocks are padded with 0 at the very end.
-        Index_offset_size ((num_q_blocks) tensor to store the number of valid blocks
-    for each iteration.
-    """
-    num_q_blocks, num_kv_blocks = block_mask_map.shape
-    index_offset = np.zeros(shape=(num_q_blocks, num_kv_blocks), dtype=np.int32)
-    index_offset_size = np.zeros(shape=(num_q_blocks), dtype=np.int32)
-    for i in range(num_q_blocks):
-        k = 0
-        for j in range(num_kv_blocks):
-            if block_mask_map[i, j]:
-                index_offset[i, k] = j
-                k += 1
-        index_offset_size[i] = k
-    return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
 
 
 def _key_value_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]:
@@ -419,10 +366,10 @@ def _flash_attention_impl(
         in_specs.append(None)
     index_offset = index_offset_spec = index_offset_size = index_offset_size_spec = None
     if mask_fn is not None:
-        block_mask_array = _build_mask(
+        block_mask_array = build_mask(
             mask_fn, q_seq_len=q_seq_len, kv_seq_len=kv_seq_len, block_q=block_q, block_k=block_k
         )
-        index_offset, index_offset_size = _query_iterator_indices(block_mask_array)
+        index_offset, index_offset_size = query_iterator_indices(block_mask_array)
         num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
         index_offset_spec = pl.BlockSpec(
             index_map=(lambda i, _, k: (i, 0)), block_shape=((None, num_kv_blocks))
@@ -705,11 +652,11 @@ def _mha_backward(
     q_index_offset = q_index_offset_spec = q_index_offset_size = q_index_offset_size_spec = None
     kv_index_offset = kv_index_offset_spec = kv_index_offset_size = kv_index_offset_size_spec = None
     if mask_fn is not None:
-        block_mask_array = _build_mask(
+        block_mask_array = build_mask(
             mask_fn, q_seq_len=q_seq_len, kv_seq_len=kv_seq_len, block_q=block_q, block_k=block_k
         )
         # Compute the dynamic indices for the query for dq.
-        q_index_offset, q_index_offset_size = _query_iterator_indices(block_mask_array)
+        q_index_offset, q_index_offset_size = query_iterator_indices(block_mask_array)
         q_index_offset_spec = pl.BlockSpec(
             index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_kv_blocks))
         )

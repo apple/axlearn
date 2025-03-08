@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from absl import logging
 
-from axlearn.common.attention import softmax_with_biases
+from axlearn.common.attention import compute_gqa_context, compute_gqa_logits, softmax_with_biases
 from axlearn.common.attention_bias import (
     NEG_INF,
     BaseAttentionBias,
@@ -16,19 +16,18 @@ from axlearn.common.attention_bias import (
     CompositeAttentionBias,
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
-    TensorAttentionBias,
     split,
 )
 from axlearn.common.flash_attention.gpu_attention import cudnn_dot_product_attention
 from axlearn.common.flash_attention.gpu_attention import flash_attention as gpu_flash_attention
 from axlearn.common.flash_attention.gpu_decoding import flash_decoding
 from axlearn.common.flash_attention.tpu_attention import tpu_flash_attention
+from axlearn.common.flash_attention.tpu_decoding import tpu_decoding
 from axlearn.common.layers import dropout
 from axlearn.common.utils import Tensor
 
 
 @functools.partial(jax.jit, static_argnames=["causal", "softmax_scale", "dropout_rate"])
-@jax.default_matmul_precision("bfloat16")
 def mha_reference(
     q: Tensor,
     k: Tensor,
@@ -42,12 +41,12 @@ def mha_reference(
     dropout_rate: float = 0.0,
     dropout_mask: Optional[Tensor] = None,
 ) -> Tensor:
-    """Reference multi-headed attention implementation.
+    """Reference multi-headed attention implementation with GQA optimization.
 
     Args:
         q: query tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
-        k: key tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
-        v: value tensor with shape [batch_size, seq_len, num_heads, per_head_dim]
+        k: key tensor with shape [batch_size, seq_len, num_kv_heads, per_head_dim]
+        v: value tensor with shape [batch_size, seq_len, num_kv_heads, per_head_dim]
         bias: bias tensor with a shape that can broadcast to
             [batch_size, num_heads, seq_len, seq_len], e.g. [1, 1, seq_len, seq_len].
         segment_ids: segment ids tensor with shape [batch_size, seq_len].
@@ -60,9 +59,10 @@ def mha_reference(
     """
     # We apply the scale factor before the attention biases.
     q *= softmax_scale
-    logits = jnp.einsum("btnh,bsnh->bnts", q, k)
+    logits = compute_gqa_logits(q, k)
 
-    # Check if we need to build a segment id mask.
+    # TODO(hanzhi-zhou): Remove segment ids and causal here. Refactor unit tests that use them.
+    # We can construct masks directly.
     if segment_ids is not None:
         assert segment_ids.ndim == 2  # shape [batch_size, seq_len]
         target_segment_ids = jnp.expand_dims(segment_ids, -1)
@@ -84,8 +84,7 @@ def mha_reference(
     if dropout_rate > 0:
         probs = dropout(probs, prng_key=prng_key, rate=dropout_rate, mask=dropout_mask)
 
-    context = jnp.einsum("bnts,bsnh->btnh", probs, v).astype(v.dtype)
-    return context
+    return compute_gqa_context(probs, v)
 
 
 def _repeat_kv_heads(num_q_heads: int, key_or_value: Tensor) -> Tensor:
@@ -143,19 +142,20 @@ def flash_attention_implementation(
         *,
         backend: str = backend,
     ) -> Tensor:
-        # Fall back to plain MHA implementation when the seq_len is not be divisible by
-        # block size.
-        is_single_step_gpu_decoding = is_decoding and query.shape[1] == 1 and backend == "gpu"
-        # For non-GPU decoding, fall back to non-flash implementation and merge all biases
-        # into a dense floating point bias tensor since that implementation does not
-        # support target_positions.
-        if not is_single_step_gpu_decoding:
+        is_single_step_decoding = is_decoding and query.shape[1] == 1
+        # TODO(hanzhi-zhou): Support multi-step GPU and TPU decoding.
+        if not is_single_step_decoding:
             if is_decoding:
-                # TODO(senyut): Support TPU decoding.
+                # If multi-step decoding, fall back to non-flash implementation.
                 backend = "xla"
-                bias = TensorAttentionBias(bias.value())
+            # Fall back to plain MHA implementation when the seq_len is not be divisible by
+            # block size.
+            # FIXME(hanzhi-zhou): This dispatch is not optimal. Backends like cuDNN have more
+            # relaxed constraints on the input shapes.
             if query.shape[1] % block_size != 0:
                 backend = "xla"
+        if is_single_step_decoding and backend not in ("gpu", "tpu", "cpu"):
+            backend = "xla"
 
         if dropout_rate != 0.0 and backend not in ("gpu", "xla", "cpu"):
             raise NotImplementedError("Dropout is only implemented for GPU, CPU and XLA.")
@@ -180,14 +180,12 @@ def flash_attention_implementation(
             return segment_ids.segment_ids
 
         if backend == "gpu":
-            # TODO(hanzhi-zhou): supports small q sequence length for future use cases such as
-            # speculative decoding.
-            if is_single_step_gpu_decoding:
+            if is_single_step_decoding:
                 # Decoding case. We should not repeat kv heads to match q heads for FlashDecoding.
                 # Note: decoding is always causal. Discard the causal mask if present.
                 mask, explicit_bias = split(bias, MaskFnAttentionBias)
                 if mask is None or mask.target_positions is None:
-                    raise RuntimeError("Cannot retrive MaskFnAttentionBias or target_positions.")
+                    raise RuntimeError("Cannot retrieve MaskFnAttentionBias or target_positions.")
                 mask_fn = mask.mask
                 query_time_step = mask.target_positions[:, -1]
                 kv_seq_len = query_time_step + 1
@@ -262,6 +260,26 @@ def flash_attention_implementation(
                 )
 
         elif backend == "tpu":
+            if is_single_step_decoding:
+                mask, explicit_bias = split(bias, MaskFnAttentionBias)
+                if mask is None or mask.target_positions is None:
+                    raise RuntimeError("Cannot retrieve MaskFnAttentionBias or target_positions.")
+                mask_fn = mask.mask
+                logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
+                query_time_step = mask.target_positions[:, -1]
+                kv_seq_len = query_time_step + 1
+                return tpu_decoding(
+                    query,
+                    key,
+                    value,
+                    bias=explicit_bias.value(),
+                    mask_fn=mask_fn,
+                    kv_seq_len=kv_seq_len,
+                    softmax_scale=softmax_scale,
+                    interpret=_interpret(backend),
+                    block_size=block_size,
+                )
+
             # TODO(dhwang2): splash attention supports GQA natively, so don't repeat it.
             # https://github.com/jax-ml/jax/blob/7b9914d711593dca8725d46aa1dadb2194284519/jax/experimental/pallas/ops/tpu/splash_attention/splash_attention_kernel.py#L934
             key = _repeat_kv_heads(query.shape[2], key)
@@ -313,25 +331,16 @@ def flash_attention_implementation(
             )
 
         elif backend in ("cpu", "xla"):
-            key = _repeat_kv_heads(query.shape[2], key)
-            value = _repeat_kv_heads(query.shape[2], value)
             if backend == "cpu":
                 logging.info("Flash attention CPU backend is for testing only.")
             logging.info("Flash attention falling back using plain MHA implementation")
 
-            # `causal` is supported.
-            # `segment_ids` is supported.
-            causal, segment_ids, explicit_bias = split(
-                bias, CausalAttentionBias, SegmentIdAttentionBias
-            )
             return mha_reference(
                 query,
                 key,
                 value,
-                bias=explicit_bias.value(),
-                segment_ids=get_segment_ids(segment_ids),
+                bias=bias.value(),
                 prng_key=prng_key,
-                causal=causal.has_value(),
                 softmax_scale=softmax_scale,
                 dropout_rate=dropout_rate,
             )
