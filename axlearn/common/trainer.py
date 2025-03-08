@@ -296,7 +296,10 @@ class SpmdTrainer(Module):
         # properly.
         with self.mesh():
             self.input: Input = self._add_child(
-                "input", maybe_set_config(cfg.input, is_training=True)
+                "input",
+                maybe_set_config(
+                    cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names), is_training=True
+                ),
             )
             # Start from the beginning of the input dataset by default.
             self._input_iter = iter(self.input.dataset())
@@ -336,6 +339,9 @@ class SpmdTrainer(Module):
                 evaler_cfg.summary_writer.dir = evaler_cfg.summary_writer.dir or os.path.join(
                     cfg.dir, "summaries", evaler_name
                 )
+                maybe_set_config(
+                    evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
+                )
                 self._evalers[evaler_name] = self._add_child(
                     evaler_name,
                     evaler_cfg,
@@ -360,8 +366,7 @@ class SpmdTrainer(Module):
         return self._trainer_state_partition_specs
 
     def _train_step_input_partition_specs(self):
-        # By default, each input tensor is fully partitioned along the batch axis.
-        return utils.input_partition_spec()
+        return self.input.partition_spec
 
     def model_params_for_eval(self):
         state = self.trainer_state
@@ -586,7 +591,10 @@ class SpmdTrainer(Module):
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
                     output = self._run_step(
-                        utils.host_to_global_device_array(input_batch),
+                        utils.host_to_global_device_array(
+                            input_batch,
+                            partition=self._train_step_input_partition_specs(),
+                        ),
                         force_run_evals=(
                             force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                         ),
@@ -1004,6 +1012,7 @@ class SpmdTrainer(Module):
             return self._compiled_train_step
         cfg: SpmdTrainer.Config = self.config
         # Get device kinds and assert that they are homogenous.
+        # TODO(markblee): Get devices from self._mesh.devices.
         device_kinds = set(d.device_kind for d in jax.devices())
         if len(device_kinds) != 1:
             raise RuntimeError(f"Heterogenous device kinds ({device_kinds}) are not supported.")
@@ -1160,13 +1169,8 @@ class SpmdTrainer(Module):
         state: TrainerState,
         input_batch: dict[str, Any],
     ) -> tuple[TrainerState, NestedTensor]:
-        cfg = self.config
         # Shard and (possibly) dispatch the input batch.
-        if hasattr(self.input, "dispatch_global_batch"):
-            input_batch = self.input.dispatch_global_batch(
-                input_batch, batch_axis_names=cfg.batch_axis_names
-            )
-
+        input_batch = self.input.dispatch_global_batch(input_batch)
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
