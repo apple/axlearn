@@ -131,7 +131,7 @@ dataflow = [
 gpu = [
     "triton==3.2.0",
     "jax-cuda12-plugin[with_cuda]==0.5.3.dev20250308",
-    "jax-cuda12-pjrt==0.5.3.dev20250308"
+    "jax-cuda12-pjrt==0.5.3.dev20250308",
     "nvidia-ml-py==12.570.86",
 ]
 # Open API inference.
