@@ -799,6 +799,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         # NCCL flags needed
         env_vars.update(
             {
+                "CUDA_LAUNCH_BLOCKING": "1",
                 # Enable auto PGLE available in jax 0.4.33
                 "JAX_ENABLE_PGLE": "True",
                 "JAX_PGLE_PROFILING_RUNS": "3",
