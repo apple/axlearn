@@ -792,7 +792,6 @@ class A4HighReplicatedJob(GPUReplicatedJob):
             "--xla_disable_hlo_passes=rematerialization",
             "--xla_gpu_enable_while_loop_double_buffering=true",
             "--xla_gpu_enable_highest_priority_async_stream=true",
-            "--xla_gpu_enable_triton_softmax_fusion=false",
             "--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL",
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
@@ -800,7 +799,6 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         # NCCL flags needed
         env_vars.update(
             {
-                "CUDA_DEVICE_MAX_CONNECTIONS": "8",
                 # Enable auto PGLE available in jax 0.4.33
                 "JAX_ENABLE_PGLE": "True",
                 "JAX_PGLE_PROFILING_RUNS": "3",
