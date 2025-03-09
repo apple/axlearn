@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 # Minimal requirments for axlearn/common/config.py.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "numpy==2.2.3",  # verified with tensorflow 2.14 RaggedTensor
+    "numpy==2.0.2",  # verified with tensorflow 2.14 RaggedTensor
 ]
 
 [project.optional-dependencies]
