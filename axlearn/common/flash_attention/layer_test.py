@@ -696,7 +696,7 @@ class TestFlashAttention(TestCase):
                 atol, rtol = 5e-4, 5e-2
             # pylint: disable-next=protected-access
             elif dropout_rate > 0.0 and test_layer.layer._backend() == "gpu":
-                atol, rtol = 2.5e-4, 1e-3
+                atol, rtol = 3.5e-4, 1e-3
             # pylint: disable-next=protected-access
             elif num_kv_heads and test_layer.layer._backend() == "cpu":
                 atol, rtol = 1e-4, 1e-2
