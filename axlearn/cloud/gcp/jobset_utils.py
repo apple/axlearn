@@ -779,24 +779,28 @@ class A4HighReplicatedJob(GPUReplicatedJob):
             # Maxtext XLA flags:
             # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
             "--xla_gpu_enable_triton_gemm=false",
+            "--xla_gpu_enable_latency_hiding_scheduler=true",
             "--xla_gpu_graph_level=0",
-            "--xla_gpu_enable_highest_priority_async_stream=true",
-            "--xla_gpu_all_reduce_combine_threshold_bytes=67108864",
-            "--xla_gpu_all_gather_combine_threshold_bytes=134217728",
-            "--xla_gpu_reduce_scatter_combine_threshold_bytes=67108864",
+            "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
+            "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=16777216",
             "--xla_gpu_enable_pipelined_all_gather=true",
             "--xla_gpu_enable_pipelined_reduce_scatter=true",
             "--xla_gpu_enable_pipelined_all_reduce=true",
-            "--xla_gpu_enable_while_loop_double_buffering=true",
             "--xla_gpu_enable_all_gather_combine_by_dim=false",
             "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
             "--xla_disable_hlo_passes=rematerialization",
+            "--xla_gpu_enable_while_loop_double_buffering=true",
+            "--xla_gpu_enable_highest_priority_async_stream=true",
+            "--xla_gpu_enable_triton_softmax_fusion=false",
+            "--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL",
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
 
         # NCCL flags needed
         env_vars.update(
             {
+                "CUDA_DEVICE_MAX_CONNECTIONS": "8",
                 # Enable auto PGLE available in jax 0.4.33
                 "JAX_ENABLE_PGLE": "True",
                 "JAX_PGLE_PROFILING_RUNS": "3",
@@ -805,10 +809,10 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
-                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
-                "NCCL_DEBUG": "WARN",
-                "NCCL_SOCKET_IFNAME": "=eth0,eth1",
+                "NCCL_DEBUG": "INFO",
+                #"NCCL_SOCKET_IFNAME": "=eth0,eth1",
                 "NCCL_CROSS_NIC": "0",
                 "NCCL_NET_GDR_LEVEL": "PIX",
                 "NCCL_P2P_NET_CHUNKSIZE": "65536",
