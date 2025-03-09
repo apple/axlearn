@@ -810,7 +810,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "NCCL_DEBUG": "INFO",
-                #"NCCL_SOCKET_IFNAME": "=eth0,eth1",
+                "NCCL_SOCKET_IFNAME": "=eth0,eth1",
                 "NCCL_CROSS_NIC": "0",
                 "NCCL_NET_GDR_LEVEL": "PIX",
                 "NCCL_P2P_NET_CHUNKSIZE": "65536",
