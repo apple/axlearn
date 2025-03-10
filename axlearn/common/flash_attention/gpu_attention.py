@@ -780,8 +780,8 @@ def _mha_backward(
             grid=grid,
             out_specs=out_specs,
             name=kernel.__name__,
-            debug=debug,
-            interpret=interpret,
+            debug=True,
+            interpret=True,
             compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta, index_offset, index_offset_size)
 
