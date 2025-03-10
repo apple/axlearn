@@ -809,7 +809,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
-                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "NCCL_DEBUG": "INFO",
                 "NCCL_SOCKET_IFNAME": "=eth0,eth1",

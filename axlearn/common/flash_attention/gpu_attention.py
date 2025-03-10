@@ -449,7 +449,7 @@ def _flash_attention_impl(
         compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         out_shape=out_shape,
         debug=True,
-        interpret=True,
+        interpret=interpret,
         name="mha_forward",
     )(query, key, value, bias, segment_ids, dropout_mask, index_offset, index_offset_size)
     if output_activations:
@@ -781,7 +781,7 @@ def _mha_backward(
             out_specs=out_specs,
             name=kernel.__name__,
             debug=True,
-            interpret=True,
+            interpret=interpret,
             compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta, index_offset, index_offset_size)
 
