@@ -799,6 +799,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         # NCCL flags needed
         env_vars.update(
             {
+                "MLIR_ENABLE_DUMP": "1",
                 # This gets stuff to launch, but moves extremely slowly
                 #"CUDA_LAUNCH_BLOCKING": "1",
                 # Enable auto PGLE available in jax 0.4.33
