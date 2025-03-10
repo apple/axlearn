@@ -17,6 +17,7 @@ from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     FusedGroupedQKVLinear,
     GroupedQueryAttention,
+    KVCache,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
@@ -222,13 +223,12 @@ def model_config(
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
     attention_qkv_linear = RoFormerQKVLinear.default_config().set(
         input_linear=FusedGroupedQKVLinear.default_config().set(
-            cache_dtype=STEP_DTYPE,
             num_kv_heads=num_kv_heads,
         ),
         rotary_value=False,
-        cache_dtype=STEP_DTYPE,
     )
     attention_qkv_linear.rope_pos_emb_layer.theta = 5e5
+    attention_kv_cache = KVCache.default_config().set(cache_dtype=STEP_DTYPE)
     norm_cfg = RMSNorm.default_config().set(eps=1e-5, forward_dtype=None)
 
     transformer_layer_cfg = TransformerLayer.default_config()
@@ -265,6 +265,7 @@ def model_config(
         attention_cfg=None,
         attention_mask=attention_mask,
         attention_qkv_linear=attention_qkv_linear,
+        attention_kv_cache=attention_kv_cache,
         layer_cfg=transformer_layer_cfg,
         **kwargs,
     )
