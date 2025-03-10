@@ -70,7 +70,7 @@ EVAL_EVERY_N_STEPS = 5_000
 
 # We typically use bfloat16 as the step dtype,
 # (but usually keep parameters and optimizer state in float32).
-STEP_DTYPE = jnp.float32
+STEP_DTYPE = jnp.bfloat16
 
 
 # The default mesh-axis names for LM training, from least to most communication intensive.
