@@ -49,6 +49,7 @@ from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL
@@ -529,6 +530,78 @@ class TPUGKERunnerJob(GKERunnerJob):
         cfg = super().from_flags(fv, **kwargs)
         cfg = with_tpu_training_defaults(cfg, flag_values=fv)
         return cfg
+
+
+class FlinkGKERunnerJob(GKERunnerJob):
+    """A GKERunnerJob that uses FlinkGKEJob."""
+
+    inner = FlinkTPUGKEJob
+    pre_provisioner = TPUNodePoolProvisioner
+
+    def _get_status(self) -> GKERunnerJob.Status:
+        """
+        Returns:
+            GKERunnerJob:
+                SUCCEEDED: when the job succeeded.
+                PENDING: if the job hasn't started yet.
+                READY: when the job is running.
+                UNKNOWN: all other cases.
+        Raises:
+            RuntimeError: when the job failed, and GKE runner will retry it.
+        """
+        cfg: GKERunnerJob.Config = self.config
+        try:
+            resp = k8s.client.CustomObjectsApi().get_namespaced_custom_object_status(
+                name=cfg.name,
+                namespace=cfg.inner.namespace,
+                group="batch",
+                version="v1",
+                plural="jobs",
+            )
+
+            status = resp.get("status", {})
+            conditions = status.get("conditions", [])
+            condition = conditions[-1] if conditions else {}
+
+            # If a job complete or failed, it is shown in the last condition of its status.
+            if condition.get("type") == "Complete" and condition.get("status") == "True":
+                return GKERunnerJob.Status.SUCCEEDED
+            elif condition.get("type") == "Failed" and condition.get("status") == "True":
+                raise RuntimeError(
+                    "Beam execution failed, it's up to the GKE runner "
+                    "to decide whether to retry."
+                )
+
+            # Otherwise, we rely on the active/succeeded/failed to derive its status.
+            # Note that we currently set restartPolicy="Never" for this job and rely on GKERunner
+            # to retry the whole job submitter and flink cluster bundle as a whole. So when the
+            # code passed the finish condition check and comes to here, there is only two more
+            # valid remaining:
+            # active == 0 and succeeded == 0 and failed == 0 means PENDING
+            # active == 1 means READY
+            active = status.get("active", 0)
+            succeeded = status.get("succeeded", 0)
+            failed = status.get("failed", 0)
+
+            # The job has not started running yet.
+            if active == 0 and succeeded == 0 and failed == 0:
+                return GKERunnerJob.Status.PENDING
+
+            # Check if the job is still active.
+            if active > 0:
+                return GKERunnerJob.Status.READY
+
+            # If we can't determine the status, return UNKNOWN
+            return GKERunnerJob.Status.UNKNOWN
+
+        except k8s.client.exceptions.ApiException as e:
+            if e.status == 404:
+                return GKERunnerJob.Status.NOT_STARTED
+            raise
+        except KeyError as e:
+            # Can happen if job was just submitted.
+            logging.warning("Got KeyError: %s, attempting to ignore.", e)
+        return GKERunnerJob.Status.UNKNOWN
 
 
 class GPUGKERunnerJob(GKERunnerJob):
