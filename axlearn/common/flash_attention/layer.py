@@ -177,7 +177,7 @@ class FlashAttention(GroupedQueryAttention):
             backend=backend,
             softmax_scale=1.0,
             is_decoding=is_decoding,
-            block_size=cfg.tpu_block_size,
+            tpu_block_size=cfg.tpu_block_size,
             dropout_rate=cfg.dropout.rate,
         )
 

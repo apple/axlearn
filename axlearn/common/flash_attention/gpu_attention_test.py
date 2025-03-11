@@ -11,131 +11,71 @@
 Currently tested on A100/H100.
 """
 import functools
-from typing import Literal
+from typing import Any, Callable, Literal
 
 import chex
 import jax
 import jax.numpy as jnp
 import pytest
 
-from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
-from axlearn.common.flash_attention.gpu_attention import (
-    cudnn_dot_product_attention,
-    flash_attention,
+from axlearn.common.attention_bias import (
+    CausalAttentionBias,
+    ZeroAttentionBias,
+    causal_mask,
+    sliding_window_causal_mask,
 )
-from axlearn.common.flash_attention.gpu_decoding import NEG_INF
-from axlearn.common.flash_attention.utils import mha_reference
+from axlearn.common.flash_attention.gpu_attention import (
+    CuDNNGPUFlashAttention,
+    PallasGPUFlashAttention,
+)
+from axlearn.common.flash_attention.test_utils import generate_attention_data
+from axlearn.common.flash_attention.utils import ReferenceMHA
+from axlearn.common.utils import Tensor
 
 if jax.default_backend() not in ("gpu", "cpu"):
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
 
-@pytest.mark.parametrize(
-    "batch_size,seq_len,num_heads,per_head_dim",
-    [
-        (1, 384, 1, 64),
-        (2, 384, 2, 64),
-        (1, 384, 1, 128),
-        (2, 384, 2, 128),
-        (1, 384, 8, 128),
-        (2, 384, 8, 128),
-        (2, 1024, 8, 128),
-    ],
-)
-@pytest.mark.parametrize("kv_seq_len", [-1, 512])
-@pytest.mark.parametrize("dropout_rate", [0, 0.1])
-@pytest.mark.parametrize("block_size", [128])  # Triton broken for block size !=128
-@pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.parametrize("softmax_scale", [1.0, 0.123])
-@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
-@pytest.mark.parametrize("use_segment_ids", [True, False])
-@pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
-def test_triton_fwd_only_against_ref(
-    batch_size: int,
-    seq_len: int,
-    num_heads: int,
-    per_head_dim: int,
-    kv_seq_len: int,
-    dropout_rate: float,
-    block_size: int,
-    causal: bool,
-    softmax_scale: float,
-    attention_bias_type: Literal["2d", "4d", None],
-    use_segment_ids: bool,
-    input_dtype: jnp.dtype,
+def _default_tol_fn(backend, dtype):
+    del backend
+    if dtype == jnp.bfloat16:
+        return dict(atol=0.05, rtol=1e-2)
+    if dtype == jnp.float16:
+        return dict(atol=0.05, rtol=1e-5)
+    if dtype == jnp.float32:
+        return dict(atol=0.025, rtol=1e-5)
+    raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+TestFn = Callable[[Tensor, Tensor, Tensor], Tensor]
+TolFn = Callable[[str, Any], dict[str, float]]
+
+
+def _test_forward_and_backward(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    bias,
+    *,
+    ref_fn: TestFn,
+    test_fn: TestFn,
+    forward_tol_fn: Callable = _default_tol_fn,
+    backward_tol_fn: Callable = _default_tol_fn,
 ):
-    if kv_seq_len == -1:
-        kv_seq_len = seq_len
-    if kv_seq_len != seq_len and use_segment_ids:
-        pytest.skip()
-    if jax.default_backend() == "cpu" and kv_seq_len > 128:
-        pytest.skip(reason="CI got OOM.")
-    k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    k = jax.random.normal(k2, (batch_size, kv_seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    v = jax.random.normal(k3, (batch_size, kv_seq_len, num_heads, per_head_dim), dtype=input_dtype)
+    ref_fn = jax.jit(ref_fn)
+    test_fn = jax.jit(test_fn)
 
-    if attention_bias_type == "4d":
-        bias = jax.random.normal(
-            k4, (batch_size, num_heads, seq_len, kv_seq_len), dtype=input_dtype
-        )
-    elif attention_bias_type == "2d":
-        bias = jax.random.normal(k4, (1, 1, seq_len, kv_seq_len), dtype=input_dtype)
-    else:
-        bias = None
+    jax_out = test_fn(q, k, v, bias)
+    jax_ref_out = ref_fn(q, k, v, bias)
+    backend = jax.default_backend()
+    chex.assert_trees_all_close(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))
 
-    segment_left = jnp.ones((batch_size, seq_len // 2), dtype=jnp.int32)
-    segment_right = jnp.zeros((batch_size, seq_len // 2), dtype=jnp.int32)
-    segment_ids = (
-        jnp.concatenate([segment_left, segment_right], axis=-1) if use_segment_ids else None
+    # Compare gradients.
+    jax_grads = jax.grad(lambda q, k, v: ref_fn(q, k, v, bias).mean(), argnums=(0, 1, 2))(q, k, v)
+    jax_ref_grads = jax.grad(lambda q, k, v: test_fn(q, k, v, bias).mean(), argnums=(0, 1, 2))(
+        q, k, v
     )
-    if causal:
-        # Move to use mask fn instead.
-        mask_fn = causal_mask
-    else:
-        mask_fn = None
-
-    def call_flash(q, k, v, bias, segment_ids, k5):
-        return flash_attention(
-            q,
-            k,
-            v,
-            bias,
-            segment_ids,
-            k5,
-            block_q=block_size,
-            block_k=block_size,
-            mask_fn=mask_fn,
-            softmax_scale=softmax_scale,
-            dropout_rate=dropout_rate,
-            interpret=(jax.default_backend() == "cpu"),
-        )
-
-    jit_fn = jax.jit(call_flash)
-    # Trigger compilation run.
-    o = jit_fn(
-        q,
-        k,
-        v,
-        bias,
-        segment_ids,
-        k5,
-    )
-    o_ref = mha_reference(
-        q,
-        k,
-        v,
-        bias,
-        segment_ids,
-        k5,
-        causal=causal,
-        softmax_scale=softmax_scale,
-        dropout_rate=dropout_rate,
-    )
-    if input_dtype == jnp.float16:
-        chex.assert_trees_all_close(o, o_ref, atol=0.07)
-    elif input_dtype == jnp.float32:
-        chex.assert_trees_all_close(o, o_ref, atol=0.03)
+    chex.assert_trees_all_close(jax_grads, jax_ref_grads, **backward_tol_fn(backend, q.dtype))
 
 
 @pytest.mark.parametrize(
@@ -149,7 +89,7 @@ def test_triton_fwd_only_against_ref(
         (2, 8, 384, 128),
     ],
 )
-@pytest.mark.parametrize("kv_seq_len", [-1, 512])
+@pytest.mark.parametrize("kv_seq_len", [None, 512])
 @pytest.mark.parametrize("dropout_rate", [0, 0.1])
 @pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("use_segment_ids", [True, False])
@@ -175,101 +115,38 @@ def test_triton_against_xla_ref(
         pytest.skip()
     if jax.default_backend() == "cpu" and kv_seq_len >= 512:
         pytest.skip(reason="Too slow on CPU.")
-    k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    k = jax.random.normal(k2, (batch_size, kv_seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    v = jax.random.normal(k3, (batch_size, kv_seq_len, num_heads, per_head_dim), dtype=input_dtype)
-
-    if attention_bias_type == "4d":
-        bias = jax.random.normal(
-            k4, (batch_size, num_heads, seq_len, kv_seq_len), dtype=input_dtype
-        )
-    elif attention_bias_type == "2d":
-        bias = jax.random.normal(k4, (1, 1, seq_len, kv_seq_len), dtype=input_dtype)
-    else:
-        bias = None
-
-    segment_left = jnp.ones((batch_size, seq_len // 2), dtype=jnp.int32)
-    segment_right = jnp.zeros((batch_size, seq_len // 2), dtype=jnp.int32)
-    segment_ids = (
-        jnp.concatenate([segment_left, segment_right], axis=-1) if use_segment_ids else None
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        seq_len,
+        kv_seq_len or seq_len,
+        num_heads,
+        per_head_dim,
+        mask_fn=causal_mask if causal else None,
+        attention_bias_type=attention_bias_type,
+        with_segment_ids=use_segment_ids,
+        dtype=input_dtype,
     )
 
-    softmax_scale = q.shape[-1] ** -0.5
-    if causal:
-        # Move to use mask fn instead.
-        mask_fn = causal_mask
-    else:
-        mask_fn = None
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
+        interpret=jax.default_backend() == "cpu",
+        dropout_rate=dropout_rate,
+        gpu_block_size=block_size,
+    )
     # Compare outputs.
-    call_flash = functools.partial(
-        flash_attention,
-        mask_fn=mask_fn,
-        softmax_scale=softmax_scale,
-        block_q=block_size,
-        block_k=block_size,
-        dropout_rate=dropout_rate,
-        interpret=(jax.default_backend() == "cpu"),
-    )
-    jit_fn = jax.jit(call_flash)
-    # Trigger compilation run.
-    jax_out = jit_fn(
-        q,
-        k,
-        v,
-        bias,
-        segment_ids,
-        k5,
-    )
-    jax_ref_out = mha_reference(
-        q,
-        k,
-        v,
-        bias,
-        segment_ids,
-        k5,
-        causal=causal,
-        softmax_scale=softmax_scale,
-        dropout_rate=dropout_rate,
-    )
-    if input_dtype == jnp.float16:
-        if jax.default_backend() != "cpu":
-            chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
-        else:
-            # TODO(kelvin-zou): Investigate the discrepancy between CPU and GPU.
-            chex.assert_trees_all_close(jax_out, jax_ref_out, rtol=5e-2, atol=1e-2)
-    elif input_dtype == jnp.float32:
-        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
-    else:
-        raise ValueError(f"Unsupported dtype: {input_dtype}")
+    call_flash = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    def fn(q, k, v, bias, segment_ids, k5):
-        return jit_fn(
-            q,
-            k,
-            v,
-            bias,
-            segment_ids,
-            k5,
-        ).sum()
+    def forward_tol_fn(backend, dtype):
+        del dtype
+        # TODO(kelvin-zou): Investigate the discrepancy between CPU and GPU.
+        if backend == "cpu":
+            return dict(rtol=5e-2, atol=1e-2)
+        return dict(atol=0.005)
 
-    def ref_fn(q, k, v, bias, segment_ids, k5):
-        return mha_reference(
-            q,
-            k,
-            v,
-            bias,
-            segment_ids,
-            k5,
-            causal=causal,
-            softmax_scale=softmax_scale,
-            dropout_rate=dropout_rate,
-        ).sum()
-
-    # Compare gradients.
-    jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v, bias, segment_ids, k5)
-    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v, bias, segment_ids, k5)
-    chex.assert_trees_all_close(jax_grads, jax_ref_grads, rtol=1e-2, atol=0.05)
+    _test_forward_and_backward(
+        q, k, v, bias, ref_fn=ref_fn, test_fn=call_flash, forward_tol_fn=forward_tol_fn
+    )
 
 
 @pytest.mark.parametrize("batch_size", [1])
@@ -286,57 +163,23 @@ def test_sliding_window_mask(
     sliding_window_size,
     use_segment_ids: bool,
 ):
-    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-    k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-    v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-    segment_left = jnp.ones((batch_size, seq_len // 2), dtype=jnp.int32)
-    segment_right = jnp.zeros((batch_size, seq_len // 2), dtype=jnp.int32)
-    segment_ids = (
-        jnp.concatenate([segment_left, segment_right], axis=-1) if use_segment_ids else None
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mask_fn=sliding_window_causal_mask(sliding_window_size),
+        with_segment_ids=use_segment_ids,
     )
 
-    def fn(q, k, v):
-        softmax_scale = q.shape[-1] ** -0.5
-        mask = sliding_window_causal_mask(sliding_window_size)
-        return flash_attention(
-            q,
-            k,
-            v,
-            mask_fn=mask,
-            segment_ids=segment_ids,
-            softmax_scale=softmax_scale,
-            interpret=(jax.default_backend() == "cpu"),
-        )
-
-    fn = jax.jit(fn)
-
-    # Trigger compilation.
-    fn(q, k, v)
-    # Trigger a run
-    fn(q, k, v)
-
-    def ref_fn(q, k, v):
-        mask_fn = sliding_window_causal_mask(sliding_window_size)
-        # We convert mask into a bias tensor.
-        mask = mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :])
-        bias = jnp.zeros((1, 1, seq_len, seq_len), dtype=jnp.float16)
-        bias = jnp.where(mask, bias, NEG_INF)
-        softmax_scale = q.shape[-1] ** -0.5
-
-        return mha_reference(
-            q,
-            k,
-            v,
-            bias,
-            causal=True,  # Sliding window mask is always causal.
-            segment_ids=segment_ids,
-            softmax_scale=softmax_scale,
-        ).mean()
-
-    grads = jax.grad(lambda q, k, v: fn(q, k, v).mean(), argnums=(0, 1, 2))(q, k, v)
-    ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v)
-    chex.assert_trees_all_close(grads, ref_grads, rtol=1e-2, atol=0.05)
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
+        interpret=jax.default_backend() == "cpu",
+    )
+    fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+    _test_forward_and_backward(q, k, v, bias, ref_fn=ref_fn, test_fn=fn)
 
 
 # We test the cudnn_dot_product_attention against the reference flash_attention.
@@ -344,10 +187,10 @@ def test_sliding_window_mask(
 @pytest.mark.parametrize(
     "batch_size,num_heads,seq_len,per_head_dim",
     [
-        (1, 2, 2048, 128),
-        (2, 2, 2048, 128),
-        (1, 4, 4096, 128),
-        (2, 8, 4096, 128),
+        (1, 2, 1024, 128),
+        (2, 2, 1024, 128),
+        (1, 4, 2048, 128),
+        (2, 8, 2048, 128),
     ],
 )
 @pytest.mark.parametrize("causal", [True, False])
@@ -363,67 +206,43 @@ def test_cudnn_against_triton_ref(
     if jax.default_backend() == "cpu":
         pytest.skip(reason="cudnn function needs GPU.")
 
-    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=dtype)
-    k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=dtype)
-    v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=dtype)
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mask_fn=causal_mask if causal else None,
+        dtype=dtype,
+    )
 
-    softmax_scale = q.shape[-1] ** -0.5
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
+    )
 
     # Compare outputs.
-    jax_out = cudnn_dot_product_attention(
-        q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale
+    test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+
+    def forward_tol_fn(backend, dtype):
+        del backend
+        if dtype == jnp.bfloat16:
+            return dict(atol=0.02, rtol=1e-5)
+        if dtype == jnp.float16:
+            return dict(atol=0.005, rtol=1e-5)
+
+    _test_forward_and_backward(
+        q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=forward_tol_fn
     )
-    if causal:
-        # Move to use mask fn instead.
-        mask_fn = causal_mask
-    else:
-        mask_fn = None
-    call_flash = functools.partial(
-        flash_attention,
-        mask_fn=mask_fn,
-        softmax_scale=softmax_scale,
-        interpret=(jax.default_backend() == "cpu"),
-    )
-    jit_fn = jax.jit(call_flash)
-    jax_ref_out = jit_fn(
-        q,
-        k,
-        v,
-        bias=None,
-    )
+
+
+def _cudnn_xla_forward_tol_fn(backend, dtype):
+    del backend
+    # cuDNN has higher diff when compared to non-fused attention in XLA.
     if dtype == jnp.bfloat16:
-        # We relax the atol to support bf16 in the unit test.
-        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.02, rtol=1e-5)
-    elif dtype == jnp.float16:
-        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005, rtol=1e-5)
-    else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
-
-    def fn(q, k, v):
-        return cudnn_dot_product_attention(
-            q, k, v, bias=None, causal=causal, softmax_scale=softmax_scale
-        ).sum()
-
-    def ref_fn(q, k, v):
-        return jit_fn(
-            q,
-            k,
-            v,
-            bias=None,
-        ).sum()
-
-    # Compare gradients.
-    jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v)
-    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v)
-    # The diff between grads are expected to be larger than the forward pass.
-    if dtype == jnp.bfloat16:
-        # We relax the rtol to support bf16 in the unit test.
-        chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-2)
-    elif dtype == jnp.float16:
-        chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-5)
-    else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
+        return dict(atol=0.25, rtol=1e-3)
+    if dtype == jnp.float16:
+        return dict(atol=0.05, rtol=1e-3)
 
 
 @pytest.mark.parametrize(
@@ -456,20 +275,25 @@ def test_cudnn_dropout_against_xla_dropout(
     if jax.default_backend() == "cpu":
         pytest.skip(reason="cudnn function needs GPU.")
     qkv_shape = (batch_size, seq_len, num_heads, per_head_dim)
-    softmax_scale = 1.0
-    cudnn_attn = functools.partial(
-        cudnn_dot_product_attention,
-        bias=None,
-        causal=causal,
-        softmax_scale=softmax_scale,
-        dropout_rate=dropout_rate,
+    cfg = dict(softmax_scale=per_head_dim**-0.5, dropout_rate=dropout_rate)
+    bias = (
+        CausalAttentionBias(
+            target_positions=jnp.arange(seq_len)[None], source_positions=jnp.arange(seq_len)[None]
+        )
+        if causal
+        else ZeroAttentionBias()
     )
 
+    # Compare outputs.
+    test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+
     dropout_mask = (
-        cudnn_attn(
+        test_fn(
             jnp.zeros(qkv_shape, dtype=dtype),
             jnp.zeros(qkv_shape, dtype=dtype),
             jnp.broadcast_to(jnp.eye(per_head_dim, dtype=dtype)[None, :, None], qkv_shape),
+            bias,
         )
         == 0.0
     ).swapaxes(1, 2)
@@ -482,66 +306,76 @@ def test_cudnn_dropout_against_xla_dropout(
     k = jax.random.normal(k2, qkv_shape, dtype=dtype)
     v = jax.random.normal(k3, qkv_shape, dtype=dtype)
 
-    ref_attn = functools.partial(
-        mha_reference,
-        bias=None,
-        causal=causal,
-        softmax_scale=softmax_scale,
+    ref_fn = functools.partial(
+        ref_fn,
         dropout_mask=dropout_mask,
-        dropout_rate=dropout_rate,
     )
+
+    _test_forward_and_backward(
+        q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=_cudnn_xla_forward_tol_fn
+    )
+
+
+@pytest.mark.parametrize(
+    "batch_size,num_heads,seq_len,kv_seq_len,per_head_dim",
+    [
+        (1, 1, 378, 676, 128),
+        (2, 4, 582, 582, 128),
+    ],
+)
+@pytest.mark.parametrize("causal", [True, False])
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
+def test_cudnn_arbitrary_seq_len(
+    batch_size: int,
+    num_heads: int,
+    seq_len: int,
+    kv_seq_len: int,
+    per_head_dim: int,
+    causal: bool,
+    dtype: jnp.dtype,
+):
+    """Tests that cudnn supports any even sequence length."""
+    if jax.default_backend() == "cpu":
+        pytest.skip(reason="cudnn function needs GPU.")
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        seq_len,
+        kv_seq_len,
+        num_heads,
+        per_head_dim,
+        mask_fn=causal_mask if causal else None,
+        dtype=dtype,
+    )
+
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
+    )
+
     # Compare outputs.
-    jax_out = cudnn_attn(q, k, v)
-    jax_ref_out = ref_attn(q, k, v)
-    if dtype == jnp.bfloat16:
-        # We relax the atol to support bf16 in the unit test.
-        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.25, rtol=1e-3)
-    elif dtype == jnp.float16:
-        chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.05, rtol=1e-3)
-    else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
+    test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    def fn(q, k, v):
-        return cudnn_attn(q, k, v).mean()
-
-    def ref_fn(q, k, v):
-        return ref_attn(q, k, v).mean()
-
-    # Compare gradients.
-    jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v)
-    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v)
-    # The diff between grads are expected to be larger than the forward pass.
-    if dtype == jnp.bfloat16:
-        # We relax the rtol to support bf16 in the unit test.
-        chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-2)
-    elif dtype == jnp.float16:
-        chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.05, rtol=1e-5)
-    else:
-        raise ValueError(f"Unsupported dtype: {dtype}")
+    _test_forward_and_backward(
+        q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=_cudnn_xla_forward_tol_fn
+    )
 
 
 def test_cudnn_dropout_determinism():
     """Tests that cuDNN dropout produces identical outputs across runs."""
     if jax.default_backend() == "cpu":
         pytest.skip(reason="cudnn function needs GPU.")
-    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(3), 3)
-    q = jax.random.normal(k1, (1, 128, 2, 64), dtype=jnp.float16)
-    k = jax.random.normal(k2, (1, 128, 2, 64), dtype=jnp.float16)
-    v = jax.random.normal(k3, (1, 128, 2, 64), dtype=jnp.float16)
+    q, k, v, bias = generate_attention_data(*(1, 128, 128, 2, 64))
+    fn = CuDNNGPUFlashAttention.default_config().set(dropout_rate=0.1).instantiate()
+
     outputs = []
     grads = []
 
-    def fn(q, k, v):
-        return cudnn_dot_product_attention(q, k, v, dropout_rate=0.1).mean()
-
     for i in range(10):
-        outputs.append(cudnn_dot_product_attention(q, k, v, dropout_rate=0.1))
+        outputs.append(fn(q, k, v, bias))
         grads.append(jax.grad(fn, argnums=(0, 1, 2))(q, k, v))
 
     jax.clear_caches()
 
     for i in range(10):
-        chex.assert_trees_all_equal(
-            cudnn_dot_product_attention(q, k, v, dropout_rate=0.1), outputs[i]
-        )
+        chex.assert_trees_all_equal(fn(q, k, v, bias), outputs[i])
         chex.assert_trees_all_equal(jax.grad(fn, argnums=(0, 1, 2))(q, k, v), grads[i])

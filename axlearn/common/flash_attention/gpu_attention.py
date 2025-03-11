@@ -37,13 +37,30 @@ from typing import Any, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from absl import logging
 from jax import lax
-from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_attention
+from jax._src.cudnn.fused_attention_stablehlo import MaskType
+from jax._src.cudnn.fused_attention_stablehlo import (
+    dot_product_attention as cudnn_dot_product_attention,
+)
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
 
-from axlearn.common.attention_bias import NEG_INF, MaskFn
-from axlearn.common.flash_attention.common import build_mask, query_iterator_indices
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    CausalAttentionBias,
+    MaskFn,
+    MaskFnAttentionBias,
+    SegmentIdAttentionBias,
+    split,
+)
+from axlearn.common.flash_attention.common import (
+    BaseFlashAttention,
+    build_mask,
+    get_segment_ids,
+    query_iterator_indices,
+    repeat_kv_heads,
+)
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Tensor
@@ -772,63 +789,99 @@ def _mha_backward(
 flash_attention.defvjp(_mha_forward, _mha_backward)
 
 
-# Interface to cuDNN's dot product attention.
-# TODO(kelvin-zou): Add support for segment IDs.
-def cudnn_dot_product_attention(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    bias: Optional[Tensor] = None,
-    mask: Optional[Tensor] = None,
-    causal: bool = False,
-    *,
-    softmax_scale: float = 1.0,
-    seed: int = 42,
-    dropout_rate: float = 0.0,
-    qkv_layout: str = "BTNH",
-):
-    """Computes dot-product attention given query (Q), key (K), and value (V).
+class PallasGPUFlashAttention(BaseFlashAttention):
+    """Wraps Pallas implementation of GPU FlashAttention.
 
-    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
+    This kernel is 40% slower than cuDNN attention kernel.
 
-    Reference implementation:
-    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/cudnn/fused_attention_stablehlo.py#L927.
-    https://github.com/openxla/xla/blob/536ba0b7d74f6637a7a772471a99ecf4f578aef2/xla/service/gpu/cublas_cudnn.cc#L77.
-
-    Args:
-        query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
-        key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
-        value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
-        bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
-        mask: Optional logit mask of shape [batch_size, num_heads, target_length, source_length].
-        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
-        seed: Random seed for dropout.
-        dropout_rate: Dropout rate.
-        qkv_layout: Layout string, with supported formats being BTNH, BNTH, BSNH,
-                    BNSH. Now it only supports BTNH.
-
-    Returns:
-        Output of the same shape as the query.
-
-    Raises:
-        NotImplementedError: If qkv_layout is not supported.
+    This kernel is preferred when using block-sparse attention (e.g. sliding window) or segment
+    ids. Otherwise, cuDNN attention should be preferred.
     """
 
-    if qkv_layout != "BTNH":
-        raise NotImplementedError(f"Unsupported qkv_layout: {qkv_layout}")
+    def is_supported(self, query, key, value, bias):
+        if not super().is_supported(query, key, value, bias):
+            return False
+        block_size = self.cfg.gpu_block_size
+        head_dim = query.shape[-1]
+        if not self._check_block_size(query=query, key=key, block_size=block_size):
+            return False
+        if head_dim not in [64, 128]:
+            self._log_unsupported(f"{head_dim=} is not 64 or 128.")
+            return
+        logging.info("Using %s.", self.name())
+        return True
 
-    mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
+    def __call__(self, query, key, value, bias, prng_key=None):
+        mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        key = repeat_kv_heads(query.shape[2], key)
+        value = repeat_kv_heads(query.shape[2], value)
+        return flash_attention(
+            query,
+            key,
+            value,
+            bias=explicit_bias.value(),
+            segment_ids=get_segment_ids(query=query, key=key, segment_ids=segment_ids),
+            prng_key=prng_key,
+            softmax_scale=self.cfg.softmax_scale,
+            mask_fn=mask.mask if mask.has_value() else None,
+            dropout_rate=self.cfg.dropout_rate,
+            interpret=self.cfg.interpret,
+        )
 
-    output = dot_product_attention(
-        query=query,
-        key=key,
-        value=value,
-        bias=bias,
-        mask=mask,
-        scale=softmax_scale,
-        seed=seed,
-        dropout_rate=dropout_rate,
-        mask_type=mask_type,
-        qkv_layout=qkv_layout,
-    )
-    return output
+
+class CuDNNGPUFlashAttention(BaseFlashAttention):
+    """Wraps cuDNN FlashAttention and disallows explicit bias.
+
+    We disallow folding `mask_fn` and segment ids into explicit bias to allow Pallas implementation
+    to be used when possible.
+    """
+
+    _allow_explicit_bias = False
+
+    def is_supported(self, query, key, value, bias):
+        if not super().is_supported(query, key, value, bias):
+            return False
+        # TODO(hanzhi-zhou): cuDNN supports decoding but doesn't perform good. Enable it once
+        # cuDNN frontend supports lean attention.
+        if not self._check_block_size(query=query, key=key, block_size=2):
+            return False
+
+        if jax.default_backend() == "cpu":
+            self._log_unsupported("we're on CPU emulation.")
+            return False
+        _, explicit_bias = split(bias, CausalAttentionBias)
+        if explicit_bias.has_value() and not self._allow_explicit_bias:
+            self._log_unsupported("we don't allow explicit bias at this stage.")
+            return False
+        logging.info("Using %s.", self.name())
+        return True
+
+    def __call__(self, query, key, value, bias, prng_key=None):
+        del prng_key
+        causal, explicit_bias = split(
+            bias,
+            CausalAttentionBias,
+        )
+        key = repeat_kv_heads(query.shape[2], key)
+        value = repeat_kv_heads(query.shape[2], value)
+        # TODO(kelvin-zou): Add support for segment IDs.
+        # TODO(kelvin-zou): verify cudnn's mask support with BoolAttentionBias.
+        return cudnn_dot_product_attention(
+            query,
+            key,
+            value,
+            bias=explicit_bias.value(),
+            scale=self.cfg.softmax_scale,
+            mask_type=MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK,
+            dropout_rate=self.cfg.dropout_rate,
+        )
+
+
+class CuDNNGPUFlashAttentionWithExplicitBias(CuDNNGPUFlashAttention):
+    """Wraps cuDNN FlashAttention and allows explicit bias.
+
+    This serves as the fallback when both `CuDNNGPUFlashAttention` and `PallasGPUFlashAttention`
+    are not applicable to prevent falling back to XLA implementation.
+    """
+
+    _allow_explicit_bias = True

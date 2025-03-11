@@ -132,6 +132,7 @@ from jax.experimental.pallas.ops.gpu.attention import mha as pallas_mha
 from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
 from axlearn.common.flash_attention.gpu_attention import (
     NEG_INF,
+    MaskType,
     cudnn_dot_product_attention,
     flash_attention,
 )
@@ -286,11 +287,16 @@ def bench_flash_attention(
 
             @jax.jit
             def cudnn_fn(q, k, v, bias):
-                return cudnn_dot_product_attention(q, k, v, bias=bias, causal=True).mean()
+                return cudnn_dot_product_attention(
+                    q, k, v, bias=bias, mask_type=MaskType.CAUSAL
+                ).mean()
 
             fn = jax.grad(cudnn_fn, argnums=(0, 1, 2))
         else:
-            fn = partial(cudnn_dot_product_attention, causal=not is_decode)
+            fn = partial(
+                cudnn_dot_product_attention,
+                mask_type=MaskType.CAUSAL if not is_decode else MaskType.NO_MASK,
+            )
     else:
         args = (q, k, v, bias)
 

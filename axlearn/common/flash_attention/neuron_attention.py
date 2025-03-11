@@ -11,8 +11,12 @@ import jax.numpy as jnp
 # Import needed to enable JAX cache on Neuron.
 import jax_neuronx  # pylint: disable=unused-import
 import neuronxcc.nki.language as nl
+from absl import logging
 from jax import custom_vjp
 from neuronxcc.nki.kernels.attention import flash_attn_bwd, flash_fwd
+
+from axlearn.common.attention_bias import CausalAttentionBias, split
+from axlearn.common.flash_attention.common import BaseFlashAttention, repeat_kv_heads
 
 # pytype: enable=import-error
 
@@ -214,3 +218,37 @@ def _mha_backward(
 
 
 flash_attention.defvjp(_mha_forward, _mha_backward)
+
+
+class NeuronFlashAttention(BaseFlashAttention):
+    """Wraps the Neuron attention kernel."""
+
+    def is_supported(self, query, key, value, bias):
+        # TODO(hanzhi-zhou): neuron may error out for unsupported sequence length and head size.
+        # Should we add checks for them and fallback to XLA?
+        if not super().is_supported(query, key, value, bias):
+            return False
+        if self.cfg.dropout_rate != 0.0:
+            self._log_unsupported("dropout is not supported.")
+            return False
+        logging.info("Using %s.", self.name())
+        return True
+
+    def __call__(self, query, key, value, bias, prng_key=None):
+        del prng_key
+
+        key = repeat_kv_heads(query.shape[2], key)
+        value = repeat_kv_heads(query.shape[2], value)
+
+        # other_biases includes SegmentIdAttentionBias among other biases.
+        causal, other_biases = split(bias, CausalAttentionBias)
+
+        return flash_attention(
+            query,
+            key,
+            value,
+            bias=other_biases.value(),
+            causal=causal.has_value(),
+            softmax_scale=self.cfg.softmax_scale,
+            dropout_rate=self.cfg.dropout_rate,
+        )
