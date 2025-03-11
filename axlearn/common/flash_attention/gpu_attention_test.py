@@ -319,13 +319,13 @@ def test_cudnn_dropout_against_xla_dropout(
 @pytest.mark.parametrize(
     "batch_size,num_heads,seq_len,kv_seq_len,per_head_dim",
     [
-        (1, 1, 378, 676, 128),
-        (2, 4, 582, 582, 128),
+        (1, 1, 378, 676, 72),
+        (2, 4, 582, 582, 56),
     ],
 )
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
-def test_cudnn_arbitrary_seq_len(
+def test_cudnn_seqlen_head_support(
     batch_size: int,
     num_heads: int,
     seq_len: int,
@@ -334,7 +334,7 @@ def test_cudnn_arbitrary_seq_len(
     causal: bool,
     dtype: jnp.dtype,
 ):
-    """Tests that cudnn supports any even sequence length."""
+    """Tests that cudnn supports any even sequence length and head dim % 8 == 0."""
     if jax.default_backend() == "cpu":
         pytest.skip(reason="cudnn function needs GPU.")
     q, k, v, bias = generate_attention_data(

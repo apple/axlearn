@@ -805,9 +805,14 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         head_dim = query.shape[-1]
         if not self._check_block_size(query=query, key=key, block_size=block_size):
             return False
-        if head_dim not in [64, 128]:
-            self._log_unsupported(f"{head_dim=} is not 64 or 128.")
+        if pl.next_power_of_2(head_dim) != head_dim:
+            self._log_unsupported(f"{head_dim=} is not a power of 2.")
             return
+        # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
+        # it by reducing the block size along sequence dim. Support it when needed.
+        if head_dim > 128:
+            self._log_unsupported(f"{head_dim=} > 128")
+            return False
         logging.info("Using %s.", self.name())
         return True
 
@@ -848,6 +853,13 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
 
         if jax.default_backend() == "cpu":
             self._log_unsupported("we're on CPU emulation.")
+            return False
+        head_dim = query.shape[-1]
+        if head_dim % 8 != 0:
+            self._log_unsupported(f"{head_dim=} is not divisible by 8.")
+            return False
+        if head_dim > 128:
+            self._log_unsupported(f"{head_dim=} > 128")
             return False
         _, explicit_bias = split(bias, CausalAttentionBias)
         if explicit_bias.has_value() and not self._allow_explicit_bias:
