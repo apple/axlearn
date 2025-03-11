@@ -581,17 +581,19 @@ class TPUGKEJob(GKEJob):
                     JAX_PLATFORMS="proxy",
                     ENABLE_PATHWAYS_PERSISTENCE="1",
                     TPU_SKIP_MDS_QUERY="true",
+                    HOST_ADDRESS=f"{cfg.name}-pathways-head-0-0.{cfg.name}",
                 )
             elif job_type == "pathways-workers":
                 env_vars.update(
                     MEGASCALE_COORDINATOR_ADDRESS=f"{cfg.name}-pathways-head-0-0.{cfg.name}",
                     MEGASCALE_NUM_SLICES=cfg.accelerator.num_replicas,
                     MEGASCALE_SLICE_ID=0,
+                    PATHWAYS_HEAD=f"{cfg.name}-pathways-head-0-0.{cfg.name}",
                 )
                 args.extend(
                     [
                         "--server_port=29001",
-                        f"--resource_manager_address={cfg.name}-pathways-head-0-0.{cfg.name}:29001",
+                        "--resource_manager_address=$(PATHWAYS_HEAD):29001",
                         f"--gcs_scratch_location={staging_location}",
                     ]
                 )
@@ -694,8 +696,14 @@ class TPUGKEJob(GKEJob):
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
+                env=[
+                    {
+                        "name": "PATHWAYS_HEAD",
+                        "value": f"{cfg.name}-pathways-head-0-0.{cfg.name}",
+                    }
+                ],
                 args=[
-                    f"--resource_manager_address={cfg.name}-pathways-head-0-0.{cfg.name}:29001",
+                    "--resource_manager_address=$(PATHWAYS_HEAD):29001",
                     "--server_port=29000",
                     f"--gcs_scratch_location={staging_location}",
                 ],
@@ -708,6 +716,10 @@ class TPUGKEJob(GKEJob):
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
                 env=[
+                    {
+                        "name": "HOST_ADDRESS",
+                        "value": f"{cfg.name}-pathways-head-0-0.{cfg.name}",
+                    },
                     {
                         "name": "TPU_SKIP_MDS_QUERY",
                         "value": "true",
