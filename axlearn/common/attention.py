@@ -2518,7 +2518,7 @@ class TransformerAttentionLayer(BaseLayer):
         cfg = self.config
         if cfg.structure in ["prenorm", "postnorm"]:
             self._add_child("norm", cfg.norm.set(input_dim=cfg.target_dim))
-        elif cfg.structure == "hybridnorm":
+        elif cfg.structure in ("hybridnorm", "hybridnorm_v2"):
             self._add_child("prenorm", cfg.norm.set(input_dim=cfg.target_dim))
             self._add_child("postnorm", cfg.norm.set(input_dim=cfg.target_dim))
         else:
@@ -2657,6 +2657,11 @@ class TransformerAttentionLayer(BaseLayer):
             atten_state, atten_output = attention_thunk(norm_target)
             data = skip_input + self.stochastic_depth(
                 self.dropout(self.postnorm(atten_output.data))
+            )
+        elif cfg.structure == "hybridnorm_v2":
+            atten_state, atten_output = attention_thunk(target)
+            data = self.postnorm(
+                target + self.prenorm(self.stochastic_depth(self.dropout(atten_output.data)))
             )
         else:
             raise NotImplementedError(cfg.structure)
@@ -2846,6 +2851,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         # * prenorm: y = x + feedforward(norm(x))
         # * postnorm: y = norm(x + feedforward(x))
         # * hybridnorm: y = postnorm(x + feedforward(prenorm(x)))
+        # * hybridnorm_v2: y = postnorm(x + prenorm(feedforward(x)))
         # * nonorm: y = feedforward(x)   # no residual, which is usually applied externally.
         #
         # References:
@@ -2880,7 +2886,7 @@ class TransformerFeedForwardLayer(BaseLayer):
         cfg: TransformerFeedForwardLayer.Config = self.config
         if cfg.structure in ["prenorm", "postnorm"]:
             self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "hybridnorm":
+        elif cfg.structure in ("hybridnorm", "hybridnorm_v2"):
             self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
             self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
         elif cfg.structure == "nonorm":
@@ -2910,7 +2916,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             "linear2",
             cfg.linear2.set(input_dim=hidden_dim, output_dim=cfg.input_dim),
         )
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
+        if cfg.structure in ["prenorm", "hybridnorm", "hybridnorm_v2", "nonorm"]:
             self._add_child("dropout1", cfg.dropout)
             self._add_child("dropout2", cfg.dropout)
         elif cfg.structure in ["postnorm"]:
@@ -2969,6 +2975,16 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x += inputs
+        elif cfg.structure == "hybridnorm_v2":
+            x = self._linear1_activation(inputs)
+            x = self.dropout1(x)
+            x = _linear2(x)
+            x = self._remat_name(x, remat_pt2)
+            x = self.dropout2(x)
+            x = self.stochastic_depth(x)
+            if cfg.residual_weight != 1:
+                x *= cfg.residual_weight
+            x = self.postnorm(inputs + self.prenorm(x))
         elif cfg.structure == "nonorm":
             x = inputs
             x = self._linear1_activation(x)
