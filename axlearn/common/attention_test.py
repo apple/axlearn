@@ -5260,9 +5260,12 @@ class KVCacheTest(TestCase):
     """Tests KVCache."""
 
     @parameterized.product(
-        cached_kv_length=[8], time_step_value=[2, 4], cache_dtype=[None, jnp.bfloat16]
+        cached_kv_length=[8],
+        time_step_value=[2, 4],
+        cache_dtype=[None, jnp.bfloat16],
+        live_step_len=[-1, 2, 4],
     )
-    def test_kv_cache(self, cached_kv_length, time_step_value, cache_dtype: Optional[jnp.dtype]):
+    def test_kv_cache(self, cached_kv_length, time_step_value, cache_dtype, live_step_len):
         test_layer = (
             KVCache.default_config()
             .set(name="ref", cache_dtype=cache_dtype)
@@ -5270,36 +5273,50 @@ class KVCacheTest(TestCase):
         )
 
         prng_key = jax.random.PRNGKey(2)
-        step_len = 4
-        step_shape = (2, step_len, 2, 2)
+        batch, step_len = 2, 4
+        heads, dim = 2, 2
+        step_shape = (batch, step_len, heads, dim)
         k_proj = jax.random.normal(prng_key, shape=step_shape)
         v_proj = jax.random.normal(prng_key, shape=step_shape)
         key_positions = jnp.arange(step_len)[None] + time_step_value
+        if live_step_len < 0:
+            valid_step_len = step_len
+            live_step_len = None
+        else:
+            valid_step_len = live_step_len
+            live_step_len = jnp.full([batch], fill_value=live_step_len, dtype=jnp.int32)
 
-        kv_shape = KVCache.Shape(2, cached_kv_length, 2, 2)
+        kv_shape = KVCache.Shape(batch, cached_kv_length, heads, dim)
         test_states = test_layer.init_states(kv_shape, dtype=k_proj.dtype)
         expect_dtype = cache_dtype or k_proj.dtype
 
         _, test_output = test_layer.extend_step(
-            test_states, k_proj=k_proj, v_proj=v_proj, key_positions=key_positions
+            test_states,
+            k_proj=k_proj,
+            v_proj=v_proj,
+            key_positions=key_positions,
+            live_step_len=live_step_len,
         )
 
-        self.assertEqual(test_output.k_proj.shape, kv_shape)
-        self.assertEqual(test_output.k_proj.dtype, expect_dtype)
-        assert_allclose(test_output.k_proj[:, :time_step_value], 0)
-        assert_allclose(
-            test_output.k_proj[:, time_step_value : time_step_value + step_len],
-            k_proj.astype(expect_dtype),
-        )
-        self.assertEqual(test_output.v_proj.shape, kv_shape)
-        self.assertEqual(test_output.v_proj.dtype, expect_dtype)
-        assert_allclose(test_output.v_proj[:, :time_step_value], 0)
-        assert_allclose(
-            test_output.v_proj[:, time_step_value : time_step_value + step_len],
-            v_proj.astype(expect_dtype),
-        )
+        def check(input_kv, output_kv):
+            self.assertEqual(output_kv.shape, kv_shape)
+            self.assertEqual(output_kv.dtype, expect_dtype)
+            assert_allclose(output_kv[:, :time_step_value], 0)
+            assert_allclose(
+                output_kv[:, time_step_value : time_step_value + valid_step_len],
+                input_kv.astype(expect_dtype)[:, :valid_step_len],
+            )
+
+        check(k_proj, test_output.k_proj)
+        check(v_proj, test_output.v_proj)
         key_positions = jnp.arange(cached_kv_length)[None]
         assert_allclose(test_output.key_positions, key_positions)
+        # Currently, the part larger than live_step_len is also being overwritten in the KV cache.
+        # TODO(dhwang2): remove this check when KVCache updates only valid part.
+        assert_allclose(
+            test_output.k_proj[:, time_step_value : time_step_value + step_len],
+            k_proj.astype(expect_dtype)[:, :step_len],
+        )
 
 
 class PositionalEmbeddingTest(TestCase):

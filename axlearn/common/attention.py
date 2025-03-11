@@ -45,6 +45,15 @@ On `attention_logit_biases`:
 
 TODO(apghml) Convert everything to take an instance of BaseAttentionBias rather than a Tensor.
 
+On `live_step_len`:
+* An int tensor of shape [batch], indicating the valid step length in the given inputs.
+* We assume that live steps must be contiguous at the beginning. So once
+    `live_step_len < max_step_len` for a sequence, the remaining `max_step_len - live_step_len`
+    part is considered padding.
+* During prefill, `time_step == live_step_len`.
+
+TODO (dhwang2): Replace `time_step` argument with `live_step_len` to reduce cognitive complexity.
+
 On `segment_ids`:
 * A tensor of shape [batch, target_length] with values in [0, num_segments].
 * Tokens are only allowed to attend to other tokens within the same segment.
@@ -188,8 +197,7 @@ class BaseKVCache(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures BaseKVCache."""
 
-        # Autoregressive cache dtype. Should match the step dtype.
-        # Needs to match the forward dtype for Repeated layers. If None, infer as BaseLayer.dtype().
+        # Autoregressive KV cache dtype, which the input KV is converted into.
         cache_dtype: Optional[jnp.dtype] = None
 
     class Output(KVState):
@@ -235,6 +243,7 @@ class BaseKVCache(BaseLayer):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
+        live_step_len: Optional[Tensor] = None,
     ) -> tuple[Nested[Tensor], Output]:
         """Updates the KV cache per extend step.
 
@@ -245,8 +254,10 @@ class BaseKVCache(BaseLayer):
         Args:
             cached_states: A `Nested[Tensor]` object containing KV cache such as key and value.
             k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
-            v_proj: A Tensor of shape [batch, step_length, num_heads, per_head_dim].
+            v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             key_positions: An optional Tensor of shape [batch, step_length].
+            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
+                in the file docstring for details.
 
         Returns:
             A tuple (updated_state, output):
@@ -282,7 +293,13 @@ class KVCache(BaseKVCache):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
+        live_step_len: Optional[Tensor] = None,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
+        # TODO(dhwang2): By returning only the valid portions of the KV (by live_step_len),
+        # the attention complexity can be reduced from O(max_len²) to O(live_step_len²), especially
+        # in prefill.
+        # The remaining part after `live_step_len` is considered padding.
+        del live_step_len
         if k_proj.shape != v_proj.shape:
             raise ValueError(f"{k_proj.shape=} != {v_proj.shape=}")
         if k_proj.shape[1] != key_positions.shape[1]:
@@ -313,6 +330,8 @@ class KVCache(BaseKVCache):
         # [B, S, N, H]
         k_proj = jnp.einsum("bnhs->bsnh", cached_key)
         v_proj = jnp.einsum("bnhs->bsnh", cached_value)
+        # Currently, the part larger than live_step_len is also being overwritten in the KV cache,
+        # and this part is filtered out by the causal mask through key_positions.
         key_positions = jnp.arange(k_proj.shape[1])[None]  # [1, source_length]
         return updated_state, self.Output(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
 
@@ -1709,6 +1728,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
+        live_step_len: Optional[Tensor] = None,
         attention_logit_biases: Union[None, Tensor, BaseAttentionBias] = None,
         segment_ids: Optional[Tensor] = None,
         query_positions: Optional[Tensor] = None,
@@ -1726,6 +1746,8 @@ class MultiheadAttention(BaseLayer):
             key:   An optional Tensor of shape [batch, source_length, source_dim].
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
+            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
+                in the file docstring for details.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See ``On segment_ids`` in the file comments.
             query_positions: See ``On positions`` in the file comments.
@@ -1776,9 +1798,9 @@ class MultiheadAttention(BaseLayer):
             kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
         elif mode in (ForwardMode.EXTEND_STEP, ForwardMode.INIT_STATES):
             assert cached_states is not None
-            new_cached_states = dict(time_step=time_step + q_proj.shape[1])
+            step_len = live_step_len if live_step_len is not None else q_proj.shape[1]
+            new_cached_states = dict(time_step=time_step + step_len)
             if kv_state is None:
-
                 # In prefill, init_states already called self.kv_cache.init_states.
                 with child_context("kv_cache_extend_step", module=self.kv_cache):
                     new_cached_states["kv_cache"], kv_cache_output = self.kv_cache.extend_step(
@@ -1786,6 +1808,7 @@ class MultiheadAttention(BaseLayer):
                         k_proj=k_proj,
                         v_proj=v_proj,
                         key_positions=query_positions,
+                        live_step_len=live_step_len,
                     )
                 k_proj, v_proj, key_positions = kv_cache_output
                 kv_state = KVState(*kv_cache_output)
@@ -1992,8 +2015,6 @@ class MultiheadAttention(BaseLayer):
                 raise ValueError("Cross-attention extend_step is not supported.")
         init_states = dict(time_step=jnp.zeros([query.shape[0]], dtype=jnp.int32))
 
-        # TODO(dhwang2): init_states without prefilling cannot determine whether KV sharing occurs,
-        # so a config option or additional argument should be added.
         if kv_state is None:
             kv_shape = KVCache.Shape(
                 batch_size=query.shape[0],
@@ -2010,22 +2031,20 @@ class MultiheadAttention(BaseLayer):
             return init_states, None
 
         # Prefill branch.
+        # TODO(dhwang2): Optimize it by passing only the valid parts of the query. Currently,
+        # prefill has a complexity of O(max_len²), but this can be easily reduced to
+        # O(time_step.max()²).
         cached_states, output = self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             query=query,
             key=key,
             value=value,
+            live_step_len=time_step,
             cached_states=init_states,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
             return_aux=return_aux,
         )
-        # `extend_step` updates `time_step` by itself, but some prefill cases uses a shorter
-        # `time_step` than the inputs.
-        # TODO(dhwang2): This results in wasted attention computation. Ensure that all callers
-        # pass inputs of the same length as time_step. Once that is fixed, time_step can be
-        # inferred from the inputs length, so time_step could be removed from the API.
-        cached_states["time_step"] = time_step
         return cached_states, output
 
     def extend_step(
