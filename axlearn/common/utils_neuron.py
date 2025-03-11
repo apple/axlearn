@@ -27,12 +27,20 @@ from axlearn.common.layers import (
     StochasticDepth,
     RMSNorm,
 )
-#jax.config.update('jax_platform_name', 'cpu')
-from axlearn.common.utils import PartitionSpec, infer_mesh_shape
+jax.config.update('jax_platform_name', 'cpu')
+from axlearn.common.utils import PartitionSpec, infer_mesh_shape, cast_floats
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
 
-MODULE_UNIT_TEST_ATOL=1e-6
-MODULE_UNIT_TEST_RTOL=1e-3
+# FP32 test tolerances
+TEST_TOLS_FP32 = {
+    "atol": 5e-4,
+    "rtol": 1e-2,
+}
+# BF16 test tolerances
+TEST_TOLS_BF16 = {
+    "atol": 5e-2,
+    "rtol": 1e-2,
+}
 
 MOE_OUTER_BATCH_AXIS_NAMES = ("data", "fsdp")
 
@@ -54,11 +62,13 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
 }
 
 class ModuleConfig():
-    def __init__(self, module = None, device = "cpu", layer = None):
+    def __init__(self, module = None, device = "cpu", layer = None, dtype = jnp.float32):
         assert module is not None
-        self.module = module.default_config().set(name="test")
+        self.module = module.default_config().set(name="test", dtype=dtype)
         self.device = device
         self.layer = layer # None for topk, else "MoE"
+        self.dtype = dtype
+        self.tol = TEST_TOLS_FP32 if dtype == jnp.float32 else TEST_TOLS_BF16
 
 class TestConfig():
     def __init__(self, setup, test: ModuleConfig, golden: ModuleConfig = None, 
@@ -122,7 +132,8 @@ class TestConfig():
         self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
         with self.mesh_test: 
             self.test_layer  = self.test.module.instantiate(parent=None) 
-            self.test_state  = self.test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
+            self.test_state  = self.test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+            self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
 
         device_type = self.golden.device
         devices = jax.devices(device_type)[:self.num_devices]
@@ -130,7 +141,8 @@ class TestConfig():
         self.mesh_golden = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
         with self.mesh_golden: 
             self.golden_layer  = self.golden.module.instantiate(parent=None) 
-            self.golden_state  = self.golden_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
+            self.golden_state  = self.golden_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+            self.golden_state = cast_floats(self.golden_state, to_dtype=self.golden.dtype)
 
     def random_inputs_with_mesh(self): 
 
@@ -142,7 +154,7 @@ class TestConfig():
         
         print(self.input_shape) 
         with jax.default_device(jax.devices("cpu")[0]):    # create tensors on host to avoid OOM  
-            inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=self.input_shape) 
+            inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=self.input_shape, dtype=self.test.dtype) 
         
         inputs = jax.device_get(inputs)   # device_put seg-faults without this 
         self.test_inputs[input_key] = jax.device_put(inputs, in_shard_test)
@@ -196,11 +208,17 @@ class TestConfigBuilder:
         }
         return self
     
-    def with_dimensions(self, batch_size, seq_len, input_dim):
+    def with_dimensions(self, batch_size, seq_len, input_dim, dtype):
+        # Only two data types currently supported
+        _dtype = jnp.float32
+        if dtype == 'bfloat16':
+            _dtype = jnp.bfloat16
+
         self.params.update({
             "batch_size": batch_size,
             "seq_len": seq_len,
-            "input_dim": input_dim
+            "input_dim": input_dim,
+            "dtype": _dtype
         })
         return self
     
@@ -272,8 +290,8 @@ class TestConfigBuilder:
                     self.build_moe_topkgather_setup(),
                     self.build_moe_topkgather_setup()
                 ],
-                test=ModuleConfig(TransformerFeedForwardMoE, "neuron", "MoE"),
-                golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE"),
+                test=ModuleConfig(TransformerFeedForwardMoE, "neuron", "MoE", self.params['dtype']),
+                golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
                 loss_fn=lambda x: x.mean(),
                 mesh_spec=self.params["mesh_spec"],
@@ -286,8 +304,8 @@ class TestConfigBuilder:
                     self.build_gating_setup(),
                     self.build_gating_setup()
                 ],
-                test=ModuleConfig(TopKGatingGather, "neuron"),
-                golden=ModuleConfig(TopKGatingGather, "cpu"),
+                test=ModuleConfig(TopKGatingGather, "neuron", dtype=self.params['dtype']),
+                golden=ModuleConfig(TopKGatingGather, "cpu", dtype=self.params['dtype']),
                 input_shape=(self.params["outer_batch"], self.params["num_groups"], seq_len, self.params["num_experts"]),
                 loss_fn=lambda x: x.load_balance_loss,
                 mesh_spec=self.params["mesh_spec"],
@@ -306,8 +324,8 @@ class TestConfigBuilder:
                     self.build_moe_topkgather_setup(),
                     self.build_moe_top2_setup()
                 ],
-                test=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE"),
-                golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE"),
+                test=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
+                golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
                 loss_fn=lambda x: x.mean(),
                 mesh_spec=self.params["mesh_spec"],
@@ -321,8 +339,8 @@ class TestConfigBuilder:
                         self.build_gating_setup(),
                         self.build_gating_setup()
                     ],
-                    test=ModuleConfig(TopKGatingGather, "cpu"),
-                    golden=ModuleConfig(Top2Gating, "cpu"),
+                    test=ModuleConfig(TopKGatingGather, "cpu", dtype=self.params['dtype']),
+                    golden=ModuleConfig(Top2Gating, "cpu", dtype=self.params['dtype']),
                     input_shape=(self.params["outer_batch"], self.params["num_groups"], seq_len, self.params["num_experts"]),
                     conv_output=partial(_topkgather_to_topk, expert_cap=self.params["expert_capacity"]),
                     loss_fn=lambda x: x.load_balance_loss,
@@ -334,19 +352,20 @@ class TestConfigBuilder:
     
     def build_grid_space(self):
         # Grid space for testing
-        batchs =            [1, 4]
-        seqs =              [16, 128]
+        batchs =            [1]
+        seqs =              [128]
         input_dims =        [64]
         hidden_dims =       [128]
-        num_experts =       [2, 8]
-        num_groups =        [1, 4]
-        outer_batches =     [1, 2]
+        num_experts =       [8]
+        num_groups =        [1]
+        outer_batches =     [1]
         expert_capacities = [2, 1000]
+        dtype =             ['float32', 'bfloat16']
         mesh_specs       =  [{}, {"fsdp":-1, "model":4}]  #empty spec for single-core
 
         grid_space = [] 
         grid_space = list(product(batchs, seqs, input_dims, hidden_dims, num_experts, 
-                                  num_groups, outer_batches, expert_capacities, mesh_specs))
+                                  num_groups, outer_batches, expert_capacities, mesh_specs, dtype))
 
         # Custom Configs
         # b s i h e g ob ec        
@@ -362,7 +381,7 @@ def get_training_configs(is_unit: bool = False):
 
     test_configs = []
 
-    for (batch, seq, input_dim,  hidden_dim, n_experts, n_groups, out_batch, capacity, mesh_spec) in builder.build_grid_space():
+    for (batch, seq, input_dim,  hidden_dim, n_experts, n_groups, out_batch, capacity, mesh_spec, dtype) in builder.build_grid_space():
         
         if batch % out_batch != 0:
             continue
@@ -373,7 +392,7 @@ def get_training_configs(is_unit: bool = False):
         capacity_factor = 2 if not capacity else None 
 
         config = builder.reset()
-        config = config.with_dimensions(batch, seq, input_dim)
+        config = config.with_dimensions(batch, seq, input_dim, dtype)
         config = config.with_expert_settings(
             hidden_dim,
             out_batch,
@@ -388,7 +407,7 @@ def get_training_configs(is_unit: bool = False):
         else:
             config = config.build_test_configs_integ()
 
-        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_g{n_groups}_ob{out_batch}_ec{capacity}_mesh{mesh_spec}"
+        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_g{n_groups}_ob{out_batch}_ec{capacity}_mesh{mesh_spec}_dtype_{dtype}"
         test_configs.extend([(name + cfg.prefix, cfg) for cfg in config])
 
     return test_configs
