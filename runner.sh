@@ -29,7 +29,7 @@ HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
 PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/profiles
 
 export XLA_FLAGS="--xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
-export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_snapshots"
+# export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_snapshots"
 export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_as_proto"
 
 # PJRT Flags 
