@@ -5260,9 +5260,12 @@ class KVCacheTest(TestCase):
     """Tests KVCache."""
 
     @parameterized.product(
-        cached_kv_length=[8], time_step_value=[2, 4], cache_dtype=[None, jnp.bfloat16]
+        cached_kv_length=[8],
+        time_step_value=[2, 4],
+        cache_dtype=[None, jnp.bfloat16],
+        use_live_step=[True, False],
     )
-    def test_kv_cache(self, cached_kv_length, time_step_value, cache_dtype: Optional[jnp.dtype]):
+    def test_kv_cache(self, cached_kv_length, time_step_value, cache_dtype, use_live_step):
         test_layer = (
             KVCache.default_config()
             .set(name="ref", cache_dtype=cache_dtype)
@@ -5270,18 +5273,27 @@ class KVCacheTest(TestCase):
         )
 
         prng_key = jax.random.PRNGKey(2)
-        step_len = 4
-        step_shape = (2, step_len, 2, 2)
+        batch, step_len = 2, 4
+        heads, dim = 2, 2
+        step_shape = (batch, step_len, heads, dim)
         k_proj = jax.random.normal(prng_key, shape=step_shape)
         v_proj = jax.random.normal(prng_key, shape=step_shape)
         key_positions = jnp.arange(step_len)[None] + time_step_value
+        if use_live_step:
+            live_step = jnp.full([batch], fill_value=step_len, dtype=jnp.int32)
+        else:
+            live_step = None
 
-        kv_shape = KVCache.Shape(2, cached_kv_length, 2, 2)
+        kv_shape = KVCache.Shape(batch, cached_kv_length, heads, dim)
         test_states = test_layer.init_states(kv_shape, dtype=k_proj.dtype)
         expect_dtype = cache_dtype or k_proj.dtype
 
         _, test_output = test_layer.extend_step(
-            test_states, k_proj=k_proj, v_proj=v_proj, key_positions=key_positions
+            test_states,
+            k_proj=k_proj,
+            v_proj=v_proj,
+            key_positions=key_positions,
+            live_step=live_step,
         )
 
         self.assertEqual(test_output.k_proj.shape, kv_shape)
