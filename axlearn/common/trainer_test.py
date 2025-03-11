@@ -564,11 +564,12 @@ class TrainerTest(test_utils.TestCase):
     @parameterized.parameters(
         {"platform": "cpu", "mesh_shape": (1, 1)},
         {"platform": "tpu", "mesh_shape": (4, 1)},
+        {"platform": "gpu", "mesh_shape": (8, 1)},
     )
     # pylint: enable=duplicate-code
     def test_compile_train_step(self, *, platform, mesh_shape):
         if not test_utils.is_supported_platform(platform):
-            return
+            pytest.skip(reason=f"Unsupported config: {platform=}, {mesh_shape=}.")
         cfg = SpmdTrainer.default_config().set(name="test_trainer", train_dtype=jnp.bfloat16)
         cfg.dir = tempfile.mkdtemp()
         cfg.mesh_axis_names = ("data", "model")

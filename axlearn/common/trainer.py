@@ -1358,16 +1358,19 @@ def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
                 + f"Code memory: {mb_or_gb(mem_stats.generated_code_size_in_bytes)}\n"
                 + f"Total HBM memory: {mb_or_gb(total_hbm)}\n"
             )
-        except AttributeError:
+        except AttributeError as e:
             # Some platforms may return different format.
             analysis_results += f"{mem_stats}\n"
+            logging.warning("Attempt to parse mem_stats=%s failed: %s", mem_stats, e)
 
     cost_stats = compiled.cost_analysis()
-    if cost_stats:
+    analysis_results += "======= Cost Analysis ====================================\n"
+    # According to the doc, some platforms may not support it.
+    if cost_stats and isinstance(cost_stats, list):
         cost_stats = cost_stats[0]
+    if cost_stats and isinstance(cost_stats, dict):
         analysis_results += (
-            "======= Cost Analysis ====================================\n"
-            + f"FLOPS: {m_or_g(cost_stats.get('flops'))}\n"
+            f"FLOPS: {m_or_g(cost_stats.get('flops'))}\n"
             + f"The number of exp/log/sin/cos ops: {m_or_g(cost_stats.get('transcendentals'))}\n"
             + f"The total memory traffic: {mb_or_gb(cost_stats.get('bytes accessed'))}\n"
             + f"  HBM access: {mb_or_gb(cost_stats.get('bytes accessed0{}'))}\n"
@@ -1386,4 +1389,9 @@ def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
             + f"  Load Balancing / Dispatch): {cost_stats.get('utilization8{}')}\n"
             + f"  Texture Units (or Rarely Used Compute Units): {cost_stats.get('utilization9{}')}"
         )
+    else:
+        # Some platforms may return different format unlike CPU, TPU (v5p) and GPU (H100).
+        analysis_results += f"{cost_stats}\n"
+        logging.warning("Attempt to parse cost_stats=%s but failed.", cost_stats)
+
     return analysis_results
