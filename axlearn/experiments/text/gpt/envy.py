@@ -95,7 +95,7 @@ MAX_SEQUENCE_LENGTH = {
     "Switch-Large": 8192,
     "Switch-XXL": 8192,
     "Mistral-toy": 256,
-    "Mistral-8x7B": 4096,
+    "Mistral-8x7B": 2048,
     "Mistral-8x20B": 4096,
 }
 
@@ -464,7 +464,7 @@ def get_trainer_kwargs(
                 hidden_dim=32 * 32 if model_size == "Mistral-toy" else 32 * 128,
                 ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=128),
                 num_heads=32,
-                num_kv_heads=8,
+                num_kv_heads=max(8, tp_degree),
                 num_experts=NUM_EXPERTS[model_size],
                 train_capacity_factor=2.0,
                 num_groups=1,
@@ -506,19 +506,14 @@ def get_trainer_kwargs(
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
-                            # RematSpecModifier.default_config().set(
-                            #     remat_policies={
-                            #         "model.decoder.transformer.layer": RematSpec(
-                            #             prevent_cse=True,
-                            #             policy=jax_remat_policies.nothing_saveable,
-                            #         ),
-                            #     } if os.getenv('AXLEARN_REMAT_LAYER', 'True') == 'True' else {
-                            #         "model.decoder.transformer.layer": RematSpec(
-                            #             prevent_cse=True,
-                            #             policy=jax_remat_policies.everything_saveable,
-                            #         ),
-                            #     }
-                            # ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                } if os.getenv('AXLEARN_REMAT_LAYER', 'true') == 'true' else {}
+                            ),
                         ],
                     ),
                 ),

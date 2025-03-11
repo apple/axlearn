@@ -9,7 +9,7 @@ The fuji models are set up to imitate LLaMA models:
 * LLaMA 2: https://arxiv.org/abs/2307.09288
 * LLaMA 3: https://github.com/meta-llama/llama3
 """
-
+import os
 import enum
 import functools
 import itertools
@@ -292,10 +292,10 @@ def get_trainer_kwargs(
     elif model_size == "1B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=16,
+                num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 16)),
                 hidden_dim=2048,
                 num_heads=32,
-                num_kv_heads=num_kv_heads,
+                num_kv_heads=max(num_kv_heads, int(os.getenv("AXLEARN_TP_DEGREE", 4))),
                 ffn_dim=8192,
                 rope_theta=rope_theta,
                 shared_lm_head=True,
@@ -314,7 +314,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 # TP within the chip, FSDP across chips.
                                 # Each TRN2 chip has 4 XLA cores.
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=int(os.getenv("AXLEARN_TP_DEGREE", 4)))
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
@@ -348,7 +348,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 # TP within the chip, FSDP across chips.
                                 # Each TRN2 chip has 4 XLA cores.
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=int(os.getenv("AXLEARN_TP_DEGREE", 4)))
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
@@ -477,7 +477,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 # TP within the chip, FSDP across chips.
                                 # Each TRN2 chip has 4 XLA cores.
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=int(os.getenv("AXLEARN_TP_DEGREE", 4)))
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
@@ -571,7 +571,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 # TP within the chip, FSDP across chips.
                                 # Each TRN2 chip has 4 XLA cores.
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=int(os.getenv("AXLEARN_TP_DEGREE", 4)))
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,

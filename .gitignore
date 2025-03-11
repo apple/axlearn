@@ -169,3 +169,6 @@ wandb/
 
 # Custom
 .axlearn.config
+
+artifacts
+archive
