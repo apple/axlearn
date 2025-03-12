@@ -8,7 +8,10 @@
 
 """Tests GPU FlashAttention kernels.
 
-Currently tested on A100/H100.
+Currently tested on A100/H100. To run tests in parallel on multi-GPU machines, use somethine like
+```
+PARALLEL_GPU_TEST=1 pytest -n 8 axlearn/common/flash_attention/gpu_attention_test.py
+```
 """
 import functools
 from typing import Any, Callable, Literal
