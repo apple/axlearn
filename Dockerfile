@@ -110,9 +110,9 @@ ENV JAX_TRACEBACK_FILTERING=off
 RUN pip install .[core,gpu]
 
 # Install Triton 3.3.0 custom build
-COPY --from=triton-3.3.0:latest /tmp/staging/triton/python/dist /tmp/triton
-RUN pip install /tmp/triton/*.whl
-RUN rm -rf /tmp/triton
+#COPY --from=triton-3.3.0:latest /tmp/staging/triton/python/dist /tmp/triton
+#RUN pip install /tmp/triton/*.whl
+#RUN rm -rf /tmp/triton
 # End Triton install
 
 COPY . .
