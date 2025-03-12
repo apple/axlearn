@@ -251,7 +251,7 @@ def streaming_packing(
             if processed_example[input_key].size == 0:
                 return None
             # fn returns a tensor with shape [1, ..]. We remove the first dimension.
-            for v in processed_example.items():
+            for v in processed_example.values():
                 assert v.shape[0] == 1
             return {k: v[0, :] for k, v in processed_example.items()}
         return example
