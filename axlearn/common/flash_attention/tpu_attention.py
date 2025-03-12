@@ -83,19 +83,7 @@ def _to_splash_mask(
 # The following code is adapted from jax-ml/jax:
 # Copyright 2023 The JAX Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
-
-
-@functools.partial(
-    jax.jit,
-    static_argnames=[
-        "causal",
-        "softmax_scale",
-        "block_sizes",
-        "debug",
-        "interpret",
-    ],
-)
-def pallas_tpu_flash_attention(
+def _pallas_tpu_flash_attention(
     q,  # [batch_size, num_heads, q_seq_len, d_model]
     k,  # [batch_size, num_heads, kv_seq_len, d_model]
     v,  # [batch_size, num_heads, kv_seq_len, d_model]
@@ -907,6 +895,7 @@ class TPUSplashAttention(TPUFlashAttention):
         logging.info("Using %s.", self.name())
         return True
 
+    @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         del prng_key
         mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
@@ -958,6 +947,7 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         logging.info("Using %s.", self.name())
         return True
 
+    @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         del prng_key
         causal_mask, segment_ids, explicit_bias = split(
@@ -989,7 +979,7 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
             block_k_dq=block_size,
             block_q_dq=block_size,
         )
-        context = pallas_tpu_flash_attention(
+        context = _pallas_tpu_flash_attention(
             query,
             key,
             value,

@@ -145,6 +145,7 @@ class TPUDecoding(BaseSingleStepDecoding):
             return False
         return True
 
+    @partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         del prng_key
         mask, explicit_bias = split(bias, MaskFnAttentionBias)

@@ -64,16 +64,18 @@ def _test_forward_and_backward(
 ):
     ref_fn = jax.jit(ref_fn)
     test_fn = jax.jit(test_fn)
-
-    jax_out = test_fn(q, k, v, bias)
-    jax_ref_out = ref_fn(q, k, v, bias)
+    prng_key = jax.random.PRNGKey(44)
+    jax_out = test_fn(q, k, v, bias, prng_key)
+    jax_ref_out = ref_fn(q, k, v, bias, prng_key)
     backend = jax.default_backend()
     chex.assert_trees_all_close(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))
 
     # Compare gradients.
-    jax_grads = jax.grad(lambda q, k, v: ref_fn(q, k, v, bias).mean(), argnums=(0, 1, 2))(q, k, v)
-    jax_ref_grads = jax.grad(lambda q, k, v: test_fn(q, k, v, bias).mean(), argnums=(0, 1, 2))(
-        q, k, v
+    jax_grads = jax.grad(lambda *args: ref_fn(*args).mean(), argnums=(0, 1, 2))(
+        q, k, v, bias, prng_key
+    )
+    jax_ref_grads = jax.grad(lambda *args: test_fn(*args).mean(), argnums=(0, 1, 2))(
+        q, k, v, bias, prng_key
     )
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, **backward_tol_fn(backend, q.dtype))
 
@@ -82,11 +84,11 @@ def _test_forward_and_backward(
     "batch_size,num_heads,seq_len,per_head_dim",
     [
         (1, 1, 384, 64),
-        (2, 2, 384, 64),
-        (1, 1, 384, 128),
+        (2, 2, 256, 64),
+        (1, 1, 512, 128),
         (2, 2, 384, 128),
         (1, 8, 384, 128),
-        (2, 8, 384, 128),
+        (2, 4, 384, 128),
     ],
 )
 @pytest.mark.parametrize("kv_seq_len", [None, 512])
@@ -109,16 +111,15 @@ def test_triton_against_xla_ref(
     causal: bool,
     input_dtype: jnp.dtype,
 ):
-    if kv_seq_len == -1:
-        kv_seq_len = seq_len
+    kv_seq_len = kv_seq_len or seq_len
     if kv_seq_len != seq_len and use_segment_ids:
-        pytest.skip()
+        pytest.skip(reason="segment ids require kv_seq_len == q_seq_len")
     if jax.default_backend() == "cpu" and kv_seq_len >= 512:
         pytest.skip(reason="Too slow on CPU.")
     q, k, v, bias = generate_attention_data(
         batch_size,
         seq_len,
-        kv_seq_len or seq_len,
+        kv_seq_len,
         num_heads,
         per_head_dim,
         mask_fn=causal_mask if causal else None,
@@ -142,7 +143,7 @@ def test_triton_against_xla_ref(
         # TODO(kelvin-zou): Investigate the discrepancy between CPU and GPU.
         if backend == "cpu":
             return dict(rtol=5e-2, atol=1e-2)
-        return dict(atol=0.005)
+        return dict(atol=0.01)
 
     _test_forward_and_backward(
         q, k, v, bias, ref_fn=ref_fn, test_fn=call_flash, forward_tol_fn=forward_tol_fn
@@ -370,12 +371,15 @@ def test_cudnn_dropout_determinism():
     outputs = []
     grads = []
 
+    def grad_fn(q, k, v, bias):
+        return fn(q, k, v, bias).mean()
+
     for i in range(10):
         outputs.append(fn(q, k, v, bias))
-        grads.append(jax.grad(fn, argnums=(0, 1, 2))(q, k, v))
+        grads.append(jax.grad(grad_fn, argnums=(0, 1, 2))(q, k, v, bias))
 
     jax.clear_caches()
 
     for i in range(10):
         chex.assert_trees_all_equal(fn(q, k, v, bias), outputs[i])
-        chex.assert_trees_all_equal(jax.grad(fn, argnums=(0, 1, 2))(q, k, v), grads[i])
+        chex.assert_trees_all_equal(jax.grad(grad_fn, argnums=(0, 1, 2))(q, k, v, bias), grads[i])

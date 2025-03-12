@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """FlashAttention utilities shared amongst CPU/GPU/TPU backends."""
+from functools import partial
 from typing import Callable, Literal, Optional
 
 import jax
@@ -25,6 +26,7 @@ class ReferenceMHA(BaseFlashAttention):
     """The reference implementation of attention in XLA."""
 
     # The additional argument `dropout_mask` is for unit test only.
+    @partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
         query: Tensor,

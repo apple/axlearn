@@ -234,6 +234,7 @@ class NeuronFlashAttention(BaseFlashAttention):
         logging.info("Using %s.", self.name())
         return True
 
+    @partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         del prng_key
 

@@ -816,6 +816,7 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         logging.info("Using %s.", self.name())
         return True
 
+    @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         key = repeat_kv_heads(query.shape[2], key)
@@ -868,6 +869,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         logging.info("Using %s.", self.name())
         return True
 
+    @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         del prng_key
         causal, explicit_bias = split(

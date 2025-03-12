@@ -274,6 +274,7 @@ def _decode_attn_unbatched(
 class GPUDecoding(BaseSingleStepDecoding):
     """Implements GPU FlashDecoding with GQA support."""
 
+    @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         del prng_key
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
