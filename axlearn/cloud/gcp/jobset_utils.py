@@ -427,7 +427,9 @@ class TPUReplicatedJob(BaseReplicatedJob):
             imagePullPolicy="Always",
         )
 
-    def _build_uploader_container(self) -> Nested[Any]:
+    def _build_uploader_container(
+        self, src: str = "/output", output_volume_mount: Optional[dict] = None
+    ) -> Nested[Any]:
         """Builds a config for the uploader container which sync logs to the output dir.
 
         The sidecar container runs an loop to periodically sync outputs to GCS until the Pod is
@@ -439,10 +441,10 @@ class TPUReplicatedJob(BaseReplicatedJob):
             A nested dict corresponding to a k8s Container config.
         """
         cfg: TPUReplicatedJob.Config = self.config
-
+        output_volume_mount = output_volume_mount or self._output_volume_mount
         dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
-        sync_command = f"while true; do gsutil -m rsync -r /output {dst}; sleep {interval_s}; done"
+        sync_command = f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done"
         resources = {
             "requests": {"cpu": "100m", "memory": "128Mi"},
             "limits": {"cpu": "500m", "memory": "256Mi"},
@@ -456,7 +458,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
             command=["/bin/sh", "-c"],
             args=[sync_command],
             resources=resources,
-            volumeMounts=[self._output_volume_mount],
+            volumeMounts=[output_volume_mount],
         )
 
     def _build_shared_memory_volumes(self, shared_memory: str) -> Nested[Any]:
