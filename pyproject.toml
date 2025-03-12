@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 # Minimal requirments for axlearn/common/config.py.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "numpy<2",  # verified with tensorflow 2.14 RaggedTensor
+    "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
 ]
 
 [project.optional-dependencies]
@@ -24,8 +24,8 @@ core = [
     "chex==0.1.88",
     "einops==0.8.0",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.5.3.dev20250310",
-    "jaxlib==0.5.3.dev20250310",
+    "jax==0.4.38",
+    "jaxlib==0.4.38",
     "ml-dtypes==0.4.1",
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -40,7 +40,7 @@ core = [
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.12.2",
-    "scipy==1.15.2",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
+    "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18",  # used for inputs
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.10.2", # for AQT, param converter and adapter.
@@ -130,9 +130,8 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==3.2.0",
-    "jax-cuda12-plugin[with_cuda]==0.5.3.dev20250310",
-    "jax-cuda12-pjrt==0.5.3.dev20250310",
-    "nvidia-ml-py==12.570.86",
+    "jax[cuda12]==0.4.38",
+    "nvidia-ml-py==12.560.30",
 ]
 # Open API inference.
 open_api = [
