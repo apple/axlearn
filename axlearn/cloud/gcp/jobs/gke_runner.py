@@ -539,13 +539,15 @@ class FlinkGKERunnerJob(GKERunnerJob):
     pre_provisioner = TPUNodePoolProvisioner
 
     def _get_status(self) -> GKERunnerJob.Status:
-        """
+        """Retrieves the current status of the job.
+        
         Returns:
             GKERunnerJob.Status:
                 SUCCEEDED: When the job succeeded.
                 PENDING: When the job hasn't started yet.
                 READY: When the job is running.
                 UNKNOWN: All other cases.
+
         Raises:
             RuntimeError: when the job failS, and GKE runner will retry it.
         """
