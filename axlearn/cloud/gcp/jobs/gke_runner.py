@@ -541,13 +541,13 @@ class FlinkGKERunnerJob(GKERunnerJob):
     def _get_status(self) -> GKERunnerJob.Status:
         """
         Returns:
-            GKERunnerJob:
-                SUCCEEDED: when the job succeeded.
-                PENDING: if the job hasn't started yet.
-                READY: when the job is running.
-                UNKNOWN: all other cases.
+            GKERunnerJob.Status:
+                SUCCEEDED: When the job succeeded.
+                PENDING: When the job hasn't started yet.
+                READY: When the job is running.
+                UNKNOWN: All other cases.
         Raises:
-            RuntimeError: when the job failed, and GKE runner will retry it.
+            RuntimeError: when the job failS, and GKE runner will retry it.
         """
         cfg: GKERunnerJob.Config = self.config
         try:
