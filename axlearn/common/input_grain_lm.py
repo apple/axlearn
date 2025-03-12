@@ -5,7 +5,8 @@
 import functools
 import logging
 import sys
-from typing import Optional, Protocol
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Protocol
 
 import grain.python as grain
 import numpy as np
@@ -23,12 +24,302 @@ class _SplitFn(Protocol):
         ...
 
 
+class _StreamingPackingDatasetIterator(grain.DatasetIterator):
+    """An iterator that yields packed examples in a streaming fashion.
+
+    This implementation does not require maintaining a fixed buffer of `window_size` elements in
+    memory. Instead, it yields packed examples and flushes the buffer as soon as an example is
+    ready. This significantly improves the first-time read, especially for datasets which have much
+    higher tokens per sequence, as well as reduces the peak memory requirements for packing.
+    """
+
+    def __init__(
+        self,
+        parent: grain.DatasetIterator,
+        *,
+        max_len: int,
+        window_size: Optional[int] = None,
+        input_key: str = "target_labels",
+    ):
+        super().__init__(parent)
+        self._max_len = max_len
+        self._window_size = window_size
+        self._input_key = input_key
+
+        # Index of the parent.
+        self._index = 0
+        self._current_token_count = 0
+        self._current_examples_list = []
+        # Both of them are used for checkpointing.
+        self._parent_sequence_start_state = None
+        self._parent_sequence_end_state = None
+        self._parent_state = self._parent.get_state()
+
+    def _reach_window_limit(self) -> bool:
+        """Determines if we have already reached window limit."""
+        return self._window_size is not None and self._index % self._window_size == 0
+
+    def _pop_element(self) -> Optional[dict]:
+        """Pops element from self._current_example_list."""
+        if not self._current_examples_list:
+            return None
+        concat_target_labels = np.concatenate(
+            [x[self._input_key] for x in self._current_examples_list], axis=-1
+        )
+        # Total tokens to pop could be up to self._max_len
+        total_tokens_to_pop = min(len(concat_target_labels), self._max_len)
+        self._current_token_count -= total_tokens_to_pop
+        if self._current_token_count > 0:
+            self._current_examples_list = [{self._input_key: concat_target_labels[self._max_len :]}]
+            self._parent_sequence_start_state = self._parent_sequence_end_state
+        else:
+            self._current_examples_list = []
+            self._parent_sequence_start_state = None
+        assert self._current_token_count >= 0
+
+        # If all the concat target labels is empty, early return.
+        if total_tokens_to_pop == 0:
+            return None
+
+        return {self._input_key: concat_target_labels[: self._max_len]}
+
+    def __next__(self):
+        # Iteratively call __next__ until we yield valid examples.
+        while True:
+            # If there are still leftover tokens when we have already reached the window limit, we
+            # should decide whether to keep this sequence.
+            if self._current_token_count > 0 and self._reach_window_limit():
+                next_element = self._pop_element()
+                assert self._current_token_count == 0 and not self._current_examples_list
+                return next_element
+
+            # Keeps filling up the sequence until reaching the limit.
+            # Termination of this while loop means:
+            # 1. Reaches the sequence_length limit, and ready to output one batch.
+            # 2. Reaches the window limit.
+            while self._current_token_count < self._max_len:
+                self._parent_sequence_end_state = self._parent.get_state()
+                if not self._parent_sequence_start_state:
+                    self._parent_sequence_start_state = self._parent_sequence_end_state
+                try:
+                    example = next(self._parent)
+                except StopIteration as e:
+                    next_element = self._pop_element()
+                    if next_element is not None:
+                        return next_element
+                    else:
+                        raise e
+
+                self._current_examples_list.append(example)
+
+                self._current_token_count += len(example[self._input_key])
+                self._index += 1
+                # Updates parent state since the index is moved by 1.
+                self._parent_state = self._parent.get_state()
+
+                if self._reach_window_limit():
+                    break
+
+            # If there is enough token, we always return a sequence.
+            if self._current_token_count >= self._max_len:
+                return self._pop_element()
+
+            next_element = self._pop_element()
+            assert self._current_token_count == 0 and not self._current_examples_list
+            # If next element is empty, that suggests that the sequence is dropped.
+            if next_element is not None:
+                return next_element
+
+    def get_state(self) -> dict[str, Any]:
+        # TODO(haoshuoh, markblee): All of the parent_state thing could be wrapped in a Packer
+        # class.
+        return {
+            "parent_sequence_start_state": self._parent_sequence_start_state
+            if self._parent_sequence_start_state
+            else self._parent.get_state(),
+            "parent": self._parent_state,
+            "index": self._index,
+            "current_token_count": self._current_token_count,
+        }
+
+    def _retrieve_packer_states(self, state: dict[str, Any]):
+        """Retrieve packer states by loading all the examples from that sequence."""
+        self._current_token_count = state["current_token_count"]
+        self._current_examples_list = []
+        self._parent_sequence_start_state = None
+        self._parent_sequence_end_state = None
+        total_tokens_retrieved = 0
+
+        while self._parent.get_state() != self._parent_state:
+            self._parent_sequence_end_state = self._parent.get_state()
+            if not self._parent_sequence_start_state:
+                self._parent_sequence_start_state = self._parent_sequence_end_state
+            example = next(self._parent)
+            total_tokens_retrieved += len(example[self._input_key])
+            self._current_examples_list.append(example)
+
+        if total_tokens_retrieved > self._current_token_count:
+            # The truncation should only happens to the first example (aka rollover example).
+            assert total_tokens_retrieved - self._current_token_count <= len(
+                self._current_examples_list[0][self._input_key]
+            )
+            self._current_examples_list[0] = {
+                self._input_key: self._current_examples_list[0][self._input_key][
+                    total_tokens_retrieved - self._current_token_count :
+                ]
+            }
+        elif total_tokens_retrieved < self._current_token_count:
+            raise ValueError("Grain receives invalid states.")
+
+    def set_state(self, state: dict[str, Any]):
+        self._parent.set_state(state["parent_sequence_start_state"])
+        self._parent_state = state["parent"]
+        self._index = state["index"]
+
+        self._retrieve_packer_states(state)
+
+
+class _StreamingPackingIterDataset(grain.IterDataset):
+    """A class that performs streaming packing."""
+
+    def __init__(
+        self,
+        parents,
+        *,
+        max_len: int,
+        window_size: Optional[int] = None,
+        input_key: str = "target_labels",
+    ):
+        super().__init__(parents)
+        self._max_len = max_len
+        self._window_size = window_size
+        self._input_key = input_key
+
+    def __str__(self) -> str:
+        return "StreamingPackingIterDataset"
+
+    def __iter__(self) -> _StreamingPackingDatasetIterator:
+        return _StreamingPackingDatasetIterator(
+            self._parent.__iter__(),
+            max_len=self._max_len,
+            window_size=self._window_size,
+            input_key=self._input_key,
+        )
+
+
+def streaming_packing(
+    ds: Dataset,
+    *,
+    max_len: int,
+    inner: Callable,
+    window_size: Optional[int] = None,
+    input_key: str = "target_labels",
+    read_options: grain.ReadOptions = grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
+) -> Dataset:
+    """Streaming packing given max_len and optional window_size.
+
+    Given a sequence of tokens with arbitraty length, streaming packing will pack examples until it
+    reaches the max_len. There is an optional window_size option to make it still compatible with
+    windowed_packing. If window_size is None, that means there is no upper bound limit on the
+    window size.
+
+    Note that the semantics of inner in this function is slightly different from the one used in
+    windowed_packing. In windowed_packing, we expect it to take full window of examples. In
+    streaming packing, we expect it to take examples that's within this sequence.
+
+    Args:
+        ds: datasets to be packed.
+        max_len: Max sequence length.
+        ds: Datasets to be packed.
+        max_len: Max sequence length.
+        inner: A processor that operates on packed examples. It should output examples of shape ...
+            or None if the example should be skipped.
+        window_size: An upper bound on the window size to use for packing. If None, no upper bound
+            is enforced.
+        input_keys: The keys in the input examples to use for packing.
+        read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
+            used to convert the pipeline to grain.IterDataset.
+
+    Returns:
+        A packed dataset.
+    """
+
+    def _maybe_call(example: Optional[SequenceOr[dict[str, Tensor]]], *, fn: Callable):
+        if example is not None:
+            processed_example = fn(example)
+            # If this example is already dropped by inner function, we skip it by marking it None.
+            if processed_example[input_key].size == 0:
+                return None
+            # fn returns a tensor with shape [1, ..]. We remove the first dimension.
+            for v in processed_example.items():
+                assert v.shape[0] == 1
+            return {k: v[0, :] for k, v in processed_example.items()}
+        return example
+
+    # Converts dataset to IterDataset.
+    ds = input_grain.maybe_to_iter_dataset(ds, read_options=read_options)
+    ds = _StreamingPackingIterDataset(
+        ds,
+        max_len=max_len,
+        window_size=window_size,
+        input_key=input_key,
+    )
+    # Some examples might be dropped after calling inner. Grain IterDataset will automatically
+    # handle it as long as we mark those examples as None.
+    ds = ds.map(functools.partial(_maybe_call, fn=inner))
+    ds = ds.filter(lambda x: x is not None)
+    return ds
+
+
+def windowed_packing(
+    ds: Dataset,
+    *,
+    max_len: Optional[int] = None,
+    inner: Optional[Callable] = None,
+    window_size: Optional[int] = None,
+    input_key: str = "target_labels",
+    read_options: grain.ReadOptions = grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
+) -> Dataset:
+    """Windowed packing given window_size.
+
+    Given a sequence of tokens with arbitraty length, windowed packing will first batch the example
+    given window_size then unbatch given max_len.
+
+    Args:
+        max_len: Max sequence length.
+        ds: Datasets to be packed.
+        max_len: Max sequence length.
+        inner: A processor that operates on packed examples. It should output examples of shape ...
+            or None if the example should be skipped.
+        window_size: An upper bound on the window size to use for packing.
+        input_keys: The keys in the input examples to use for packing.
+        read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
+            used to convert the pipeline to grain.IterDataset.
+
+    Returns:
+        A packed dataset.
+    """
+    del max_len
+    del input_key
+    ds = ds.batch(window_size, drop_remainder=False, batch_fn=list)
+    if inner is not None:
+        ds = ds.map(inner)
+    ds = input_grain.maybe_to_iter_dataset(
+        ds,
+        read_options=read_options,
+    )
+    # After processing, we have non-ragged np.arrays, so we can unbatch.
+    ds = input_grain.unbatch(ds)
+    return ds
+
+
 # TODO(markblee): If we enforce that each input example is initially shorter than packed length, we
 # can preserve the `grain.MapDataset` by using a flat map with fanout <= window_size.
 def _make_autoregressive_inputs(
     ds: Dataset,
     *,
     max_len: int,
+    packing_fn: Callable[[Dataset, int, Callable, int, str, grain.ReadOptions], Dataset],
     input_key: str = "target_labels",
     split_fn: Optional[ConfigOr[_SplitFn]] = None,
     read_options: grain.ReadOptions = grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
@@ -43,12 +334,15 @@ def _make_autoregressive_inputs(
         ds: A Dataset where each input example contains:
             `input_key`: A flat int Tensor of shape [None], i.e., length can vary across examples.
         max_len: Max sequence length.
-        input_key: Input key containing `target_labels`.
-        split_fn: A callable taking flat input IDs and producing batched IDs of shape [-1, max_len].
-            If None, returns the flat input IDs unchanged.
+        ds: Datasets to be packed.
+        max_len: Max sequence length.
+        inner: A processor that operates on packed examples. It should output examples of shape ...
+            or None if the example should be skipped.
+        window_size: An upper bound on the window size to use for packing. If None, no upper bound
+            is enforced.
+        input_keys: The keys in the input examples to use for packing.
         read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
             used to convert the pipeline to grain.IterDataset.
-        window_size: Window size. If > 1, also packs.
 
     Returns:
         A `grain.IterDataset` with potentially different cardinality than the input dataset.
@@ -61,6 +355,8 @@ def _make_autoregressive_inputs(
         split_fn = lambda ids, **_: ids[None]  # Passthrough ids.  # noqa: E731
 
     def process_example_fn(example: SequenceOr[dict[str, Tensor]]) -> dict[str, Tensor]:
+        if not isinstance(example, Sequence):
+            example = [example]
         flat_target_labels = np.concatenate([x[input_key] for x in example], axis=-1)
         flat_input_ids = np.roll(flat_target_labels, 1, axis=0)
         return dict(
@@ -68,16 +364,15 @@ def _make_autoregressive_inputs(
             target_labels=split_fn(flat_target_labels, max_len=max_len),
         )
 
-    # Batch as lists to avoid ragged.
-    ds = ds.batch(window_size, drop_remainder=False, batch_fn=list)
-    ds = ds.map(process_example_fn)
-    ds = input_grain.maybe_to_iter_dataset(
-        ds,
+    packing_fn = functools.partial(
+        packing_fn,
+        max_len=max_len,
+        inner=process_example_fn,
+        window_size=window_size,
         read_options=read_options,
     )
-    # After processing, we have non-ragged np.arrays, so we can unbatch.
-    ds = input_grain.unbatch(ds)
-    return ds
+
+    return packing_fn(ds)
 
 
 def _trim_or_pad_and_batch(
@@ -107,6 +402,7 @@ def text_to_lm_training_input(
     window_size: int = 128,
     max_padding_fraction: float = 1,
     read_options: grain.ReadOptions = grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
+    packing_fn: Callable = windowed_packing,
 ) -> Dataset:
     """Returns a function that generates training inputs for language models from raw text.
 
@@ -146,7 +442,12 @@ def text_to_lm_training_input(
     ds = input_grain.rekey(ds, key_map={"target_labels": "text"})
     # Flatten, roll, split.
     ds = _make_autoregressive_inputs(
-        ds, max_len=max_len, window_size=window_size, split_fn=split_fn, read_options=read_options
+        ds,
+        max_len=max_len,
+        window_size=window_size,
+        split_fn=split_fn,
+        read_options=read_options,
+        packing_fn=packing_fn,
     )
     ds = input_grain_text.count_num_bytes(
         ds, input_key="target_labels", vocab=vocab, output_key="target_num_bytes"
@@ -170,6 +471,7 @@ def text_to_lm_eval_input(
     vocab: ConfigOr[input_grain_text.Vocabulary],
     max_len: int,
     stride: Optional[int] = None,
+    packing_fn: Callable = windowed_packing,
 ) -> Dataset:
     """Returns a function that generates eval inputs for language models from raw text.
 
@@ -219,7 +521,7 @@ def text_to_lm_eval_input(
     ds = input_grain.rekey(ds, key_map={"target_labels": "text"})
 
     # Make autoregressive and produce strided slices.
-    ds = _make_autoregressive_inputs(ds, max_len=max_len, split_fn=None)
+    ds = _make_autoregressive_inputs(ds, packing_fn=packing_fn, max_len=max_len, split_fn=None)
     ds = ds.map(strided_slice)
 
     # Produce batches.
