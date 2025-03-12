@@ -266,7 +266,8 @@ def delete_k8s_jobset(name: str, *, namespace: str):
 
 
 def list_flink_deployments(*, namespace: str) -> list[str]:
-    """Return a list of names of existing Flink deployments."""
+    """Returns a list of names of existing Flink deployments."""
+    # Avoid introducing a k8s dependency globally.
     # pylint: disable-next=import-error,import-outside-toplevel
     import kubernetes as k8s  # pytype: disable=import-error
 
@@ -309,7 +310,7 @@ def delete_flink_deployment(name: str, *, namespace: str):
 
 
 def list_k8s_jobs(*, namespace: str, label_selector: Optional[str] = None) -> list[str]:
-    """Return a list of names of existing K8s jobs.
+    """Returns a list of names of existing K8s jobs.
 
     Args:
         namespace: The namespace of the K8s cluster.
@@ -318,6 +319,7 @@ def list_k8s_jobs(*, namespace: str, label_selector: Optional[str] = None) -> li
     Returns:
         A list of filtered names of existing K8s jobs.
     """
+    # Avoid introducing a k8s dependency globally.
     # pylint: disable-next=import-error,import-outside-toplevel
     import kubernetes as k8s  # pytype: disable=import-error
 

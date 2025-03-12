@@ -540,7 +540,7 @@ class FlinkGKERunnerJob(GKERunnerJob):
 
     def _get_status(self) -> GKERunnerJob.Status:
         """Retrieves the current status of the job.
-        
+
         Returns:
             GKERunnerJob.Status:
                 SUCCEEDED: When the job succeeded.
@@ -577,8 +577,8 @@ class FlinkGKERunnerJob(GKERunnerJob):
             # Otherwise, we rely on the active/succeeded/failed to derive its status.
             # Note that we currently set restartPolicy="Never" for this job and rely on GKERunner
             # to retry the whole job submitter and flink cluster bundle as a whole. So when the
-            # code passed the finish condition check and comes to here, there is only two more
-            # valid remaining:
+            # code passed the finish condition check and comes to here, there are only two more
+            # valid cases remaining:
             # active == 0 and succeeded == 0 and failed == 0 means PENDING
             # active == 1 means READY
             active = status.get("active", 0)

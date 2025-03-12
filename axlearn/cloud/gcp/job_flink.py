@@ -31,19 +31,19 @@ _TIMEOUT_SECS = 600
 
 
 def _custom_flinkdeployment_kwargs() -> dict[str, str]:
-    """Common kwargs needed for CustomObjectsApi JobSets."""
+    """Common kwargs needed for CustomObjectsApi Flink deployment."""
     return dict(group="flink.apache.org", version="v1beta1", plural="flinkdeployments")
 
 
 class FlinkTPUGKEJob(job.GKEJob):
-    """A Job that submits a Flink + Beam bundle and monitor its status."""
+    """A Job that submits a Flink + Beam bundle and monitors its status."""
 
     builder = TPUReplicatedJob
     Config = GKEJob.Config
 
     def _delete(self):
         """This is a non-blocking method to delete the flink deployment and submitter job.
-        It is called when GKERunner gives up retry this job.
+        It is called when GKERunner gives up retrying this job.
         """
         cfg: GKEJob.Config = self.config
         # Delete all deployments submitted by this job.
@@ -60,7 +60,7 @@ class FlinkTPUGKEJob(job.GKEJob):
 
     def _cleanup(self):
         """This is a blocking method to delete the flink deployment and submitter job.
-        It is at the beginning of execution for every retry.
+        It is called at the beginning of execution for every retry.
         """
         self._delete()
         cfg: job.TPUGKEJob.Config = self.config
@@ -144,7 +144,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         # TODO(muyang_yu): consider using pod name instead of id.
         jobmanager_ip = jobmanager_pods.items[0].status.pod_ip
 
-        # 3) Create a job to submit user pipeline to the Flink cluster
+        # 3) Create a job to submit user's pipeline to the Flink cluster
         job_submission = self._build_job_submission_deployment(jobmanager_ip)
         logging.info("Submitting Job job_submission=%s", job_submission)
         return k8s.client.BatchV1Api().create_namespaced_job(
@@ -232,8 +232,9 @@ class FlinkTPUGKEJob(job.GKEJob):
                     "taskmanager.network.bind-host": "0.0.0.0",
                     "rest.address": "0.0.0.0",
                 },
-                # job manager's task is lightweight, it is only responsible to accept the request
-                # from one job submitter in this setup. So a minimum resource is good enough.
+                # job manager's responsibility is lightweight, it is only responsible to
+                # accept one request from one job submitter in this setup. So a minimum
+                # resource is good enough.
                 jobManager=dict(resource=dict(memory="2g", cpu=1)),
                 taskManager=dict(
                     replicas=cfg.accelerator.num_replicas,
@@ -342,11 +343,10 @@ class FlinkTPUGKEJob(job.GKEJob):
     def _build_job_submission_deployment(self, job_manager_ip: str) -> Dict[str, Any]:
         cfg: job.GKEJob.Config = self.config
         user_command = cfg.command
-        # redirect output to /output/beam_pipline_log and sleep 100s at the end
-        # so that all logs can be uploaded.
         user_command += (
             f" --flink_master_address={job_manager_ip}"
             f" --flink_parallelism={cfg.accelerator.num_replicas}"
+            # Replicate output to /output/beam_pipline_log
             f" 2>&1 | tee /output/beam_pipline_log"
         )
         return dict(
@@ -365,6 +365,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                     spec=dict(
                         serviceAccountName=cfg.service_account,
                         volumes=[dict(name="shared-output", emptyDir={})],
+                        # Makes sure all logs are uploaded before terminating the pod.
                         terminationGracePeriodSeconds=100,
                         # pylint: disable=protected-access
                         # pytype: disable=attribute-error
