@@ -287,9 +287,8 @@ def windowed_packing(
     Args:
         max_len: Max sequence length.
         ds: Datasets to be packed.
-        max_len: Max sequence length.
         inner: A processor that operates on packed examples. It should output examples of shape
-        [1, sequence_length] or None if the example should be skipped.
+            [1, sequence_length] or None if the example should be skipped.
         window_size: An upper bound on the window size to use for packing.
         input_key: The keys in the input examples to use for packing.
         read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
@@ -337,7 +336,7 @@ def _make_autoregressive_inputs(
             or None if the example should be skipped.
         window_size: An upper bound on the window size to use for packing. If None, no upper bound
             is enforced.
-        input_keys: The keys in the input examples to use for packing.
+        input_key: The keys in the input examples to use for packing.
         read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
             used to convert the pipeline to grain.IterDataset.
 
