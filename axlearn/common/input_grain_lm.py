@@ -34,6 +34,10 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
     memory. Instead, it yields packed examples and flushes the buffer as soon as an example is
     ready. This significantly improves the first-time read, especially for datasets which have much
     higher tokens per sequence, as well as reduces the peak memory requirements for packing.
+
+    window_size is used for parity with windowed_packing. It will also be used if we want to pack
+    multimodal data which is not represented in sequence, thus naturally has a limit in how many
+    examples we can pack due to memory limit.
     """
 
     def __init__(
@@ -42,7 +46,7 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
         *,
         max_len: int,
         window_size: Optional[int] = None,
-        input_key: str = "target_labels",
+        input_key: str = "target_labels",  # The key in the input examples to use for packing.
     ):
         super().__init__(parent)
         self._max_len = max_len
@@ -53,7 +57,9 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
         self._index = 0
         self._current_token_count = 0
         self._current_examples_list = []
-        # Both of them are used for checkpointing.
+        # For checkpointing support, we need to maintain what exact are the examples in current
+        # sequence. self._parent_sequence_start_state and self._parent_sequence_end_state are used
+        # to store to starting and ending state of the examples.
         self._parent_sequence_start_state = None
         self._parent_sequence_end_state = None
         self._parent_state = self._parent.get_state()
@@ -64,6 +70,7 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
 
     def _pop_element(self) -> Optional[dict]:
         """Pops element from self._current_example_list."""
+        # If there is no examples in current sequence, return None.
         if not self._current_examples_list:
             return None
         concat_target_labels = np.concatenate(
@@ -72,13 +79,13 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
         # Total tokens to pop could be up to self._max_len
         total_tokens_to_pop = min(len(concat_target_labels), self._max_len)
         self._current_token_count -= total_tokens_to_pop
+        assert self._current_token_count >= 0
         if self._current_token_count > 0:
             self._current_examples_list = [{self._input_key: concat_target_labels[self._max_len :]}]
             self._parent_sequence_start_state = self._parent_sequence_end_state
         else:
             self._current_examples_list = []
             self._parent_sequence_start_state = None
-        assert self._current_token_count >= 0
 
         # If all the concat target labels is empty, early return.
         if total_tokens_to_pop == 0:
