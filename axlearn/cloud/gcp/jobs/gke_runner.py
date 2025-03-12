@@ -549,7 +549,7 @@ class FlinkGKERunnerJob(GKERunnerJob):
                 UNKNOWN: All other cases.
 
         Raises:
-            RuntimeError: when the job failS, and GKE runner will retry it.
+            RuntimeError: When the job fails, and GKE runner will retry it.
         """
         cfg: GKERunnerJob.Config = self.config
         try:
