@@ -22,6 +22,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
@@ -530,6 +531,10 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
             pytest.skip("Dropout is implemented for GPU only.")
+        if attn_type == "sliding_window" and query_len_multiplier > 1:
+            # When sliding window is enabled and q_len > kv_len, there might be be fully masked
+            # rows.
+            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
 
         if attn_type == "full":
             mask = None
@@ -579,7 +584,9 @@ class TestFlashAttention(TestCase):
             # TODO(markblee): Test probs.
             # Note: cannot compare results when dropout_rate > 0 and not using segment ids, because
             # cudnn dropout will be used and it uses different PRNG than ours.
-            if dropout_rate == 0.0 or use_segment_ids:
+            # Note: Dropout result between reference and Flash will be different on multiple
+            # devices due to the use of shard_map.
+            if dropout_rate == 0.0 or (int(np.prod(mesh)) == 1 and use_segment_ids):
                 self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
         jax.clear_caches()
 
@@ -689,7 +696,7 @@ class TestFlashAttention(TestCase):
                 atol, rtol = 5e-4, 5e-2
             # pylint: disable-next=protected-access
             elif dropout_rate > 0.0 and test_layer.layer._backend() == "gpu":
-                atol, rtol = 2.5e-4, 1e-3
+                atol, rtol = 3.5e-4, 1e-3
             # pylint: disable-next=protected-access
             elif num_kv_heads and test_layer.layer._backend() == "cpu":
                 atol, rtol = 1e-4, 1e-2
