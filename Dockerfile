@@ -2,7 +2,7 @@
 
 ARG TARGET=base
 #ARG BASE_IMAGE=python:3.10-slim
-ARG BASE_IMAGE=nvcr.io/nvidia/tensorflow:25.01-tf2-py3
+ARG BASE_IMAGE=nvcr.io/nvidia/jax:25.01-py3
 
 FROM ${BASE_IMAGE} AS base
 
