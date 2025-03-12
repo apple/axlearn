@@ -16,6 +16,8 @@ from axlearn.cloud.gcp.jobset_utils_test import mock_settings
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.test_utils import TestCase
 
+# These two json text-literals are auto generated on test failure as a warning log.
+# Please copy the updated version here and verify if the update is expected.
 expected_flink_deployment_json = """
 {
   "apiVersion": "flink.apache.org/v1beta1",
