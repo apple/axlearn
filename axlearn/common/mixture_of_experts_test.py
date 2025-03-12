@@ -10,6 +10,7 @@
 # Copyright 2022 The Pax Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Test for mixture_of_experts.py"""
+
 import copy
 from functools import partial
 
@@ -458,6 +459,7 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
         "prenorm",
         "postnorm",
         "hybridnorm",
+        "hybridnorm_v2",
         "nonorm",
     )
     def test_layer_structure(self, structure):
@@ -526,6 +528,22 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
                 prng_key=jax.random.PRNGKey(0),
             )
             x += inputs
+        elif structure == "hybridnorm_v2":
+            x, _ = dispatch_and_combine_fn(inputs=dict(x=inputs))
+            x, _ = F(
+                layer.prenorm,
+                inputs=dict(x=x),
+                state=layer_params["prenorm"],
+                is_training=False,
+                prng_key=jax.random.PRNGKey(0),
+            )
+            x, _ = F(
+                layer.postnorm,
+                inputs=dict(x=x + inputs),
+                state=layer_params["postnorm"],
+                is_training=False,
+                prng_key=jax.random.PRNGKey(0),
+            )
         elif structure == "nonorm":
             x, _ = dispatch_and_combine_fn(inputs=dict(x=inputs))
         else:
