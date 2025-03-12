@@ -13,6 +13,7 @@
 
 Reference: https://arxiv.org/abs/2405.15052.
 """
+
 import re
 from typing import NamedTuple, Optional, Union
 
@@ -672,10 +673,12 @@ class TransformerFeedForwardMoE(BaseLayer):
         activation: Union[str, tuple[str, str]] = "nn.relu"
         dropout: InstantiableConfig = Dropout.default_config()
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
-        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm".
+        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm",
+        # "hybridnorm_v2", "nonorm".
         # * prenorm: y = x + feedforward(norm(x))
         # * postnorm: y = norm(x + feedforward(x))
         # * hybridnorm: y = postnorm(x + feedforward(prenorm(x)))
+        # * hybridnorm_v2: y = postnorm(x + prenorm(feedforward(x)))
         # * nonorm: y = feedforward(x)   # no residual, which is usually applied externally.
         #
         # References:
@@ -765,7 +768,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # Add norm layers for different structures.
         if cfg.structure in ["prenorm", "postnorm"]:
             self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "hybridnorm":
+        elif cfg.structure in ("hybridnorm", "hybridnorm_v2"):
             self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
             self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
         elif cfg.structure == "nonorm":
@@ -773,7 +776,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         else:
             raise NotImplementedError(cfg.structure)
         # Add dropout layers for different structures.
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
+        if cfg.structure in ["prenorm", "hybridnorm", "hybridnorm_v2", "nonorm"]:
             self._add_child("dropout1", cfg.dropout)
             self._add_child("dropout2", cfg.dropout)
         elif cfg.structure in ["postnorm"]:
@@ -808,6 +811,13 @@ class TransformerFeedForwardMoE(BaseLayer):
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
             x += inputs
+        elif cfg.structure == "hybridnorm_v2":
+            x = self._dispatch_and_combine(inputs)
+            x = self.dropout2(x)
+            x = self.stochastic_depth(x)
+            if cfg.residual_weight != 1:
+                x *= cfg.residual_weight
+            x = self.postnorm(inputs + self.prenorm(x))
         elif cfg.structure == "nonorm":
             x = self._dispatch_and_combine(inputs)
             x = self.dropout2(x)
@@ -863,7 +873,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         x = jnp.einsum("ogsec,ogsm->oegcm", dispatch_tensor, x)
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
         x = self._wi_activation(x)
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
+        if cfg.structure in ["prenorm", "hybridnorm", "hybridnorm_v2", "nonorm"]:
             x = self.dropout1(x)
         x = jnp.einsum("oegch,ehm->oegcm", x, self.parameters["wo_weight"])
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
