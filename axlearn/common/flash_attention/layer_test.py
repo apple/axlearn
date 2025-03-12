@@ -712,7 +712,10 @@ class TestFlashAttention(TestCase):
         jax.clear_caches()
 
     @parameterized.product(
-        _TEST_CONFIGS, attn_type=["causal", "sliding_window"], use_bias=[True, False]
+        _TEST_CONFIGS,
+        attn_type=["causal", "sliding_window"],
+        use_bias=[True, False],
+        dtype=[jnp.float32, jnp.bfloat16],
     )
     def test_extend_step(
         self,
@@ -725,6 +728,7 @@ class TestFlashAttention(TestCase):
         mesh_axis_names,
         attn_type,
         use_bias,
+        dtype,
     ):
         print(
             f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
@@ -734,7 +738,6 @@ class TestFlashAttention(TestCase):
 
         # Limit generation length to 16 to save test time.
         seq_len = 16
-        dtype = jnp.bfloat16
 
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
@@ -819,9 +822,15 @@ class TestFlashAttention(TestCase):
             )
             self.assertIsNone(initial_output)
             self.assertIsNone(ref_inital_output)
-            for k in ["key", "value"]:
-                self.assertEqual(ref_initial_state["i_proj"][k].dtype, dtype)
-                self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
+            if dtype is jnp.float32:
+                # Float32 inference still uses bfloat16 kv cache.
+                for k in ["key", "value"]:
+                    self.assertEqual(ref_initial_state["i_proj"][k].dtype, jnp.bfloat16)
+                    self.assertEqual(initial_state["i_proj"][k].dtype, jnp.bfloat16)
+            else:
+                for k in ["key", "value"]:
+                    self.assertEqual(ref_initial_state["i_proj"][k].dtype, dtype)
+                    self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
 
             # Prepare decoding inputs.
             inputs = dict(

@@ -185,8 +185,8 @@ def tpu_decoding(
     q = q.squeeze(1)
     # Convert to bnhs which is the native shape of KV in the kv cache. These two transposes should
     # be elided by the compiler. See `BaseQKVLinear.init_states` from attention.py.
-    k = jnp.einsum("bsnh->bnhs", k)
-    v = jnp.einsum("bsnh->bnhs", v)
+    k = jnp.einsum("bsnh->bnhs", k).astype(q.dtype)
+    v = jnp.einsum("bsnh->bnhs", v).astype(q.dtype)
     bs, kv_heads, head_dim, padded_kv_seq_len = k.shape
     if kv_seq_len is not None:
         kv_seq_len = jnp.broadcast_to(jnp.asarray(kv_seq_len), (bs,))
