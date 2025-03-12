@@ -310,9 +310,9 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     + [
                                         dict(name=k, value=str(v))
                                         for k, v in get_default_env(
-                                            infer_tpu_type(cfg.accelerator.instance_type),
-                                            cfg.accelerator.num_replicas,
-                                            cfg.name,
+                                            tpu_type=infer_tpu_type(cfg.accelerator.instance_type),
+                                            num_tpu_slices=cfg.accelerator.num_replicas,
+                                            job_name=cfg.name,
                                         ).items()
                                     ],
                                     resources=self._build_resources(
