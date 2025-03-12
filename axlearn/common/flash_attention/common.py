@@ -1,6 +1,7 @@
 # Copyright © 2025 Apple Inc.
 """Common utilities across backends."""
 
+from functools import partial
 from typing import NamedTuple, Optional
 
 import jax
@@ -9,8 +10,10 @@ import numpy as np
 from absl import logging
 from jax.experimental import pallas as pl
 
+from axlearn.common.attention import compute_gqa_context, compute_gqa_logits, softmax_with_biases
 from axlearn.common.attention_bias import BaseAttentionBias, MaskFn, SegmentIdAttentionBias
 from axlearn.common.config import Configurable, config_class
+from axlearn.common.layers import dropout
 from axlearn.common.utils import Tensor
 
 
@@ -239,3 +242,26 @@ def repeat_kv_heads(num_q_heads: int, key_or_value: Tensor) -> Tensor:
         return key_or_value
     # Repeat along the num_heads dim: [batch, source_length, num_heads, per_head_dim].
     return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
+
+
+class ReferenceMHA(BaseFlashAttention):
+    """The reference implementation of attention in XLA."""
+
+    # The additional argument `dropout_mask` is for unit test only.
+    @partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+        dropout_mask: Optional[Tensor] = None,
+    ):
+        # We apply the scale factor before the attention biases.
+        query *= self.cfg.softmax_scale
+        logits = compute_gqa_logits(query, key)
+        probs = softmax_with_biases(logits, bias.value())
+        if self.cfg.dropout_rate > 0:
+            probs = dropout(probs, prng_key=prng_key, rate=self.cfg.dropout_rate, mask=dropout_mask)
+        return compute_gqa_context(probs, value)

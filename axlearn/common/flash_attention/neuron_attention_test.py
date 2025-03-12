@@ -7,8 +7,8 @@ import jax.numpy as jnp
 import pytest
 
 from axlearn.common.attention_bias import causal_mask
+from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.test_utils import generate_attention_data
-from axlearn.common.flash_attention.utils import ReferenceMHA
 
 if jax.default_backend() != "neuron":
     pytestmark = pytest.skip(

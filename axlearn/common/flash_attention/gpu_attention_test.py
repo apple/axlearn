@@ -27,12 +27,12 @@ from axlearn.common.attention_bias import (
     causal_mask,
     sliding_window_causal_mask,
 )
+from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.gpu_attention import (
     CuDNNGPUFlashAttention,
     PallasGPUFlashAttention,
 )
 from axlearn.common.flash_attention.test_utils import generate_attention_data
-from axlearn.common.flash_attention.utils import ReferenceMHA
 from axlearn.common.utils import Tensor
 
 if jax.default_backend() not in ("gpu", "cpu"):

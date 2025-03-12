@@ -121,23 +121,21 @@ seq_len=32768,sw_sz=4096                43.984417     3.662720      16.771521   
 """
 # pylint: enable=line-too-long
 import itertools
-from functools import partial
 from typing import Any, Optional, Protocol, Union
 
 import jax
 import jax.numpy as jnp
 from jax.experimental.mosaic.gpu.profiler import _event_elapsed, _event_record, has_registrations
-from jax.experimental.pallas.ops.gpu.attention import mha as pallas_mha
 
-from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
+from axlearn.common.attention_bias import causal_mask
+from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.gpu_attention import (
-    NEG_INF,
-    MaskType,
-    cudnn_dot_product_attention,
-    flash_attention,
+    CuDNNGPUFlashAttentionWithExplicitBias,
+    PallasGPUFlashAttention,
 )
-from axlearn.common.flash_attention.gpu_decoding import Tensor, flash_decoding
-from axlearn.common.flash_attention.utils import mha_reference
+from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
+from axlearn.common.flash_attention.test_utils import generate_attention_data
+from axlearn.common.utils import Tensor
 
 X = jnp.zeros((8192, 8192))
 Y = jnp.zeros((8192, 8192))
@@ -216,101 +214,43 @@ def bench_flash_attention(
         num_kv_heads = num_heads
     q_seq_len = 1 if is_decode else seq_len
     if is_decode:
-        if "pallas" in library:
-            q_seq_len = 16  # min supported seq length for triton and pallas
-        else:
-            q_seq_len = 1
+        cfg = dict(is_decoding=True)
+        q_seq_len = 1
     else:
+        cfg = dict()
         q_seq_len = seq_len
-    q = jax.random.normal(
-        jax.random.PRNGKey(0),
-        (bs, q_seq_len, num_heads, per_head_dim),
-        dtype=jnp.float16,
-    )
-    k = jax.random.normal(
-        jax.random.PRNGKey(1), (bs, seq_len, num_kv_heads, per_head_dim), dtype=jnp.float16
-    )
-    v = jax.random.normal(
-        jax.random.PRNGKey(2), (bs, seq_len, num_kv_heads, per_head_dim), dtype=jnp.float16
-    )
-    # Bias is not supported in pallas, so we don't include it here.
-    bias = None
+    mask_fn = causal_mask
     if sw_sz != -1:
-        mask_fn = sliding_window_causal_mask(sw_sz)
-        # We convert mask into a bias tensor for jax and cudnn.
-        assert bias is None
-        if not is_decode:
-            bias = jnp.zeros((1, 1, seq_len, seq_len), dtype=jnp.float16)
-            bias = jnp.where(
-                mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :]), bias, NEG_INF
-            )
-        else:
-            bias = jnp.zeros((1, 1, 1, seq_len), dtype=jnp.float16)
-            bias = bias.at[:, :, :, :-sw_sz].set(NEG_INF)
-    else:
-        mask_fn = causal_mask
+        mask_fn = None
+
+    q, k, v, bias = generate_attention_data(
+        bs,
+        q_seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        num_kv_heads=num_kv_heads,
+        mask_fn=mask_fn,
+        sliding_window_sz=sw_sz,
+        dtype=jnp.float16,
+        query_offset=seq_len - 1 if is_decode else 0,
+    )
+
     if "axlearn" in library:
-        args = (q, k, v)
-        if use_bwd:
-
-            @jax.jit
-            def triton_fn(q, k, v):
-                # Use mean rather than sum so that gradients won't overflow.
-                return flash_attention(q, k, v, mask_fn=mask_fn).mean()
-
-            fn = jax.grad(triton_fn, argnums=(0, 1, 2))
-        else:
-            if q_seq_len == 1:
-                fn = partial(flash_decoding, kv_seq_len=None, mask_fn=mask_fn)
-                args = (q, k, v)
-            else:
-                fn = partial(flash_attention, mask_fn=mask_fn)
-    elif "pallas" in library:
-        k = k.repeat(num_heads // num_kv_heads, axis=2)
-        v = v.repeat(num_heads // num_kv_heads, axis=2)
-        args = (q, k, v)
-        if use_bwd:
-
-            @jax.jit
-            def pallas_fn(q, k, v):
-                return pallas_mha(q, k, v, segment_ids=None, causal=True).mean()
-
-            fn = jax.grad(pallas_fn, argnums=(0, 1, 2))
-        else:
-            fn = partial(pallas_mha, segment_ids=None, causal=not is_decode)
+        base_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
+        if q_seq_len == 1:
+            base_fn = GPUDecoding.default_config().set(**cfg).instantiate()
     elif "cudnn" in library:
-        k = k.repeat(num_heads // num_kv_heads, axis=2)
-        v = v.repeat(num_heads // num_kv_heads, axis=2)
-        args = (q, k, v, bias)
-
-        if use_bwd:
-
-            @jax.jit
-            def cudnn_fn(q, k, v, bias):
-                return cudnn_dot_product_attention(
-                    q, k, v, bias=bias, mask_type=MaskType.CAUSAL
-                ).mean()
-
-            fn = jax.grad(cudnn_fn, argnums=(0, 1, 2))
-        else:
-            fn = partial(
-                cudnn_dot_product_attention,
-                mask_type=MaskType.CAUSAL if not is_decode else MaskType.NO_MASK,
-            )
+        base_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
     else:
-        args = (q, k, v, bias)
+        base_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-        if use_bwd:
-
-            @jax.jit
-            def ref_fn(q, k, v, bias):
-                return mha_reference(q, k, v, bias, causal=True).mean()
-
-            fn = jax.grad(ref_fn, argnums=(0, 1, 2))
-        else:
-            fn = partial(mha_reference, causal=not is_decode)
-
-    return measure(fn, *args)
+    assert base_fn.is_supported(q, k, v, bias)
+    if use_bwd:
+        fn = lambda *args: base_fn(*args).mean()
+    else:
+        fn = base_fn
+    return measure(fn, q, k, v, bias)
 
 
 def _sweep(
@@ -397,7 +337,7 @@ def bench_flash_attention_fwd_bwd(use_bwd: bool):
         per_head_dim=128,
         sw_sz=-1,
     )
-    libraries = ["jax", "axlearn", "jax-cudnn", "jax-pallas"]
+    libraries = ["jax", "axlearn", "jax-cudnn"]
     benchmark_sweep(libraries, common_kwargs, bs=[2, 4, 8])
     benchmark_sweep(libraries, common_kwargs, num_heads=[12, 16, 32, 48, 72])
     # 256 to 8192.

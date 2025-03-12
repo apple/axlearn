@@ -18,8 +18,8 @@ from axlearn.common.attention_bias import (
     sliding_window_causal_mask,
 )
 from axlearn.common.flash_attention import tpu_attention
+from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.test_utils import generate_attention_data
-from axlearn.common.flash_attention.utils import ReferenceMHA
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import Tensor
 

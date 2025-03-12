@@ -26,9 +26,7 @@ Compared to the implementation in the JAX repo, we made the following enhancemen
 * Support kv_seq_len != q_seq_len.
 * Support 2D/4D bias.
 * Support dropout.
-* Support arbitrary mask function,
-    with speed and memory optimization for sliding window type mask,
-    and memory optimizations for arbitrary mask.
+* Support arbitrary mask function like Pytorch FlexAttention.
 """
 import functools
 from collections.abc import Sequence
@@ -52,6 +50,8 @@ from axlearn.common.attention_bias import (
     MaskFn,
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
+    SlidingWindowAttentionBias,
+    causal_mask,
     split,
 )
 from axlearn.common.flash_attention.common import (
@@ -821,11 +821,13 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         key = repeat_kv_heads(query.shape[2], key)
         value = repeat_kv_heads(query.shape[2], value)
+        tensor_bias = explicit_bias.value()
+        logging.info("Using explicit bias %s", str(tensor_bias))
         return flash_attention(
             query,
             key,
             value,
-            bias=explicit_bias.value(),
+            bias=tensor_bias,
             segment_ids=get_segment_ids(query=query, key=key, segment_ids=segment_ids),
             prng_key=prng_key,
             softmax_scale=self.cfg.softmax_scale,
@@ -847,9 +849,20 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
     def is_supported(self, query, key, value, bias):
         if not super().is_supported(query, key, value, bias):
             return False
-        # TODO(hanzhi-zhou): cuDNN supports decoding but doesn't perform good. Enable it once
-        # cuDNN frontend supports lean attention.
-        if not self._check_block_size(query=query, key=key, block_size=2):
+        if self.cfg.is_decoding:
+            if query.shape[1] > 1:
+                self._log_unsupported("multi-step decoding is not supported.")
+                return False
+            if not key.shape[1] % 2 == 0:
+                self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
+                return False
+        else:
+            if not self._check_block_size(query=query, key=key, block_size=2):
+                return False
+        if query.dtype not in (jnp.float16, jnp.bfloat16):
+            self._log_unsupported(
+                f"{query.dtype=} is not supported. Only supports float16 and bfloat16."
+            )
             return False
 
         if jax.default_backend() == "cpu":
@@ -862,7 +875,30 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         if head_dim > 128:
             self._log_unsupported(f"{head_dim=} > 128")
             return False
-        _, explicit_bias = split(bias, CausalAttentionBias)
+        _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
+        self._need_to_fold_sliding_into_bias = sliding.has_value() and (
+            self.cfg.is_decoding or self.cfg.dropout_rate != 0.0
+        )
+        if sliding.has_value() and not self._allow_explicit_bias:
+            if self.cfg.is_decoding:
+                self._log_unsupported(
+                    "cuDNN doesn't support sliding window in decoding "
+                    "without folding it into explicit bias."
+                )
+                return False
+            if self.cfg.dropout_rate != 0.0:
+                self._log_unsupported(
+                    "cuDNN doesn't support sliding window with dropout "
+                    "without folding it into explicit bias."
+                )
+                return False
+            if explicit_bias.has_value():
+                self._log_unsupported(
+                    "cuDNN doesn't support sliding window with explicit bias "
+                    "without folding it into explicit bias."
+                )
+                return False
+
         if explicit_bias.has_value() and not self._allow_explicit_bias:
             self._log_unsupported("we don't allow explicit bias at this stage.")
             return False
@@ -872,22 +908,50 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(self, query, key, value, bias, prng_key=None):
         del prng_key
-        causal, explicit_bias = split(
-            bias,
-            CausalAttentionBias,
+
+        args = dict(
+            query=query,
+            key=repeat_kv_heads(query.shape[2], key),
+            value=repeat_kv_heads(query.shape[2], value),
+            scale=self.cfg.softmax_scale,
+            dropout_rate=self.cfg.dropout_rate,
         )
-        key = repeat_kv_heads(query.shape[2], key)
-        value = repeat_kv_heads(query.shape[2], value)
+        sliding_window_length = None
+        kv_seq_len = None
+        if self.cfg.is_decoding:
+            mask_type = MaskType.NO_MASK
+            mask, explicit_bias = split(bias, MaskFnAttentionBias)
+            if mask.target_positions is None:
+                raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
+            kv_seq_len = jnp.broadcast_to(mask.target_positions[:, -1] + 1, [query.shape[0]])
+            # Fold mask_fn into explicit bias if it's not causal.
+            if getattr(mask, "mask_fn", None) is not causal_mask:
+                if mask.has_value():
+                    explicit_bias += mask
+        else:
+            if self._need_to_fold_sliding_into_bias:
+                causal, explicit_bias = split(bias, CausalAttentionBias)
+                mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
+            else:
+                causal, sliding, explicit_bias = split(
+                    bias, CausalAttentionBias, SlidingWindowAttentionBias
+                )
+                mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
+                # Sliding window must has causal set.
+                if sliding.has_value():
+                    sliding_window_length = sliding.sliding_window_size + 1
+                    mask_type = MaskType.CAUSAL
+        # cuDNN requires bias to have the same dtype as qkv.
+        tensor_bias = explicit_bias.astype(query.dtype).value()
         # TODO(kelvin-zou): Add support for segment IDs.
         # TODO(kelvin-zou): verify cudnn's mask support with BoolAttentionBias.
+        logging.info("Using explicit bias=%s", str(tensor_bias))
         return cudnn_dot_product_attention(
-            query,
-            key,
-            value,
-            bias=explicit_bias.value(),
-            scale=self.cfg.softmax_scale,
-            mask_type=MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK,
-            dropout_rate=self.cfg.dropout_rate,
+            **args,
+            kv_seqlen=kv_seq_len,
+            bias=tensor_bias,
+            mask_type=mask_type,
+            sliding_window_length=sliding_window_length,
         )
 
 

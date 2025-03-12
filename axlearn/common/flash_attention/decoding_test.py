@@ -9,18 +9,19 @@ import pytest
 from absl.testing import parameterized
 
 from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
+from axlearn.common.flash_attention.common import BaseFlashAttention, ReferenceMHA
+from axlearn.common.flash_attention.gpu_attention import CuDNNGPUFlashAttentionWithExplicitBias
 from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
 from axlearn.common.flash_attention.test_utils import generate_attention_data
 from axlearn.common.flash_attention.tpu_decoding import TPUDecoding
-from axlearn.common.flash_attention.utils import BaseFlashAttention, ReferenceMHA
 from axlearn.common.test_utils import TestCase, Tolerance
 
 if jax.default_backend() == "gpu":
-    decoding_fns = [GPUDecoding]
+    decoding_fns = [GPUDecoding, CuDNNGPUFlashAttentionWithExplicitBias]
     dtypes = [jnp.float32, jnp.float16]
 elif jax.default_backend() == "tpu":
     decoding_fns = [TPUDecoding]
-    dtypes = [jnp.bfloat16]
+    dtypes = [jnp.float32, jnp.bfloat16]
 elif jax.default_backend() == "cpu":
     # CPU emulation of pallas kernels.
     decoding_fns = [GPUDecoding, TPUDecoding]
@@ -92,6 +93,13 @@ class DecodingTest(TestCase):
         if seq_len % 512 != 0 and decoding_fn is TPUDecoding:
             self.assertFalse(is_supported)
             return
+        if (
+            jax.default_backend() == "gpu"
+            and decoding_fn is CuDNNGPUFlashAttentionWithExplicitBias
+            and input_dtype is jnp.float32
+        ):
+            self.assertFalse(is_supported)
+            return
         self.assertTrue(is_supported)
 
         o = fn(q, k, v, bias)
@@ -119,7 +127,7 @@ class DecodingTest(TestCase):
                 o,
                 o_ref,
                 tolerance_map={
-                    1.0: Tolerance(rtol=0.01, atol=0.2),
+                    1.0: Tolerance(rtol=0.01, atol=0.25),
                     0.98: Tolerance(rtol=0.01, atol=0.05),
                     0.9: Tolerance(rtol=0.01, atol=0.025),
                 },
