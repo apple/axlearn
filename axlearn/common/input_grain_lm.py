@@ -23,7 +23,9 @@ class _SplitFn(Protocol):
     def __call__(self, ids: Tensor, *, max_len: int) -> Tensor:
         ...
 
+
 _PackingFn = Callable[[Dataset, int, Callable, int, str, grain.ReadOptions], Dataset]
+
 
 class _StreamingPackingDatasetIterator(grain.DatasetIterator):
     """An iterator that yields packed examples in a streaming fashion.
@@ -268,6 +270,7 @@ def streaming_packing(
     ds = ds.map(functools.partial(_maybe_call, fn=inner))
     ds = ds.filter(lambda x: x is not None)
     return ds
+
 
 # TODO(markblee): Clean up the unused signatures.
 def windowed_packing(
