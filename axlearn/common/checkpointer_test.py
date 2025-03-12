@@ -494,7 +494,7 @@ class CheckpointerTest(test_utils.TestCase):
 
             def __init__(self, max_step: int):
                 self._max_step = max_step
-                self._state = dict(step=0)
+                self._state = dict(step=0, values=b"123")
 
             def get_state(self):
                 return self._state
@@ -535,8 +535,10 @@ class CheckpointerTest(test_utils.TestCase):
             state1 = dict(x=_DummySavable(max_step=3))
             step, restored_state = ckpt.restore(step=None, state=state1)
             self.assertEqual(1, step)
+            restored_x: _DummySavable = restored_state["x"]
             # The restored_state contains the iter pointing to the next value.
-            self.assertEqual(list(range(1, 3)), list(iter(restored_state["x"])))
+            self.assertEqual(list(range(1, 3)), list(iter(restored_x)))
+            self.assertEqual(b"123", restored_x.get_state()["values"])
             ckpt.stop()
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])

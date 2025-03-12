@@ -16,6 +16,7 @@ from typing import Any, NamedTuple, Optional, Protocol, Union, runtime_checkable
 
 import jax
 import jax.numpy as jnp
+import msgpack
 import tensorflow as tf
 from absl import logging
 from jax._src.mesh import thread_resources
@@ -203,14 +204,13 @@ class PythonSavable(Protocol):
     def get_state(self) -> Union[bytes, Nested[Any]]:
         """Gets checkpoint state.
 
-        The state should be a JSON-serializable PyTree or bytes that utf-8 decode to a
-        JSON-serializable PyTree.
+        The state should be serializable via `msgpack`.
         """
 
-    def set_state(self, state: Nested[Any]):
+    def set_state(self, state: Union[bytes, Nested[Any]]):
         """Sets checkpoint state.
 
-        The input state is a JSON-deserialized PyTree.
+        The input is a `msgpack`-deserialized object corresponding to restored checkpoint state.
         """
 
 
@@ -221,12 +221,10 @@ def maybe_save_python_savables(value_map: Nested[Any], *, dir: str):
         if not isinstance(value, PythonSavable):
             continue
         state = value.get_state()
-        if isinstance(state, bytes):
-            state = state.decode("utf-8")
         dst = os.path.join(dir, path)
         fs.makedirs(os.path.dirname(dst))
-        with fs.open(dst, "w") as f:
-            json.dump(state, f, indent=4)
+        with fs.open(dst, "wb") as f:
+            f.write(msgpack.packb(state))
 
 
 # pylint: disable-next=redefined-builtin
@@ -237,10 +235,7 @@ def maybe_restore_python_savables(value_map: Nested[Any], *, dir: str) -> Nested
             continue
         with fs.open(os.path.join(dir, path), "rb") as f:
             state = f.read()
-        if isinstance(state, bytes):
-            state = state.decode("utf-8")
-        if isinstance(state, str):
-            state = json.loads(state)
+        state = msgpack.unpackb(state)
         value.set_state(state)
 
     return value_map
