@@ -23,6 +23,7 @@ class _SplitFn(Protocol):
     def __call__(self, ids: Tensor, *, max_len: int) -> Tensor:
         ...
 
+_PackingFn = Callable[[Dataset, int, Callable, int, str, grain.ReadOptions], Dataset]
 
 class _StreamingPackingDatasetIterator(grain.DatasetIterator):
     """An iterator that yields packed examples in a streaming fashion.
@@ -230,13 +231,11 @@ def streaming_packing(
     Args:
         ds: datasets to be packed.
         max_len: Max sequence length.
-        ds: Datasets to be packed.
-        max_len: Max sequence length.
         inner: A processor that operates on packed examples. It should output examples of shape ...
             or None if the example should be skipped.
         window_size: An upper bound on the window size to use for packing. If None, no upper bound
             is enforced.
-        input_keys: The keys in the input examples to use for packing.
+        input_key: The keys in the input examples to use for packing.
         read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
             used to convert the pipeline to grain.IterDataset.
 
@@ -270,7 +269,7 @@ def streaming_packing(
     ds = ds.filter(lambda x: x is not None)
     return ds
 
-
+# TODO(markblee): Clean up the unused signatures.
 def windowed_packing(
     ds: Dataset,
     *,
@@ -289,10 +288,10 @@ def windowed_packing(
         max_len: Max sequence length.
         ds: Datasets to be packed.
         max_len: Max sequence length.
-        inner: A processor that operates on packed examples. It should output examples of shape ...
-            or None if the example should be skipped.
+        inner: A processor that operates on packed examples. It should output examples of shape
+        [1, sequence_length] or None if the example should be skipped.
         window_size: An upper bound on the window size to use for packing.
-        input_keys: The keys in the input examples to use for packing.
+        input_key: The keys in the input examples to use for packing.
         read_options: grain.ReadOptions which includes num_threads and prefetch_buffer_size. It is
             used to convert the pipeline to grain.IterDataset.
 
@@ -319,7 +318,7 @@ def _make_autoregressive_inputs(
     ds: Dataset,
     *,
     max_len: int,
-    packing_fn: Callable[[Dataset, int, Callable, int, str, grain.ReadOptions], Dataset],
+    packing_fn: _PackingFn,
     input_key: str = "target_labels",
     split_fn: Optional[ConfigOr[_SplitFn]] = None,
     read_options: grain.ReadOptions = grain.ReadOptions(num_threads=1, prefetch_buffer_size=16),
@@ -333,8 +332,6 @@ def _make_autoregressive_inputs(
     Args:
         ds: A Dataset where each input example contains:
             `input_key`: A flat int Tensor of shape [None], i.e., length can vary across examples.
-        max_len: Max sequence length.
-        ds: Datasets to be packed.
         max_len: Max sequence length.
         inner: A processor that operates on packed examples. It should output examples of shape ...
             or None if the example should be skipped.
