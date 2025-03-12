@@ -4,7 +4,7 @@
 from typing import Any
 
 
-def get_default_env(tpu_type: str, num_tpu_slices: int, job_name: str) -> dict[str, Any]:
+def get_default_env(*, tpu_type: str, num_tpu_slices: int, job_name: str) -> dict[str, Any]:
     """Gets the default environment for TPU pods."""
     return dict(
         # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
