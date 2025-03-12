@@ -27,7 +27,7 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3.10 -m venv $VIRTUAL_ENV
+RUN python -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install flit
