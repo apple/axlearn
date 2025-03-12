@@ -23,7 +23,9 @@ hostname
 JOB_ID=${SLURM_JOB_ID}
 ARTIFACTS_PATH="artifacts/"
 TEST_ARTIFACTS_PATH="${ARTIFACTS_PATH}/${JOB_ID}"
-mkdir -p "$TEST_ARTIFACTS_PATH"
+if [ "$1" -ne "profile" ]; then
+	mkdir -p "$TEST_ARTIFACTS_PATH"
+fi
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
 PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/profiles
@@ -159,8 +161,10 @@ profile() {
 	cp $profile_dir/profile_rank_0_exec_3.ntff $upload_dir
 	cd $(dirname $neff_path)
 	cp file.neff $upload_dir
+	set +e
 	tar -cvf penguin-text.tar penguin-sg*
 	cp penguin-text.tar $upload_dir
+	set -e
 	if [ $SLURM_PROCID -eq 0 ]; then
 		aws s3 sync $upload_dir $s3_profile_path
 		echo "Profile uploaded to $s3_profile_path"

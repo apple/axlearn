@@ -99,7 +99,6 @@ MAX_SEQUENCE_LENGTH = {
     "Mistral-8x20B": 4096,
 }
 
-
 _BASE_MODEL_HIDDEN_DIM = 768
 
 MOE_OUTER_BATCH_AXIS_NAMES = ("data", "fsdp")
@@ -472,8 +471,8 @@ def get_trainer_kwargs(
                 outer_batch_size=get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, neuron_mesh),
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
-            max_sequence_length=max_sequence_length,
-            train_batch_size=128, # 8M tokens.
+            max_sequence_length=int(os.getenv("AXLEARN_MAX_SEQ_LEN", max_sequence_length)),
+            train_batch_size=int(os.getenv("AXLEARN_TRAIN_BATCH_SIZE", 128)),
             max_step=250_000,
             mesh_shape=mesh_shape_from_axes(fsdp=-1, model=8),
             mesh_rules=(
