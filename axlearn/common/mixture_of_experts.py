@@ -15,6 +15,7 @@ Reference: https://arxiv.org/abs/2405.15052.
 """
 import re
 import os
+import math
 from enum import Enum
 from functools import reduce, partial
 from typing import NamedTuple, Optional, Sequence, Union
@@ -982,21 +983,17 @@ class TopKGatingGather(TopKGating):
         print('token_permutation_idx', token_permutation_idx.shape, token_permutation_idx)
         print('token_assignments', token_assignments)
 
-    # pylint: disable-next=too-many-statements
-    def forward(self, logits: Tensor) -> NestedTensor:
-        """Please see comments of BaseGating.forward."""
-        cfg = self.config
-        O, G, S, E = logits.shape
-        
-        # logits: (O, G, S, E)
-        if logits.dtype != jnp.float32:
-            logits = logits.astype(jnp.float32)
-        with jax.named_scope("cap_logits"):
+    def router(self, cfg, logits):
+        with jax.named_scope("router"):
+            # logits: (O, G, S, E)
+            if logits.dtype != jnp.float32:
+                logits = logits.astype(jnp.float32)
             logits = _cap_logits(logits, cfg.gating_logit_cap)
-        with jax.named_scope("softmax"):
             # raw_gates (expert affinities): (O, G, S, E)
             raw_gates = jax.nn.softmax(logits, axis=-1)  # along E dim
-
+        return raw_gates
+    
+    def compute_expert_capacity(self, cfg, logits):
         with jax.named_scope("expert_capacity"):
             # computing expert capacity scalar
             expert_capacity = _compute_expert_capacity(
@@ -1007,29 +1004,9 @@ class TopKGatingGather(TopKGating):
                 group_size=logits.shape[-2],
                 num_experts=cfg.num_experts,
             )
-
-        with jax.named_scope("expert_index"):
-            # Compute expert indices based on affinities
-            # top_k happens on last axis of operand, so the expert axis
-            k = min(cfg.top_k, cfg.num_experts)
-            _, expert_index = jax.lax.top_k(raw_gates, k)
-            # expert_index: (O, G, S, top_k)
-            expert_index = expert_index.astype(jnp.int32)
-
-            # expert_index: (O, G, top_k, S)
-            expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
-            # expert_index: (O, G, S * top_k)
-            expert_index = expert_index.reshape(O, G, S*k)
-
-        with jax.named_scope("expert_mask"):
-            # Use expert indices to compute mask
-            # expert_mask: [O, G, S*topk, E]
-            expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
-
-        # Only use top 1 tokens for calculationg aux loss.
-        with jax.named_scope("aux_loss"):
-            aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
-
+        return expert_capacity
+        
+    def compute_position_in_experts(self, expert_mask, raw_gates, expert_capacity, cfg):
         with jax.named_scope("position_in_expert"):
             # Compute cumulative sums of assignment
             # indicators for each expert, i.e. index e \in 0..E-1 independently.
@@ -1073,6 +1050,42 @@ class TopKGatingGather(TopKGating):
             expert_index = expert_index.reshape(O, G, k, S)
             expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
 
+    # pylint: disable-next=too-many-statements
+    def forward(self, logits: Tensor) -> NestedTensor:
+        """Please see comments of BaseGating.forward."""
+        cfg = self.config
+        O, G, S, E = logits.shape
+        
+        raw_gates = self.router(cfg, logits)
+        expert_capacity = self.compute_expert_capacity(cfg, logits)
+
+        with jax.named_scope("expert_index"):
+            # expert index will be (O, G, S, top_k)
+            # mapping from tokens to the chosen top_k experts
+            # based on affinities
+            # top_k happens on last axis of operand, so the expert axis
+            k = min(cfg.top_k, cfg.num_experts)
+            # expert_index: (O, G, S, top_k)
+            _, expert_index = jax.lax.top_k(raw_gates, k)
+
+            expert_index = expert_index.astype(jnp.int32)
+
+            # expert_index: (O, G, top_k, S)
+            expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
+            # expert_index: (O, G, S * top_k)
+            expert_index = expert_index.reshape(O, G, S*k)
+
+        with jax.named_scope("expert_mask"):
+            # Use expert indices to compute mask
+            # expert_mask: [O, G, S*topk, E]
+            expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
+
+        # Only use top 1 tokens for calculationg aux loss.
+        with jax.named_scope("aux_loss"):
+            aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
+
+        position_in  self.compute_position_in_experts()
+
         with jax.named_scope("token_permutation_idx"):
             # token_permutation_idx: (O, G, S, top_k)
             # for each token we get the position in assigned experts from this tensor
@@ -1107,6 +1120,22 @@ class TopKGatingGather(TopKGating):
             load_balance_loss=aux_loss,
             router_z_loss=router_z_loss,
         )
+
+
+class TopKGatingGatherBlockwise(TopKGatingGather):
+    @config_class
+    class Config(TopKGating.Config):
+        block_size: int = 512
+    
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+    
+    def compute_num_blocks(self, num_tokens, expert_capacity):
+        num_blocks = math.ceil(expert_capacity / self.config.block_size) * self.config.num_experts
+        num_blocks = min(num_blocks, num_tokens * self.config.top_k)
+        logging.info("Setting number of blocks as %d", num_blocks)
+        return num_blocks
+
 
 class TransformerFeedForwardMoE(BaseLayer):
     """A Transformer feed-forward layer with mixture of experts.
