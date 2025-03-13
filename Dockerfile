@@ -103,12 +103,15 @@ FROM base AS gpu
 # Needed for NVIDIA CX7 based RDMA (not cloud specific).
 RUN apt-get update && apt-get install -y ibverbs-utils
 
+# Add custom wheels
+ADD image/wheels.tar.gz /tmp/wheels/
+
 # TODO(markblee): Support extras.
-ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_nightly_releases.html
+ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html /tmp/wheels/export/"
 ENV JAX_TRACEBACK_FILTERING=off
 #RUN pip install --pre jax jaxlib "jax-cuda12-plugin[with_cuda]" jax-cuda12-pjrt
 RUN pip install .[core,gpu]
-RUN pip install --ignore-requires-python tensorflow-text==2.18.1 seqio
+
 
 # Install Triton 3.3.0 custom build
 #COPY --from=triton-3.3.0:latest /tmp/staging/triton/python/dist /tmp/triton

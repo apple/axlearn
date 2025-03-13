@@ -36,12 +36,12 @@ core = [
     "tensorflow==2.17.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    # "tensorflow_text==2.18.1; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
+    "tensorflow_text==2.17.1; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.12.2",
     "scipy==1.15.2",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
-    # "seqio==0.0.18",  # used for inputs
+    "seqio==0.0.18",  # used for inputs
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.10.2", # for AQT, param converter and adapter.
     "prefixed==0.9.0", # For formatting file sizes, param counts, etc.
@@ -129,7 +129,7 @@ dataflow = [
 ]
 # GPU custom kernel dependency.
 gpu = [
-    "triton==3.2.0",
+    "triton==3.3.0+git1c5ea229",
     "jax-cuda12-plugin[with_cuda]==0.5.3.dev20250311",
     "jax-cuda12-pjrt==0.5.3.dev20250311",
     "nvidia-ml-py==12.570.86",
