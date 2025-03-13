@@ -803,7 +803,8 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 # This gets stuff to launch, but moves extremely slowly
                 #"CUDA_LAUNCH_BLOCKING": "1",
                 # Enable auto PGLE available in jax 0.4.33
-                "JAX_ENABLE_PGLE": "True",
+                #"JAX_ENABLE_PGLE": "True",
+                "JAX_ENABLE_PGLE": "False",
                 "JAX_PGLE_PROFILING_RUNS": "3",
                 # This is needed for flash attention + auto PGLE to work
                 "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
