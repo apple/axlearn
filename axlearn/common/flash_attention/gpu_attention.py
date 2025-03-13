@@ -842,6 +842,10 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
 
     We disallow folding `mask_fn` and segment ids into explicit bias to allow Pallas implementation
     to be used when possible.
+
+    Note on sliding window condition (quoted from an error message):
+    "Sliding window attention is only supported with padding_mask=False, causal_mask=True,
+    is_dropout=False, is_bias=False, is_ragged=False"
     """
 
     _allow_explicit_bias = False
@@ -876,9 +880,6 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             self._log_unsupported(f"{head_dim=} > 128")
             return False
         _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
-        self._need_to_fold_sliding_into_bias = sliding.has_value() and (
-            self.cfg.is_decoding or self.cfg.dropout_rate != 0.0
-        )
         if sliding.has_value() and not self._allow_explicit_bias:
             if self.cfg.is_decoding:
                 self._log_unsupported(
@@ -916,30 +917,33 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             scale=self.cfg.softmax_scale,
             dropout_rate=self.cfg.dropout_rate,
         )
-        sliding_window_length = None
-        kv_seq_len = None
+        # TODO(hanzhi-zhou): cuDNN decoding is only for testing. Enable in production once we
+        # upgrade cuDNN frontend to enable lean attention.
         if self.cfg.is_decoding:
-            mask_type = MaskType.NO_MASK
+            # Decoding needs PADDING mask to compute attention only up to `kv_seqlen`.
+            mask_type = MaskType.PADDING
             mask, explicit_bias = split(bias, MaskFnAttentionBias)
             if mask.target_positions is None:
                 raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
-            kv_seq_len = jnp.broadcast_to(mask.target_positions[:, -1] + 1, [query.shape[0]])
+            args.update(
+                q_seqlen=jnp.broadcast_to(1, [query.shape[0]]),
+                kv_seqlen=jnp.broadcast_to(mask.target_positions[:, -1] + 1, [query.shape[0]]),
+            )
             # Fold mask_fn into explicit bias if it's not causal.
             if getattr(mask, "mask_fn", None) is not causal_mask:
                 if mask.has_value():
                     explicit_bias += mask
         else:
-            if self._need_to_fold_sliding_into_bias:
-                causal, explicit_bias = split(bias, CausalAttentionBias)
-                mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
-            else:
-                causal, sliding, explicit_bias = split(
-                    bias, CausalAttentionBias, SlidingWindowAttentionBias
-                )
-                mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
-                # Sliding window must has causal set.
-                if sliding.has_value():
-                    sliding_window_length = sliding.sliding_window_size + 1
+            causal, sliding, explicit_bias = split(
+                bias, CausalAttentionBias, SlidingWindowAttentionBias
+            )
+            mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
+            if sliding.has_value():
+                if self.cfg.dropout_rate != 0.0 or explicit_bias.has_value():
+                    explicit_bias += sliding
+                else:
+                    args["sliding_window_length"] = sliding.sliding_window_size + 1
+                    # When using cuDNN sliding window, mask must be set to CAUSAL.
                     mask_type = MaskType.CAUSAL
         # cuDNN requires bias to have the same dtype as qkv.
         tensor_bias = explicit_bias.astype(query.dtype).value()
@@ -948,10 +952,8 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         logging.info("Using explicit bias=%s", str(tensor_bias))
         return cudnn_dot_product_attention(
             **args,
-            kv_seqlen=kv_seq_len,
             bias=tensor_bias,
             mask_type=mask_type,
-            sliding_window_length=sliding_window_length,
         )
 
 

@@ -21,15 +21,11 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from axlearn.common.attention_bias import (
-    CausalAttentionBias,
-    ZeroAttentionBias,
-    causal_mask,
-    sliding_window_causal_mask,
-)
+from axlearn.common.attention_bias import CausalAttentionBias, ZeroAttentionBias, causal_mask
 from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.gpu_attention import (
     CuDNNGPUFlashAttention,
+    CuDNNGPUFlashAttentionWithExplicitBias,
     PallasGPUFlashAttention,
 )
 from axlearn.common.flash_attention.test_utils import generate_attention_data
@@ -138,8 +134,9 @@ def test_triton_against_xla_ref(
         gpu_block_size=block_size,
     )
     # Compare outputs.
-    call_flash = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
+    test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
 
     def forward_tol_fn(backend, dtype):
         del dtype
@@ -149,7 +146,7 @@ def test_triton_against_xla_ref(
         return dict(atol=0.01)
 
     _test_forward_and_backward(
-        q, k, v, bias, ref_fn=ref_fn, test_fn=call_flash, forward_tol_fn=forward_tol_fn
+        q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=forward_tol_fn
     )
 
 
@@ -159,13 +156,15 @@ def test_triton_against_xla_ref(
 @pytest.mark.parametrize("use_segment_ids", [True, False])
 @pytest.mark.parametrize("num_heads", [8])
 @pytest.mark.parametrize("per_head_dim", [128])
+@pytest.mark.parametrize("test_cls", [PallasGPUFlashAttention, CuDNNGPUFlashAttention])
 def test_sliding_window_mask(
     batch_size,
     seq_len,
     num_heads,
     per_head_dim,
     sliding_window_size,
-    use_segment_ids: bool,
+    use_segment_ids,
+    test_cls,
 ):
     q, k, v, bias = generate_attention_data(
         batch_size,
@@ -173,7 +172,7 @@ def test_sliding_window_mask(
         seq_len,
         num_heads,
         per_head_dim,
-        mask_fn=sliding_window_causal_mask(sliding_window_size),
+        sliding_window_sz=sliding_window_size,
         with_segment_ids=use_segment_ids,
     )
 
@@ -181,9 +180,13 @@ def test_sliding_window_mask(
         softmax_scale=q.shape[-1] ** -0.5,
         interpret=jax.default_backend() == "cpu",
     )
-    fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
+    test_fn = test_cls.default_config().set(**cfg).instantiate()
+    if test_cls is CuDNNGPUFlashAttention and use_segment_ids:
+        chex.assert_equal(test_fn.is_supported(q, k, v, bias), False)
+        test_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
+    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    _test_forward_and_backward(q, k, v, bias, ref_fn=ref_fn, test_fn=fn)
+    _test_forward_and_backward(q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn)
 
 
 # We test the cudnn_dot_product_attention against the reference flash_attention.
@@ -226,6 +229,7 @@ def test_cudnn_against_triton_ref(
 
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
+    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
     def forward_tol_fn(backend, dtype):
@@ -309,6 +313,7 @@ def test_cudnn_dropout_against_xla_dropout(
     q = jax.random.normal(k1, qkv_shape, dtype=dtype)
     k = jax.random.normal(k2, qkv_shape, dtype=dtype)
     v = jax.random.normal(k3, qkv_shape, dtype=dtype)
+    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
 
     ref_fn = functools.partial(
         ref_fn,
@@ -358,6 +363,7 @@ def test_cudnn_seqlen_head_support(
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
 
     _test_forward_and_backward(
         q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=_cudnn_xla_forward_tol_fn
