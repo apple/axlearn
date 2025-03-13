@@ -116,6 +116,11 @@ class BaseFlashAttention(Configurable):
         tpu_block_size: int = 512
         gpu_block_size: int = 128
 
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        # Keep a typed copy of self.config.
+        self.cfg: BaseFlashAttention.Config = self.config
+
     def name(self) -> str:
         """Returns the class name."""
         return self.__class__.__name__
@@ -168,11 +173,6 @@ class BaseFlashAttention(Configurable):
                 f"{key.shape[2]}"
             )
         return True
-
-    @property
-    def cfg(self) -> Config:
-        """Returns a typed self.config."""
-        return self.config
 
     def __call__(
         self,
