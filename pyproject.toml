@@ -36,7 +36,7 @@ core = [
     "tensorflow==2.17.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    "tensorflow_text==2.18.1; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
+    # "tensorflow_text==2.18.1; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.12.2",
