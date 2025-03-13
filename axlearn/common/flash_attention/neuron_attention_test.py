@@ -39,7 +39,7 @@ def test_fwd_against_ref(
     per_head_dim: int,
     causal: bool,
     input_dtype: jnp.dtype,
-    attention_bias_type: str,
+    attention_bias_type: Literal[None, "2d"],
 ):
     # On demand import only if test is needed.
     # pylint: disable=import-outside-toplevel
