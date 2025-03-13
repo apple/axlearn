@@ -165,9 +165,10 @@ def with_minibatch_steps(
                 """Helper function that adds a minibatch dimension while evenly dividing
                 batches across gradient accumulation iterations.
 
-                Input dimension is [Global logical Batch Size, sequence], this first reshaped to
-                [Minibatch Size, steps, sequence],then transposed to [steps, [Minibatch Size, seq]
-                this ensures that batches picked up from the global batch in a staggered pattern.
+                Input dimension is [Global logical Batch Size, Sequence], this first reshaped to
+                [Minibatch Size, Steps, Sequence],
+                then transposed to [steps, Minibatch Size, Sequence] this ensures that
+                batches picked up from the global batch in a staggered pattern.
 
                 The main benefit is that this avoids extra communication incurred in reshard
                 for every minibatch.

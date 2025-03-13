@@ -157,11 +157,14 @@ class TestMinibatchSteps(test_utils.TestCase):
 
         def loss_fn(*, model_params, inputs) -> ForwardOutputs:
             """Simple ForwardFn."""
-            del inputs
             loss = -jax.nn.log_softmax(model_params["w"] + model_params["b"])[1]
             output_collection = new_output_collection()
             output_collection.state_updates["w"] = model_params["w"] + 1
             output_collection.state_updates["loss"] = WeightedScalar(loss, 1)
+            # This output_collection entry is used to check if the gradient accumulation decorator
+            # correctly handles outputs that depend on batch size during carry buffer creation.
+            output_collection.summaries["output_with_batch_dimension"] = inputs["input_batch"]
+            del inputs
             return ForwardOutputs(loss=loss, aux={}, output_collection=output_collection)
 
         batch_key, forward_key, param_noise_key = jax.random.split(jax.random.PRNGKey(0), 3)
