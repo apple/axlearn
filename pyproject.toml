@@ -129,7 +129,7 @@ dataflow = [
 ]
 # GPU custom kernel dependency.
 gpu = [
-    "triton==3.3.0+git1c5ea229",
+    #"triton==3.3.0+git1c5ea229",
     "jax-cuda12-plugin[with_cuda]==0.5.3.dev20250311",
     "jax-cuda12-pjrt==0.5.3.dev20250311",
     "nvidia-ml-py==12.570.86",
