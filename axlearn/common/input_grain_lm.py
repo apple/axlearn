@@ -55,12 +55,20 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
 
         # Index of the parent.
         self._index = 0
+        # Total number of tokens in `self._current_examples_list`.
         self._current_token_count = 0
+        # The examples in the current buffer.
         self._current_examples_list = []
-        # For checkpointing support, we need to maintain what exact are the examples in current
+        # For checkpointing support, we need to maintain what exactly are the examples in current
         # sequence. self._parent_sequence_start_state and self._parent_sequence_end_state are used
         # to store to starting and ending state of the examples.
+
+        # If not None, the state of `self._parent` before the first example in
+        # `self._current_examples_list` was added.
+        # Must be None if `self._current_token_count == 0`.
         self._parent_sequence_start_state = None
+        # If not None, the state of `self._parent` before the last example in
+        # `self._current_examples_list` was added.
         self._parent_sequence_end_state = None
 
     def _reach_window_limit(self) -> bool:
@@ -68,7 +76,7 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
         return self._window_size is not None and self._index % self._window_size == 0
 
     def _pop_element(self) -> Optional[dict]:
-        """Pops element from self._current_example_list, and returns None if it's empty."""
+        """Pops element from self._current_example_list, returns None if the list is empty."""
         # If there is no examples in current sequence, return None.
         if not self._current_examples_list:
             return None
@@ -180,7 +188,6 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
                 raise ValueError("Grain receives invalid states.")
 
         self._parent.set_state(state["parent_sequence_start_state"])
-        self._parent_state = state["parent"]
         self._index = state["index"]
         _retrieve_packer_states(state)
 
