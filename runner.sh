@@ -172,6 +172,7 @@ profile() {
 	cd $(dirname $neff_path)
 	cp file.neff $upload_dir
 	cp log-neuron-cc.txt $upload_dir
+	cp file.code $upload_dir
 	set +e
 	tar -cvf penguin-text.tar penguin-sg*
 	cp penguin-text.tar $upload_dir

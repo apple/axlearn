@@ -1404,7 +1404,12 @@ class TransformerFeedForwardMoE(BaseLayer):
                     output = combine_outputs_sm(
                         min_k, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, output
                     )
-                    output = jnp.sum(output, axis=0)
+                    # In jax0.4.33, this op is hardcoded to fp32
+                    # TODO: verify that this becomes bf16 when jax is upgraded, 
+                    # and that the AR becomes RS once the cast op in between goes away.
+                    # it may not go away because of a reshape in between this and the slice, need to check.
+                    # TODO: does this need to be in fp32 for high TP
+                    output = jnp.sum(output, axis=0, dtype=permuted_output.dtype)
                 else:
                     output = jnp.zeros((O, G, group_len, cfg.input_dim), dtype=input_dtype)
                     min_k = min(self.config.gating.top_k, self.config.num_experts)
