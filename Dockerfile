@@ -27,7 +27,11 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python -m venv $VIRTUAL_ENV
+
+# Copy the Python 3.10 binaries from the builder image
+COPY --from=python3.10:latest /opt/python3.10 /opt/python3.10
+
+RUN /opt/python3.10/bin/python3.10 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install flit
@@ -104,22 +108,23 @@ FROM base AS gpu
 RUN apt-get update && apt-get install -y ibverbs-utils
 
 # Add custom wheels
-ADD image/wheels.tar.gz /tmp/wheels/
+#ADD image/wheels.tar.gz /tmp/wheels/
 
 # TODO(markblee): Support extras.
-ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html /tmp/wheels/export/"
+ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html"
 ENV JAX_TRACEBACK_FILTERING=off
 #RUN pip install --pre jax jaxlib "jax-cuda12-plugin[with_cuda]" jax-cuda12-pjrt
 RUN pip install .[core,gpu]
 
 
 # Install Triton 3.3.0 custom build
-#COPY --from=triton-3.3.0:latest /tmp/staging/triton/python/dist /tmp/triton
-#RUN pip install /tmp/triton/*.whl
-#RUN rm -rf /tmp/triton
+COPY --from=triton-3.3.0:latest /tmp/staging/triton/python/dist /tmp/triton
+RUN pip install /tmp/triton/*.whl
+RUN rm -rf /tmp/triton
 # End Triton install
 
 COPY . .
+RUN rm -rf image venv
 
 ################################################################################
 # Final target spec.                                                           #
