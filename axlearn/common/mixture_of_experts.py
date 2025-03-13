@@ -41,7 +41,7 @@ from axlearn.common.layers import (
 )
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
-from axlearn.common.param_init import FanAxes, constant_initializer
+from axlearn.common.param_init import ConstantInitializer, FanAxes, constant_initializer
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
@@ -709,6 +709,9 @@ class TransformerFeedForwardMoE(BaseLayer):
         # S - sequence dim
         dim_to_mesh_axis_map: dict[str, Optional[PartitionSpec]] = {}
 
+        # Optional prenorm_scale parameter.
+        prenorm_scale: Optional[float] = None
+
     @classmethod
     def default_config(cls) -> Config:
         cfg = super().default_config()
@@ -769,7 +772,18 @@ class TransformerFeedForwardMoE(BaseLayer):
         if cfg.structure in ["prenorm", "postnorm"]:
             self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
         elif cfg.structure in ("hybridnorm", "hybridnorm_v2"):
-            self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
+            if cfg.prenorm_scale:
+                self._add_child(
+                    "prenorm",
+                    cfg.norm.set(
+                        input_dim=cfg.target_dim,
+                        param_init=ConstantInitializer.default_config().set(
+                            value=cfg.prenorm_scale
+                        ),
+                    ),
+                )
+            else:
+                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.target_dim))
             self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
         elif cfg.structure == "nonorm":
             pass
