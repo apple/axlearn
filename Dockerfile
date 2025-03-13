@@ -108,7 +108,7 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_nightly_relea
 ENV JAX_TRACEBACK_FILTERING=off
 #RUN pip install --pre jax jaxlib "jax-cuda12-plugin[with_cuda]" jax-cuda12-pjrt
 RUN pip install .[core,gpu]
-RUN pip install --ignore-requires-python tensorflow-text==2.18.1
+RUN pip install --ignore-requires-python tensorflow-text==2.18.1 seqio
 
 # Install Triton 3.3.0 custom build
 #COPY --from=triton-3.3.0:latest /tmp/staging/triton/python/dist /tmp/triton
