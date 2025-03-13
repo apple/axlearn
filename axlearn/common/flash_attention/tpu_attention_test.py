@@ -154,10 +154,8 @@ class TestFlashAttention(TestCase):
         self.assertNestedAllClose(out, ref_out, atol=0.05)
 
         # Compare grads.
-        grad_out = jax.grad(lambda q, k, v, b: fn(q, k, v, b).mean(), argnums=(0, 1, 2))(
-            q, k, v, bias
-        )
-        ref_grad_out = jax.grad(lambda q, k, v, b: ref_fn(q, k, v, b).mean(), argnums=(0, 1, 2))(
+        grad_out = jax.grad(lambda *args: fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
+        ref_grad_out = jax.grad(lambda *args: ref_fn(*args).mean(), argnums=(0, 1, 2))(
             q, k, v, bias
         )
         self.assertNestedAllClose(grad_out, ref_grad_out, atol=0.05)

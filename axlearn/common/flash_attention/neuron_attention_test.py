@@ -114,6 +114,6 @@ def test_bwd_against_ref(
     test_fn = NeuronFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    jax_grads = jax.grad(test_fn, argnums=(0, 1, 2))(q, k, v, bias)
-    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v, bias)
+    jax_grads = jax.grad(lambda *args: test_fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
+    jax_ref_grads = jax.grad(lambda *args: ref_fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.07)

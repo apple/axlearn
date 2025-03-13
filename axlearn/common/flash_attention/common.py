@@ -184,12 +184,14 @@ class BaseFlashAttention(Configurable):
     ) -> Tensor:
         """Computes attention context.
 
+        Warning: The dtype of key and value may differ from the dtype of query.
+
         Args:
             query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
             key: Key of shape [batch_size, source_length, num_kv_heads, per_head_dim].
             value: Value of shape [batch_size, source_length, num_kv_heads, per_head_dim].
             bias: Attention bias to apply.
-            prng_key: PRNG key for dropout.
+            prng_key: PRNG key for dropout. Only needed when dropout_rate > 0.0.
 
         Returns:
             The context tensor of shape [batch_size, target_length, num_heads, per_head_dim].
