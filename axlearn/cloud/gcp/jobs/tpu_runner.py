@@ -79,6 +79,7 @@ from axlearn.cloud.gcp.bundler import GCSTarBundler, with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import TPUQRMJob, docker_command
 from axlearn.cloud.gcp.jobs import runner_utils
+from axlearn.cloud.gcp.jobs.tpu_utils import get_default_env
 from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
 from axlearn.cloud.gcp.tpu import (
     create_queued_tpu,
@@ -567,21 +568,10 @@ def with_tpu_training_defaults(
     cfg: TPUQRMJob.Config, *, flag_values: flags.FlagValues
 ) -> TPUQRMJob.Config:
     """Configures the job with TPU training defaults."""
-    default_env = dict(
-        # Use a large refresh to mitigate DNS timeout issues until tf>2.12 upgrade.
-        GCS_RESOLVE_REFRESH_SECS=600,
-        TPU_TYPE=infer_tpu_type(flag_values.instance_type),
-        NUM_TPU_SLICES=flag_values.num_replicas,
-        XLA_FLAGS=f"--xla_dump_to=/output/{cfg.name}/xla",
-        TF_CPP_MIN_LOG_LEVEL=0,
-        # Necessary for surfacing FATAL TPU errors.
-        TPU_STDERR_LOG_LEVEL=0,
-        # Default; see https://cloud.google.com/tpu/docs/troubleshooting/trouble-tf#debug_logs
-        TPU_MIN_LOG_LEVEL=0,
-        # Forces TensorStore to retry failed requests.
-        TENSORSTORE_CURL_LOW_SPEED_TIME_SECONDS=60,
-        TENSORSTORE_CURL_LOW_SPEED_LIMIT_BYTES=256,
-        LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4",
+    default_env = get_default_env(
+        tpu_type=infer_tpu_type(flag_values.instance_type),
+        num_tpu_slices=flag_values.num_replicas,
+        job_name=cfg.name,
     )
     vertexai_tb_uploader = None
     if is_vertexai_tensorboard_configured(flag_values=flag_values):

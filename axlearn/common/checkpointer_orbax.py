@@ -23,10 +23,11 @@ from axlearn.common.checkpointer import (
     STEP_PREFIX,
     BaseCheckpointer,
     CheckpointValidationType,
+    PythonSavable,
     async_save_tf_savables,
     check_state_structure,
-    maybe_restore_grain_savables,
-    maybe_save_grain_savables,
+    maybe_restore_python_savables,
+    maybe_save_python_savables,
     restore_tf_savables,
 )
 from axlearn.common.config import config_class
@@ -113,7 +114,7 @@ ocp.type_handlers.register_type_handler(tf.data.Iterator, _TfIteratorHandler(), 
 
 
 if _GRAIN_INSTALLED:
-
+    # TODO(markblee): Generalize to PythonSavableHandler.
     class _GrainDatasetIteratorHandler(ocp.type_handlers.TypeHandler):
         """Serializes grain dataset iterators."""
 
@@ -126,7 +127,7 @@ if _GRAIN_INSTALLED:
 
         def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
             # Each worker writes its grain checkpoints under a different path.
-            return os.path.join(info.parent_dir, f"grain_{jax.process_index()}")
+            return os.path.join(info.parent_dir, f"python_{jax.process_index()}")
 
         async def serialize(
             self,
@@ -137,7 +138,7 @@ if _GRAIN_INSTALLED:
             """Serializes `values` into corresponding `info.path`s."""
             del args  # Unused.
             for value, info in zip(values, infos):
-                maybe_save_grain_savables({info.name: value}, dir=self._ckpt_dir(info))
+                maybe_save_python_savables({info.name: value}, dir=self._ckpt_dir(info))
             return []
 
         async def deserialize(
@@ -150,7 +151,7 @@ if _GRAIN_INSTALLED:
             ret = []
             for arg, info in zip(args, infos):
                 ret.append(
-                    maybe_restore_grain_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
+                    maybe_restore_python_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
                         info.name
                     ]
                 )
@@ -264,11 +265,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 spec["index"].append(
                     (path, {"dtype": str(dtype), "shape": str(tuple(value.shape))})
                 )
-            elif (
-                isinstance(value, tf.data.Iterator)
-                or _GRAIN_INSTALLED
-                and isinstance(value, _GrainIterator)
-            ):
+            elif isinstance(value, (tf.data.Iterator, PythonSavable)):
                 spec["index"].append((path, str(type(value))))
             else:
                 spec["index"].append((path, value))

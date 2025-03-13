@@ -1003,6 +1003,139 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 # pytype: enable=attribute-error
 
 
+class FlinkGKERunnerJobTest(parameterized.TestCase):
+    @contextlib.contextmanager
+    def _job_config(
+        self,
+        *,
+        name: str,
+        cluster: str,
+        service_account: str,
+        gcsfuse_mount_spec: Optional[str] = None,
+    ) -> Iterator[tuple[gke_runner.GPUGKERunnerJob.Config, dict]]:
+        mock_user = mock.patch("os.environ", {"USER": "test"})
+        mock_settings = {
+            "project": "settings-project",
+            "zone": "settings-zone-a",
+            "ttl_bucket": "settings-ttl-bucket",
+            "gke_cluster": "settings-cluster",
+            "default_dockerfile": "settings-dockerfile",
+            "docker_repo": "settings-repo",
+        }
+        with (
+            mock_user,
+            mock_gcp_settings(
+                [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                mock_settings,
+            ),
+        ):
+            fv = flags.FlagValues()
+            gke_runner.GPUGKERunnerJob.define_flags(fv)
+            if name:
+                fv.set_default("name", name)
+            if cluster:
+                fv.set_default("cluster", cluster)
+            if service_account:
+                fv.set_default("service_account", service_account)
+            if gcsfuse_mount_spec:
+                fv.set_default("gcsfuse_mount_spec", gcsfuse_mount_spec)
+            fv.set_default("instance_type", "gpu-a3-highgpu-8g-256")
+            fv.mark_as_parsed()
+            yield gke_runner.FlinkGKERunnerJob.from_flags(fv), mock_settings
+
+    @parameterized.product(
+        (
+            # SUCCEEDED
+            dict(
+                status={
+                    "status": {
+                        "conditions": [
+                            {
+                                "type": "Complete",
+                                "status": "True",
+                            }
+                        ],
+                    }
+                },
+                expected=gke_runner.GKERunnerJob.Status.SUCCEEDED,
+            ),
+            # FAILED, an exception will be raised and GKE runner will retry
+            dict(
+                status={
+                    "status": {
+                        "conditions": [
+                            {
+                                "type": "Failed",
+                                "status": "True",
+                            }
+                        ],
+                    }
+                },
+                expected=RuntimeError(
+                    "Beam execution failed, it's up to the GKE runner "
+                    "to decide whether to retry."
+                ),
+            ),
+            # PENDING
+            dict(
+                status={"status": {"active": 0, "succeeded": 0, "failed": 0}},
+                expected=gke_runner.GKERunnerJob.Status.PENDING,
+            ),
+            # READY
+            dict(
+                status={"status": {"active": 1, "succeeded": 0, "failed": 0}},
+                expected=gke_runner.GKERunnerJob.Status.READY,
+            ),
+            # Both succeeded and failed, UNKNOWN
+            dict(
+                status={"status": {"active": 0, "succeeded": 1, "failed": 1}},
+                expected=gke_runner.GKERunnerJob.Status.UNKNOWN,
+            ),
+            # NOT_STARTED
+            dict(
+                status=k8s.client.exceptions.ApiException(status=404),
+                expected=gke_runner.GKERunnerJob.Status.NOT_STARTED,
+            ),
+            # Permission error
+            dict(
+                status=k8s.client.exceptions.ApiException(status=403),
+                expected=k8s.client.exceptions.ApiException(status=403),
+            ),
+        )
+    )
+    def test_get_status(
+        self,
+        status: dict,
+        expected: gke_runner.GKERunnerJob.Status,
+    ):
+        with self._job_config(
+            name="test-name",
+            cluster="test-cluster",
+            service_account="test-sa",
+        ) as (cfg, _):
+            cfg.inner.accelerator.set(instance_type="v5p-8", num_replicas=1)
+            cfg.bundler.set(image="test")
+            job: gke_runner.FlinkGKERunnerJob = cfg.set(command="").instantiate()
+
+            if isinstance(status, Exception):
+                mock_get_status = mock.Mock(side_effect=status)
+            else:
+                mock_get_status = mock.Mock(return_value=status)
+
+            with (
+                mock.patch(
+                    "kubernetes.client.CustomObjectsApi",
+                    return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
+                ),
+            ):
+                if isinstance(expected, Exception):
+                    with self.assertRaises(Exception) as context:
+                        job._get_status()
+                    self.assertEqual(str(expected), str(context.exception))
+                else:
+                    self.assertEqual(expected, job._get_status())
+
+
 class MainTest(parameterized.TestCase):
     """Tests CLI entrypoint."""
 
