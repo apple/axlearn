@@ -76,8 +76,8 @@ class TestConfig():
 
         self.mesh_test = None 
         self.mesh_golden = None
-        self.test_inputs = None 
-        self.golden_inputs = None 
+        self.test_inputs = dict() 
+        self.golden_inputs = dict()  
         self.out_shard_test = None
         self.out_shard_golden = None        
 
@@ -91,6 +91,7 @@ class TestConfig():
             self.set_outer_batch()
                     
         self.instantiate_modules_with_mesh() 
+        self.random_inputs_with_mesh()
 
         #specify empty outsharding for jax.jit because we transfer tensors to host and compare
         out_pspec = PartitionSpec()  
@@ -119,23 +120,33 @@ class TestConfig():
         devices = jax.devices(device_type)[:self.num_devices]
         print("Test devices: ", devices)
         self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
-        input_key = 'inputs' if self.test.layer == "MoE" else 'logits'
         with self.mesh_test: 
             self.test_layer  = self.test.module.instantiate(parent=None) 
             self.test_state  = self.test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
-            self.test_inputs = dict()
-            self.test_inputs[input_key] = jax.random.uniform(jax.random.PRNGKey(1), shape=self.input_shape)
 
         device_type = self.golden.device
         devices = jax.devices(device_type)[:self.num_devices]
         print("Golden devices: ", devices)
         self.mesh_golden = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
-        input_key = 'inputs' if self.test.layer == "MoE" else 'logits'
         with self.mesh_golden: 
             self.golden_layer  = self.golden.module.instantiate(parent=None) 
             self.golden_state  = self.golden_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
-            self.golden_inputs = dict()
-            self.golden_inputs[input_key] = jax.random.uniform(jax.random.PRNGKey(1), shape=self.input_shape)
+
+    def random_inputs_with_mesh(self): 
+
+        input_key = 'inputs' if self.test.layer == "MoE" else 'logits'
+        pspec = PartitionSpec(('data','fsdp'), None, 'model') if self.test.layer == "MoE" else PartitionSpec() 
+
+        in_shard_test = NamedSharding(mesh=self.mesh_test, spec = pspec) 
+        in_shard_golden = NamedSharding(mesh=self.mesh_golden, spec = pspec)
+        
+        print(self.input_shape) 
+        with jax.default_device(jax.devices("cpu")[0]):    # create tensors on host to avoid OOM  
+            inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=self.input_shape) 
+        
+        inputs = jax.device_get(inputs)   # device_put seg-faults without this 
+        self.test_inputs[input_key] = jax.device_put(inputs, in_shard_test)
+        self.golden_inputs[input_key] = jax.device_put(inputs, in_shard_golden)
 
 def _topkgather_to_topk(output, expert_cap):
     tok_perm_idx, expert_index, exp_aff_mask = output.combine_tensor
@@ -340,6 +351,8 @@ class TestConfigBuilder:
         # Custom Configs
         # b s i h e g ob ec        
         #grid_space.extend([(2, 100, 64, 128, 2, 1, 1, 5)])
+        # Mistral8x7B_toy = (128,  256, 1024,  3584, 8, 1, 1, None, {"fsdp":-1, "model":4})
+        # grid_space.append(Mistral8x7B_toy) 
 
         return grid_space
 
@@ -356,6 +369,8 @@ def get_training_configs(is_unit: bool = False):
         
         if mesh_spec and batch < 16: # need large batch to parallelize
             batch = batch*16 
+        
+        capacity_factor = 2 if not capacity else None 
 
         config = builder.reset()
         config = config.with_dimensions(batch, seq, input_dim)
@@ -364,8 +379,8 @@ def get_training_configs(is_unit: bool = False):
             out_batch,
             n_groups,
             n_experts,
-            capacity,
-            train_capacity_factor=None
+            expert_capacity=capacity,
+            train_capacity_factor=capacity_factor
         )
         config = config.with_mesh_settings(mesh_spec)
         if is_unit:

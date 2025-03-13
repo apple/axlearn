@@ -70,6 +70,9 @@ _PYTEST_OPT_REGISTERED = {}
 def assert_allclose(actual, desired, atol=1e-6, rtol=1e-3, err_msg=""):
     actual = jnp.asarray(actual).astype(np.float32)
     desired = jnp.asarray(desired).astype(np.float32)
+    # temp workaround for seg-fault
+    actual = np.asarray(actual)
+    desired = np.asarray(desired) 
     # Checks if 'actual' and 'desired' are within (atol + rtol * abs(desired)).
     diff: np.ndarray = np.abs(actual - desired)
     if diff.size > 0:
