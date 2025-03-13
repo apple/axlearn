@@ -80,7 +80,7 @@ def _tpu_decoding_kernel(
     @pl.when(non_empty_kv_block_index < num_non_empty_kv_blocks)
     def compute():
         q = q_ref[...]
-        k = k_ref[...]
+        k = k_ref[...].astype(q.dtype)
         qk = pl.dot(q, k, precision=precision)
         if softmax_scale != 1.0:
             qk *= softmax_scale
@@ -109,7 +109,7 @@ def _tpu_decoding_kernel(
         l_curr = s_curr.sum(axis=-1, keepdims=True)
         l_next = l_prev_corr + l_curr
         o_prev_corr = correction * o_prev
-        v = v_ref[...]
+        v = v_ref[...].astype(q.dtype)
         o_curr = pl.dot(s_curr.astype(v.dtype), v.T, precision=precision)
 
         o_next = o_prev_corr + o_curr
