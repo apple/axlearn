@@ -127,22 +127,20 @@ class TestFlashAttention(TestCase):
 
         q, k, v, bias = generate_attention_data(
             batch_size,
-            kv_len * query_length_multiplier,
+            int(kv_len * query_length_multiplier),
             kv_len,
             num_heads,
             per_head_dim,
-            mask,
-            attention_bias_type,
-            with_segment_ids,
+            mask_fn=mask,
+            attention_bias_type=attention_bias_type,
+            with_segment_ids=with_segment_ids,
         )
-        softmax_scale = per_head_dim**-0.5
-        ref_fn = ReferenceMHA.default_config().set(softmax_scale=softmax_scale).instantiate()
-
         cfg = dict(
             interpret=jax.default_backend() == "cpu",
-            softmax_scale=softmax_scale,
+            softmax_scale=per_head_dim**-0.5,
             tpu_block_size=128,
         )
+        ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
         fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
         if not fn.is_supported(q, k, v, bias):
             # Check splash attention is used when it should be.
