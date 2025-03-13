@@ -1,6 +1,8 @@
 # Copyright © 2024 Amazon Inc.
 """Tests for Flash attention on Neuron. Tested on trn1 & trn2."""
 
+from typing import Literal
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -90,7 +92,7 @@ def test_bwd_against_ref(
     per_head_dim: int,
     causal: bool,
     input_dtype: jnp.dtype,
-    attention_bias_type: str,
+    attention_bias_type: Literal[None, "2d"],
 ):
     # On demand import only if test is needed.
     # pylint: disable=import-outside-toplevel
