@@ -165,9 +165,9 @@ def with_minibatch_steps(
                 """Helper function that adds a minibatch dimension while evenly dividing
                 batches across gradient accumulation iterations.
 
-                Input dimension is [GBS, seq], this first reshaped to [MBS, steps, seq],
-                then transposed to [steps, MBS, seq] this ensures that batches picked
-                up from the global batch in a staggered pattern.
+                Input dimension is [Global logical Batch Size, sequence], this first reshaped to
+                [Minibatch Size, steps, sequence],then transposed to [steps, [Minibatch Size, seq]
+                this ensures that batches picked up from the global batch in a staggered pattern.
 
                 The main benefit is that this avoids extra communication incurred in reshard
                 for every minibatch.
@@ -185,10 +185,7 @@ def with_minibatch_steps(
                     )
 
                 x = x.reshape(minibatch_size, -1, *x.shape[1:])
-                # Set up transpose to swap the first two dimensions.
-                dims = list(range(x.ndim))
-                dims[0], dims[1] = dims[1], dims[0]
-                return x.transpose(dims)
+                return jnp.swapaxes(x, 0, 1)
 
             inputs["input_batch"] = jax.tree_map(reshape_for_scan, inputs["input_batch"])
 
