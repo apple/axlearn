@@ -353,6 +353,68 @@ class MakeAutoregressveInputsTest(TestCase):
             # Skipping it.
             self.assertNestedEqual(exp["input_ids"][1:], act["input_ids"][1:])
 
+    @parameterized.parameters(
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3, 5, 7, 9, 11, 13, 15, 17]),
+                np.array([7, 8, 9]),
+                np.array([1, 2, 3, 4, 5, 6]),
+            ],
+            max_len=6,
+            window_size=3,
+            max_padding_fraction=0.5,
+        ),
+        dict(
+            target_labels=[
+                np.array([10, 11, 12, 1, 21]),
+                np.array([100, 1, 102, 103, 104, 105]),
+            ],
+            max_len=8,
+            window_size=2,  # Divides number of inputs evenly.
+        ),
+    )
+    def test_windowed_packing_streaming_packing_parity(
+        self,
+        target_labels: list,
+        max_len: int,
+        window_size: int = 1,
+        max_padding_fraction: float = 1.0,
+    ):
+        split_fn = functools.partial(
+            _trim_or_pad_and_batch, max_padding_fraction=max_padding_fraction
+        )
+        ds = fake_grain_source([{"target_labels": x} for x in target_labels])
+        ds = _make_autoregressive_inputs(
+            ds,
+            max_len=max_len,
+            split_fn=split_fn,
+            window_size=window_size,
+            packing_fn=windowed_packing,
+        )
+        windowed_packing_results = list(ds)
+        ds = fake_grain_source([{"target_labels": x} for x in target_labels])
+        ds = _make_autoregressive_inputs(
+            ds,
+            max_len=max_len,
+            split_fn=split_fn,
+            window_size=window_size,
+            packing_fn=streaming_packing,
+        )
+        streaming_packing_results = list(ds)
+        self.assertEqual(len(windowed_packing_results), len(streaming_packing_results))
+        for windowed_result, streaming_result in zip(
+            windowed_packing_results, streaming_packing_results
+        ):
+            self.assertNestedEqual(
+                windowed_result["target_labels"], streaming_result["target_labels"]
+            )
+            # The first element of input_id is rolled over from the last element of this sequence.
+            # Skipping it.
+            self.assertNestedEqual(
+                windowed_result["input_ids"][1:], streaming_result["input_ids"][1:]
+            )
+
 
 class TrimOrPadAndBatchTest(TestCase):
     """Tests `trim_and_pad_batch`."""

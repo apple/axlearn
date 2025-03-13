@@ -46,8 +46,18 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
         *,
         max_len: int,
         window_size: Optional[int] = None,
-        input_key: str = "target_labels",  # The key in the input examples to use for packing.
+        input_key: str = "target_labels",
     ):
+        """Initializes StreamingPackingDataset Iterator.
+
+        Args:
+            parent: Parent DatasetIterator to inherit from.
+            max_len: A int value representing sequence length of the output examples.
+            window_size: An optional int value representing the window_size. If it's set, this
+                iterator will behave similar to windowed_packing. This is used for parity with
+                windowed_packing.
+            input_key: The key in the input examples to use for packing.
+        """
         super().__init__(parent)
         self._max_len = max_len
         self._window_size = window_size
@@ -149,47 +159,47 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
         # TODO(haoshuoh, markblee): All of the parent_state thing could be wrapped in a Packer
         # class.
         return {
-            "parent_sequence_start_state": self._parent_sequence_start_state
-            if self._parent_sequence_start_state
-            else self._parent.get_state(),
+            "parent_sequence_start_state": self._parent_sequence_start_state,
             "parent": self._parent.get_state(),
             "index": self._index,
             "current_token_count": self._current_token_count,
         }
 
     def set_state(self, state: dict[str, Any]):
-        def _retrieve_packer_states(state: dict[str, Any]):
-            """Retrieves packer states by loading all the examples from that sequence."""
-            self._current_token_count = state["current_token_count"]
-            self._current_examples_list = []
-            self._parent_sequence_start_state = None
-            self._parent_sequence_end_state = None
-            total_tokens_retrieved = 0
-
-            while self._parent.get_state() != state["parent"]:
-                self._parent_sequence_end_state = self._parent.get_state()
-                if not self._parent_sequence_start_state:
-                    self._parent_sequence_start_state = self._parent_sequence_end_state
-                example = next(self._parent)
-                total_tokens_retrieved += len(example[self._input_key])
-                self._current_examples_list.append(example)
-
-            if total_tokens_retrieved > self._current_token_count:
-                # The truncation should only happens to the first example (aka rollover example).
-                assert total_tokens_retrieved - self._current_token_count <= len(
-                    self._current_examples_list[0][self._input_key]
-                )
-                self._current_examples_list[0] = {
-                    self._input_key: self._current_examples_list[0][self._input_key][
-                        total_tokens_retrieved - self._current_token_count :
-                    ]
-                }
-            elif total_tokens_retrieved < self._current_token_count:
-                raise ValueError("Grain receives invalid states.")
-
-        self._parent.set_state(state["parent_sequence_start_state"])
+        self._parent.set_state(state["parent_sequence_start_state"] or state["parent"])
         self._index = state["index"]
-        _retrieve_packer_states(state)
+
+        # Retrieves packer states by loading all the examples from that sequence.
+        self._current_token_count = state["current_token_count"]
+        self._current_examples_list = []
+        self._parent_sequence_start_state = None
+        self._parent_sequence_end_state = None
+        total_tokens_retrieved = 0
+
+        assert (
+            self._current_token_count == 0 if self._parent.get_state() == state["parent"] else True
+        )
+
+        while self._parent.get_state() != state["parent"]:
+            self._parent_sequence_end_state = self._parent.get_state()
+            if not self._parent_sequence_start_state:
+                self._parent_sequence_start_state = self._parent_sequence_end_state
+            example = next(self._parent)
+            total_tokens_retrieved += len(example[self._input_key])
+            self._current_examples_list.append(example)
+
+        if total_tokens_retrieved > self._current_token_count:
+            # The truncation should only happens to the first example (aka rollover example).
+            assert total_tokens_retrieved - self._current_token_count <= len(
+                self._current_examples_list[0][self._input_key]
+            )
+            self._current_examples_list[0] = {
+                self._input_key: self._current_examples_list[0][self._input_key][
+                    total_tokens_retrieved - self._current_token_count :
+                ]
+            }
+        elif total_tokens_retrieved < self._current_token_count:
+            raise ValueError("Grain receives invalid states.")
 
 
 class _StreamingPackingIterDataset(grain.IterDataset):
@@ -252,7 +262,7 @@ def streaming_packing(
             used to convert the pipeline to grain.IterDataset.
 
     Returns:
-        A packed dataset.
+        A packed dataset which will be a dict with values corresponding to `input_key`.
     """
 
     def _maybe_call(example: Optional[SequenceOr[dict[str, Tensor]]], *, fn: Callable):
@@ -308,7 +318,7 @@ def windowed_packing(
             used to convert the pipeline to grain.IterDataset.
 
     Returns:
-        A packed dataset.
+        A packed dataset which will be a dict with values corresponding to `input_key`.
     """
     del max_len
     del input_key
