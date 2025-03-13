@@ -766,14 +766,14 @@ class A4HighReplicatedJob(GPUReplicatedJob):
 
         volume_mounts = [
             {"name": "shared-memory", "mountPath": "/dev/shm"},
-            {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
+            #{"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
             {"name": "gib", "mountPath": "/usr/local/gib"},
         ]
 
         env_vars: dict[str, str] = {}
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
-        env_vars["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib64"
+        #env_vars["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib64"
 
         default_xla_flags = [
             # Maxtext XLA flags:
