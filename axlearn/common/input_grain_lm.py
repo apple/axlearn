@@ -35,9 +35,12 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
     ready. This significantly improves the first-time read, especially for datasets which have much
     higher tokens per sequence, as well as reduces the peak memory requirements for packing.
 
-    window_size is used for parity with windowed_packing. It will also be used if we want to pack
+    `window_size` is used for parity with windowed_packing. It will also be used if we want to pack
     multimodal data which is not represented in sequence, thus naturally has a limit in how many
     examples we can pack due to memory limit.
+
+    `max_len` and `input_key` are packing sequence length and keys to look up for packing,
+    respectively.
     """
 
     def __init__(
