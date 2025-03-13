@@ -2907,14 +2907,15 @@ class TransformerFeedForwardLayer(BaseLayer):
                 self._add_child(
                     "prenorm",
                     cfg.norm.set(
-                        input_dim=cfg.target_dim,
+                        input_dim=cfg.input_dim,
                         param_init=ConstantInitializer.default_config().set(
                             value=cfg.prenorm_scale
                         ),
                     ),
                 )
             else:
-                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.target_dim))
+                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
+            self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
         elif cfg.structure == "nonorm":
             pass
         else:
