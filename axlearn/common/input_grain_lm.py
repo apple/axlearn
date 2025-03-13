@@ -265,7 +265,7 @@ def streaming_packing(
             used to convert the pipeline to grain.IterDataset.
 
     Returns:
-        A packed dataset which will be a dict with values corresponding to `input_key`.
+        A packed dataset with dict which only contains values corresponding to `input_key`.
     """
 
     def _maybe_call(example: Optional[SequenceOr[dict[str, Tensor]]], *, fn: Callable):
@@ -321,7 +321,7 @@ def windowed_packing(
             used to convert the pipeline to grain.IterDataset.
 
     Returns:
-        A packed dataset which will be a dict with values corresponding to `input_key`.
+        A packed dataset with dict which only contains values corresponding to `input_key`.
     """
     del max_len
     del input_key
