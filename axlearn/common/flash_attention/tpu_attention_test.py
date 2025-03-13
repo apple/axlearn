@@ -264,14 +264,20 @@ class TestFlashAttention(TestCase):
 
         legacy_flash_wrapper = unittest.mock.Mock(wraps=tpu_attention._legacy_tpu_flash_attention)
 
-        if mask is not None:
-            mask = MaskFnAttentionBias(
+        if mask is None:
+            mask = ZeroAttentionBias()
+        elif mask is causal_mask:
+            mask = CausalAttentionBias(
                 mask,
                 target_positions=jnp.arange(query_len)[None],
                 source_positions=jnp.arange(kv_len)[None],
             )
         else:
-            mask = ZeroAttentionBias()
+            mask = MaskFnAttentionBias(
+                mask,
+                target_positions=jnp.arange(query_len)[None],
+                source_positions=jnp.arange(kv_len)[None],
+            )
 
         def fn(q, k, v, bias, ids):
             record_legacy_call = unittest.mock.patch.object(
