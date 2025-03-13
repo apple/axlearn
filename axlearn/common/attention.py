@@ -2525,7 +2525,7 @@ class TransformerAttentionLayer(BaseLayer):
             if cfg.prenorm_scale:
                 self._add_child(
                     "prenorm",
-                    cfg.norm.set(
+                    cfg.norm.clone().set(
                         input_dim=cfg.target_dim,
                         param_init=ConstantInitializer.default_config().set(
                             value=cfg.prenorm_scale
@@ -2906,7 +2906,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             if cfg.prenorm_scale:
                 self._add_child(
                     "prenorm",
-                    cfg.norm.set(
+                    cfg.norm.clone().set(
                         input_dim=cfg.input_dim,
                         param_init=ConstantInitializer.default_config().set(
                             value=cfg.prenorm_scale
