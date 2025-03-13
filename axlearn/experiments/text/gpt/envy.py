@@ -74,7 +74,7 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL", "Mistral-8x7B", "Mistral-toy", "Mistral-8x20B")
+MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL", "Mistral-8x7B", "Mistral-toy", "Mistral-16x10B")
 
 NUM_EXPERTS = {
     "test": 8,
@@ -83,7 +83,7 @@ NUM_EXPERTS = {
     "Switch-XXL": 64,
     "Mistral-8x7B": 8,
     "Mistral-toy": 8,
-    "Mistral-8x20B": 8,
+    "Mistral-16x10B": 16,
 }
 
 # T5 uses 32128 vocab size, we make it 32768 for simplicity.
@@ -96,7 +96,7 @@ MAX_SEQUENCE_LENGTH = {
     "Switch-XXL": 8192,
     "Mistral-toy": 256,
     "Mistral-8x7B": 2048,
-    "Mistral-8x20B": 4096,
+    "Mistral-16x10B": 4096,
 }
 
 _BASE_MODEL_HIDDEN_DIM = 768
@@ -518,22 +518,28 @@ def get_trainer_kwargs(
                 ),
             ),
         )
-    elif model_size == "Mistral-8x20B":
+    elif model_size == "Mistral-16x10B":
         # Num of parameters: 150B.
         ffn_layer_types = get_ffn_layer_types()
-        neuron_mesh = mesh_shape_from_axes(fsdp=-1, model=16)
+        tp_degree=int(os.getenv("AXLEARN_TP_DEGREE", 4))
+        neuron_mesh = mesh_shape_from_axes(fsdp=-1, model=tp_degree)
         trainer_kwargs = dict(
             model_kwargs=dict(
-                # 40 layers gets to about 150B
-                num_layers=int(os.getenv("NUM_LAYERS", 4)),
-                hidden_dim=32*192,
-                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=128),
-                num_heads=32,
-                num_kv_heads=16,
+                # hidden size of 64*128 has 11B params per layer, with 3.5 factor, used to create compiler ticket 
+                # hidden size of 48*128 has 6.6B params per layer, with 3.5 factor
+                # hidden size of 48*128 has 5.5 params per layer, with 3 factor
+                # hidden size of 48*128 has 4.8 params per layer, with 2.5 factor
+                # hidden size of 64*64 has  params per layer, with 3.5 factor
+                num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 32)),
+                hidden_dim=48*128,
+                ffn_dim=scaled_hidden_dim(scale=2.5, round_up_to_multiples_of=128),
+                num_heads=48,
+                num_kv_heads=tp_degree,
                 num_experts=NUM_EXPERTS[model_size],
                 train_capacity_factor=2.0,
                 num_groups=1,
                 ffn_layer_types=ffn_layer_types,
+                ffn_sparse_top_k=4,
                 outer_batch_size=get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, neuron_mesh),
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
@@ -553,14 +559,14 @@ def get_trainer_kwargs(
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
-                            # RematSpecModifier.default_config().set(
-                            #     remat_policies={
-                            #         "model.decoder.transformer.layer": RematSpec(
-                            #             prevent_cse=True,
-                            #             policy=jax_remat_policies.nothing_saveable,
-                            #         ),
-                            #     }
-                            # ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                } if os.getenv('AXLEARN_REMAT_LAYER', 'true') == 'true' else {}
+                            ),
                         ],
                     ),
                 ),
@@ -612,6 +618,7 @@ def model_config(
     train_capacity_factor: float,
     num_groups: int,
     ffn_layer_types: Sequence[Literal["dense", "sparse"]],
+    ffn_sparse_top_k: int = 2,
     ffn_dim: Union[int, config.FunctionConfigBase],
     dropout_rate: float = 0.0,
     flash_attention: bool = False,
@@ -679,7 +686,7 @@ def model_config(
         dim_to_mesh_axis_map=MOE_DIM_TO_MESH_AXIS_MAP,
         gating=TopKGatingGather.default_config(),
     )
-    expert_config.gating.top_k = 2
+    expert_config.gating.top_k = ffn_sparse_top_k
     expert_config.gating.train_capacity_factor = train_capacity_factor
 
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config().set(

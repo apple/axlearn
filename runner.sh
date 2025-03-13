@@ -23,7 +23,7 @@ hostname
 JOB_ID=${SLURM_JOB_ID}
 ARTIFACTS_PATH="artifacts/"
 TEST_ARTIFACTS_PATH="${ARTIFACTS_PATH}/${JOB_ID}"
-if [ "$1" -ne "profile" ]; then
+if [ "$1" != "profile" ]; then
 	mkdir -p "$TEST_ARTIFACTS_PATH"
 fi
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
@@ -143,11 +143,23 @@ upload_profile() {
 
 profile() {
 	set -ex
-	neff_path=$1
-	profile_dir=$2
-	s3_profile_path=$3
-	profile_id=$4
-	NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1 NEURON_RT_PROFILE_BUF_DMA_MB=256 NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1 NEURON_RT_VIRTUAL_CORE_SIZE=2 neuron-profile capture -r 64 --num-exec 3 \
+	job_id=$1
+	job_dir=$(realpath artifacts/$job_id)
+	s3_profile_path=$2
+	profile_id=$3
+
+	profile_dir=${job_dir}/profiles
+	upload_dir=${job_dir}/to_upload
+	log_dir=logs
+	mkdir -p $profile_dir $upload_dir
+
+	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | tail -n1)
+
+	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
+	export NEURON_RT_PROFILE_BUF_DMA_MB=256
+	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
+	export NEURON_RT_VIRTUAL_CORE_SIZE=2
+	neuron-profile capture -r 64 --num-exec 3 \
 		--collectives-worker-count $((64* $SLURM_JOB_NUM_NODES)) \
 		--collectives-worker-start-id $((64 * $SLURM_PROCID)) \
 		-i 0 \
@@ -155,33 +167,28 @@ profile() {
 		-s $profile_dir/profile.ntff
 
 	echo "Done profiling"
-	
-	upload_dir=$(realpath $profile_dir/to_upload)
-	mkdir -p $upload_dir
 	cp $profile_dir/profile_rank_0_exec_3.ntff $upload_dir
+	cp $log_dir/$job_id*.out $upload_dir
 	cd $(dirname $neff_path)
 	cp file.neff $upload_dir
+	cp log-neuron-cc.txt $upload_dir
 	set +e
 	tar -cvf penguin-text.tar penguin-sg*
 	cp penguin-text.tar $upload_dir
 	set -e
+	cd $job_dir/hlo_dump
+	tar -cvf hlo_dump.tar *
+	cp hlo_dump.tar $upload_dir
 	if [ $SLURM_PROCID -eq 0 ]; then
-		aws s3 sync $upload_dir $s3_profile_path
+		set +x
+		aws s3 sync --no-progress $upload_dir $s3_profile_path
 		echo "Profile uploaded to $s3_profile_path"
 		echo "profile-upload -F \"s3=$s3_profile_path\" -F name=$profile_id -F \"profiler-opts='--enable-memory-tracker'\""
 	fi
-	
 }
 
 if [ "$1" = "profile" ]; then
-	job_dir=artifacts/$2
-	s3_profile_path=$3
-	profile_id=$4
-	NEFF_PATH=$(ls ${job_dir}/neuron_dump/**/file.neff | tail -n1)
-	echo "Using $NEFF_PATH for profiling"
-	PROFILE_DIR=${job_dir}/profiles
-	mkdir -p $PROFILE_DIR
-	profile $NEFF_PATH $PROFILE_DIR $s3_profile_path $profile_id
+	profile $2 $3 $4
 else
 	# MIXTRAL_MOE being
 	# 0 adds dense MLP layers
