@@ -789,54 +789,6 @@ def _mha_backward(
 flash_attention.defvjp(_mha_forward, _mha_backward)
 
 
-class PallasGPUFlashAttention(BaseFlashAttention):
-    """Wraps Pallas implementation of GPU FlashAttention.
-
-    This kernel is 40% slower than cuDNN attention kernel.
-
-    This kernel is preferred when using block-sparse attention (e.g. sliding window) or segment
-    ids. Otherwise, cuDNN attention should be preferred.
-    """
-
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
-            return False
-        block_size = self.cfg.gpu_block_size
-        head_dim = query.shape[-1]
-        if not self._check_block_size(query=query, key=key, block_size=block_size):
-            return False
-        if pl.next_power_of_2(head_dim) != head_dim:
-            self._log_unsupported(f"{head_dim=} is not a power of 2.")
-            return
-        # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
-        # it by reducing the block size along sequence dim. Support it when needed.
-        if head_dim > 128:
-            self._log_unsupported(f"{head_dim=} > 128")
-            return False
-        logging.info("Using %s.", self.name())
-        return True
-
-    @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
-        mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
-        key = repeat_kv_heads(query.shape[2], key)
-        value = repeat_kv_heads(query.shape[2], value)
-        tensor_bias = explicit_bias.value()
-        logging.info("Using explicit bias %s", str(tensor_bias))
-        return flash_attention(
-            query,
-            key,
-            value,
-            bias=tensor_bias,
-            segment_ids=get_segment_ids(query=query, key=key, segment_ids=segment_ids),
-            prng_key=prng_key,
-            softmax_scale=self.cfg.softmax_scale,
-            mask_fn=mask.mask if mask.has_value() else None,
-            dropout_rate=self.cfg.dropout_rate,
-            interpret=self.cfg.interpret,
-        )
-
-
 class CuDNNGPUFlashAttention(BaseFlashAttention):
     """Wraps cuDNN FlashAttention and disallows explicit bias.
 
@@ -954,6 +906,55 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             **args,
             bias=tensor_bias,
             mask_type=mask_type,
+        )
+
+
+class PallasGPUFlashAttention(BaseFlashAttention):
+    """Wraps Pallas implementation of GPU FlashAttention.
+
+    This kernel is 40% slower than cuDNN attention kernel, and only serves as a fallback for the
+    following cases:
+    1. Non-sliding window block-sparse attention.
+    2. Sliding window attention with dropout or bias.
+    3. Segment ids.
+    """
+
+    def is_supported(self, query, key, value, bias):
+        if not super().is_supported(query, key, value, bias):
+            return False
+        block_size = self.cfg.gpu_block_size
+        head_dim = query.shape[-1]
+        if not self._check_block_size(query=query, key=key, block_size=block_size):
+            return False
+        if pl.next_power_of_2(head_dim) != head_dim:
+            self._log_unsupported(f"{head_dim=} is not a power of 2.")
+            return
+        # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
+        # it by reducing the block size along sequence dim. Support it when needed.
+        if head_dim > 128:
+            self._log_unsupported(f"{head_dim=} > 128")
+            return False
+        logging.info("Using %s.", self.name())
+        return True
+
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(self, query, key, value, bias, prng_key=None):
+        mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        key = repeat_kv_heads(query.shape[2], key)
+        value = repeat_kv_heads(query.shape[2], value)
+        tensor_bias = explicit_bias.value()
+        logging.info("Using explicit bias %s", str(tensor_bias))
+        return flash_attention(
+            query,
+            key,
+            value,
+            bias=tensor_bias,
+            segment_ids=get_segment_ids(query=query, key=key, segment_ids=segment_ids),
+            prng_key=prng_key,
+            softmax_scale=self.cfg.softmax_scale,
+            mask_fn=mask.mask if mask.has_value() else None,
+            dropout_rate=self.cfg.dropout_rate,
+            interpret=self.cfg.interpret,
         )
 
 
