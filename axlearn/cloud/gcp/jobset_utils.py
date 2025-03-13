@@ -778,8 +778,8 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         default_xla_flags = [
             # Maxtext XLA flags:
             # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
-            "--xla_gpu_enable_triton_gemm=false",
             "--xla_gpu_enable_latency_hiding_scheduler=true",
+            "--xla_gpu_enable_triton_gemm=false",
             "--xla_gpu_graph_level=0",
             "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
             "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
@@ -791,20 +791,15 @@ class A4HighReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
             "--xla_disable_hlo_passes=rematerialization",
             "--xla_gpu_enable_while_loop_double_buffering=true",
-            "--xla_gpu_enable_highest_priority_async_stream=true",
-            "--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL",
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
 
         # NCCL flags needed
         env_vars.update(
             {
-                "MLIR_ENABLE_DUMP": "1",
-                # This gets stuff to launch, but moves extremely slowly
-                #"CUDA_LAUNCH_BLOCKING": "1",
                 # Enable auto PGLE available in jax 0.4.33
-                #"JAX_ENABLE_PGLE": "True",
-                "JAX_ENABLE_PGLE": "False",
+                "JAX_ENABLE_PGLE": "True",
+                #"JAX_ENABLE_PGLE": "False",
                 "JAX_PGLE_PROFILING_RUNS": "3",
                 # This is needed for flash attention + auto PGLE to work
                 "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
