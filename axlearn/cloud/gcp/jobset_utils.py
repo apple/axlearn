@@ -689,10 +689,10 @@ class GPUReplicatedJob(BaseReplicatedJob):
                 "name": "shared-memory",
                 "emptyDir": {"medium": "Memory"},
             },
-            {
-                "name": "nvidia-install-dir-host",
-                "hostPath": {"path": "/home/kubernetes/bin/nvidia/lib64"},
-            },
+            #{
+            #    "name": "nvidia-install-dir-host",
+            #    "hostPath": {"path": "/home/kubernetes/bin/nvidia/lib64"},
+            #},
         ]
         return volumes
 
