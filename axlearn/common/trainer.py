@@ -577,12 +577,30 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
-                    output = self._run_step(
-                        utils.host_to_global_device_array(input_batch),
-                        force_run_evals=(
-                            force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
-                        ),
-                    )
+
+                    if os.getenv("NEURON_RT_INSPECT_DEVICE_PROFILE", "0" ) == "1" and num_steps == 2:
+                        assert os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR") is not None
+                        with jax.profiler.trace(os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR")):
+                            output = self._run_step(
+                                utils.host_to_global_device_array(input_batch),
+                                force_run_evals=(
+                                    force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
+                                ),
+                            )
+                            logging.info(f"Done profiling step 3, waiting for sigint. Run the following command within next 5 min: 'scancel --signal=SIGINT {os.environ.get('SLURM_JOBID')}'")
+                            time.sleep(600)
+                    else:
+                        output = self._run_step(
+                            input_batch,
+                            force_run_evals=(
+                                force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
+                            ),
+                        )
+                        max_step_ = os.getenv("AXLEARN_MAX_STEP", None)
+                        if max_step_ is not None and max_step_  == num_steps:
+                            logging.info(f"Done running {num_steps}, exiting")
+                            break
+
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
                     if num_steps % 100 == 0:

@@ -29,6 +29,7 @@ fi
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
 PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/profiles
+RT_PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/rt_profiles
 
 export XLA_FLAGS="--xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
 # export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_snapshots"
@@ -74,13 +75,27 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --enable-mixed-precision-accumulation
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} -O1"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --tensorizer-options='--enable-hoist-fsdp-collectives'"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
-if [ "$FOR_PROFILE" = "1" ]; then
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
+
+if [ "$PROFILE_MODE" = "capture_postrun" ] || [ "$PROFILE_MODE" = "tracerun" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-compiler-debug-mode=penguin"
 	export XLA_IR_DEBUG=1
 	export XLA_HLO_DEBUG=1
+	if [ "$PROFILE_MODE" = "capture_postrun" ]; then
+		# runs a step and captures profile immediately after
+		export AXLEARN_MAX_STEP=1
+	else
+		export NEURON_RT_INSPECT_OUTPUT_DIR="${RT_PROFILE_DUMP_PATH}"
+		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
+	fi
 fi
+
+if [ "$FOR_BIRSIM" = "1" ]; then
+	export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_snapshots"
+	export AXLEARN_MAX_STEP=1
+fi
+
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 
 # use to add debug logging at module level in xla
 # export TF_CPP_MIN_LOG_LEVEL=0
@@ -101,6 +116,8 @@ echo "Done listing dependencies"
 printenv | grep NEURON
 printenv | grep XLA
 printenv | grep AXLEARN || true
+printenv | grep PROFILE_MODE || true
+printenv | grep FOR_BIRSIM || true
 which python
 
 # TC MALLOC HACK
@@ -132,21 +149,13 @@ else
 	jax_backend="neuron"
 fi
 
-upload_profile() {
-	neff_path=$1
-	ntff_path=$2
-	profile_name=$3
-	set -x
-	curl -X POST -m 1800 -F "neff=@${neff_path}" -F "ntff=@${ntff_path}" -F "name=${profile_name}" http://localhost:8050/api/upload > /dev/null || true
-	set +x
-}
-
 profile() {
 	set -ex
 	job_id=$1
 	job_dir=$(realpath artifacts/$job_id)
-	s3_profile_path=$2
-	profile_id=$3
+	profile_name=$2
+	profile_id=${2}_${1}
+	s3_profile_path=$3/$profile_id
 
 	profile_dir=${job_dir}/profiles
 	upload_dir=${job_dir}/to_upload
@@ -188,9 +197,14 @@ profile() {
 	fi
 }
 
-if [ "$1" = "profile" ]; then
-	profile $2 $3 $4
+if [ "$S3_PROFILE_BASE_PATH" = "" ]; then
+	export S3_PROFILE_BASE_PATH="s3://kaena-tempdata/huilgolr/fs-moe/profiles"
+fi
+
+if [ "$PROFILE_MODE" = "capture" ]; then
+	profile $PROFILE_JOB_ID $PROFILE_JOB_NAME $S3_PROFILE_BASE_PATH
 else
+	set -x
 	# MIXTRAL_MOE being
 	# 0 adds dense MLP layers
 	# 1 adds all sparse MLP layers
@@ -198,10 +212,15 @@ else
 	# export MIXTRAL_MOE=$1
 	# export NUM_LAYERS=$2
 	# envy-Mistral-${AXLEARN_MODEL_NAME}
+
 	python -m axlearn.common.launch_trainer_main \
 		--module=text.gpt.c4_trainer --config=$AXLEARN_MODEL_NAME \
 		--trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
 		--jax_backend=$jax_backend --mesh_selector=neuron-trn2.48xlarge-64 \
 		--distributed_coordinator=$MASTER_ADDR:$JAX_COORDINATOR_PORT --num_processes=$num_nodes \
 		--process_id=$NEURON_PJRT_PROCESS_INDEX
+
+	if [ "$PROFILE_MODE" = "capture_postrun" ]; then
+		profile $SLURM_JOB_ID $SLURM_JOB_NAME $S3_PROFILE_BASE_PATH
+	fi
 fi

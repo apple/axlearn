@@ -1,7 +1,7 @@
 #!/bin/bash
 
-export PATH=/fsx/huilgolr/bin/:$PATH
-source /fsx/huilgolr/jaxmoe/bin/activate
+export PATH=../bin/:$PATH
+source ../jaxmoe/bin/activate
 
 process_file() {
     set -ex
@@ -20,8 +20,17 @@ process_file() {
     mkdir -p "$new_dir"
     cd "$new_dir" || return
     
-    python3 /fsx/huilgolr/bin/unpack.py "../$filename"
-    neuronx-cc compile --framework=XLA --target=trn2 --verbose=35 --pipeline verify model.hlo --internal-max-instruction-limit=20000000 --target=trn2 --internal-num-neuroncores-per-sengine=2 --model-type transformer --no-internal-hlo-remat --enable-mixed-precision-accumulation -O1 --tensorizer-options=--enable-hoist-fsdp-collectives --internal-hlo2tensorizer-options=--remat-rope --policy=1 --enable-saturate-infinity --tolerance 1 1e-5
+    python3 ../bin/unpack.py "../$filename"
+    neuronx-cc compile --framework=XLA --target=trn2 --verbose=35 \
+        --pipeline verify model.hlo \
+        --internal-max-instruction-limit=20000000 \
+        --target=trn2 --internal-num-neuroncores-per-sengine=2 \
+        --model-type transformer --no-internal-hlo-remat \
+        --enable-mixed-precision-accumulation -O1 \
+        --tensorizer-options=--enable-hoist-fsdp-collectives \
+        --internal-hlo2tensorizer-options=--remat-rope \
+        --auto-cast=none \
+        --policy=1 --enable-saturate-infinity --tolerance 1 1e-5
 }
 
 export -f process_file
