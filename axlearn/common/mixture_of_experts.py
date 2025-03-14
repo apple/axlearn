@@ -100,11 +100,12 @@ def _router_z_loss(logits: Tensor) -> Tensor:
     Returns:
         z_loss: A scalar loss.
     """
-    # pytype: disable=module-attr
-    logits_sum = jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
-    # pytype: enable=module-attr
-    log_z = jnp.squeeze(logits_sum, axis=-1)
-    z_loss = jax.lax.square(log_z).mean()
+    with jax.named_scope("z_loss"):
+        # pytype: disable=module-attr
+        logits_sum = jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
+        # pytype: enable=module-attr
+        log_z = jnp.squeeze(logits_sum, axis=-1)
+        z_loss = jax.lax.square(log_z).mean()
     return z_loss
 
 
@@ -834,22 +835,23 @@ class TopKGatingGather(TopKGating):
         # Perform operation in float64 to prevent precision issues due to auto-downcasting to bf16
         # (Use float dtype to perform computations in the vector engine for efficiency)
         
-        # expert_mask: top_k-hot encoded expert assignment per token -> (T, E)        
-        # Initialize expert_mask with zeros
-        O, G, Sxtop_k = expert_index.shape
-        expert_mask = jnp.zeros((O, G, Sxtop_k, num_experts), dtype=jnp.float64)
+        with jax.named_scope("expert_mask"):
+            # expert_mask: top_k-hot encoded expert assignment per token -> (T, E)        
+            # Initialize expert_mask with zeros
+            O, G, Sxtop_k = expert_index.shape
+            expert_mask = jnp.zeros((O, G, Sxtop_k, num_experts), dtype=jnp.float64)
 
-        idx_O, idx_G, idx_Sxtop_k = jnp.meshgrid(
-            jnp.arange(O),
-            jnp.arange(G),
-            jnp.arange(Sxtop_k),
-            indexing='ij'
-        )
+            idx_O, idx_G, idx_Sxtop_k = jnp.meshgrid(
+                jnp.arange(O),
+                jnp.arange(G),
+                jnp.arange(Sxtop_k),
+                indexing='ij'
+            )
 
-        # Set expert mask to one for each token at correct expert for all top k
-        # expert_mask: O, G, S*topk, E
-        expert_mask = expert_mask.at[idx_O[..., None], idx_G[..., None],
-                                     idx_Sxtop_k[..., None], expert_index[..., None]].set(1.0)
+            # Set expert mask to one for each token at correct expert for all top k
+            # expert_mask: O, G, S*topk, E
+            expert_mask = expert_mask.at[idx_O[..., None], idx_G[..., None],
+                                        idx_Sxtop_k[..., None], expert_index[..., None]].set(1.0)
         return expert_mask
     
     @staticmethod
@@ -879,65 +881,64 @@ class TopKGatingGather(TopKGating):
     
     @staticmethod
     def compute_token_assignments(token_permutation_idx, num_experts, expert_capacity):
-        O, G, S, top_k = token_permutation_idx.shape
-        token_indices = jnp.arange(S)[None, None, :, None]
-        token_indices = jnp.broadcast_to(token_indices, (O, G, S, top_k))
-        token_indices = token_indices.reshape(O, G, -1)
+        with jax.named_scope("token_assignments"):
+            O, G, S, top_k = token_permutation_idx.shape
+            token_indices = jnp.arange(S)[None, None, :, None]
+            token_indices = jnp.broadcast_to(token_indices, (O, G, S, top_k))
+            token_indices = token_indices.reshape(O, G, -1)
 
-        # Create batch and group indices
-        batch_indices = jnp.arange(O)[:, None, None, None]
-        batch_indices = jnp.broadcast_to(batch_indices, (O, G, S, top_k))
-        batch_indices = batch_indices.reshape(O, G, -1)
+            # Create batch and group indices
+            batch_indices = jnp.arange(O)[:, None, None, None]
+            batch_indices = jnp.broadcast_to(batch_indices, (O, G, S, top_k))
+            batch_indices = batch_indices.reshape(O, G, -1)
 
-        group_indices = jnp.arange(G)[None, :, None, None]
-        group_indices = jnp.broadcast_to(group_indices, (O, G, S, top_k))
-        group_indices = group_indices.reshape(O, G, -1)
-        
-        token_permutation_idx = token_permutation_idx.reshape(O, G, -1)
+            group_indices = jnp.arange(G)[None, :, None, None]
+            group_indices = jnp.broadcast_to(group_indices, (O, G, S, top_k))
+            group_indices = group_indices.reshape(O, G, -1)
+            
+            token_permutation_idx = token_permutation_idx.reshape(O, G, -1)
 
-        # Create scatter indices
-        scatter_indices = jnp.stack(
-            [batch_indices, group_indices, token_permutation_idx], axis=-1)
-        # token_assignments: (C*E+1,)
-        # for each position in an expert's capacity we now need the token id
-        # this is basically reverse of the token_permutation_idx
-        token_assignments = jnp.zeros((O, G, expert_capacity * num_experts+1), dtype=jnp.int32)
-        
-        # Perform scatter
-        token_assignments = jax.lax.scatter(
-            token_assignments,
-            scatter_indices,
-            token_indices + 1,
-            jax.lax.ScatterDimensionNumbers(
-                update_window_dims=(),
-                inserted_window_dims=(0, 1, 2),
-                scatter_dims_to_operand_dims=(0, 1, 2)
+            # Create scatter indices
+            scatter_indices = jnp.stack(
+                [batch_indices, group_indices, token_permutation_idx], axis=-1)
+            # token_assignments: (C*E+1,)
+            # for each position in an expert's capacity we now need the token id
+            # this is basically reverse of the token_permutation_idx
+            token_assignments = jnp.zeros((O, G, expert_capacity * num_experts+1), dtype=jnp.int32)
+            
+            # Perform scatter
+            token_assignments = jax.lax.scatter(
+                token_assignments,
+                scatter_indices,
+                token_indices + 1,
+                jax.lax.ScatterDimensionNumbers(
+                    update_window_dims=(),
+                    inserted_window_dims=(0, 1, 2),
+                    scatter_dims_to_operand_dims=(0, 1, 2)
+                )
             )
-        )
-        token_assignments = token_assignments[:,:,1:]
-        token_assignments = jnp.reshape(token_assignments, shape=(O, G, num_experts, expert_capacity))
+            token_assignments = token_assignments[:,:,1:]
+            token_assignments = jnp.reshape(token_assignments, shape=(O, G, num_experts, expert_capacity))
         return token_assignments
 
     @staticmethod
     def compute_aux_loss(cfg, mask, raw_gates):
-        # TODO(huilgolr): Why does aux loss not use mask_2 in original code
-        # maybe replace mask here with mask using top_1 on raw_gates instead of top_k
+        with jax.named_scope("aux_loss"):
+            # OGE tensor (reduce S out of OGSE tensor mask_1).
+            # density_1[:, e] represents assignment ratio (num assigned / total) to
+            # expert e as top_1 expert without taking capacity into account.
+            density_denom = jnp.asarray(1.0, dtype=jnp.float32)
 
-        # OGE tensor (reduce S out of OGSE tensor mask_1).
-        # density_1[:, e] represents assignment ratio (num assigned / total) to
-        # expert e as top_1 expert without taking capacity into account.
-        density_denom = jnp.asarray(1.0, dtype=jnp.float32)
+            density_k = jnp.mean(mask.astype(jnp.float32), axis=-2) / density_denom
+            # density_1_proxy[:, e] represents mean of raw_gates for expert e, including
+            # those of examples not assigned to e with top_k.
+            density_k_proxy = jnp.mean(raw_gates, axis=-2, dtype=jnp.float32) / density_denom
 
-        density_k = jnp.mean(mask.astype(jnp.float32), axis=-2) / density_denom
-        # density_1_proxy[:, e] represents mean of raw_gates for expert e, including
-        # those of examples not assigned to e with top_k.
-        density_k_proxy = jnp.mean(raw_gates, axis=-2, dtype=jnp.float32) / density_denom
-
-        # Compute aux_loss.
-        aux_loss = jnp.mean(density_k_proxy * density_k, dtype=jnp.float32)
-        aux_loss *= cfg.num_experts * cfg.num_experts
-        
-        return aux_loss
+            # Compute aux_loss.
+            aux_loss = jnp.mean(density_k_proxy * density_k, dtype=jnp.float32)
+            aux_loss *= cfg.num_experts * cfg.num_experts
+            
+            return aux_loss
 
     def compute_metrics(self, expert_mask_pre_capacity_drop, expert_mask):
         # stats
@@ -1006,14 +1007,16 @@ class TopKGatingGather(TopKGating):
             )
         return expert_capacity
         
-    def compute_position_in_experts(self, expert_mask, raw_gates, expert_capacity, cfg):
+    def compute_positions_and_drop(self, expert_mask, raw_gates, expert_capacity, cfg):
+        O, G, sk, E = expert_mask.shape
+        k = cfg.top_k
+        S = sk // k
         with jax.named_scope("position_in_expert"):
             # Compute cumulative sums of assignment
             # indicators for each expert, i.e. index e \in 0..E-1 independently.
             # cumsum over S dim
             # position_in_expert: [O, G, S*topk, E]
-            expert_mask = expert_mask.astype(jnp.int32)
-            position_in_expert = self.cumsum_4d_matmul(expert_mask, axis=-2).astype(jnp.float64)
+            position_in_expert = self.cumsum_4d_matmul(expert_mask.astype(jnp.int32), axis=-2).astype(jnp.float64)
             
             expert_mask_pre_capacity_drop = expert_mask
             expert_mask_k_pre_capacity_drop = expert_mask_pre_capacity_drop.reshape(O, G, k, S, E)
@@ -1045,20 +1048,11 @@ class TopKGatingGather(TopKGating):
             position_in_expert_with_offset = jnp.where(expert_mask == 0, 0, position_in_expert_with_offset)
             position_in_expert_with_offset = position_in_expert_with_offset.reshape(O, G, k , S, E)
             position_in_expert_with_offset = jnp.sum(position_in_expert_with_offset, axis=2)
-
-            # Reshape expert_index back to O, G, S, topk
-            expert_index = expert_index.reshape(O, G, k, S)
-            expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
-
-    # pylint: disable-next=too-many-statements
-    def forward(self, logits: Tensor) -> NestedTensor:
-        """Please see comments of BaseGating.forward."""
-        cfg = self.config
-        O, G, S, E = logits.shape
-        
-        raw_gates = self.router(cfg, logits)
-        expert_capacity = self.compute_expert_capacity(cfg, logits)
-
+            
+        return position_in_expert_with_offset, expert_mask, expert_affinities_masked
+    
+    def compute_expert_index(self, cfg, raw_gates):
+        O, G, S, E = raw_gates.shape
         with jax.named_scope("expert_index"):
             # expert index will be (O, G, S, top_k)
             # mapping from tokens to the chosen top_k experts
@@ -1074,17 +1068,27 @@ class TopKGatingGather(TopKGating):
             expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
             # expert_index: (O, G, S * top_k)
             expert_index = expert_index.reshape(O, G, S*k)
+        return expert_index
 
-        with jax.named_scope("expert_mask"):
-            # Use expert indices to compute mask
-            # expert_mask: [O, G, S*topk, E]
-            expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
+
+    # pylint: disable-next=too-many-statements
+    def forward(self, logits: Tensor) -> NestedTensor:
+        """Please see comments of BaseGating.forward."""
+        cfg = self.config
+        O, G, S, E = logits.shape
+        
+        raw_gates = self.router(cfg, logits)
+        expert_capacity = self.compute_expert_capacity(cfg, logits)
+        expert_index = self.compute_expert_index(cfg, raw_gates)
+        # expert_mask: [O, G, S*topk, E]
+        expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
 
         # Only use top 1 tokens for calculationg aux loss.
-        with jax.named_scope("aux_loss"):
-            aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
+        aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
 
-        position_in  self.compute_position_in_experts()
+        position_in_expert_with_offset, expert_mask_after_dropping, expert_affinities_masked = self.compute_positions_and_drop(
+            expert_mask, raw_gates, expert_capacity, cfg
+        )
 
         with jax.named_scope("token_permutation_idx"):
             # token_permutation_idx: (O, G, S, top_k)
@@ -1095,8 +1099,8 @@ class TopKGatingGather(TopKGating):
                 axis=-1
             ).astype(jnp.int32)
 
-        with jax.named_scope("token_assignments"):
-            token_assignments = self.compute_token_assignments(token_permutation_idx, cfg.num_experts, expert_capacity)
+        
+        token_assignments = self.compute_token_assignments(token_permutation_idx, cfg.num_experts, expert_capacity)
 
         with jax.named_scope("zero_indexing"):
             # Indexing using these will result in the first token (index 0) being loaded in place of dropped tokens
@@ -1107,11 +1111,10 @@ class TopKGatingGather(TopKGating):
             token_permutation_idx = jnp.maximum(token_permutation_idx, zero_tensor)
             token_assignments = jnp.maximum(token_assignments, zero_tensor)
         
-        with jax.named_scope("z_loss"):
-            router_z_loss = _router_z_loss(logits)
+        router_z_loss = _router_z_loss(logits)
 
         with jax.named_scope("metrics"):
-            total_num_dropped, dispatch_per_expert = self.compute_metrics(expert_mask_pre_capacity_drop, expert_mask)
+            total_num_dropped, dispatch_per_expert = self.compute_metrics(expert_mask, expert_mask_after_dropping)
             self.add_summaries(aux_loss, router_z_loss, total_num_dropped, dispatch_per_expert)
         
         return self.Output(
@@ -1135,6 +1138,44 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         num_blocks = min(num_blocks, num_tokens * self.config.top_k)
         logging.info("Setting number of blocks as %d", num_blocks)
         return num_blocks
+
+    def forward(self, logits):
+        cfg = self.config
+        O, G, S, E = logits.shape
+        
+        raw_gates = self.router(cfg, logits)
+        expert_capacity = self.compute_expert_capacity(cfg, logits)
+        expert_index = self.compute_expert_index(cfg, raw_gates)
+        # expert_mask: [O, G, S*topk, E]
+        expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
+        # Only use top 1 tokens for calculationg aux loss.
+        aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
+
+        # [O, G, S*topk, E], [O, G, S*topk, E], [O, G, S, E]
+        position_in_expert_with_offset, expert_mask_after_dropping, expert_affinities_masked = self.compute_positions_and_drop(
+            expert_mask, raw_gates, expert_capacity, cfg
+        )
+
+        num_tokens = S * cfg.top_k
+        num_blocks = self.compute_num_blocks(num_tokens, expert_capacity)
+        # tokens_per_expert: [O, G, E]
+        tokens_per_expert = jnp.sum(expert_mask_after_dropping, axis=2)
+        # blocks_per_expert: [O, G, E]
+        blocks_per_expert = jnp.ceil(tokens_per_expert / cfg.block_size).astype(jnp.int32)
+        blocks_ids = jnp.arange(num_blocks, dtype=jnp.int32)
+        # num_blocks_idx_expanded: [1, 1, num_blocks, 1]
+        # num_blocks_idx_expanded: [O, G, num_blocks, E]
+        num_blocks_idx_expanded = jnp.expand_dims(blocks_ids, (0, 2, 3))
+        num_blocks_idx_expanded = jnp.broadcast_to(num_blocks_idx_expanded, (O, G, num_blocks, E))
+        
+        # cumulative_blocks_per_expert: [O, G, E]
+        cumulative_blocks_per_expert = jnp.cumsum(blocks_per_expert, axis=2, dtype=jnp.int32)
+
+        # block_to_expert = jnp.sum()
+        
+        # num_blocks_idx_expanded
+        # cumulative_blocks_per_expert
+
 
 
 class TransformerFeedForwardMoE(BaseLayer):
