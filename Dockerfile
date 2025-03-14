@@ -34,7 +34,7 @@ COPY --from=python3.10:latest /opt/python3.10 /opt/python3.10
 RUN /opt/python3.10/bin/python3.10 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
-RUN pip install flit
+RUN pip install flit pytest
 RUN pip install --upgrade pip
 
 ################################################################################

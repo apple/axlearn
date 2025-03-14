@@ -769,7 +769,8 @@ def _mha_backward(
     def call_kernel(
         *, kernel, grid, out_shape, in_specs, out_specs, index_offset, index_offset_size
     ):
-        print("Calling kernel", file=sys.stderr)
+        print("gpu_attention.py: Calling kernel", file=sys.stderr)
+        print(f"Q dtype: {q.dtype}.\nK dtype: {k.dtype}.\nV dtype: {v.dtype}", file=sys.stderr)
         return pl.pallas_call(
             functools.partial(
                 kernel,

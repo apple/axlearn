@@ -233,6 +233,7 @@ def flash_attention_implementation(
             ):
                 logging.warning("Flash attention falling back to Triton GPU kernel.")
                 logging.warning("explicit_bias after extracting mask: %s", explicit_bias.value())
+                logging.info(f"Q dtype: {query.dtype}. K dtype: {key.dtype}. V dtype: {value.dtype}")
                 return gpu_flash_attention(
                     query,
                     key,
