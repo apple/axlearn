@@ -368,6 +368,7 @@ def test_triton_against_xla_ref(
             dropout_rate=dropout_rate,
         ).sum()
 
+    print("\n\n--STARTING GRADIENT CALCULATION. THIS IS WHERE THE HANG HAPPENS ON BF16/FP16--\n\n", file=sys.stderr)
     # Compare gradients.
     jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v, bias, segment_ids, k5)
     print(f"\nRunning jax_grads. {jax_grads}. Q: {q.dtype}. K: {k.dtype}. V: {v.dtype}\n\n", file=sys.stderr)
