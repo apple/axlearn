@@ -18,12 +18,18 @@ from axlearn.common.flash_attention.tpu_attention import LegacyTPUFlashAttention
 from axlearn.common.flash_attention.tpu_decoding import TPUDecoding
 from axlearn.common.utils import Tensor
 
-backends = dict(
+BACKENDS = dict(
+    # Always try decoding kernel first, then regular attention kernels.
+    # For TPU, prefer SplashAttention whenever possible, as it's faster than legacy.
     tpu=[TPUDecoding, TPUSplashAttention, LegacyTPUFlashAttention],
     gpu=[
         GPUDecoding,
+        # For GPU, prefer cuDNN (without bias) whenever possible, as it's the fastest.
         CuDNNGPUFlashAttention,
+        # Fallbacks to Pallas if cuDNN cannot be used without instantiating bias tensors.
         PallasGPUFlashAttention,
+        # If Pallas is not supported, fallback to cuDNN with bias as the last resort before we
+        # fallback to plain XLA.
         CuDNNGPUFlashAttentionWithExplicitBias,
     ],
     cpu=[ReferenceMHA],
@@ -44,6 +50,8 @@ def flash_attention_implementation(
     dropout_rate: Optional[float] = 0.0,
 ) -> MultiHeadAttentionImpl:
     """Returns a jitted "flash" multihead-attention implementation for the given backend.
+
+    The first matching kernel will be picked for each backend.
 
     Args:
         backend: A valid XLA backend name. 'cpu' intended for testing only.
@@ -81,8 +89,8 @@ def flash_attention_implementation(
             # pylint: disable-next=import-outside-toplevel
             from axlearn.common.flash_attention.neuron_attention import NeuronFlashAttention
 
-            backends["neuron"] = [NeuronFlashAttention]
-        attn_configs = backends.get(backend, [])
+            BACKENDS["neuron"] = [NeuronFlashAttention]
+        attn_configs = BACKENDS.get(backend, [])
         common_cfg = dict(
             is_decoding=is_decoding,
             dropout_rate=dropout_rate,

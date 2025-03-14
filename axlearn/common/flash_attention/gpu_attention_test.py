@@ -113,8 +113,6 @@ def test_triton_against_xla_ref(
     kv_seq_len = kv_seq_len or seq_len
     if kv_seq_len != seq_len and use_segment_ids:
         pytest.skip(reason="segment ids require kv_seq_len == q_seq_len")
-    if jax.default_backend() == "cpu" and kv_seq_len >= 512:
-        pytest.skip(reason="Too slow on CPU.")
     q, k, v, bias = generate_attention_data(
         batch_size,
         seq_len,
@@ -166,6 +164,8 @@ def test_sliding_window_mask(
     use_segment_ids,
     test_cls,
 ):
+    if jax.default_backend() != "gpu" and test_cls is CuDNNGPUFlashAttention:
+        pytest.skip("cuDNN requires GPU.")
     q, k, v, bias = generate_attention_data(
         batch_size,
         seq_len,
