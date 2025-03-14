@@ -296,21 +296,18 @@ def check_tpu_splash_attention(
             )
     if has_segment_ids:
         raise SplashAttentionUnsupportedError(
-            "The public API for SplashAttention that we "
-            "currently use does not support segment ids."
+            "The public API for SplashAttention that we currently use does not support segment ids."
         )
+    if is_decoding:
+        raise SplashAttentionUnsupportedError("Please use `tpu_decoding` for decoding.")
     if mask.has_value():
-        assert isinstance(mask, MaskFnAttentionBias)
-        if not isinstance(mask, (CausalAttentionBias, SlidingWindowAttentionBias)):
-            raise SplashAttentionUnsupportedError(f"{mask=} is not supported.")
-        if is_decoding:
-            # TODO(dhwang2): support splash decoding via splash NumPy mask.
+        if target_len != source_len:
+            # The case where cross-attention is used with a mask exists only in unittests.
             raise SplashAttentionUnsupportedError(
-                "Query and key/value must have same length when mask is used."
+                f"{target_len=} and {source_len=} must have same length when mask is used."
             )
-        else:
-            if target_len != source_len:
-                raise ValueError(f"{target_len=} and {source_len=} must be same in forward().")
+        if not isinstance(mask, MaskFnAttentionBias):
+            raise SplashAttentionUnsupportedError(f"{mask=} is not supported.")
 
 
 def _to_splash_mask(
