@@ -13,17 +13,13 @@
 from functools import partial
 
 import jax
+import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils_neuron import TestConfig
 from axlearn.common.utils_neuron import get_training_configs
-
-#jax.config.update('jax_platform_name', 'cpu')  # Do we need this ?
-
-MODULE_UNIT_TEST_ATOL=1e-6
-MODULE_UNIT_TEST_RTOL=1e-3
 
 test_configs = get_training_configs(is_unit=True)
 print(test_configs)
@@ -62,7 +58,8 @@ class TestImplCorrectnessUnit(TestCase):
             test_output = cfg.conv_output(test_output)
         
         # Transfer results to CPU before comparison
-        self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output))
+        self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output),
+                                  atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
 
     @parameterized.named_parameters(test_configs)
     def test_bwd_correctness(self, cfg: TestConfig):
@@ -96,8 +93,10 @@ class TestImplCorrectnessUnit(TestCase):
         test_grads = jax.tree_map(jax.device_get, test_grads)
         golden_grads = jax.tree_map(jax.device_get, golden_grads)
         
-        self.assertNestedAllClose(test_loss, golden_loss)
-        self.assertNestedAllClose(test_grads, golden_grads)
+        self.assertNestedAllClose(test_loss, golden_loss,
+                                  atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
+        self.assertNestedAllClose(test_grads, golden_grads,
+                                  atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
 
 if __name__ == "__main__":
     absltest.main()
