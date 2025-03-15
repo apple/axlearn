@@ -16,7 +16,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import NamedSharding, Mesh
 
 from axlearn.common.mixture_of_experts import (
-    Top2Gating,
+    TopKGating,
     TransformerFeedForwardMoE,
     TopKGatingGather,
     get_outer_batch_from_mesh
@@ -66,7 +66,7 @@ class ModuleConfig():
         assert module is not None
         self.module = module.default_config().set(name="test", dtype=dtype)
         self.device = device
-        self.layer = layer # None for topk, else "MoE"
+        self.layer = layer # None for top_k, else "MoE"
         self.dtype = dtype
         self.tol = TEST_TOLS_FP32 if dtype == jnp.float32 else TEST_TOLS_BF16
 
@@ -160,11 +160,13 @@ class TestConfig():
         self.test_inputs[input_key] = jax.device_put(inputs, in_shard_test)
         self.golden_inputs[input_key] = jax.device_put(inputs, in_shard_golden)
 
-def _topkgather_to_topk(output, expert_cap):
+def _topkgather_to_topk(output, top_k, cf):
     tok_perm_idx, expert_index, exp_aff_mask = output.combine_tensor
 
     O, G, S, _ = tok_perm_idx.shape
     E = exp_aff_mask.shape[-1]
+
+    expert_cap = jnp.int32(S*cf/E)
 
     exp_aff = jnp.take_along_axis(exp_aff_mask, expert_index, axis=-1)
 
@@ -200,10 +202,10 @@ class TestConfigBuilder:
             "input_dim": 4,
             "hidden_dim": 4,
             "num_experts": 4,
+            "top_k" : 2,
             "num_groups": 1,
             "outer_batch": 1,
-            "expert_capacity": 1000,
-            "train_capacity_factor": None,
+            "train_capacity_factor": 2,
             "mesh_spec": {}   # dict with keys from MESH_AXIS_NAMES, empty for single core test
         }
         return self
@@ -222,13 +224,13 @@ class TestConfigBuilder:
         })
         return self
     
-    def with_expert_settings(self, hidden_dim, outer_batch, num_groups, num_experts, expert_capacity, train_capacity_factor=None):
+    def with_expert_settings(self, hidden_dim, outer_batch, num_groups, num_experts, top_k=2, train_capacity_factor=None):
         self.params.update({
             "hidden_dim": hidden_dim,
             "outer_batch" : outer_batch,
             "num_groups": num_groups,
             "num_experts": num_experts,
-            "expert_capacity": expert_capacity,
+            "top_k": top_k,
             "train_capacity_factor": train_capacity_factor
         })
         return self
@@ -249,7 +251,7 @@ class TestConfigBuilder:
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
             "gating": TopKGatingGather.default_config().set(
                 name="gating",
-                expert_capacity=self.params["expert_capacity"],
+                top_k=self.params["top_k"],
                 train_capacity_factor=self.params["train_capacity_factor"]
             ),
             # "norm" : RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
@@ -265,17 +267,17 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
-            "gating": Top2Gating.default_config().set(
+            "gating": TopKGating.default_config().set(
                 name="gating",
-                expert_capacity=self.params["expert_capacity"],
+                top_k=self.params["top_k"],
                 train_capacity_factor=self.params["train_capacity_factor"]
             )
         }
     
     def build_gating_setup(self):
         return {
-            "expert_capacity": self.params["expert_capacity"],
             "num_experts": self.params["num_experts"],
+            "top_k": self.params["top_k"],
             "train_capacity_factor": self.params["train_capacity_factor"]
         }
     
@@ -332,7 +334,7 @@ class TestConfigBuilder:
                 prefix="_moe"
                 )
             )
-        if not self.params["mesh_spec"]: # gating tests only for single-core config
+        if not self.params["mesh_spec"] or True: # gating tests only for single-core config
             test_configs.append(
                 TestConfig(
                     setup=[
@@ -340,9 +342,9 @@ class TestConfigBuilder:
                         self.build_gating_setup()
                     ],
                     test=ModuleConfig(TopKGatingGather, "cpu", dtype=self.params['dtype']),
-                    golden=ModuleConfig(Top2Gating, "cpu", dtype=self.params['dtype']),
+                    golden=ModuleConfig(TopKGating, "cpu", dtype=self.params['dtype']),
                     input_shape=(self.params["outer_batch"], self.params["num_groups"], seq_len, self.params["num_experts"]),
-                    conv_output=partial(_topkgather_to_topk, expert_cap=self.params["expert_capacity"]),
+                    conv_output=partial(_topkgather_to_topk, top_k=self.params["top_k"], cf=self.params["train_capacity_factor"]),
                     loss_fn=lambda x: x.load_balance_loss,
                     mesh_spec=self.params["mesh_spec"],
                     prefix="_gating"
@@ -352,26 +354,35 @@ class TestConfigBuilder:
     
     def build_grid_space(self):
         # Grid space for testing
-        batchs =            [1]
-        seqs =              [128]
-        input_dims =        [64]
-        hidden_dims =       [128]
-        num_experts =       [8]
-        num_groups =        [1]
-        outer_batches =     [1]
-        expert_capacities = [2, 1000]
-        dtype =             ['float32', 'bfloat16']
-        mesh_specs       =  [{}, {"fsdp":-1, "model":4}]  #empty spec for single-core
 
-        grid_space = [] 
-        grid_space = list(product(batchs, seqs, input_dims, hidden_dims, num_experts, 
-                                  num_groups, outer_batches, expert_capacities, mesh_specs, dtype))
+        grid_space = []
 
         # Custom Configs
-        # b s i h e g ob ec        
-        #grid_space.extend([(2, 100, 64, 128, 2, 1, 1, 5)])
-        # Mistral8x7B_toy = (128,  256, 1024,  3584, 8, 1, 1, None, {"fsdp":-1, "model":4})
-        # grid_space.append(Mistral8x7B_toy) 
+        # b s i h e top_k g ob cf mesh dtype
+
+        ## Presubmit Tests
+        
+        # Toy Config
+        Mistral8x7B_toy_multi = (128,  256, 1024,  3584, 8, 2, 1, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8x7B_toy_multi)
+        Mistral8x7B_toy_single = (128,  256, 64,  896, 8, 2, 1, 1, 2, {}, "bfloat16")
+        grid_space.append(Mistral8x7B_toy_single)
+
+        # 8B Configs
+        Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8B_base)
+        Mistral8B_top1_cap1 = (16, 4096, 2048, 7168, 8, 1, 1, 4, 1, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8B_top1_cap1)
+        Mistral8B_8k = (16, 8192, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8B_8k)
+
+        # 50B Config
+        Mistral50B_base = (16, 2048, 4096, 14336, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_base)
+
+        # 150B Config
+        Mistral150B_base = (16, 2048, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral150B_base)
 
         return grid_space
 
@@ -381,15 +392,13 @@ def get_training_configs(is_unit: bool = False):
 
     test_configs = []
 
-    for (batch, seq, input_dim,  hidden_dim, n_experts, n_groups, out_batch, capacity, mesh_spec, dtype) in builder.build_grid_space():
+    for (batch, seq, input_dim,  hidden_dim, n_experts, top_k, n_groups, out_batch, capacity_factor, mesh_spec, dtype) in builder.build_grid_space():
         
         if batch % out_batch != 0:
             continue
         
         if mesh_spec and batch < 16: # need large batch to parallelize
-            batch = batch*16 
-        
-        capacity_factor = 2 if not capacity else None 
+            batch = batch*16
 
         config = builder.reset()
         config = config.with_dimensions(batch, seq, input_dim, dtype)
@@ -398,7 +407,7 @@ def get_training_configs(is_unit: bool = False):
             out_batch,
             n_groups,
             n_experts,
-            expert_capacity=capacity,
+            top_k,
             train_capacity_factor=capacity_factor
         )
         config = config.with_mesh_settings(mesh_spec)
@@ -407,7 +416,7 @@ def get_training_configs(is_unit: bool = False):
         else:
             config = config.build_test_configs_integ()
 
-        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_g{n_groups}_ob{out_batch}_ec{capacity}_mesh{mesh_spec}_dtype_{dtype}"
+        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_g{n_groups}_ob{out_batch}_ec{capacity_factor}_mesh{mesh_spec}_dtype_{dtype}"
         test_configs.extend([(name + cfg.prefix, cfg) for cfg in config])
 
     return test_configs
