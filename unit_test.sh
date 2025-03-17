@@ -16,7 +16,7 @@ export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
 export NEURON_ENABLE_INT_MATMUL_DOWNCAST=1
 export NEURON_FSDP=0
 export NEURON_FSDP_NUM_LAYER_COALESCE=-1
-export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=0
+export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
 export NEURON_DISABLE_BOUNDARY_MARKER=1
 
 # Neuron runtime flags
@@ -60,7 +60,9 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 echo "setup env vars"
 if [ "$1" = "unit" ]; then
     echo "Running Unit Test"
-    pytest axlearn/common/mixture_of_experts_neuron_unit_test.py
+    export JAX_PLATFORMS=cpu
+    # much faster to run with CPU backend
+    pytest -v axlearn/common/mixture_of_experts_neuron_unit_test.py
 else
     echo "Running Integ Test"
     pytest axlearn/common/mixture_of_experts_neuron_test.py
