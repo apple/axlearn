@@ -97,7 +97,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         return f"{self.config.name}-flink-cluster"
 
     def _get_single_node_topology(self) -> str:
-        """This method returns single node topology for large slice of TPU."""
+        """This method returns the single node topology for the configured TPU type."""
         tpu_type = infer_tpu_type(self.config.accelerator.instance_type)
         cores, hosts = infer_tpu_cores(tpu_type), infer_tpu_workers(tpu_type)
         if cores % hosts != 0:
