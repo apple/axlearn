@@ -229,6 +229,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     mountPath="/opt/flink/log", name="flink-logs"
                                 ),
                             )
+                            # pylint: enable=protected-access
+                            # pytype: enable=attribute-error
                         ],
                         containers=[
                             dict(
@@ -294,6 +296,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                                         mountPath="/opt/flink/log", name="flink-logs"
                                     ),
                                 )
+                                # pylint: enable=protected-access
+                                # pytype: enable=attribute-error
                             ],
                             containers=[
                                 dict(
@@ -407,6 +411,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                         # pylint: disable=protected-access
                         # pytype: disable=attribute-error
                         initContainers=[self._builder._build_uploader_container()],
+                        # pylint: enable=protected-access
+                        # pytype: enable=attribute-error
                         containers=[
                             dict(
                                 name=cfg.name,

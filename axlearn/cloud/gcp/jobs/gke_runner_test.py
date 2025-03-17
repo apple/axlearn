@@ -1161,9 +1161,7 @@ class MainTest(parameterized.TestCase):
 
     def test_get_runner_or_exit_with_job_type(self):
         self.fv.set_default("job_type", JobType.FLINK.value)
-        self.assertEqual(
-            gke_runner.FlinkGKERunnerJob, _get_runner_or_exit(None, flag_values=self.fv)
-        )
+        self.assertEqual(gke_runner.FlinkGKERunnerJob, _get_runner_or_exit("", flag_values=self.fv))
 
     @parameterized.product(
         [

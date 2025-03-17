@@ -164,7 +164,7 @@ class TestUtils(parameterized.TestCase):
         ),
         # Match Flink
         dict(
-            matcher=match_by_regex(match_regex=None, gcp_api=None, job_type=JobType.FLINK.value),
+            matcher=match_by_regex(match_regex={}, gcp_api="", job_type=JobType.FLINK.value),
             cases=[
                 dict(
                     action="start",

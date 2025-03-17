@@ -103,7 +103,10 @@ class TestUtils(parameterized.TestCase):
             gcp_api=GCPAPI.GKE,
             flag_values=self.fv,
         )
+        # pytype: disable=attribute-error
+        # .runner is defined in `BaseBastionManagedJob`, a subclass of `Job`
         self.assertEqual(launcher.job_cls.runner, FlinkGKERunnerJob)
+        # pytype: enable=attribute-error
 
 
 class _DummyRunner(Job):
