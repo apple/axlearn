@@ -64,6 +64,14 @@ class ClippingChoice(Enum):
     OUTPUT_ACTIVATION = 1
 
 
+FP8_SCALE_PARAM_NAMES = ["input_scale", "kernel_scale", "output_grad_scale"]
+FP8_AMAX_HISTORY_PARAM_NAMES = [
+    "input_amax_history",
+    "kernel_amax_history",
+    "output_grad_amax_history",
+]
+
+
 class QuantizedDotGeneral(BaseLayer):
     """Hardware accelerated quantized dot general layer.
 
@@ -152,9 +160,7 @@ class QuantizedDotGeneral(BaseLayer):
                 initializer=constant_initializer(1.0),
                 weight_decay_scale=0,
             )
-            specs.update(
-                {k: scale_spec for k in ["input_scale", "kernel_scale", "output_grad_scale"]}
-            )
+            specs.update({k: scale_spec for k in FP8_SCALE_PARAM_NAMES})
             if cfg.fp8_amax_history_length is not None and cfg.fp8_amax_history_length > 0:
                 amax_spec = ParameterSpec(
                     shape=[cfg.fp8_amax_history_length],
@@ -163,16 +169,7 @@ class QuantizedDotGeneral(BaseLayer):
                     initializer=constant_initializer(0.0),
                     weight_decay_scale=0,
                 )
-                specs.update(
-                    {
-                        k: amax_spec
-                        for k in [
-                            "input_amax_history",
-                            "kernel_amax_history",
-                            "output_grad_amax_history",
-                        ]
-                    }
-                )
+                specs.update({k: amax_spec for k in FP8_AMAX_HISTORY_PARAM_NAMES})
         return specs
 
     def _dot_general_maybe_quantized(

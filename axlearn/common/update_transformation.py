@@ -260,7 +260,7 @@ def mask_tree(tree: dict, *, keep: dict, mask_value: Any) -> dict:
 
     Returns:
         A masked tree the same structure as tree, the leaf is masked as MaskNode() if
-         the corresponding keep leaf is False.
+            the corresponding keep leaf is False.
 
     """
     # For sub-learner optimizer state, only the subset of parameters

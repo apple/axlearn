@@ -18,15 +18,14 @@ from axlearn.common.config import (
 from axlearn.common.gradient_accumulation import with_minibatch_steps
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.quantized_dot_general.layers import (
+    FP8_AMAX_HISTORY_PARAM_NAMES,
+    FP8_SCALE_PARAM_NAMES,
     DenseGeneralBaseLayer,
     DotGeneralQuantizationType,
     QuantizedDotGeneral,
 )
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.update_transformation import (
-    OverrideInplaceUpdateTransformation,
-    PartitionedGradientTransformation,
-)
+from axlearn.common.update_transformation import OverrideInplaceUpdateTransformation
 from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
 
 
@@ -318,19 +317,8 @@ class FP8ConfigModifier(ConfigModifier):
             OverrideInplaceUpdateTransformation.default_config()
         )
         update_cfg.rules = [
-            f".*/{x}"
-            for x in [
-                "input_scale",
-                "kernel_scale",
-                "output_grad_scale",
-                "input_amax_history",
-                "kernel_amax_history",
-                "output_grad_amax_history",
-            ]
+            f".*/{x}" for x in (FP8_SCALE_PARAM_NAMES + FP8_AMAX_HISTORY_PARAM_NAMES)
         ]
-        transformation = maybe_instantiate(cfg.learner.optimizer)
-        if not isinstance(transformation, PartitionedGradientTransformation):
-            raise ValueError("transformation must be a PartitionedGradientTransformation")
-        update_cfg.transformation = transformation
+        update_cfg.transformation = cfg.learner.optimizer
         cfg.learner.optimizer = update_cfg
         return cfg
