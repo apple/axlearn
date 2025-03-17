@@ -247,7 +247,7 @@ class FlashDecodingTest(TestCase):
     ],
 )
 #@pytest.mark.parametrize("kv_seq_len", [-1, 512])
-@pytest.mark.parametrize("kv_seq_len", [512])
+@pytest.mark.parametrize("kv_seq_len", [-1])
 #@pytest.mark.parametrize("dropout_rate", [0, 0.1])
 @pytest.mark.parametrize("dropout_rate", [0])
 #@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
@@ -256,6 +256,7 @@ class FlashDecodingTest(TestCase):
 @pytest.mark.parametrize("use_segment_ids", [True])
 @pytest.mark.parametrize("block_size", [128])  # Triton broken for block size !=128
 #@pytest.mark.parametrize("causal", [True, False])
+@pytest.mark.parametrize("causal", [True])
 #@pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
 @pytest.mark.parametrize("input_dtype", [jnp.float32, jnp.bfloat16])
 def test_triton_against_xla_ref(
