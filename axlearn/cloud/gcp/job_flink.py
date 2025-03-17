@@ -107,7 +107,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         single_host_cores = cores // hosts
         single_host_tpu_name = f"{infer_tpu_version(tpu_type)}-{single_host_cores}"
         if not single_host_tpu_name in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
-            raise RuntimeError(f"Can't find spect for {single_host_tpu_name}")
+            raise RuntimeError(f"Can't find specs for {single_host_tpu_name}.")
         return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[single_host_tpu_name].topology
 
     def _execute(self) -> Any:
