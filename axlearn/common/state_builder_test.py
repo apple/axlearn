@@ -52,7 +52,6 @@ from axlearn.common.state_builder import (
     MergeStateConverter,
     MergeStateSelection,
     ModelStateScopeConverter,
-    OrbaxCheckpointer,
     OrbaxStateBuilder,
     PosEmbeddingConverter,
     RestoreAndConvertBuilder,
@@ -1430,6 +1429,9 @@ class OrbaxStateBuilderTest(TestCase):
         mesh_shape = (1, 1)
         if not is_supported_mesh_shape(mesh_shape):
             return
+
+        # pylint: disable-next=import-outside-toplevel
+        from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
 
         with tempfile.TemporaryDirectory() as root_dir, _mesh(mesh_shape):
             state = _make_state(float_dtype=jnp.float32)
