@@ -134,7 +134,7 @@ def _get_bastion_vm(bastion_name: str) -> Optional[dict[str, Any]]:
 
 
 class _Matcher(Protocol):
-    def __call__(self, *, action: str, instance_type: str, gcp_api: str) -> bool:
+    def __call__(self, *, action: str, instance_type: str, gcp_api: str, job_type: str) -> bool:
         pass
 
 
