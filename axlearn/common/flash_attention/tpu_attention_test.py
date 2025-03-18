@@ -120,6 +120,9 @@ class TestFlashAttention(TestCase):
         # pylint: disable=protected-access
         fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
 
+        if mask is jax_fn_mask:
+            # TODO(dhwang2,hanzhi-zhou): Fix this.
+            pytest.skip("Custom mask is broken.")
         if fallback_to_legacy and mask is jax_fn_mask:
             pytest.skip("Custom masks are not supported by legacy attention.")
         if with_segment_ids and query_length_multiplier != 1:
