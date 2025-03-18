@@ -1385,8 +1385,6 @@ class TransformerFeedForwardMoE(BaseLayer):
                 expert_aligned_hidden_states = x[idx_o, idx_g, token_assignments] # (O, G, E, C, M)
                 expert_aligned_hidden_states = jnp.einsum("ogecm->oegcm", expert_aligned_hidden_states)
 
-                print("I wanna know::", expert_aligned_hidden_states.shape)
-
                 expert_aligned_hidden_states = with_sharding_constraint(expert_aligned_hidden_states, cfg.dim_to_mesh_axis_map["oegcM"])
             
             # Perform MLP operations
