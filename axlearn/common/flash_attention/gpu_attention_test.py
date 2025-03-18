@@ -8,20 +8,26 @@
 
 """Tests GPU FlashAttention kernels.
 
-Currently tested on A100/H100. To run tests in parallel on multi-GPU machines, use somethine like
+Currently tested on A100/H100. To run tests in parallel on a multi-GPU machine, use this:
 ```
 PARALLEL_GPU_TEST=1 pytest -n 8 axlearn/common/flash_attention/gpu_attention_test.py
 ```
 """
 import functools
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Optional
 
 import chex
 import jax
 import jax.numpy as jnp
+import jax.random
 import pytest
 
-from axlearn.common.attention_bias import CausalAttentionBias, ZeroAttentionBias, causal_mask
+from axlearn.common.attention_bias import (
+    CausalAttentionBias,
+    MaskFn,
+    ZeroAttentionBias,
+    causal_mask,
+)
 from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.gpu_attention import (
     CuDNNGPUFlashAttention,
@@ -79,50 +85,103 @@ def _test_forward_and_backward(
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, **backward_tol_fn(backend, q.dtype))
 
 
-@pytest.mark.parametrize(
-    "batch_size,num_heads,seq_len,per_head_dim",
-    [
-        (1, 1, 384, 64),
-        (2, 2, 256, 64),
-        (1, 1, 512, 128),
-        (2, 2, 384, 128),
-        (1, 8, 384, 128),
-        (2, 4, 384, 128),
-    ],
-)
-@pytest.mark.parametrize("kv_seq_len", [None, 512])
-@pytest.mark.parametrize("dropout_rate", [0, 0.1])
-@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
-@pytest.mark.parametrize("use_segment_ids", [True, False])
-@pytest.mark.parametrize("block_size", [128])  # Triton broken for block size !=128
-@pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
+def common_attn_test_params(func):
+    params = [
+        pytest.mark.parametrize(
+            "batch_size,num_heads,query_len,per_head_dim",
+            [
+                (1, 1, 384, 64),
+                (2, 2, 256, 64),
+                (1, 1, 512, 128),
+                (2, 2, 384, 128),
+                (1, 8, 384, 128),
+                (2, 4, 384, 128),
+            ],
+        ),
+        pytest.mark.parametrize("kv_len", [None, 512]),
+        pytest.mark.parametrize("dropout_rate", [0, 0.1]),
+        pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"]),
+        pytest.mark.parametrize("with_segment_ids", [True, False]),
+        pytest.mark.parametrize("block_size", [128]),  # Triton broken for block size !=128.
+        pytest.mark.parametrize("mask_fn", [causal_mask, None]),
+        pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32]),
+    ]
+    # Apply in reverse order to stack correctly.
+    for param in reversed(params):
+        func = param(func)
+    return func
+
+
+@common_attn_test_params
+def test_triton_fwd_only_against_ref(
+    batch_size: int,
+    query_len: int,
+    num_heads: int,
+    per_head_dim: int,
+    kv_len: int,
+    dropout_rate: float,
+    block_size: int,
+    mask_fn: Optional[MaskFn],
+    attention_bias_type: Literal["2d", "4d", None],
+    with_segment_ids: bool,
+    dtype: jnp.dtype,
+):
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        query_len,
+        kv_len,
+        num_heads,
+        per_head_dim,
+        mask_fn=mask_fn,
+        attention_bias_type=attention_bias_type,
+        with_segment_ids=with_segment_ids,
+        dtype=dtype,
+    )
+
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
+        interpret=jax.default_backend() == "cpu",
+        dropout_rate=dropout_rate,
+        gpu_block_size=block_size,
+    )
+    # Compare outputs.
+    test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
+    prng_key = jax.random.PRNGKey(43)
+    o = test_fn(q, k, v, bias, prng_key)
+    o_ref = ref_fn(q, k, v, bias, prng_key)
+
+    if dtype == jnp.float16:
+        chex.assert_trees_all_close(o, o_ref, atol=0.07)
+    elif dtype == jnp.float32:
+        chex.assert_trees_all_close(o, o_ref, atol=0.03)
+
+
+@common_attn_test_params
 def test_triton_against_xla_ref(
     batch_size: int,
     num_heads: int,
-    seq_len: int,
+    query_len: int,
     per_head_dim: int,
-    kv_seq_len: int,
+    kv_len: int,
     attention_bias_type: Literal["2d", "4d", None],
-    use_segment_ids: bool,
+    with_segment_ids: bool,
     dropout_rate: float,
     block_size: int,
-    causal: bool,
-    input_dtype: jnp.dtype,
+    mask_fn: Optional[MaskFn],
+    dtype: jnp.dtype,
 ):
-    kv_seq_len = kv_seq_len or seq_len
-    if kv_seq_len != seq_len and use_segment_ids:
-        pytest.skip(reason="segment ids require kv_seq_len == q_seq_len")
     q, k, v, bias = generate_attention_data(
         batch_size,
-        seq_len,
-        kv_seq_len,
+        query_len,
+        kv_len,
         num_heads,
         per_head_dim,
-        mask_fn=causal_mask if causal else None,
+        mask_fn=mask_fn,
         attention_bias_type=attention_bias_type,
-        with_segment_ids=use_segment_ids,
-        dtype=input_dtype,
+        with_segment_ids=with_segment_ids,
+        dtype=dtype,
     )
 
     cfg = dict(

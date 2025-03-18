@@ -5,6 +5,7 @@ from typing import Literal, Optional
 
 import jax
 import jax.numpy as jnp
+import pytest
 
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
@@ -41,6 +42,9 @@ def generate_attention_data(
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
     q = jax.random.normal(k1, (batch_size, query_len, num_heads, per_head_dim), dtype=dtype)
     num_kv_heads = num_kv_heads or num_heads
+    kv_len = kv_len or query_len
+    if kv_len != query_len and with_segment_ids:
+        pytest.skip(reason="segment ids require kv_seq_len == q_seq_len")
     k = jax.random.normal(k2, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=dtype)
     v = jax.random.normal(k3, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=dtype)
     attention_bias = None

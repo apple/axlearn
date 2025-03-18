@@ -125,8 +125,6 @@ class TestFlashAttention(TestCase):
             pytest.skip("Custom mask is broken.")
         if fallback_to_legacy and mask is jax_fn_mask:
             pytest.skip("Custom masks are not supported by legacy attention.")
-        if with_segment_ids and query_length_multiplier != 1:
-            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
 
         q, k, v, bias = generate_attention_data(
             batch_size,
