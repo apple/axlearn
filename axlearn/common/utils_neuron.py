@@ -15,6 +15,7 @@ import jax.numpy as jnp
 from jax.experimental import mesh_utils
 from jax.sharding import NamedSharding, Mesh
 
+from axlearn.common.module import functional as F
 from axlearn.common.mixture_of_experts import (
     Top2Gating,
     TransformerFeedForwardMoE,
@@ -54,6 +55,36 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
     "oegch": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None, "model"),
 }
 
+
+def _topkgather_to_topk(output, expert_cap):
+    tok_perm_idx, expert_index, exp_aff_mask = output.combine_tensor
+
+    O, G, S, _ = tok_perm_idx.shape
+    E = exp_aff_mask.shape[-1]
+
+    exp_aff = jnp.take_along_axis(exp_aff_mask, expert_index, axis=-1)
+
+    base = jnp.zeros((O, G, S, E * expert_cap), dtype=exp_aff_mask.dtype)
+
+    idx_O, idx_G, idx_S = jnp.meshgrid(
+        jnp.arange(O), 
+        jnp.arange(G), 
+        jnp.arange(S), 
+        indexing='ij'
+    )
+
+    output_tensor = base.at[idx_O[..., None], idx_G[..., None], idx_S[..., None], tok_perm_idx].add(exp_aff)
+    output_tensor = output_tensor.reshape(O, G, S, E, expert_cap)
+
+    dispatch_tensor = output_tensor.astype(bool)
+
+    return TopKGatingGather.Output(
+        combine_tensor=output_tensor,
+        dispatch_tensor=dispatch_tensor,
+        load_balance_loss=output.load_balance_loss,
+        router_z_loss=output.router_z_loss
+    )
+
 class ModuleConfig():
     def __init__(self, module = None, device = "cpu", layer = None, config=None):
         assert module is not None
@@ -63,7 +94,6 @@ class ModuleConfig():
                 setattr(self.module, k, config[k])
         self.device = device
         self.layer = layer # None for topk, else "MoE"
-
 
 class TestConfig():
     def __init__(self, test: ModuleConfig, golden: ModuleConfig = None, 
@@ -135,35 +165,6 @@ class TestConfig():
         self.test_inputs[input_key] = jax.device_put(inputs, in_shard_test)
         self.golden_inputs[input_key] = jax.device_put(inputs, in_shard_golden)
 
-def _topkgather_to_topk(output, expert_cap):
-    tok_perm_idx, expert_index, exp_aff_mask = output.combine_tensor
-
-    O, G, S, _ = tok_perm_idx.shape
-    E = exp_aff_mask.shape[-1]
-
-    exp_aff = jnp.take_along_axis(exp_aff_mask, expert_index, axis=-1)
-
-    base = jnp.zeros((O, G, S, E * expert_cap), dtype=exp_aff_mask.dtype)
-
-    idx_O, idx_G, idx_S = jnp.meshgrid(
-        jnp.arange(O), 
-        jnp.arange(G), 
-        jnp.arange(S), 
-        indexing='ij'
-    )
-
-    output_tensor = base.at[idx_O[..., None], idx_G[..., None], idx_S[..., None], tok_perm_idx].add(exp_aff)
-    output_tensor = output_tensor.reshape(O, G, S, E, expert_cap)
-
-    dispatch_tensor = output_tensor.astype(bool)
-
-    return TopKGatingGather.Output(
-        combine_tensor=output_tensor,
-        dispatch_tensor=dispatch_tensor,
-        load_balance_loss=output.load_balance_loss,
-        router_z_loss=output.router_z_loss
-    )
-
 class TestConfigBuilder:
     def __init__(self):
         self.reset()
@@ -214,22 +215,18 @@ class TestConfigBuilder:
     def build_moe_topkgather_setup(self):
         print(self.params["use_blockwise_kernel"])
         if self.params["use_blockwise_kernel"] is False:
-            gating_config = {
-                "gating": TopKGatingGather.default_config().set(
+            gating_config = TopKGatingGather.default_config().set(
                     name="gating",
                     expert_capacity=self.params["expert_capacity"],
                     train_capacity_factor=self.params["train_capacity_factor"],
-                )
-            }
+            )
         else:
-            gating_config = {
-                "gating": TopKGatingGatherBlockwise.default_config().set(
+            gating_config = TopKGatingGatherBlockwise.default_config().set(
                     name="gating",
                     expert_capacity=self.params["expert_capacity"],
                     train_capacity_factor=self.params["train_capacity_factor"],
                     block_size=self.params["block_size"],
-                )
-            }
+            )
         
         return {
             "input_dim": self.params["input_dim"],
@@ -270,9 +267,9 @@ class TestConfigBuilder:
             x["block_size"] = self.params["block_size"]
         return x
             
-    def build_moe_layer_config(self, device="neuron"):
+    def build_moe_layer_config(self, test_device="neuron"):
         return TestConfig(
-            test=ModuleConfig(TransformerFeedForwardMoE, device, "MoE", config=self.build_moe_topkgather_setup()),
+            test=ModuleConfig(TransformerFeedForwardMoE, test_device, "MoE", config=self.build_moe_topkgather_setup()),
             golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", config=self.build_moe_top2_setup()),
             input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
             loss_fn=lambda x: x.mean(),
@@ -296,9 +293,9 @@ class TestConfigBuilder:
     
     def build_test_configs_unit(self):
         test_configs = [] 
-        test_configs.append(self.build_moe_layer_config(device="cpu"))
+        test_configs.append(self.build_moe_layer_config(test_device="cpu"))
         if not self.params["mesh_spec"]: # gating tests only for single-core config
-            test_configs.append(self.build_gating_layer_config(device="cpu"))
+            test_configs.append(self.build_gating_layer_config(test_device="cpu"))
         return test_configs
         
     def build_test_configs_integ(self):
@@ -372,3 +369,71 @@ def get_training_configs(is_unit: bool = False):
         test_configs.extend([(name + cfg.prefix, cfg) for cfg in config])
 
     return test_configs
+
+class ModuleTester:
+    def _fwd_call(self, layer, state, inputs):
+        return F(
+                layer,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(123),
+                state=state,
+                inputs=inputs,
+        )
+
+    def _test_fwd_internal(self, cfg, assert_outputs=True):
+        cfg.init()
+        @partial(jax.jit, out_shardings=cfg.out_shard_test) # cannot specify both backend and sharding together
+        def test_fwd_call():
+            test_output, _ = self._fwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
+            return test_output
+
+        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
+        def golden_fwd_call():
+            golden_output, _ =  self._fwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
+            return golden_output
+
+        with cfg.mesh_test:
+            test_output = test_fwd_call()
+        with cfg.mesh_golden:
+            golden_output = golden_fwd_call()
+
+        if cfg.conv_output != None:
+            test_output = cfg.conv_output(test_output)
+        
+        # Transfer results to CPU before comparison
+        if assert_outputs:
+            self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output))
+
+    def _test_bwd_internal(self, cfg):
+        cfg.init()
+        @partial(jax.jit, out_shardings=cfg.out_shard_test)
+        def test_bwd_call():
+            def loss_fn(state):
+                test_output, _ = self._fwd_call(cfg.test_layer, state, cfg.test_inputs)
+                return cfg.loss_fn(test_output)
+            
+            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.test_state)
+            return  loss, grads
+
+        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
+        def golden_bwd_call():
+            def loss_fn(state):
+                golden_output, _ = self._fwd_call(cfg.golden_layer, state, cfg.golden_inputs)
+                return cfg.loss_fn(golden_output)
+            
+            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.golden_state)
+            return loss, grads
+
+        with cfg.mesh_test:
+            test_loss, test_grads = test_bwd_call()
+        with cfg.mesh_golden:
+             golden_loss, golden_grads = golden_bwd_call()
+
+        # Transfer results to CPU before comparison
+        test_loss = jax.tree_map(jax.device_get, test_loss)
+        golden_loss = jax.tree_map(jax.device_get, golden_loss)
+        test_grads = jax.tree_map(jax.device_get, test_grads)
+        golden_grads = jax.tree_map(jax.device_get, golden_grads)
+        
+        self.assertNestedAllClose(test_loss, golden_loss)
+        self.assertNestedAllClose(test_grads, golden_grads)

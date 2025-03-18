@@ -1445,7 +1445,8 @@ class TransformerFeedForwardMoE(BaseLayer):
                 raise NotImplementedError(cfg.structure)
         return x
 
-    def _dispatch_and_combine_with_gather_gating(self, cfg, group_len, token_shape, gating, x):
+    def _dispatch_and_combine_with_gather_gating(self, cfg, group_len, gating, x):
+        input_dtype = x.dtype
         with jax.named_scope("dispatch"):
             # token_assignments: (O, G, E, C)
             token_assignments= gating.dispatch_tensor
@@ -1544,28 +1545,72 @@ class TransformerFeedForwardMoE(BaseLayer):
 
                     output += output_k * expert_affinities_k
             return output
-
-    def _dispatch_and_combine_with_gather_blockwise_gating(self, cfg, group_len, token_shape, gating, hidden_states):
+    
+    def _backend(self):
+        # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
+        global_mesh = thread_resources.env.physical_mesh
+        if len(global_mesh.devices):
+            backend = global_mesh.devices.flat[0].platform
+        else:
+            # Fall back to jax.default_backend() if no device is found in physical_mesh.
+            backend = jax.default_backend()
+        return backend
+    
+    def _dispatch_and_combine_with_gather_blockwise_gating(self, cfg, gating, hidden_states):
+        """
+        Args
+        - cfg: Config
+        - gating: Output of the gating function
+          - combine_tensor: 
+            - token_position_to_id (O, G, N*B)
+            - expert_affinities_masked (O, G, S, E)
+          - dispatch_tensor: 
+            - block_to_expert (O, G, N)
+        - hidden_states: (O, G, S, M)
+        """
         mesh = thread_resources.env.physical_mesh
-        from .neuron_blockwise_mlp import can_use_blockwise_matmul_nki
+        backend = self._backend()
+        assert backend == "neuron"
+        from .neuron_blockwise_mlp import can_use_blockwise_matmul_nki, blockwise_mm
         if can_use_blockwise_matmul_nki(
             hidden_size=cfg.input_dim,
             intermediate_size_tp=cfg.hidden_dim/mesh.shape["model"],
             block_size=cfg.gating.block_size,
-            glu_mlp=True,
-            device=hidden_states.device,
+            glu_mlp=len(cfg.activations) == 2,
         ):
-            return self.blockwise_nki.apply(
-                hidden_states,
-                gating.combine_tensor[1], #expert_affinities_masked
-                self.mlp_op.gate_up_proj.weight,
-                self.mlp_op.down_proj.weight,
-                self.block_size,
-                gating.combine_tensor[0], # token_position_to_id
-                gating.dispatch_tensor, # block_to_expert
-                self.training,
-                self.mesh,
+            expert_affinities_masked = gating.combine_tensor[1]
+            token_position_to_id = gating.combine_tensor[0]
+            block_to_expert = gating.dispatch_tensor
+            MOE_OUTER_BATCH_AXIS_NAMES = ("data", "fsdp")
+            partitioned_blockwise_mm = shard_map(
+                blockwise_mm,
+                mesh=thread_resources.env.physical_mesh,
+                in_specs=(
+                    cfg.dim_to_mesh_axis_map["ogsM"], # hidden_states
+                    cfg.dim_to_mesh_axis_map["ogse"], # expert_affinities_masked
+                    PartitionSpec("expert", None, "model"), # gate weight
+                    PartitionSpec("expert", None, "model"), # up proj weight
+                    PartitionSpec("expert", "model", None), # down proj weight
+                    None, # block size
+                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # token_position_to_id
+                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # block_to_expert
+                ),
+                out_specs=PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
+                check_rep=False
             )
+            outputs = with_sharding_constraint(
+                partitioned_blockwise_mm(
+                    hidden_states,
+                    expert_affinities_masked,
+                    self.parameters["wi_0_weight"],
+                    self.parameters["wi_1_weight"],
+                    self.parameters["wo_weight"],
+                    cfg.gating.block_size,
+                    token_position_to_id,
+                    block_to_expert,
+                )
+            )
+            return outputs
         else:
             raise NotImplementedError
     
@@ -1610,10 +1655,10 @@ class TransformerFeedForwardMoE(BaseLayer):
             + gating.router_z_loss * cfg.router_z_loss_weight
         )
         self.add_module_output("aux_loss", aux_loss)
-        if isinstance(self.gating, TopKGatingGather):
-            x = self._dispatch_and_combine_with_gather_gating(cfg, group_len, token_shape, gating, x)
-        elif isinstance(self.gating, TopKGatingGatherBlockwise):
-            x = self._dispatch_and_combine_with_gather_blockwise_gating(cfg, group_len, token_shape, gating, x)
+        if isinstance(self.gating, TopKGatingGatherBlockwise):
+            x = self._dispatch_and_combine_with_gather_blockwise_gating(cfg, gating, x)
+        elif isinstance(self.gating, TopKGatingGather):
+            x = self._dispatch_and_combine_with_gather_gating(cfg, group_len, gating, x)
         else:
             combine_tensor = gating.combine_tensor.astype(input_dtype)
             dispatch_tensor = gating.dispatch_tensor.astype(input_dtype)

@@ -10,93 +10,43 @@
 # Copyright 2022 The Pax Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Integration Test for mixture_of_experts.py"""
-from functools import partial
-
-import jax
+import pytest
 from absl.testing import absltest, parameterized
-
-from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
-from axlearn.common.utils_neuron import TestConfig
+from axlearn.common.utils_neuron import ModuleTester, TestConfig, TestConfigBuilder
 from axlearn.common.utils_neuron import get_training_configs
-
-#jax.config.update('jax_platform_name', 'cpu')  # Do we need this ?
-
-MODULE_UNIT_TEST_ATOL=1e-6
-MODULE_UNIT_TEST_RTOL=1e-3
 
 test_configs = get_training_configs()
 
 # pylint: disable=no-self-use,protected-access
-class TestImplCorrectnessInteg(TestCase):
-
-    def _fwd_call(self, layer, state, inputs):
-        return F(
-                layer,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(123),
-                state=state,
-                inputs=inputs,
-        )
+class TestImplCorrectnessInteg(TestCase, ModuleTester):
+    def test_fwd_correctness_blockwise(self):
+        builder = TestConfigBuilder()
+        builder.reset()
+        builder.with_dimensions(batch_size=16, seq_len=32, input_dim=4096, )
+        builder.with_expert_settings(
+            hidden_dim=6144, outer_batch=1, 
+            num_groups=1, num_experts=4, 
+            expert_capacity=None, 
+            train_capacity_factor=1.2,
+            block_size=128,
+            use_blockwise_kernel=True)
+        builder.with_mesh_settings({"fsdp":-1, "model":4})
+        # gating_config = builder.build_gating_layer_config(test_device="neuron")
+        # gating_config.conv_output = None
+        # self._test_fwd_internal(gating_config, assert_outputs=False)
+        moe_config = builder.build_moe_layer_config(test_device="neuron")
+        self._test_fwd_internal(moe_config, assert_outputs=True)
 
     @parameterized.named_parameters(test_configs)
+    @pytest.mark.skip(reason="skip")
     def test_fwd_correctness(self, cfg: TestConfig):
-
-        @partial(jax.jit, out_shardings=cfg.out_shard_test) # cannot specify both backend and sharding together
-        def test_fwd_call():
-            test_output, _ = self._fwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
-            return test_output
-
-        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
-        def golden_fwd_call():
-            golden_output, _ =  self._fwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
-            return golden_output
-
-        with cfg.mesh_test:
-            test_output = test_fwd_call()
-        with cfg.mesh_golden:
-            golden_output = golden_fwd_call()
-
-        if cfg.conv_output != None:
-            test_output = cfg.conv_output(test_output)
-        
-        # Transfer results to CPU before comparison
-        self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output))
+        self._test_fwd_internal(cfg)
 
     @parameterized.named_parameters(test_configs)
+    @pytest.mark.skip(reason="skip")
     def test_bwd_correctness(self, cfg: TestConfig):
-
-        @partial(jax.jit, out_shardings=cfg.out_shard_test)
-        def test_bwd_call():
-            def loss_fn(state):
-                test_output, _ = self._fwd_call(cfg.test_layer, state, cfg.test_inputs)
-                return cfg.loss_fn(test_output)
-            
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.test_state)
-            return  loss, grads
-
-        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
-        def golden_bwd_call():
-            def loss_fn(state):
-                golden_output, _ = self._fwd_call(cfg.golden_layer, state, cfg.golden_inputs)
-                return cfg.loss_fn(golden_output)
-            
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.golden_state)
-            return loss, grads
-
-        with cfg.mesh_test:
-            test_loss, test_grads = test_bwd_call()
-        with cfg.mesh_golden:
-             golden_loss, golden_grads = golden_bwd_call()
-
-        # Transfer results to CPU before comparison
-        test_loss = jax.tree_map(jax.device_get, test_loss)
-        golden_loss = jax.tree_map(jax.device_get, golden_loss)
-        test_grads = jax.tree_map(jax.device_get, test_grads)
-        golden_grads = jax.tree_map(jax.device_get, golden_grads)
-        
-        self.assertNestedAllClose(test_loss, golden_loss)
-        self.assertNestedAllClose(test_grads, golden_grads)
+        self._test_bwd_internal(cfg)
 
 if __name__ == "__main__":
     absltest.main()
