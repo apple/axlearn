@@ -328,6 +328,39 @@ class MakeAutoregressveInputsTest(TestCase):
             packing_fn=streaming_packing,
             max_padding_fraction=0.5,
         ),
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3]),
+                np.array([1, 2, 3, 4, 5, 6]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([33, 33]),
+                    input_ids=np.array([33, 33]),
+                ),
+                dict(
+                    target_labels=np.array([1, 3]),
+                    input_ids=np.array([3, 1]),
+                ),
+                dict(
+                    target_labels=np.array([1, 2]),
+                    input_ids=np.array([2, 1]),
+                ),
+                dict(
+                    target_labels=np.array([3, 4]),
+                    input_ids=np.array([4, 3]),
+                ),
+                dict(
+                    target_labels=np.array([5, 6]),
+                    input_ids=np.array([6, 5]),
+                ),
+            ],
+            max_len=2,
+            window_size=3,
+            packing_fn=streaming_packing,
+            max_padding_fraction=0.5,
+        ),
     )
     def test_make_autoregressive_inputs(
         self,
