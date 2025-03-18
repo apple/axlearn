@@ -119,9 +119,7 @@ class _StreamingPackingDatasetIterator(grain.DatasetIterator):
             # If there are still leftover tokens when we have already reached the window limit, we
             # should decide whether to keep this sequence.
             if self._current_token_count > 0 and self._reach_window_limit():
-                next_element = self._pop_element()
-                assert self._current_token_count == 0 and not self._current_examples_list
-                return next_element
+                return self._pop_element()
 
             # Keeps filling up the sequence until reaching the limit.
             # Termination of this while loop means:
