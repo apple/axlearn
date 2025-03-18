@@ -141,8 +141,7 @@ class TPUDecoding(BaseSingleStepDecoding):
         block_size = self.cfg.tpu_block_size
         k_seq_len = key.shape[1]
         if k_seq_len % block_size != 0 and k_seq_len > block_size:
-            self._log_unsupported(f"{k_seq_len=} is not divisible by {block_size=}")
-            return False
+            return self._log_unsupported(f"{k_seq_len=} is not divisible by {block_size=}")
         return True
 
     @partial(jax.jit, static_argnames=["self"])

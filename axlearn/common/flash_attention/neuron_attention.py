@@ -229,8 +229,7 @@ class NeuronFlashAttention(BaseFlashAttention):
         if not super().is_supported(query, key, value, bias):
             return False
         if self.cfg.dropout_rate != 0.0:
-            self._log_unsupported("dropout is not supported.")
-            return False
+            return self._log_unsupported("dropout is not supported.")
         logging.info("Using %s.", self.name())
         return True
 

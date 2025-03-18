@@ -807,54 +807,44 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             return False
         if self.cfg.is_decoding:
             if query.shape[1] > 1:
-                self._log_unsupported("multi-step decoding is not supported.")
-                return False
+                return self._log_unsupported("multi-step decoding is not supported.")
             if not key.shape[1] % 2 == 0:
-                self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
-                return False
+                return self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
         else:
             if not self._check_block_size(query=query, key=key, block_size=2):
                 return False
         if query.dtype not in (jnp.float16, jnp.bfloat16):
-            self._log_unsupported(
+            return self._log_unsupported(
                 f"{query.dtype=} is not supported. Only supports float16 and bfloat16."
             )
-            return False
 
         if jax.default_backend() == "cpu":
-            self._log_unsupported("we're on CPU emulation.")
-            return False
+            return self._log_unsupported("we're on CPU emulation.")
         head_dim = query.shape[-1]
         if head_dim % 8 != 0:
-            self._log_unsupported(f"{head_dim=} is not divisible by 8.")
-            return False
+            return self._log_unsupported(f"{head_dim=} is not divisible by 8.")
         if head_dim > 128:
-            self._log_unsupported(f"{head_dim=} > 128")
-            return False
+            return self._log_unsupported(f"{head_dim=} > 128")
         _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
         if sliding.has_value() and not self._allow_explicit_bias:
             if self.cfg.is_decoding:
-                self._log_unsupported(
+                return self._log_unsupported(
                     "cuDNN doesn't support sliding window in decoding "
                     "without folding it into explicit bias."
                 )
-                return False
             if self.cfg.dropout_rate != 0.0:
-                self._log_unsupported(
+                return self._log_unsupported(
                     "cuDNN doesn't support sliding window with dropout "
                     "without folding it into explicit bias."
                 )
-                return False
             if explicit_bias.has_value():
-                self._log_unsupported(
+                return self._log_unsupported(
                     "cuDNN doesn't support sliding window with explicit bias "
                     "without folding it into explicit bias."
                 )
-                return False
 
         if explicit_bias.has_value() and not self._allow_explicit_bias:
-            self._log_unsupported("we don't allow explicit bias at this stage.")
-            return False
+            return self._log_unsupported("we don't allow explicit bias at this stage.")
         logging.info("Using %s.", self.name())
         return True
 
@@ -927,13 +917,11 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         if not self._check_block_size(query=query, key=key, block_size=block_size):
             return False
         if pl.next_power_of_2(head_dim) != head_dim:
-            self._log_unsupported(f"{head_dim=} is not a power of 2.")
-            return
+            return self._log_unsupported(f"{head_dim=} is not a power of 2.")
         # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
         # it by reducing the block size along sequence dim. Support it when needed.
         if head_dim > 128:
-            self._log_unsupported(f"{head_dim=} > 128")
-            return False
+            return self._log_unsupported(f"{head_dim=} > 128")
         logging.info("Using %s.", self.name())
         return True
 

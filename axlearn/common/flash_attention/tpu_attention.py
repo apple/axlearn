@@ -862,8 +862,7 @@ class TPUFlashAttention(BaseFlashAttention):
         if not self._check_block_size(query=query, key=key, block_size=block_size):
             return False
         if self.cfg.dropout_rate != 0.0:
-            self._log_unsupported("dropout is not supported.")
-            return False
+            return self._log_unsupported("dropout is not supported.")
         return True
 
 
@@ -884,14 +883,12 @@ class TPUSplashAttention(TPUFlashAttention):
         head_dim = query.shape[-1]
 
         if explicit_bias.has_value():
-            self._log_unsupported("explicit bias is not supported.")
-            return False
+            return self._log_unsupported("explicit bias is not supported.")
 
         if head_dim % splash_attention_kernel.NUM_LANES != 0:
-            self._log_unsupported(
+            return self._log_unsupported(
                 f"{head_dim=} is not divisible by {splash_attention_kernel.NUM_LANES=}"
             )
-            return False
         logging.info("Using %s.", self.name())
         return True
 

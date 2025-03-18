@@ -127,6 +127,7 @@ class BaseFlashAttention(Configurable):
 
     def _log_unsupported(self, reason: str):
         logging.warning("Not using %s because %s", self.name(), reason)
+        return False
 
     def _check_block_size(self, *, query: Tensor, key: Tensor, block_size: int) -> bool:
         q_seq_len = query.shape[1]
@@ -206,11 +207,9 @@ class BaseSingleStepDecoding(BaseFlashAttention):
         if not super().is_supported(query, key, value, bias):
             return False
         if not self.cfg.is_decoding:
-            self._log_unsupported("is_decoding=False.")
-            return False
+            return self._log_unsupported("is_decoding=False.")
         if query.shape[1] != 1:
-            self._log_unsupported(f"{query.shape[1]=} != 1")
-            return False
+            return self._log_unsupported(f"{query.shape[1]=} != 1")
         if self.cfg.dropout_rate != 0.0:
             raise ValueError("Dropout rate cannot be set for decoding!")
         return True
