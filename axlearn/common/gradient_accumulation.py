@@ -122,6 +122,13 @@ def with_minibatch_steps(
 
     TODO(cemkoc): Investigate the slight difference in loss curves when decorated.
 
+    Outputs of the decorated ForwardFn are accumulated based on the provided metric_accumulator.
+    The accumulated outputs of the decorated ForwardFn are the same as ForwardFn only if the
+    specific output does not rely on batch size of the input. For example if a summary output
+    of a ForwardFn is of the shape [batch_size, ] with value [1,2,3,4] where batch_size is 4,
+    after decoration with minibatch_size of 2 the metric output will be of shape
+    [minibatch_size, ] with value [1+3, 2+4] instead.
+
     Args:
         steps: Number of gradient accumulation steps.
         metric_accumulator: A `MetricAccumulator` to accumulate minibatch summaries from the
