@@ -19,9 +19,8 @@ from axlearn.cloud.gcp.system_characteristics import (
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
     _SystemCharacteristics,
 )
-from axlearn.cloud.gcp.tpu import infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import BEAM_SUBMITTER_LABEL, delete_flink_deployment, delete_k8s_job
-from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
+from axlearn.common.compiler_options import infer_tpu_type
 
 _FINK_MAIN_CONTAINER_CPU_PERCENTAGE = 0.4
 
@@ -96,20 +95,6 @@ class FlinkTPUGKEJob(job.GKEJob):
     def _get_flink_cluster_name(self) -> str:
         return f"{self.config.name}-flink-cluster"
 
-    def _get_single_node_topology(self) -> str:
-        """This method returns the single node topology for the configured TPU type."""
-        tpu_type = infer_tpu_type(self.config.accelerator.instance_type)
-        cores, hosts = infer_tpu_cores(tpu_type), infer_tpu_workers(tpu_type)
-        if cores % hosts != 0:
-            raise ValueError(
-                f"Number of cores:{cores} is not divisible by hosts:{hosts} for TPU type:{tpu_type}"
-            )
-        single_host_cores = cores // hosts
-        single_host_tpu_name = f"{infer_tpu_version(tpu_type)}-{single_host_cores}"
-        if not single_host_tpu_name in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
-            raise RuntimeError(f"Can't find specs for {single_host_tpu_name}.")
-        return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[single_host_tpu_name].topology
-
     def _execute(self) -> Any:
         """Submits a Flink Cluster and a Beam job submitter to the cluster."""
         cfg: job.TPUGKEJob.Config = self.config
@@ -160,7 +145,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         jobmanager_ip = jobmanager_pods.items[0].status.pod_ip
 
         # 3) Create a job to submit user's pipeline to the Flink cluster
-        job_submission = self._build_job_submission_deployment(jobmanager_ip, system)
+        job_submission = self._build_job_submission_deployment(jobmanager_ip)
         logging.info("Submitting Job job_submission=%s", job_submission)
         return k8s.client.BatchV1Api().create_namespaced_job(
             namespace=cfg.namespace,
@@ -229,8 +214,6 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     mountPath="/opt/flink/log", name="flink-logs"
                                 ),
                             )
-                            # pylint: enable=protected-access
-                            # pytype: enable=attribute-error
                         ],
                         containers=[
                             dict(
@@ -242,10 +225,9 @@ class FlinkTPUGKEJob(job.GKEJob):
                     )
                 ),
                 flinkConfiguration={
-                    # taskmanager.numberOfTaskSlots controls the number of concurrent
-                    # threads per worker.
-                    # TODO(muyang_yu): enable users override this default value via a flag
-                    "taskmanager.numberOfTaskSlots": f"{system.chips_per_vm}",
+                    # We reply on JAX mesh config to do data parallelism, every host will
+                    # offer only one task slot.
+                    "taskmanager.numberOfTaskSlots": "1",
                     "taskmanager.memory.task.off-heap.size": "16g",
                     "taskmanager.network.bind-host": "0.0.0.0",
                     "rest.address": "0.0.0.0",
@@ -255,8 +237,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                 # resource is good enough.
                 jobManager=dict(resource=dict(memory="2g", cpu=1)),
                 taskManager=dict(
-                    # We use large slices as multiple independent single nodes in inference
-                    replicas=(cfg.accelerator.num_replicas * system.vms_per_slice),
+                    replicas=cfg.accelerator.num_replicas,
                     resource=self._build_resource(
                         system=system,
                         cpu_percentage=_FINK_MAIN_CONTAINER_CPU_PERCENTAGE,
@@ -271,13 +252,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     self._builder.config.location_hint
                                 ),
                                 "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                                # In inference, we use every node independently, so we use single
-                                # node's topology instead of the whole slice's topology.
-                                # So that jax.device_count() gets the number of chips in a single
-                                # node.
-                                "cloud.google.com/gke-tpu-topology": (
-                                    self._get_single_node_topology()
-                                ),
+                                "cloud.google.com/gke-tpu-topology": system.topology,
                             },
                             tolerations=[
                                 dict(
@@ -296,8 +271,6 @@ class FlinkTPUGKEJob(job.GKEJob):
                                         mountPath="/opt/flink/log", name="flink-logs"
                                     ),
                                 )
-                                # pylint: enable=protected-access
-                                # pytype: enable=attribute-error
                             ],
                             containers=[
                                 dict(
@@ -339,9 +312,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                                         dict(name=k, value=str(v))
                                         for k, v in get_default_env(
                                             tpu_type=infer_tpu_type(cfg.accelerator.instance_type),
-                                            # Every pod is independent to each other, so they
-                                            # believe they run in single slice.
-                                            num_tpu_slices=1,
+                                            num_tpu_slices=cfg.accelerator.num_replicas,
                                             job_name=cfg.name,
                                         ).items()
                                     ],
@@ -369,24 +340,12 @@ class FlinkTPUGKEJob(job.GKEJob):
             ),
         )
 
-    def _build_job_submission_deployment(
-        self, job_manager_ip: str, system: _SystemCharacteristics
-    ) -> Dict[str, Any]:
+    def _build_job_submission_deployment(self, job_manager_ip: str) -> Dict[str, Any]:
         cfg: job.GKEJob.Config = self.config
         user_command = cfg.command
-        # --flink_parallelism controls the number of replicas of all stages in the Beam pipeline
-        # it executes.
-        # A reasonable large number of --flink_parallelism can enable better I/O performance.
-        # But if it is too large, it takes large amount of memory and time to initialize them.
-        # And since this is the only job running on the flink cluster, we are using all task
-        # slots from all taskmasters for this job, which is a reasonable number.
-        # TODO(muyang_yu): enable users override this default value via a flag
-        flink_parallelism = (
-            cfg.accelerator.num_replicas * system.vms_per_slice * system.chips_per_vm
-        )
         user_command += (
             f" --flink_master_address={job_manager_ip}"
-            f" --flink_parallelism={flink_parallelism}"
+            f" --flink_parallelism={cfg.accelerator.num_replicas}"
             # Replicate output to /output/beam_pipline_log
             f" 2>&1 | tee /output/beam_pipline_log"
         )
@@ -411,8 +370,6 @@ class FlinkTPUGKEJob(job.GKEJob):
                         # pylint: disable=protected-access
                         # pytype: disable=attribute-error
                         initContainers=[self._builder._build_uploader_container()],
-                        # pylint: enable=protected-access
-                        # pytype: enable=attribute-error
                         containers=[
                             dict(
                                 name=cfg.name,

@@ -22,7 +22,6 @@ from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp import job as gcp_job
 from axlearn.cloud.gcp.jobs import bastion_vm, gke_runner, launch, tpu_runner
-from axlearn.cloud.gcp.jobs.gke_runner import FlinkGKERunnerJob, JobType
 from axlearn.cloud.gcp.jobs.launch import (
     BaseBastionManagedJob,
     BastionDirectory,
@@ -47,18 +46,13 @@ from axlearn.common.test_utils import TestWithTemporaryCWD
 class TestUtils(parameterized.TestCase):
     """Tests util functions."""
 
-    def setUp(self):
-        self.fv = flags.FlagValues()
-        _prelaunch_flags(fv=self.fv)
-        self.fv.mark_as_parsed()
-
     def test_get_launcher_or_exit(self):
-        def match_qrm_tpu(*, action, instance_type, gcp_api, job_type):
-            del action, job_type
+        def match_qrm_tpu(*, action, instance_type, gcp_api):
+            del action
             return instance_type == "tpu" and gcp_api == GCPAPI.QRM
 
-        def match_gke(*, action, instance_type, gcp_api, job_type):
-            del action, instance_type, job_type
+        def match_gke(*, action, instance_type, gcp_api):
+            del action, instance_type
             return gcp_api == GCPAPI.GKE
 
         class DummyTPULauncher(Job):
@@ -73,40 +67,19 @@ class TestUtils(parameterized.TestCase):
         ]
         with mock.patch(f"{launch.__name__}._LAUNCHERS", mock_launchers):
             launcher = _get_launcher_or_exit(
-                action="start",
-                instance_type="tpu",
-                gcp_api=GCPAPI.QRM,
-                flag_values=self.fv,
+                action="start", instance_type="tpu", gcp_api=GCPAPI.QRM
             )
             self.assertEqual(launcher.job_cls, DummyTPULauncher)
             self.assertEqual(launcher.matcher, match_qrm_tpu)
 
             launcher = _get_launcher_or_exit(
-                action="start",
-                instance_type="other",
-                gcp_api=GCPAPI.GKE,
-                flag_values=self.fv,
+                action="start", instance_type="other", gcp_api=GCPAPI.GKE
             )
             self.assertEqual(launcher.job_cls, DummyGKELauncher)
             self.assertEqual(launcher.matcher, match_gke)
 
             with self.assertRaises(app.UsageError):
-                _get_launcher_or_exit(
-                    action="start", instance_type="other", gcp_api=GCPAPI.QRM, flag_values=self.fv
-                )
-
-    def test_get_launcher_or_exit_with_job_type(self):
-        self.fv.set_default("job_type", JobType.FLINK.value)
-        launcher = _get_launcher_or_exit(
-            action="start",
-            instance_type="tpu",
-            gcp_api=GCPAPI.GKE,
-            flag_values=self.fv,
-        )
-        # pytype: disable=attribute-error
-        # .runner is defined in `BaseBastionManagedJob`, a subclass of `Job`
-        self.assertEqual(launcher.job_cls.runner, FlinkGKERunnerJob)
-        # pytype: enable=attribute-error
+                _get_launcher_or_exit(action="start", instance_type="other", gcp_api=GCPAPI.QRM)
 
 
 class _DummyRunner(Job):
