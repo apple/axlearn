@@ -83,7 +83,7 @@ expected_flink_deployment_json = """
       }
     },
     "flinkConfiguration": {
-      "taskmanager.numberOfTaskSlots": "1",
+      "taskmanager.numberOfTaskSlots": "4",
       "taskmanager.memory.task.off-heap.size": "16g",
       "taskmanager.network.bind-host": "0.0.0.0",
       "rest.address": "0.0.0.0"
@@ -95,7 +95,7 @@ expected_flink_deployment_json = """
       }
     },
     "taskManager": {
-      "replicas": 1,
+      "replicas": 2,
       "resource": {
         "cpu": 83,
         "memory": "179Gi"
@@ -201,7 +201,7 @@ expected_flink_deployment_json = """
                 },
                 {
                   "name": "TPU_TYPE",
-                  "value": "v5p-8"
+                  "value": "v5p-16"
                 },
                 {
                   "name": "NUM_TPU_SLICES",
@@ -352,7 +352,7 @@ expected_jobsubmission_json = """
               "-c"
             ],
             "args": [
-              "python -m fake --command --flink_master_address=1.2.3.4 --flink_parallelism=1 2>&1 | tee /output/beam_pipline_log"
+              "python -m fake --command --flink_master_address=1.2.3.4 --flink_parallelism=8 2>&1 | tee /output/beam_pipline_log"
             ]
           }
         ],
@@ -390,7 +390,7 @@ class FlinkTPUGKEJobTest(TestCase):
             fv.mark_as_parsed()
             cfg = job_flink.FlinkTPUGKEJob.from_flags(fv)
             cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
-            cfg.accelerator.instance_type = "tpu-v5p-8"
+            cfg.accelerator.instance_type = "tpu-v5p-16"
             cfg.enable_pre_provisioner = enable_pre_provisioner
             cfg.builder.priority_class = priority_class
             cfg.output_dir = "fake-output-dir"
@@ -455,7 +455,8 @@ class FlinkTPUGKEJobTest(TestCase):
         ) as cfg:
             flink_job = job_flink.FlinkTPUGKEJob(cfg)
             # pylint: disable=protected-access
-            job_submission = flink_job._build_job_submission_deployment("1.2.3.4")
+            system = flink_job._get_system_info()
+            job_submission = flink_job._build_job_submission_deployment("1.2.3.4", system)
             expected_job_submission = json.loads(expected_jobsubmission_json)
             expected_job_submission["spec"]["template"]["spec"]["serviceAccountName"] = (
                 service_account if service_account else "settings-account"

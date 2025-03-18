@@ -95,6 +95,7 @@ from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import gke_runner, tpu_runner
 from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
+from axlearn.cloud.gcp.jobs.gke_runner import JobType, job_type_flags
 from axlearn.cloud.gcp.jobs.launch_utils import (
     JobsToTableFn,
     jobs_table,
@@ -133,7 +134,7 @@ def _get_bastion_vm(bastion_name: str) -> Optional[dict[str, Any]]:
 
 
 class _Matcher(Protocol):
-    def __call__(self, *, action: str, instance_type: str, gcp_api: str) -> bool:
+    def __call__(self, *, action: str, instance_type: str, gcp_api: str, job_type: str) -> bool:
         pass
 
 
@@ -282,7 +283,11 @@ class BaseBastionManagedJob(Job):
         if action in ("start", "update"):
             cfg.runner = cls.runner.from_flags(fv, command=command)
             runner_flags = " ".join(serialized_flags_for_job(fv, cls.runner))
-            cfg.command = f"python3 -m {cls.runner.__module__} {action} {runner_flags} -- {command}"
+            cfg.command = (
+                f"python3 -m {cls.runner.__module__} {action} {runner_flags} "
+                f"--job_type={fv.job_type} "
+                f"-- {command}"
+            )
             if cfg.runner.bundler and fv.bundler_exclude:
                 cfg.runner.bundler.set(exclude=fv.bundler_exclude)
         else:
@@ -563,12 +568,22 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
 
 # Launchers specified here will be tried (in the given order) when launching a given instance type.
 _LAUNCHERS = [
+    Launcher(
+        job_cls=BastionManagedGKEJob.with_runner(gke_runner.FlinkGKERunnerJob),
+        matcher=config_for_function(match_by_regex).set(
+            match_regex=None,
+            gcp_api=None,
+            job_type=JobType.FLINK.value,
+        ),
+        description="Supports running Flink jobs on GKE TPU",
+    ),
     # TPU QRM launcher.
     Launcher(
         job_cls=BastionManagedTPUJob,
         matcher=config_for_function(match_by_regex).set(
             match_regex=dict(start=r"tpu-v.+-(\d)+", list=r"tpu.*", stop=r"tpu.*"),
             gcp_api=GCPAPI.QRM.value,
+            job_type=JobType.DEFAULT.value,
         ),
         description=(
             "Supports launching TPU jobs via QRM. "
@@ -584,6 +599,7 @@ _LAUNCHERS = [
         matcher=config_for_function(match_by_regex).set(
             match_regex=dict(start=r"tpu-v.+-(\d)+", update=r"tpu.*", list=r"tpu.*", stop=r"tpu.*"),
             gcp_api=GCPAPI.GKE.value,
+            job_type=JobType.DEFAULT.value,
         ),
         description=(
             "Supports launching TPU jobs via GKE. "
@@ -596,7 +612,9 @@ _LAUNCHERS = [
 ]
 
 
-def _get_launcher_or_exit(*, action: str, instance_type: str, gcp_api: str) -> Launcher:
+def _get_launcher_or_exit(
+    *, action: str, instance_type: str, gcp_api: str, flag_values: flags.FlagValues = FLAGS
+) -> Launcher:
     """Retrieves launcher by matching instance_type and gcp_api.
 
     If there are multiple matches, the first one in the registry is returned.
@@ -604,7 +622,12 @@ def _get_launcher_or_exit(*, action: str, instance_type: str, gcp_api: str) -> L
     # Identify launcher from instance type.
     for launcher in _LAUNCHERS:
         m = maybe_instantiate(launcher.matcher)
-        if m(action=action, instance_type=instance_type, gcp_api=gcp_api):
+        if m(
+            action=action,
+            instance_type=instance_type,
+            gcp_api=gcp_api,
+            job_type=flag_values.job_type,
+        ):
             return launcher
 
     launchers = "\n".join(
@@ -640,6 +663,7 @@ def main(_):
         action=action,
         instance_type=FLAGS.instance_type,
         gcp_api=_gcp_api(),
+        flag_values=FLAGS,
     )
 
     # Parse the command from argv. Note that argv may or may not contain action, so we explicitly
@@ -684,6 +708,7 @@ def _prelaunch_flags(fv: flags.FlagValues = FLAGS):
     flags.DEFINE_bool(
         "dry_run", False, "Output job config and exit without running.", flag_values=fv
     )
+    job_type_flags(fv)
 
 
 def _private_flags():
@@ -703,6 +728,7 @@ def _private_flags():
             action=action,
             instance_type=FLAGS.instance_type,
             gcp_api=_gcp_api(),
+            flag_values=FLAGS,
         )
         orig_flags = FLAGS.flag_values_dict()
         launcher.job_cls.define_flags(FLAGS)
