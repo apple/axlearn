@@ -69,8 +69,8 @@ def match_by_regex(*, match_regex: dict[str, str], gcp_api: str, job_type: str):
 
         # job_type has a higher priority then other condition since it will decide which
         # runner in runner.inner to be used.
-        if match_job_type != "default" and match_job_type.lower() == job_type.lower():
-            return True
+        if match_job_type != "default":
+            return match_job_type.lower() == job_type.lower()
 
         return (
             gcp_api.lower() == match_gcp_api.lower()
