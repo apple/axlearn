@@ -334,7 +334,7 @@ class TestConfigBuilder:
                 prefix="_moe"
                 )
             )
-        if not self.params["mesh_spec"] or True: # gating tests only for single-core config
+        if not self.params["mesh_spec"]: # gating tests only for single-core config
             test_configs.append(
                 TestConfig(
                     setup=[
