@@ -246,19 +246,20 @@ class FlashDecodingTest(TestCase):
         #(2, 8, 384, 128),
     ],
 )
-#@pytest.mark.parametrize("kv_seq_len", [-1, 512])
-@pytest.mark.parametrize("kv_seq_len", [-1])
-#@pytest.mark.parametrize("dropout_rate", [0, 0.1])
-@pytest.mark.parametrize("dropout_rate", [0])
-#@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
-@pytest.mark.parametrize("attention_bias_type", ["2d"])
-#@pytest.mark.parametrize("use_segment_ids", [True, False])
-@pytest.mark.parametrize("use_segment_ids", [True])
+@pytest.mark.parametrize("kv_seq_len", [-1, 512])
+#@pytest.mark.parametrize("kv_seq_len", [-1])
+@pytest.mark.parametrize("dropout_rate", [0, 0.1])
+#@pytest.mark.parametrize("dropout_rate", [0])
+@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
+#@pytest.mark.parametrize("attention_bias_type", ["2d"])
+@pytest.mark.parametrize("use_segment_ids", [True, False])
+#@pytest.mark.parametrize("use_segment_ids", [True])
 @pytest.mark.parametrize("block_size", [128])  # Triton broken for block size !=128
-#@pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.parametrize("causal", [True])
+@pytest.mark.parametrize("causal", [True, False])
+#@pytest.mark.parametrize("causal", [True])
 #@pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.float32])
-@pytest.mark.parametrize("input_dtype", [jnp.float32, jnp.bfloat16])
+#@pytest.mark.parametrize("input_dtype", [jnp.float32, jnp.bfloat16])
+@pytest.mark.parametrize("input_dtype", [jnp.float16, jnp.bfloat16, jnp.float32])
 def test_triton_against_xla_ref(
     batch_size: int,
     num_heads: int,
@@ -337,17 +338,19 @@ def test_triton_against_xla_ref(
     )
     if input_dtype == jnp.bfloat16:
         if jax.default_backend() != "cpu":
-            print(f"Doing bf16 check...\n\n----jax_out----\n{jax_out}\n\n----jax_ref_out----\n{jax_ref_out}\n\njax_out.shape: {jax_out.shape}\njax_ref_out.shape: {jax_ref_out.shape}", file=sys.stderr)
+            print(f"Doing BF16 check...\njax_out.shape: {jax_out.shape}\njax_ref_out.shape: {jax_ref_out.shape}", file=sys.stderr)
             # Remove this check becasue BF16 accuracy hasn't been tested yet
-            #chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
-            print("bf16 tree check pass", file=sys.stderr)
+            chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.05)
+    elif input_dtype == jnp.float16:
+        if jax.default_backend() != "cpu":
+            print(f"Doing FP16 check...\njax_out.shape: {jax_out.shape}\njax_ref_out.shape: {jax_ref_out.shape}", file=sys.stderr)
+            chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
         else:
             # TODO(kelvin-zou): Investigate the discrepancy between CPU and GPU.
             chex.assert_trees_all_close(jax_out, jax_ref_out, rtol=5e-2, atol=1e-2)
     elif input_dtype == jnp.float32:
-      print(f"Doing first check...\n\n----jax_out----\n{jax_out}\n\n----jax_ref_out----\n{jax_ref_out}\n\njax_out.shape: {jax_out.shape}\njax_ref_out.shape: {jax_ref_out.shape}", file=sys.stderr)
+      print(f"Doing FP32 check...\njax_out.shape: {jax_out.shape}\njax_ref_out.shape: {jax_ref_out.shape}", file=sys.stderr)
       chex.assert_trees_all_close(jax_out, jax_ref_out, atol=0.005)
-      print("fp32 tree check pass", file=sys.stderr)
     else:
         raise ValueError(f"Unsupported dtype: {input_dtype}")
 
@@ -374,14 +377,13 @@ def test_triton_against_xla_ref(
             dropout_rate=dropout_rate,
         ).sum()
 
-    print("\n\n--STARTING GRADIENT CALCULATION. THIS IS WHERE THE HANG HAPPENS ON BF16/FP16--\n\n", file=sys.stderr)
+    print("--STARTING GRADIENT CALCULATION. THIS IS WHERE THE HANG HAPPENS ON BF16/FP16--", file=sys.stderr)
     # Compare gradients.
     jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v, bias, segment_ids, k5)
-    print(f"\nRunning jax_grads. {jax_grads}. Q: {q.dtype}. K: {k.dtype}. V: {v.dtype}\n\n", file=sys.stderr)
+    print(f"Running jax_grads. Q: {q.dtype}. K: {k.dtype}. V: {v.dtype}", file=sys.stderr)
     jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v, bias, segment_ids, k5)
-    print(f"\nRunning jax_ref_grads. {jax_ref_grads}. Q: {q.dtype}. K: {k.dtype}. V: {v.dtype}\n\n", file=sys.stderr)
+    print(f"Running jax_ref_grads. Q: {q.dtype}. K: {k.dtype}. V: {v.dtype}", file=sys.stderr)
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, rtol=1e-2, atol=0.05)
-    print("Everything matches", file=sys.stderr)
 
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("seq_len", [512, 2048])

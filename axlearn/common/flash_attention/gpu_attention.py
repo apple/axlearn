@@ -443,7 +443,6 @@ def _flash_attention_impl(
                 shape=(batch_size, num_heads, q_seq_len), dtype=jnp.float32
             ),  # lse
         ]
-    print("Calling Pallas for mha_forward kernel", file=sys.stderr)
     pallas_out = pl.pallas_call(
         kernel,
         grid=grid_,
@@ -769,8 +768,10 @@ def _mha_backward(
     def call_kernel(
         *, kernel, grid, out_shape, in_specs, out_specs, index_offset, index_offset_size
     ):
-        print("gpu_attention.py: Calling kernel", file=sys.stderr)
-        print(f"Q dtype: {q.dtype}.\nK dtype: {k.dtype}.\nV dtype: {v.dtype}", file=sys.stderr)
+        print(f"gpu_attention.py: Calling kernel: {kernel.__name__}", file=sys.stderr)
+        print(f"gpu_attention.py: Q.dtype: {q.dtype}. K.dtype: {k.dtype}. V.dtype: {v.dtype}", file=sys.stderr)
+        print(f"gpu_attention.py: Q.shape: {q.shape}. K.shape: {k.shape}. V.shape: {v.shape}", file=sys.stderr)
+        print(f"gpu_attention.py: Grid: {grid}")
         return pl.pallas_call(
             functools.partial(
                 kernel,
