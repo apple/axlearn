@@ -76,9 +76,12 @@ def blockwise_mm(
     # (N, 1)
     block_to_expert = jnp.expand_dims(block_to_expert, axis=1)
 
-    # add +1 for padding to 
-    hidden_states = 
-    expert_affinities_masked =
+    # add +1 for padding
+    padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
+    # (S+1, H)
+    hidden_states = jnp.concat(hidden_states, padding_h, dim=0)
+
+    # expert_affinities_masked =
 
     gate_up_weight = jnp.stack([gate_weight, up_proj_weight], 
         axis=2
