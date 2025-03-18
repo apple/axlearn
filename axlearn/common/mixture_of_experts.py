@@ -70,22 +70,40 @@ def down_proj(x, wo_weight):
     return jnp.einsum("oegch,ehm->oegcm", x, wo_weight)
 
 @partial(jax.jit, static_argnums=(0,))
-def combine_outputs(adjusted_top_k, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
-    for k in range(adjusted_top_k):
-        # indices: (O, G, S)
-        indices = token_permutation_idx[..., k]
-        # indices: (O, G, S, 1)
-        indices = jnp.expand_dims(indices, axis=3)
-        # index into permuted_output
-        # output_k : (O, G, S, M)
-        output_k = jnp.take_along_axis(permuted_output, indices, axis=2)
-        # expert_affinities_masked: (O, G, S, 1) after indexing the expert
-        kth_expert_index = jnp.expand_dims(expert_index[..., k], axis=-1)
+def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
+    # Expected shapes:
+    # permuted_output: (O, G, E, M)
+    # token_permutation_idx: (O, G, S, K)
+    # expert_index: (O, G, S, K)
+    # expert_affinities_masked: (O, G, S, E)
 
-        # Result shape: (O, G, S, 1)
-        expert_affinities_k = jnp.take_along_axis(expert_affinities_masked, kth_expert_index, axis=-1)
-        dest_output += output_k * expert_affinities_k
-    return dest_output
+    batch_idx = jnp.arange(permuted_output.shape[0])[:, None, None, None]
+    group_idx = jnp.arange(permuted_output.shape[1])[None, :, None, None]
+    seq_idx = jnp.arange(token_permutation_idx.shape[2])[None, None, :, None]
+
+    output_k = permuted_output[
+        batch_idx,
+        group_idx,
+        token_permutation_idx,
+        :
+    ]  # Shape: (O, G, S, K, M)
+
+    expert_affinities_k = expert_affinities_masked[
+        batch_idx,
+        group_idx,
+        seq_idx,
+        expert_index
+    ]  # Shape: (O, G, S, K)
+
+    expert_affinities_k_expanded = expert_affinities_k[..., None]  # Shape: (O, G, S, K, 1)
+
+    # Multiply outputs by their corresponding affinities
+    weighted_output_k = output_k * expert_affinities_k_expanded  # Shape: (O, G, S, K, M)
+
+    # Sum across the top-k dimension
+    combined_output = jnp.sum(weighted_output_k, axis=3)  # Shape: (O, G, S, M)
+
+    return combined_output
 
 def _router_z_loss(logits: Tensor) -> Tensor:
     """Loss that encourages router logits to remain small and improves stability.
@@ -1074,13 +1092,19 @@ class TopKGatingGather(TopKGating):
             expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
 
         with jax.named_scope("token_permutation_idx"):
+
+            batch_idx = jnp.arange(position_in_expert_with_offset.shape[0])[:, None, None, None]
+            group_idx = jnp.arange(position_in_expert_with_offset.shape[1])[None, :, None, None]
+            seq_idx = jnp.arange(position_in_expert_with_offset.shape[2])[None, None, :, None]
+
             # token_permutation_idx: (O, G, S, top_k)
             # for each token we get the position in assigned experts from this tensor
-            token_permutation_idx = jnp.take_along_axis(
-                position_in_expert_with_offset, # O_G_S_E
-                expert_index, # O_G_S_topK
-                axis=-1
-            ).astype(jnp.int32)
+            token_permutation_idx = position_in_expert_with_offset[
+                batch_idx,
+                group_idx,
+                seq_idx,
+                expert_index
+            ].astype(jnp.int32)
 
         with jax.named_scope("token_assignments"):
             token_assignments = self.compute_token_assignments(token_permutation_idx, cfg.num_experts, expert_capacity)
@@ -1334,18 +1358,16 @@ class TransformerFeedForwardMoE(BaseLayer):
             with jax.named_scope("dispatch"):
                 # token_assignments: (O, G, E, C)
                 token_assignments= gating.dispatch_tensor
-                
                 token_assignments = with_sharding_constraint(token_assignments, cfg.dim_to_mesh_axis_map["ogec"])
-                token_assignments = token_assignments[..., None]       # (O, G, E, C, 1)
-                token_assignments = jnp.expand_dims(token_assignments, axis=2)  # (O, G, 1, E, C, 1)
-                
-                # Permute hidden_states using token_assignments to get expert_aligned_hidden_states
-                x = x[..., None, None, :]      # (O, G, S, 1, 1, M)
-                # expert_aligned_hidden_states: (O, G, 1, E, C, M)
-                expert_aligned_hidden_states = jnp.take_along_axis(x, token_assignments, axis=2)
-                O, G, _, E, C, M = expert_aligned_hidden_states.shape
-                # expert_aligned_hidden_states: (O, E, G, C, M)
-                expert_aligned_hidden_states = jnp.einsum("oegcm->ogecm", expert_aligned_hidden_states.squeeze(2))
+
+                O, G, E, C = token_assignments.shape
+                _, _, _, M = x.shape
+
+                idx_o = jnp.arange(O)[:, None, None, None]  # (O, 1, 1, 1)
+                idx_g = jnp.arange(G)[None, :, None, None]  # (1, G, 1, 1)
+                expert_aligned_hidden_states = x[idx_o, idx_g, token_assignments] # (O, G, E, C, M)
+                expert_aligned_hidden_states = jnp.einsum("ogecm->oegcm", expert_aligned_hidden_states)
+
                 expert_aligned_hidden_states = with_sharding_constraint(expert_aligned_hidden_states, cfg.dim_to_mesh_axis_map["oegcM"])
             
             # Perform MLP operations
