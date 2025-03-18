@@ -1106,12 +1106,6 @@ class TopKGatingGather(TopKGating):
                 expert_index
             ].astype(jnp.int32)
 
-            # token_permutation_idx = jnp.take_along_axis(
-            #     position_in_expert_with_offset, # O_G_S_E
-            #     expert_index, # O_G_S_topK
-            #     axis=-1
-            # ).astype(jnp.int32)
-
         with jax.named_scope("token_assignments"):
             token_assignments = self.compute_token_assignments(token_permutation_idx, cfg.num_experts, expert_capacity)
 
@@ -1364,18 +1358,7 @@ class TransformerFeedForwardMoE(BaseLayer):
             with jax.named_scope("dispatch"):
                 # token_assignments: (O, G, E, C)
                 token_assignments= gating.dispatch_tensor
-                
                 token_assignments = with_sharding_constraint(token_assignments, cfg.dim_to_mesh_axis_map["ogec"])
-                # token_assignments = token_assignments[..., None]       # (O, G, E, C, 1)
-                # token_assignments = jnp.expand_dims(token_assignments, axis=2)  # (O, G, 1, E, C, 1)
-                
-                # # Permute hidden_states using token_assignments to get expert_aligned_hidden_states
-                # x = x[..., None, None, :]      # (O, G, S, 1, 1, M)
-                # # expert_aligned_hidden_states: (O, G, 1, E, C, M)
-                # expert_aligned_hidden_states = jnp.take_along_axis(x, token_assignments, axis=2)
-                # O, G, _, E, C, M = expert_aligned_hidden_states.shape
-                # # expert_aligned_hidden_states: (O, E, G, C, M)
-                # expert_aligned_hidden_states = jnp.einsum("oegcm->ogecm", expert_aligned_hidden_states.squeeze(2))
 
                 O, G, E, C = token_assignments.shape
                 _, _, _, M = x.shape
