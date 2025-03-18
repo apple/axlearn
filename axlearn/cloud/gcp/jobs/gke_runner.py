@@ -74,6 +74,18 @@ from axlearn.common.config import REQUIRED, Required, config_class, maybe_instan
 FLAGS = flags.FLAGS
 
 
+class JobType(enum.Enum):
+    """Represents possible values for `--job_type`.
+
+    This is used for selecting the type of runner to use, in the cases where the same instance
+    type can map to multiple possible runners.
+    """
+
+    DEFAULT = "default"
+    FLINK = "flink"
+    RAY = "ray"
+
+
 def _infer_reservation(jobset_spec: dict) -> Optional[str]:
     """Infers reservation given a jobset spec."""
     try:
@@ -612,7 +624,21 @@ class GPUGKERunnerJob(GKERunnerJob):
     inner = GPUGKEJob
 
 
-def _get_runner_or_exit(instance_type: str):
+# By default, runners are determined by the accelerator type.
+# But some special runners are determined by the --job_type flag,
+# and this dictionary has the mapping between --job_type to those special
+# runners.
+_JOB_TYPE_TO_RUNNER_JOB = {
+    JobType.FLINK.value: FlinkGKERunnerJob,
+}
+
+
+def _get_runner_or_exit(instance_type: str, flag_values: flags.FlagValues = FLAGS):
+    job_type = flag_values.job_type.lower()
+    if job_type != JobType.DEFAULT.value:
+        if job_type not in _JOB_TYPE_TO_RUNNER_JOB:
+            raise app.UsageError(f"Launcher type {job_type} is not supported in non-default mode.")
+        return _JOB_TYPE_TO_RUNNER_JOB[job_type]
     if instance_type.startswith("tpu"):
         return TPUGKERunnerJob
     elif instance_type.startswith("gpu-a3"):
@@ -678,7 +704,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         if not command:
             raise app.UsageError("Command is required.")
 
-        runner = _get_runner_or_exit(flag_values.instance_type)
+        runner = _get_runner_or_exit(flag_values.instance_type, flag_values)
         job: GKERunnerJob = runner.from_flags(flag_values, command=command).instantiate()
         job.execute()
     elif action == "list":
@@ -700,8 +726,25 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         raise app.UsageError(f"Unknown action {action}")
 
 
+def job_type_flags(fv: flags.FlagValues = FLAGS):
+    flags.DEFINE_enum(
+        "job_type",
+        # if job_type is set at the launcher, use any existing value by default.
+        getattr(FLAGS, "job_type", JobType.DEFAULT.value),
+        [member.value for member in JobType],
+        help=(
+            "Which job type to launch:\n"
+            "  default: The default training job.\n"
+            "  flink: A job that will be executed by Flink;\n"
+            "  ray: A job that will be executed by Ray;\n"
+        ),
+        flag_values=fv,
+    )
+
+
 def _private_flags():
     flags.DEFINE_string("instance_type", None, "Instance type to launch.")
+    job_type_flags(FLAGS)
     FLAGS(sys.argv, known_only=True)
     # At minimum define the base GKE runner flags.
     GKERunnerJob.define_flags(FLAGS)

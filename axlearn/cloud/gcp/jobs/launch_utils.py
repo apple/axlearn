@@ -44,8 +44,14 @@ def serialized_flags_for_job(fv: flags.FlagValues, job: type[Job]) -> list[str]:
     return filtered
 
 
-def match_by_regex(match_regex: dict[str, str], gcp_api: str):
+def match_by_regex(*, match_regex: dict[str, str], gcp_api: str, job_type: str):
     """Matches action and instance type by regex.
+
+    Args
+        match_regex: Dictionary of regex to match against action and instance type.
+        gcp_api: GCP API client.
+        job_type: Job type to match, note that it has higher priority
+          than other matching conditions.
 
     For example:
 
@@ -56,9 +62,16 @@ def match_by_regex(match_regex: dict[str, str], gcp_api: str):
     be invoked for any other action.
     """
     match_gcp_api = gcp_api
+    match_job_type = job_type
 
-    def fn(*, action: str, instance_type: str, gcp_api: str) -> bool:
+    def fn(*, action: str, instance_type: str, gcp_api: str, job_type: str) -> bool:
         """Returns True iff the launcher supports the given action and instance_type."""
+
+        # job_type has a higher priority then other condition since it will decide which
+        # runner in runner.inner to be used.
+        if match_job_type != "default":
+            return match_job_type.lower() == job_type.lower()
+
         return (
             gcp_api.lower() == match_gcp_api.lower()
             and action in match_regex

@@ -18,10 +18,12 @@ from axlearn.cloud.gcp.job import GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
 from axlearn.cloud.gcp.jobs.gke_runner import (
+    JobType,
     _get_runner_or_exit,
     _infer_job_version,
     _infer_reservation,
 )
+from axlearn.cloud.gcp.jobs.launch import _prelaunch_flags
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
@@ -1139,6 +1141,11 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
 class MainTest(parameterized.TestCase):
     """Tests CLI entrypoint."""
 
+    def setUp(self):
+        self.fv = flags.FlagValues()
+        _prelaunch_flags(fv=self.fv)
+        self.fv.mark_as_parsed()
+
     @parameterized.parameters(
         dict(instance_type="tpu", expected=gke_runner.TPUGKERunnerJob),
         dict(instance_type="tpu-v4-8", expected=gke_runner.TPUGKERunnerJob),
@@ -1148,9 +1155,13 @@ class MainTest(parameterized.TestCase):
     def test_get_runner_or_exit(self, instance_type: str, expected: Union[Exception, type]):
         if isinstance(expected, Exception):
             with self.assertRaisesRegex(type(expected), str(expected)):
-                _get_runner_or_exit(instance_type)
+                _get_runner_or_exit(instance_type, flag_values=self.fv)
         else:
-            self.assertEqual(expected, _get_runner_or_exit(instance_type))
+            self.assertEqual(expected, _get_runner_or_exit(instance_type, flag_values=self.fv))
+
+    def test_get_runner_or_exit_with_job_type(self):
+        self.fv.set_default("job_type", JobType.FLINK.value)
+        self.assertEqual(gke_runner.FlinkGKERunnerJob, _get_runner_or_exit("", flag_values=self.fv))
 
     @parameterized.product(
         [
@@ -1181,6 +1192,7 @@ class MainTest(parameterized.TestCase):
         with mock_gcp_settings(gke_runner.__name__, mock_settings), mock_job, mock_utils as m:
             fv = flags.FlagValues()
             gke_runner.TPUGKERunnerJob.define_flags(fv)
+            _prelaunch_flags(fv=fv)
             fv.set_default("name", "test")
             fv.set_default("instance_type", instance_type)
             fv.mark_as_parsed()
