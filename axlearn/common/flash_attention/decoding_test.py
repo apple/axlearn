@@ -73,7 +73,6 @@ class DecodingTest(TestCase):
         cfg = dict(
             softmax_scale=softmax_scale,
             interpret=(jax.default_backend() == "cpu"),
-            is_decoding=True,
         )
         q, k, v, bias = generate_attention_data(
             batch_size,

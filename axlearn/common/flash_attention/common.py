@@ -205,6 +205,12 @@ class BaseFlashAttention(Configurable):
 class BaseSingleStepDecoding(BaseFlashAttention):
     """Wraps the common checks for single step decoding kernels."""
 
+    @classmethod
+    def default_config(cls) -> BaseFlashAttention.Config:
+        cfg: BaseFlashAttention.Config = super().default_config()
+        cfg.is_decoding = True
+        return cfg
+
     def is_supported(
         self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
     ) -> bool:
