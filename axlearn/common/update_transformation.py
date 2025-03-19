@@ -34,6 +34,7 @@ from axlearn.common.utils import (
     Tensor,
     flatten_items,
     match_regex_rules,
+    non_empty_leaf_merge_fn,
     tree_merge,
     tree_paths,
 )
@@ -341,7 +342,13 @@ class OverrideInplaceUpdateTransformation(WrappedPartitionedGradientTransformati
         return dataclasses.replace(
             updates,
             delta_updates=tree_merge(
-                passthrough_updates.delta_updates, secondary=override_inplace_updates
+                passthrough_updates.delta_updates,
+                secondary=override_inplace_updates,
+                leaf_merge_fn=non_empty_leaf_merge_fn,
             ),
-            inplace_updates=tree_merge(updates.inplace_updates, secondary=override_inplace_updates),
+            inplace_updates=tree_merge(
+                updates.inplace_updates,
+                secondary=override_inplace_updates,
+                leaf_merge_fn=non_empty_leaf_merge_fn,
+            ),
         )

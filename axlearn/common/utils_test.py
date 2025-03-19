@@ -8,6 +8,7 @@ import enum
 import sys
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
+from functools import partial
 from typing import Any, NamedTuple, Optional, Union
 from unittest import mock
 
@@ -79,6 +80,7 @@ from axlearn.common.utils import (
     infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    non_empty_leaf_merge_fn,
     per_param_dtype_by_path,
     prune_empty,
     prune_tree,
@@ -896,8 +898,9 @@ class TreeUtilsTest(TestCase):
         )
 
     def test_tree_merge(self):
+        default_merge = partial(tree_merge, leaf_merge_fn=non_empty_leaf_merge_fn)
         primary = {"a": {"b": {}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": ()}
-        out = tree_merge(primary, secondary={"a": {"b": {"c": 1}}})
+        out = default_merge(primary, secondary={"a": {"b": {"c": 1}}})
         self.assertEqual(
             out, {"a": {"b": {"c": 1}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": ()}
         )
@@ -905,9 +908,9 @@ class TreeUtilsTest(TestCase):
         self.assertIsInstance(out["a"]["c"], VDict)
 
         with self.assertRaises(ValueError):
-            tree_merge(primary, secondary={"a": {"b": 1}})
+            default_merge(primary, secondary={"a": {"b": 1}})
         with self.assertRaises(ValueError):
-            tree_merge(primary, secondary={"a": {"c": {"e": 456}}})
+            default_merge(primary, secondary={"a": {"c": {"e": 456}}})
 
         with self.assertRaises(ValueError):
             # c is not a VDict.
@@ -920,10 +923,10 @@ class TreeUtilsTest(TestCase):
         )
 
         # Non-empty leaves overrides empty leaves.
-        out = tree_merge(primary, secondary={"empty": 1})
+        out = default_merge(primary, secondary={"empty": 1})
         self.assertEqual(out, {"a": {"b": {}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": 1})
 
-        out = tree_merge(primary, secondary={"a": {"g": {"e": None}}})
+        out = default_merge(primary, secondary={"a": {"g": {"e": None}}})
         self.assertEqual(out, primary)
 
     @parameterized.parameters(

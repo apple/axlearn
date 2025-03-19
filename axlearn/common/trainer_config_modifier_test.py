@@ -10,6 +10,7 @@ from axlearn.common.attention import RepeatedTransformerLayer, StackedTransforme
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
 from axlearn.common.optimizers import sgd_optimizer
+from axlearn.common.quantized_dot_general.layers import get_all_fp8_param_names
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
@@ -203,14 +204,7 @@ class FP8ConfigModifierTest(test_utils.TestCase):
         self.assertIsInstance(cfg.learner.optimizer, OverrideInplaceUpdateTransformation.Config)
         self.assertEqual(
             cfg.learner.optimizer.rules,
-            [
-                ".*/input_scale",
-                ".*/kernel_scale",
-                ".*/output_grad_scale",
-                ".*/input_amax_history",
-                ".*/kernel_amax_history",
-                ".*/output_grad_amax_history",
-            ],
+            [f".*/{x}" for x in get_all_fp8_param_names()],
         )
         self.assertEqual(cfg.model.linear.quantized_dot_general.fp8_amax_history_length, 1)
 

@@ -1386,7 +1386,10 @@ def prune_tree(
     return in_tree
 
 
-def tree_merge_default_leaf_merge_fn(primary: Any, secondary: Any):
+def non_empty_leaf_merge_fn(primary: Any, secondary: Any):
+    """This function chooses the non-empty leaf. If both leaves are non-empty, an error
+    will be raised.
+    """
     is_primary_empty = False
     is_secondary_empty = False
     try:
@@ -1410,16 +1413,13 @@ def tree_merge(
     primary: Nested[Any],
     *,
     secondary: Nested[Any],
-    leaf_merge_fn: Callable[[Any, Any], Any] = tree_merge_default_leaf_merge_fn,
+    leaf_merge_fn: Callable[[Any, Any], Any],
 ) -> Nested[Any]:
     """Merge `secondary` into `primary`. The result contains deep copies of subtrees from both.
 
     Two trees are mergable if there does not exists a path in `secondary` that is a subpath of any
     path in `primary`. If there are identical path with different leaves, `leaf_merge_fn` is used to
     determine which leaf is kept in the resulting tree.
-
-    The default `leaf_merge_fn` choses the non-empty leaf. If both leaves are non-empty, an error
-    will be raised.
     """
     if isinstance(primary, dict) ^ isinstance(secondary, dict):
         raise ValueError(f"Trying to merge incompatible subtrees: {primary=}, {secondary=}")
