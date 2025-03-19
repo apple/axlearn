@@ -44,7 +44,7 @@ def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
     SplashAttention since `tpu_flash_attention()` needs to wrap this function
     to return numpy values if the input is numpy. (Otherwise we get tracer errors in jit.)
     """
-    return jnp.greater_equal(query_position, key_position)
+    return query_position >= key_position
 
 
 class TestFlashAttention(TestCase):
@@ -104,7 +104,7 @@ class TestFlashAttention(TestCase):
     @parameterized.product(
         batch_size=[4],
         seq_len=[1024, 32768],
-        mask_fn=["zero", "causal", "sliding"],
+        mask_fn=["zero", "causal", "sliding", "custom"],
         sliding_window_size=[1024],
         num_heads=[4],
         per_head_dim=[256],
@@ -158,10 +158,16 @@ class TestFlashAttention(TestCase):
                         target_positions=jnp.arange(seq_len)[None],
                         source_positions=jnp.arange(seq_len)[None],
                     )
-                elif mask_fn.startswith("sliding"):
+                elif mask_fn == "sliding":
                     mask = SlidingWindowAttentionBias(
                         sliding_window_causal_mask(sliding_window_size),
                         sliding_window_size=sliding_window_size,
+                        target_positions=jnp.arange(seq_len)[None],
+                        source_positions=jnp.arange(seq_len)[None],
+                    )
+                elif mask_fn == "custom":
+                    mask = MaskFnAttentionBias(
+                        jax_fn_mask,
                         target_positions=jnp.arange(seq_len)[None],
                         source_positions=jnp.arange(seq_len)[None],
                     )
