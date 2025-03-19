@@ -47,7 +47,9 @@ from axlearn.common.optimizers import (
 )
 from axlearn.common.quantized_dot_general.layers import (
     DotGeneralQuantizationType,
+    FP8AmaxHistoryParams,
     QuantizedDotGeneral,
+    get_all_fp8_param_names,
 )
 from axlearn.common.test_utils import TestCase
 from axlearn.common.update_transformation import (
@@ -1546,17 +1548,7 @@ class CompositeLearnerTest(TestCase):
                 OverrideInplaceUpdateTransformation.default_config()
             )
             optimizer.transformation = transformation
-            optimizer.rules = [
-                f".*{x}"
-                for x in [
-                    "input_scale",
-                    "kernel_scale",
-                    "output_grad_scale",
-                    "input_amax_history",
-                    "kernel_amax_history",
-                    "output_grad_amax_history",
-                ]
-            ]
+            optimizer.rules = [f".*{x}" for x in get_all_fp8_param_names()]
         else:
             optimizer = transformation
         cfg = Learner.default_config().set(name="test", optimizer=optimizer)
@@ -1651,15 +1643,13 @@ class CompositeLearnerTest(TestCase):
         updated_params = fwd_bwd_outputs.backward_outputs.updated_params
         # After learner update, amax history should be positive.
         if use_override_inplace_update:
-            self.assertGreater(updated_params["input_amax_history"][0], 0.0)
-            self.assertGreater(updated_params["kernel_amax_history"][0], 0.0)
-            self.assertGreater(updated_params["output_grad_amax_history"][0], 0.0)
+            for x in FP8AmaxHistoryParams:
+                self.assertGreater(updated_params[x.value][0], 0.0)
         else:
             # If using a regualr update transformation, learner will try to use adam rule for
             # these parameters, resulting in negative values.
-            self.assertLess(updated_params["input_amax_history"][0], 0.0)
-            self.assertLess(updated_params["kernel_amax_history"][0], 0.0)
-            self.assertLess(updated_params["output_grad_amax_history"][0], 0.0)
+            for x in FP8AmaxHistoryParams:
+                self.assertLess(updated_params[x.value][0], 0.0)
 
         model_params = jax.tree.map(lambda x: OptParam(x, None, 1.0), updated_params)
         fwd_bwd_outputs, learner_output_collection = step()

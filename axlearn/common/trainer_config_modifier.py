@@ -18,11 +18,10 @@ from axlearn.common.config import (
 from axlearn.common.gradient_accumulation import with_minibatch_steps
 from axlearn.common.metrics import MetricAccumulator
 from axlearn.common.quantized_dot_general.layers import (
-    FP8_AMAX_HISTORY_PARAM_NAMES,
-    FP8_SCALE_PARAM_NAMES,
     DenseGeneralBaseLayer,
     DotGeneralQuantizationType,
     QuantizedDotGeneral,
+    get_all_fp8_param_names,
 )
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.update_transformation import OverrideInplaceUpdateTransformation
@@ -316,9 +315,7 @@ class FP8ConfigModifier(ConfigModifier):
         update_cfg: OverrideInplaceUpdateTransformation.Config = (
             OverrideInplaceUpdateTransformation.default_config()
         )
-        update_cfg.rules = [
-            f".*/{x}" for x in (FP8_SCALE_PARAM_NAMES + FP8_AMAX_HISTORY_PARAM_NAMES)
-        ]
+        update_cfg.rules = [f".*/{x}" for x in get_all_fp8_param_names()]
         update_cfg.transformation = cfg.learner.optimizer
         cfg.learner.optimizer = update_cfg
         return cfg

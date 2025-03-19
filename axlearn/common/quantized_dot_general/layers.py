@@ -64,12 +64,21 @@ class ClippingChoice(Enum):
     OUTPUT_ACTIVATION = 1
 
 
-FP8_SCALE_PARAM_NAMES = ["input_scale", "kernel_scale", "output_grad_scale"]
-FP8_AMAX_HISTORY_PARAM_NAMES = [
-    "input_amax_history",
-    "kernel_amax_history",
-    "output_grad_amax_history",
-]
+# TODO(hanzhi-zhou): use StrEnum once we upgrade to Python 3.11.
+class FP8ScaleParams(Enum):
+    INPUT_SCALE = "input_scale"
+    KERNEL_SCALE = "kernel_scale"
+    OUTPUT_GRADE_SCALE = "output_grad_scale"
+
+
+class FP8AmaxHistoryParams(Enum):
+    INPUT_AMAX_HISTORY = "input_amax_history"
+    KERNEL_AMAX_HISTORY = "kernel_amax_history"
+    OUTPUT_GRAD_AMAX_HISTORY = "output_grad_amax_history"
+
+
+def get_all_fp8_param_names():
+    return [x.value for x in FP8ScaleParams] + [x.value for x in FP8AmaxHistoryParams]
 
 
 class QuantizedDotGeneral(BaseLayer):
@@ -160,7 +169,7 @@ class QuantizedDotGeneral(BaseLayer):
                 initializer=constant_initializer(1.0),
                 weight_decay_scale=0,
             )
-            specs.update({k: scale_spec for k in FP8_SCALE_PARAM_NAMES})
+            specs.update({k.value: scale_spec for k in FP8ScaleParams})
             if cfg.fp8_amax_history_length is not None and cfg.fp8_amax_history_length > 0:
                 amax_spec = ParameterSpec(
                     shape=[cfg.fp8_amax_history_length],
@@ -169,7 +178,7 @@ class QuantizedDotGeneral(BaseLayer):
                     initializer=constant_initializer(0.0),
                     weight_decay_scale=0,
                 )
-                specs.update({k: amax_spec for k in FP8_AMAX_HISTORY_PARAM_NAMES})
+                specs.update({k.value: amax_spec for k in FP8AmaxHistoryParams})
         return specs
 
     def _dot_general_maybe_quantized(
@@ -266,9 +275,7 @@ class QuantizedDotGeneral(BaseLayer):
         return fp8_ops.q_dot_dq_in_batch(
             lhs,
             rhs,
-            self.parameters["input_scale"],
-            self.parameters["kernel_scale"],
-            self.parameters["output_grad_scale"],
+            *(self.parameters[x.value] for x in FP8ScaleParams),
             dimension_numbers,
             preferred_element_type=preferred_element_type,
         )
@@ -284,12 +291,8 @@ class QuantizedDotGeneral(BaseLayer):
         return fp8_ops.q_dot_dq_delayed(
             lhs,
             rhs,
-            self.parameters["input_scale"],
-            self.parameters["kernel_scale"],
-            self.parameters["output_grad_scale"],
-            self.parameters["input_amax_history"],
-            self.parameters["kernel_amax_history"],
-            self.parameters["output_grad_amax_history"],
+            *(self.parameters[x.value] for x in FP8ScaleParams),
+            *(self.parameters[x.value] for x in FP8AmaxHistoryParams),
             preferred_element_type,
             dimension_numbers,
             precision,
