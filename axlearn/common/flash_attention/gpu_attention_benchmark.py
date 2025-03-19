@@ -160,13 +160,12 @@ def measure(f: BenchFn, *args: Tensor) -> tuple[Tensor, float]:
     launch overhead to cuda event.
 
     Args:
-      f: The function to measure. It must accept at least one argument and return
-        at least one output to be measurable.
-      *args: The arguments to pass to ``f``.
-      **kwargs: The keyword arguments to pass to ``f``.
+        f: The function to measure. It must accept at least one argument and return
+            at least one output to be measurable.
+        *args: The arguments to pass to ``f``.
 
     Returns:
-      The return value of ``f`` and the elapsed time in milliseconds.
+        The return value of ``f`` and the elapsed time in milliseconds.
     """
     if not has_registrations:
         raise RuntimeError("This function requires jaxlib >=0.4.36 with CUDA support.")
@@ -242,7 +241,7 @@ def bench_flash_attention(
     else:
         base_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    assert base_fn.is_supported(q, k, v, bias)
+    assert base_fn.is_supported(query=q, key=k, value=v, bias=bias)
     if use_bwd:
         fn = lambda *args: base_fn(*args).mean()
     else:

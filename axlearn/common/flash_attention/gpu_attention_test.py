@@ -147,7 +147,7 @@ def test_triton_fwd_only_against_ref(
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
+    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
     prng_key = jax.random.PRNGKey(43)
     o = test_fn(q, k, v, bias, prng_key)
     o_ref = ref_fn(q, k, v, bias, prng_key)
@@ -193,7 +193,7 @@ def test_triton_against_xla_ref(
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
+    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
 
     def forward_tol_fn(backend, dtype):
         del dtype
@@ -241,9 +241,9 @@ def test_sliding_window_mask(
     )
     test_fn = test_cls.default_config().set(**cfg).instantiate()
     if test_cls is CuDNNGPUFlashAttention and use_segment_ids:
-        chex.assert_equal(test_fn.is_supported(q, k, v, bias), False)
+        chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), False)
         test_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
+    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
     _test_forward_and_backward(q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn)
 
@@ -288,7 +288,7 @@ def test_cudnn_against_triton_ref(
 
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
+    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
     def forward_tol_fn(backend, dtype):
@@ -372,7 +372,7 @@ def test_cudnn_dropout_against_xla_dropout(
     q = jax.random.normal(k1, qkv_shape, dtype=dtype)
     k = jax.random.normal(k2, qkv_shape, dtype=dtype)
     v = jax.random.normal(k3, qkv_shape, dtype=dtype)
-    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
+    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
 
     ref_fn = functools.partial(
         ref_fn,
@@ -422,7 +422,7 @@ def test_cudnn_seqlen_head_support(
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(q, k, v, bias), True)
+    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
 
     _test_forward_and_backward(
         q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=_cudnn_xla_forward_tol_fn

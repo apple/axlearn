@@ -138,7 +138,7 @@ class BaseFlashAttention(Configurable):
         return True
 
     def is_supported(
-        self, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
     ) -> bool:
         """Returns whether the attention kernel supports the given configuration.
 
@@ -175,6 +175,8 @@ class BaseFlashAttention(Configurable):
             )
         return True
 
+    # Note: Positional arguments are used since some use cases require positional-only args,
+    # such as functional transformations.
     def __call__(
         self,
         query: Tensor,
@@ -203,8 +205,11 @@ class BaseFlashAttention(Configurable):
 class BaseSingleStepDecoding(BaseFlashAttention):
     """Wraps the common checks for single step decoding kernels."""
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         if not self.cfg.is_decoding:
             return self._log_unsupported("is_decoding=False.")

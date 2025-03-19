@@ -143,11 +143,11 @@ class TestFlashAttention(TestCase):
         )
         ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
         fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
-        if not fn.is_supported(q, k, v, bias):
+        if not fn.is_supported(query=q, key=k, value=v, bias=bias):
             # Check splash attention is used when it should be.
             self.assertEqual(fallback_to_legacy, True)
             fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
-            self.assertEqual(fn.is_supported(q, k, v, bias), True)
+            self.assertEqual(fn.is_supported(query=q, key=k, value=v, bias=bias), True)
 
         # Compare outputs.
         out = fn(q, k, v, bias)

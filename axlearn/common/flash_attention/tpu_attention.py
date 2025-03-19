@@ -34,6 +34,7 @@ from jax.experimental.pallas.ops.tpu.splash_attention import (
 )
 
 from axlearn.common.attention_bias import (
+    BaseAttentionBias,
     CausalAttentionBias,
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
@@ -47,6 +48,7 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.utils import Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
 
@@ -855,8 +857,11 @@ def _flash_attention_bwd_dq(
 class TPUFlashAttention(BaseFlashAttention):
     """Wraps the common checks for TPU attention implementations."""
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         block_size = self.cfg.tpu_block_size
         if not self._check_block_size(query=query, key=key, block_size=block_size):
@@ -876,8 +881,11 @@ class TPUSplashAttention(TPUFlashAttention):
     In these two cases, we fallback to the legacy implementation.
     """
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         _, _, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         head_dim = query.shape[-1]
@@ -893,7 +901,15 @@ class TPUSplashAttention(TPUFlashAttention):
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         del prng_key
         mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
@@ -938,14 +954,25 @@ class TPUSplashAttention(TPUFlashAttention):
 class LegacyTPUFlashAttention(TPUFlashAttention):
     """Wraps the legacy (deprecated) implementation of TPU attention."""
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         logging.info("Using %s.", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         del prng_key
         causal_mask, segment_ids, explicit_bias = split(
             bias, CausalAttentionBias, SegmentIdAttentionBias

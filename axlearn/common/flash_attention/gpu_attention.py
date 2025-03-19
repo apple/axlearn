@@ -46,6 +46,7 @@ from jax.experimental import pallas as pl
 
 from axlearn.common.attention_bias import (
     NEG_INF,
+    BaseAttentionBias,
     CausalAttentionBias,
     MaskFn,
     MaskFnAttentionBias,
@@ -802,8 +803,11 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
 
     _allow_explicit_bias = False
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         if self.cfg.is_decoding:
             if query.shape[1] > 1:
@@ -811,6 +815,8 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             if not key.shape[1] % 2 == 0:
                 return self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
         else:
+            # cuDNN has no concept of block size. It only requires the length of query and
+            # key/value to be even.
             if not self._check_block_size(query=query, key=key, block_size=2):
                 return False
         if query.dtype not in (jnp.float16, jnp.bfloat16):
@@ -849,7 +855,15 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         del prng_key
 
         args = dict(
@@ -909,8 +923,11 @@ class PallasGPUFlashAttention(BaseFlashAttention):
     3. Segment ids.
     """
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         block_size = self.cfg.gpu_block_size
         head_dim = query.shape[-1]
@@ -926,7 +943,15 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         key = repeat_kv_heads(query.shape[2], key)
         value = repeat_kv_heads(query.shape[2], value)

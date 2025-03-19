@@ -177,6 +177,7 @@ class FlashAttention(GroupedQueryAttention):
             backend=backend,
             softmax_scale=1.0,
             is_decoding=is_decoding,
+            # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
             dropout_rate=cfg.dropout.rate,
         )

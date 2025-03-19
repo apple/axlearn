@@ -50,9 +50,16 @@ from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import check_compute_capability
 from jax.experimental import pallas as pl
 
-from axlearn.common.attention_bias import NEG_INF, MaskFn, MaskFnAttentionBias, split
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    BaseAttentionBias,
+    MaskFn,
+    MaskFnAttentionBias,
+    split,
+)
 from axlearn.common.flash_attention.common import BaseSingleStepDecoding
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
+from axlearn.common.utils import Tensor
 
 
 # Note: split_k_seq_len must be a multiple of block_k.
@@ -275,7 +282,15 @@ class GPUDecoding(BaseSingleStepDecoding):
     """Implements GPU FlashDecoding with GQA support."""
 
     @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         del prng_key
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:

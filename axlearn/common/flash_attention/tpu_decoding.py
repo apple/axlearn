@@ -31,7 +31,13 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
-from axlearn.common.attention_bias import NEG_INF, MaskFn, MaskFnAttentionBias, split
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    BaseAttentionBias,
+    MaskFn,
+    MaskFnAttentionBias,
+    split,
+)
 from axlearn.common.flash_attention.common import (
     BaseSingleStepDecoding,
     build_mask,
@@ -134,8 +140,11 @@ def _tpu_decoding_kernel(
 class TPUDecoding(BaseSingleStepDecoding):
     "Wraps the TPU decoding kernel."
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
 
         block_size = self.cfg.tpu_block_size
@@ -145,7 +154,15 @@ class TPUDecoding(BaseSingleStepDecoding):
         return True
 
     @partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         del prng_key
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:

@@ -89,7 +89,7 @@ class DecodingTest(TestCase):
         )
 
         fn = decoding_fn.default_config().set(**cfg).instantiate()
-        is_supported = fn.is_supported(q, k, v, bias)
+        is_supported = fn.is_supported(query=q, key=k, value=v, bias=bias)
         if seq_len % 512 != 0 and decoding_fn is TPUDecoding:
             self.assertFalse(is_supported)
             return
