@@ -101,7 +101,7 @@ def flash_attention_implementation(
         )
         for cfg in attn_configs:
             attn_fn = cfg.default_config().set(**common_cfg).instantiate()
-            if attn_fn.is_supported(query, key, value, bias):
+            if attn_fn.is_supported(query=query, key=key, value=value, bias=bias):
                 return attn_fn(query, key, value, bias, prng_key)
         # Fall back to plain XLA implementation if no backend kernels are supported for the given
         # configuration.
