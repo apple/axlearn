@@ -38,7 +38,7 @@ def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
     SplashAttention since `tpu_flash_attention()` needs to wrap this function
     to return numpy values if the input is numpy. (Otherwise we get tracer errors in jit.)
     """
-    return jnp.greater_equal(query_position, key_position)
+    return query_position >= key_position
 
 
 class TestFlashAttention(TestCase):
@@ -119,13 +119,6 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Backward path is broken on CPU")
         # pylint: disable=protected-access
         fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
-
-        if mask is jax_fn_mask:
-            # TODO(dhwang2,hanzhi-zhou): Fix this.
-            pytest.skip("Custom mask is broken.")
-        if fallback_to_legacy and mask is jax_fn_mask:
-            pytest.skip("Custom masks are not supported by legacy attention.")
-
         q, k, v, bias = generate_attention_data(
             batch_size,
             int(kv_len * query_length_multiplier),
