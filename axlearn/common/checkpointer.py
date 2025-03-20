@@ -7,6 +7,7 @@ import difflib
 import enum
 import json
 import os.path
+import re
 import tempfile
 import threading
 import time
@@ -84,8 +85,10 @@ class CheckpointValidationType(str, enum.Enum):
 
 
 def parse_step_from_dir(step_dir: str) -> int:
-    # TODO(markblee): use regex.
-    return int(step_dir[-STEP_NUM_DIGITS:])
+    step = re.findall(r'(\d{' + str(STEP_NUM_DIGITS) + r'})', step_dir)
+    if len(step) < 1:
+        raise ValueError(f"Could not find step in '{step_dir}'")
+    return int(step[-1])
 
 
 def build_step_dir(base_dir: str, *, step: int) -> str:
