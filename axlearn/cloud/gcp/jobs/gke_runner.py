@@ -45,13 +45,12 @@ from axlearn.cloud.common.utils import (
     parse_action,
     parse_kv_flags,
 )
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
-from axlearn.cloud.gcp.jobs.tpu_runner import with_tpu_training_defaults
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
@@ -59,6 +58,7 @@ from axlearn.cloud.gcp.node_pool import (
     list_node_pools_by_label_key,
 )
 from axlearn.cloud.gcp.node_pool_provisioner import NodePoolProvisioner, TPUNodePoolProvisioner
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_type
 from axlearn.cloud.gcp.utils import (
     catch_auth,
     custom_jobset_kwargs,
@@ -68,7 +68,10 @@ from axlearn.cloud.gcp.utils import (
     load_kube_config,
     running_from_vm,
 )
-from axlearn.cloud.gcp.vertexai_tensorboard import VertexAITensorboardUploader
+from axlearn.cloud.gcp.vertexai_tensorboard import (
+    VertexAITensorboardUploader,
+    is_vertexai_tensorboard_configured,
+)
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_instantiate
 
 FLAGS = flags.FLAGS
@@ -540,7 +543,15 @@ class TPUGKERunnerJob(GKERunnerJob):
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
-        cfg = with_tpu_training_defaults(cfg, flag_values=fv)
+        default_env = get_default_env(
+            tpu_type=infer_tpu_type(fv.instance_type),
+            num_tpu_slices=fv.num_replicas,
+            job_name=cfg.name,
+        )
+        cfg.env_vars = {**default_env, **cfg.env_vars}
+        if is_vertexai_tensorboard_configured(fv):
+            cfg.vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(fv)
+        cfg.bundler = with_tpu_extras(cfg.bundler)
         return cfg
 
 
@@ -582,8 +593,7 @@ class FlinkGKERunnerJob(GKERunnerJob):
                 return GKERunnerJob.Status.SUCCEEDED
             elif condition.get("type") == "Failed" and condition.get("status") == "True":
                 raise RuntimeError(
-                    "Beam execution failed, it's up to the GKE runner "
-                    "to decide whether to retry."
+                    "Beam execution failed, it's up to the GKE runner to decide whether to retry."
                 )
 
             # Otherwise, we rely on the active/succeeded/failed to derive its status.

@@ -1074,8 +1074,7 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
                     }
                 },
                 expected=RuntimeError(
-                    "Beam execution failed, it's up to the GKE runner "
-                    "to decide whether to retry."
+                    "Beam execution failed, it's up to the GKE runner to decide whether to retry."
                 ),
             ),
             # PENDING
@@ -1186,7 +1185,6 @@ class MainTest(parameterized.TestCase):
             gke_runner.__name__,
             load_kube_config=mock.DEFAULT,
             delete_k8s_jobset=mock.DEFAULT,
-            with_tpu_training_defaults=mock.DEFAULT,
             list_node_pools_by_label_key=mock.DEFAULT,
         )
         with mock_gcp_settings(gke_runner.__name__, mock_settings), mock_job, mock_utils as m:
@@ -1252,7 +1250,6 @@ class MainTest(parameterized.TestCase):
             gke_runner.__name__,
             load_kube_config=mock.DEFAULT,
             delete_k8s_jobset=mock.DEFAULT,
-            with_tpu_training_defaults=mock.DEFAULT,
             list_node_pools_by_label_key=mock.Mock(return_value=node_pool_by_provisioner),
             delete_node_pools=mock.DEFAULT,
         )
