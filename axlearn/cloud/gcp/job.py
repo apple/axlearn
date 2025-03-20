@@ -2,7 +2,7 @@
 
 """Utilities for executing commands on GCP.
 
-Note that these utilities do not handle resource management.
+See also ``On configuration`` in `axlearn/cloud/gcp/job.py`.
 """
 
 import logging
@@ -19,13 +19,7 @@ from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
-from axlearn.cloud.gcp.jobset_utils import (
-    A3ReplicatedJob,
-    AcceleratorConfig,
-    BaseReplicatedJob,
-    TPUReplicatedJob,
-    accelerator_flags,
-)
+from axlearn.cloud.gcp.jobset_utils import A3ReplicatedJob, BaseReplicatedJob, TPUReplicatedJob
 from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset, get_credentials
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
@@ -51,11 +45,11 @@ class GCPJob(Job):
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_string("project", default_project(), "The GCP project name.", **common_kwargs)
-        flags.DEFINE_string("zone", default_zone(), "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string("project", None, "The GCP project name.", **common_kwargs)
+        flags.DEFINE_string("zone", None, "The GCP zone name.", **common_kwargs)
         flags.DEFINE_string(
             "env_id",
-            default_env_id(),
+            None,
             "The env_id, used along with project to identify `gcp_settings`.",
             **common_kwargs,
         )
@@ -67,6 +61,14 @@ class GCPJob(Job):
             **common_kwargs,
         )
 
+    @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        super().set_defaults(fv)
+        fv.set_default("project", default_project())
+        fv.set_default("zone", default_zone())
+        fv.set_default("env_id", default_env_id())
+
+    # TODO(markblee): Remove this from GCPJob.
     def _get_job_credentials(
         self,
         impersonate_scopes: Optional[Sequence[str]] = None,
@@ -101,32 +103,19 @@ class GKEJob(GCPJob):
 
         Attributes:
             builder: A builder that returns one or more replicated job specs.
-            accelerator: Accelerator configuration.
-            env_vars: Optional env vars to set.
             namespace: The namespace to use within the k8s cluster.
                 https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-            enable_pre_provisioner: Whether to enable pre-provisioner.
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
-            output_dir: Optional; The output directory of the GKE job outputs.
-                Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
-                This directory is used by the sidecar container to sync outputs to GCS using gsutil.
-                Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
         """
 
         builder: Required[BaseReplicatedJob.Config] = REQUIRED
-        accelerator: AcceleratorConfig = AcceleratorConfig()
-        env_vars: dict[str, str] = {}
         namespace: str = "default"
-        # This config is made Optional for backwards compatibility. Default is False.
-        enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
-        output_dir: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        accelerator_flags(**common_kwargs)
         flags.DEFINE_string(
             "queue",
             None,
@@ -136,37 +125,33 @@ class GKEJob(GCPJob):
         cls.builder.define_flags(fv)
 
     @classmethod
+    def set_defaults(cls, fv):
+        super().set_defaults(fv)
+        fv.set_default("max_tries", fv["max_tries"].default or 10)
+        fv.set_default("retry_interval", fv["retry_interval"].default or 60)
+        fv.set_default(
+            "service_account", gcp_settings("k8s_service_account", default="default", fv=fv)
+        )
+
+    @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         cfg: GKEJob.Config = super().from_flags(fv, **kwargs)
-        # TODO(markblee): This is usually propagated from parent. Reduce redundant defaults.
-        cfg.service_account = cfg.service_account or gcp_settings(
-            "k8s_service_account", default="default", fv=fv
-        )
-        cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
+        # The command is not used at the jobset, but at the builder(s).
+        cfg.command = None
         cfg.builder = cls.builder.from_flags(fv, **kwargs)
         return cfg
 
-    def __init__(self, cfg):
-        bundler_cfg = cfg.bundler
-        bundler_cfg = getattr(bundler_cfg, "inner", bundler_cfg)
-        if bundler_cfg is None or not issubclass(bundler_cfg.klass, BaseDockerBundler):
-            raise NotImplementedError(f"Only docker bundler supported, got: {bundler_cfg}")
+    def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
         super().__init__(cfg)
         cfg: GKEJob.Config = self.config
+        if cfg.bundler is not None:
+            raise ValueError("Pass instantiated bundler directly.")
+        self._bundler = bundler
         # This instantiatees a builder for constructing replicated job specs, which will be managed
         # together under the jobset represented by this class.
         # Note the distinction from bundlers, which are responsible for bundling any code assets
         # required to run the job.
-        self._builder: BaseReplicatedJob = cfg.builder.set(
-            name=cfg.name,
-            command=cfg.command,
-            accelerator=cfg.accelerator,
-            project=cfg.project,
-            env_vars=cfg.env_vars,
-            service_account=cfg.service_account,
-            enable_pre_provisioner=cfg.enable_pre_provisioner,
-            output_dir=cfg.output_dir,
-        ).instantiate(bundler=self._bundler)
+        self._builder: BaseReplicatedJob = cfg.builder.instantiate(bundler=bundler)
 
     def _delete(self):
         cfg: GKEJob.Config = self.config

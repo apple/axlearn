@@ -61,7 +61,8 @@ def handle_popen(proc: subprocess.Popen):
 
 def generate_job_name() -> str:
     """Generate a unique job name."""
-    return f"{os.environ['USER'].replace('_', '')}-{uuid.uuid4().hex.lower()[:6]}"
+    prefix = os.environ.get("USER", "job").replace("_", "")
+    return f"{prefix}-{uuid.uuid4().hex.lower()[:6]}"
 
 
 def generate_job_id() -> str:
@@ -398,8 +399,49 @@ class FlagConfigurable(Configurable):
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         """Populate config partially using parsed absl flags."""
+        # Define default flags before reading flag values. Note that in the common case, a child
+        # class will invoke `super().set_defaults` prior to defining its own defaults, which
+        # allows parents to define defaults that are overridden in the child.
+        cls.set_defaults(fv)
         flag_values = {**fv.flag_values_dict(), **kwargs}
         cfg = cls.default_config()
         return cfg.set(
             **{field: flag_values[field] for field in cfg.keys() if field in flag_values}
         )
+
+    @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        """Sets default values for `fv`.
+
+        Instead of setting defaults in `define_flags` or `from_flags`, this method applies defaults
+        after flag parsing (allowing access to values in `fv`) while ensuring that a parent's
+        `set_defaults` is invoked before the child's.
+
+        This allows the child to have more flexibility in choosing whether a default value should be
+        overridden, inherited, or inferred from another flag. For example, to inherit a default, one
+        can do:
+        ```
+        # Calling the super method defines parent flags first.
+        super().set_defaults(fv)
+
+        # Use the existing default (if any), else use our own default.
+        fv.set_default("my_flag", fv["my_flag"].default or "backup-default")
+        ```
+        On the other hand, to override a default, one can do:
+        ```
+        # Register parent defaults first.
+        super().set_defaults(fv)
+
+        # Override the default for "my_flag".
+        fv.set_default("my_flag", "override-default")
+        ```
+        Or, to infer a flag from another:
+        ```
+        # Register parent defaults first.
+        super().set_defaults(fv)
+
+        # Override the default for "my_flag" using the value of another flag.
+        fv.set_default("my_flag", f"{fv.my_other_flag}-with-suffix")
+        ```
+        """
+        del fv

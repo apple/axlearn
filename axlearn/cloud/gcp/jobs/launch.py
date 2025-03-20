@@ -91,7 +91,7 @@ from axlearn.cloud.common.utils import (
     parse_action,
 )
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
-from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
@@ -426,10 +426,20 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def define_flags(cls, fv: flags.FlagValues):
         """Defines launch flags using tpu_runner."""
         super().define_flags(fv)
-        fv.set_default("name", generate_job_name())
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_string("namespace", "default", "K8s namespace.", **common_kwargs)
+        flags.DEFINE_string("project", None, "The GCP project name.", **common_kwargs)
+        flags.DEFINE_string("zone", None, "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string("namespace", None, "K8s namespace.", **common_kwargs)
         flags.DEFINE_string("cluster", None, "K8s cluster.", **common_kwargs)
+
+    @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        super().set_defaults(fv)
+        # Don't override `name` if already specified, since the default is non-deterministic.
+        fv.set_default("name", fv["name"].default or generate_job_name())
+        fv.set_default("project", default_project())
+        fv.set_default("zone", default_zone())
+        fv.set_default("namespace", "default")
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:

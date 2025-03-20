@@ -16,7 +16,7 @@ from unittest import mock
 
 import psutil
 import pytest
-from absl import app
+from absl import app, flags
 from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE
@@ -298,3 +298,57 @@ class TestTable(parameterized.TestCase):
             utils.Table(headings=["a", "b"], rows=[[1, 4], [3, 2]]),
             table,
         )
+
+
+class FlagConfigurableTest(parameterized.TestCase):
+    """Tests FlagConfigurable."""
+
+    def test_set_defaults(self):
+        class Parent(utils.FlagConfigurable):
+            """A parent class."""
+
+            @classmethod
+            def define_flags(cls, fv):
+                flags.DEFINE_string("shared", None, "", flag_values=fv, allow_override=True)
+                flags.DEFINE_string("parent_only", None, "", flag_values=fv, allow_override=True)
+
+            @classmethod
+            def set_defaults(cls, fv: flags.FlagValues):
+                super().set_defaults(fv)
+                fv.set_default("shared", "parent-default")
+                fv.set_default("parent_only", "parent-default")
+                fv.set_default("shared_override", "parent-default")
+
+        class Child(Parent):
+            """A child class."""
+
+            @classmethod
+            def define_flags(cls, fv):
+                super().define_flags(fv)
+                flags.DEFINE_string("shared", None, "", flag_values=fv, allow_override=True)
+                flags.DEFINE_string("child_only", None, "", flag_values=fv, allow_override=True)
+                flags.DEFINE_string(
+                    "shared_override", None, "", flag_values=fv, allow_override=True
+                )
+
+            @classmethod
+            def set_defaults(cls, fv: flags.FlagValues):
+                super().set_defaults(fv)
+                fv.set_default("shared_override", "child-default")
+                fv.set_default("child_only", "child-default")
+
+        fv = flags.FlagValues()
+        Child.define_flags(fv)
+        fv.mark_as_parsed()
+        Child.from_flags(fv)
+
+        # "parent-only" and "child-only" should follow original defaults.
+        self.assertEqual(fv.parent_only, "parent-default")
+        self.assertEqual(fv.child_only, "child-default")
+
+        # "shared" should follow parent default, because it is not overridden.
+        # Note that this is the case even though child defines the same flag.
+        self.assertEqual(fv.shared, "parent-default")
+
+        # "shared_override" should follow child default, because it is overridden.
+        self.assertEqual(fv.shared_override, "child-default")

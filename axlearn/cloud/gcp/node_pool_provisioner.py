@@ -12,7 +12,7 @@ from absl import flags, logging
 
 from axlearn.cloud.common.bastion import _BASTION_SERIALIZED_JOBSPEC_ENV_VAR, deserialize_jobspec
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import AcceleratorConfig, GKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import GKEJob, TPUGKEJob
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
@@ -83,13 +83,15 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
     def create_for(self, job: TPUGKEJob):
         """Creates named node pools for the job."""
 
+        # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
+        # TPUGKEJob implementation and internals.
         if not isinstance(job, _PRE_PROVISIONER_SUPPORTED_JOBS):
             raise TypeError(f"Expected {_PRE_PROVISIONER_SUPPORTED_JOBS}, got {type(job)}.")
 
         cfg: TPUNodePoolProvisioner.Config = self.config
         job_cfg: TPUGKEJob.Config = job.config
-        acc_cfg: AcceleratorConfig = job_cfg.accelerator
         builder_cfg: TPUReplicatedJob.Config = job_cfg.builder
+        acc_cfg = builder_cfg.accelerator
         reservation = builder_cfg.reservation
         location_hint = builder_cfg.location_hint
         enable_tpu_ici_resiliency = builder_cfg.enable_tpu_ici_resiliency
@@ -175,8 +177,8 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         cfg: TPUNodePoolProvisioner.Config = self.config
         job_cfg: TPUGKEJob.Config = job.config
-        acc_cfg: AcceleratorConfig = job_cfg.accelerator
-        num_node_pools = acc_cfg.num_replicas
+        builder_cfg: TPUReplicatedJob.Config = job_cfg.builder
+        num_node_pools = builder_cfg.accelerator.num_replicas
 
         node_pool_names = []
 
