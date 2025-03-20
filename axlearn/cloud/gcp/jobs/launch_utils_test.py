@@ -4,7 +4,6 @@
 # pylint: disable=protected-access
 
 import contextlib
-import dataclasses
 import json
 from datetime import datetime
 from types import SimpleNamespace
@@ -29,9 +28,7 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
     user_usage_table,
     validate_resource_flags,
     with_k8s_jobset_state,
-    with_qrm_tpu_state,
 )
-from axlearn.cloud.gcp.tpu import TpuInfo
 from axlearn.cloud.gcp.utils import GCPAPI
 
 
@@ -60,54 +57,6 @@ class TestUtils(parameterized.TestCase):
         )
 
     @parameterized.parameters(
-        # Matches any "start" command.
-        dict(
-            matcher=match_by_regex(
-                match_regex=dict(start=".*"),
-                gcp_api=GCPAPI.QRM.value,
-                job_type=JobType.DEFAULT.value,
-            ),
-            cases=[
-                dict(
-                    action="start",
-                    instance_type="",
-                    gcp_api=GCPAPI.QRM.value,
-                    job_type=JobType.DEFAULT.value,
-                    expected=True,
-                ),
-                dict(
-                    action="start",
-                    instance_type="test type",
-                    gcp_api=GCPAPI.QRM.value,
-                    expected=True,
-                    job_type=JobType.DEFAULT.value,
-                ),
-                # Missing matcher for list.
-                dict(
-                    action="list",
-                    instance_type="",
-                    gcp_api=GCPAPI.QRM.value,
-                    job_type=JobType.DEFAULT.value,
-                    expected=False,
-                ),
-                # Does not match GKE.
-                dict(
-                    action="start",
-                    instance_type="",
-                    gcp_api=GCPAPI.GKE.value,
-                    job_type=JobType.DEFAULT.value,
-                    expected=False,
-                ),
-                # Matches both upper/lowercase.
-                dict(
-                    action="start",
-                    instance_type="v4-8",
-                    gcp_api=GCPAPI.QRM.value.lower(),
-                    expected=True,
-                    job_type=JobType.DEFAULT.value,
-                ),
-            ],
-        ),
         # Matches TPU types.
         dict(
             matcher=match_by_regex(
@@ -143,14 +92,6 @@ class TestUtils(parameterized.TestCase):
                     gcp_api=GCPAPI.GKE.value,
                     job_type=JobType.DEFAULT.value,
                     expected=True,
-                ),
-                # Does not match QRM.
-                dict(
-                    action="start",
-                    instance_type="v4-8",
-                    gcp_api=GCPAPI.QRM.value,
-                    job_type=JobType.DEFAULT.value,
-                    expected=False,
                 ),
                 # Matches both upper/lowercase.
                 dict(
@@ -349,53 +290,6 @@ class TestListUtils(parameterized.TestCase):
             ),
             project_usage_table(self._mock_jobs),
         )
-
-    def test_with_qrm_tpu_state(self):
-        mock_states = {"job_000": "ACTIVE", "job_001": "DELETING", "job_100": ""}
-        mock_qrm_tpus = [
-            TpuInfo(name=job_name, accelerator_type="", state=state, metadata={})
-            for job_name, state in mock_states.items()
-        ]
-        with mock.patch.multiple(
-            launch_utils.__name__,
-            tpu_resource=mock.DEFAULT,
-            get_credentials=mock.DEFAULT,
-            list_tpu_info=mock.Mock(return_value=mock_qrm_tpus),
-        ):
-            table = with_qrm_tpu_state(jobs_table)(self._mock_jobs)
-            expected = [
-                [{mock_states.get(job_name, "PENDING") or "UNKNOWN"}]
-                for job_name in self._mock_jobs
-            ]
-            self.assertEqual(expected, table.get_col("QRM_STATE"))
-
-    @parameterized.parameters(
-        "--num_slices=2",
-        "--num_slices 2",
-        "--num_replicas 2",
-    )
-    def test_with_qrm_tpu_state_replicas(self, replica_flag):
-        # Test a job with multislice.
-        job = self._mock_jobs["job_000"]
-        mock_jobs = {
-            "job_000": dataclasses.replace(
-                job,
-                spec=dataclasses.replace(job.spec, command=f"{job.spec.command} {replica_flag}"),
-            )
-        }
-        mock_states = {"job_000-0": "ACTIVE", "job_000-1": "PENDING"}
-        mock_qrm_tpus = [
-            TpuInfo(name=job_name, accelerator_type="", state=state, metadata={})
-            for job_name, state in mock_states.items()
-        ]
-        with mock.patch.multiple(
-            launch_utils.__name__,
-            tpu_resource=mock.DEFAULT,
-            get_credentials=mock.DEFAULT,
-            list_tpu_info=mock.Mock(return_value=mock_qrm_tpus),
-        ):
-            table = with_qrm_tpu_state(jobs_table)(mock_jobs)
-            self.assertEqual([[{"ACTIVE", "PENDING"}]], table.get_col("QRM_STATE"))
 
     def test_with_k8s_jobset_state(self):
         mock_k8s_jobsets = {

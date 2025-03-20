@@ -11,29 +11,20 @@
 """
 # pylint: disable=protected-access
 
-import atexit
 import contextlib
-import os
-import subprocess
-import sys
-from typing import Optional, Union
+from typing import Optional
 from unittest import mock
 
-import pytest
 from absl import flags, logging
 from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.common.utils import configure_logging, generate_job_name
+from axlearn.cloud.common.utils import configure_logging
 from axlearn.cloud.gcp import bundler, job, jobset_utils
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
-from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.jobset_utils_test import mock_settings
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
-from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
-from axlearn.cloud.gcp.utils import common_flags, get_credentials
-from axlearn.cloud.gcp.vm import create_vm, delete_vm
+from axlearn.cloud.gcp.utils import common_flags
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
 
@@ -50,136 +41,6 @@ def _private_flags():
 
 
 FLAGS = flags.FLAGS
-
-
-class DummyRemoteTPUJob(TPUQRMJob):
-    """A dummy TPU job."""
-
-    def _execute(self) -> Union[subprocess.CompletedProcess, subprocess.Popen]:
-        """Provisions a TPU and launches a command."""
-        cfg: TPUQRMJob.Config = self.config
-        bundle_id = self._bundler.bundle(cfg.name)
-        resource = qrm_resource(get_credentials())
-        create_queued_tpu(
-            cfg.name,
-            resource,
-            tpu_type=infer_tpu_type(cfg.accelerator.instance_type),
-            bundler_type=self._bundler.TYPE,
-        )
-        out = self._execute_remote_cmd(
-            f"{self._bundler.install_command(bundle_id)} && {cfg.command}",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        delete_queued_tpu(cfg.name, resource)
-        return out[0]
-
-
-@pytest.mark.tpu
-@pytest.mark.gs_login
-class TPUJobTest(TestCase):
-    """Tests TPUJob."""
-
-    def test_execute_from_local(self):
-        jobname = generate_job_name()
-        resource = qrm_resource(get_credentials())
-        atexit.register(delete_queued_tpu, jobname, resource)
-        project = gcp_settings("project")
-        zone = gcp_settings("zone")
-        cfg: DummyRemoteTPUJob.Config = DummyRemoteTPUJob.default_config().set(
-            name=jobname,
-            project=project,
-            zone=zone,
-            max_tries=1,
-            retry_interval=60,
-            bundler=GCSTarBundler.default_config(),
-            command="pip list",
-        )
-        cfg.accelerator.instance_type = FLAGS.instance_type
-        out = cfg.instantiate().execute()
-        self.assertIn("axlearn", out.stdout)
-
-
-class DummyBastionJob(CPUJob):
-    """A dummy CPU job."""
-
-    @config_class
-    class Config(CPUJob.Config):
-        # Type of VM.
-        vm_type: str
-        # Disk size in GB.
-        disk_size: int
-
-    def _execute(self) -> subprocess.CompletedProcess:
-        """Provisions and launches a command on a VM."""
-        cfg: DummyBastionJob.Config = self.config
-        self._bundler.bundle(cfg.name)
-        create_vm(
-            cfg.name,
-            vm_type=cfg.vm_type,
-            disk_size=cfg.disk_size,
-            bundler_type=self._bundler.TYPE,
-            credentials=get_credentials(),
-        )
-        return self._execute_remote_cmd(
-            cfg.command,
-            detached=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-
-@pytest.mark.gs_login
-class CPUJobTest(TestCase):
-    """Tests CPUJob."""
-
-    def test_execute_from_local(self):
-        jobname = generate_job_name()
-        atexit.register(delete_vm, jobname, credentials=get_credentials())
-        cfg = DummyBastionJob.default_config().set(
-            name=jobname,
-            project=gcp_settings("project"),
-            zone=gcp_settings("zone"),
-            max_tries=1,
-            retry_interval=60,
-            bundler=GCSTarBundler.default_config(),
-            vm_type="n2-standard-2",
-            disk_size=64,
-            command=f"mkdir -p /tmp/{jobname} && ls /tmp/",
-        )
-        out = cfg.instantiate().execute()
-        self.assertIn(jobname, out.stdout)
-
-
-class UtilTest(TestCase):
-    """Tests util functions."""
-
-    def test_ssh_agent(self):
-        old_environ = os.environ.copy()
-        try:
-            os.environ.pop("SSH_AGENT_PID", None)
-            os.environ.pop("SSH_AUTH_SOCK", None)
-            self.assertIsNone(os.getenv("SSH_AGENT_PID"))
-            self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
-            _start_ssh_agent()
-            if sys.platform == "linux":
-                self.assertRegex(
-                    os.getenv("SSH_AUTH_SOCK", ""),
-                    r"/tmp/ssh-.+/agent.(\d+)",
-                )
-            elif sys.platform == "darwin":
-                self.assertRegex(
-                    os.getenv("SSH_AUTH_SOCK", ""),
-                    r"/var/folders/[\w/]+//ssh-.+/agent.(\d+)",
-                )
-            self.assertTrue(os.path.exists(os.getenv("SSH_AUTH_SOCK")))
-            self.assertRegex(os.getenv("SSH_AGENT_PID", ""), r"\d+")
-            _kill_ssh_agent()
-            self.assertIsNone(os.getenv("SSH_AGENT_PID"))
-            self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
-        finally:
-            os.environ.clear()
-            os.environ.update(old_environ)
 
 
 class TPUGKEJobTest(TestCase):

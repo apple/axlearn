@@ -1,6 +1,7 @@
 # Copyright © 2025 Apple Inc.
 
 """A helper module to launch and manage Apache Flink + Beam bundles on GKE."""
+
 import logging
 import math
 import time
@@ -10,7 +11,6 @@ import kubernetes as k8s
 
 from axlearn.cloud.gcp import job
 from axlearn.cloud.gcp.job import GKEJob
-from axlearn.cloud.gcp.jobs.tpu_utils import get_default_env
 from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
@@ -19,7 +19,7 @@ from axlearn.cloud.gcp.system_characteristics import (
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
     _SystemCharacteristics,
 )
-from axlearn.cloud.gcp.tpu import infer_tpu_cores, infer_tpu_workers
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import BEAM_SUBMITTER_LABEL, delete_flink_deployment, delete_k8s_job
 from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 
@@ -106,7 +106,7 @@ class FlinkTPUGKEJob(job.GKEJob):
             )
         single_host_cores = cores // hosts
         single_host_tpu_name = f"{infer_tpu_version(tpu_type)}-{single_host_cores}"
-        if not single_host_tpu_name in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
+        if single_host_tpu_name not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise RuntimeError(f"Can't find specs for {single_host_tpu_name}.")
         return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[single_host_tpu_name].topology
 
@@ -185,7 +185,7 @@ class FlinkTPUGKEJob(job.GKEJob):
             system.gce_machine_type, None
         )
         if machine_memory_gi is not None:
-            resource["memory"] = f"{math.floor(machine_memory_gi*memory_percentage)}Gi"
+            resource["memory"] = f"{math.floor(machine_memory_gi * memory_percentage)}Gi"
         return resource
 
     def _build_resources(
@@ -229,7 +229,6 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     mountPath="/opt/flink/log", name="flink-logs"
                                 ),
                             )
-                            # pylint: enable=protected-access
                             # pytype: enable=attribute-error
                         ],
                         containers=[
