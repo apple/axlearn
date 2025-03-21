@@ -68,6 +68,8 @@ def _reduce_loss(
     if sample_weight is not None:
         loss = loss * sample_weight
 
+    # Initialize reduced_loss to prevent linter errors
+    reduced_loss = loss  # Default initialization
     if reduction == ReductionMethod.NONE:
         reduced_loss = loss
     elif reduction == ReductionMethod.SUM:
@@ -117,14 +119,18 @@ def cross_entropy(
             target_labels will only be used for inferring the live targets during loss calculation.
 
     Returns:
-        (loss, all_losses), where
+        (loss, loss_dict), where
         loss is a scalar tensor for the cross entropy loss;
-        all_losses is a dictionary containing:
+        loss_dict is a dictionary containing:
             * "total_loss": a scalar representing the overall
                 loss = cross_entropy_loss + z_loss_scale * z_loss.
-            * "cross_entropy_loss": the cross_entropy_loss.
             * "z_loss": the unscaled z_loss.
+            * "cross_entropy_loss": the cross_entropy_loss.
             * "per_target_loss": the loss per target, of the same shape as `target_labels`.
+            * "accuracy": the proportion of correctly predicted targets, computed as
+              the number of instances where the predicted class (argmax of logits)
+              matches the target label, weighted by `live_targets`, and normalized by
+              the total number of valid targets.
 
     Raises:
         ValueError: If z_loss_scale is negative.
