@@ -71,22 +71,40 @@ def down_proj(x, wo_weight):
     return jnp.einsum("oegch,ehm->oegcm", x, wo_weight)
 
 @partial(jax.jit, static_argnums=(0,))
-def combine_outputs(adjusted_top_k, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
-    for k in range(adjusted_top_k):
-        # indices: (O, G, S)
-        indices = token_permutation_idx[..., k]
-        # indices: (O, G, S, 1)
-        indices = jnp.expand_dims(indices, axis=3)
-        # index into permuted_output
-        # output_k : (O, G, S, M)
-        output_k = jnp.take_along_axis(permuted_output, indices, axis=2)
-        # expert_affinities_masked: (O, G, S, 1) after indexing the expert
-        kth_expert_index = jnp.expand_dims(expert_index[..., k], axis=-1)
+def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
+    # Expected shapes:
+    # permuted_output: (O, G, E, M)
+    # token_permutation_idx: (O, G, S, K)
+    # expert_index: (O, G, S, K)
+    # expert_affinities_masked: (O, G, S, E)
 
-        # Result shape: (O, G, S, 1)
-        expert_affinities_k = jnp.take_along_axis(expert_affinities_masked, kth_expert_index, axis=-1)
-        dest_output += output_k * expert_affinities_k
-    return dest_output
+    batch_idx = jnp.arange(permuted_output.shape[0])[:, None, None, None]
+    group_idx = jnp.arange(permuted_output.shape[1])[None, :, None, None]
+    seq_idx = jnp.arange(token_permutation_idx.shape[2])[None, None, :, None]
+
+    output_k = permuted_output[
+        batch_idx,
+        group_idx,
+        token_permutation_idx,
+        :
+    ]  # Shape: (O, G, S, K, M)
+
+    expert_affinities_k = expert_affinities_masked[
+        batch_idx,
+        group_idx,
+        seq_idx,
+        expert_index
+    ]  # Shape: (O, G, S, K)
+
+    expert_affinities_k_expanded = expert_affinities_k[..., None]  # Shape: (O, G, S, K, 1)
+
+    # Multiply outputs by their corresponding affinities
+    weighted_output_k = output_k * expert_affinities_k_expanded  # Shape: (O, G, S, K, M)
+
+    # Sum across the top-k dimension
+    combined_output = jnp.sum(weighted_output_k, axis=3)  # Shape: (O, G, S, M)
+
+    return combined_output
 
 def _router_z_loss(logits: Tensor) -> Tensor:
     """Loss that encourages router logits to remain small and improves stability.
@@ -1072,13 +1090,19 @@ class TopKGatingGather(TopKGating):
             expert_mask, raw_gates, expert_capacity, cfg
         )
         with jax.named_scope("token_permutation_idx"):
+
+            batch_idx = jnp.arange(position_in_expert_with_offset.shape[0])[:, None, None, None]
+            group_idx = jnp.arange(position_in_expert_with_offset.shape[1])[None, :, None, None]
+            seq_idx = jnp.arange(position_in_expert_with_offset.shape[2])[None, None, :, None]
+
             # token_permutation_idx: (O, G, S, top_k)
             # for each token we get the position in assigned experts from this tensor
-            token_permutation_idx = jnp.take_along_axis(
-                position_in_expert_with_offset, # O_G_S_E
-                expert_index, # O_G_S_topK
-                axis=-1
-            ).astype(jnp.int32)
+            token_permutation_idx = position_in_expert_with_offset[
+                batch_idx,
+                group_idx,
+                seq_idx,
+                expert_index
+            ].astype(jnp.int32)
 
         
         token_assignments = self.compute_token_assignments(token_permutation_idx, cfg.num_experts, expert_capacity)
@@ -1115,6 +1139,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         super().__init__(cfg, parent=parent)
     
     def compute_num_blocks(self, num_tokens, expert_capacity):
+        #TODO make block size == expert cap
         num_blocks = math.ceil(expert_capacity / self.config.block_size) * self.config.num_experts
         num_blocks = min(num_blocks, num_tokens * self.config.top_k)
         logging.info("Setting number of blocks as %d", num_blocks)
@@ -1126,6 +1151,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         """
         Invert block_position_indices to obtain token_position_to_id.
         """
+
         O, G, num_tokens, E = block_position_indices.shape
         mesh = thread_resources.env.physical_mesh
         TP = mesh.shape["model"]
@@ -1215,13 +1241,13 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         tokens_per_expert = jnp.sum(expert_mask_after_dropping, axis=2)
 
         # blocks_per_expert: (O, G, E)
-        blocks_per_expert = jnp.ceil(tokens_per_expert / cfg.block_size).astype(jnp.int32)
+        blocks_per_expert = jnp.ceil(tokens_per_expert / self.config.block_size).astype(jnp.int32)
         blocks_ids = jnp.arange(num_blocks, dtype=jnp.int32)
         
         # num_blocks_idx_expanded: (1, 1, num_blocks, 1)
         num_blocks_idx_expanded = jnp.expand_dims(blocks_ids, (0, 1, 3))
         # num_blocks_idx_expanded: (O, G, num_blocks, E)
-        num_blocks_idx_expanded = jnp.broadcast_to(num_blocks_idx_expanded, (O, G, num_blocks, E))
+        num_blocks_idx_expanded = jnp.broadcast_to(num_blocks_idx_expanded, (O, G, num_blocks, 1))
         
         print('num blocks', num_blocks_idx_expanded)
         
@@ -1235,7 +1261,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         #   N is num blocks
         #   for each block, which expert it belongs to
         block_to_expert = jnp.sum(
-            num_blocks_idx_expanded >=  jnp.expand_dims(cumulative_blocks_per_expert, 1)[:,:,:,:], 
+            num_blocks_idx_expanded >=  jnp.expand_dims(cumulative_blocks_per_expert, 2)[:,:,:,:-1], 
             axis=3
         )
         
@@ -1244,6 +1270,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # the position in blocks if all tokens in blocks were laid out in a linear array
         # b0t0, b0t1,..., b1t0, b1t1,...
         block_position_indices = self.cumsum_4d_matmul(expert_mask_after_dropping.astype(jnp.int32), axis=-2).astype(jnp.int32)
+        # O G 1 E
         expert_block_offsets = jnp.expand_dims(cumulative_blocks_per_expert * cfg.block_size, 2)
         block_position_indices = block_position_indices.at[:,:,:,1:].set(block_position_indices[:,:,:,1:] + expert_block_offsets[:,:,:,:-1])
         block_position_indices = jnp.where(expert_mask_after_dropping==0, 0, block_position_indices)
@@ -1572,11 +1599,15 @@ class TransformerFeedForwardMoE(BaseLayer):
         backend = self._backend()
         assert backend == "neuron"
         from .neuron_blockwise_mlp import can_use_blockwise_matmul_nki, blockwise_mm
+        if isinstance(cfg.hidden_dim, int):
+            hidden_dim = cfg.hidden_dim
+        else:
+            hidden_dim = cfg.hidden_dim.set(input_dim=cfg.input_dim).instantiate()
         if can_use_blockwise_matmul_nki(
             hidden_size=cfg.input_dim,
-            intermediate_size_tp=cfg.hidden_dim/mesh.shape["model"],
+            intermediate_size_tp=hidden_dim/mesh.shape["model"],
             block_size=cfg.gating.block_size,
-            glu_mlp=len(cfg.activations) == 2,
+            glu_mlp=len(cfg.activation) == 2,
         ):
             expert_affinities_masked = gating.combine_tensor[1]
             token_position_to_id = gating.combine_tensor[0]

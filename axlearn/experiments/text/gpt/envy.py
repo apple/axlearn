@@ -45,7 +45,7 @@ from axlearn.common.attention import (
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
-from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh, TopKGatingGather
+from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh, TopKGatingGatherBlockwise
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
@@ -684,7 +684,7 @@ def model_config(
         input_dim=hidden_dim,
         num_groups=num_groups,
         dim_to_mesh_axis_map=MOE_DIM_TO_MESH_AXIS_MAP,
-        gating=TopKGatingGather.default_config(),
+        gating=TopKGatingGatherBlockwise.default_config(),
     )
     expert_config.gating.top_k = ffn_sparse_top_k
     expert_config.gating.train_capacity_factor = train_capacity_factor

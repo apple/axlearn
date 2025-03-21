@@ -17,7 +17,7 @@ from jax.sharding import NamedSharding, Mesh
 
 from axlearn.common.module import functional as F
 from axlearn.common.mixture_of_experts import (
-    Top2Gating,
+    TopKGating,
     TransformerFeedForwardMoE,
     TopKGatingGather,
     TopKGatingGatherBlockwise,
@@ -29,12 +29,20 @@ from axlearn.common.layers import (
     StochasticDepth,
     RMSNorm,
 )
-#jax.config.update('jax_platform_name', 'cpu')
-from axlearn.common.utils import PartitionSpec, infer_mesh_shape
+jax.config.update('jax_platform_name', 'cpu')
+from axlearn.common.utils import PartitionSpec, infer_mesh_shape, cast_floats
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
 
-MODULE_UNIT_TEST_ATOL=1e-6
-MODULE_UNIT_TEST_RTOL=1e-3
+# FP32 test tolerances
+TEST_TOLS_FP32 = {
+    "atol": 5e-4,
+    "rtol": 1e-2,
+}
+# BF16 test tolerances
+TEST_TOLS_BF16 = {
+    "atol": 5e-2,
+    "rtol": 1e-2,
+}
 
 MOE_OUTER_BATCH_AXIS_NAMES = ("data", "fsdp")
 
@@ -56,11 +64,13 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
 }
 
 
-def _topkgather_to_topk(output, expert_cap):
+def _topkgather_to_topk(output, top_k, cf):
     tok_perm_idx, expert_index, exp_aff_mask = output.combine_tensor
 
     O, G, S, _ = tok_perm_idx.shape
     E = exp_aff_mask.shape[-1]
+
+    expert_cap = jnp.int32(S*cf/E)
 
     exp_aff = jnp.take_along_axis(exp_aff_mask, expert_index, axis=-1)
 
@@ -176,6 +186,7 @@ class TestConfigBuilder:
             "input_dim": 4,
             "hidden_dim": 4,
             "num_experts": 4,
+            "top_k" : 2,
             "num_groups": 1,
             "outer_batch": 1,
             "expert_capacity": 1000,
@@ -185,11 +196,17 @@ class TestConfigBuilder:
         }
         return self
     
-    def with_dimensions(self, batch_size, seq_len, input_dim):
+    def with_dimensions(self, batch_size, seq_len, input_dim, dtype):
+        # Only two data types currently supported
+        _dtype = jnp.float32
+        if dtype == 'bfloat16':
+            _dtype = jnp.bfloat16
+
         self.params.update({
             "batch_size": batch_size,
             "seq_len": seq_len,
-            "input_dim": input_dim
+            "input_dim": input_dim,
+            "dtype": _dtype
         })
         return self
     
@@ -249,9 +266,9 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
-            "gating": Top2Gating.default_config().set(
+            "gating": TopKGating.default_config().set(
                 name="gating",
-                expert_capacity=self.params["expert_capacity"],
+                top_k=self.params["top_k"],
                 train_capacity_factor=self.params["train_capacity_factor"]
             )
         }
