@@ -16,4 +16,5 @@ def pytest_configure(config):
     if "PARALLEL_GPU_TEST" not in os.environ:
         return
     worker_id = os.getenv("PYTEST_XDIST_WORKER", "gw0")
-    os.environ["CUDA_VISIBLE_DEVICES"] = worker_id.lstrip("gw")
+    num_gpus = int(os.getenv("NUM_GPUS", "8"))
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(int(worker_id.lstrip("gw")) % num_gpus)
