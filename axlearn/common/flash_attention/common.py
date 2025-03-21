@@ -2,7 +2,7 @@
 """Common utilities across backends."""
 
 from functools import partial
-from typing import NamedTuple, Optional
+from typing import Literal, NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
@@ -125,7 +125,17 @@ class BaseFlashAttention(Configurable):
         """Returns the class name."""
         return self.__class__.__name__
 
-    def _log_unsupported(self, reason: str):
+    def _log_unsupported(self, reason: str) -> Literal[False]:
+        """Logs this class is unsupported with `reason`.
+
+        The log message will be formatted as `Not using {self.name()} because {reason}`.
+
+        This method also conveniently returns False so it could be used like this in `is_supported`
+        ```
+        if ...:
+            return self._log_unsupported(...)
+        ```
+        """
         logging.warning("Not using %s because %s", self.name(), reason)
         return False
 
