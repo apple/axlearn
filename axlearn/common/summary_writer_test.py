@@ -187,6 +187,29 @@ class WandBWriterTest(absltest.TestCase):
             finally:
                 wandb.finish()
 
+    def test_log_config(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            dummy_model_config = DummyModel.default_config()
+            flat_config = WandBWriter.format_config(
+                dummy_model_config.to_flat_dict(omit_default_values={})
+            )
+            config = WandBWriter.format_config(dummy_model_config.to_dict())
+            try:
+                writer: WandBWriter = (
+                    WandBWriter.default_config()
+                    .set(name="test", exp_name="wandb-testLogConfig", dir=tempdir, mode="offline")
+                    .instantiate(parent=None)
+                )
+                writer.log_config(dummy_model_config)
+            finally:
+                stored_config = dict(wandb.config)
+                wandb.finish()
+                stored_flat_config = stored_config.pop(
+                    WandBWriter._FLAT_CONFIG_KEY  # pylint: disable=protected-access
+                )
+                assert stored_flat_config == flat_config
+                assert stored_config == config
+
     @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
     @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
     def test_resume(self):

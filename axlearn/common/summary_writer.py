@@ -8,7 +8,8 @@ import numbers
 import os
 from collections.abc import Sequence
 from functools import wraps
-from typing import Any, Callable, Optional
+from types import FunctionType
+from typing import Any, Callable, Optional, Union
 
 import jax
 import numpy as np
@@ -19,7 +20,7 @@ from axlearn.common import file_system as fs
 from axlearn.common.config import REQUIRED, ConfigBase, Required, RequiredFieldValue, config_class
 from axlearn.common.module import Module
 from axlearn.common.summary import AudioSummary, ImageSummary, Summary
-from axlearn.common.utils import NestedTensor, Tensor, tree_paths
+from axlearn.common.utils import Nested, NestedTensor, Tensor, tree_paths
 
 try:
     import wandb
@@ -263,6 +264,8 @@ class WandBWriter(BaseWriter):
     TODO(adesai22): Add support for restarts.
     """
 
+    _FLAT_CONFIG_KEY = "flat_config"
+
     @config_class
     class Config(BaseWriter.Config):
         """Configures WandBWriter."""
@@ -356,20 +359,35 @@ class WandBWriter(BaseWriter):
             group=cfg.group,
         )
 
+    @staticmethod
+    def format_config(val) -> Union[Nested[str], list[Nested[str]]]:
+        """Helper function to format config for wandb logging."""
+        if isinstance(val, RequiredFieldValue):
+            return "REQUIRED"
+        elif isinstance(val, dict):
+            return type(val)({k: WandBWriter.format_config(v) for k, v in val.items()})
+        elif isinstance(val, (tuple, list)):
+            # wandb config stores tuple as list so no type(val)(...)
+            return [WandBWriter.format_config(v) for v in val]
+        elif isinstance(val, (type, FunctionType)):
+            # wandb config stores type as fully qualified str (same as Configurable.debug_string())
+            return f"{val.__module__}.{val.__name__}"
+        else:
+            return val
+
     @processor_zero_only
     def log_config(self, config: ConfigBase, step: int = 0):
-        def fmt(val):
-            if isinstance(val, RequiredFieldValue):
-                return "REQUIRED"
-            elif isinstance(val, dict):
-                return type(val)({k: fmt(v) for k, v in val.items()})
-            elif isinstance(val, (tuple, list)):
-                return type(val)([fmt(v) for v in val])
-            else:
-                return val
-
         assert wandb.run is not None, "A wandb run must be initialized."
-        wandb.config.update(fmt(config.to_dict()), allow_val_change=True)
+        wandb.config.update(WandBWriter.format_config(config.to_dict()), allow_val_change=True)
+        wandb.config.update(
+            # .to_flat_dict(omit_default_values={},...) matches behavior of .to_dict()
+            {
+                self._FLAT_CONFIG_KEY: WandBWriter.format_config(
+                    config.to_flat_dict(omit_default_values={})
+                )
+            },
+            allow_val_change=True,
+        )
 
     @processor_zero_only
     def __call__(self, step: int, values: dict[str, Any]):
