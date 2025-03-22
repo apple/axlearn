@@ -76,16 +76,6 @@ def get_git_revision(revision: str) -> str:
     return subprocess.check_output(["git", "rev-parse", revision]).decode("ascii").strip()
 
 
-def get_git_branch() -> str:
-    """Returns current git branch."""
-    return subprocess.check_output(["git", "branch", "--show-current"]).decode("ascii").strip()
-
-
-def get_git_status() -> str:
-    """Returns current git status."""
-    return subprocess.check_output(["git", "status", "--short"]).decode("ascii").strip()
-
-
 def get_package_root(root_module_name: str = ROOT_MODULE_NAME) -> str:
     """Returns the absolute path of the package root, as defined by the directory with name
     `root_module_name`.
@@ -108,36 +98,6 @@ def get_package_root(root_module_name: str = ROOT_MODULE_NAME) -> str:
             return curr
         curr = os.path.dirname(curr)
     raise ValueError(f"Not running within {root_module_name} (searching up from '{init}').")
-
-
-def get_repo_root() -> str:
-    """Returns the absolute path of the repo root, as defined by a directory with `.git` containing
-    `ROOT_MODULE_NAME` as a subdirectory.
-
-    Returns:
-        The absolute path of the project root.
-
-    Raises:
-        ValueError: If run from outside a repo containing `ROOT_MODULE_NAME`.
-    """
-    repo_root = os.path.dirname(get_package_root())
-    if not os.path.exists(os.path.join(repo_root, ".git")):
-        raise ValueError(f"Not running within a repo (no .git directory under '{repo_root})")
-    return repo_root
-
-
-def running_from_source() -> bool:
-    """Returns whether this function is called from source (instead of an installed package).
-
-    Returns:
-        True iff running from source.
-    """
-    try:
-        get_repo_root()
-        return True
-    except ValueError as e:
-        logging.info(str(e))
-    return False
 
 
 def get_pyproject_version() -> str:

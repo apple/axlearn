@@ -39,7 +39,6 @@ Example (docker):
     axlearn cloud bundle ... --bundler_spec=external=/path/to/external_dir/
 
 """
-
 import os
 import pathlib
 import shutil
@@ -55,16 +54,13 @@ from absl import app, flags, logging
 from axlearn.cloud.common import config
 from axlearn.cloud.common.docker import build as docker_build
 from axlearn.cloud.common.docker import push as docker_push
+from axlearn.cloud.common.git_summary import GitSummary, GitSummaryMembers
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
     canonicalize_to_string,
     copy_blobs,
-    get_git_branch,
-    get_git_revision,
-    get_git_status,
     get_pyproject_version,
     parse_kv_flags,
-    running_from_source,
 )
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 from axlearn.common.file_system import copy, exists, makedirs
@@ -161,6 +157,10 @@ class Bundler(Configurable):
 
         logging.info("Packaging %s.", package_dir)
         copytree(package_dir, temp_root, exclude_paths)
+        gitsummary = GitSummary(path=str(package_dir))
+        if gitsummary.is_valid():
+            summary_files = gitsummary.to_disk(temp_root)
+            logging.info("Writing out git summary as %s", summary_files)
 
         # Copy any external files/dirs.
         for dep in canonicalize_to_list(cfg.external):
@@ -364,10 +364,13 @@ class BaseDockerBundler(Bundler):
             logging.info("Skipping build + push and using: %s.", bundle_id)
             return bundle_id
 
+        git_summary = GitSummary(path=".")
         # Fail early if git status is dirty.
-        if running_from_source() and (status := get_git_status()):
+        if git_summary.is_valid() and git_summary.is_dirty():
             if cfg.allow_dirty:
-                logging.warning("Bundling with local changes:\n%s", status)
+                logging.warning(
+                    "Bundling with local changes:\n%s", git_summary[GitSummaryMembers.porcelain]
+                )
             else:
                 raise RuntimeError("Please commit your changes or gitignore them.")
 
@@ -392,13 +395,8 @@ class BaseDockerBundler(Bundler):
             labels = dict(version=get_pyproject_version())
 
             # If running from source, also label with git metadata.
-            if running_from_source():
-                labels.update(
-                    {
-                        "git-branch": get_git_branch(),
-                        "git-commit-head": get_git_revision("HEAD"),
-                    }
-                )
+            if git_summary.is_valid():
+                labels.update(git_summary.to_labels())
 
             build_args = {**cfg.build_args}
             if cfg.extras:

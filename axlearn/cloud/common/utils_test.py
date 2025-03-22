@@ -43,14 +43,6 @@ class UtilsTest(TestWithTemporaryCWD):
 
         self.assertEqual(str(ROOT_MODULE), utils.get_package_root())
 
-    def test_running_from_source(self):
-        # Patch package root.
-        with _fake_module_root("test_module") as temp_module:
-            with mock.patch(f"{utils.__name__}.get_package_root", return_value=temp_module):
-                self.assertFalse(utils.running_from_source())
-                os.makedirs(os.path.join(os.path.dirname(temp_module), ".git"))
-                self.assertTrue(utils.running_from_source())
-
     @parameterized.parameters(
         dict(
             kv_flags=["key1:value1", "key2:value2", "key1:value3"],
