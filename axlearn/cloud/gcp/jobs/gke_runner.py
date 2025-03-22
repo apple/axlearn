@@ -39,12 +39,7 @@ from axlearn.cloud.common.bastion import (
 )
 from axlearn.cloud.common.bundler import get_bundler_config
 from axlearn.cloud.common.event_queue import BaseQueueClient
-from axlearn.cloud.common.utils import (
-    configure_logging,
-    generate_job_name,
-    parse_action,
-    parse_kv_flags,
-)
+from axlearn.cloud.common.utils import configure_logging, generate_job_name, parse_action
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, with_tpu_extras
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
@@ -58,7 +53,6 @@ from axlearn.cloud.gcp.node_pool import (
     list_node_pools_by_label_key,
 )
 from axlearn.cloud.gcp.node_pool_provisioner import NodePoolProvisioner, TPUNodePoolProvisioner
-from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_type
 from axlearn.cloud.gcp.utils import (
     catch_auth,
     custom_jobset_kwargs,
@@ -133,7 +127,6 @@ class GKERunnerJob(GCPJob):
             output_dir: Output directory for artifacts (e.g. XLA dumps).
             namespace: K8s namespace propagated to inner.
             cluster: GKE cluster.
-            env_vars: Optional env vars to set.
             status_interval_seconds: Interval to poll status.
             vertexai_tb_uploader: Optional VertexAI Tensorboard Uploader.
             enable_pre_provisioner: Whether to enable pre-provisioner.
@@ -145,7 +138,6 @@ class GKERunnerJob(GCPJob):
         output_dir: Required[str] = REQUIRED
         namespace: str = "default"
         cluster: Required[str] = REQUIRED
-        env_vars: dict[str, str] = {}
         status_interval_seconds: float = 30
         vertexai_tb_uploader: Optional[VertexAITensorboardUploader.Config] = None
         # This config is made Optional for backwards compatibility. Default is False.
@@ -163,15 +155,15 @@ class GKERunnerJob(GCPJob):
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string(
             "output_dir",
             None,
             "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
         )
-        flags.DEFINE_string("namespace", "default", "K8s namespace.", **common_kwargs)
+        flags.DEFINE_string("namespace", None, "K8s namespace.", **common_kwargs)
         flags.DEFINE_string("cluster", None, "GKE cluster name.", **common_kwargs)
-        flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
         flags.DEFINE_boolean(
             "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
         )
@@ -180,19 +172,27 @@ class GKERunnerJob(GCPJob):
             cls.inner.define_flags(fv)
 
     @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        super().set_defaults(fv)
+        # Don't override `name` if already specified, since the default is non-deterministic.
+        fv.set_default("name", fv["name"].default or generate_job_name())
+        fv.set_default("namespace", "default")
+        fv.set_default(
+            "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
+        )
+
+    @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cls.validate_inner()
         cfg: GKERunnerJob.Config = super().from_flags(fv, **kwargs)
-        cfg.max_tries = cfg.max_tries or 10
-        cfg.name = cfg.name or generate_job_name()
-        cfg.env_vars = {**cfg.env_vars, **parse_kv_flags(fv.env)}
-        cfg.output_dir = (
-            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
-        )
-        cfg.retry_interval = 60  # Unused.
+        # Not used at the runner, but at the inner definition(s).
+        cfg.command = None
+        cfg.service_account = None
         # Construct wrapped job config. Don't propagate any configs here. Instead, propagate them in
         # __init__, since the caller may set(...) configs between now and __init__.
         cfg.inner = cast(GKEJob, cls.inner).from_flags(fv, **kwargs)
+        cfg.max_tries = cfg.inner.max_tries
+        cfg.retry_interval = cfg.inner.retry_interval
         # Configure bundler at the job level, which will be propagated to inner in __init__. This
         # ensures that callers do not need to know about the `inner` implementation when configuring
         # bundler.
@@ -202,42 +202,16 @@ class GKERunnerJob(GCPJob):
             fv=fv,
         )
         cfg.cluster = cfg.cluster or gcp_settings("gke_cluster", required=False, fv=fv)
-        # NOTE: service account uses workload identity to grant permissions to resources.
-        cfg.service_account = cfg.service_account or gcp_settings(
-            "k8s_service_account", default="default", fv=fv
-        )
         if cfg.enable_pre_provisioner:
             cfg.pre_provisioner = cast(NodePoolProvisioner, cls.pre_provisioner).from_flags(fv)
-
         cfg.event_publisher = event_queue_from_config(flag_values=fv)
-
         return cfg
-
-    @property
-    def bundler(self):
-        return self._inner.bundler
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
         # Instantiate inner job impl.
-        # TODO(markblee): Reduce the number of pass-through args. Some of these fields can be
-        # directly initialized within `inner` and read from `cfg.inner`. This minimizes config
-        # duplication/ambiguity about where values are read from.
-        self._inner: GKEJob = cfg.inner.set(
-            name=cfg.name,
-            bundler=cfg.bundler,
-            namespace=cfg.namespace,
-            env_vars=cfg.env_vars,
-            command=cfg.command,
-            service_account=cfg.service_account,
-            max_tries=cfg.max_tries,
-            retry_interval=cfg.retry_interval,
-            enable_pre_provisioner=cfg.enable_pre_provisioner,
-            output_dir=cfg.output_dir,
-        ).instantiate()
-        # Use the bundler configured on inner.
-        self._bundler = None
+        self._inner: GKEJob = cfg.inner.instantiate(bundler=self._bundler)
         # Log sync process.
         self._tb_uploader = None
         if cfg.vertexai_tb_uploader:
@@ -361,7 +335,9 @@ class GKERunnerJob(GCPJob):
 
             # Return status if all replicas agree.
             for status, count in statuses.items():
-                if count == cfg.inner.accelerator.num_replicas:
+                # TODO(markblee): Fix this by refactoring _get_status to inner.
+                # By doing so, we can also get rid of the other GKERunnerJob subclasses.
+                if count == cfg.inner.builder.accelerator.num_replicas:
                     return GKERunnerJob.Status[status.upper()]
         except k8s.client.exceptions.ApiException as e:
             if e.status == 404:
@@ -543,14 +519,9 @@ class TPUGKERunnerJob(GKERunnerJob):
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
-        default_env = get_default_env(
-            tpu_type=infer_tpu_type(fv.instance_type),
-            num_tpu_slices=fv.num_replicas,
-            job_name=cfg.name,
-        )
-        cfg.env_vars = {**default_env, **cfg.env_vars}
         if is_vertexai_tensorboard_configured(fv):
             cfg.vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(fv)
+        # TODO(markblee): Remove if not needed for GKE path, which doesn't use tar bundling.
         cfg.bundler = with_tpu_extras(cfg.bundler)
         return cfg
 
@@ -706,10 +677,13 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     project = gcp_settings("project", fv=flag_values)
     zone = gcp_settings("zone", fv=flag_values)
     cluster = flag_values.cluster or gcp_settings("gke_cluster", fv=flag_values, required=False)
+    namespace = flag_values.namespace or "default"
 
     load_kube_config(project=project, zone=zone, cluster=cluster)
 
     if action in ("start", "update"):
+        # TODO(markblee): Read the command from flags. If specified, command should not be specified
+        # here. This allows us to support multiple commands (e.g., one per replicated job).
         command = " ".join(argv[2:])
         if not command:
             raise app.UsageError("Command is required.")
@@ -718,7 +692,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         job: GKERunnerJob = runner.from_flags(flag_values, command=command).instantiate()
         job.execute()
     elif action == "list":
-        print(k8s_jobset_table(list_k8s_jobsets(namespace=flag_values.namespace)))
+        print(k8s_jobset_table(list_k8s_jobsets(namespace=namespace)))
     elif action == "stop":
         if not flag_values.name:
             raise app.UsageError("--name is required.")
@@ -728,9 +702,8 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             zone=zone,
             cluster=cluster,
             jobset_name=flag_values.name,
-            jobset_namespace=flag_values.namespace,
+            jobset_namespace=namespace,
         )
-
     else:
         # Unreachable -- `parse_action` will handle validation.
         raise app.UsageError(f"Unknown action {action}")

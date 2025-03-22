@@ -141,6 +141,7 @@ FLAGS = flags.FLAGS
 _RSYNC_DIR = os.path.join(_LOG_DIR, "..", "rsync")
 
 
+# TODO(markblee): Use `define_flags` instead of redefining flags here.
 def _private_flags(flag_values: flags.FlagValues = FLAGS):
     common_flags(flag_values=flag_values)
     bastion_job_flags(flag_values=flag_values)

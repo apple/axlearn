@@ -416,21 +416,20 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
 
             # Check some basic flags.
             self.assertEqual(fv.bastion, bastion)
-            self.assertEqual(fv.name, name or "job-name")
-            self.assertEqual(fv.project, project or mock_settings["project"])
-            self.assertEqual(fv.zone, zone or mock_settings["zone"])
             self.assertIn("instance_type", fv)
             self.assertIn("bundler_type", fv)
-            self.assertIsNotNone(fv["name"].default)
             self.assertEqual(fv.instance_type, "tpu-v4-8")
             self.assertEqual(fv.output_dir, output_dir)
-            self.assertEqual(fv.namespace, namespace or "default")
             self.assertEqual(fv.cluster, cluster)
             self.assertEqual(fv.bundler_exclude, bundler_exclude or BUNDLE_EXCLUDE)
 
             from_flags_kwargs = dict(command="test command", action=action)
-            cfg = tpu_gke_job.from_flags(fv, **from_flags_kwargs)
+            cfg: BastionManagedGKEJob.Config = tpu_gke_job.from_flags(fv, **from_flags_kwargs)
 
+            self.assertEqual(cfg.name, name or "job-name")
+            self.assertEqual(cfg.project, project or mock_settings["project"])
+            self.assertEqual(cfg.zone, zone or mock_settings["zone"])
+            self.assertEqual(cfg.namespace, namespace or "default")
             self.assertIsNone(cfg.bundler)
             if action in ("start", "update"):
                 self.assertIsNotNone(cfg.runner)
@@ -456,7 +455,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
 
             # Check output_dir.
             if output_dir is None:
-                self.assertEqual(cfg.output_dir, f"gs://ttl_bucket/axlearn/jobs/{fv.name}")
+                self.assertEqual(cfg.output_dir, f"gs://ttl_bucket/axlearn/jobs/{cfg.name}")
             else:
                 self.assertEqual(cfg.output_dir, output_dir)
 

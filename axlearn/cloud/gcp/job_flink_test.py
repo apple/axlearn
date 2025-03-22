@@ -1,10 +1,10 @@
 # Copyright © 2025 Apple Inc.
 
 """Unit tests of job_flink.py."""
+
 import contextlib
 import json
 import logging
-from typing import Optional
 
 from absl import flags
 from absl.testing import parameterized
@@ -12,8 +12,7 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.gcp import bundler, job, job_flink
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
-from axlearn.cloud.gcp.jobset_utils_test import mock_settings
-from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.test_utils import TestCase
 
 # These two json text-literals are auto generated on test failure as a warning log.
@@ -369,33 +368,21 @@ class FlinkTPUGKEJobTest(TestCase):
     def _job_config(
         self,
         bundler_cls: type[Bundler],
-        reservation: Optional[str] = None,
-        service_account: Optional[str] = None,
-        enable_pre_provisioner: Optional[bool] = None,
-        host_mount_spec: Optional[list[str]] = None,
-        priority_class: Optional[str] = None,
-        gcsfuse_mount_spec: Optional[str] = None,
+        command: str = "python -m fake --command",
+        **kwargs,
     ):
-        with mock_gcp_settings([job.__name__, bundler.__name__], mock_settings()):
+        with mock_gcp_settings([job.__name__, bundler.__name__], default_mock_settings()):
             fv = flags.FlagValues()
             job_flink.FlinkTPUGKEJob.define_flags(fv)
-            if reservation:
-                fv.set_default("reservation", reservation)
-            if service_account:
-                fv.set_default("service_account", service_account)
-            if host_mount_spec:
-                fv.set_default("host_mount_spec", host_mount_spec)
-            if gcsfuse_mount_spec:
-                fv.set_default("gcsfuse_mount_spec", gcsfuse_mount_spec)
+            fv.set_default("instance_type", "tpu-v5p-16")
+            fv.set_default("output_dir", "fake-output-dir")
+            for key, value in kwargs.items():
+                if value is not None:
+                    setattr(fv, key, value)
             fv.mark_as_parsed()
-            cfg = job_flink.FlinkTPUGKEJob.from_flags(fv)
-            cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
-            cfg.accelerator.instance_type = "tpu-v5p-16"
-            cfg.enable_pre_provisioner = enable_pre_provisioner
-            cfg.builder.priority_class = priority_class
-            cfg.output_dir = "fake-output-dir"
-            cfg.command = "python -m fake --command"
-            yield cfg
+            cfg = job_flink.FlinkTPUGKEJob.from_flags(fv, command=command)
+            bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+            yield cfg, bundler_cfg
 
     @parameterized.product(
         reservation=[None, "test"],
@@ -415,8 +402,8 @@ class FlinkTPUGKEJobTest(TestCase):
             reservation=reservation,
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as cfg:
-            flink_job = job_flink.FlinkTPUGKEJob(cfg)
+        ) as (cfg, bundler_cfg):
+            flink_job: job_flink.FlinkTPUGKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
             # pylint: disable=protected-access
             system = flink_job._get_system_info()
             flink_deployment = flink_job._build_flink_deployment(system)
@@ -452,8 +439,8 @@ class FlinkTPUGKEJobTest(TestCase):
             reservation=reservation,
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as cfg:
-            flink_job = job_flink.FlinkTPUGKEJob(cfg)
+        ) as (cfg, bundler_cfg):
+            flink_job: job_flink.FlinkTPUGKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
             # pylint: disable=protected-access
             system = flink_job._get_system_info()
             job_submission = flink_job._build_job_submission_deployment("1.2.3.4", system)
