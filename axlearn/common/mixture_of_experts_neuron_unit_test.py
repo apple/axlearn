@@ -37,6 +37,8 @@ class TestImplCorrectnessUnit(TestCase):
     @parameterized.named_parameters(test_configs)
     def test_fwd_correctness(self, cfg: TestConfig):
 
+        cfg.instantiate()
+
         @partial(jax.jit, static_argnums=0, out_shardings=cfg.out_shard_test) # cannot specify both backend and sharding together
         def test_fwd_call(test_layer, test_state, test_inputs):
             test_output, _ = self._fwd_call(test_layer, test_state, test_inputs)
@@ -61,6 +63,8 @@ class TestImplCorrectnessUnit(TestCase):
 
     @parameterized.named_parameters(test_configs)
     def test_bwd_correctness(self, cfg: TestConfig):
+
+        cfg.instantiate()
 
         @partial(jax.jit, static_argnums=0, out_shardings=cfg.out_shard_test)
         def test_bwd_call(test_layer, test_state, test_inputs):

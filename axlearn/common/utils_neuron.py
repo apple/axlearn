@@ -99,7 +99,9 @@ class TestConfig():
 
         if test.layer == "MoE":
             self.set_outer_batch()
-                    
+
+    def instantiate(self):
+                        
         self.instantiate_modules_with_mesh() 
         self.random_inputs_with_mesh()
 
