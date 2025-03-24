@@ -513,16 +513,16 @@ def metric_fn(
 
         target = OpenAIClient.format_message(target_message)
 
-        if target.tool_calls is not None:
+        if target.tool_calls:
             target_tool_calls = get_tool_calls_from_message(target.model_dump())
             total_tool_calls += len(target_tool_calls)
             number_of_func_call_intents_ground_truth += 1
 
         if len(pred_messages) > 0:
             pred = pred_messages[0]
-            if pred.tool_calls is not None:
+            if pred.tool_calls:
                 number_of_func_call_intents_pred += 1
-                if target.tool_calls is not None:
+                if target.tool_calls:
                     number_of_func_call_intents_ground_truth_pred += 1
 
             # Check string match.
@@ -533,8 +533,8 @@ def metric_fn(
             ):
                 matched = True
             elif (
-                target.tool_calls is not None
-                and pred.tool_calls is not None
+                target.tool_calls
+                and pred.tool_calls
                 and len(target.tool_calls) == len(pred.tool_calls)
             ):
                 pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
@@ -545,7 +545,7 @@ def metric_fn(
                     match_rules=match_rules,
                 )
 
-            if target.tool_calls is not None and pred.tool_calls is not None:
+            if target.tool_calls and pred.tool_calls:
                 # Run the detailed too call matching.
                 pred_tool_calls = get_tool_calls_from_message(pred.model_dump())
                 detailed_results = _compare_tool_call_detailed(

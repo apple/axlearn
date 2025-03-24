@@ -140,7 +140,7 @@ class ConvTest(TestCase):
         self, window: int, stride: int, padding: ConvPaddingType, expected
     ):
         """Tests the cases in conv_explicit_padding() description."""
-        paddings = jnp.array([[0, 0, 0, 0, 1, 1]])
+        paddings = jnp.array([[0, 0, 0, 0, 1, 1]], dtype=jnp.bool)
         out_paddings = compute_conv_paddings(
             paddings, window=window, stride=stride, conv_padding=padding
         )
@@ -198,7 +198,7 @@ class ConvTest(TestCase):
         )
         assert_allclose(explicit_padding[0], (9, 5))
 
-        in_paddings = jnp.array([in_paddings])
+        in_paddings = jnp.array([in_paddings], dtype=jnp.bool)
         out_paddings = compute_conv_paddings(
             in_paddings, window=window, stride=stride, conv_padding=padding
         )[0]
@@ -651,7 +651,7 @@ class ConvTest(TestCase):
         )
 
         # The 10 sequences have length 1 to 10.
-        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1)
+        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1).astype(jnp.bool)
 
         # Compute layer outputs.
         (ref_outputs, ref_paddings), _ = F(
@@ -767,7 +767,7 @@ class ConvTest(TestCase):
         prng_key, input_key = jax.random.split(prng_key)
         inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim])
         # The 10 sequences have length 1 to 10.
-        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1)
+        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1).astype(jnp.bool)
 
         (test_outputs, test_paddings), _ = F(
             test_layer,
@@ -791,6 +791,8 @@ class ConvTest(TestCase):
         assert_allclose(ref_outputs.shape, output_shape)
         ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
+        self.assertEqual(ref_paddings.dtype, jnp.bool)
+        self.assertEqual(test_paddings.dtype, jnp.bool)
         assert_allclose(ref_paddings, test_paddings)
         assert_allclose(ref_outputs, test_outputs)
 
@@ -1076,7 +1078,7 @@ class ConvTransposeTest(TestCase):
     )
     def test_compute_conv_transpose_paddings(self, window, strides, padding, dilation, expected):
         """Tests the cases in conv_transpose_explicit_padding() description."""
-        in_paddings = jnp.array([0, 0, 1, 1], dtype=jnp.float32)[None, :]
+        in_paddings = jnp.array([0, 0, 1, 1], dtype=jnp.bool)[None, :]
         out_paddings = convolution.compute_conv_transpose_paddings(
             in_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
         )
@@ -1094,11 +1096,11 @@ class ConvTransposeTest(TestCase):
         self, window, strides, padding, dilation, value
     ):
         """If in_paddings is all valid or invalid, out_paddings must be all valid or invalid."""
-        in_paddings = jnp.full([1, 4], fill_value=value)
+        in_paddings = jnp.full([1, 4], fill_value=value, dtype=jnp.bool)
         out_paddings = convolution.compute_conv_transpose_paddings(
             in_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
         )
-        expected = jnp.ones_like(out_paddings) * value
+        expected = jnp.full_like(out_paddings, fill_value=value, dtype=jnp.bool)
         self.assertNestedEqual(out_paddings, expected)
 
     CONVT_PADDINGS_PARAMS = dict(
@@ -1120,7 +1122,7 @@ class ConvTransposeTest(TestCase):
         self, in_paddings, window, strides, padding, dilation
     ):
         """Check if ConvT -> Conv preserves information."""
-        in_paddings = jnp.array(in_paddings, dtype=jnp.float32)[None, :]
+        in_paddings = jnp.array(in_paddings, dtype=jnp.bool)[None, :]
         out_paddings = convolution.compute_conv_transpose_paddings(
             in_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
         )
@@ -1154,7 +1156,7 @@ class ConvTransposeTest(TestCase):
         else:
             anchor = None
 
-        in_paddings = jnp.array(in_paddings, dtype=jnp.float32)[None, :]
+        in_paddings = jnp.array(in_paddings, dtype=jnp.bool)[None, :]
         ref_paddings = convolution.compute_conv_paddings(
             in_paddings,
             window=window,

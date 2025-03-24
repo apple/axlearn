@@ -377,5 +377,4 @@ def k8s_jobset_table(jobsets: dict[str, list]) -> Table:
 class GCPAPI(str, enum.Enum):
     """GCP API to submit resource requests to."""
 
-    QRM = "QRM"
     GKE = "GKE"

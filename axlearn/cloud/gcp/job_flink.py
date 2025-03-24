@@ -1,6 +1,7 @@
 # Copyright © 2025 Apple Inc.
 
 """A helper module to launch and manage Apache Flink + Beam bundles on GKE."""
+
 import logging
 import math
 import time
@@ -9,8 +10,6 @@ from typing import Any, Dict
 import kubernetes as k8s
 
 from axlearn.cloud.gcp import job
-from axlearn.cloud.gcp.job import GKEJob
-from axlearn.cloud.gcp.jobs.tpu_utils import get_default_env
 from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
@@ -19,8 +18,9 @@ from axlearn.cloud.gcp.system_characteristics import (
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
     _SystemCharacteristics,
 )
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import BEAM_SUBMITTER_LABEL, delete_flink_deployment, delete_k8s_job
-from axlearn.common.compiler_options import infer_tpu_type
+from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 
 _FINK_MAIN_CONTAINER_CPU_PERCENTAGE = 0.4
 
@@ -35,17 +35,20 @@ def _custom_flinkdeployment_kwargs() -> dict[str, str]:
     return dict(group="flink.apache.org", version="v1beta1", plural="flinkdeployments")
 
 
+# TODO(muyang_yu,markblee): Refactor to move logic into builder, which allows decoupling the
+# management of namespaced_custom_objects from the construction of the flink cluster specs and the
+# construction of the flink job specs.
 class FlinkTPUGKEJob(job.GKEJob):
     """A Job that submits a Flink + Beam bundle and monitors its status."""
 
     builder = TPUReplicatedJob
-    Config = GKEJob.Config
+    Config = job.GKEJob.Config
 
     def _delete(self):
         """This is a non-blocking method to delete the flink deployment and submitter job.
         It is called when GKERunner gives up retrying this job.
         """
-        cfg: GKEJob.Config = self.config
+        cfg: FlinkTPUGKEJob.Config = self.config
         # Delete all deployments submitted by this job.
         try:
             delete_k8s_job(cfg.name, namespace=cfg.namespace)
@@ -63,7 +66,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         It is called at the beginning of execution for every retry.
         """
         self._delete()
-        cfg: job.TPUGKEJob.Config = self.config
+        cfg: FlinkTPUGKEJob.Config = self.config
         while True:
             try:
                 k8s.client.CustomObjectsApi().get_namespaced_custom_object_status(
@@ -95,9 +98,24 @@ class FlinkTPUGKEJob(job.GKEJob):
     def _get_flink_cluster_name(self) -> str:
         return f"{self.config.name}-flink-cluster"
 
+    def _get_single_node_topology(self) -> str:
+        """This method returns the single node topology for the configured TPU type."""
+        cfg: FlinkTPUGKEJob.Config = self.config
+        tpu_type = infer_tpu_type(cfg.builder.accelerator.instance_type)
+        cores, hosts = infer_tpu_cores(tpu_type), infer_tpu_workers(tpu_type)
+        if cores % hosts != 0:
+            raise ValueError(
+                f"Number of cores:{cores} is not divisible by hosts:{hosts} for TPU type:{tpu_type}"
+            )
+        single_host_cores = cores // hosts
+        single_host_tpu_name = f"{infer_tpu_version(tpu_type)}-{single_host_cores}"
+        if single_host_tpu_name not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
+            raise RuntimeError(f"Can't find specs for {single_host_tpu_name}.")
+        return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[single_host_tpu_name].topology
+
     def _execute(self) -> Any:
         """Submits a Flink Cluster and a Beam job submitter to the cluster."""
-        cfg: job.TPUGKEJob.Config = self.config
+        cfg: FlinkTPUGKEJob.Config = self.config
 
         # When to retry, cleaning up the previous deployments.
         # And this is a noop for the initial execution.
@@ -145,7 +163,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         jobmanager_ip = jobmanager_pods.items[0].status.pod_ip
 
         # 3) Create a job to submit user's pipeline to the Flink cluster
-        job_submission = self._build_job_submission_deployment(jobmanager_ip)
+        job_submission = self._build_job_submission_deployment(jobmanager_ip, system)
         logging.info("Submitting Job job_submission=%s", job_submission)
         return k8s.client.BatchV1Api().create_namespaced_job(
             namespace=cfg.namespace,
@@ -153,7 +171,8 @@ class FlinkTPUGKEJob(job.GKEJob):
         )
 
     def _get_system_info(self) -> _SystemCharacteristics:
-        tpu_type = infer_tpu_type(self.config.accelerator.instance_type)
+        cfg: FlinkTPUGKEJob.Config = self.config
+        tpu_type = infer_tpu_type(cfg.builder.accelerator.instance_type)
         if tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {tpu_type}")
         return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
@@ -170,7 +189,7 @@ class FlinkTPUGKEJob(job.GKEJob):
             system.gce_machine_type, None
         )
         if machine_memory_gi is not None:
-            resource["memory"] = f"{math.floor(machine_memory_gi*memory_percentage)}Gi"
+            resource["memory"] = f"{math.floor(machine_memory_gi * memory_percentage)}Gi"
         return resource
 
     def _build_resources(
@@ -190,7 +209,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         return f"{self.config.output_dir}/flink_checkpoints"
 
     def _build_flink_deployment(self, system: _SystemCharacteristics) -> Dict[str, Any]:
-        cfg: job.GKEJob.Config = self.config
+        cfg: FlinkTPUGKEJob.Config = self.config
         return dict(
             apiVersion="flink.apache.org/v1beta1",
             kind="FlinkDeployment",
@@ -214,6 +233,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     mountPath="/opt/flink/log", name="flink-logs"
                                 ),
                             )
+                            # pytype: enable=attribute-error
                         ],
                         containers=[
                             dict(
@@ -225,9 +245,10 @@ class FlinkTPUGKEJob(job.GKEJob):
                     )
                 ),
                 flinkConfiguration={
-                    # We reply on JAX mesh config to do data parallelism, every host will
-                    # offer only one task slot.
-                    "taskmanager.numberOfTaskSlots": "1",
+                    # taskmanager.numberOfTaskSlots controls the number of concurrent
+                    # threads per worker.
+                    # TODO(muyang_yu): enable users override this default value via a flag
+                    "taskmanager.numberOfTaskSlots": f"{system.chips_per_vm}",
                     "taskmanager.memory.task.off-heap.size": "16g",
                     "taskmanager.network.bind-host": "0.0.0.0",
                     "rest.address": "0.0.0.0",
@@ -237,7 +258,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                 # resource is good enough.
                 jobManager=dict(resource=dict(memory="2g", cpu=1)),
                 taskManager=dict(
-                    replicas=cfg.accelerator.num_replicas,
+                    # We use large slices as multiple independent single nodes in inference
+                    replicas=(cfg.builder.accelerator.num_replicas * system.vms_per_slice),
                     resource=self._build_resource(
                         system=system,
                         cpu_percentage=_FINK_MAIN_CONTAINER_CPU_PERCENTAGE,
@@ -252,7 +274,13 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     self._builder.config.location_hint
                                 ),
                                 "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                                "cloud.google.com/gke-tpu-topology": system.topology,
+                                # In inference, we use every node independently, so we use single
+                                # node's topology instead of the whole slice's topology.
+                                # So that jax.device_count() gets the number of chips in a single
+                                # node.
+                                "cloud.google.com/gke-tpu-topology": (
+                                    self._get_single_node_topology()
+                                ),
                             },
                             tolerations=[
                                 dict(
@@ -271,6 +299,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                                         mountPath="/opt/flink/log", name="flink-logs"
                                     ),
                                 )
+                                # pylint: enable=protected-access
+                                # pytype: enable=attribute-error
                             ],
                             containers=[
                                 dict(
@@ -311,8 +341,12 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     + [
                                         dict(name=k, value=str(v))
                                         for k, v in get_default_env(
-                                            tpu_type=infer_tpu_type(cfg.accelerator.instance_type),
-                                            num_tpu_slices=cfg.accelerator.num_replicas,
+                                            tpu_type=infer_tpu_type(
+                                                cfg.builder.accelerator.instance_type
+                                            ),
+                                            # Every pod is independent to each other, so they
+                                            # believe they run in single slice.
+                                            num_tpu_slices=1,
                                             job_name=cfg.name,
                                         ).items()
                                     ],
@@ -340,12 +374,24 @@ class FlinkTPUGKEJob(job.GKEJob):
             ),
         )
 
-    def _build_job_submission_deployment(self, job_manager_ip: str) -> Dict[str, Any]:
-        cfg: job.GKEJob.Config = self.config
-        user_command = cfg.command
+    def _build_job_submission_deployment(
+        self, job_manager_ip: str, system: _SystemCharacteristics
+    ) -> Dict[str, Any]:
+        cfg: FlinkTPUGKEJob.Config = self.config
+        user_command = cfg.builder.command
+        # --flink_parallelism controls the number of replicas of all stages in the Beam pipeline
+        # it executes.
+        # A reasonable large number of --flink_parallelism can enable better I/O performance.
+        # But if it is too large, it takes large amount of memory and time to initialize them.
+        # And since this is the only job running on the flink cluster, we are using all task
+        # slots from all taskmasters for this job, which is a reasonable number.
+        # TODO(muyang_yu): enable users override this default value via a flag
+        flink_parallelism = (
+            cfg.builder.accelerator.num_replicas * system.vms_per_slice * system.chips_per_vm
+        )
         user_command += (
             f" --flink_master_address={job_manager_ip}"
-            f" --flink_parallelism={cfg.accelerator.num_replicas}"
+            f" --flink_parallelism={flink_parallelism}"
             # Replicate output to /output/beam_pipline_log
             f" 2>&1 | tee /output/beam_pipline_log"
         )
@@ -370,6 +416,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                         # pylint: disable=protected-access
                         # pytype: disable=attribute-error
                         initContainers=[self._builder._build_uploader_container()],
+                        # pylint: enable=protected-access
+                        # pytype: enable=attribute-error
                         containers=[
                             dict(
                                 name=cfg.name,

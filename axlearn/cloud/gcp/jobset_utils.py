@@ -25,6 +25,7 @@ from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
+from axlearn.cloud.gcp.tpu import get_default_env
 from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
@@ -62,14 +63,7 @@ class AcceleratorConfig(ConfigBase):
 
 def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
     """Defines resource flags, e.g. --instance_type and --num_replicas."""
-    flags.DEFINE_string(
-        "instance_type",
-        # --instance_type is often defined at the launcher, so use any existing value by default.
-        getattr(flag_values, "instance_type", None),
-        "Instance type.",
-        flag_values=flag_values,
-        **kwargs,
-    )
+    flags.DEFINE_string("instance_type", None, "Instance type.", flag_values=flag_values, **kwargs)
     flags.DEFINE_integer(
         "num_replicas", 1, "Number of replicas.", flag_values=flag_values, **kwargs
     )
@@ -164,10 +158,8 @@ class _LoadBalancer:
         }
 
 
-# TODO(markblee): Support a CompositeReplicatedJob, which takes multiple replicated jobs and
-# concatenates their outputs.
 class BaseReplicatedJob(FlagConfigurable):
-    """Builds a replicated job spec."""
+    """Common base class between single and composite replicated jobs."""
 
     @config_class
     class Config(FlagConfigurable.Config):
@@ -175,68 +167,26 @@ class BaseReplicatedJob(FlagConfigurable):
 
         Attributes:
             name: Name of the jobset. Also used for inferring docker image.
-            command: Command to be executed.
             output_dir: An optional GCS path to upload job outputs to.
                 Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
                 This directory is used by the sidecar container to sync outputs to GCS using gsutil.
                 Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
-            accelerator: Accelerator configuration.
-            project: GCP Project.
-            env_vars: Optional env vars to set.
-            gcsfuse_mount: Optional configs for the GCS FUSE sidecar and volume mount.
-                See `GCSFuseMount` for details.
-            host_mounts: List of volumes from host to mount into the container.
-                See `HostMount` for details.
-            service_account: Optional service account to execute the job as.
-            enable_pre_provisioner: Whether to enable pre-provisioner.
         """
 
         name: Required[str] = REQUIRED
-        command: Required[str] = REQUIRED
         output_dir: Optional[str] = None
-        accelerator: Required[AcceleratorConfig] = REQUIRED
-        project: Required[str] = REQUIRED
-        env_vars: dict[str, str] = {}
-        gcsfuse_mount: Optional[GCSFuseMount] = None
-        host_mounts: Optional[Sequence[HostMount]] = None
-        service_account: Optional[str] = None
-        # This config is made Optional for backwards compatibility. Default is False.
-        enable_pre_provisioner: Optional[bool] = None
 
     @classmethod
-    def define_flags(cls, fv: flags.FlagValues):
+    def define_flags(cls, fv):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_multi_string(
-            "gcsfuse_mount_spec",
+        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
+        flags.DEFINE_string(
+            "output_dir",
             None,
-            "GCS FUSE mount spec in the format key=value.",
+            "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
         )
-        flags.DEFINE_multi_string(
-            "host_mount_spec",
-            None,
-            "Host mount spec in the format key=value, separated by comma. You can specify multiple "
-            "host mounts by using this flag repeatedly. Example: "
-            "--host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp "
-            "--host_mount_spec=name=home,host_path=/home,mount_path=/host-home",
-            **common_kwargs,
-        )
-
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs):
-        cfg: BaseReplicatedJob.Config = super().from_flags(fv, **kwargs)
-        # pylint: disable=missing-kwoa
-        # pytype: disable=missing-parameter
-        if fv.gcsfuse_mount_spec:
-            cfg.gcsfuse_mount = GCSFuseMount(**parse_kv_flags(fv.gcsfuse_mount_spec, delimiter="="))
-        if fv.host_mount_spec:
-            cfg.host_mounts = [
-                HostMount(**parse_kv_flags(item.split(","), delimiter="="))
-                for item in fv.host_mount_spec
-            ]
-        # pytype: enable=missing-parameter
-        return cfg
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg)
@@ -254,11 +204,86 @@ class BaseReplicatedJob(FlagConfigurable):
         raise NotImplementedError(type(self))
 
 
-class TPUReplicatedJob(BaseReplicatedJob):
-    """Builds a replicated jobspec for TPU, to be used with JobSet API."""
+class SingleReplicatedJob(BaseReplicatedJob):
+    """Builds a single replicated job spec."""
 
     @config_class
     class Config(BaseReplicatedJob.Config):
+        """Configures SingleReplicatedJob.
+
+        Attributes:
+            command: Command to be executed.
+            accelerator: Accelerator configuration.
+            project: GCP Project.
+            env_vars: Optional env vars to set.
+            gcsfuse_mount: Optional configs for the GCS FUSE sidecar and volume mount.
+                See `GCSFuseMount` for details.
+            host_mounts: List of volumes from host to mount into the container.
+                See `HostMount` for details.
+            service_account: Optional service account to execute the job as.
+            enable_pre_provisioner: Whether to enable pre-provisioner.
+        """
+
+        command: Required[str] = REQUIRED
+        project: Required[str] = REQUIRED
+        accelerator: AcceleratorConfig = AcceleratorConfig()
+        env_vars: dict[str, str] = {}
+        gcsfuse_mount: Optional[GCSFuseMount] = None
+        host_mounts: Optional[Sequence[HostMount]] = None
+        service_account: Optional[str] = None
+        # This config is made Optional for backwards compatibility. Default is False.
+        enable_pre_provisioner: Optional[bool] = None
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        accelerator_flags(**common_kwargs)
+        flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
+        flags.DEFINE_multi_string(
+            "gcsfuse_mount_spec",
+            None,
+            "GCS FUSE mount spec in the format key=value.",
+            **common_kwargs,
+        )
+        flags.DEFINE_multi_string(
+            "host_mount_spec",
+            None,
+            "Host mount spec in the format key=value, separated by comma. You can specify multiple "
+            "host mounts by using this flag repeatedly. Example: "
+            "--host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp "
+            "--host_mount_spec=name=home,host_path=/home,mount_path=/host-home",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
+        )
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        cfg: SingleReplicatedJob.Config = super().from_flags(fv, **kwargs)
+        cfg.service_account = cfg.service_account or gcp_settings(
+            "k8s_service_account", default="default", fv=fv
+        )
+        cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
+        # pylint: disable=missing-kwoa
+        # pytype: disable=missing-parameter
+        if fv.gcsfuse_mount_spec:
+            cfg.gcsfuse_mount = GCSFuseMount(**parse_kv_flags(fv.gcsfuse_mount_spec, delimiter="="))
+        if fv.host_mount_spec:
+            cfg.host_mounts = [
+                HostMount(**parse_kv_flags(item.split(","), delimiter="="))
+                for item in fv.host_mount_spec
+            ]
+        # pytype: enable=missing-parameter
+        return cfg
+
+
+class TPUReplicatedJob(SingleReplicatedJob):
+    """Builds a replicated jobspec for TPU, to be used with JobSet API."""
+
+    @config_class
+    class Config(SingleReplicatedJob.Config):
         """Configures TPUReplicatedJob.
 
         Attributes:
@@ -329,6 +354,13 @@ class TPUReplicatedJob(BaseReplicatedJob):
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         cfg: TPUReplicatedJob.Config = super().from_flags(fv, **kwargs)
+        default_env = get_default_env(
+            tpu_type=infer_tpu_type(fv.instance_type),
+            num_tpu_slices=fv.num_replicas,
+            job_name=cfg.name,
+        )
+        # NOTE: we allow fv.env flags to override the defaults.
+        cfg.env_vars = {**default_env, **cfg.env_vars, **parse_kv_flags(fv.env)}
         cfg.reservation = cfg.reservation or gcp_settings("gke_reservation", required=False, fv=fv)
         cfg.reservation_project = cfg.reservation_project or gcp_settings(
             "gke_reservation_project", required=False, fv=fv
@@ -687,10 +719,10 @@ class TPUReplicatedJob(BaseReplicatedJob):
 
 
 # TODO(markblee): Generalize this to support different GPU types without different classes.
-class A3ReplicatedJob(BaseReplicatedJob):
+class A3ReplicatedJob(SingleReplicatedJob):
     """Builds a replicated job spec for an A3 GPU job, to be used with JobSet API."""
 
-    Config = BaseReplicatedJob.Config
+    Config = SingleReplicatedJob.Config
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
         if cfg.gcsfuse_mount:

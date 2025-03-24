@@ -28,10 +28,17 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common.attention import Dropout, GroupedQKVLinear, GroupedQueryAttention, QKVLinear
+from axlearn.common.attention import (
+    Dropout,
+    GroupedQKVLinear,
+    GroupedQueryAttention,
+    KVCache,
+    QKVLinear,
+)
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     CompositeAttentionBias,
+    MaskFnAttentionBias,
     SegmentIdAttentionBias,
     SlidingWindowAttentionBias,
     TensorAttentionBias,
@@ -121,7 +128,7 @@ def _prepare_layers(
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
 
     if inference:
-        ref_cfg.input_linear.set(dtype=jnp.bfloat16)
+        ref_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
     test_cfg = (
         FlashAttention.default_config()
         .set(**kwargs)
@@ -132,7 +139,7 @@ def _prepare_layers(
         )
     )
     if inference:
-        test_cfg.input_linear.set(dtype=jnp.bfloat16)
+        test_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
 
     ref_cfg.set(mask=mask)
     test_cfg.set(mask=mask)
@@ -146,6 +153,10 @@ def _prepare_layers(
     # Use the same params for both. Only attention implementation differs.
     params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
     return test_layer, ref_layer, params, hidden_dim
+
+
+def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
+    return query_position >= key_position
 
 
 class DummyModel(BaseLayer):
@@ -497,7 +508,7 @@ class TestFlashAttention(TestCase):
     @parameterized.product(
         _TEST_CONFIGS,
         query_len_multiplier=[0.5, 1, 2],
-        attn_type=["full", "causal", "sliding_window"],
+        attn_type=["full", "causal", "sliding_window", "custom"],
         use_bias=[False, True],
         use_segment_ids=[False, True],
         input_dtype=[jnp.bfloat16, jnp.float32],
@@ -542,6 +553,8 @@ class TestFlashAttention(TestCase):
             mask = CausalAttentionBias.default_config()
         elif attn_type == "sliding_window":
             mask = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
+        elif attn_type == "custom":
+            mask = MaskFnAttentionBias.default_config(mask=jax_fn_mask)
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -593,7 +606,7 @@ class TestFlashAttention(TestCase):
     @parameterized.product(
         _TEST_CONFIGS,
         query_len_multiplier=[0.5, 1, 2],
-        attn_type=["full", "causal", "sliding_window"],
+        attn_type=["full", "causal", "sliding_window", "custom"],
         use_bias=[False, True],
         use_segment_ids=[False, True],
         set_layer_bias_recursively=[False, True],
@@ -647,6 +660,8 @@ class TestFlashAttention(TestCase):
                 kwargs["mask"] = CausalAttentionBias.default_config()
             elif attn_type == "sliding_window":
                 kwargs["mask"] = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
+            elif attn_type == "custom":
+                kwargs["mask"] = MaskFnAttentionBias.default_config(mask=jax_fn_mask)
 
             ref_layer_cfg = GroupedQueryAttention.default_config().set(**kwargs)
             test_layer_cfg = FlashAttention.default_config().set(
@@ -712,7 +727,10 @@ class TestFlashAttention(TestCase):
         jax.clear_caches()
 
     @parameterized.product(
-        _TEST_CONFIGS, attn_type=["causal", "sliding_window"], use_bias=[True, False]
+        _TEST_CONFIGS,
+        attn_type=["causal", "sliding_window"],
+        use_bias=[True, False],
+        dtype=[jnp.float32, jnp.bfloat16],
     )
     def test_extend_step(
         self,
@@ -725,6 +743,7 @@ class TestFlashAttention(TestCase):
         mesh_axis_names,
         attn_type,
         use_bias,
+        dtype,
     ):
         print(
             f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
@@ -734,7 +753,6 @@ class TestFlashAttention(TestCase):
 
         # Limit generation length to 16 to save test time.
         seq_len = 16
-        dtype = jnp.bfloat16
 
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
@@ -819,9 +837,15 @@ class TestFlashAttention(TestCase):
             )
             self.assertIsNone(initial_output)
             self.assertIsNone(ref_inital_output)
-            for k in ["key", "value"]:
-                self.assertEqual(ref_initial_state["i_proj"][k].dtype, dtype)
-                self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
+            if dtype is jnp.float32:
+                # Float32 inference still uses bfloat16 kv cache.
+                for k in ["key", "value"]:
+                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                    self.assertEqual(initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+            else:
+                for k in ["key", "value"]:
+                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
+                    self.assertEqual(initial_state["kv_cache"][k].dtype, dtype)
 
             # Prepare decoding inputs.
             inputs = dict(

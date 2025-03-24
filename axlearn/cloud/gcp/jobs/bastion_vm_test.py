@@ -5,21 +5,12 @@
 
 import contextlib
 import tempfile
-from datetime import datetime
 from unittest import mock
 
 from absl import app, flags
 from absl.testing import parameterized
 
-from axlearn.cloud.common.bastion import (
-    Job,
-    JobState,
-    JobStatus,
-    _load_runtime_options,
-    new_jobspec,
-    set_runtime_options,
-)
-from axlearn.cloud.common.scheduler import JobMetadata
+from axlearn.cloud.common.bastion import _load_runtime_options, set_runtime_options
 from axlearn.cloud.gcp.jobs import bastion_vm
 from axlearn.cloud.gcp.jobs.bastion_vm import RemoteBastionJob
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
@@ -205,59 +196,6 @@ class MainTest(TestWithTemporaryCWD):
             else:
                 ctx = contextlib.nullcontext()
             with mock_set, mock_execute, ctx:
-                bastion_vm.main(["cli", "stop"], flag_values=fv)
-
-    @parameterized.parameters(
-        dict(
-            input_value="y",
-            # Returns terminated jobs for each sweep.
-            mock_sweeps=[
-                [],
-                ["test_job0", "test_job2"],
-                ["test_job1"],
-            ],
-        ),
-        dict(input_value="n", mock_sweeps=[]),
-    )
-    def test_delete_child_jobs(self, input_value, mock_sweeps):
-        fv = flags.FlagValues()
-        bastion_vm._private_flags(flag_values=fv)
-        fv.set_default("name", "test-bastion")
-        fv.set_default("delete_child_jobs", True)
-        fv.mark_as_parsed()
-
-        mock_jobs = {
-            f"job{i}": Job(
-                spec=new_jobspec(
-                    name=f"test_job{i}",
-                    command="command",
-                    metadata=JobMetadata(
-                        user_id="test_user",
-                        project_id="test_project",
-                        creation_time=datetime.now(),
-                        resources={"v4": 8},
-                    ),
-                ),
-                state=JobState(status=status),
-                command_proc=None,
-                cleanup_proc=None,
-            )
-            for i, status in enumerate([JobStatus.PENDING, JobStatus.ACTIVE, JobStatus.CANCELLING])
-        }
-        mock_utils = mock.patch.multiple(
-            bastion_vm.__name__,
-            download_job_batch=mock.Mock(return_value=(mock_jobs, set())),
-            _stop_bastion=mock.Mock(return_value=None),
-            input=mock.Mock(return_value=input_value),
-        )
-        settings_kwargs = {"permanent_bucket": "test-bucket"}
-        mock_cleaner = _mock_job(
-            bastion_vm.TPUCleaner, bundler_kwargs={}, settings_kwargs=settings_kwargs
-        )
-        mock_sleep = mock.patch(f"{bastion_vm.__name__}.time.sleep")
-
-        with mock_sleep, mock_utils, mock_cleaner as (_, _, mock_cleaner_job):
-            with mock.patch.object(mock_cleaner_job, "sweep", side_effect=mock_sweeps):
                 bastion_vm.main(["cli", "stop"], flag_values=fv)
 
     @parameterized.parameters(

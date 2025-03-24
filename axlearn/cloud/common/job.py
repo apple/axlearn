@@ -1,6 +1,46 @@
 # Copyright © 2023 Apple Inc.
 
-"""Utilities for executing on remote compute."""
+"""Utilities for executing on remote compute.
+
+On configuration:
+
+Jobs are `FlagConfigurable`s and are typically configured via command line flags.
+
+While flexible, flags are global objects and may potentially complicate the design of the configs.
+For example, it can be hard to identify where configs or flags (and their default values) are
+defined, or which configs are propagated from parent to child as opposed to being read from flags.
+
+To avoid such ambiguities, we apply a few rules of thumb when implementing a Job:
+
+1. Define flags in the same class that defines the configs.
+* This keeps the flag interface and the config interface of a module consistent and encapsulated.
+* Default to `override=True` so that other classes can define the same flag.
+    This allows other classes to minimize assumptions about what config flags have already been
+    defined.
+* Avoid defining defaults in `define_flags` so that defaults do not need to be repeated across
+    flag definitions.
+    Instead, consider whether the default can be inherited, can be local to the class, or needs to
+    be a global default that propagates to descendant configs.
+    * If a default can be inherited, simply implement `define_flags` with defaults left as None.
+        `FlagConfigurable` will handle the default propagation from parents.
+    * In the local case, prefer to assign a default to the instantiated config after `from_flags`;
+        this ensures that the default never "leaks" into child configs.
+    * If a global default is justified, use `fv.set_default` in `set_defaults`.
+        Using `set_defaults` allows for more predictable default behavior, where parent defaults
+        propagate to descendants unless a descendant itself overrides the default.
+
+2. Similarly, define configs within the Job that consumes the configs.
+* Avoid defining configs at a module unless the module itself requires the config.
+    For example, instead of defining "command" at the parent and propagating it to each child,
+    define "command" at the leaf config that executes the command.
+    This allows for better composition, because different child configs within the same parent job
+    can execute different commands.
+* Minimize the number of "pass-through" configs, i.e. configs that are directly `set` on a
+    child config.
+    If a value needs to be "passed-through", consider using flag values to propagate (using
+    `set_defaults` as discussed above), since flag values can be read by descendants that are
+    multiple layers deep without requiring each layer to forward its configs.
+"""
 
 import logging
 import time
@@ -14,6 +54,8 @@ from axlearn.cloud.common.utils import FlagConfigurable
 from axlearn.common.config import REQUIRED, Required, config_class
 
 
+# TODO(markblee): Add a `define_flag` util to enforce some of the rules in file docstring + basic
+# book keeping like reusing helpstrings between flags.
 class Job(FlagConfigurable):
     """Base Job definition.
 
@@ -32,6 +74,8 @@ class Job(FlagConfigurable):
         """Configures Job."""
 
         # TODO(markblee): Convert all comments into config class docstrings.
+        # TODO(markblee): Pare down the configs at the Job level (e.g., name, commmand, bundler).
+
         # Job name.
         name: Required[str] = REQUIRED
         # Max attempts to execute the Job.
@@ -52,7 +96,13 @@ class Job(FlagConfigurable):
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
-        """Defines absl flags to be read by `from_flags()`."""
+        """Defines absl flags to be read by `from_flags()`.
+
+        Avoid assigning default values in this method. Instead, defaults can be assigned in
+        `set_defaults`.
+
+        See also ``On configuration`` in file docstring.
+        """
         common_kwargs = dict(flag_values=fv, allow_override=True)
         # Note: don't use generate_job_name() here, as not all environments define $USER.
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)

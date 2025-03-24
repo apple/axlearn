@@ -30,15 +30,9 @@ import time
 from typing import Callable, Optional
 
 import jax
-import jax.numpy as jnp
 
-from axlearn.common.attention_bias import (
-    CausalAttentionBias,
-    CompositeAttentionBias,
-    SlidingWindowAttentionBias,
-    TensorAttentionBias,
-    sliding_window_causal_mask,
-)
+from axlearn.common.attention_bias import causal_mask
+from axlearn.common.flash_attention.test_utils import generate_attention_data
 from axlearn.common.flash_attention.utils import flash_attention_implementation
 
 _BENCHMARK_CONFIGS = {
@@ -99,52 +93,25 @@ def _benchmark(
     sliding_window_size: Optional[int] = None,
 ):
     """Benchmarks TPU FlashAttention vs reference impl."""
-    k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
-    if num_kv_heads is None:
-        num_kv_heads = num_heads
-    q_seq_len = 1 if is_decoding else seq_len
-    q = jax.random.normal(k1, (batch_size, q_seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-    k = jax.random.normal(k2, (batch_size, seq_len, num_kv_heads, per_head_dim), dtype=jnp.bfloat16)
-    v = jax.random.normal(k3, (batch_size, seq_len, num_kv_heads, per_head_dim), dtype=jnp.bfloat16)
-
-    softmax_scale = per_head_dim**-0.5
-    mask = []
-    if is_decoding:
-        target_positions = jnp.asarray([seq_len - 1])[None]
-    else:
-        target_positions = jnp.arange(seq_len)[None]
-    if causal and sliding_window_size is None:
-        mask.append(
-            CausalAttentionBias(
-                target_positions=target_positions,
-                source_positions=jnp.arange(seq_len)[None],
-            )
-        )
-    elif causal:
-        mask.append(
-            SlidingWindowAttentionBias(
-                sliding_window_causal_mask(sliding_window_size),
-                sliding_window_size=sliding_window_size,
-                target_positions=target_positions,
-                source_positions=jnp.arange(seq_len)[None],
-            )
-        )
-    if use_bias:
-        mask.append(
-            TensorAttentionBias(
-                jax.random.normal(
-                    k4, (batch_size, num_heads, q_seq_len, seq_len), dtype=jnp.bfloat16
-                )
-            )
-        )
-    bias = CompositeAttentionBias(mask)
-
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        1 if is_decoding else seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        num_kv_heads or num_heads,
+        mask_fn=causal_mask if causal and not sliding_window_size else None,
+        sliding_window_sz=sliding_window_size,
+        attention_bias_type="4d" if use_bias else None,
+        query_offset=seq_len - 1 if is_decoding else 0,
+    )
+    softmax_scale = q.shape[-1] ** 0.5
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     ref_mha_impl = flash_attention_implementation(
-        "xla", softmax_scale=softmax_scale, block_size=block_size, is_decoding=is_decoding
+        "xla", softmax_scale=softmax_scale, tpu_block_size=block_size, is_decoding=is_decoding
     )
     mha_impl = flash_attention_implementation(
-        "tpu", softmax_scale=softmax_scale, block_size=block_size, is_decoding=is_decoding
+        "tpu", softmax_scale=softmax_scale, tpu_block_size=block_size, is_decoding=is_decoding
     )
 
     ref_fwd_time = _time_call(lambda: ref_mha_impl(q, k, v, bias))
@@ -172,9 +139,9 @@ if __name__ == "__main__":
         print(f"Benchmarking attention representative of {name} model layer on {device_kind}.")
         _benchmark(
             batch_size=2,
-            seq_len=1024 * 128,
+            seq_len=1024 * 8,
             block_size=4 * 128,
             sliding_window_size=4096,
-            is_decoding=True,
+            is_decoding=False,
             **cfg,
         )

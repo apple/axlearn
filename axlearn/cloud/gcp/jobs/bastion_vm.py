@@ -46,14 +46,8 @@ Examples:
     #
     axlearn gcp bastion stop --name=shared-bastion
 
-    # Stop the bastion and any child jobs.
-    axlearn gcp bastion stop --name=shared-bastion --delete_child_jobs
-
     # Delete the bastion.
     axlearn gcp bastion delete --name=shared-bastion
-
-    # Delete the bastion and any child jobs.
-    axlearn gcp bastion delete --name=shared-bastion --delete_child_jobs
 
     # Build and push a bastion image.
     axlearn gcp bundle --bundler_type=artifactregistry \
@@ -110,7 +104,6 @@ import os
 import re
 import shlex
 import subprocess
-import tempfile
 import time
 from collections.abc import Sequence
 from typing import Optional
@@ -123,11 +116,10 @@ from axlearn.cloud.common.bastion import (
     BastionDirectory,
     bastion_job_flags,
     deserialize_jobspec,
-    download_job_batch,
     set_runtime_options,
 )
 from axlearn.cloud.common.bundler import DockerBundler, get_bundler_config
-from axlearn.cloud.common.cleaner import CompositeCleaner, UnschedulableCleaner
+from axlearn.cloud.common.cleaner import UnschedulableCleaner
 from axlearn.cloud.common.job import _with_retry
 from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
 from axlearn.cloud.common.scheduler import JobScheduler
@@ -136,7 +128,6 @@ from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import CPUJob, docker_command
-from axlearn.cloud.gcp.tpu_cleaner import TPUCleaner
 from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, common_flags
 from axlearn.cloud.gcp.vm import create_vm, delete_vm
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
@@ -150,6 +141,7 @@ FLAGS = flags.FLAGS
 _RSYNC_DIR = os.path.join(_LOG_DIR, "..", "rsync")
 
 
+# TODO(markblee): Use `define_flags` instead of redefining flags here.
 def _private_flags(flag_values: flags.FlagValues = FLAGS):
     common_flags(flag_values=flag_values)
     bastion_job_flags(flag_values=flag_values)
@@ -172,12 +164,6 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
         [],
         "Bundler spec provided as key=value. "
         "Refer to each bundler's `from_spec` method docstring for details.",
-        flag_values=flag_values,
-    )
-    flags.DEFINE_bool(
-        "delete_child_jobs",
-        False,
-        "Also delete jobs when stopping the bastion.",
         flag_values=flag_values,
     )
     flags.DEFINE_string(
@@ -422,36 +408,6 @@ def _stop_bastion(flag_values: flags.FlagValues):
         raise e  # Else re-raise.
 
 
-def _maybe_delete_child_jobs(flag_values: flags.FlagValues):
-    if not flag_values.delete_child_jobs:
-        return
-    cleaner = TPUCleaner.default_config().instantiate()
-    bastion_dir = bastion_root_dir(flag_values.name, fv=flag_values)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        jobs, _ = download_job_batch(
-            spec_dir=f"{bastion_dir}/jobs/active",
-            state_dir=f"{bastion_dir}/jobs/states",
-            user_state_dir=f"{bastion_dir}/jobs/user_states",
-            local_spec_dir=tmpdir,
-            remove_invalid_job_specs=False,
-        )
-        logging.info("Will terminate the following jobs:\n%s", "\n".join(jobs.keys()))
-        logging.info("Continue? [y/n]")
-        if input().lower() == "y":
-            jobs_to_terminate = {job.spec.name: job.spec for job in jobs.values()}
-            # Delete all TPUs with an associated bastion job.
-            while jobs_to_terminate:
-                logging.info("Issuing a sweep...")
-                for job_name in cleaner.sweep(jobs_to_terminate):
-                    logging.info("%s is terminated.", job_name)
-                    jobs_to_terminate.pop(job_name, None)
-                if jobs_to_terminate:
-                    logging.info("Not all jobs are terminated yet: %s", jobs_to_terminate)
-                    time.sleep(60)
-        else:
-            logging.info("Cancelled by user.")
-
-
 @catch_auth
 def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     action = parse_action(
@@ -496,7 +452,6 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         cfg = RemoteBastionJob.from_flags(flag_values)
         job = cfg.instantiate()
         job._delete()  # pylint: disable=protected-access
-        _maybe_delete_child_jobs(flag_values=flag_values)
     elif action == "start":
         # Start the bastion. This should run on the bastion itself.
         scheduler_cfg = JobScheduler.default_config().set(
@@ -505,12 +460,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
         bastion_cfg = Bastion.default_config().set(
             output_dir=root_dir(),
             scheduler=scheduler_cfg,
-            cleaner=CompositeCleaner.default_config().set(
-                cleaners=[
-                    TPUCleaner.default_config(),
-                    UnschedulableCleaner.default_config().set(scheduler=scheduler_cfg),
-                ]
-            ),
+            cleaner=UnschedulableCleaner.default_config().set(scheduler=scheduler_cfg),
             uploader=Uploader.default_config().set(
                 upload_fn=config_for_function(with_interval).set(upload_fn=_gcloud_storage_rsync),
             ),
@@ -526,7 +476,6 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
     # TODO(markblee): Split out 'internal' commands from user-facing ones.
     elif action == "stop":
         _stop_bastion(flag_values=flag_values)
-        _maybe_delete_child_jobs(flag_values=flag_values)
     elif action == "submit":
         spec = deserialize_jobspec(flag_values.spec)
         # Construct a job for bastion to execute. This typically runs locally.
