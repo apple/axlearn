@@ -4,7 +4,7 @@
 
    Example:
 
-   # Enable GoodPut when launching an AXLearn training job
+   # Enable Goodput when launching an AXLearn training job
    axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
@@ -12,7 +12,11 @@
         --recorder_type=axlearn.cloud.gcp.measurement:goodput \
         --recorder_spec=name=my-run-with-goodput \
         --recorder_spec=upload_dir=my-output-directory/summaries \
-        --recorder_spec=upload_interval=30
+        --recorder_spec=upload_interval=30 \
+        --recorder_spec=include_step_deviation=True \
+        --recorder_spec=step_deviation_interval_seconds=30 \
+        --recorder_spec=enable_gcp_goodput_metrics=True \
+        --recorder_spec=enable_gcp_step_deviation_metrics=True
 
 """
 
@@ -37,10 +41,22 @@ class GoodputRecorder(measurement.Recorder):
         Attributes:
             upload_dir: Directory to store metrics for the monitor.
             upload_interval: Time interval (seconds) for monitoring uploads.
+            include_step_deviation: Whether to include step deviation
+              metrics in the upload.
+            step_deviation_interval_seconds: Time interval (seconds) for step
+              deviation metrics uploads.
+            enable_gcp_goodput_metrics: Whether to push Goodput metrics to
+              Google Cloud Monitoring.
+            enable_gcp_step_deviation_metrics: Whether to push step deviation
+              metrics to Google Cloud Monitoring.
         """
 
         upload_dir: Required[str] = REQUIRED
         upload_interval: Required[int] = REQUIRED
+        include_step_deviation: bool = True  # Default to True
+        step_deviation_interval_seconds: int = 30  # Default to 30 seconds
+        enable_gcp_goodput_metrics: bool = True  # Default to True
+        enable_gcp_step_deviation_metrics: bool = True  # Default to True
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues) -> "GoodputRecorder":
@@ -52,9 +68,28 @@ class GoodputRecorder(measurement.Recorder):
          - upload_dir: The directory to write Tensorboard data to.
          - upload_interval: The time interval in seconds at which to query and upload data
            to Tensorboard.
+         - include_step_deviation: Whether to include step deviation
+            metrics in the upload.
+        - step_deviation_interval_seconds: Time interval (seconds) for step
+            deviation metrics uploads.
+        - enable_gcp_goodput_metrics: Whether to push Goodput metrics to Google Cloud
+            Monitoring.
+        - enable_gcp_step_deviation_metrics: Whether to push step deviation metrics to Google
+            Cloud Monitoring.
         """
         cfg: measurement.Recorder.Config = cls.default_config()
-        cfg = maybe_set_config(cfg, **parse_kv_flags(fv.recorder_spec, delimiter="="))
+        kwargs = parse_kv_flags(fv.recorder_spec, delimiter="=")
+
+        boolean_flags = [
+            "include_step_deviation",
+            "enable_gcp_goodput_metrics",
+            "enable_gcp_step_deviation_metrics",
+        ]
+        for flag in boolean_flags:
+            if flag in kwargs:
+                kwargs[flag] = kwargs[flag].lower() == "true"
+
+        cfg = maybe_set_config(cfg, **kwargs)
         return cfg.instantiate()
 
     def __init__(self, cfg):
@@ -109,18 +144,35 @@ class GoodputRecorder(measurement.Recorder):
         If there are internal GCP errors from querying and uploading data, these will be
         logged without affecting the workload. GoodputMonitor logs will provide further
         information if data is not being uploaded correctly.
-        """
-        if self._monitor is None:
-            cfg: GoodputRecorder.Config = self.config
-            self._monitor = goodput_monitoring.GoodputMonitor(
-                job_name=cfg.name,
-                logger_name=f"goodput_logger_{cfg.name}",
-                tensorboard_dir=cfg.upload_dir,
-                upload_interval=int(cfg.upload_interval),
-                monitoring_enabled=(jax.process_index() == 0),
-                include_badput_breakdown=True,
-            )
 
+        Default behavior is to push metrics to Google Cloud Monitoring.
+        This behavior can be overridden by setting the flags:
+            --recorder_spec=enable_gcp_goodput_metrics=False
+            --recorder_spec=enable_gcp_step_deviation_metrics=False
+        """
+        cfg: GoodputRecorder.Config = self.config
         if jax.process_index() == 0:
+            if self._monitor is None:
+                gcp_options = goodput_monitoring.GCPOptions(
+                    enable_gcp_goodput_metrics=cfg.enable_gcp_goodput_metrics,
+                    enable_gcp_step_deviation_metrics=cfg.enable_gcp_step_deviation_metrics,
+                )
+                self._monitor = goodput_monitoring.GoodputMonitor(
+                    job_name=cfg.name,
+                    logger_name=f"goodput_logger_{cfg.name}",
+                    tensorboard_dir=cfg.upload_dir,
+                    upload_interval=int(cfg.upload_interval),
+                    monitoring_enabled=(jax.process_index() == 0),
+                    include_badput_breakdown=True,
+                    include_step_deviation=cfg.include_step_deviation,
+                    step_deviation_interval_seconds=int(cfg.step_deviation_interval_seconds),
+                    gcp_options=gcp_options,
+                )
+
             self._monitor.start_goodput_uploader(*args, **kwargs)
-            logging.info("Started Goodput upload to Tensorboard in the background!")
+            logging.info("Started Goodput upload to Tensorboard & GCM in the background!")
+            if cfg.include_step_deviation:
+                self._monitor.start_step_deviation_uploader(*args, **kwargs)
+                logging.info(
+                    "Started Step Deviation upload to Tensorboard & GCM in the background!"
+                )

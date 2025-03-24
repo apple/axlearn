@@ -17,7 +17,18 @@ class GoodputRecorderTest(parameterized.TestCase):
     """Tests GoodputRecorder."""
 
     @parameterized.parameters(
-        (None,), (["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],)
+        (None,),
+        (
+            [
+                "name=test-name",
+                "upload_dir=/test/path/to/upload",
+                "upload_interval=15",
+                "include_step_deviation=True",
+                "step_deviation_interval_seconds=30",
+                "enable_gcp_goodput_metrics=True",
+                "enable_gcp_step_deviation_metrics=True",
+            ],
+        ),
     )
     def test_from_flags(self, spec):
         fv = flags.FlagValues()
@@ -41,7 +52,15 @@ class GoodputRecorderTest(parameterized.TestCase):
         measurement.define_flags(flag_values=fv)
         fv.set_default(
             "recorder_spec",
-            ["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],
+            [
+                "name=test-name",
+                "upload_dir=/test/path/to/upload",
+                "upload_interval=15",
+                "include_step_deviation=True",
+                "step_deviation_interval_seconds=30",
+                "enable_gcp_goodput_metrics=True",
+                "enable_gcp_step_deviation_metrics=True",
+            ],
         )
         fv.mark_as_parsed()
 
@@ -55,7 +74,15 @@ class GoodputRecorderTest(parameterized.TestCase):
         measurement.define_flags(flag_values=fv)
         fv.set_default(
             "recorder_spec",
-            ["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],
+            [
+                "name=test-name",
+                "upload_dir=/test/path/to/upload",
+                "upload_interval=15",
+                "include_step_deviation=True",
+                "step_deviation_interval_seconds=30",
+                "enable_gcp_goodput_metrics=True",
+                "enable_gcp_step_deviation_metrics=True",
+            ],
         )
         fv.mark_as_parsed()
 
@@ -96,7 +123,11 @@ class GoodputRecorderTest(parameterized.TestCase):
         measurement.define_flags(flag_values=fv)
         fv.set_default(
             "recorder_spec",
-            ["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],
+            [
+                "name=test-name",
+                "upload_dir=/test/path/to/upload",
+                "upload_interval=15",
+            ],
         )
         fv.mark_as_parsed()
 
@@ -117,7 +148,11 @@ class GoodputRecorderTest(parameterized.TestCase):
         measurement.define_flags(flag_values=fv)
         fv.set_default(
             "recorder_spec",
-            ["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],
+            [
+                "name=test-name",
+                "upload_dir=/test/path/to/upload",
+                "upload_interval=15",
+            ],
         )
         fv.mark_as_parsed()
 
