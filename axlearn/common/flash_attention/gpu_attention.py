@@ -437,7 +437,7 @@ def _mha_forward(*args: Any):
     return _flash_attention_impl(*args, output_activations=True)
 
 
-# TODO(lezhi): Add support arbitrary per-head-dim in backward pass
+# TODO(lezhi): Add support arbitrary per-head-dim in backward pass.
 def _mha_backward_kernel_dkdv(
     # Inputs.
     q_ref,
