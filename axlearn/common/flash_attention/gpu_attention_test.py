@@ -113,7 +113,7 @@ def common_attn_test_params(func):
 
 
 @pytest.mark.parametrize(
-    "batch_size,seq_len,num_heads,per_head_dim",
+    "batch_size,num_heads,query_len,per_head_dim",
     [
         (1, 1, 384, 64),
         (2, 2, 256, 64),
@@ -124,7 +124,7 @@ def common_attn_test_params(func):
         (2, 4, 384, 128),
     ],
 )
-@pytest.mark.parametrize("kv_seq_len", [None, 512])
+@pytest.mark.parametrize("kv_len", [None, 512])
 @pytest.mark.parametrize("dropout_rate", [0, 0.1])
 @pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
 @pytest.mark.parametrize("with_segment_ids", [True, False])
