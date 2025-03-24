@@ -941,8 +941,6 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         head_dim = query.shape[-1]
         if not self._check_block_size(query=query, key=key, block_size=block_size):
             return False
-        if pl.next_power_of_2(head_dim) != head_dim:
-            return self._log_unsupported(f"{head_dim=} is not a power of 2.")
         # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
         # it by reducing the block size along sequence dim. Support it when needed.
         if head_dim > 128:
