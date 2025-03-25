@@ -101,17 +101,17 @@ class TestMinibatchSharding(test_utils.TestCase):
 
         return loss_fn
 
+    @parameterized.named_parameters(
+        ("one_step", 1),  # no accumulation
+        ("two_steps", 2),
+        ("four_steps", 4),
+    )
     @pytest.mark.skipif(
         jax.device_count() != 4 or jax.process_count() != 1,
         reason=(
             "Incorrect device & process count for mesh.\n"
             "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
         ),
-    )
-    @parameterized.named_parameters(
-        ("one_step", 1),  # no accumulation
-        ("two_steps", 2),
-        ("four_steps", 4),
     )
     def test_minibatch_partitioner_default(self, steps):
         """Tests grad accumulation with minibatch steps and default minibatch partitioner."""
