@@ -77,16 +77,18 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --tensorizer-options='--enable-hoist-
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 
-if [ "$PROFILE_MODE" = "capture_postrun" ] || [ "$PROFILE_MODE" = "tracerun" ]; then
+if [ "$PROFILE_MODE" = "capture_postrun" ] || [ "$PROFILE_MODE" = "tracerun" ] || [ "$FOR_PROFILE" = "1" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-compiler-debug-mode=penguin"
 	export XLA_IR_DEBUG=1
 	export XLA_HLO_DEBUG=1
 	if [ "$PROFILE_MODE" = "capture_postrun" ]; then
 		# runs a step and captures profile immediately after
 		export AXLEARN_MAX_STEP=1
-	else
+	elif [ "$PROFILE_MODE" = "tracerun" ]; then
 		export NEURON_RT_INSPECT_OUTPUT_DIR="${RT_PROFILE_DUMP_PATH}"
 		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
+	else
+		echo ""
 	fi
 fi
 
@@ -162,7 +164,7 @@ profile() {
 	log_dir=logs
 	mkdir -p $profile_dir $upload_dir
 
-	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | tail -n1)
+	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | head -n1)
 
 	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
 	export NEURON_RT_PROFILE_BUF_DMA_MB=256
