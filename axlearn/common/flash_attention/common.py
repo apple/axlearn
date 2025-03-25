@@ -167,7 +167,7 @@ class BaseFlashAttention(Configurable):
         """
         del bias
         if key.shape != value.shape:
-            raise ValueError(f"Expects {key.shape=} to be equal to {key.shape=}")
+            raise ValueError(f"Expects {key.shape=} to be equal to {value.shape=}")
         if query.shape[0] != key.shape[0]:
             raise ValueError(
                 f"Expects query batch size {query.shape[0]} to be equal to key batch size "
