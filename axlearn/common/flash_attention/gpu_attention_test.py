@@ -112,7 +112,25 @@ def common_attn_test_params(func):
     return func
 
 
-@common_attn_test_params
+@pytest.mark.parametrize(
+    "batch_size,num_heads,query_len,per_head_dim",
+    [
+        (1, 1, 384, 64),
+        (2, 2, 256, 64),
+        (2, 2, 256, 72),
+        (1, 1, 512, 128),
+        (2, 2, 384, 128),
+        (1, 8, 384, 128),
+        (2, 4, 384, 128),
+    ],
+)
+@pytest.mark.parametrize("kv_len", [None, 512])
+@pytest.mark.parametrize("dropout_rate", [0, 0.1])
+@pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"])
+@pytest.mark.parametrize("with_segment_ids", [True, False])
+@pytest.mark.parametrize("block_size", [128])  # Triton broken for block size !=128.
+@pytest.mark.parametrize("mask_fn", [causal_mask, None])
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32])
 def test_triton_fwd_only_against_ref(
     batch_size: int,
     query_len: int,
