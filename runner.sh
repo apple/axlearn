@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
-set -e
+set +e
+# Reload Driver 
+sudo rmmod neuron; sudo modprobe neuron
+
 # Neuron env vars for distributed training based on SLURM
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 if [ -z "$SLURM_JOB_NODELIST" ]; then
@@ -224,3 +227,4 @@ else
 		profile $SLURM_JOB_ID $SLURM_JOB_NAME $S3_PROFILE_BASE_PATH
 	fi
 fi
+./get_memory_split.sh
