@@ -351,7 +351,7 @@ expected_jobsubmission_json = """
               "-c"
             ],
             "args": [
-              "python -m fake --command --flink_master_address=1.2.3.4 --flink_parallelism=8 2>&1 | tee /output/beam_pipline_log"
+              "python -m fake --command --flink_master=1.2.3.4 --parallelism=8 --artifacts_dir=fake-output-dir/artifacts_dir 2>&1 | tee /output/beam_pipline_log"
             ]
           }
         ],
