@@ -4,7 +4,6 @@
 # pylint: disable=protected-access
 
 import contextlib
-import dataclasses
 import json
 from datetime import datetime
 from types import SimpleNamespace
@@ -19,6 +18,7 @@ from axlearn.cloud.common.bastion import JobMetadata, JobSpec, JobState, JobStat
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import Table
 from axlearn.cloud.gcp.jobs import launch_utils
+from axlearn.cloud.gcp.jobs.gke_runner import JobType
 from axlearn.cloud.gcp.jobs.launch_utils import (
     _parse_resource_flags_from_command,
     jobs_table,
@@ -28,9 +28,7 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
     user_usage_table,
     validate_resource_flags,
     with_k8s_jobset_state,
-    with_qrm_tpu_state,
 )
-from axlearn.cloud.gcp.tpu import TpuInfo
 from axlearn.cloud.gcp.utils import GCPAPI
 
 
@@ -59,57 +57,63 @@ class TestUtils(parameterized.TestCase):
         )
 
     @parameterized.parameters(
-        # Matches any "start" command.
-        dict(
-            matcher=match_by_regex(match_regex=dict(start=".*"), gcp_api=GCPAPI.QRM.value),
-            cases=[
-                dict(action="start", instance_type="", gcp_api=GCPAPI.QRM.value, expected=True),
-                dict(
-                    action="start",
-                    instance_type="test type",
-                    gcp_api=GCPAPI.QRM.value,
-                    expected=True,
-                ),
-                # Missing matcher for list.
-                dict(action="list", instance_type="", gcp_api=GCPAPI.QRM.value, expected=False),
-                # Does not match GKE.
-                dict(action="start", instance_type="", gcp_api=GCPAPI.GKE.value, expected=False),
-                # Matches both upper/lowercase.
-                dict(
-                    action="start",
-                    instance_type="v4-8",
-                    gcp_api=GCPAPI.QRM.value.lower(),
-                    expected=True,
-                ),
-            ],
-        ),
         # Matches TPU types.
         dict(
             matcher=match_by_regex(
                 match_regex=dict(start=r"v(\d)+.*-(\d)+", list="tpu"),
                 gcp_api=GCPAPI.GKE.value,
+                job_type=JobType.DEFAULT.value,
             ),
             cases=[
-                dict(action="start", instance_type="v4-8", gcp_api=GCPAPI.GKE.value, expected=True),
+                dict(
+                    action="start",
+                    instance_type="v4-8",
+                    gcp_api=GCPAPI.GKE.value,
+                    job_type=JobType.DEFAULT.value,
+                    expected=True,
+                ),
                 dict(
                     action="start",
                     instance_type="v5litepod-16",
                     gcp_api=GCPAPI.GKE.value,
+                    job_type=JobType.DEFAULT.value,
                     expected=True,
                 ),
-                dict(action="start", instance_type="tpu", gcp_api=GCPAPI.GKE.value, expected=False),
-                dict(action="list", instance_type="tpu", gcp_api=GCPAPI.GKE.value, expected=True),
-                # Does not match QRM.
                 dict(
-                    action="start", instance_type="v4-8", gcp_api=GCPAPI.QRM.value, expected=False
+                    action="start",
+                    instance_type="tpu",
+                    gcp_api=GCPAPI.GKE.value,
+                    job_type=JobType.DEFAULT.value,
+                    expected=False,
+                ),
+                dict(
+                    action="list",
+                    instance_type="tpu",
+                    gcp_api=GCPAPI.GKE.value,
+                    job_type=JobType.DEFAULT.value,
+                    expected=True,
                 ),
                 # Matches both upper/lowercase.
                 dict(
                     action="start",
                     instance_type="v4-8",
                     gcp_api=GCPAPI.GKE.value.lower(),
+                    job_type=JobType.DEFAULT.value,
                     expected=True,
                 ),
+            ],
+        ),
+        # Match Flink
+        dict(
+            matcher=match_by_regex(match_regex={}, gcp_api="", job_type=JobType.FLINK.value),
+            cases=[
+                dict(
+                    action="start",
+                    instance_type="v4-8",
+                    gcp_api=GCPAPI.GKE.value.lower(),
+                    job_type=JobType.FLINK.value,
+                    expected=True,
+                )
             ],
         ),
     )
@@ -121,6 +125,7 @@ class TestUtils(parameterized.TestCase):
                     action=case["action"],
                     instance_type=case["instance_type"],
                     gcp_api=case["gcp_api"],
+                    job_type=case["job_type"],
                 ),
             )
 
@@ -286,53 +291,6 @@ class TestListUtils(parameterized.TestCase):
             project_usage_table(self._mock_jobs),
         )
 
-    def test_with_qrm_tpu_state(self):
-        mock_states = {"job_000": "ACTIVE", "job_001": "DELETING", "job_100": ""}
-        mock_qrm_tpus = [
-            TpuInfo(name=job_name, accelerator_type="", state=state, metadata={})
-            for job_name, state in mock_states.items()
-        ]
-        with mock.patch.multiple(
-            launch_utils.__name__,
-            tpu_resource=mock.DEFAULT,
-            get_credentials=mock.DEFAULT,
-            list_tpu_info=mock.Mock(return_value=mock_qrm_tpus),
-        ):
-            table = with_qrm_tpu_state(jobs_table)(self._mock_jobs)
-            expected = [
-                [{mock_states.get(job_name, "PENDING") or "UNKNOWN"}]
-                for job_name in self._mock_jobs
-            ]
-            self.assertEqual(expected, table.get_col("QRM_STATE"))
-
-    @parameterized.parameters(
-        "--num_slices=2",
-        "--num_slices 2",
-        "--num_replicas 2",
-    )
-    def test_with_qrm_tpu_state_replicas(self, replica_flag):
-        # Test a job with multislice.
-        job = self._mock_jobs["job_000"]
-        mock_jobs = {
-            "job_000": dataclasses.replace(
-                job,
-                spec=dataclasses.replace(job.spec, command=f"{job.spec.command} {replica_flag}"),
-            )
-        }
-        mock_states = {"job_000-0": "ACTIVE", "job_000-1": "PENDING"}
-        mock_qrm_tpus = [
-            TpuInfo(name=job_name, accelerator_type="", state=state, metadata={})
-            for job_name, state in mock_states.items()
-        ]
-        with mock.patch.multiple(
-            launch_utils.__name__,
-            tpu_resource=mock.DEFAULT,
-            get_credentials=mock.DEFAULT,
-            list_tpu_info=mock.Mock(return_value=mock_qrm_tpus),
-        ):
-            table = with_qrm_tpu_state(jobs_table)(mock_jobs)
-            self.assertEqual([[{"ACTIVE", "PENDING"}]], table.get_col("QRM_STATE"))
-
     def test_with_k8s_jobset_state(self):
         mock_k8s_jobsets = {
             "job_000": [
@@ -343,7 +301,9 @@ class TestListUtils(parameterized.TestCase):
             "job_100": [SimpleNamespace()],
         }
         with mock.patch(f"{launch_utils.__name__}.list_k8s_jobsets", return_value=mock_k8s_jobsets):
-            table = with_k8s_jobset_state(jobs_table, namespace="default")(self._mock_jobs)
+            table = with_k8s_jobset_state(jobs_table, namespace=JobType.DEFAULT.value)(
+                self._mock_jobs
+            )
             expected = {
                 "job_000": {"active": 1, "ready": 2, "failed": 0, "succeeded": 0},
                 "job_001": {"active": 0, "ready": 0, "failed": 1, "succeeded": 0},

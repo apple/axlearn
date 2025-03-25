@@ -345,6 +345,108 @@ class TestToolUseExecution(parameterized.TestCase):
             self.assertEqual(metrics["func_intent_precision"], 0)
 
     @parameterized.parameters(
+        dict(
+            pred_tool_calls=None,
+            target_tool_calls=[],
+            expected_number_of_func_call_intents_pred=0,
+            expected_number_of_func_call_intents_ground_truth=0,
+            expected_func_intent_recall=0.0,
+            expected_func_intent_precision=0.0,
+        ),
+        dict(
+            pred_tool_calls=[],
+            target_tool_calls=[
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {}},
+                }
+            ],
+            expected_number_of_func_call_intents_pred=0,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_func_intent_recall=0.0,
+            expected_func_intent_precision=0.0,
+        ),
+        dict(
+            pred_tool_calls=[
+                {"id": "call_0", "type": "function", "function": {"name": "get", "arguments": {}}}
+            ],
+            target_tool_calls=[],
+            expected_number_of_func_call_intents_pred=1,
+            expected_number_of_func_call_intents_ground_truth=0,
+            expected_func_intent_recall=0.0,
+            expected_func_intent_precision=0.0,
+        ),
+        dict(
+            pred_tool_calls=[
+                {"id": "call_0", "type": "function", "function": {"name": "get", "arguments": {}}}
+            ],
+            target_tool_calls=[
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": {}},
+                }
+            ],
+            expected_number_of_func_call_intents_pred=1,
+            expected_number_of_func_call_intents_ground_truth=1,
+            expected_func_intent_recall=1.0,
+            expected_func_intent_precision=1.0,
+        ),
+    )
+    def test_intents(
+        self,
+        pred_tool_calls,
+        target_tool_calls,
+        expected_number_of_func_call_intents_pred,
+        expected_number_of_func_call_intents_ground_truth,
+        expected_func_intent_recall,
+        expected_func_intent_precision,
+    ):
+        pred_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": pred_tool_calls,
+        }
+        target_message = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": target_tool_calls,
+        }
+        responses = [
+            {
+                "response": json.dumps({"choices": [{"message": pred_message}]}),
+                "target_message": target_message,
+            }
+        ]
+        mock_target_message = Mock(**target_message)
+        mock_target_message.model_dump.return_value = target_message
+        mock_pred_message = Mock(**pred_message)
+        mock_pred_message.model_dump.return_value = pred_message
+        self.generator.config.client.klass.parse_generation.return_value = [mock_pred_message]
+
+        with patch(
+            "axlearn.open_api.openai.OpenAIClient.format_message", return_value=mock_target_message
+        ):
+            metrics = metric_fn(
+                responses=responses,
+                generators={
+                    EvalGeneratorType.RESPONSE: self.generator,
+                    EvalGeneratorType.GRADER: self.generator,
+                },
+            )
+            self.assertEqual(
+                metrics["number_of_func_call_intents_ground_truth"],
+                expected_number_of_func_call_intents_ground_truth,
+            )
+            self.assertEqual(
+                metrics["number_of_func_call_intents_pred"],
+                expected_number_of_func_call_intents_pred,
+            )
+            self.assertEqual(metrics["func_intent_recall"], expected_func_intent_recall)
+            self.assertEqual(metrics["func_intent_precision"], expected_func_intent_precision)
+
+    @parameterized.parameters(
         # Simple match.
         dict(
             pred_target_pair=[

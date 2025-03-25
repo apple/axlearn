@@ -11,8 +11,12 @@ import jax.numpy as jnp
 # Import needed to enable JAX cache on Neuron.
 import jax_neuronx  # pylint: disable=unused-import
 import neuronxcc.nki.language as nl
+from absl import logging
 from jax import custom_vjp
 from neuronxcc.nki.kernels.attention import flash_attn_bwd, flash_fwd
+
+from axlearn.common.attention_bias import BaseAttentionBias, CausalAttentionBias, split
+from axlearn.common.flash_attention.common import BaseFlashAttention, repeat_kv_heads
 
 # pytype: enable=import-error
 
@@ -214,3 +218,48 @@ def _mha_backward(
 
 
 flash_attention.defvjp(_mha_forward, _mha_backward)
+
+
+class NeuronFlashAttention(BaseFlashAttention):
+    """Wraps the Neuron attention kernel."""
+
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        # TODO(hanzhi-zhou): neuron may error out for unsupported sequence length and head size.
+        # Should we add checks for them and fallback to XLA?
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+            return False
+        if self.cfg.dropout_rate != 0.0:
+            return self._log_unsupported("dropout is not supported.")
+        logging.info("Using %s.", self.name())
+        return True
+
+    @partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
+        del prng_key
+
+        key = repeat_kv_heads(query.shape[2], key)
+        value = repeat_kv_heads(query.shape[2], value)
+
+        # other_biases includes SegmentIdAttentionBias among other biases.
+        causal, other_biases = split(bias, CausalAttentionBias)
+
+        return flash_attention(
+            query,
+            key,
+            value,
+            bias=other_biases.value(),
+            causal=causal.has_value(),
+            softmax_scale=self.cfg.softmax_scale,
+            dropout_rate=self.cfg.dropout_rate,
+        )

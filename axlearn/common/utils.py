@@ -1375,7 +1375,8 @@ def prune_tree(
         The pruned copy of the input tree.
     """
     if isinstance(in_tree, dict):
-        out_tree = {}
+        # Use type() so that if in_tree is a VDict, out_tree is also a VDict.
+        out_tree = type(in_tree)()
         for k, v in in_tree.items():
             path = _concat(prefix=prefix, suffix=k, separator=separator)
             v = prune_tree(v, should_prune, prefix=path, separator=separator)
@@ -1383,6 +1384,63 @@ def prune_tree(
                 out_tree[k] = v
         in_tree = out_tree
     return in_tree
+
+
+def non_empty_leaf_merge_fn(primary: Any, secondary: Any):
+    """This function chooses the non-empty leaf. If both leaves are non-empty, an error
+    will be raised.
+    """
+    is_primary_empty = False
+    is_secondary_empty = False
+    try:
+        is_primary_empty = len(primary) == 0
+        is_secondary_empty = len(secondary) == 0
+    except TypeError:
+        # A TypeError will be raised if primary/secondary don't have length,
+        # e.g. if they are scalars.
+        pass
+    if primary is None or is_primary_empty:
+        return secondary
+    if secondary is None or is_secondary_empty:
+        return primary
+    raise ValueError(
+        f"Encountered incompatible subtree leaves: {primary=}, {secondary=}. Specify "
+        "a custom override function to resolve incompatible subtree merges."
+    )
+
+
+def tree_merge(
+    primary: Nested[Any],
+    *,
+    secondary: Nested[Any],
+    leaf_merge_fn: Callable[[Any, Any], Any],
+) -> Nested[Any]:
+    """Merge `secondary` into `primary`. The result contains deep copies of subtrees from both.
+
+    Two trees are mergable if there does not exists a path in `secondary` that is a subpath of any
+    path in `primary`. If there are identical path with different leaves, `leaf_merge_fn` is used to
+    determine which leaf is kept in the resulting tree.
+    """
+    if isinstance(primary, dict) ^ isinstance(secondary, dict):
+        raise ValueError(f"Trying to merge incompatible subtrees: {primary=}, {secondary=}")
+    # Use the override function if primary or secondary is a leaf.
+    if not (isinstance(primary, dict) or isinstance(secondary, dict)):
+        return copy.deepcopy(leaf_merge_fn(primary, secondary))
+    # pylint: disable-next=unidiomatic-typecheck
+    if type(primary) != type(secondary):
+        raise ValueError(
+            f"Incompatible subtree types: primary={type(primary)}, secondary={type(secondary)}"
+        )
+    # Use type() so that if primary is a VDict, out_tree is also a VDict.
+    out_tree = type(primary)(primary)
+    for k in secondary:
+        if k in primary:
+            out_tree[k] = tree_merge(
+                primary[k], secondary=secondary[k], leaf_merge_fn=leaf_merge_fn
+            )
+        else:
+            out_tree[k] = copy.deepcopy(secondary[k])
+    return out_tree
 
 
 @dataclasses.dataclass

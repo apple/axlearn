@@ -495,7 +495,6 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         qkv_proj_cfg.value_dim = cfg.value_dim
         qkv_proj_cfg.num_heads = cfg.num_heads
         qkv_proj_cfg.per_head_dim = cfg.per_head_dim
-        qkv_proj_cfg.cache_dtype = cfg.cache_dtype
         self._add_child("layer", qkv_proj_cfg)
         self._add_child(
             "adapter",

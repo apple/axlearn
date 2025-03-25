@@ -4,6 +4,7 @@
 
 * Changes
   * Upgrade Jax from 0.4.37 to 0.4.38
+  * Removes all QRM (queued resource manager) codepaths from `axlearn.cloud.gcp`.
 
 ## 0.1.5
 

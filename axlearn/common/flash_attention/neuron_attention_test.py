@@ -1,12 +1,16 @@
 # Copyright © 2024 Amazon Inc.
 """Tests for Flash attention on Neuron. Tested on trn1 & trn2."""
 
+from typing import Literal
+
 import chex
 import jax
 import jax.numpy as jnp
 import pytest
 
-from axlearn.common.flash_attention.utils import mha_reference
+from axlearn.common.attention_bias import causal_mask
+from axlearn.common.flash_attention.common import ReferenceMHA
+from axlearn.common.flash_attention.test_utils import generate_attention_data
 
 if jax.default_backend() != "neuron":
     pytestmark = pytest.skip(
@@ -35,41 +39,32 @@ def test_fwd_against_ref(
     per_head_dim: int,
     causal: bool,
     input_dtype: jnp.dtype,
-    attention_bias_type: str,
+    attention_bias_type: Literal[None, "2d"],
 ):
     # On demand import only if test is needed.
     # pylint: disable=import-outside-toplevel
-    from axlearn.common.flash_attention.neuron_attention import flash_attention
+    from axlearn.common.flash_attention.neuron_attention import NeuronFlashAttention
 
-    softmax_scale = per_head_dim**-0.5
-    k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
-
-    if attention_bias_type == "2d":
-        bias = jax.random.normal(k4, (1, 1, seq_len, seq_len), dtype=input_dtype)
-    else:
-        bias = None
-
-    o = flash_attention(
-        q,
-        k,
-        v,
-        bias,
-        causal=causal,
-        softmax_scale=softmax_scale,
-        dropout_rate=0.0,
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mask_fn=causal_mask if causal else None,
+        attention_bias_type=attention_bias_type,
+        dtype=input_dtype,
     )
-    o_ref = mha_reference(
-        q,
-        k,
-        v,
-        bias,
-        causal=causal,
-        softmax_scale=softmax_scale,
-        dropout_rate=0.0,
+
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
     )
+    # Compare outputs.
+    test_fn = NeuronFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+
+    o = test_fn(q, k, v, bias)
+    o_ref = ref_fn(q, k, v, bias)
     if input_dtype == jnp.float16:
         chex.assert_trees_all_close(o, o_ref, atol=0.07)
     elif input_dtype == jnp.float32:
@@ -97,45 +92,30 @@ def test_bwd_against_ref(
     per_head_dim: int,
     causal: bool,
     input_dtype: jnp.dtype,
-    attention_bias_type: str,
+    attention_bias_type: Literal[None, "2d"],
 ):
     # On demand import only if test is needed.
     # pylint: disable=import-outside-toplevel
-    from axlearn.common.flash_attention.neuron_attention import flash_attention
+    from axlearn.common.flash_attention.neuron_attention import NeuronFlashAttention
 
-    softmax_scale = per_head_dim**-0.5
-    k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
-    v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=input_dtype)
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mask_fn=causal_mask if causal else None,
+        attention_bias_type=attention_bias_type,
+        dtype=input_dtype,
+    )
 
-    if attention_bias_type == "2d":
-        bias = jax.random.normal(k4, (1, 1, seq_len, seq_len), dtype=input_dtype)
-    else:
-        bias = None
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
+    )
+    # Compare outputs.
+    test_fn = NeuronFlashAttention.default_config().set(**cfg).instantiate()
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    def fn(q, k, v, bias):
-        return flash_attention(
-            q,
-            k,
-            v,
-            bias,
-            causal=causal,
-            softmax_scale=softmax_scale,
-            dropout_rate=0.0,
-        ).sum()
-
-    def ref_fn(q, k, v, bias):
-        return mha_reference(
-            q,
-            k,
-            v,
-            bias,
-            causal=causal,
-            softmax_scale=softmax_scale,
-            dropout_rate=0.0,
-        ).sum()
-
-    jax_grads = jax.grad(fn, argnums=(0, 1, 2))(q, k, v, bias)
-    jax_ref_grads = jax.grad(ref_fn, argnums=(0, 1, 2))(q, k, v, bias)
+    jax_grads = jax.grad(lambda *args: test_fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
+    jax_ref_grads = jax.grad(lambda *args: ref_fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.07)
