@@ -162,7 +162,7 @@ class GoodputRecorder(measurement.Recorder):
                     logger_name=f"goodput_logger_{cfg.name}",
                     tensorboard_dir=cfg.upload_dir,
                     upload_interval=int(cfg.upload_interval),
-                    monitoring_enabled=(jax.process_index() == 0),
+                    monitoring_enabled=True,
                     include_badput_breakdown=True,
                     include_step_deviation=cfg.include_step_deviation,
                     step_deviation_interval_seconds=int(cfg.step_deviation_interval_seconds),

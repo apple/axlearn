@@ -48,16 +48,16 @@ project, then do the following:
 
 ### How to Monitor Goodput and Badput
 
-To enable Goodput recording and monitoring on AXLearn, follow the example below.
+To enable Goodput recording and monitoring on AXLearn, follow the example below. Ensure the name is unique and easily identifiable by users.
 
 ```bash
    axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
-        --name=<jobset-name> \
+        --name=<unique-readable-name> \
         -- python3 -m ...training-config... \
         --recorder_type=axlearn.cloud.gcp.measurement:goodput \
-        --recorder_spec=name=<jobset-name> \
+        --recorder_spec=name=<unique-readable-name> \
         --recorder_spec=upload_dir=<my-output-directory>/summaries \
         --recorder_spec=upload_interval=30 \
 ```
@@ -70,9 +70,10 @@ AXLearn enables step time deviation monitoring by default. You can configure the
    axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
-        -- python3 -m my_training_job \
+        --name=<unique-readable-name> \
+        -- python3 -m ...training-config... \
         --recorder_type=axlearn.cloud.gcp.measurement:goodput \
-        --recorder_spec=name=my-run-with-goodput \
+        --recorder_spec=name=<unique-readable-name> \
         --recorder_spec=upload_dir=my-output-directory/summaries \
         --recorder_spec=upload_interval=30 \
         --recorder_spec=include_step_deviation=True \
@@ -92,9 +93,10 @@ AXLearn has an additional option of pushing goodput, badput and step time deviat
    axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
-        -- python3 -m my_training_job \
+        --name=<unique-readable-name> \
+        -- python3 -m ...training-config... \
         --recorder_type=axlearn.cloud.gcp.measurement:goodput \
-        --recorder_spec=name=my-run-with-goodput \
+        --recorder_spec=name=<unique-readable-name> \
         --recorder_spec=upload_dir=my-output-directory/summaries \
         --recorder_spec=upload_interval=30 \
         --recorder_spec=include_step_deviation=True \
@@ -113,3 +115,44 @@ To visualize the collected metrics within Google Cloud Monitoring:
     a.  [**Productive Time:**](https://cloud.google.com/monitoring/api/metrics_gcp#:~:text=workload/goodput_time) Represents the cumulative duration the workload spent on productive tasks, measured by `compute.googleapis.com/workload/goodput_time`.
     b.  [**Non-Productive Time:**](https://cloud.google.com/monitoring/api/metrics_gcp#:~:text=workload/badput_time) Represents the cumulative duration the workload spent on non-productive tasks, measured by `compute.googleapis.com/workload/badput_time`.
     c.  [**Performance:**](https://cloud.google.com/monitoring/api/metrics_gcp#:~:text=workload/performance) Represents the workload's performance metric, specifically step deviation in this context, measured by `compute.googleapis.com/workload/performance`.
+
+#### Interval Query for Goodput Monitoring in GCM
+
+**Preferred Approach: Using Cumulative Metrics with PromQL**
+
+The recommended method for tracking Goodput scores within Google Cloud Monitoring (GCM) is to leverage existing cumulative metrics and apply PromQL logic, specifically the `offset` function, to calculate Goodput over user-defined time spans. This approach offers flexibility and consistency, allowing users to dynamically adjust the time window for analysis without requiring code modifications.
+
+
+**PromQL Example:**
+
+To calculate over a user-defined time span, you can use the following PromQL pattern:
+
+```promql
+(metric_name{monitored_resource="resource_type"} - (metric_name{monitored_resource="resource_type"} offset ${time_span}))
+```
+
+In this example:
+
+* `offset $time_span` shifts the metric back by the `$time_span` duration.
+* `$time_span` is a variable that allows users to dynamically set the time window in the GCM dashboards.
+
+
+**Alternative Approach: Direct Interval Data Upload via API (Last Resort)**
+
+Call the `start_goodput_interval_uploader` API and specify `window_size_seconds` to compute Goodput and Badput metrics only in the sliding time window. The interval starts `window_size_seconds` prior to time of query, ends at time of query, and moves ahead by `upload_interval` seconds.
+
+While GCM provides APIs for directly sending interval data, this method is generally discouraged due to potential inconsistencies and management overhead. If different jobs use different intervals or one uses cumulative and other interval, it can lead to incorrect data while aggregating across workloads in a project.
+
+
+**Code Example (Python):**
+
+To send Goodput and Badput data for a 12-hour interval, you can modify your code as follows:
+
+```python
+# Set the window size to be 12h
+goodput_monitor.start_goodput_interval_uploader(window_size_seconds = 43200)
+```
+
+**Recommendation:**
+
+Prioritize the PromQL-based approach using cumulative metrics for its flexibility, consistency, and simplified management. Use the direct interval data upload API only as a last resort when specific requirements necessitate it, and be mindful of the potential complexities it introduces.
