@@ -393,7 +393,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         user_command += (
             f" --flink_master={job_manager_ip}"
             f" --parallelism={flink_parallelism}"
-            f" --artifacts_dir={os.path.join(self.config.builder.output_dir, 'artifacts_dir')}"
+            f" --artifacts_dir={os.path.join(cfg.builder.output_dir, 'artifacts_dir')}"
             # Replicate output to /output/beam_pipline_log
             f" 2>&1 | tee /output/beam_pipline_log"
         )
