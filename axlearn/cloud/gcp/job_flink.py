@@ -4,6 +4,7 @@
 
 import logging
 import math
+import os
 import time
 from typing import Any, Dict
 
@@ -390,8 +391,9 @@ class FlinkTPUGKEJob(job.GKEJob):
             cfg.builder.accelerator.num_replicas * system.vms_per_slice * system.chips_per_vm
         )
         user_command += (
-            f" --flink_master_address={job_manager_ip}"
-            f" --flink_parallelism={flink_parallelism}"
+            f" --flink_master={job_manager_ip}"
+            f" --parallelism={flink_parallelism}"
+            f" --artifacts_dir={os.path.join(self.config.builder.output_dir, 'artifacts_dir')}"
             # Replicate output to /output/beam_pipline_log
             f" 2>&1 | tee /output/beam_pipline_log"
         )
