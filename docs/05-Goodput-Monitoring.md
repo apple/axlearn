@@ -1,4 +1,4 @@
-## ML Goodput Monitoring
+# ML Goodput Monitoring
 AXLearn supports automatic measurement and upload of workload metrics such as Goodput, Badput Breakdown and Step Time Deviation using the ML Goodput Measurement library.
 
 The [ML Goodput Measurement](https://github.com/AI-Hypercomputer/ml-goodput-measurement) library currently supports monitoring workloads running on Google Cloud Platform. For more information on details of the library, visit the Github page or the [ml-goodput-measurement](https://pypi.org/project/ml-goodput-measurement/) PyPI package documentation.
@@ -46,9 +46,16 @@ project, then do the following:
    > **_NOTE:_** Access Scopes are immutable and workloads can only be migrated
   to new node pools with required access scopes. Access scopes on already created clusters cannot be updated.
 
+## Monitoring
+
+**__IMPORTANT__:** Ensure unique readable `run_name`
+
+Please use a unique workload name, unless you intend to monitor cumulative Goodput/Badput metrics of a previous workload along with your current workload
+
 ### How to Monitor Goodput and Badput
 
-To enable Goodput recording and monitoring on AXLearn, follow the example below. Ensure the name is unique and easily identifiable by users.
+To enable Goodput recording and monitoring on AXLearn, follow the example below.
+
 
 ```bash
    axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
@@ -61,6 +68,7 @@ To enable Goodput recording and monitoring on AXLearn, follow the example below.
         --recorder_spec=upload_dir=<my-output-directory>/summaries \
         --recorder_spec=upload_interval=30 \
 ```
+
 
 ### How to Monitor Step Time Deviation
 
@@ -118,9 +126,9 @@ To visualize the collected metrics within Google Cloud Monitoring:
 
 #### Interval Query for Goodput Monitoring in GCM
 
-**Preferred Approach: Using Cumulative Metrics with PromQL**
+**Preferred Approach: Apply PromQL logic to Cumulative Metrics**
 
-The recommended method for tracking Goodput scores within Google Cloud Monitoring (GCM) is to leverage existing cumulative metrics and apply PromQL logic, specifically the `offset` function, to calculate Goodput over user-defined time spans. This approach offers flexibility and consistency, allowing users to dynamically adjust the time window for analysis without requiring code modifications.
+The recommended method for tracking interval Goodput scores within Google Cloud Monitoring (GCM) is to leverage existing cumulative metrics and apply PromQL logic, specifically the `offset` function, to calculate Goodput over user-defined time spans. This approach offers flexibility and consistency, allowing users to dynamically adjust the time window for analysis without requiring code modifications.
 
 
 **PromQL Example:**
