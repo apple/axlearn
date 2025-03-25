@@ -13,7 +13,7 @@ The ML Goodput Measurement library exposes Badput Breakdown. Further details of 
 
 ### What is Step Time Deviation
 
-Step Time Deviation is the metric that measures deviation of step time from ideal step time.
+Step Time Deviation is the metric that measures deviation of step time (in seconds) from ideal step time.
 
 The ML Goodput Measurement library exposes step time deviation by computing ideal step time or allowing users to configure ideal step time.
 
