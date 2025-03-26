@@ -87,6 +87,8 @@ if [ "$PROFILE_MODE" = "capture_postrun" ] || [ "$PROFILE_MODE" = "tracerun" ] |
 	elif [ "$PROFILE_MODE" = "tracerun" ]; then
 		export NEURON_RT_INSPECT_OUTPUT_DIR="${RT_PROFILE_DUMP_PATH}"
 		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
+		export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
+		# export NEURON_RT_PROFILE_BUF_DMA_MB=256
 	else
 		echo ""
 	fi
