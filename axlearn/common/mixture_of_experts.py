@@ -1213,7 +1213,6 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
     def forward(self, logits):
         cfg = self.config
         O, G, S, E = logits.shape
-        print()
         raw_gates = self.router(cfg, logits)
         expert_capacity = self.compute_expert_capacity(cfg, logits)
         print('capacity', expert_capacity)
@@ -1629,8 +1628,15 @@ class TransformerFeedForwardMoE(BaseLayer):
                 out_specs=PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
                 check_rep=False
             )
-            outputs = with_sharding_constraint(
-                partitioned_blockwise_mm(
+            print("hidden_stateshidden_states::" , hidden_states)
+
+            print("expert_affinities_maskedexpert_affinities_masked::" , expert_affinities_masked)
+
+            print("token_position_to_id::" , token_position_to_id)
+
+            print("block_to_expert::" , block_to_expert)
+
+            outputs = partitioned_blockwise_mm(
                     hidden_states,
                     expert_affinities_masked,
                     self.parameters["wi_0_weight"],
@@ -1638,9 +1644,10 @@ class TransformerFeedForwardMoE(BaseLayer):
                     self.parameters["wo_weight"],
                     cfg.gating.block_size,
                     token_position_to_id,
-                    block_to_expert,
+                    block_to_expert
                 )
-            )
+            print("outputssss::" , outputs)
+
             return outputs
         else:
             raise NotImplementedError
@@ -1711,7 +1718,9 @@ class TransformerFeedForwardMoE(BaseLayer):
             x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogsm"])
             # (batch, seq_len, input_dim)
         
-        return x.reshape(token_shape + (cfg.input_dim,))
+        print("Final shape ::::", (token_shape + (cfg.input_dim,)))
+        out = x.reshape(token_shape + (cfg.input_dim,))
+        return out
 
     def _wi_activation(self, x: Tensor) -> Tensor:
         cfg = self.config

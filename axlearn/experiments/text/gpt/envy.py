@@ -460,12 +460,12 @@ def get_trainer_kwargs(
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4)),
-                hidden_dim=32 * 32 if model_size == "Mistral-toy" else 32 * 128,
-                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=128),
+                hidden_dim=32 * 32 if model_size == "Mistral-toy" else 32 * 160,
+                ffn_dim=scaled_hidden_dim(scale=1, round_up_to_multiples_of=128),
                 num_heads=32,
                 num_kv_heads=max(8, tp_degree),
                 num_experts=NUM_EXPERTS[model_size],
-                train_capacity_factor=2.0,
+                train_capacity_factor=2,
                 num_groups=1,
                 ffn_layer_types=ffn_layer_types,
                 outer_batch_size=get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, neuron_mesh),

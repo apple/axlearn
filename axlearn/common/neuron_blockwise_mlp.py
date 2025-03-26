@@ -11,18 +11,22 @@ import jax_neuronx  # pylint: disable=unused-import
 import neuronxcc.nki.language as nl
 from jax import custom_vjp
 from neuronxcc.nki._private_kernels.blockwise_mm import (
-        blockwise_mm as blockwise_mm_nki,
+        # blockwise_mm as blockwise_mm_nki,
+        blockwise_mm_selective_cp as blockwise_mm_nki,
         # blockwise_mm_baseline_shard_hidden as blockwise_mm_nki,
         check_blockwise_mm_kernel_compatibility,
     )
 from neuronxcc.nki._private_kernels.blockwise_mm_bwd import (
-    blockwise_mm_bwd as blockwise_mm_bwd_nki,
+    # blockwise_mm_bwd as blockwise_mm_bwd_nki,
+    blockwise_mm_bwd_selective_cp as blockwise_mm_bwd_nki,
     check_blockwise_mm_bwd_kernel_compatibility,
 )
 from neuronxcc.nki.compiler.backends.neuron.dimensions import VNC
 import neuronxcc.nki as nki
 
 _blockwise_mm_nki_call = nki.jit(show_compiler_tb=True)(blockwise_mm_nki)
+_blockwise_mm_bwd_nki_call = nki.jit(show_compiler_tb=True)(blockwise_mm_bwd_nki)
+
 
 Tensor = jax.Array
 lnc = 2 if jax.devices()[0].device_kind == "NC_v3d" else 1
@@ -53,7 +57,7 @@ def can_use_blockwise_matmul_nki(
 
     return True
 
-@partial(custom_vjp, nondiff_argnums=(5,10))
+@partial(custom_vjp, nondiff_argnums=(5,))
 def blockwise_mm(
     hidden_states: Tensor,
     expert_affinities_masked: Tensor,
@@ -63,9 +67,20 @@ def blockwise_mm(
     block_size: int, 
     token_position_to_id: Tensor,
     block_to_expert: Tensor,
-    gate_up_activations_T: Tensor=None,
-    down_activations: Tensor=None,
-    skip_dma: bool=True,
+):    
+    out, _ = _blockwise_mm_fwd(hidden_states, expert_affinities_masked, gate_weight, up_proj_weight,
+                            down_proj_weight, block_size, token_position_to_id, block_to_expert)
+    return out
+
+def _blockwise_mm_fwd(
+    hidden_states: Tensor,
+    expert_affinities_masked: Tensor,
+    gate_weight: Tensor,
+    up_proj_weight: Tensor,
+    down_proj_weight: Tensor,
+    block_size: int, 
+    token_position_to_id: Tensor,
+    block_to_expert: Tensor,
 ):
     
     # TODO handle O>1, G>1
@@ -79,18 +94,32 @@ def blockwise_mm(
     block_to_expert = jnp.expand_dims(block_to_expert, axis=1)
 
     # # add +1 for padding
-    # padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
+    padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
+    padding_e = jnp.zeros((1,expert_affinities_masked.shape[1]), dtype=expert_affinities_masked.dtype)
     # # (S+1, H)
-    # hidden_states = jnp.concat(hidden_states, padding_h, dim=0)
-    output = jnp.empty(hidden_states.shape, dtype=hidden_states.dtype)
+    hidden_states = jnp.concat([hidden_states, padding_h], axis=0)
+    expert_affinities_masked = jnp.concat([expert_affinities_masked, padding_e], axis=0)
     expert_affinities_masked = jnp.reshape(expert_affinities_masked, (-1, 1))
+
     gate_up_weight = jnp.stack([gate_weight, up_proj_weight], 
         axis=2
     )
 
+    print("gate:::", gate_up_weight)
+    print("hidden_states:::", hidden_states)
+    print("down:::", down_proj_weight)
+
+    # hidden_states = jnp.zeros_like(hidden_states)
+    # expert_affinities_masked = jnp.zeros_like(expert_affinities_masked)
+    # gate_up_weight = jnp.zeros_like(gate_up_weight)
+    # down_proj_weight = jnp.zeros_like(down_proj_weight)
+    # block_size = block_size  # If it's an integer, just use the same value
+    # token_position_to_id = jnp.zeros_like(token_position_to_id)
+    # block_to_expert = jnp.zeros_like(block_to_expert)
+
     # out: (S+1, H)
     # out = blockwise_mm_nki[VNC(2)](
-    out = _blockwise_mm_nki_call[VNC(2)](
+    out, gate_up_activations_T, down_activations = _blockwise_mm_nki_call[VNC(2)](
         # Inputs
         hidden_states=hidden_states,
         expert_affinities_masked=expert_affinities_masked,
@@ -101,65 +130,79 @@ def blockwise_mm(
         block_size=block_size,
         token_position_to_id=token_position_to_id,
         block_to_expert=block_to_expert,
-        # Output
-        output=output,
-        gate_up_activations_T=gate_up_activations_T,
-        down_activations=down_activations,
-        # LNC
-        skip_dma=skip_dma,
-        lnc=lnc,
     )
-    return out
+
+    print("out:::", out)
+    print("gate_up_activations_T:::", gate_up_activations_T)
+    print("down_activations:::", down_activations)
+
+    return out[:-1, :], (hidden_states, expert_affinities_masked, gate_up_weight, 
+                down_proj_weight, down_activations, gate_up_activations_T, 
+                token_position_to_id, block_to_expert)
 
 def _blockwise_mm_bwd(
-    hidden_states,
-    expert_affinities_masked,
-    token_position_to_id,
-    block_to_expert,
-    gate_up_proj_weight,
-    down_proj_weight,
-    gate_up_activations,
-    down_activations,
-    grad_output,
-    total_tokens,
-    intermediate_size,
+    block_size,
+    res,
+    grad_output
 ):
-    # Get shapes
-    _, E = expert_affinities_masked.shape
-    T = total_tokens
-    H = hidden_states.shape[-1]
+    (hidden_states, expert_affinities_masked, gate_up_proj_weight, 
+     down_proj_weight, down_activations, gate_up_activations_T, 
+     token_position_to_id, block_to_expert) = res
+    
+    T,H = hidden_states.shape
+    E, _, _, _ = gate_up_proj_weight.shape
 
-    # Initialize gradients with zeros
-    hidden_states_grad = jnp.zeros((T, H), dtype=hidden_states.dtype)
-    affinities_grad = jnp.zeros((T, E), dtype=expert_affinities_masked.dtype)
-    gate_up_proj_weight_grad = jnp.zeros_like(gate_up_proj_weight)
-    down_weight_grad = jnp.zeros_like(down_proj_weight)
+    print("gate grads::::", grad_output)
 
+    print("hidden states::, ", hidden_states.shape)
+
+    print("block sizeeee:::" , block_size)
     # Compute gradients
-    hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = blockwise_mm_bwd_nki(
+    hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = _blockwise_mm_bwd_nki_call[VNC(2)](
         hidden_states,
-        hidden_states_grad,
-        expert_affinities_masked.reshape(-1, 1),
-        affinities_grad.reshape(-1, 1),
+        expert_affinities_masked,
         gate_up_proj_weight,
-        gate_up_proj_weight_grad,
-        gate_up_activations,
+        gate_up_activations_T,
         down_proj_weight,
-        down_weight_grad,
         down_activations,
         token_position_to_id.astype(jnp.int32),
         block_to_expert.astype(jnp.int32),
         grad_output,
+        block_size=block_size,
     )
 
-    # Take only the relevant portion of hidden_states_grad
-    hidden_states_grad = hidden_states_grad[:T]
+    print("gate grads::::", gate_up_proj_weight_grad)
+    print("down_weight_grad grads::::", down_weight_grad)
+    
+    print("gate hidden_states_grad::::", hidden_states_grad)
+    print("affinities_grad grads::::", affinities_grad)
+
+    sliced_tensor = hidden_states_grad[:-1,:]
+    hidden_states_grad = sliced_tensor.reshape(1, 1, -1, H)
+    
+    # sliced_tensor = affinities_grad.reshape(T,E)
+    # affinities_grad = sliced_tensor[:T-1, :]
+
+    affinities_grad = jnp.reshape(affinities_grad, (-1, E))
+    affinities_grad = affinities_grad[:-1, :].reshape(1, 1, -1, E)
+
+    print("gate hidden_states_grad::::", hidden_states_grad)
+    print("affinities_grad grads::::", affinities_grad)
+
+    gate_proj_weight_grad = gate_up_proj_weight_grad[:, :, 0, :]  # Shape: (E, H, I)
+    up_proj_weight_grad = gate_up_proj_weight_grad[:, :, 1, :]
+
+    # exit()
+
 
     return (
-        hidden_states_grad[:T],
-        affinities_grad[:T],
-        gate_up_proj_weight_grad.reshape(E, H, 2 * intermediate_size),
+        hidden_states_grad,
+        affinities_grad,
+        gate_proj_weight_grad,
+        up_proj_weight_grad,
         down_weight_grad,
+        token_position_to_id,
+        block_to_expert
     )
 
-blockwise_mm.defvjp(blockwise_mm, _blockwise_mm_bwd)
+blockwise_mm.defvjp(_blockwise_mm_fwd, _blockwise_mm_bwd)
