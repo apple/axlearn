@@ -152,6 +152,8 @@ class BaseFlashAttention(Configurable):
     ) -> bool:
         """Returns whether the attention kernel supports the given configuration.
 
+        Note: This method is called outside of jax.shard_map, so query has the global shape.
+
         Args:
             query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
             key: Key of shape [batch_size, source_length, num_kv_heads, per_head_dim].
@@ -197,6 +199,7 @@ class BaseFlashAttention(Configurable):
     ) -> Tensor:
         """Computes attention context.
 
+        Note: This method is called inside jax.shard_map, so query has the per-device shape.
         Warning: The dtype of key and value may differ from the dtype of query.
 
         Args:

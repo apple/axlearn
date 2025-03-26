@@ -32,6 +32,7 @@ from typing import Callable, Optional
 import jax
 
 from axlearn.common.attention_bias import causal_mask
+from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.test_utils import generate_attention_data
 from axlearn.common.flash_attention.utils import flash_attention_implementation
 
@@ -107,11 +108,20 @@ def _benchmark(
     )
     softmax_scale = q.shape[-1] ** 0.5
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
-    ref_mha_impl = flash_attention_implementation(
-        "xla", softmax_scale=softmax_scale, tpu_block_size=block_size, is_decoding=is_decoding
+    ref_mha_impl = (
+        ReferenceMHA.default_config()
+        .set(softmax_scale=softmax_scale, tpu_block_size=block_size, is_decoding=is_decoding)
+        .instantiate()
     )
     mha_impl = flash_attention_implementation(
-        "tpu", softmax_scale=softmax_scale, tpu_block_size=block_size, is_decoding=is_decoding
+        "tpu",
+        query=q,
+        key=k,
+        value=v,
+        bias=bias,
+        softmax_scale=softmax_scale,
+        tpu_block_size=block_size,
+        is_decoding=is_decoding,
     )
 
     ref_fwd_time = _time_call(lambda: ref_mha_impl(q, k, v, bias))
