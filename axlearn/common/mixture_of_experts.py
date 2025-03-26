@@ -751,90 +751,6 @@ class TopKGatingGather(TopKGating):
     
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
-    
-    @staticmethod
-    def cumsum_4d_matmul(x: jnp.ndarray, axis: int = -1, tril_size: int = 2048):
-        """Efficient cumsum implementation using triangular matrix multiplication.
-        This only works for inputs of dtype int32.
-
-        Args:
-            x: Input array of shape (d0, d1, d2, d3)
-            axis: Axis along which to compute cumsum (0-3)
-            tril_size: Size of triangular matrix for tiling
-        Returns:
-            Array of same shape with cumulative sum along specified axis
-        """
-        assert x.dtype == jnp.int32, f"cumsum_4d_matmul expected int32, got {x.dtype}"
-
-        if axis < 0:
-            axis = x.ndim + axis
-
-        # Create triangular matrix once
-        tril = jnp.tril(jnp.ones((tril_size, tril_size), dtype=jnp.int32))
-
-        # Move the target axis to first position
-        if axis != 0:
-            perm = list(range(4))
-            perm[0], perm[axis] = perm[axis], perm[0]
-            x = jnp.transpose(x, perm)
-        # Get shapes
-        axis_size = x.shape[0]
-        batch_size = np.prod(x.shape[1:])
-
-        # Reshape to 2D for efficient matmul
-        x_2d = x.reshape(axis_size, batch_size)
-
-        # Process data based on size
-        if axis_size <= tril_size:
-            # Single matmul for small sizes
-            tril_slice = lax.dynamic_slice(
-                tril,
-                (0, 0),
-                (axis_size, axis_size)
-            )
-            result = jnp.matmul(tril_slice, x_2d, precision=lax.Precision.HIGHEST)
-        else:
-            # Process in tiles
-            num_full_tiles = axis_size // tril_size
-            remainder_size = axis_size % tril_size
-
-            # Process full tiles with rolling sum
-            full_tiles = x_2d[:num_full_tiles * tril_size].reshape(
-                num_full_tiles, tril_size, batch_size
-            )
-
-            def process_tile(rolling_sum, x_tile):
-                output = rolling_sum + jnp.matmul(tril, x_tile, precision=lax.Precision.HIGHEST)
-                # Last row becomes new rolling sum
-                new_rolling_sum = output[-1:, :]
-                return new_rolling_sum, output
-
-            rolling_sum = jnp.zeros((1, batch_size), dtype=full_tiles.dtype)
-            last_rolling_sum, results = jax.lax.scan(process_tile, rolling_sum, full_tiles)
-            result = results.reshape(-1, batch_size)
-
-            # Process remainder if any
-            if remainder_size > 0:
-                x_remainder = x_2d[num_full_tiles * tril_size :]
-                tril_remainder = tril[:remainder_size, :remainder_size]
-                remainder_result = last_rolling_sum + jnp.matmul(
-                    tril_remainder, x_remainder, precision=lax.Precision.HIGHEST
-                )
-
-                # Concatenate remainder
-                result = jnp.concatenate([result, remainder_result], axis=0)
-
-        # Reshape back to 4D
-        result = result.reshape(x.shape)
-
-        # Transpose back if necessary
-        if axis != 0:
-            inv_perm = [0] * 4
-            for i, p in enumerate(perm):
-                inv_perm[p] = i
-            result = jnp.transpose(result, inv_perm)
-
-        return result
 
     @staticmethod
     def compute_expert_mask(expert_index, num_experts):
@@ -1054,8 +970,7 @@ class TopKGatingGather(TopKGating):
             # cumsum over S dim
             # position_in_expert: [O, G, S*topk, E]
             expert_mask = expert_mask.astype(jnp.int32)
-            position_in_expert = self.cumsum_4d_matmul(expert_mask, axis=-2).astype(jnp.float64)
-            
+            position_in_expert = _cum_sum(expert_mask, axis=-2).astype(jnp.float64)
             expert_mask_pre_capacity_drop = expert_mask
             expert_mask_k_pre_capacity_drop = expert_mask_pre_capacity_drop.reshape(O, G, k, S, E)
             expert_mask_k_pre_capacity_drop = jnp.sum(expert_mask_k_pre_capacity_drop, axis=2)
