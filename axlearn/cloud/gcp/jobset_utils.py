@@ -18,7 +18,12 @@ from axlearn.cloud.common.bastion import (
     deserialize_jobspec,
 )
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.common.utils import FlagConfigurable, parse_kv_flags
+from axlearn.cloud.common.utils import (
+    AcceleratorConfig,
+    FlagConfigurable,
+    accelerator_flags,
+    parse_kv_flags,
+)
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
@@ -28,7 +33,7 @@ from axlearn.cloud.gcp.system_characteristics import (
 from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import infer_tpu_type
-from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
 # Set 80% of the max value as the requested memory.
@@ -47,35 +52,6 @@ _METADATA_GOOGLE_INTERNAL_IP = "169.254.169.254"
 # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
 _ANNOTATION_ADDITIONAL_NODE_NETWORKS = "tpu-provisioner.cloud.google.com/additional-node-networks"
 _ANNOTATION_NODE_SERVICE_ACCOUNT = "tpu-provisioner.cloud.google.com/node-service-account"
-
-
-@config_class
-class AcceleratorConfig(ConfigBase):
-    """Configures job resources, e.g. TPU or GPU.
-
-    Attributes:
-        instance_type: Instance type, e.g. tpu-v4-8.
-        num_replicas: Number of replicas, e.g. TPU slices.
-    """
-
-    instance_type: Required[str] = REQUIRED
-    num_replicas: int = 1
-
-
-def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
-    """Defines resource flags, e.g. --instance_type and --num_replicas."""
-    flags.DEFINE_string(
-        "instance_type",
-        # --instance_type is often defined at the launcher, so use any existing value by default.
-        # TODO(markblee): Remove this after we migrate launch command away from `--instance_type`.
-        getattr(flag_values, "instance_type", None),
-        "Instance type.",
-        flag_values=flag_values,
-        **kwargs,
-    )
-    flags.DEFINE_integer(
-        "num_replicas", 1, "Number of replicas.", flag_values=flag_values, **kwargs
-    )
 
 
 # Use kw_only=True so that subclasses can have a mix of default and non-default attributes.
