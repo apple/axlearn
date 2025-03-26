@@ -36,6 +36,7 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
         ):
             fv = flags.FlagValues()
             TPUGKEJob.define_flags(fv)
+            fv.set_default("name", "test-job")
             fv.set_default("instance_type", "tpu-v4-8")
             fv.set_default("output_dir", "FAKE")
             for key, value in kwargs.items():

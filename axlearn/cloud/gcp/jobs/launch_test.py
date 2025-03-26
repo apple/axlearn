@@ -3,7 +3,6 @@
 """Tests launchers."""
 # pylint: disable=protected-access
 
-import contextlib
 import copy
 from datetime import datetime
 from typing import Optional
@@ -15,14 +14,14 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobState as BastionJobState
 from axlearn.cloud.common.bastion import JobStatus, deserialize_jobspec, new_jobspec
-from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE
+from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, Bundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp import job as gcp_job
 from axlearn.cloud.gcp.jobs import bastion_vm, gke_runner, launch
-from axlearn.cloud.gcp.jobs.gke_runner import FlinkGKERunnerJob, JobType
+from axlearn.cloud.gcp.jobs.gke_runner import FlinkGKERunnerJob, JobType, job_type_flags
 from axlearn.cloud.gcp.jobs.launch import (
     BaseBastionManagedJob,
     BastionDirectory,
@@ -493,30 +492,38 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
         class FakeBastionDirectory(BastionDirectory):
             pass
 
-        tpu_gke_job = BastionManagedGKEJob.with_runner(_DummyRunner)
-        cfg = tpu_gke_job.default_config().set(
-            **_common_bastion_managed_job_kwargs(),
-            namespace="default",
-            project="test-project",
-            cluster="test-cluster",
-            bastion_dir=FakeBastionDirectory.default_config().set(root_dir="temp_dir"),
-        )
-        cfg.set(name=name)
+        class DummyBundler(Bundler):
+            pass
+
+        with (
+            mock_gcp_settings(
+                [launch.__name__, bastion_vm.__name__, gke_runner.__name__, bundler.__name__],
+            ),
+        ):
+            fv = flags.FlagValues()
+            tpu_gke_job = BastionManagedGKEJob.with_runner(gke_runner.TPUGKERunnerJob)
+            tpu_gke_job.define_flags(fv)
+            job_type_flags(fv)
+            fv.name = name
+            fv.instance_type = "tpu-v4-8"
+            fv.mark_as_parsed()
+
+            cfg = tpu_gke_job.from_flags(fv, command="", action="start")
+            cfg.runner.bundler = DummyBundler.default_config()
+            cfg.set(bastion_dir=FakeBastionDirectory.default_config().set(root_dir=""))
+
         patch_kube_config = mock.patch(f"{launch.__name__}.load_kube_config")
         patch_execute = mock.patch(f"{launch.__name__}.{BaseBastionManagedJob.__name__}._execute")
 
-        if isinstance(expected, Exception):
-            ctx = self.assertRaisesRegex(type(expected), str(expected))
-        else:
-            ctx = contextlib.nullcontext()
-
-        with ctx, patch_kube_config, patch_execute as mock_execute:
-            job: BastionManagedGKEJob = cfg.instantiate()
-            job_spec = job._execute()
-
+        with patch_kube_config, patch_execute as mock_execute:
             if isinstance(expected, Exception):
+                with self.assertRaisesRegex(type(expected), str(expected)):
+                    job: BastionManagedGKEJob = cfg.instantiate()
+
                 mock_execute.assert_not_called()
             else:
+                job: BastionManagedGKEJob = cfg.instantiate()
+                job_spec = job._execute()
                 mock_execute.assert_called_once()
                 self.assertIsNotNone(job_spec)
 

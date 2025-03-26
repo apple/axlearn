@@ -207,7 +207,11 @@ class Bundler(Configurable):
     @classmethod
     def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler."""
-        raise NotImplementedError(cls)
+        del spec
+        cfg: Bundler.Config = cls.default_config()
+        if exclude := getattr(fv, "bundler_exclude", None):
+            cfg.exclude = exclude
+        return cfg
 
     def id(self, name: str) -> str:
         """Returns a unique identifier for the bundle."""
@@ -330,8 +334,7 @@ class BaseDockerBundler(Bundler):
 
         All other specs are treated as build args.
         """
-        del fv  # Not used.
-        cfg: BaseDockerBundler.Config = cls.default_config()
+        cfg: BaseDockerBundler.Config = super().from_spec(spec, fv=fv)
         kwargs = parse_kv_flags(spec, delimiter="=")
         cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
         # Non-config specs are treated as build args.
@@ -505,8 +508,8 @@ class BaseTarBundler(Bundler):
         Possible options:
         - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
         """
-        del fv  # Not used.
-        return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
+        cfg: BaseTarBundler.Config = super().from_spec(spec, fv=fv)
+        return cfg.set(**parse_kv_flags(spec, delimiter="="))
 
     def id(self, name: str) -> str:
         """Returns the full image identifier from the tag."""
@@ -676,9 +679,7 @@ def main_flags():
 
 
 def main(_):
-    cfg = get_bundler_config(
-        bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec, fv=FLAGS
-    ).set(exclude=FLAGS.bundler_exclude)
+    cfg = get_bundler_config(bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec, fv=FLAGS)
     bundler = cfg.instantiate()
     bundler.bundle(FLAGS.name)
 

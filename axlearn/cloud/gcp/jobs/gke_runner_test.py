@@ -16,7 +16,6 @@ from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.job import GPUGKEJob
 from axlearn.cloud.gcp.jobs import gke_runner
-from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
 from axlearn.cloud.gcp.jobs.gke_runner import (
     JobType,
     _get_runner_or_exit,
@@ -26,7 +25,7 @@ from axlearn.cloud.gcp.jobs.gke_runner import (
 from axlearn.cloud.gcp.jobs.launch import _prelaunch_flags
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
-from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
+from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings, mock_job
 
 
 def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Optional[int] = None):
@@ -121,11 +120,9 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             cfg.bundler.set(image="test")
             job: gke_runner.GPUGKERunnerJob = cfg.instantiate()
 
-            mock_job = mock.patch.multiple(
+            with mock.patch.multiple(
                 job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
-            )
-
-            with mock_job:
+            ):
                 job._execute()
 
     def test_delete(self):
@@ -134,13 +131,11 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
 
             job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
+            with mock.patch.multiple(
                 job,
                 _inner=mock.DEFAULT,
                 _pre_provisioner=mock.DEFAULT,
-            )
-
-            with mock_job:
+            ):
                 job._delete()
                 job._inner._delete.assert_called()  # pytype: disable=attribute-error
 
@@ -157,7 +152,7 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
 
             job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
+            with mock.patch.multiple(
                 job,
                 _get_status=mock.Mock(
                     side_effect=[
@@ -169,9 +164,7 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
                 _delete=mock.DEFAULT,
                 _inner=mock.DEFAULT,
                 _pre_provisioner=mock.DEFAULT,
-            )
-
-            with mock_job:
+            ):
                 job._execute()
                 job._inner.execute.assert_called()  # pytype: disable=attribute-error
 
@@ -295,11 +288,9 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cfg.bundler.set(image="test")
             job: gke_runner.TPUGKERunnerJob = cfg.instantiate()
 
-            mock_job = mock.patch.multiple(
+            with mock.patch.multiple(
                 job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
-            )
-
-            with mock_job:
+            ):
                 job._execute()
 
     @parameterized.parameters(
@@ -835,7 +826,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
 
             job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
+            patch_job = mock.patch.multiple(
                 job,
                 _get_status=mock.Mock(
                     side_effect=[
@@ -856,7 +847,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 list_node_pools_by_label_key=mock_list_node_pools_by_label_key,
             )
             mock_env = mock.patch("os.environ", {"BASTION_TIER": tier} if tier is not None else {})
-            with mock_env, mock_job, mock_node_pool:
+            with mock_env, patch_job, mock_node_pool:
                 job._reschedule()
 
                 self.assertEqual(expect_delete_count, mock_delete_node_pools.call_count)
@@ -875,13 +866,11 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cfg.bundler.set(image="test")
             job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
+            with mock.patch.multiple(
                 job,
                 _inner=mock.DEFAULT,
                 _pre_provisioner=mock.DEFAULT,
-            )
-
-            with mock_job:
+            ):
                 job._delete()
 
                 job._inner._delete.assert_called()  # pytype: disable=attribute-error
@@ -902,7 +891,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cfg.bundler.set(image="test")
             job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
+            with mock.patch.multiple(
                 job,
                 _get_status=mock.Mock(
                     side_effect=[
@@ -914,9 +903,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 _delete=mock.DEFAULT,
                 _inner=mock.DEFAULT,
                 _pre_provisioner=mock.DEFAULT,
-            )
-
-            with mock_job:
+            ):
                 job._execute()
 
                 if enable_pre_provisioner:
@@ -938,7 +925,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
 
             job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
+            with mock.patch.multiple(
                 job,
                 _get_status=mock.Mock(
                     side_effect=[
@@ -950,9 +937,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 _delete=mock.DEFAULT,
                 _inner=mock.DEFAULT,
                 _pre_provisioner=mock.DEFAULT,
-            )
-
-            with mock_job:
+            ):
                 job._execute()
 
                 # pytype: disable=attribute-error
@@ -1135,18 +1120,17 @@ class MainTest(parameterized.TestCase):
             "zone": "settings-zone",
             "gke_cluster": "settings-cluster",
         }
-        mock_job = _mock_job(
-            runner,
-            bundler_kwargs={},
-            settings_kwargs=mock_settings,
-        )
         mock_utils = mock.patch.multiple(
             gke_runner.__name__,
             load_kube_config=mock.DEFAULT,
             delete_k8s_jobset=mock.DEFAULT,
             list_node_pools_by_label_key=mock.DEFAULT,
         )
-        with mock_gcp_settings(gke_runner.__name__, mock_settings), mock_job, mock_utils as m:
+        with (
+            mock_gcp_settings(gke_runner.__name__, mock_settings),
+            mock_job(runner),
+            mock_utils as m,
+        ):
             fv = flags.FlagValues()
             gke_runner.TPUGKERunnerJob.define_flags(fv)
             _prelaunch_flags(fv=fv)
@@ -1194,11 +1178,6 @@ class MainTest(parameterized.TestCase):
         ),
     )
     def test_stop(self, node_pool_by_provisioner, expect_delete_np_count):
-        mock_job = _mock_job(
-            gke_runner.TPUGKERunnerJob,
-            bundler_kwargs={},
-            settings_kwargs={},
-        )
         mock_settings = {
             "project": "settings-project",
             "zone": "settings-zone",
@@ -1212,7 +1191,11 @@ class MainTest(parameterized.TestCase):
             list_node_pools_by_label_key=mock.Mock(return_value=node_pool_by_provisioner),
             delete_node_pools=mock.DEFAULT,
         )
-        with mock_gcp_settings(gke_runner.__name__, mock_settings), mock_job, mock_utils:
+        with (
+            mock_gcp_settings(gke_runner.__name__, mock_settings),
+            mock_job(gke_runner.TPUGKERunnerJob),
+            mock_utils,
+        ):
             fv = flags.FlagValues()
             gke_runner.TPUGKERunnerJob.define_flags(fv)
             fv.set_default("name", "test-job-0")

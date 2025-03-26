@@ -24,7 +24,7 @@ expected_flink_deployment_json = """
   "kind": "FlinkDeployment",
   "metadata": {
     "namespace": "default",
-    "name": "None-flink-cluster"
+    "name": "fake-name-flink-cluster"
   },
   "spec": {
     "image": "flink:1.18",
@@ -103,7 +103,7 @@ expected_flink_deployment_json = """
       "podTemplate": {
         "spec": {
           "nodeSelector": {
-            "pre-provisioner-id": null,
+            "pre-provisioner-id": "fake-name",
             "cloud.google.com/gke-accelerator-count": "4",
             "cloud.google.com/gke-tpu-accelerator": "tpu-v5p-slice",
             "cloud.google.com/gke-tpu-topology": "2x2x1",
@@ -156,7 +156,7 @@ expected_flink_deployment_json = """
                   "name": "flink-logs"
                 }
               ],
-              "image": "settings-repo/test-image:None",
+              "image": "settings-repo/test-image:fake-name",
               "args": [
                 "-worker_pool"
               ],
@@ -209,7 +209,7 @@ expected_flink_deployment_json = """
                 },
                 {
                   "name": "XLA_FLAGS",
-                  "value": "--xla_dump_to=/output/None/xla"
+                  "value": "--xla_dump_to=/output/fake-name/xla"
                 },
                 {
                   "name": "TF_CPP_MIN_LOG_LEVEL",
@@ -281,14 +281,14 @@ expected_jobsubmission_json = """
   "apiVersion": "batch/v1",
   "kind": "Job",
   "metadata": {
-    "name": null
+    "name": "fake-name"
   },
   "spec": {
     "backoffLimit": 0,
     "template": {
       "metadata": {
         "labels": {
-          "app": null,
+          "app": "fake-name",
           "app_type": "beam_pipline_submitter"
         }
       },
@@ -333,14 +333,14 @@ expected_jobsubmission_json = """
         ],
         "containers": [
           {
-            "name": null,
+            "name": "fake-name",
             "env": [
               {
                 "name": "PYTHONUNBUFFERED",
                 "value": "1"
               }
             ],
-            "image": "settings-repo/test-image:None",
+            "image": "settings-repo/test-image:fake-name",
             "volumeMounts": [
               {
                 "name": "shared-output",
@@ -381,6 +381,7 @@ class FlinkTPUGKEJobTest(TestCase):
         ):
             fv = flags.FlagValues()
             job_flink.FlinkTPUGKEJob.define_flags(fv)
+            fv.set_default("name", "fake-name")
             fv.set_default("instance_type", "tpu-v5p-16")
             fv.set_default("output_dir", "fake-output-dir")
             for key, value in kwargs.items():

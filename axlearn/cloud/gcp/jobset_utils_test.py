@@ -102,6 +102,14 @@ class TPUReplicatedJobTest(TestCase):
             self.assertIn("key1", cfg.env_vars)
             self.assertEqual(cfg.env_vars["key1"], "value1")
 
+    def test_validate_k8s_name(self):
+        with (
+            self.assertRaisesRegex(ValueError, "invalid"),
+            self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, _),
+        ):
+            cfg.set(name="invalid_underscore_name", command="", output_dir="")
+            cfg.instantiate(bundler=mock.Mock())
+
     @parameterized.product(
         [
             dict(env={}, reservation=None, reservation_project=None, expect_reserved=False),

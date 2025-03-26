@@ -140,6 +140,15 @@ class BundlerTest(TestWithTemporaryCWD):
             self.assertEqual("hello world", (temp_bundle / "test.txt").read_text())
             self.assertTrue((temp_bundle / CONFIG_DIR / CONFIG_FILE).exists())
 
+    def test_bundler_exclude(self):
+        """Tests that bundler_exclude is respected."""
+
+        fv = flags.FlagValues()
+        flags.DEFINE_multi_string("bundler_exclude", ["test1", "test2"], "", flag_values=fv)
+        fv.mark_as_parsed()
+        cfg = Bundler.from_spec([], fv=fv)
+        self.assertEqual(["test1", "test2"], cfg.exclude)
+
 
 class RegistryTest(TestCase):
     """Tests retrieving bundlers from registry."""
@@ -279,13 +288,16 @@ class DockerBundlerTest(TestWithTemporaryCWD):
             self.assertEqual(kwargs["platform"], platform)
 
         mock_build = mock.Mock(side_effect=mock_build_fn)
-        with mock.patch.multiple(
-            bundler.__name__,
-            docker_push=mock.Mock(return_value=123),
-            docker_build=mock_build,
-        ), mock.patch.multiple(
-            f"{git_summary.__name__}.{git_summary.GitSummary.__name__}",
-            is_valid=mock.Mock(return_value=False),
+        with (
+            mock.patch.multiple(
+                bundler.__name__,
+                docker_push=mock.Mock(return_value=123),
+                docker_build=mock_build,
+            ),
+            mock.patch.multiple(
+                f"{git_summary.__name__}.{git_summary.GitSummary.__name__}",
+                is_valid=mock.Mock(return_value=False),
+            ),
         ):
             _create_dummy_config(self._temp_root.name)
 
