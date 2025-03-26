@@ -345,8 +345,8 @@ class KVCache(BaseKVCache):
             # Use jax.vmap to vectorize over the batch dimension.
             vmap_update = jax.vmap(update_single)
             time_step = jnp.broadcast_to(key_positions[:, 0], [batch])
-            cached_key = vmap_update(cached_key, k_proj, time_step)
-            cached_value = vmap_update(cached_value, v_proj, time_step)
+            cached_key = vmap_update(cached_key, k_proj.astype(cached_key.dtype), time_step)
+            cached_value = vmap_update(cached_value, v_proj.astype(cached_key.dtype), time_step)
 
         updated_state = dict(key=cached_key, value=cached_value)
         chex.assert_equal_shape((updated_state["key"], cached_key))
