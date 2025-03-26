@@ -436,7 +436,7 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
         # Don't override `name` if already specified, since the default is non-deterministic.
-        fv.set_default("name", fv["name"].default or generate_job_name())
+        fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("project", default_project())
         fv.set_default("zone", default_zone())
         fv.set_default("namespace", "default")

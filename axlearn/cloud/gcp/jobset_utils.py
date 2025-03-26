@@ -63,7 +63,15 @@ class AcceleratorConfig(ConfigBase):
 
 def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
     """Defines resource flags, e.g. --instance_type and --num_replicas."""
-    flags.DEFINE_string("instance_type", None, "Instance type.", flag_values=flag_values, **kwargs)
+    flags.DEFINE_string(
+        "instance_type",
+        # --instance_type is often defined at the launcher, so use any existing value by default.
+        # TODO(markblee): Remove this after we migrate launch command away from `--instance_type`.
+        getattr(flag_values, "instance_type", None),
+        "Instance type.",
+        flag_values=flag_values,
+        **kwargs,
+    )
     flags.DEFINE_integer(
         "num_replicas", 1, "Number of replicas.", flag_values=flag_values, **kwargs
     )

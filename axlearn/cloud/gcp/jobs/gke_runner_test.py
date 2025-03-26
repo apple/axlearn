@@ -960,6 +960,24 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 job._inner._delete.assert_called()
                 # pytype: enable=attribute-error
 
+    def test_name_alias(self):
+        with (
+            mock_gcp_settings(
+                [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                default_mock_settings(),
+            ),
+        ):
+            fv = flags.FlagValues()
+            gke_runner.TPUGKERunnerJob.define_flags(fv)
+            fv.mark_as_parsed()
+            self.assertIsNone(fv.name)
+            self.assertIsNone(fv["name"].default)
+            flags.DEFINE_alias("alias_name", "name", flag_values=fv)
+            fv.set_default("alias_name", "test-name")
+            gke_runner.TPUGKERunnerJob.set_defaults(fv)
+            self.assertEqual(fv.name, fv.alias_name)
+            self.assertEqual(fv["name"].default, fv.alias_name)
+
 
 class FlinkGKERunnerJobTest(parameterized.TestCase):
     @contextlib.contextmanager
