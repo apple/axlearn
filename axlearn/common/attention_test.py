@@ -5318,8 +5318,13 @@ class KVCacheTest(TestCase):
             k_proj.astype(expect_dtype)[:, :step_len],
         )
 
-    def test_kv_cache_onehot_vs_dynamic(self):
-        test_layer = KVCache.default_config().set(name="test").instantiate(parent=None)
+    @parameterized.product(cache_dtype=[None, jnp.bfloat16])
+    def test_kv_cache_onehot_vs_dynamic(self, cache_dtype):
+        test_layer = (
+            KVCache.default_config()
+            .set(name="test", cache_dtype=cache_dtype)
+            .instantiate(parent=None)
+        )
 
         kv_len = 64
         kv_shape = KVCache.Shape(2, kv_len, 2, 2)
@@ -5343,10 +5348,19 @@ class KVCacheTest(TestCase):
         onehot_states, onehot_output = extend_step(step_size=1, cached_states=onehot_states)
         dynamic_states, dynamic_output = extend_step(step_size=32, cached_states=dynamic_states)
 
+        expect_dtype = cache_dtype or k_proj.dtype
         assert_allclose(onehot_states["key"], dynamic_states["key"])
         assert_allclose(onehot_states["value"], dynamic_states["value"])
+        self.assertEqual(onehot_states["key"].dtype, dynamic_states["key"].dtype)
+        self.assertEqual(onehot_states["value"].dtype, dynamic_states["value"].dtype)
+        self.assertEqual(onehot_states["key"].dtype, expect_dtype)
+        self.assertEqual(onehot_states["value"].dtype, expect_dtype)
+
         assert_allclose(onehot_output.k_proj, dynamic_output.k_proj)
         assert_allclose(onehot_output.v_proj, dynamic_output.v_proj)
+        self.assertEqual(onehot_output.k_proj.dtype, dynamic_output.k_proj.dtype)
+        self.assertEqual(onehot_output.v_proj.dtype, dynamic_output.v_proj.dtype)
+
         assert_allclose(onehot_output.key_positions, dynamic_output.key_positions)
 
 
