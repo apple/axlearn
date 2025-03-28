@@ -492,7 +492,7 @@ class Decoder(BaseLayer):
         *,
         mode: ForwardMode,
         input_batch: Nested[Tensor],
-        self_attention_logit_biases: Optional[Tensor],
+        self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,

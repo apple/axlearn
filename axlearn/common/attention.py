@@ -33,6 +33,7 @@
 """Attention layers with pjit partition specs.
 
 On `attention_logit_biases`:
+* This is legacy. Use cfg.mask to avoid unnecessary O(T^2) biases.
 * For methods that take a tensor, a biases Tensor can have one of the following shapes:
   * [target_length, source_length]
   * [batch, target_length, source_length]
@@ -2000,7 +2001,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        attention_logit_biases: Optional[Tensor],
+        attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Nested[Tensor], Optional[Output]]:
         """Initializes cache for autoregressive cached decoding.
@@ -2079,7 +2080,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        attention_logit_biases: Optional[Tensor],
+        attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.

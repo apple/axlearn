@@ -827,13 +827,11 @@ class TestFlashAttention(TestCase):
                 time_step=None,
                 query=TensorSpec([batch, seq_len], dtype=dtype),
                 kv_state=kv_state,
-                attention_logit_biases=None,
             )
             ref_initial_state, ref_inital_output = ref_layer.init_states(
                 time_step=None,
                 query=TensorSpec([batch, seq_len], dtype=dtype),
                 kv_state=kv_state,
-                attention_logit_biases=None,
             )
             self.assertIsNone(initial_output)
             self.assertIsNone(ref_inital_output)
@@ -852,13 +850,11 @@ class TestFlashAttention(TestCase):
                 cached_states=initial_state,
                 kv_state=kv_state,
                 return_aux=return_aux,
-                attention_logit_biases=None,
             )
             ref_inputs = dict(
                 cached_states=ref_initial_state,
                 kv_state=kv_state,
                 return_aux=return_aux,
-                attention_logit_biases=None,
             )
 
             decoder_output = jnp.zeros(shape=[seq_len, batch, hidden_dim]).astype(dtype)
