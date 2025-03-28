@@ -385,7 +385,7 @@ class FlagConfigurable(Configurable):
         super().set_defaults(fv)
 
         # Use the existing default (if any), else use our own default.
-        fv.set_default("my_flag", fv["my_flag"].default or "backup-default")
+        fv.set_default("my_flag", fv.my_flag or "backup-default")
         ```
         On the other hand, to override a default, one can do:
         ```

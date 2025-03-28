@@ -564,3 +564,12 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             updated_version = (job_spec.metadata.version or 0) + 1
 
             self.assertEqual(updated_job_spec.metadata.version, updated_version)
+
+    def test_instance_type(self):
+        """Tests --instance_type is retained for backwards compat."""
+
+        fv = flags.FlagValues()
+        flags.DEFINE_string("instance_type", "tpu-v4-8", "", flag_values=fv)
+        BastionManagedGKEJob.with_runner(_DummyRunner).define_flags(fv)
+        fv.mark_as_parsed()
+        self.assertEqual(fv.instance_type, "tpu-v4-8")

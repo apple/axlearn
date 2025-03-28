@@ -175,7 +175,10 @@ class GKERunnerJob(GCPJob):
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
         # Don't override `name` if already specified, since the default is non-deterministic.
-        fv.set_default("name", fv["name"].default or generate_job_name())
+        # NOTE: Accessing fv.name directly reads any values or default values set on either --name
+        # or its aliases. On the other hand, accessing fv["name"].default ignores any values or
+        # default values set by aliases.
+        fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("namespace", "default")
         fv.set_default(
             "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
