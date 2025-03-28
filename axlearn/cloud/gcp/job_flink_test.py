@@ -5,12 +5,13 @@
 import contextlib
 import json
 import logging
+from typing import Optional
 
 from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.gcp import bundler, job, job_flink
+from axlearn.cloud.gcp import bundler, job, job_flink, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.test_utils import TestCase
@@ -104,9 +105,9 @@ expected_flink_deployment_json = """
           "nodeSelector": {
             "pre-provisioner-id": null,
             "cloud.google.com/gke-accelerator-count": "4",
-            "cloud.google.com/gke-location-hint": "None",
             "cloud.google.com/gke-tpu-accelerator": "tpu-v5p-slice",
-            "cloud.google.com/gke-tpu-topology": "2x2x1"
+            "cloud.google.com/gke-tpu-topology": "2x2x1",
+            "cloud.google.com/gke-location-hint": "fake-location-hint"
           },
           "tolerations": [
             {
@@ -369,9 +370,15 @@ class FlinkTPUGKEJobTest(TestCase):
         self,
         bundler_cls: type[Bundler],
         command: str = "python -m fake --command",
+        location_hint: Optional[str] = None,
         **kwargs,
     ):
-        with mock_gcp_settings([job.__name__, bundler.__name__], default_mock_settings()):
+        mock_setting = default_mock_settings()
+        mock_setting["location_hint"] = location_hint
+
+        with mock_gcp_settings(
+            [job.__name__, jobset_utils.__name__, bundler.__name__], mock_setting
+        ):
             fv = flags.FlagValues()
             job_flink.FlinkTPUGKEJob.define_flags(fv)
             fv.set_default("instance_type", "tpu-v5p-16")
@@ -389,16 +396,19 @@ class FlinkTPUGKEJobTest(TestCase):
         service_account=[None, "sa"],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_pre_provisioner=[None, False, True],
+        location_hint=["fake-location-hint", None],
     )
     def test_get_flinkdeployment(
         self,
         reservation,
         service_account,
         enable_pre_provisioner,
+        location_hint,
         bundler_cls,
     ):
         with self._job_config(
             bundler_cls,
+            location_hint=location_hint,
             reservation=reservation,
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
@@ -411,6 +421,10 @@ class FlinkTPUGKEJobTest(TestCase):
             expected_flink_deployment["spec"]["serviceAccount"] = (
                 service_account if service_account else "settings-account"
             )
+            if not location_hint:
+                del expected_flink_deployment["spec"]["taskManager"]["podTemplate"]["spec"][
+                    "nodeSelector"
+                ]["cloud.google.com/gke-location-hint"]
             try:
                 self.assertDictEqual(expected_flink_deployment, flink_deployment)
             except AssertionError:
