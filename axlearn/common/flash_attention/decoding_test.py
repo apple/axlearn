@@ -64,6 +64,8 @@ class DecodingTest(TestCase):
         window_len: int,
         decoding_fn: BaseFlashAttention,
     ):
+        if seq_len >= 1024 and jax.default_backend() == "cpu":
+            self.skipTest("Too slow on CPU.")
         self.assertEqual(num_heads % kv_head_factor, 0)
         assert num_heads % kv_head_factor == 0
         softmax_scale = per_head_dim**0.5
