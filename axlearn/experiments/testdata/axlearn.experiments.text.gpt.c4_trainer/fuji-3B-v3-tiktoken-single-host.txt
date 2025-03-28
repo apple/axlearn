@@ -220,6 +220,9 @@ mesh_rules[0][1].config_modifiers[2].partition_specs['model.decoder.transformer.
 mesh_rules[0][1].config_modifiers[2].partition_specs['model.decoder.transformer.layer.feed_forward.linear2']['output_partition_spec'][0][1]: 'fsdp'
 mesh_rules[0][1].config_modifiers[2].partition_specs['model.decoder.transformer.layer.feed_forward.linear2']['output_partition_spec'][1]: None
 mesh_rules[0][1].config_modifiers[2].partition_specs['model.decoder.transformer.layer.feed_forward.linear2']['output_partition_spec'][2]: None
+mesh_rules[0][1].config_modifiers[3].grad_acc_steps: 4
+mesh_rules[0][1].config_modifiers[3].klass: 'axlearn.common.trainer_config_modifier.GradientAccumulationModifier'
+mesh_rules[0][1].config_modifiers[3].metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 mesh_rules[0][1].klass: 'axlearn.common.trainer_config_modifier.ChainConfigModifier'
 mesh_shape[0]: 1
 mesh_shape[1]: -1
