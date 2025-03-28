@@ -432,7 +432,7 @@ def define_flags(cfg: ConfigBase, fv: flags.FlagValues):
 
     def enter_fn(_, value, default_kv):
         if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "define_flags"):
-            return
+            return default_kv
         klass: FlagConfigurable = value.klass
         klass.define_flags(fv)
         return default_kv
@@ -469,14 +469,14 @@ def from_flags(cfg: _C, fv: flags.FlagValues, **kwargs) -> _C:
 
     def enter_set_defaults(_, value, default_kv):
         if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "set_defaults"):
-            return
+            return default_kv
         klass: FlagConfigurable = value.klass
         klass.set_defaults(fv)
         return default_kv
 
     def enter_from_flags(_, value, default_kv):
         if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "from_flags"):
-            return
+            return default_kv
         klass: FlagConfigurable = value.klass
         klass.from_flags(fv, prebuilt_cfg=value, _set_defaults=False, **kwargs)
         return default_kv

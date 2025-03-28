@@ -21,7 +21,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE
 from axlearn.cloud.common import utils
-from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
+from axlearn.common.config import REQUIRED, ConfigBase, Configurable, Required, config_class
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -395,6 +395,15 @@ class FlagConfigurableTest(parameterized.TestCase):
                 super().set_defaults(fv)
                 fv.set_default("common_value", "child-default")
 
+        # Test that it traverses non FlagConfigurables.
+        class RegularConfigurable(Configurable):
+            """A dummy container config to test traversal."""
+
+            @config_class
+            class Config(Configurable.Config):
+                # Test that it traverses other non-config containers.
+                inner: list[Inner.Config] = [Inner.default_config()]
+
         class Outer(utils.FlagConfigurable):
             """An outer config."""
 
@@ -403,7 +412,7 @@ class FlagConfigurableTest(parameterized.TestCase):
                 common_value: Required[str] = REQUIRED
                 outer_value: Required[str] = REQUIRED
                 inner_enabled: Optional[bool] = None
-                inner: Inner.Config = Inner.default_config()
+                inner: Optional[Configurable.Config] = RegularConfigurable.default_config()
 
             @classmethod
             def define_flags(cls, fv):
@@ -441,10 +450,10 @@ class FlagConfigurableTest(parameterized.TestCase):
 
         # Check that from_flags respects set_default override.
         self.assertEqual("child-default", cfg_with_inner.common_value)
-        self.assertEqual("child-default", cfg_with_inner.inner.common_value)
+        self.assertEqual("child-default", cfg_with_inner.inner.inner[0].common_value)
         # Check that flag values are set.
         self.assertEqual("outer-value", cfg_with_inner.outer_value)
-        self.assertEqual("inner-value", cfg_with_inner.inner.inner_value)
+        self.assertEqual("inner-value", cfg_with_inner.inner.inner[0].inner_value)
 
         # Check that cfg can be modified in from_flags.
         fv.inner_enabled = False
