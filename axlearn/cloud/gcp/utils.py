@@ -105,8 +105,8 @@ def validate_resource_name(name: Optional[str]):
         )
 
 
-def validate_k8s_name(name: str, *, num_workers: int, num_replicas: int, job_name: str = "job"):
-    """Validates k8s name (e.g. TPUs, VMs, jobs) to ensure compat with GKE.
+def validate_jobset_name(name: str, *, num_workers: int, num_replicas: int, job_name: str = "job"):
+    """Validates JobSet name (e.g. TPUs, VMs, jobs) to ensure compat with GKE.
 
     Raises:
         ValueError: If name is invalid.

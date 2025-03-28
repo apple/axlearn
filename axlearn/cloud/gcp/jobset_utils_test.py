@@ -102,7 +102,7 @@ class TPUReplicatedJobTest(TestCase):
             self.assertIn("key1", cfg.env_vars)
             self.assertEqual(cfg.env_vars["key1"], "value1")
 
-    def test_validate_k8s_name(self):
+    def test_validate_jobset_name(self):
         with (
             self.assertRaisesRegex(ValueError, "invalid"),
             self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, _),

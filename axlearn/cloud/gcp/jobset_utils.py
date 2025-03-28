@@ -26,7 +26,7 @@ from axlearn.cloud.gcp.system_characteristics import (
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
 from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
-from axlearn.cloud.gcp.utils import validate_k8s_name
+from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
 from axlearn.common.utils import Nested
@@ -392,7 +392,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
-        validate_k8s_name(
+        validate_jobset_name(
             cfg.name,
             num_workers=infer_tpu_workers(self._tpu_type),
             num_replicas=cfg.accelerator.num_replicas,
