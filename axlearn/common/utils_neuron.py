@@ -262,6 +262,7 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
+            "activation": ("nn.silu","linear"),
             "gating": TopKGatingGather.default_config().set(
                 name="gating",
                 top_k=self.params["top_k"],
@@ -280,6 +281,7 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
+            "activation": ("nn.silu","linear"),
             "gating": TopKGating.default_config().set(
                 name="gating",
                 top_k=self.params["top_k"],
