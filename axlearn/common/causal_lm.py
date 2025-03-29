@@ -107,9 +107,6 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
         if live_targets is None:
             live_targets = target_labels >= 0
         num_targets = live_targets.sum()
-        accuracy = (
-            jnp.equal(jnp.argmax(logits, axis=-1), target_labels) * live_targets
-        ).sum() / jnp.maximum(1, num_targets)
 
         loss, loss_dict = cross_entropy(
             logits=logits,
@@ -118,7 +115,7 @@ class CrossEntropyLossMetrics(BaseLossMetrics):
             z_loss_scale=cfg.z_loss_scale if cfg.z_loss_scale is not None else 0.0,
         )
         per_token_loss = loss_dict["per_target_loss"] * live_targets
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
+        self.add_summary("accuracy", WeightedScalar(loss_dict["accuracy"], num_targets))
         self.add_summary("z_loss", WeightedScalar(loss_dict["z_loss"], num_targets))
         if target_num_bytes is not None:
             # N.B. we calculate bpb following Appendix D.2. of <https://arxiv.org/abs/2112.11446>,
@@ -606,6 +603,7 @@ def residual_initializer_cfg(num_layers, scale=0.02):
     return init_cfg
 
 
+# pylint: disable=too-many-positional-arguments
 def gpt_decoder_config(
     stack_cfg: TransformerStackConfig,
     num_layers: int,
