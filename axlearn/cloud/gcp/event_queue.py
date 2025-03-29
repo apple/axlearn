@@ -37,6 +37,7 @@ def event_queue_from_config(
         not is_publish_job_event_configured(
             gcp_settings(CONFIGURED_KEY_JOB_EVENT_QUEUE_ID, required=False, fv=flag_values)
         )
+        # RabbitMQ requires some auth env variables which can be left unset for local debugging.
         or not is_rabbit_mq_configured()
     ):
         return None
