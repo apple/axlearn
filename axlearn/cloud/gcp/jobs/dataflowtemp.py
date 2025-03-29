@@ -2,7 +2,7 @@
 
 """Runs Dataflow jobs locally or in GCP.
 
-If you're having issues when submitting jobs to the DataflowRunner, use dataflow.alt.py instead
+If you are running into issues trying to submit a job to the DgitataflowRunner, use dataflow.alt.py instead.
 
 The flow is:
 1. Builds the dataflow worker image.
@@ -136,11 +136,10 @@ class DataflowJob(GCPJob):
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
-        cfg: DataflowJob.Config = super().from_flags(fv, **kwargs)
+        cfg = super().from_flags(fv, **kwargs)
         cfg.name = cfg.name or generate_job_name()
         cfg.max_tries = cfg.max_tries or 1
         cfg.retry_interval = cfg.retry_interval or 60
-        cfg.service_account = cfg.service_account or gcp_settings("service_account_email", fv=fv)
 
         # Construct bundler.
         cfg.bundler = get_bundler_config(
@@ -189,6 +188,7 @@ class DataflowJob(GCPJob):
     ) -> tuple[dict[str, Any], list[str]]:
         """Returns a flag dict and a list of flags considered as 'multi-flags'."""
         # Construct dataflow args, providing some defaults.
+        service_account = cfg.service_account or gcp_settings("service_account_email", fv=fv)
         dataflow_spec = {
             "job_name": cfg.name,
             "project": cfg.project,
@@ -196,7 +196,7 @@ class DataflowJob(GCPJob):
             "worker_machine_type": cfg.vm_type,
             "sdk_container_image": f"{cfg.bundler.repo}/{cfg.bundler.image}:{cfg.name}",
             "temp_location": f"gs://{gcp_settings('ttl_bucket', fv=fv)}/tmp/{cfg.name}/",
-            "service_account_email": cfg.service_account,
+            "service_account_email": service_account,
             "dataflow_service_options": ["enable_secure_boot", "enable_google_cloud_heap_sampling"],
             "experiments": ["use_network_tags=allow-internet-egress", "use_runner_v2"],
             "no_use_public_ips": None,
