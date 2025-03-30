@@ -356,7 +356,9 @@ class AcceleratorConfig(ConfigBase):
     """Configures job resources, e.g. TPU or GPU.
 
     Attributes:
-        instance_type: Instance type, e.g. tpu-v4-8.
+        instance_type: Instance type, e.g. tpu-v4-8. The format of instance type is
+            `<accelerator_type>-<user_facing_name>`. As an example, a list of accelerator types and
+            user facing names for GCP can be found in `axlearn.cloud.gcp.system_characteristics`.
         num_replicas: Number of replicas, e.g. TPU slices.
     """
 
