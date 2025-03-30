@@ -413,6 +413,8 @@ def infer_resources(cfg: ConfigBase) -> ResourceMap[int]:
     return dict(total_resources)
 
 
+# TODO(markblee): Support generic `--config_override=<path>=<value>` instead of requiring
+# `define_flags`.
 def define_flags(cfg: ConfigBase, fv: flags.FlagValues):
     """Define flags on `fv` by recursively invoking `cfg.klass.define_flags`.
 
