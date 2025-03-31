@@ -582,7 +582,10 @@ class SpmdTrainer(Module):
                         assert os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR") is not None
                         with jax.profiler.trace(os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR")):
                             output = self._run_step(
-                                utils.host_to_global_device_array(input_batch),
+                                utils.host_to_global_device_array(
+                                    input_batch, 
+                                    partition=PartitionSpec(('pipeline', 'data', 'expert', 'fsdp', 'seq'),),
+                                ),
                                 force_run_evals=(
                                     force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                                 ),
