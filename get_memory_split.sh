@@ -14,7 +14,7 @@ for subdir in "$base_path/neuron_core0/stats/memory_usage/device_mem"/*; do
         core1_file="$base_path/neuron_core1/stats/memory_usage/device_mem/$dirname/peak"
         if [ -f "$core0_file" ] && [ -f "$core1_file" ]; then
             echo -n "$dirname: "
-            sum_files "$core0_file" "$core1_file"
+            sum_files "$core0_file" "$core1_file" | numfmt --to=si --suffix=B
         fi
     fi
 done
