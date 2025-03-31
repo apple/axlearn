@@ -26,9 +26,7 @@ Compared to the implementation in the JAX repo, we made the following enhancemen
 * Support kv_seq_len != q_seq_len.
 * Support 2D/4D bias.
 * Support dropout.
-* Support arbitrary mask function,
-    with speed and memory optimization for sliding window type mask,
-    and memory optimizations for arbitrary mask.
+* Support arbitrary mask function like Pytorch FlexAttention.
 """
 import functools
 from collections.abc import Sequence
@@ -37,12 +35,33 @@ from typing import Any, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+from absl import logging
 from jax import lax
-from jax._src.cudnn.fused_attention_stablehlo import MaskType, dot_product_attention
+from jax._src.cudnn.fused_attention_stablehlo import MaskType
+from jax._src.cudnn.fused_attention_stablehlo import (
+    dot_product_attention as cudnn_dot_product_attention,
+)
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
 
-from axlearn.common.attention_bias import NEG_INF, MaskFn
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    BaseAttentionBias,
+    CausalAttentionBias,
+    MaskFn,
+    MaskFnAttentionBias,
+    SegmentIdAttentionBias,
+    SlidingWindowAttentionBias,
+    causal_mask,
+    split,
+)
+from axlearn.common.flash_attention.common import (
+    BaseFlashAttention,
+    build_mask,
+    get_segment_ids,
+    query_iterator_indices,
+    repeat_kv_heads,
+)
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Tensor
@@ -72,60 +91,6 @@ def _segment_mask(
     # [B, 1, S] or [1, S]
     kv_segment_ids = jnp.expand_dims(kv_segment_ids, axis=-2)
     return jnp.equal(q_segment_ids, kv_segment_ids).astype(jnp.bool_)
-
-
-def _build_mask(
-    mask_fn: MaskFn, *, q_seq_len: int, kv_seq_len: int, block_q: int, block_k: int
-) -> np.ndarray:
-    """build the iteration map where True means the block is not empty.
-
-    Returns:
-        A boolean array of shape (num_q_blocks, num_kv_blocks) where True means
-    the block is not empty.
-    """
-    # Initialize the iteration map where True means the block is not empty.
-    num_q_blocks = pl.cdiv(q_seq_len, block_q)
-    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
-    block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
-    # # Initialize the scan begin and end indices.
-    rows = np.arange(q_seq_len, dtype=np.int32)
-    cols = np.arange(kv_seq_len, dtype=np.int32)
-    # Run a compile-time evaluation to get the mask array.
-    # TODO(kelvin-zou): use a block-wise mask function to avoid the compile-time
-    # high memory usage.
-    with jax.ensure_compile_time_eval():
-        mask_array = np.asarray(mask_fn(rows[:, None], cols[None, :]))
-    for i in range(0, q_seq_len, block_q):
-        for j in range(0, kv_seq_len, block_k):
-            # Extract the block
-            block = mask_array[i : i + block_q, j : j + block_k]
-            # All empty means skipping
-            if not block.any():
-                block_mask_map[i // block_q, j // block_k] = False
-    return block_mask_map
-
-
-def _query_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]:
-    """build the iteration begin/end indices for the query dimension.
-
-    Returns:
-        Index_offset (num_q_blocks, num_kv_blocks) tensor where index_offset[i][j]
-    to store the first jth available block index for ith query block, and the unused
-    blocks are padded with 0 at the very end.
-        Index_offset_size ((num_q_blocks) tensor to store the number of valid blocks
-    for each iteration.
-    """
-    num_q_blocks, num_kv_blocks = block_mask_map.shape
-    index_offset = np.zeros(shape=(num_q_blocks, num_kv_blocks), dtype=np.int32)
-    index_offset_size = np.zeros(shape=(num_q_blocks), dtype=np.int32)
-    for i in range(num_q_blocks):
-        k = 0
-        for j in range(num_kv_blocks):
-            if block_mask_map[i, j]:
-                index_offset[i, k] = j
-                k += 1
-        index_offset_size[i] = k
-    return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
 
 
 def _key_value_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Tensor]:
@@ -169,6 +134,7 @@ def _mha_forward_kernel(
     dropout_rate: float,
     block_q: int,
     block_k: int,
+    head_dim: int,
 ):
     """Computes attention outputs for the given block.
 
@@ -192,6 +158,9 @@ def _mha_forward_kernel(
         index_offset_size_ref: The number of valid blocks for each iteration.
         o_ref: Output ref.
         *residual_refs: Residual output refs, e.g. softmax statistics.
+        head_dim: Optional per_head_dim, necessary when per_head_dim cannot be
+            devided by the block size on the final dimension. When not provided, default to be
+            the final dimension of the q_ref.
         **kwargs: See `flash_attention`.
     """
     kv_seq_len = k_ref.shape[0]
@@ -209,12 +178,13 @@ def _mha_forward_kernel(
     l_i = jnp.zeros(block_q, dtype=jnp.float32)
     # acc is the buffer where we accumulate the output on sram.
     o = jnp.zeros((block_q, block_d), dtype=jnp.float32)
+    d_mask = jnp.arange(block_d)[None] < head_dim
 
     # Load q: it will stay in L1 throughout. Indices form a matrix because we
     # read, compute, and write all in 2d chunks. 1 element ~= 1 CUDA thread index.
-    # q tile has shape [block_q, block_d], block_d == head_dim.
+    # q tile has shape [block_q, block_d], block_d >= head_dim and is a power of 2.
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = q_ref[...]
+    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0)
     q_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_q_slice,))
     # In FlashAttention algorithm 1 there are 2 loops: slow over tiles of kv (size
     # (Bc == block_k here), and fast over blocks of q (size Br == block_q here).
@@ -229,7 +199,7 @@ def _mha_forward_kernel(
         span_k = start_k * block_k + jnp.arange(block_k)
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)))
+        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0)
         qk = pl.dot(q, k.T, precision=precision)  # [block_q, block_k].
         if softmax_scale != 1.0:
             qk *= softmax_scale  # [block_q, block_k].
@@ -256,7 +226,7 @@ def _mha_forward_kernel(
         l_curr = s_curr.sum(axis=-1)
         l_next = l_prev_corr + l_curr
         o_prev_corr = correction[:, None] * o_prev
-        v = pl.load(v_ref, (curr_k_slice, pl.dslice(block_d)))
+        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
         if dropout_rate > 0:
             dropout_mask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
             s_curr = jnp.where(dropout_mask, 0, s_curr / (1 - dropout_rate))
@@ -279,7 +249,7 @@ def _mha_forward_kernel(
         lse_ref = residual_refs[0]
         lse_ref[...] = m_i + jnp.log(l_i)
     # Write output to dram.
-    o_ref[...] = o.astype(o_ref.dtype)
+    pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
 
 
 # pylint: disable=unused-argument
@@ -360,6 +330,7 @@ def _flash_attention_impl(
     kv_seq_len = key.shape[1]
     block_q = min(block_q, q_seq_len)
     block_k = min(block_k, kv_seq_len)
+    block_d = pl.next_power_of_2(head_dim)
     assert q_seq_len % block_q == 0
     assert kv_seq_len % block_k == 0
     # Heuristics.
@@ -379,12 +350,13 @@ def _flash_attention_impl(
         dropout_rate=dropout_rate,
         block_q=block_q,
         block_k=block_k,
+        head_dim=head_dim,
     )
     out_shape = jax.ShapeDtypeStruct(shape=query.shape, dtype=query.dtype)  # out
     in_specs = [
-        pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda _, j, k: (j, 0, k, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda _, j, k: (j, 0, k, 0)),
+        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k: (j, i, k, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k: (j, 0, k, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k: (j, 0, k, 0)),
     ]
     if bias is not None:
         assert bias.ndim == 4
@@ -419,10 +391,10 @@ def _flash_attention_impl(
         in_specs.append(None)
     index_offset = index_offset_spec = index_offset_size = index_offset_size_spec = None
     if mask_fn is not None:
-        block_mask_array = _build_mask(
+        block_mask_array = build_mask(
             mask_fn, q_seq_len=q_seq_len, kv_seq_len=kv_seq_len, block_q=block_q, block_k=block_k
         )
-        index_offset, index_offset_size = _query_iterator_indices(block_mask_array)
+        index_offset, index_offset_size = query_iterator_indices(block_mask_array)
         num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
         index_offset_spec = pl.BlockSpec(
             index_map=(lambda i, _, k: (i, 0)), block_shape=((None, num_kv_blocks))
@@ -432,7 +404,7 @@ def _flash_attention_impl(
         )
     in_specs.append(index_offset_spec)
     in_specs.append(index_offset_size_spec)
-    out_specs = pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0))
+    out_specs = pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k: (j, i, k, 0))
     if output_activations:
         out_specs = [out_specs, pl.BlockSpec((None, None, block_q), lambda i, j, k: (j, k, i))]
         out_shape = [
@@ -465,6 +437,7 @@ def _mha_forward(*args: Any):
     return _flash_attention_impl(*args, output_activations=True)
 
 
+# TODO(lezhi): Add support arbitrary per-head-dim in backward pass.
 def _mha_backward_kernel_dkdv(
     # Inputs.
     q_ref,
@@ -705,11 +678,11 @@ def _mha_backward(
     q_index_offset = q_index_offset_spec = q_index_offset_size = q_index_offset_size_spec = None
     kv_index_offset = kv_index_offset_spec = kv_index_offset_size = kv_index_offset_size_spec = None
     if mask_fn is not None:
-        block_mask_array = _build_mask(
+        block_mask_array = build_mask(
             mask_fn, q_seq_len=q_seq_len, kv_seq_len=kv_seq_len, block_q=block_q, block_k=block_k
         )
         # Compute the dynamic indices for the query for dq.
-        q_index_offset, q_index_offset_size = _query_iterator_indices(block_mask_array)
+        q_index_offset, q_index_offset_size = query_iterator_indices(block_mask_array)
         q_index_offset_spec = pl.BlockSpec(
             index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_kv_blocks))
         )
@@ -825,63 +798,190 @@ def _mha_backward(
 flash_attention.defvjp(_mha_forward, _mha_backward)
 
 
-# Interface to cuDNN's dot product attention.
-# TODO(kelvin-zou): Add support for segment IDs.
-def cudnn_dot_product_attention(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    bias: Optional[Tensor] = None,
-    mask: Optional[Tensor] = None,
-    causal: bool = False,
-    *,
-    softmax_scale: float = 1.0,
-    seed: int = 42,
-    dropout_rate: float = 0.0,
-    qkv_layout: str = "BTNH",
-):
-    """Computes dot-product attention given query (Q), key (K), and value (V).
+class CuDNNGPUFlashAttention(BaseFlashAttention):
+    """Wraps cuDNN FlashAttention and disallows explicit bias.
 
-    If provided, bias, segment_ids, and any causal mask are applied on top of one another.
+    We disallow folding `mask_fn` and segment ids into explicit bias to allow Pallas implementation
+    to be used when possible.
 
-    Reference implementation:
-    https://github.com/google/jax/blob/f4158ace933482844c145a6b919bf5dc86e084ba/jax/_src/cudnn/fused_attention_stablehlo.py#L927.
-    https://github.com/openxla/xla/blob/536ba0b7d74f6637a7a772471a99ecf4f578aef2/xla/service/gpu/cublas_cudnn.cc#L77.
-
-    Args:
-        query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
-        key: Key of shape [batch_size, source_length, num_heads, per_head_dim].
-        value: Value of shape [batch_size, source_length, num_heads, per_head_dim].
-        bias: Optional logit biases of shape [batch_size, num_heads, target_length, source_length].
-        mask: Optional logit mask of shape [batch_size, num_heads, target_length, source_length].
-        softmax_scale: Optional scale to apply to softmax. Defaults to 1.
-        seed: Random seed for dropout.
-        dropout_rate: Dropout rate.
-        qkv_layout: Layout string, with supported formats being BTNH, BNTH, BSNH,
-                    BNSH. Now it only supports BTNH.
-
-    Returns:
-        Output of the same shape as the query.
-
-    Raises:
-        NotImplementedError: If qkv_layout is not supported.
+    Note on sliding window condition (quoted from an error message):
+    "Sliding window attention is only supported with padding_mask=False, causal_mask=True,
+    is_dropout=False, is_bias=False, is_ragged=False"
     """
 
-    if qkv_layout != "BTNH":
-        raise NotImplementedError(f"Unsupported qkv_layout: {qkv_layout}")
+    _allow_explicit_bias = False
 
-    mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+            return False
+        if self.cfg.is_decoding:
+            if query.shape[1] > 1:
+                return self._log_unsupported("multi-step decoding is not supported.")
+            if not key.shape[1] % 2 == 0:
+                return self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
+        else:
+            # cuDNN has no concept of block size. It only requires the length of query and
+            # key/value to be even.
+            if not self._check_block_size(query=query, key=key, block_size=2):
+                return False
+        if query.dtype not in (jnp.float16, jnp.bfloat16):
+            return self._log_unsupported(
+                f"{query.dtype=} is not supported. Only supports float16 and bfloat16."
+            )
 
-    output = dot_product_attention(
-        query=query,
-        key=key,
-        value=value,
-        bias=bias,
-        mask=mask,
-        scale=softmax_scale,
-        seed=seed,
-        dropout_rate=dropout_rate,
-        mask_type=mask_type,
-        qkv_layout=qkv_layout,
-    )
-    return output
+        if jax.default_backend() == "cpu":
+            return self._log_unsupported("we're on CPU emulation.")
+        head_dim = query.shape[-1]
+        if head_dim % 8 != 0:
+            return self._log_unsupported(f"{head_dim=} is not divisible by 8.")
+        if head_dim > 128:
+            return self._log_unsupported(f"{head_dim=} > 128")
+        _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
+        if sliding.has_value() and not self._allow_explicit_bias:
+            if self.cfg.is_decoding:
+                return self._log_unsupported(
+                    "cuDNN doesn't support sliding window in decoding "
+                    "without folding it into explicit bias."
+                )
+            if self.cfg.dropout_rate != 0.0:
+                return self._log_unsupported(
+                    "cuDNN doesn't support sliding window with dropout "
+                    "without folding it into explicit bias."
+                )
+            if explicit_bias.has_value():
+                return self._log_unsupported(
+                    "cuDNN doesn't support sliding window with explicit bias "
+                    "without folding it into explicit bias."
+                )
+
+        if explicit_bias.has_value() and not self._allow_explicit_bias:
+            return self._log_unsupported("we don't allow explicit bias at this stage.")
+        logging.info("Using %s.", self.name())
+        return True
+
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
+        del prng_key
+
+        args = dict(
+            query=query,
+            key=repeat_kv_heads(query.shape[2], key),
+            value=repeat_kv_heads(query.shape[2], value),
+            scale=self.cfg.softmax_scale,
+            dropout_rate=self.cfg.dropout_rate,
+        )
+        # TODO(hanzhi-zhou): cuDNN decoding is only for testing. Enable in production once we
+        # upgrade cuDNN frontend to enable lean attention.
+        if self.cfg.is_decoding:
+            # Decoding needs PADDING mask to compute attention only up to `kv_seqlen`.
+            mask_type = MaskType.PADDING
+            mask, explicit_bias = split(bias, MaskFnAttentionBias)
+            if mask.target_positions is None:
+                raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
+            args.update(
+                q_seqlen=jnp.broadcast_to(1, [query.shape[0]]),
+                kv_seqlen=jnp.broadcast_to(mask.target_positions[:, -1] + 1, [query.shape[0]]),
+            )
+            # Fold mask_fn into explicit bias if it's not causal.
+            if getattr(mask, "mask_fn", None) is not causal_mask:
+                if mask.has_value():
+                    explicit_bias += mask
+        else:
+            causal, sliding, explicit_bias = split(
+                bias, CausalAttentionBias, SlidingWindowAttentionBias
+            )
+            mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
+            if sliding.has_value():
+                if self.cfg.dropout_rate != 0.0 or explicit_bias.has_value():
+                    explicit_bias += sliding
+                else:
+                    args["sliding_window_length"] = sliding.sliding_window_size + 1
+                    # When using cuDNN sliding window, mask must be set to CAUSAL.
+                    mask_type = MaskType.CAUSAL
+        # cuDNN requires bias to have the same dtype as qkv.
+        tensor_bias = explicit_bias.astype(query.dtype).value()
+        # TODO(kelvin-zou): Add support for segment IDs.
+        # TODO(kelvin-zou): verify cudnn's mask support with BoolAttentionBias.
+        logging.info("Using explicit bias=%s", str(tensor_bias))
+        return cudnn_dot_product_attention(
+            **args,
+            bias=tensor_bias,
+            mask_type=mask_type,
+        )
+
+
+class PallasGPUFlashAttention(BaseFlashAttention):
+    """Wraps Pallas implementation of GPU FlashAttention.
+
+    This kernel is 40% slower than cuDNN attention kernel, and only serves as a fallback for the
+    following cases:
+    1. Non-sliding window block-sparse attention.
+    2. Sliding window attention with dropout or bias.
+    3. Segment ids.
+    """
+
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+            return False
+        block_size = self.cfg.gpu_block_size
+        head_dim = query.shape[-1]
+        if not self._check_block_size(query=query, key=key, block_size=block_size):
+            return False
+        # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
+        # it by reducing the block size along sequence dim. Support it when needed.
+        if head_dim > 128:
+            return self._log_unsupported(f"{head_dim=} > 128")
+        logging.info("Using %s.", self.name())
+        return True
+
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
+        mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        key = repeat_kv_heads(query.shape[2], key)
+        value = repeat_kv_heads(query.shape[2], value)
+        tensor_bias = explicit_bias.value()
+        logging.info("Using explicit bias %s", str(tensor_bias))
+        return flash_attention(
+            query,
+            key,
+            value,
+            bias=tensor_bias,
+            segment_ids=get_segment_ids(query=query, key=key, segment_ids=segment_ids),
+            prng_key=prng_key,
+            softmax_scale=self.cfg.softmax_scale,
+            mask_fn=mask.mask if mask.has_value() else None,
+            dropout_rate=self.cfg.dropout_rate,
+            interpret=self.cfg.interpret,
+        )
+
+
+class CuDNNGPUFlashAttentionWithExplicitBias(CuDNNGPUFlashAttention):
+    """Wraps cuDNN FlashAttention and allows explicit bias.
+
+    This serves as the fallback when both `CuDNNGPUFlashAttention` and `PallasGPUFlashAttention`
+    are not applicable to prevent falling back to XLA implementation.
+    """
+
+    _allow_explicit_bias = True

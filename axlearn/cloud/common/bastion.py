@@ -517,7 +517,7 @@ def download_job_batch(
         local_spec_dir: Directory to store downloaded job specs.
         verbose: Verbose logging.
         remove_invalid_job_specs: Whether to remove invalid job specs.
-        quota: A thunk returning the UserQuotaInfo to use for validating
+        quota: A thunk returning the QuotaInfo to use for validating
                user project membership.
                If None, do not validate project membership.
 

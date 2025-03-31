@@ -55,7 +55,7 @@ from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, TrainerState, aot_model_analysis, select_mesh_config
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulationModifier,
@@ -517,7 +517,7 @@ class TrainerTest(test_utils.TestCase):
         original_compile_train_step_fn = trainer.compile_train_step
 
         def mock_compile_train_step(*args, compiler_options=None, **kwargs):
-            if compiler_options is not None:
+            if compiler_options:
                 compiled_with_options_call_count[0] += 1
             return original_compile_train_step_fn(
                 *args, compiler_options=compiler_options, **kwargs
@@ -564,11 +564,12 @@ class TrainerTest(test_utils.TestCase):
     @parameterized.parameters(
         {"platform": "cpu", "mesh_shape": (1, 1)},
         {"platform": "tpu", "mesh_shape": (4, 1)},
+        {"platform": "gpu", "mesh_shape": (8, 1)},
     )
     # pylint: enable=duplicate-code
     def test_compile_train_step(self, *, platform, mesh_shape):
         if not test_utils.is_supported_platform(platform):
-            return
+            pytest.skip(reason=f"Unsupported config: {platform=}, {mesh_shape=}.")
         cfg = SpmdTrainer.default_config().set(name="test_trainer", train_dtype=jnp.bfloat16)
         cfg.dir = tempfile.mkdtemp()
         cfg.mesh_axis_names = ("data", "model")
@@ -593,6 +594,10 @@ class TrainerTest(test_utils.TestCase):
         compiled_with_input_batch = trainer.compile_train_step(input_batch=input_batch)
         # In a single-host environment, both compiled functions should match.
         self.assertEqual(compiled_without_args.as_text(), compiled_with_input_batch.as_text())
+        self.assertEqual(
+            aot_model_analysis(compiled_without_args),
+            aot_model_analysis(compiled_with_input_batch),
+        )
 
         # A version compiled with non-default compiled args should be different.
         compiled_with_compiler_options = trainer.compile_train_step(
@@ -606,6 +611,10 @@ class TrainerTest(test_utils.TestCase):
         )
         self.assertEqual(
             compiled_without_args.as_text(), compiled_with_trainer_state_and_input_batch.as_text()
+        )
+        self.assertEqual(
+            aot_model_analysis(compiled_without_args),
+            aot_model_analysis(compiled_with_trainer_state_and_input_batch),
         )
 
     @parameterized.parameters(

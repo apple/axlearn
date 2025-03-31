@@ -21,6 +21,8 @@ from google.auth.credentials import Credentials
 from axlearn.cloud.common.utils import Table, infer_cli_name, subprocess_run
 from axlearn.cloud.gcp.scopes import DEFAULT_APPLICATION
 
+BEAM_SUBMITTER_LABEL = "beam_pipline_submitter"
+
 
 def common_flags(**kwargs):
     """Defines common GCP flags. Keyword args will be forwarded to flag definitions."""
@@ -263,7 +265,74 @@ def delete_k8s_jobset(name: str, *, namespace: str):
         raise
 
 
-def delete_k8s_job(name: str, *, namespace: str):
+def list_flink_deployments(*, namespace: str) -> list[str]:
+    """Returns a list of names of existing Flink deployments."""
+    # Avoid introducing a k8s dependency globally.
+    # pylint: disable-next=import-error,import-outside-toplevel
+    import kubernetes as k8s  # pytype: disable=import-error
+
+    api = k8s.client.CustomObjectsApi()
+
+    flink_deployments = api.list_namespaced_custom_object(
+        namespace=namespace,
+        group="flink.apache.org",
+        version="v1beta1",
+        plural="flinkdeployments",
+    )
+
+    names = []
+    for flink_deployment in flink_deployments["items"]:
+        if name := flink_deployment.get("metadata", {}).get("name", ""):
+            names.append(name)
+    return names
+
+
+def delete_flink_deployment(name: str, *, namespace: str):
+    """Deletes a K8s flink deployment by name."""
+    # Avoid introducing a k8s dependency globally.
+    # pylint: disable-next=import-error,import-outside-toplevel
+    import kubernetes as k8s  # pytype: disable=import-error
+
+    try:
+        k8s.client.CustomObjectsApi().delete_namespaced_custom_object(
+            name=name,
+            namespace=namespace,
+            propagation_policy="Foreground",
+            group="flink.apache.org",
+            version="v1beta1",
+            plural="flinkdeployments",
+        )
+    except k8s.client.ApiException as e:
+        if e.status == 404:
+            logging.info("Flink Deployment %s does not exist, no need to delete.", name)
+            return
+        raise
+
+
+def list_k8s_jobs(*, namespace: str, label_selector: Optional[str] = None) -> list[str]:
+    """Returns a list of names of existing K8s jobs.
+
+    Args:
+        namespace: The namespace of the K8s cluster.
+        label_selector: Comma-separated labels k=v to filter jobs
+
+    Returns:
+        A list of filtered names of existing K8s jobs.
+    """
+    # Avoid introducing a k8s dependency globally.
+    # pylint: disable-next=import-error,import-outside-toplevel
+    import kubernetes as k8s  # pytype: disable=import-error
+
+    jobs = k8s.client.BatchV1Api().list_namespaced_job(
+        namespace=namespace,
+        watch=False,
+        label_selector=label_selector,
+    )
+
+    return [job.metadata.name for job in jobs.items]
+
+
+def delete_k8s_job(name: str, *, namespace: str) -> None:
     """Deletes a K8s job by name. If the job is managed by a jobset, the job may be recreated."""
 
     # Avoid introducing a k8s dependency globally.
@@ -308,5 +377,4 @@ def k8s_jobset_table(jobsets: dict[str, list]) -> Table:
 class GCPAPI(str, enum.Enum):
     """GCP API to submit resource requests to."""
 
-    QRM = "QRM"
     GKE = "GKE"

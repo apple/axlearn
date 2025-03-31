@@ -27,6 +27,7 @@ core = [
     "jax==0.4.38",
     "jaxlib==0.4.38",
     "ml-dtypes==0.4.1",
+    "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
@@ -159,7 +160,6 @@ grain = [
 ]
 # Audio dependencies.
 audio = [
-    "einops==0.8.0",
     "levenshtein==0.25.1",
 ]
 

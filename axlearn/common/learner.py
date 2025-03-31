@@ -337,6 +337,7 @@ class Learner(BaseLearner):
         )
 
 
+# TODO(hanzhi-zhou): replace with utils.tree_merge.
 def _apply_updates(base: Nested[Tensor], updates: Nested[Tensor]) -> Nested[Tensor]:
     """Applies updates from `updates` to `base` in-place, keeping `updates` unchanged.
     Note that keys omitted from `updates` will be untouched in `base`.

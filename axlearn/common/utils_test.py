@@ -8,6 +8,7 @@ import enum
 import sys
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
+from functools import partial
 from typing import Any, NamedTuple, Optional, Union
 from unittest import mock
 
@@ -26,7 +27,12 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import learner, optimizers, serialization, struct, utils
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
-from axlearn.common.config import config_class, config_for_function, similar_names
+from axlearn.common.config import (
+    config_class,
+    config_for_function,
+    maybe_instantiate,
+    similar_names,
+)
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
@@ -49,12 +55,15 @@ from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
     NestedTensor,
+    PerParamFn,
     StackedKeyArray,
     Tensor,
     VDict,
     as_numpy_array,
     as_tensor,
+    canonicalize_per_param_dtype,
     cast_floats,
+    cast_floats_per_param,
     check_jax_type,
     check_param_shape_alignment,
     complete_partition_spec_tree,
@@ -71,6 +80,8 @@ from axlearn.common.utils import (
     infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    non_empty_leaf_merge_fn,
+    per_param_dtype_by_path,
     prune_empty,
     prune_tree,
     pytree_children,
@@ -80,6 +91,7 @@ from axlearn.common.utils import (
     set_data_dir,
     set_recursively,
     split_prng_key,
+    tree_merge,
     tree_paths,
     validate_contains_paths,
     validate_float_dtype,
@@ -718,6 +730,91 @@ class TreeUtilsTest(TestCase):
 
         self.assertEqual(out_tree["w2"].dtype, in_tree["w2"].dtype)
 
+    @parameterized.parameters(
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                update_rules=[
+                    ("w1", jnp.float32),
+                ],
+                default_dtype=jnp.bfloat16,
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": jnp.bfloat16,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path),
+            {
+                "w1": None,
+                "w2": None,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                update_rules=[
+                    ("w1", jnp.float32),
+                ],
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": None,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                default_dtype=jnp.float32,
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": jnp.float32,
+            },
+        ),
+    )
+    def test_per_param_train_dtype_by_path(self, config, cast_dtype):
+        tree = {
+            "w1": jnp.ones(2, dtype=jnp.bfloat16),
+            "w2": jnp.ones(3, dtype=jnp.bfloat16),
+        }
+        per_param_train_dtype_by_path_fn = config.instantiate()
+        out_tree = per_param_train_dtype_by_path_fn(tree)
+        self.assertEqual(out_tree, cast_dtype)
+
+    @parameterized.parameters(
+        None,
+        jnp.float32,
+        config_for_function(per_param_dtype_by_path).set(
+            update_rules=[
+                ("^.*w1.*$", jnp.float32),
+            ],
+            default_dtype=jnp.bfloat16,
+        ),
+    )
+    def test_canonicalize_per_param_dtype(self, train_dtype):
+        canonicalized_train_dtype = maybe_instantiate(canonicalize_per_param_dtype(train_dtype))
+        self.assertIsInstance(canonicalized_train_dtype, PerParamFn)
+
+    @parameterized.parameters(
+        (
+            {"w1": None},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+        ),
+        (
+            {"w1": jnp.float32},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.float32)},
+        ),
+        (
+            {"w1": jnp.float32, "w2": jnp.bfloat16},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16), "w2": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.float32), "w2": jnp.ones(2, dtype=jnp.bfloat16)},
+        ),
+    )
+    def test_cast_floats_per_param(self, per_param_train_dtype, in_tree, casted_tree):
+        out_tree = cast_floats_per_param(in_tree, per_param_train_dtype)
+        jax.tree.map(self.assertTensorEqual, out_tree, casted_tree)
+
     def test_count_model_params(self):
         tree = {
             "a": jnp.asarray([1]),
@@ -772,6 +869,65 @@ class TreeUtilsTest(TestCase):
             check_jax_type(kwargs={"key": "1"})
         with self.assertRaisesRegex(ValueError, "^Argument key has leaf with non-JAX type"):
             check_jax_type(pretty_named_args={"key": "1"})
+
+    def test_prune_tree(self):
+        in_tree = {
+            "a": {
+                "b": {"d": "test"},
+                "c": {
+                    "b": None,
+                    "e": VDict({"ee": 123}),
+                },
+            },
+            "f": 345,
+        }
+        # Prune by path.
+        result = prune_tree(in_tree, lambda k, _: "b" in k)
+        self.assertEqual({"a": {"c": {"e": VDict({"ee": 123})}}, "f": 345}, result)
+        # VDict should be preserved.
+        self.assertIsInstance(result["a"]["c"]["e"], VDict)
+        # Prune by path with prefix/separator.
+        self.assertEqual(
+            {"a": {"c": {"b": None, "e": {"ee": 123}}}, "f": 345},
+            prune_tree(in_tree, lambda k, _: k == "prefix:a:b", prefix="prefix", separator=":"),
+        )
+        # Prune by value.
+        self.assertEqual(
+            {"a": {"b": {"d": "test"}, "c": {"b": None, "e": VDict()}}},
+            prune_tree(in_tree, lambda _, v: isinstance(v, int)),
+        )
+
+    def test_tree_merge(self):
+        default_merge = partial(tree_merge, leaf_merge_fn=non_empty_leaf_merge_fn)
+        primary = {"a": {"b": {}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": ()}
+        out = default_merge(primary, secondary={"a": {"b": {"c": 1}}})
+        self.assertEqual(
+            out, {"a": {"b": {"c": 1}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": ()}
+        )
+        # Test preserving VDict.
+        self.assertIsInstance(out["a"]["c"], VDict)
+
+        with self.assertRaises(ValueError):
+            default_merge(primary, secondary={"a": {"b": 1}})
+        with self.assertRaises(ValueError):
+            default_merge(primary, secondary={"a": {"c": {"e": 456}}})
+
+        with self.assertRaises(ValueError):
+            # c is not a VDict.
+            tree_merge(primary, secondary={"a": {"c": {"e": 456}}}, leaf_merge_fn=lambda f, s: s)
+        out = tree_merge(
+            primary, secondary={"a": {"c": VDict({"e": 456})}}, leaf_merge_fn=lambda f, s: s
+        )
+        self.assertEqual(
+            out, {"a": {"b": {}, "c": VDict({"e": 456}), "g": {"e": 123}}, "empty": ()}
+        )
+
+        # Non-empty leaves overrides empty leaves.
+        out = default_merge(primary, secondary={"empty": 1})
+        self.assertEqual(out, {"a": {"b": {}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": 1})
+
+        out = default_merge(primary, secondary={"a": {"g": {"e": None}}})
+        self.assertEqual(out, primary)
 
     @parameterized.parameters(
         dict(lengths=[3, 4], dtype=None, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
@@ -1354,36 +1510,6 @@ class MatchRegexRulesTest(TestCase):
         self.assertEqual("w", match_regex_rules("not_special/weight", rules=rules))
         # Custom default value.
         self.assertEqual("d", match_regex_rules("layer/scale", rules=rules, default_value="d"))
-
-
-class PruneTreeTest(TestCase):
-    """Tests prune_tree."""
-
-    def test(self):
-        in_tree = {
-            "a": {
-                "b": {"d": "test"},
-                "c": {
-                    "b": None,
-                    "e": 123,
-                },
-            },
-            "f": 345,
-        }
-        # Prune by path.
-        self.assertEqual(
-            {"a": {"c": {"e": 123}}, "f": 345}, prune_tree(in_tree, lambda k, _: "b" in k)
-        )
-        # Prune by path with prefix/separator.
-        self.assertEqual(
-            {"a": {"c": {"b": None, "e": 123}}, "f": 345},
-            prune_tree(in_tree, lambda k, _: k == "prefix:a:b", prefix="prefix", separator=":"),
-        )
-        # Prune by value.
-        self.assertEqual(
-            {"a": {"b": {"d": "test"}, "c": {"b": None}}},
-            prune_tree(in_tree, lambda _, v: isinstance(v, int)),
-        )
 
 
 @dataclasses.dataclass(frozen=True)

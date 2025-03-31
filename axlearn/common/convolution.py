@@ -445,11 +445,11 @@ class Conv1DWithPadding(Conv1D):
 
         Args:
             x: A Tensor of shape [batch_size, seq_len, frequency, input_dim].
-            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
 
         Returns:
             output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
-            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
         """
         cfg = self.config
         chex.assert_rank(x, paddings.ndim + 1)
@@ -671,11 +671,11 @@ class Conv2DWith1DPadding(Conv2D):
 
         Args:
             x: A Tensor of shape [batch_size, seq_len, frequency, input_dim].
-            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
 
         Returns:
             output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
-            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
         """
         cfg = self.config
         # Apply padding to the input.
@@ -1588,11 +1588,11 @@ class Conv2DTransposeWith1DPadding(Conv2DTranspose):
 
         Args:
             x: A Tensor of shape [batch_size, seq_len, frequency, input_dim].
-            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
 
         Returns:
             output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
-            paddings: 0/1 Tensor of shape [batch_size, seq_len].
+            paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
         """
         cfg = self.config
         # Apply padding to the input.
@@ -1734,11 +1734,11 @@ class StackOverTime(BaseLayer):
 
         Args:
             inputs: Tensor of shape [batch, time, input_dim].
-            paddings: 0/1 Tensor of shape [batch, time], paddings of the input sequences.
+            paddings: 0/1 boolean Tensor of shape [batch, time], paddings of the input sequences.
 
         Returns:
             stacked_inputs: Tensor of shape [batch, time // stride, input_dim * stride].
-            stacked_paddings: 0/1 Tensor of shape [batch, time // stride]. An output frame
+            stacked_paddings: 0/1 boolean Tensor of shape [batch, time // stride]. An output frame
                 is padding if at least one of the stacked input frames is padding.
 
         Raises:

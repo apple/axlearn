@@ -24,6 +24,7 @@ from axlearn.common.attention import (
     FusedQKVLinear,
     GroupedQKVLinear,
     GroupedQueryAttention,
+    KVCache,
     MultiheadAttention,
     RematRegexSavePatterns,
     RepeatedTransformerLayer,
@@ -352,6 +353,9 @@ def get_trainer_kwargs(
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
+                            GradientAccumulationModifier.default_config().set(
+                                grad_acc_steps=4,
+                            ),
                         ],
                     ),
                 ),
@@ -770,14 +774,13 @@ def model_config(
     else:
         atten_cfg = MultiheadAttention.default_config()
         atten_input_linear = FusedQKVLinear.default_config()
-    atten_input_linear.cache_dtype = STEP_DTYPE
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
     atten_qkv_linear = RoFormerQKVLinear.default_config().set(
-        cache_dtype=STEP_DTYPE,
         input_linear=atten_input_linear,
         rotary_value=False,
     )
     atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
+    attention_kv_cache = KVCache.default_config().set(cache_dtype=STEP_DTYPE)
 
     cfg = common_model_config(
         num_layers=num_layers,
@@ -793,6 +796,7 @@ def model_config(
         lm_head_cfg=LmHead.default_config() if not shared_lm_head else None,
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
+        attention_kv_cache=attention_kv_cache,
         pad_token_id=pad_token_id,
         eos_token_id=eos_token_id,
     )

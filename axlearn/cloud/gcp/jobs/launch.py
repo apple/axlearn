@@ -8,7 +8,7 @@ The launch command provides a few benefits:
 
 The launch flow depends on the launcher being used. Each launcher must define a "matcher" function
 that decides, for a given CLI action (e.g. 'start') and instance type (e.g. 'tpu-v4-8'), whether the
-launcher can be used. See `_LAUNCHERS` for a full list, and `BastionManagedTPUJob` for an example.
+launcher can be used. See `_LAUNCHERS` for a full list, and `BastionManagedGKEJob` for an example.
 
 Possible actions: [start|update|stop|list]
 
@@ -73,7 +73,7 @@ import sys
 import tempfile
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, Callable, NamedTuple, Optional, Protocol, TextIO
+from typing import Callable, NamedTuple, Optional, Protocol, TextIO
 
 from absl import app, flags, logging
 
@@ -91,10 +91,11 @@ from axlearn.cloud.common.utils import (
     parse_action,
 )
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
-from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import Job
-from axlearn.cloud.gcp.jobs import gke_runner, tpu_runner
+from axlearn.cloud.gcp.jobs import gke_runner
 from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
+from axlearn.cloud.gcp.jobs.gke_runner import JobType, job_type_flags
 from axlearn.cloud.gcp.jobs.launch_utils import (
     JobsToTableFn,
     jobs_table,
@@ -104,18 +105,9 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
     user_usage_table,
     validate_resource_flags,
     with_k8s_jobset_state,
-    with_qrm_tpu_state,
 )
 from axlearn.cloud.gcp.tpu import infer_tpu_resources, infer_tpu_type, infer_tpu_workers
-from axlearn.cloud.gcp.utils import (
-    GCPAPI,
-    catch_auth,
-    get_credentials,
-    load_kube_config,
-    validate_k8s_name,
-    validate_resource_name,
-)
-from axlearn.cloud.gcp.vm import _compute_resource, get_vm_node
+from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, load_kube_config, validate_k8s_name
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -128,12 +120,8 @@ from axlearn.common.config import (
 FLAGS = flags.FLAGS
 
 
-def _get_bastion_vm(bastion_name: str) -> Optional[dict[str, Any]]:
-    return get_vm_node(bastion_name, _compute_resource(get_credentials()))
-
-
 class _Matcher(Protocol):
-    def __call__(self, *, action: str, instance_type: str, gcp_api: str) -> bool:
+    def __call__(self, *, action: str, instance_type: str, gcp_api: str, job_type: str) -> bool:
         pass
 
 
@@ -170,7 +158,7 @@ class BaseBastionManagedJob(Job):
     the implementation of the job executed by the bastion, as well as resources used by the job,
     which will be used for quota management and scheduling.
 
-    See `BastionManagedTPUJob` as an example.
+    See `BastionManagedGKEJob` as an example.
     """
 
     # Runner class, a subclass of Job that runs locally on the bastion.
@@ -282,7 +270,11 @@ class BaseBastionManagedJob(Job):
         if action in ("start", "update"):
             cfg.runner = cls.runner.from_flags(fv, command=command)
             runner_flags = " ".join(serialized_flags_for_job(fv, cls.runner))
-            cfg.command = f"python3 -m {cls.runner.__module__} {action} {runner_flags} -- {command}"
+            cfg.command = (
+                f"python3 -m {cls.runner.__module__} {action} {runner_flags} "
+                f"--job_type={fv.job_type} "
+                f"-- {command}"
+            )
             if cfg.runner.bundler and fv.bundler_exclude:
                 cfg.runner.bundler.set(exclude=fv.bundler_exclude)
         else:
@@ -353,19 +345,15 @@ class BaseBastionManagedJob(Job):
                 job_id=job_id,
             )
             jobspec = new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata)
-            serialize_jobspec(
-                jobspec,
-                f,
-            )
+            serialize_jobspec(jobspec, f)
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
-        gcp_api = "gke" if "gke" in cfg.bastion_name else "qrm"
         print(
             "\nView bastion outputs with: (if not found, check job and project history)\n"
             f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
             f"\nStop/cancel the job with:\n"
             f"{infer_cli_name()} gcp launch stop "
             f"--name={cfg.name} --bastion={cfg.bastion_name} --instance_type={cfg.instance_type} "
-            f"--env_id={cfg.env_id} --gcp_api={gcp_api}\n"
+            f"--env_id={cfg.env_id}\n"
             "\nCheck job history with:\n"
             f"{infer_cli_name()} gcp bastion history "
             f"--name={cfg.bastion_name} --env_id={cfg.env_id} "
@@ -413,70 +401,6 @@ class BaseBastionManagedJob(Job):
         return jobspec
 
 
-# TODO(markblee): Add a BastionManagedCPUJob.
-class BastionManagedTPUJob(BaseBastionManagedJob):
-    """Launches a TPU job via bastion."""
-
-    runner = tpu_runner.TPURunnerJob
-
-    @config_class
-    class Config(BaseBastionManagedJob.Config):
-        """Configures BastionManagedTPUJob.
-
-        Attributes:
-            num_replicas: Number of TPU slices.
-        """
-
-        num_replicas: int = 1
-
-    @classmethod
-    def define_flags(cls, fv: flags.FlagValues):
-        """Defines launch flags using tpu_runner."""
-        super().define_flags(fv)
-        fv.set_default("name", generate_job_name())
-
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
-        cfg = super().from_flags(fv, command=command, action=action, **kwargs)
-        cfg.output_tables = [with_qrm_tpu_state(jobs_table), user_usage_table, project_usage_table]
-        cfg.resources = config_for_function(infer_tpu_resources).set(
-            instance_type=fv.instance_type,
-            num_replicas=fv.num_replicas,
-        )
-        return cfg
-
-    def _execute(self) -> JobSpec:
-        """Submits the command to bastion.
-
-        In addition to logic defined in `BaseBastionManagedJob._execute()`, also emits the output
-        logs for each TPU worker.
-        """
-        cfg: BastionManagedTPUJob.Config = self.config
-
-        bastion_node = _get_bastion_vm(cfg.bastion_name)
-        if bastion_node is None or bastion_node.get("status", None) != "RUNNING":
-            logging.warning(
-                "Bastion %s does not appear to be running yet. "
-                "It will need to be running before jobs will execute.",
-                cfg.bastion_name,
-            )
-
-        # Job name has a suffix "-{slice_index}" for multi-slice.
-        validate_resource_name(
-            cfg.name if cfg.num_replicas == 1 else f"{cfg.name}-{cfg.num_replicas}"
-        )
-
-        job_spec = super()._execute()
-        num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
-        worker_log = f'gsutil cat "{cfg.output_dir}/output/*-0/run.log"'
-        print(
-            "\nNote that the job may take a few minutes to start. "
-            f"Once started, view TPU log outputs with:\n{worker_log}\n"
-            f"Replace `*-0` with `*-{{idx}}` where idx is between [0, {num_workers}).\n"
-        )
-        return job_spec
-
-
 class BastionManagedGKEJob(BaseBastionManagedJob):
     """A GKE job managed by bastion."""
 
@@ -502,10 +426,20 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def define_flags(cls, fv: flags.FlagValues):
         """Defines launch flags using tpu_runner."""
         super().define_flags(fv)
-        fv.set_default("name", generate_job_name())
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_string("namespace", "default", "K8s namespace.", **common_kwargs)
+        flags.DEFINE_string("project", None, "The GCP project name.", **common_kwargs)
+        flags.DEFINE_string("zone", None, "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string("namespace", None, "K8s namespace.", **common_kwargs)
         flags.DEFINE_string("cluster", None, "K8s cluster.", **common_kwargs)
+
+    @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        super().set_defaults(fv)
+        # Don't override `name` if already specified, since the default is non-deterministic.
+        fv.set_default("name", fv.name or generate_job_name())
+        fv.set_default("project", default_project())
+        fv.set_default("zone", default_zone())
+        fv.set_default("namespace", "default")
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
@@ -563,20 +497,14 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
 
 # Launchers specified here will be tried (in the given order) when launching a given instance type.
 _LAUNCHERS = [
-    # TPU QRM launcher.
     Launcher(
-        job_cls=BastionManagedTPUJob,
+        job_cls=BastionManagedGKEJob.with_runner(gke_runner.FlinkGKERunnerJob),
         matcher=config_for_function(match_by_regex).set(
-            match_regex=dict(start=r"tpu-v.+-(\d)+", list=r"tpu.*", stop=r"tpu.*"),
-            gcp_api=GCPAPI.QRM.value,
+            match_regex=None,
+            gcp_api=None,
+            job_type=JobType.FLINK.value,
         ),
-        description=(
-            "Supports launching TPU jobs via QRM. "
-            "For 'start', provide --gcp_api=qrm, as well as the full TPU version, "
-            "e.g. --instance_type=tpu-v4-8. "
-            "For 'list' or 'stop', provide --gcp_api=qrm, as well as the accelerator type, "
-            "e.g. --instance_type=tpu."
-        ),
+        description="Supports running Flink jobs on GKE TPU",
     ),
     # TPU GKE launcher.
     Launcher(
@@ -584,19 +512,20 @@ _LAUNCHERS = [
         matcher=config_for_function(match_by_regex).set(
             match_regex=dict(start=r"tpu-v.+-(\d)+", update=r"tpu.*", list=r"tpu.*", stop=r"tpu.*"),
             gcp_api=GCPAPI.GKE.value,
+            job_type=JobType.DEFAULT.value,
         ),
         description=(
             "Supports launching TPU jobs via GKE. "
-            "For 'start' or 'update', provide --gcp_api=gke, as well as the full instance type, "
-            "e.g. --instance_type=tpu-v4-8. "
-            "For 'list' or 'stop', provide --gcp_api=gke as well as the accelerator type, "
-            "e.g. --instance_type=tpu."
+            "For 'start' or 'update', provide the instance type, e.g. --instance_type=tpu-v4-8. "
+            "For 'list' or 'stop', provide the accelerator type, e.g. --instance_type=tpu."
         ),
     ),
 ]
 
 
-def _get_launcher_or_exit(*, action: str, instance_type: str, gcp_api: str) -> Launcher:
+def _get_launcher_or_exit(
+    *, action: str, instance_type: str, gcp_api: str, flag_values: flags.FlagValues = FLAGS
+) -> Launcher:
     """Retrieves launcher by matching instance_type and gcp_api.
 
     If there are multiple matches, the first one in the registry is returned.
@@ -604,7 +533,12 @@ def _get_launcher_or_exit(*, action: str, instance_type: str, gcp_api: str) -> L
     # Identify launcher from instance type.
     for launcher in _LAUNCHERS:
         m = maybe_instantiate(launcher.matcher)
-        if m(action=action, instance_type=instance_type, gcp_api=gcp_api):
+        if m(
+            action=action,
+            instance_type=instance_type,
+            gcp_api=gcp_api,
+            job_type=flag_values.job_type,
+        ):
             return launcher
 
     launchers = "\n".join(
@@ -626,7 +560,7 @@ def _gcp_api(fv: flags.FlagValues = FLAGS) -> str:
         return fv.gcp_api.lower()
     # The return value depends on --zone, so cannot be set as the default value of fv.gcp_api.
     return gcp_settings(
-        "launch_gcp_api", default=GCPAPI.QRM.lower(), required=False, fv=fv
+        "launch_gcp_api", default=GCPAPI.GKE.lower(), required=False, fv=fv
     )  # pytype: disable=bad-return-type
 
 
@@ -640,6 +574,7 @@ def main(_):
         action=action,
         instance_type=FLAGS.instance_type,
         gcp_api=_gcp_api(),
+        flag_values=FLAGS,
     )
 
     # Parse the command from argv. Note that argv may or may not contain action, so we explicitly
@@ -684,6 +619,7 @@ def _prelaunch_flags(fv: flags.FlagValues = FLAGS):
     flags.DEFINE_bool(
         "dry_run", False, "Output job config and exit without running.", flag_values=fv
     )
+    job_type_flags(fv)
 
 
 def _private_flags():
@@ -703,6 +639,7 @@ def _private_flags():
             action=action,
             instance_type=FLAGS.instance_type,
             gcp_api=_gcp_api(),
+            flag_values=FLAGS,
         )
         orig_flags = FLAGS.flag_values_dict()
         launcher.job_cls.define_flags(FLAGS)

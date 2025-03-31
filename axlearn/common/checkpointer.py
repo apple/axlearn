@@ -12,10 +12,11 @@ import threading
 import time
 from concurrent import futures
 from types import TracebackType
-from typing import Any, NamedTuple, Optional, Protocol, TypeAlias, Union
+from typing import Any, NamedTuple, Optional, Protocol, Union, runtime_checkable
 
 import jax
 import jax.numpy as jnp
+import msgpack
 import tensorflow as tf
 from absl import logging
 from jax._src.mesh import thread_resources
@@ -54,15 +55,6 @@ from axlearn.common.utils import (
     TensorSpec,
     set_recursively,
 )
-
-try:
-    import grain.python as grain
-
-    _GrainIterator: TypeAlias = Union[grain.DatasetIterator, grain.PyGrainDatasetIterator]
-    _GRAIN_INSTALLED = True
-except ImportError:
-    logging.warning("grain is not installed. Will not be able to checkpoint grain iterators.")
-    _GRAIN_INSTALLED = False
 
 # Number of digits in the step directory.
 STEP_NUM_DIGITS = 8
@@ -202,43 +194,48 @@ def restore_tf_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
     return value_map
 
 
-# pylint: disable-next=redefined-builtin
-def maybe_save_grain_savables(value_map: Nested[Any], *, dir: str):
-    """Saves grain savables from `value_map` into `dir`.
+@runtime_checkable
+class PythonSavable(Protocol):
+    """A Python object that implements save/restore logic.
 
-    Is a no-op if grain is not installed.
+    For example, `grain` datasets implement this protocol.
     """
-    if not _GRAIN_INSTALLED:
-        return
+
+    def get_state(self) -> Union[bytes, Nested[Any]]:
+        """Gets checkpoint state.
+
+        The state should be serializable via `msgpack`.
+        """
+
+    def set_state(self, state: Union[bytes, Nested[Any]]):
+        """Sets checkpoint state.
+
+        The input is a `msgpack`-deserialized object corresponding to restored checkpoint state.
+        """
+
+
+# pylint: disable-next=redefined-builtin
+def maybe_save_python_savables(value_map: Nested[Any], *, dir: str):
+    """Saves python savables from `value_map` into `dir`."""
     for path, value in utils.flatten_items(value_map):
-        if not callable(getattr(value, "get_state", None)):
+        if not isinstance(value, PythonSavable):
             continue
         state = value.get_state()
-        if isinstance(state, bytes):
-            state = state.decode("utf-8")
         dst = os.path.join(dir, path)
         fs.makedirs(os.path.dirname(dst))
-        with fs.open(dst, "w") as f:
-            json.dump(state, f, indent=4)
+        with fs.open(dst, "wb") as f:
+            f.write(msgpack.packb(state))
 
 
 # pylint: disable-next=redefined-builtin
-def maybe_restore_grain_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
-    """Restores grain savables from `dir` into `value_map`.
-
-    Is a no-op if grain is not installed.
-    """
-    if not _GRAIN_INSTALLED:
-        return
+def maybe_restore_python_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
+    """Restores Python savables from `dir` into `value_map`."""
     for path, value in utils.flatten_items(value_map):
-        if not callable(getattr(value, "set_state", None)):
+        if not isinstance(value, PythonSavable):
             continue
         with fs.open(os.path.join(dir, path), "rb") as f:
             state = f.read()
-        if isinstance(value, grain.DatasetIterator):
-            if isinstance(state, bytes):
-                state = state.decode("utf-8")
-            state = json.loads(state)
+        state = msgpack.unpackb(state)
         value.set_state(state)
 
     return value_map
@@ -433,7 +430,7 @@ class TensorStoreStateStorage(StateStorage):
         shardings: list[jax.sharding.Sharding]
         gda_values: list[Tensor]
         tf_ckpt_map: dict[str, Any]
-        grain_ckpt_map: dict[str, Any]
+        python_ckpt_map: dict[str, Any]
 
     def _spec_from_path(self, ckpt_path: str):
         # TODO(markblee): Enable ocdbt driver.
@@ -449,7 +446,7 @@ class TensorStoreStateStorage(StateStorage):
             shardings=[],
             gda_values=[],
             tf_ckpt_map={},
-            grain_ckpt_map={},
+            python_ckpt_map={},
         )
 
         mesh = thread_resources.env.physical_mesh
@@ -479,9 +476,9 @@ class TensorStoreStateStorage(StateStorage):
                 logging.vlog(3, "Adding value (%s) to tf_ckpt_map", value)
                 spec.index.append((path, str(type(value))))
                 spec.tf_ckpt_map[path] = value
-            elif _GRAIN_INSTALLED and isinstance(value, _GrainIterator):
+            elif isinstance(value, PythonSavable):
                 spec.index.append((path, str(type(value))))
-                spec.grain_ckpt_map[path] = value
+                spec.python_ckpt_map[path] = value
             else:
                 logging.vlog(3, "Adding value (%s) to index", value)
                 spec.index.append((path, value))
@@ -513,8 +510,8 @@ class TensorStoreStateStorage(StateStorage):
             executor=self._executor,
             dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"),
         )
-        maybe_save_grain_savables(
-            spec.grain_ckpt_map, dir=os.path.join(ckpt_dir, f"grain_{jax.process_index()}")
+        maybe_save_python_savables(
+            spec.python_ckpt_map, dir=os.path.join(ckpt_dir, f"python_{jax.process_index()}")
         )
 
         def commit():
@@ -555,8 +552,8 @@ class TensorStoreStateStorage(StateStorage):
         restore_tf_savables(
             spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
         )
-        maybe_restore_grain_savables(
-            spec.grain_ckpt_map, dir=os.path.join(ckpt_dir, f"grain_{jax.process_index()}")
+        maybe_restore_python_savables(
+            spec.python_ckpt_map, dir=os.path.join(ckpt_dir, f"python_{jax.process_index()}")
         )
         return self._restore_tensorstore_state(state, ckpt_dir=ckpt_dir, spec=spec)
 
@@ -576,8 +573,8 @@ class TensorStoreStateStorage(StateStorage):
                 pass
             elif path in spec.tf_ckpt_map:
                 state_leaves.append(spec.tf_ckpt_map[path])
-            elif path in spec.grain_ckpt_map:
-                state_leaves.append(spec.grain_ckpt_map[path])
+            elif path in spec.python_ckpt_map:
+                state_leaves.append(spec.python_ckpt_map[path])
             elif isinstance(value, dict):
                 state_leaves.append(restored_gda_values.pop(0))
             else:

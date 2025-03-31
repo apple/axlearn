@@ -10,7 +10,7 @@ from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 import axlearn.common
-from axlearn.common import optimizers, test_utils
+from axlearn.common import optimizers, schedule, test_utils
 from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_for_function, maybe_instantiate
 from axlearn.common.module import (
@@ -21,11 +21,12 @@ from axlearn.common.module import (
 )
 from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
 from axlearn.common.update_transformation import (
+    OverrideInplaceUpdateTransformation,
     Updates,
     UpdateTransformation,
     WrappedPartitionedGradientTransformation,
 )
-from axlearn.common.utils import Nested, Tensor, VDict
+from axlearn.common.utils import Nested, Tensor, VDict, tree_paths
 
 
 class UpdateTransformationTest(test_utils.TestCase):
@@ -166,7 +167,7 @@ def mock_params() -> Nested[Tensor]:
     )
 
 
-def mock_updates(state_param_none: bool = True) -> axlearn.common.update_transformation.Updates:
+def mock_updates(state_param_none: bool = True) -> Updates:
     """Create an updates object with various semi-reasonable values."""
     model_params = mock_params()
     if state_param_none:
@@ -186,7 +187,7 @@ def mock_updates(state_param_none: bool = True) -> axlearn.common.update_transfo
         more_state=jnp.arange(3, dtype=jnp.int32),
         do_not_update=optax.MaskedNode(),
     )
-    updates = axlearn.common.update_transformation.Updates(
+    updates = Updates(
         opt_params=opt_params, delta_updates=delta_updates, inplace_updates=inplace_updates
     )
     return updates
@@ -263,6 +264,47 @@ class UpdatesTest(test_utils.TestCase):
 
         chex.assert_trees_all_equal_structs(actual, expected)
         self.assertNestedAllClose(actual, expected)
+
+
+class OverrideInplaceUpdateTransformationTest(test_utils.TestCase):
+    """Tests for `OverrideInplaceUpdateTransformation`."""
+
+    def test_override_inplace_update_transformation(self):
+        learning_rate = config_for_function(schedule.stepwise).set(
+            sub=[0.1, 0.01, 0.001],
+            start_step=[100, 200],
+        )
+        transformation = config_for_function(optimizers.adamw_optimizer).set(
+            learning_rate=learning_rate, b1=0.9, b2=0.95, eps=1e-7
+        )
+        cfg = OverrideInplaceUpdateTransformation.default_config().set(
+            name="tmp", transformation=transformation, rules=[".*weight"]
+        )
+        update_transformation: UpdateTransformation = cfg.instantiate(parent=None)
+
+        updates = mock_updates()
+        param_specs = updates.param_specs()
+        actual_init = update_transformation.init(updates.opt_params)
+        actual_specs = update_transformation.create_state_partition_specs(param_specs)
+
+        # `weight` should be filtered from both init states and specs.
+        jax.tree.map(lambda path: self.assertNotIn("weight", path), tree_paths(actual_init))
+        jax.tree.map(lambda path: self.assertNotIn("weight", path), tree_paths(actual_specs))
+
+        actual_update, _ = functional(
+            module=update_transformation,
+            prng_key=None,
+            state=actual_init,
+            inputs=[updates],
+            method="__call__",
+            is_training=True,
+        )
+
+        # `weight` should be in both `inplace_updates` and `delta_updates`.
+        out = jax.tree.map(lambda path: "weight" in path, tree_paths(actual_update.delta_updates))
+        self.assertTrue(jax.tree.reduce(lambda a, b: a or b, out))
+        out = jax.tree.map(lambda path: "weight" in path, tree_paths(actual_update.inplace_updates))
+        self.assertTrue(jax.tree.reduce(lambda a, b: a or b, out))
 
 
 if __name__ == "__main__":

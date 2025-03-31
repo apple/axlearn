@@ -39,14 +39,23 @@ from axlearn.common.optimizers import (
     ParamEmaState,
     adafactor_optimizer,
     adam_optimizer,
+    adamw_optimizer,
     chain,
     clip_by_global_norm,
+    optax,
     sgd_optimizer,
+)
+from axlearn.common.quantized_dot_general.layers import (
+    DotGeneralQuantizationType,
+    FP8AmaxHistoryParams,
+    QuantizedDotGeneral,
+    get_all_fp8_param_names,
 )
 from axlearn.common.test_utils import TestCase
 from axlearn.common.update_transformation import (
     ForwardOutputs,
     ForwardPass,
+    OverrideInplaceUpdateTransformation,
     Updates,
     UpdateTransformation,
 )
@@ -1511,6 +1520,146 @@ class CompositeLearnerTest(TestCase):
         state = learner.init(updates.opt_params)
 
         F(learner, method="update", prng_key=None, state=state, inputs=[updates], is_training=True)
+
+    @parameterized.parameters(False, True)
+    def test_fp8_override_update(self, use_override_inplace_update):
+        """Tests FP8 with `OverrideInplaceUpdateTransformation`
+
+        FP8 should work correctly when using `OverrideInplaceUpdateTransformation`
+        (use_override_inplace_update=True) and it doesn't work otherwise.
+        """
+        if jax.default_backend() != "gpu":
+            self.skipTest("Need H100 for this test.")
+        # Arbitrary values that don't matter.
+        learning_rate = config_for_function(schedule.stepwise).set(
+            sub=[0.1, 0.01, 0.001],
+            start_step=[100, 200],
+        )
+        transformation = config_for_function(chain).set(
+            args=(
+                config_for_function(clip_by_global_norm),
+                config_for_function(adamw_optimizer).set(
+                    learning_rate=learning_rate, b1=0.9, b2=0.95, eps=1e-7
+                ),
+            ),
+        )
+        if use_override_inplace_update:
+            optimizer: OverrideInplaceUpdateTransformation.Config = (
+                OverrideInplaceUpdateTransformation.default_config()
+            )
+            optimizer.transformation = transformation
+            optimizer.rules = [f".*{x}" for x in get_all_fp8_param_names()]
+        else:
+            optimizer = transformation
+        cfg = Learner.default_config().set(name="test", optimizer=optimizer)
+        learner: Learner = cfg.instantiate(parent=None)
+
+        q_dot_cfg: QuantizedDotGeneral.Config = QuantizedDotGeneral.default_config()
+        q_dot_cfg.quantization_type = DotGeneralQuantizationType.FP_8
+        q_dot_cfg.name = "quantized_dot_general_layer"
+        q_dot_cfg.fp8_amax_history_length = 2
+        quantized_dot_general_layer: QuantizedDotGeneral = q_dot_cfg.instantiate(parent=None)
+        params = quantized_dot_general_layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123)
+        )
+        inputs = [
+            "bd,dh->bh",
+            jax.random.normal(
+                jax.random.PRNGKey(0),
+                [32, 32],
+                dtype=jnp.bfloat16,
+            ),
+            jax.random.normal(
+                jax.random.PRNGKey(1),
+                [32, 32],
+                dtype=jnp.bfloat16,
+            ),
+        ]
+
+        model_params = jax.tree.map(lambda x: OptParam(x, None, 1.0), params)
+        state = learner.init(model_params=model_params)
+
+        def forward_fn(model_params, inputs):
+            model_output_collection = new_output_collection()
+            with child_context(
+                "quantized_dot_general_layer",
+                module=quantized_dot_general_layer,
+                state=model_params,
+                prng_key=jax.random.PRNGKey(5),
+                output_collection=model_output_collection,
+            ):
+                out = quantized_dot_general_layer.einsum_maybe_quantized(
+                    inputs[0], activation=inputs[1], kernel=inputs[2]
+                )
+                loss = jnp.sum(out)
+            return ForwardOutputs(
+                loss=loss,
+                aux=out,
+                output_collection=model_output_collection,
+            )
+
+        def step():
+            return F(
+                learner,
+                method="forward_and_backward",
+                is_training=True,
+                prng_key=jax.random.PRNGKey(123),
+                state=state,
+                inputs=dict(fn=forward_fn, inputs=inputs, opt_params=model_params),
+            )
+
+        fwd_bwd_outputs, learner_output_collection = step()
+        visited_adam_state = False
+        # Before updating the amax history for delayed scaling, fp8 is less accurate.
+        self.assertFalse(
+            jnp.allclose(
+                jnp.einsum(*inputs), fwd_bwd_outputs.forward_outputs.aux, atol=0.5, rtol=0.2
+            )
+        )
+        self.assertTrue(
+            jnp.allclose(jnp.einsum(*inputs), fwd_bwd_outputs.forward_outputs.aux, atol=0.5, rtol=1)
+        )
+
+        # Assert that no optimizer states will be created for FP8 scales and amax history.
+        def assert_empty_optimizer(adam_state: optax.ScaleByAdamState):
+            nonlocal visited_adam_state
+            if isinstance(adam_state, optax.ScaleByAdamState):
+                is_leaf = lambda x: x is None
+                if use_override_inplace_update:
+                    jax.tree.map(self.assertIsNone, adam_state.mu, is_leaf=is_leaf)
+                    jax.tree.map(self.assertIsNone, adam_state.nu, is_leaf=is_leaf)
+                else:
+                    jax.tree.map(self.assertIsNotNone, adam_state.mu, is_leaf=is_leaf)
+                    jax.tree.map(self.assertIsNotNone, adam_state.nu, is_leaf=is_leaf)
+                visited_adam_state = True
+
+        jax.tree.map(
+            assert_empty_optimizer,
+            learner_output_collection.state_updates,
+            is_leaf=lambda x: isinstance(x, optax.ScaleByAdamState),
+        )
+        self.assertTrue(visited_adam_state)
+
+        updated_params = fwd_bwd_outputs.backward_outputs.updated_params
+        # After learner update, amax history should be positive.
+        if use_override_inplace_update:
+            for x in FP8AmaxHistoryParams:
+                self.assertGreater(updated_params[x.value][0], 0.0)
+        else:
+            # If using a regualr update transformation, learner will try to use adam rule for
+            # these parameters, resulting in negative values.
+            for x in FP8AmaxHistoryParams:
+                self.assertLess(updated_params[x.value][0], 0.0)
+
+        model_params = jax.tree.map(lambda x: OptParam(x, None, 1.0), updated_params)
+        fwd_bwd_outputs, learner_output_collection = step()
+        # After amax update, fp8 should be more accurate if we run the same input.
+        if use_override_inplace_update:
+            self.assertTrue(
+                jnp.allclose(
+                    jnp.einsum(*inputs), fwd_bwd_outputs.forward_outputs.aux, atol=0.5, rtol=0.2
+                )
+            )
 
 
 if __name__ == "__main__":

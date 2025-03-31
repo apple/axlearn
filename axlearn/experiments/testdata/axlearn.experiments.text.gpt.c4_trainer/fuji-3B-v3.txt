@@ -228,6 +228,9 @@ mesh_rules[0][1].config_modifiers[3].partition_specs['model.decoder.transformer.
 mesh_rules[0][1].config_modifiers[3].partition_specs['model.decoder.transformer.layer.feed_forward.linear2']['output_partition_spec'][0][1]: 'fsdp'
 mesh_rules[0][1].config_modifiers[3].partition_specs['model.decoder.transformer.layer.feed_forward.linear2']['output_partition_spec'][1]: None
 mesh_rules[0][1].config_modifiers[3].partition_specs['model.decoder.transformer.layer.feed_forward.linear2']['output_partition_spec'][2]: None
+mesh_rules[0][1].config_modifiers[4].grad_acc_steps: 4
+mesh_rules[0][1].config_modifiers[4].klass: 'axlearn.common.trainer_config_modifier.GradientAccumulationModifier'
+mesh_rules[0][1].config_modifiers[4].metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 mesh_rules[0][1].klass: 'axlearn.common.trainer_config_modifier.ChainConfigModifier'
 mesh_shape[0]: 1
 mesh_shape[1]: -1
@@ -306,8 +309,6 @@ model.decoder.transformer.layer.remat_spec['policy'].offload_dst: 'pinned_host'
 model.decoder.transformer.layer.remat_spec['policy'].offload_src: 'device'
 model.decoder.transformer.layer.self_attention.attention.causal: True
 model.decoder.transformer.layer.self_attention.attention.dropout.klass: 'axlearn.common.layers.Dropout'
-model.decoder.transformer.layer.self_attention.attention.input_linear.cache_dtype: 'jax.numpy.bfloat16'
-model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.cache_dtype: 'jax.numpy.bfloat16'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.klass: 'axlearn.common.attention.FusedGroupedQKVLinear'
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.bias: False
 model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear.layer.klass: 'axlearn.common.attention.MultiheadInputLinear'
@@ -323,6 +324,8 @@ model.decoder.transformer.layer.self_attention.attention.input_linear.rope_pos_e
 model.decoder.transformer.layer.self_attention.attention.input_linear.rotary_value: False
 model.decoder.transformer.layer.self_attention.attention.key_scale.klass: 'axlearn.common.attention.ScaleKey'
 model.decoder.transformer.layer.self_attention.attention.klass: 'axlearn.common.attention.GroupedQueryAttention'
+model.decoder.transformer.layer.self_attention.attention.kv_cache.cache_dtype: 'jax.numpy.bfloat16'
+model.decoder.transformer.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.attention.KVCache'
 model.decoder.transformer.layer.self_attention.attention.num_heads: 24
 model.decoder.transformer.layer.self_attention.attention.output_linear.bias: False
 model.decoder.transformer.layer.self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'
