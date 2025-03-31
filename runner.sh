@@ -117,7 +117,12 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 deactivate || true
-source ../jaxmoe/bin/activate
+
+if [ -z "$VENV_NAME" ]; then
+	VENV_NAME=jaxmoe
+fi
+
+source ../$VENV_NAME/bin/activate
 
 echo "Listing apt dependencies"
 apt list --installed | grep neuron
