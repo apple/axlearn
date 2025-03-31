@@ -691,7 +691,6 @@ def model_config(
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
     attention_qkv_linear = RoFormerQKVLinear.default_config().set(
         input_linear=FusedGroupedQKVLinear.default_config().set(
-            cache_dtype=STEP_DTYPE,
             num_kv_heads=num_kv_heads,
         ),
         rotary_value=False,
