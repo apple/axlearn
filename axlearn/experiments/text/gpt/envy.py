@@ -694,7 +694,6 @@ def model_config(
             num_kv_heads=num_kv_heads,
         ),
         rotary_value=False,
-        cache_dtype=STEP_DTYPE,
     )
     attention_qkv_linear.rope_pos_emb_layer.theta = 5e5
     norm_cfg = RMSNorm.default_config().set(eps=1e-5, forward_dtype=None)
