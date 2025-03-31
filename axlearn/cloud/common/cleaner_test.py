@@ -100,6 +100,7 @@ class UnschedulableCleanerTest(parameterized.TestCase):
                     "aws_4:p5.48xlarge": 400,
                 },
             },
+            project_membership={},
         )
 
         schedulable_jobs = mock_jobs(prefix="schedulable", resource_count=8)
