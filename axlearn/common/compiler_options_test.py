@@ -24,10 +24,10 @@ class CompilerOptionsTest(test_utils.TestCase):
         )
         self.assertEqual(f_compiled(5), 15)
 
-    def atest_xla_flags_from_options(self):
+    def test_xla_flags_from_options(self):
         options = dict(a="true", b="false", c=True, d=False, long_option_name=True)
         result = compiler_options.xla_flags_from_options(options)
-        self.assertEqual(result, "--a=true --b=false --c=1 --d=0 --long_option_name=1")
+        self.assertEqual(result, "--a=true --b=false --c=true --d=false --long_option_name=true")
 
     def test_xsc_compiler_options(self):
         options = compiler_options.infer_xsc_compiler_options(
