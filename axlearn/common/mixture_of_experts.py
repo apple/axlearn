@@ -945,7 +945,7 @@ class TopKGatingGather(TopKGating):
         with jax.named_scope("expert_index"):
             # Compute expert indices based on affinities
             # top_k happens on last axis of operand, so the expert axis
-            k = min(cfg.top_k, cfg.num_experts)
+            k = min(int(cfg.top_k), int(cfg.num_experts))
             _, expert_index = jax.lax.top_k(raw_gates, k)
             # expert_index: (O, G, S, top_k)
             expert_index = expert_index.astype(jnp.int32)
@@ -1297,13 +1297,15 @@ class TransformerFeedForwardMoE(BaseLayer):
                         down_proj, 
                         mesh=thread_resources.env.physical_mesh,
                         in_specs=(
-                            PartitionSpec(("data", "fsdp"), "expert", None, None, "model"),
-                            PartitionSpec("expert", "model", None),
+                            cfg.dim_to_mesh_axis_map["oegch"],
+                            cfg.dim_to_mesh_axis_map["ehM"],
                         ),
-                        out_specs=PartitionSpec(("data", "fsdp"), "expert", None, None, None),
+                        out_specs=cfg.dim_to_mesh_axis_map["oegcM"],
                         check_rep=False
                     )
                     x = down_proj_sm(x, self.parameters["wo_weight"])
+                    x = self._remat_name(x, f"linear2")
+
                 x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcM"])
                 x = jnp.einsum("oegcm->ogecm", x)
                 x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecM"])
@@ -1333,9 +1335,9 @@ class TransformerFeedForwardMoE(BaseLayer):
                             cfg.dim_to_mesh_axis_map["ogse"],
                             cfg.dim_to_mesh_axis_map["ogse"],
                             cfg.dim_to_mesh_axis_map["ogse"],
-                            PartitionSpec("model", ("data", "fsdp"), "expert", None, None),
+                            cfg.dim_to_mesh_axis_map["hoesm"],
                         ),
-                        out_specs=PartitionSpec("model", ("data", "fsdp"), "expert", None, None),
+                        out_specs=cfg.dim_to_mesh_axis_map["hoesm"],
                         check_rep=False
                     )
                     output = combine_outputs_sm(
@@ -1396,6 +1398,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                 x_i = jnp.einsum("oegcm,emh->oegch", x, self.parameters[f"wi_{i}_weight"])
                 x_i = with_sharding_constraint(x_i, cfg.dim_to_mesh_axis_map["oegch"])
                 x_i = get_activation_fn(activation)(x_i)
+                x = self._remat_name(x, f"linear1_{i}")
                 activations.append(x_i)
             assert len(activations) == 2, cfg.activation
             return activations[0] * activations[1]

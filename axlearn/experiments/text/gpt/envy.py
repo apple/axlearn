@@ -29,8 +29,12 @@ import functools
 from typing import Any, Literal, Sequence, Union, NamedTuple, List
 import os
 import jax
+from axlearn.common.utils import (
+    extended_checkpoint_policies,
+    save_and_offload_only_these_names_regex,
+)
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
-
+from axlearn.common.config import config_for_function
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     FusedGroupedQKVLinear,
@@ -40,7 +44,8 @@ from axlearn.common.attention import (
     ScaleKey,
     ScaleQuery,
     TransformerLayer,
-    StackedTransformerLayer
+    StackedTransformerLayer,
+    RematRegexSavePatterns
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.embedding import TransformerTextEmbeddings
@@ -107,6 +112,7 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
     "me": PartitionSpec(None, None),
     "emh": PartitionSpec("expert", "fsdp", "model"),
     "ehm": PartitionSpec("expert", "model", "fsdp"),
+    "ehM": PartitionSpec("expert", "model", None),
     "ogsm": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, "model"),
     "ogsM": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
     "ogse": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
@@ -118,6 +124,7 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
     "ogecm": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, None, "expert", None, "model"),
     "ogecM": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, None, "expert", None, None),
     "oegch": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None, "model"),
+    "hoesm": PartitionSpec("model", MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
 }
 
 def get_ffn_layer_types():
@@ -129,6 +136,42 @@ def get_ffn_layer_types():
     elif ffn_type == "2":
         ffn_layer_types = ["sparse", "dense"]
     return ffn_layer_types
+
+def get_remat_policy():
+    remat_config = os.getenv('AXLEARN_REMAT_LAYER', 'true')
+    if remat_config == 'true':
+        remat_policy = RematSpecModifier.default_config().set(
+            remat_policies={
+                "model.decoder.transformer.layer": RematSpec(
+                    prevent_cse=True,
+                    policy=jax_remat_policies.nothing_saveable,
+                ),
+            } if os.getenv('AXLEARN_REMAT_LAYER', 'true') == 'true' else {}
+        )
+    elif remat_config == 'nonmatmul':
+        remat_policy = RematSpecModifier.default_config().set(
+            remat_policies={
+                "model.decoder.transformer.layer": RematSpec(
+                    prevent_cse=True,
+                    policy=config_for_function(
+                        save_and_offload_only_these_names_regex
+                    ).set(
+                        names_which_can_be_saved="|".join(
+                            [
+                                RematRegexSavePatterns.QKV_PROJ.value,
+                                RematRegexSavePatterns.LINEAR1_X.value,
+                            ]
+                        ),
+                        names_which_can_be_offloaded=None,
+                        offload_src=None,
+                        offload_dst=None,
+                    ),
+                ),
+            }
+        )
+    else:
+        remat_policy = {}
+    return remat_policy
 
 def common_trainer_kwargs() -> dict[str, Any]:
     """Returns kwargs that are common to all configs."""
@@ -457,6 +500,7 @@ def get_trainer_kwargs(
         ffn_layer_types = get_ffn_layer_types()
         tp_degree=int(os.getenv("AXLEARN_TP_DEGREE", 4))
         neuron_mesh = mesh_shape_from_axes(fsdp=-1, model=tp_degree)
+        remat_policy = get_remat_policy()
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4)),
@@ -505,14 +549,7 @@ def get_trainer_kwargs(
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
-                                        policy=jax_remat_policies.nothing_saveable,
-                                    ),
-                                } if os.getenv('AXLEARN_REMAT_LAYER', 'true') == 'true' else {}
-                            ),
+                            remat_policy,
                         ],
                     ),
                 ),
