@@ -105,11 +105,6 @@ class TestConfig():
         self.instantiate_modules_with_mesh() 
         self.random_inputs_with_mesh()
 
-        #specify empty outsharding for jax.jit because we transfer tensors to host and compare
-        out_pspec = PartitionSpec()  
-        self.out_shard_test = NamedSharding(mesh=self.mesh_test, spec = out_pspec) 
-        self.out_shard_golden = NamedSharding(mesh=self.mesh_golden, spec = out_pspec)
-
     def get_mesh_from_spec(self, mesh_spec):  
 
         mesh = mesh_shape_from_axes(**mesh_spec)
@@ -134,7 +129,15 @@ class TestConfig():
         self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
         with self.mesh_test: 
             self.test_layer  = self.test.module.instantiate(parent=None) 
-            self.test_state  = self.test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+            test_param_specs = self.test_layer.create_parameter_specs_recursively()
+            test_param_partition_specs = jax.tree.map(lambda spec: spec.sharding, test_param_specs)
+            
+            def _init_state(prng_key): 
+                params = self.test_layer.initialize_parameters_recursively(prng_key) 
+                return params 
+            init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings = test_param_partition_specs) 
+            
+            self.test_state = init_fn(jax.random.PRNGKey(123)) 
             self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
 
         device_type = self.golden.device
@@ -143,13 +146,21 @@ class TestConfig():
         self.mesh_golden = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
         with self.mesh_golden: 
             self.golden_layer  = self.golden.module.instantiate(parent=None) 
-            self.golden_state  = self.golden_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+            golden_param_specs = self.golden_layer.create_parameter_specs_recursively() 
+            golden_param_partition_specs = jax.tree.map(lambda spec: spec.sharding, golden_param_specs) 
+            
+            def _init_state(prng_key):
+                params = self.golden_layer.initialize_parameters_recursively(prng_key)
+                return params
+            init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings=golden_param_partition_specs)
+            
+            self.golden_state = init_fn(jax.random.PRNGKey(123))
             self.golden_state = cast_floats(self.golden_state, to_dtype=self.golden.dtype)
 
     def random_inputs_with_mesh(self): 
 
         input_key = 'inputs' if self.test.layer == "MoE" else 'logits'
-        pspec = PartitionSpec(('data','fsdp'), None, 'model') if self.test.layer == "MoE" else PartitionSpec() 
+        pspec = PartitionSpec(('data','fsdp'), 'model', None) if self.test.layer == "MoE" else PartitionSpec() # seq-parallel inputs
 
         in_shard_test = NamedSharding(mesh=self.mesh_test, spec = pspec) 
         in_shard_golden = NamedSharding(mesh=self.mesh_golden, spec = pspec)
@@ -251,6 +262,7 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
+            "activation": ("nn.silu","linear"),
             "gating": TopKGatingGather.default_config().set(
                 name="gating",
                 top_k=self.params["top_k"],
@@ -269,6 +281,7 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
+            "activation": ("nn.silu","linear"),
             "gating": TopKGating.default_config().set(
                 name="gating",
                 top_k=self.params["top_k"],
@@ -383,7 +396,7 @@ class TestConfigBuilder:
         grid_space.append(Mistral50B_base)
 
         # 150B Config
-        Mistral150B_base = (16, 2048, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
         grid_space.append(Mistral150B_base)
 
         return grid_space

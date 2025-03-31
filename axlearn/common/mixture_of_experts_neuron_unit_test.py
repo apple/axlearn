@@ -39,12 +39,12 @@ class TestImplCorrectnessUnit(TestCase):
 
         cfg.instantiate()
 
-        @partial(jax.jit, static_argnums=0, out_shardings=cfg.out_shard_test) # cannot specify both backend and sharding together
+        @partial(jax.jit, static_argnums=0) 
         def test_fwd_call(test_layer, test_state, test_inputs):
             test_output, _ = self._fwd_call(test_layer, test_state, test_inputs)
             return test_output
 
-        @partial(jax.jit, static_argnums=0, out_shardings=cfg.out_shard_golden)
+        @partial(jax.jit, static_argnums=0)
         def golden_fwd_call(golden_layer, golden_state, golden_inputs):
             golden_output, _ =  self._fwd_call(golden_layer, golden_state, golden_inputs)
             return golden_output
@@ -66,7 +66,7 @@ class TestImplCorrectnessUnit(TestCase):
 
         cfg.instantiate()
 
-        @partial(jax.jit, static_argnums=0, out_shardings=cfg.out_shard_test)
+        @partial(jax.jit, static_argnums=0) 
         def test_bwd_call(test_layer, test_state, test_inputs):
             def loss_fn(state):
                 test_output, _ = self._fwd_call(test_layer, state, test_inputs)
@@ -75,7 +75,7 @@ class TestImplCorrectnessUnit(TestCase):
             loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(test_state)
             return  loss, grads
 
-        @partial(jax.jit, static_argnums=0, out_shardings=cfg.out_shard_golden)
+        @partial(jax.jit, static_argnums=0)
         def golden_bwd_call(golden_layer, golden_state, golden_inputs):
             def loss_fn(state):
                 golden_output, _ = self._fwd_call(golden_layer, state, golden_inputs)

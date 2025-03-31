@@ -1255,6 +1255,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # O may be lower than fsdp axis
         # TODO(huilgolr): what to do here
 
+        x = with_sharding_constraint(x, PartitionSpec(("data", "fsdp"), "expert", None))
         with jax.named_scope("router"):
             logits = jnp.einsum("ogsm,me->ogse", x, self.parameters["gate_weight"])
 
