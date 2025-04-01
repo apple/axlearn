@@ -33,7 +33,6 @@ from typing import (
     final,
 )
 
-import einops
 import jax
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
@@ -526,8 +525,9 @@ class MaskFnAttentionBias(BoolAttentionBias):
             raise ValueError(
                 f"{target_positions.shape=} or {source_positions.shape=} is not rank 2."
             )
-        target_positions = einops.rearrange(target_positions, "b t -> b t 1")
-        source_positions = einops.rearrange(source_positions, "b s -> b 1 s")
+
+        target_positions = jnp.expand_dims(target_positions, axis=2)  # [batch, target_length, 1]
+        source_positions = jnp.expand_dims(source_positions, axis=1)  # [batch, 1, source_length]
         return self.mask(target_positions, source_positions)  # pylint: disable=not-callable
 
     @classmethod
