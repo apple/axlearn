@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Sequence
-from typing import Union
+from typing import Optional, Union
 from unittest import mock
 
 import psutil
@@ -21,6 +21,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE
 from axlearn.cloud.common import utils
+from axlearn.common.config import REQUIRED, ConfigBase, Configurable, Required, config_class
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -221,6 +222,32 @@ class UtilsTest(TestWithTemporaryCWD):
     def test_merge(self, base, overrides, expected):
         self.assertEqual(expected, utils.merge(base, overrides))
 
+    def test_infer_resources(self):
+        @config_class
+        class DummyConfig(ConfigBase):
+            name: Required[str] = REQUIRED
+            inner: Optional[Sequence[ConfigBase]] = None
+            resources: Optional[utils.AcceleratorConfig] = None
+
+        cfg = DummyConfig(
+            inner=[
+                DummyConfig(
+                    resources=utils.AcceleratorConfig(instance_type="tpu-v4-8", num_replicas=2),
+                ),
+                DummyConfig(
+                    inner=[
+                        DummyConfig(),
+                        DummyConfig(
+                            resources=utils.AcceleratorConfig(
+                                instance_type="tpu-v5litepod-16", num_replicas=1
+                            )
+                        ),
+                    ],
+                ),
+            ],
+        )
+        self.assertEqual({"v4": 16, "v5litepod": 16}, utils.infer_resources(cfg))
+
 
 class TestTable(parameterized.TestCase):
     """Tests table utils."""
@@ -344,3 +371,91 @@ class FlagConfigurableTest(parameterized.TestCase):
 
         # "shared_override" should follow child default, because it is overridden.
         self.assertEqual(fv.shared_override, "child-default")
+
+    def test_flag_utils(self):
+        """Tests define_flags and from_flags."""
+
+        class Inner(utils.FlagConfigurable):
+            """An inner config."""
+
+            @config_class
+            class Config(utils.FlagConfigurable.Config):
+                common_value: Required[str] = REQUIRED
+                inner_value: Required[str] = REQUIRED
+
+            @classmethod
+            def define_flags(cls, fv):
+                super().define_flags(fv)
+                common_kwargs = dict(flag_values=fv, allow_override=True)
+                flags.DEFINE_string("common_value", None, "", **common_kwargs)
+                flags.DEFINE_string("inner_value", None, "", **common_kwargs)
+
+            @classmethod
+            def set_defaults(cls, fv):
+                super().set_defaults(fv)
+                fv.set_default("common_value", "child-default")
+
+        # Test that it traverses non FlagConfigurables.
+        class RegularConfigurable(Configurable):
+            """A dummy container config to test traversal."""
+
+            @config_class
+            class Config(Configurable.Config):
+                # Test that it traverses other non-config containers.
+                inner: list[Inner.Config] = [Inner.default_config()]
+
+        class Outer(utils.FlagConfigurable):
+            """An outer config."""
+
+            @config_class
+            class Config(utils.FlagConfigurable.Config):
+                common_value: Required[str] = REQUIRED
+                outer_value: Required[str] = REQUIRED
+                inner_enabled: Optional[bool] = None
+                inner: Optional[Configurable.Config] = RegularConfigurable.default_config()
+
+            @classmethod
+            def define_flags(cls, fv):
+                super().define_flags(fv)
+                common_kwargs = dict(flag_values=fv, allow_override=True)
+                flags.DEFINE_string("common_value", None, "", **common_kwargs)
+                flags.DEFINE_string("outer_value", None, "", **common_kwargs)
+                flags.DEFINE_bool("inner_enabled", None, "", **common_kwargs)
+
+            @classmethod
+            def set_defaults(cls, fv):
+                super().set_defaults(fv)
+                fv.set_default("common_value", "parent-default")
+
+            @classmethod
+            def from_flags(cls, fv, **kwargs):
+                cfg = super().from_flags(fv, **kwargs)
+                if not fv.inner_enabled:
+                    cfg.inner = None
+                return cfg
+
+        cfg = Outer.default_config()
+        fv = flags.FlagValues()
+        utils.define_flags(cfg, fv)
+        fv.mark_as_parsed()
+
+        # Check that both outer and inner are defined.
+        self.assertIn("inner_value", fv)
+        self.assertIn("outer_value", fv)
+
+        fv.outer_value = "outer-value"
+        fv.inner_value = "inner-value"
+        fv.inner_enabled = True
+        cfg_with_inner = utils.from_flags(cfg.clone(), fv)
+
+        # Check that from_flags respects set_default override.
+        self.assertEqual("child-default", cfg_with_inner.common_value)
+        self.assertEqual("child-default", cfg_with_inner.inner.inner[0].common_value)
+        # Check that flag values are set.
+        self.assertEqual("outer-value", cfg_with_inner.outer_value)
+        self.assertEqual("inner-value", cfg_with_inner.inner.inner[0].inner_value)
+
+        # Check that cfg can be modified in from_flags.
+        fv.inner_enabled = False
+        cfg_no_inner = utils.from_flags(cfg.clone(), fv)
+        self.assertIsNone(cfg_no_inner.inner)

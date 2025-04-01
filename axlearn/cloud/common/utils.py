@@ -2,6 +2,7 @@
 
 """General-purpose utilities."""
 
+import collections
 import dataclasses
 import logging as pylogging
 import os
@@ -10,14 +11,16 @@ import signal
 import subprocess
 import uuid
 from collections.abc import Sequence
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, TypeVar, Union
 
 import pkg_resources
 import psutil
 from absl import app, flags, logging
 
 from axlearn.cloud import ROOT_MODULE_NAME
-from axlearn.common.config import Configurable
+from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.gcp.tpu import infer_tpu_resources
+from axlearn.common.config import REQUIRED, ConfigBase, Configurable, Required, config_class
 
 
 class FilterDiscoveryLogging(pylogging.Filter):
@@ -348,23 +351,179 @@ class Table:
         return format_table(headings=self.headings, rows=self.rows)
 
 
+@config_class
+class AcceleratorConfig(ConfigBase):
+    """Configures job resources, e.g. TPU or GPU.
+
+    Attributes:
+        instance_type: Instance type, e.g. tpu-v4-8. The format of instance type is
+            `<accelerator_type>-<user_facing_name>`. As an example, a list of accelerator types and
+            user facing names for GCP can be found in `axlearn.cloud.gcp.system_characteristics`.
+        num_replicas: Number of replicas, e.g. TPU slices.
+    """
+
+    instance_type: Required[str] = REQUIRED
+    num_replicas: int = 1
+
+
+def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
+    """Defines resource flags, e.g. --instance_type and --num_replicas."""
+    flags.DEFINE_string(
+        "instance_type",
+        # --instance_type is often defined at the launcher, so use any existing value by default.
+        # TODO(markblee): Remove this after we migrate launch command away from `--instance_type`.
+        getattr(flag_values, "instance_type", None),
+        "Instance type.",
+        flag_values=flag_values,
+        **kwargs,
+    )
+    flags.DEFINE_integer(
+        "num_replicas", 1, "Number of replicas.", flag_values=flag_values, **kwargs
+    )
+
+
+def infer_resources(cfg: ConfigBase) -> ResourceMap[int]:
+    """Traverses a job config to identify resources based on `AcceleratorConfig`.
+
+    Args:
+        cfg: An arbitrary config. Resources should be configured via `AcceleratorConfig`.
+
+    Returns:
+        A mapping from resource type to usage.
+
+    Raises:
+        NotImplementedError: If unable to infer resources for an `instance_type`.
+    """
+
+    total_resources = collections.defaultdict(int)
+
+    def visit_fn(_, value):
+        if isinstance(value, AcceleratorConfig):
+            if value.instance_type.startswith("tpu-"):
+                resources = infer_tpu_resources(value.instance_type, value.num_replicas)
+                for resource, usage in resources.items():
+                    total_resources[resource] += usage
+            else:
+                raise NotImplementedError(value.instance_type)
+
+    def enter_fn(_, value, default_kv):
+        return None if isinstance(value, AcceleratorConfig) else default_kv
+
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+    return dict(total_resources)
+
+
+# TODO(markblee): Support generic `--config_override=<path>=<value>` instead of requiring
+# `define_flags`.
+def define_flags(cfg: ConfigBase, fv: flags.FlagValues):
+    """Define flags on `fv` by recursively invoking `cfg.klass.define_flags`.
+
+    Flags are defined in topological order, i.e., parent flags will be defined prior to defining
+    child flags.
+
+    Args:
+        cfg: A config instance. It does not need to be a `FlagConfigurable` config.
+        fv: Parsed flag values instance. The same `fv` is used for the entire config hierarchy.
+
+    Raises:
+        ValueError: If `cfg` is not a config.
+    """
+    if not isinstance(cfg, ConfigBase):
+        raise ValueError(f"Expected {ConfigBase}, got: {type(cfg)}")
+
+    def visit_fn(*_):  # Unused.
+        pass
+
+    def enter_fn(_, value, default_kv):
+        if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "define_flags"):
+            return default_kv
+        klass: FlagConfigurable = value.klass
+        klass.define_flags(fv)
+        return default_kv
+
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+
+
+_C = TypeVar("_C", bound=ConfigBase)
+
+
+def from_flags(cfg: _C, fv: flags.FlagValues, **kwargs) -> _C:
+    """Read values from `fv` by recursively invoking `cfg.klass.from_flags`.
+
+    The config precedence is `kwargs` followed by `fv` followed by `cfg`. In other words, `kwargs`
+    override any values specified as flags, which override any existing values on `cfg`.
+
+    Args:
+        cfg: A config instance. It does not need to be a `FlagConfigurable` config.
+        fv: Parsed flag values instance. The same `fv` is used for the entire config hierarchy.
+        **kwargs: Forwarded to `cfg.klass.from_flags(...)`.
+
+    Returns:
+        The modified config instance. The modifications happen in-place and is also returned for
+        convenience (consistent with `cfg.set()`).
+
+    Raises:
+        ValueError: If `cfg` is not a config.
+    """
+    if not isinstance(cfg, ConfigBase):
+        raise ValueError(f"Expected {ConfigBase}, got: {type(cfg)}")
+
+    def visit_fn(*_):  # Unused.
+        pass
+
+    def enter_set_defaults(_, value, default_kv):
+        if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "set_defaults"):
+            return default_kv
+        klass: FlagConfigurable = value.klass
+        klass.set_defaults(fv)
+        return default_kv
+
+    def enter_from_flags(_, value, default_kv):
+        if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "from_flags"):
+            return default_kv
+        klass: FlagConfigurable = value.klass
+        klass.from_flags(fv, prebuilt_cfg=value, _set_defaults=False, **kwargs)
+        return default_kv
+
+    # Set all defaults across the hierarchy first, so that default override can happen.
+    # This ensures that fv defaults are consistent.
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_set_defaults)
+    # Read configs from flags.
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_from_flags)
+    return cfg
+
+
 class FlagConfigurable(Configurable):
     """A Configurable object that also supports flag-based configuration."""
 
+    Config = Configurable.Config
+
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
-        """Subclasses can override this method to define absl flags to be read by `from_flags()`."""
+        """Subclasses can override this method to define absl flags to be read by `from_flags()`.
+
+        This method should only define flags that are used by this class, and not any child classes,
+        which allows each class to be encapsulated.
+
+        To define flags recursively, use `utils.define_flags`.
+        """
         del fv
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs):
-        """Populate config partially using parsed absl flags."""
-        # Define default flags before reading flag values. Note that in the common case, a child
-        # class will invoke `super().set_defaults` prior to defining its own defaults, which
-        # allows parents to define defaults that are overridden in the child.
-        cls.set_defaults(fv)
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
+        """Populate config partially using parsed absl flags.
+
+        This method should only set configs that are used by this class, and not any child classes,
+        which allows each class to be encapsulated.
+
+        To read flags recursively, use `utils.from_flags`.
+        """
+        # TODO(markblee): This branch is for backwards compatibility. It will be removed once all
+        # components move towards `from_flags`.
+        if kwargs.pop("_set_defaults", True):
+            cls.set_defaults(fv)
+        cfg: FlagConfigurable.Config = kwargs.pop("prebuilt_cfg", cls.default_config())
         flag_values = {**fv.flag_values_dict(), **kwargs}
-        cfg = cls.default_config()
         return cfg.set(
             **{field: flag_values[field] for field in cfg.keys() if field in flag_values}
         )
