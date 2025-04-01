@@ -393,7 +393,8 @@ async def _async_deserialize(
     capacity in the pre-mapped buffer, we can perform several linearization concurrently for
     improved performance. However, if there isn't sufficient capacity in the premapped buffer,
     on-demand DMA buffer mapping is needed, and this is often very slow. Additionally, concurrently
-    mapping DMA buffers are neither faster (due to OS overhead) nor memory-efficient.
+    mapping DMA buffers are neither faster (due to OS overhead) nor memory-efficient. Transparent
+    huge pages (THP) can help, but it's only for jax 0.5.1+.
     """
     in_sharding = (
         user_in_sharding.sharding if isinstance(user_in_sharding, Layout) else user_in_sharding
