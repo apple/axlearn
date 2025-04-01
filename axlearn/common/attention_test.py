@@ -1377,9 +1377,17 @@ class QKVLinearTest(TestCase):
             attention.FusedGroupedQKVLinear,
         ],
         with_positions=[True, False],
+        value_dim_ratio=[1, 2],
     )
-    def test_qkv_equality(self, test_cls: type[attention.BaseQKVLinear], with_positions: bool):
+    def test_qkv_equality(
+        self, test_cls: type[attention.BaseQKVLinear], with_positions: bool, value_dim_ratio: int
+    ):
         """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
+        if value_dim_ratio != 1 and test_cls in (
+            attention.FusedQKVLinear,
+            attention.FusedGroupedQKVLinear,
+        ):
+            pytest.skip(reason="Fused QKV doesn't support different value dim.")
         with utils.numeric_checks(True):
             model_dim = 12
             num_heads = 4
@@ -1387,7 +1395,7 @@ class QKVLinearTest(TestCase):
             layer_kwargs = dict(
                 query_dim=model_dim,
                 key_dim=model_dim,
-                value_dim=model_dim,
+                value_dim=model_dim * value_dim_ratio,
                 num_heads=num_heads,
                 per_head_dim=per_head_dim,
             )
@@ -1423,7 +1431,9 @@ class QKVLinearTest(TestCase):
             batch_size, src_len, tgt_len = 2, 6, 6
             query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
             key = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, src_len, model_dim])
-            value = jax.random.uniform(jax.random.PRNGKey(2), [batch_size, src_len, model_dim])
+            value = jax.random.uniform(
+                jax.random.PRNGKey(2), [batch_size, src_len, model_dim * value_dim_ratio]
+            )
 
             # In the fused GQA case, we assume query=key=value.
             if test_cls == attention.FusedGroupedQKVLinear:

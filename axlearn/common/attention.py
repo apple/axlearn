@@ -1815,7 +1815,6 @@ class MultiheadAttention(BaseLayer):
             time_step = cached_states["time_step"]
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
-        chex.assert_equal_shape((k_proj, v_proj))
 
         if mode == ForwardMode.FORWARD:
             new_cached_states = dict()
