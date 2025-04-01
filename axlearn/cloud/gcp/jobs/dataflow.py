@@ -84,7 +84,12 @@ from absl import app, flags, logging
 from google.auth.credentials import Credentials
 from googleapiclient import discovery, errors
 
-from axlearn.cloud.common.bundler import BaseDockerBundler, get_bundler_config
+from axlearn.cloud.common.bundler import (
+    BaseDockerBundler,
+    Bundler,
+    bundler_flags,
+    get_bundler_config,
+)
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import (
     canonicalize_to_list,
@@ -112,18 +117,30 @@ class DataflowJob(GCPJob):
 
     @config_class
     class Config(GCPJob.Config):
+        """Configures DataflowJob."""
+
+        # Job name.
+        name: Required[str] = REQUIRED
         # Worker VM type.
         vm_type: Required[str] = REQUIRED
+        # Dataflow command.
+        command: Required[str] = REQUIRED
         # Setup command. This is used to prepare the local machine for running `cfg.command`,
         # including installing docker (if not already present) and building the worker image.
         # `cfg.command` will then be run within the worker image, to ensure a consistent build +
         # execute environment.
         setup_command: Required[str] = REQUIRED
+        # Dataflow service account.
+        service_account: Required[str] = REQUIRED
+        # Bundler config.
+        bundler: Required[Bundler.Config] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        bundler_flags(**common_kwargs)
+        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string("vm_type", "n2-standard-2", "Worker VM type.", **common_kwargs)
         flags.DEFINE_multi_string(
             "dataflow_spec",
@@ -131,6 +148,14 @@ class DataflowJob(GCPJob):
             "Bundler spec provided as key=value.",
             **common_kwargs,
         )
+        flags.DEFINE_string(
+            "service_account", None, "The dataflow service account.", **common_kwargs
+        )
+
+    @classmethod
+    def set_defaults(cls, fv):
+        super().set_defaults(fv)
+        fv.set_default("service_account", gcp_settings("service_account_email", fv=fv))
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -222,6 +247,10 @@ class DataflowJob(GCPJob):
             dataflow_spec["subnetwork"] = f"https://www.googleapis.com/compute/v1/{subnetwork}"
 
         return dataflow_spec, multi_flags
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        self._bundler = cfg.bundler.instantiate()
 
     def _delete(self):
         cfg: DataflowJob.Config = self.config

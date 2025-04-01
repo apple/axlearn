@@ -88,9 +88,9 @@ from axlearn.cloud.common.utils import (
     generate_job_id,
     generate_job_name,
     infer_cli_name,
+    infer_resources,
     parse_action,
 )
-from axlearn.cloud.gcp.bundler import CloudBuildBundler
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.job import Job
 from axlearn.cloud.gcp.jobs import gke_runner
@@ -110,6 +110,7 @@ from axlearn.cloud.gcp.tpu import infer_tpu_resources, infer_tpu_type, infer_tpu
 from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, load_kube_config
 from axlearn.common.config import (
     REQUIRED,
+    ConfigBase,
     ConfigOr,
     Required,
     config_class,
@@ -169,6 +170,10 @@ class BaseBastionManagedJob(Job):
     class Config(Job.Config):
         """Configures BaseBastionManagedJob."""
 
+        # Name of the job. It's used for bastion job management as well as the name of the runner.
+        name: Required[str] = REQUIRED
+        # Command to submit to the bastion.
+        command: Optional[str] = None
         # Used along with project to identify `gcp_settings`.
         env_id: Optional[str] = None
         # Where to run the remote job.
@@ -197,7 +202,8 @@ class BaseBastionManagedJob(Job):
             project_usage_table,
         ]
         # Resources used by the job.
-        resources: ConfigOr[ResourceMap[int]] = {}
+        # This should take a config as input and return all resources used by the config.
+        resources: Callable[[ConfigBase], ResourceMap[int]] = infer_resources
 
     @classmethod
     def with_runner(cls, runner: type[Job]):
@@ -214,6 +220,7 @@ class BaseBastionManagedJob(Job):
         cls.validate_runner()
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string("bastion", None, "Name of bastion VM to use.", **common_kwargs)
         flags.DEFINE_integer(
             "priority",
@@ -243,6 +250,12 @@ class BaseBastionManagedJob(Job):
         cls.runner.define_flags(fv)
 
     @classmethod
+    def set_defaults(cls, fv):
+        super().set_defaults(fv)
+        # Don't override `name` if already specified, since the default is non-deterministic.
+        fv.set_default("name", fv.name or generate_job_name())
+
+    @classmethod
     def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
         """Constructs config from flags defined by `define_flags()`.
 
@@ -263,9 +276,6 @@ class BaseBastionManagedJob(Job):
         # Default output_dir depends on the final value of --name.
         if not cfg.output_dir:
             cfg.output_dir = f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
-        # We use the bundler defined by the runner impl, ensuring that bundling is consistent
-        # between local and bastion.
-        cfg.bundler = None
         # Construct runner only for start and update.
         if action in ("start", "update"):
             cfg.runner = cls.runner.from_flags(fv, command=command)
@@ -275,8 +285,6 @@ class BaseBastionManagedJob(Job):
                 f"--job_type={fv.job_type} "
                 f"-- {command}"
             )
-            if cfg.runner.bundler and fv.bundler_exclude:
-                cfg.runner.bundler.set(exclude=fv.bundler_exclude)
         else:
             cfg.runner = None
             cfg.command = None
@@ -288,9 +296,9 @@ class BaseBastionManagedJob(Job):
         if not (cfg.instance_type and cfg.output_dir):
             raise ValueError("instance_type, output_dir cannot be empty")
         self._bastion_dir: BastionDirectory = cfg.bastion_dir.instantiate()
-        self._runner: Optional[Job] = (
-            cfg.runner.set(name="runner").instantiate() if cfg.runner else None
-        )
+        self._runner = None
+        if cfg.command is not None:
+            self._runner: Job = cfg.runner.instantiate()
         self._output_tables = maybe_instantiate(cfg.output_tables)
 
     def _delete(self):
@@ -329,8 +337,11 @@ class BaseBastionManagedJob(Job):
                     f"Instead, user '{cfg.user_id}' is a member of: {user_projects}"
                 )
 
-        if self._runner and self._runner.bundler:
-            self._runner.bundler.bundle(cfg.name)
+        # TODO(markblee): Simplify when merging launch command.
+        # pytype: disable=attribute-error
+        if self._runner and self._runner._bundler:
+            self._runner._bundler.bundle(cfg.name)
+        # pytype: enable=attribute-error
 
         logging.info("Starting run for job name %s", cfg.name)
         logging.info("Command: %s", cfg.command)
@@ -340,7 +351,7 @@ class BaseBastionManagedJob(Job):
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
                 creation_time=datetime.now(timezone.utc),
-                resources=maybe_instantiate(cfg.resources),
+                resources=cfg.resources(cfg),
                 priority=cfg.priority,
                 job_id=job_id,
             )
@@ -379,8 +390,11 @@ class BaseBastionManagedJob(Job):
         # Get current job spec.
         job_spec = self._bastion_dir.get_job(job_name=cfg.name)
 
-        if self._runner and self._runner.bundler:
-            self._runner.bundler.bundle(cfg.name)
+        # TODO(markblee): Simplify when merging launch command.
+        # pytype: disable=attribute-error
+        if self._runner and self._runner._bundler:
+            self._runner._bundler.bundle(cfg.name)
+        # pytype: enable=attribute-error
 
         logging.info("Starting update for job name %s", cfg.name)
         logging.info("Command: %s", cfg.command)
@@ -443,9 +457,6 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, *, command: str, action: str, **kwargs) -> Config:
-        # Set default docker flags. These will automatically propagate to the runner on the bastion.
-        if action in ("start", "update"):
-            fv.set_default("bundler_type", CloudBuildBundler.TYPE)
         cfg: BastionManagedGKEJob.Config = super().from_flags(
             fv, command=command, action=action, **kwargs
         )
