@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike
@@ -417,3 +417,7 @@ class ShardedFftTest(TestCase):
         # Run the following on gpu.
         jax.debug.inspect_array_sharding(test_ffts, callback=print)
         jax.debug.inspect_array_sharding(ref_ffts, callback=print)
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
@@ -435,3 +435,7 @@ def _ref_stft_frontend(
         tf.maximum(tf.math.abs(outputs), tf.experimental.numpy.finfo(outputs.dtype).tiny)
     )
     return outputs, output_paddings
+
+
+if __name__ == "__main__":
+    absltest.main()
