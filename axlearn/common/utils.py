@@ -51,8 +51,8 @@ from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.ad_checkpoint import Offloadable, Recompute, Saveable
-from jax.extend.core import Primitive
 from jax.experimental import mesh_utils, multihost_utils
+from jax.extend.core import Primitive
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
@@ -151,8 +151,7 @@ register_validator(
 
 
 class RematPolicy(Protocol):
-    def __call__(self, prim: Primitive, *args: Any, **params: Any) -> Union[RematType, bool]:
-        ...
+    def __call__(self, prim: Primitive, *args: Any, **params: Any) -> Union[RematType, bool]: ...
 
 
 def save_and_offload_only_these_names_regex(
@@ -1162,7 +1161,7 @@ def per_param_dtype_by_path(
     """
 
     def fn(
-        tree: Union[Nested[Tensor], Nested[TensorSpec]]
+        tree: Union[Nested[Tensor], Nested[TensorSpec]],
     ) -> Union[Nested[Tensor], Nested[TensorSpec]]:
         if update_rules is None:
             return jax.tree.map(lambda x: default_dtype, tree_paths(tree))
@@ -1217,7 +1216,7 @@ def cast_floats_per_param(
 
 
 def canonicalize_per_param_dtype(
-    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]]
+    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]],
 ) -> ConfigOr[PerParamFn[jnp.dtype]]:
     """Canonicalize the input `param_dtype` to a consistent format of
     `ConfigOr[PerParamFn[jnp.dtype]]`, which handles three possible cases:
