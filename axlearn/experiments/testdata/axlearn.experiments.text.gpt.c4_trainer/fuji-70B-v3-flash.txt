@@ -225,9 +225,9 @@ mesh_rules[6][1].klass: 'axlearn.common.trainer_config_modifier.ChainConfigModif
 mesh_rules[7][0]: 'neuron-(trn2|trn2n).48xlarge-64'
 mesh_rules[7][1].config_modifiers[0].klass: 'axlearn.common.trainer_config_modifier.MeshShapeModifier'
 mesh_rules[7][1].config_modifiers[0].mesh_shape[0]: 1
-mesh_rules[7][1].config_modifiers[0].mesh_shape[1]: 1
+mesh_rules[7][1].config_modifiers[0].mesh_shape[1]: -1
 mesh_rules[7][1].config_modifiers[0].mesh_shape[2]: 1
-mesh_rules[7][1].config_modifiers[0].mesh_shape[3]: -1
+mesh_rules[7][1].config_modifiers[0].mesh_shape[3]: 128
 mesh_rules[7][1].config_modifiers[0].mesh_shape[4]: 1
 mesh_rules[7][1].config_modifiers[0].mesh_shape[5]: 4
 mesh_rules[7][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematSpecModifier'
