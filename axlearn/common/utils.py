@@ -49,7 +49,7 @@ from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.ad_checkpoint import Offloadable, Recompute, Saveable
-from jax.core import Primitive
+from jax.extend.core import Primitive
 from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
 
