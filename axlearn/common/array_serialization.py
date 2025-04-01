@@ -16,20 +16,25 @@ Reference:
 https://github.com/google/orbax/blob/3cc343c63c769e4b2df44f3e57f6b5b43569df32/checkpoint/orbax/checkpoint/serialization.py
 https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/experimental/array_serialization/serialization.py
 """
-
 import asyncio
 import functools
+import math
+import os
 import threading
 import time
 from collections import defaultdict
 from concurrent import futures
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence, Union
 
 import jax
+import jax.numpy as jnp
 import numpy as np
+import tensorstore as ts
 from absl import logging
-from jax._src import array, config, layout, typing
+from jax._src import array, config, typing
+from jax._src.layout import Layout
 from jax.experimental.array_serialization import serialization
 
 from axlearn.common.utils import Tensor
@@ -344,6 +349,136 @@ async def _run_serializer(
         raise e
 
 
+def _blocking_device_put(out: Tensor, layout: Layout) -> Tensor:
+    return jax.block_until_ready(jax.device_put(out, layout))
+
+
+async def _async_deserialize(
+    user_in_sharding: jax.sharding.Sharding | Layout,
+    tensorstore_spec: dict[str, Any],
+    global_shape: Optional[Sequence[int]],
+    dtype: Optional[typing.DTypeLike],
+    *,
+    h2d_limiter: serialization._LimitInFlightBytes,
+    byte_limiter: serialization._LimitInFlightBytes,
+    pool: ThreadPoolExecutor,
+    single_thread_pool: ThreadPoolExecutor,
+):
+    """Modified from
+    https://github.com/jax-ml/jax/blob/e7ec418eba9ada336f755613948cbdf4a9e97d59/jax/experimental/array_serialization/serialization.py#L345
+
+    Changes:
+    1. ts.cast is used rather than np.astype to allow casting on-the-fly.
+    2. Avoid allocating a zero array if the global shape is the same as the shape of the tensor
+       stored in the checkpoint, which should be true for majority of the cases.
+    3. Limit in flight padded H2D size to be smaller than premapped buffer size on TPU, so all H2Ds
+       can fit in the pre-mapped buffer. This is to avoid the significant runtime cost of
+       allocating large DMA buffers on-demand and to avoid having extra memory footprint for extra
+       DMA buffers. For tensors whose size exceed the entirety of the premapped buffer, their H2D
+       will be serialized using a single threaded threadpool. For non TPU backend, no limit on
+       in flight H2D is imposed.
+
+    Combination of these optimizations speed up the loading of checkpoints as much as 5x if it's
+    not network-bound.
+
+    ## Background on TPU H2D
+
+    Each H2D consists of the following steps:
+
+    Host buffer -> linearize -> (map DMA buffers) -> PCIe Copy, where linearization is the
+    conversion from host native layout to TPU native tiled layout.
+
+    If there is sufficient capacity in the premapped DMA buffers, the map DMA step can be skipped,
+    and we linearize to a section of the pre-mapped DMA buffer directly. If there is sufficient
+    capacity in the pre-mapped buffer, we can perform several linearization concurrently for
+    improved performance. However, if there isn't sufficient capacity in the premapped buffer,
+    on-demand DMA buffer mapping is needed, and this is often very slow. Additionally, concurrently
+    mapping DMA buffers are neither faster (due to OS overhead) nor memory-efficient.
+    """
+    in_sharding = (
+        user_in_sharding.sharding if isinstance(user_in_sharding, Layout) else user_in_sharding
+    )
+    if not isinstance(in_sharding, jax.sharding.Sharding):
+        raise ValueError(
+            "sharding passed to deserialization should be specified, concrete and"
+            f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
+        )
+    dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
+    t = await ts.open(
+        tensorstore_spec,
+        open=True,
+        assume_metadata=False,
+        context=serialization.TS_CONTEXT,
+    )
+    shape = tuple(t.shape if global_shape is None else global_shape)
+    new_shard_shape = in_sharding.shard_shape(shape)
+    loop = asyncio.get_running_loop()
+
+    async def cb(index: array.Index, device: jax.Device):
+        requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
+        restricted_domain = t.domain.intersect(requested_domain)
+        requested_bytes = serialization.estimate_read_memory_footprint(t, restricted_domain)
+        # Limit the bytes read for every shard.
+        await byte_limiter.wait_for_bytes(requested_bytes)
+        read_ts = t[restricted_domain]
+        # Use ts.cast rather than np.astype since ts can perform casting on-the-fly.
+        if dtype is not None:
+            read_ts = ts.cast(read_ts, dtype)
+        if tuple(t.shape) == shape:
+            # If the restore shape is the same as shape in ckpt, we can avoid the cost of
+            # allocating a zero array first.
+            out = np.empty(new_shard_shape, read_ts.dtype.numpy_dtype)
+        else:
+            # This maybe needed because the shape the array was saved with is smaller
+            # than the requested shape of the array in which it will be reloaded. So
+            # the extra values will be filled with 0s.
+            out = np.zeros(new_shard_shape, read_ts.dtype.numpy_dtype)
+
+        await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][restricted_domain].write(
+            read_ts
+        )
+
+        # Convert to jnp array so that layouts are initialized properly for
+        # sub-byte dtypes.
+        # TODO(yashkatariya): This is a band-aid fix. Figure out a better way to
+        # make this work.
+        if out.dtype == jnp.int4:
+            out = jnp.asarray(out)  # type: ignore
+
+        out_size = out.size * out.dtype.itemsize
+        # Pad to next 256mb. This is a very conservative padding.
+        mb_256 = 256 * 1024 * 1024
+        out_size = math.ceil(out_size / mb_256) * mb_256
+
+        layout = Layout(dll, jax.sharding.SingleDeviceSharding(device))
+        try:
+            await h2d_limiter.wait_for_bytes(out_size)
+            result = await loop.run_in_executor(pool, _blocking_device_put, out, layout)
+            await h2d_limiter.release_bytes(out_size)
+        except ValueError as e:
+            if "Requested more bytes than we reserved" not in str(e):
+                raise e  # Raise if it's not the type of error we expect.
+            logging.log_first_n(
+                logging.WARNING,
+                "Tensor shard for tensor %s (padded size %d bytes) exceeded "
+                "premapped buffer size %d. Consider allocating larger premapped buffer using "
+                "TPU_PREMAPPED_BUFFER_SIZE for improved H2D performance.",
+                32,
+                str(out.shape),
+                out_size,
+                # pylint: disable-next=protected-access
+                h2d_limiter._max_bytes,
+            )
+            result = await loop.run_in_executor(
+                single_thread_pool, _blocking_device_put, out, layout
+            )
+
+        await byte_limiter.release_bytes(requested_bytes)
+        return result
+
+    return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
+
+
 # Reference:
 # https://github.com/google/orbax/blob/ebb3e6d75f9ccb52bf862f1740943a45b18f4dac/checkpoint/orbax/checkpoint/future.py#L49
 class _ThreadRaisingException(threading.Thread):
@@ -377,6 +512,14 @@ class _CommitFuture:
         return self._t.join(timeout=timeout)
 
 
+def _get_premapped_buffer_size():
+    if jax.default_backend() == "tpu":
+        # If TPU_PREMAPPED_BUFFER_SIZE is not set, default is 4GB.
+        return int(os.getenv("TPU_PREMAPPED_BUFFER_SIZE", "4294967296"))
+    # On all other backends, use 1TB (effectively unlimited).
+    return 1099511627776
+
+
 class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
     """Similar to GlobalAsyncCheckpointManager but allows passing additional futures to be awaited
     while asynchronously serializing tensors.
@@ -387,10 +530,18 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._loop_thread.start()
+        self._pool = ThreadPoolExecutor(4)
+        self._single_thread_pool = ThreadPoolExecutor(1)
 
-    def __del__(self):
+    def stop(self):
+        """Cleans up any internal threads."""
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._loop_thread.join()
+        self._pool.shutdown()
+        self._single_thread_pool.shutdown()
+
+    def __del__(self):
+        self.stop()
         return super().__del__()
 
     def serialize(
@@ -431,7 +582,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
     def deserialize(
         self,
-        shardings: Sequence[Union[jax.sharding.Sharding, layout.Layout]],
+        shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
         tensorstore_specs: Sequence[dict[str, Any]],
         global_shapes: Optional[Sequence[array.Shape]] = None,
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
@@ -443,11 +594,18 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         async def _run_deserializer():
             # Object should be created once per process.
-            # pylint: disable-next=protected-access
+            # pylint: disable=protected-access
             byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
+            h2d_limiter = serialization._LimitInFlightBytes(_get_premapped_buffer_size())
 
             future_arrays = jax.tree_util.tree_map(
-                functools.partial(serialization.async_deserialize, byte_limiter=byte_limiter),
+                functools.partial(
+                    _async_deserialize,
+                    byte_limiter=byte_limiter,
+                    h2d_limiter=h2d_limiter,
+                    pool=self._pool,
+                    single_thread_pool=self._single_thread_pool,
+                ),
                 shardings,
                 tensorstore_specs,
                 [None] * len(tensorstore_specs) if global_shapes is None else global_shapes,
@@ -595,10 +753,3 @@ class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
 
         logging.info("D2H during save took %fs. Starting async commit.", time.time() - start_t)
         self._start_async_commit(on_commit_callback)
-
-    def stop(self):
-        """Disposes and cleanup any internal resources."""
-
-    def __del__(self):
-        super().__del__()
-        self.stop()
