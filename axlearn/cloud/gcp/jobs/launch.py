@@ -88,7 +88,6 @@ from axlearn.cloud.common.utils import (
     generate_job_id,
     generate_job_name,
     infer_cli_name,
-    infer_resources,
     parse_action,
 )
 from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
@@ -110,7 +109,6 @@ from axlearn.cloud.gcp.tpu import infer_tpu_resources, infer_tpu_type, infer_tpu
 from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, load_kube_config
 from axlearn.common.config import (
     REQUIRED,
-    ConfigBase,
     ConfigOr,
     Required,
     config_class,
@@ -202,8 +200,7 @@ class BaseBastionManagedJob(Job):
             project_usage_table,
         ]
         # Resources used by the job.
-        # This should take a config as input and return all resources used by the config.
-        resources: Callable[[ConfigBase], ResourceMap[int]] = infer_resources
+        resources: ConfigOr[ResourceMap[int]] = {}
 
     @classmethod
     def with_runner(cls, runner: type[Job]):
@@ -351,7 +348,7 @@ class BaseBastionManagedJob(Job):
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
                 creation_time=datetime.now(timezone.utc),
-                resources=cfg.resources(cfg),
+                resources=maybe_instantiate(cfg.resources),
                 priority=cfg.priority,
                 job_id=job_id,
             )

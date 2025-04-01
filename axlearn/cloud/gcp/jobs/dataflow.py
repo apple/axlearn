@@ -31,6 +31,7 @@ Examples:
         --bundler_spec=dockerfile=Dockerfile \
         --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
         --bundler_spec=target=dataflow \
+        --bundler_spec=allow_dirty=True \
         -- "'
         python3 -m apache_beam.examples.wordcount \
             --input=gs://dataflow-samples/shakespeare/kinglear.txt \
@@ -54,6 +55,7 @@ Examples:
             --bundler_spec=dockerfile=Dockerfile \
             --bundler_spec=base_image=apache/beam_python3.10_sdk:2.55.1 \
             --bundler_spec=target=dataflow \
+            --bundler_spec=allow_dirty=True \
             -- "'
             rm -r /tmp/output_dir; \
             python3 -m apache_beam.examples.wordcount \
@@ -139,7 +141,7 @@ class DataflowJob(GCPJob):
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        bundler_flags(**common_kwargs)
+        bundler_flags(required=False, **common_kwargs)
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string("vm_type", "n2-standard-2", "Worker VM type.", **common_kwargs)
         flags.DEFINE_multi_string(

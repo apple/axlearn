@@ -16,7 +16,7 @@ from absl import flags
 
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
-from axlearn.cloud.common.utils import subprocess_run
+from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.jobset_utils import A3ReplicatedJob, BaseReplicatedJob, TPUReplicatedJob
 from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset
@@ -31,6 +31,8 @@ class GCPJob(Job):
     class Config(Job.Config):
         """Configures GCPJob."""
 
+        # Name of the job.
+        name: Required[str] = REQUIRED
         # GCP project.
         project: Required[str] = REQUIRED
         # GCP zone.
@@ -42,6 +44,7 @@ class GCPJob(Job):
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string("project", None, "The GCP project name.", **common_kwargs)
         flags.DEFINE_string("zone", None, "The GCP zone name.", **common_kwargs)
         flags.DEFINE_string(
@@ -61,6 +64,7 @@ class GCPJob(Job):
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
+        fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("project", default_project())
         fv.set_default("zone", default_zone())
         fv.set_default("env_id", default_env_id())
@@ -78,14 +82,12 @@ class GKEJob(GCPJob):
         """Configures GKEJob.
 
         Attributes:
-            name: Name of the JobSet.
             builder: A builder that returns one or more replicated job specs.
             namespace: The namespace to use within the k8s cluster.
                 https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
         """
 
-        name: Required[str] = REQUIRED
         builder: Required[BaseReplicatedJob.Config] = REQUIRED
         namespace: str = "default"
         queue: Optional[str] = None
@@ -210,18 +212,10 @@ class CPUJob(GCPJob):
         """Configures CPUJob.
 
         Attributes:
-            name: Name of the job.
             command: Command to execute.
         """
 
-        name: Required[str] = REQUIRED
         command: Required[str] = REQUIRED
-
-    @classmethod
-    def define_flags(cls, fv):
-        super().define_flags(fv)
-        common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
 
     def _execute_remote_cmd(
         self, cmd: str, *, detached_session: Optional[str] = None, **kwargs

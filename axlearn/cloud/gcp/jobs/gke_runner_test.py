@@ -119,7 +119,6 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             name="test-name",
             cluster="test-cluster",
         )
-        # cfg.bundler.set(image="test")
         job: gke_runner.GPUGKERunnerJob = cfg.instantiate()
 
         with mock.patch.multiple(
@@ -129,8 +128,6 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
 
     def test_delete(self):
         cfg = self._job_config(command="", name="test-name", cluster="test-cluster")
-        # cfg.bundler.set(image="test")
-
         job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
         with mock.patch.multiple(
@@ -147,8 +144,6 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             name="test-name",
             cluster="test-cluster",
         )
-        # cfg.bundler.set(image="test")
-
         job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
         with mock.patch.multiple(
@@ -284,7 +279,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        # cfg.bundler.set(image="test")
         job: gke_runner.TPUGKERunnerJob = cfg.instantiate()
 
         with mock.patch.multiple(
@@ -609,7 +603,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             enable_pre_provisioner=enable_pre_provisioner,
             num_replicas=num_slices,
         )
-        # cfg.bundler.set(image="test")
         job: gke_runner.TPUGKERunnerJob = cfg.instantiate()
 
         if isinstance(status, Exception):
@@ -819,7 +812,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        # cfg.bundler.set(image="test")
         # Node pool test cases assume "test-name".
         self.assertEqual("test-name", cfg.name)
 
@@ -861,7 +853,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        # cfg.bundler.set(image="test")
         job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
         with mock.patch.multiple(
@@ -886,7 +877,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        # cfg.bundler.set(image="test")
         job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
         with mock.patch.multiple(
@@ -918,8 +908,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        # cfg.bundler.set(image="test")
-
         job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
         with mock.patch.multiple(
@@ -1059,7 +1047,6 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             instance_type="v5p-8",
         )
-        # cfg.bundler.set(image="test")
         job: gke_runner.FlinkGKERunnerJob = cfg.instantiate()
 
         if isinstance(status, Exception):
