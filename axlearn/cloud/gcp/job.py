@@ -127,8 +127,8 @@ class GKEJob(GCPJob):
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
-        fv.set_default("max_tries", fv["max_tries"].default or 10)
-        fv.set_default("retry_interval", fv["retry_interval"].default or 60)
+        fv.set_default("max_tries", fv.max_tries or 10)
+        fv.set_default("retry_interval", fv.retry_interval or 60)
         fv.set_default(
             "service_account", gcp_settings("k8s_service_account", default="default", fv=fv)
         )

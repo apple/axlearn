@@ -107,7 +107,7 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
     with_k8s_jobset_state,
 )
 from axlearn.cloud.gcp.tpu import infer_tpu_resources, infer_tpu_type, infer_tpu_workers
-from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, load_kube_config, validate_k8s_name
+from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, load_kube_config
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -436,7 +436,7 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
         # Don't override `name` if already specified, since the default is non-deterministic.
-        fv.set_default("name", fv["name"].default or generate_job_name())
+        fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("project", default_project())
         fv.set_default("zone", default_zone())
         fv.set_default("namespace", "default")
@@ -473,19 +473,15 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
         cfg: BastionManagedGKEJob.Config = self.config
         try:
             num_workers = infer_tpu_workers(infer_tpu_type(cfg.instance_type))
-        except ValueError:
-            logging.warning(
-                "Failed to infer number of workers for instance_type: %s.", cfg.instance_type
-            )
-            num_workers = None
-        if num_workers is not None:
-            validate_k8s_name(cfg.name, num_workers=num_workers, num_replicas=cfg.num_replicas)
-            # TODO(markblee): add the logs command.
             worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --worker=0"
             print(
                 f"\nOnce started, view TPU log outputs with:\n{worker_log}\n"
                 "Replace `--worker=0` with `--worker={idx}` "
                 f"where idx is between [0, {num_workers}).\n"
+            )
+        except ValueError:
+            logging.warning(
+                "Failed to infer number of workers for instance_type: %s.", cfg.instance_type
             )
         job_spec = super()._execute()
         print(

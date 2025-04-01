@@ -4,6 +4,7 @@
 
 import logging
 import math
+import os
 import time
 from typing import Any, Dict
 
@@ -208,6 +209,26 @@ class FlinkTPUGKEJob(job.GKEJob):
     def _build_checkpoint_path(self):
         return f"{self.config.output_dir}/flink_checkpoints"
 
+    def _build_tpu_node_selector(self, system: _SystemCharacteristics):
+        cfg: FlinkTPUGKEJob.Config = self.config
+        node_selector = {
+            PRE_PROVISIONER_LABEL: cfg.name,
+            "cloud.google.com/gke-accelerator-count": str(system.chips_per_vm),
+            "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+            # In batch inference, we use every node independently, because they don't need to
+            # communicate with each other. When we provision the nodepool, we removed the
+            # placement_policy from it so that nodes' preemption doesn't impact the whole
+            # nodepool. And here at pod level, we use single node's topology instead of the
+            # whole slice's topology. So that jax.device_count() gets the number of chips in a
+            # single node.
+            "cloud.google.com/gke-tpu-topology": self._get_single_node_topology(),
+        }
+
+        location_hint = cfg.builder.location_hint
+        if location_hint:
+            node_selector["cloud.google.com/gke-location-hint"] = str(location_hint).lower()
+        return node_selector
+
     def _build_flink_deployment(self, system: _SystemCharacteristics) -> Dict[str, Any]:
         cfg: FlinkTPUGKEJob.Config = self.config
         return dict(
@@ -267,21 +288,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                     ),
                     podTemplate=dict(
                         spec=dict(
-                            nodeSelector={
-                                PRE_PROVISIONER_LABEL: cfg.name,
-                                "cloud.google.com/gke-accelerator-count": str(system.chips_per_vm),
-                                "cloud.google.com/gke-location-hint": str(
-                                    self._builder.config.location_hint
-                                ),
-                                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                                # In inference, we use every node independently, so we use single
-                                # node's topology instead of the whole slice's topology.
-                                # So that jax.device_count() gets the number of chips in a single
-                                # node.
-                                "cloud.google.com/gke-tpu-topology": (
-                                    self._get_single_node_topology()
-                                ),
-                            },
+                            nodeSelector=self._build_tpu_node_selector(system=system),
                             tolerations=[
                                 dict(
                                     key="google.com/tpu",
@@ -390,8 +397,9 @@ class FlinkTPUGKEJob(job.GKEJob):
             cfg.builder.accelerator.num_replicas * system.vms_per_slice * system.chips_per_vm
         )
         user_command += (
-            f" --flink_master_address={job_manager_ip}"
-            f" --flink_parallelism={flink_parallelism}"
+            f" --flink_master={job_manager_ip}"
+            f" --parallelism={flink_parallelism}"
+            f" --artifacts_dir={os.path.join(cfg.builder.output_dir, 'artifacts_dir')}"
             # Replicate output to /output/beam_pipline_log
             f" 2>&1 | tee /output/beam_pipline_log"
         )

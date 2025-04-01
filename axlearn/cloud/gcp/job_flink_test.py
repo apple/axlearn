@@ -5,12 +5,13 @@
 import contextlib
 import json
 import logging
+from typing import Optional
 
 from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.gcp import bundler, job, job_flink
+from axlearn.cloud.gcp import bundler, job, job_flink, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.test_utils import TestCase
@@ -23,7 +24,7 @@ expected_flink_deployment_json = """
   "kind": "FlinkDeployment",
   "metadata": {
     "namespace": "default",
-    "name": "None-flink-cluster"
+    "name": "fake-name-flink-cluster"
   },
   "spec": {
     "image": "flink:1.18",
@@ -102,11 +103,11 @@ expected_flink_deployment_json = """
       "podTemplate": {
         "spec": {
           "nodeSelector": {
-            "pre-provisioner-id": null,
+            "pre-provisioner-id": "fake-name",
             "cloud.google.com/gke-accelerator-count": "4",
-            "cloud.google.com/gke-location-hint": "None",
             "cloud.google.com/gke-tpu-accelerator": "tpu-v5p-slice",
-            "cloud.google.com/gke-tpu-topology": "2x2x1"
+            "cloud.google.com/gke-tpu-topology": "2x2x1",
+            "cloud.google.com/gke-location-hint": "fake-location-hint"
           },
           "tolerations": [
             {
@@ -155,7 +156,7 @@ expected_flink_deployment_json = """
                   "name": "flink-logs"
                 }
               ],
-              "image": "settings-repo/test-image:None",
+              "image": "settings-repo/test-image:fake-name",
               "args": [
                 "-worker_pool"
               ],
@@ -208,7 +209,7 @@ expected_flink_deployment_json = """
                 },
                 {
                   "name": "XLA_FLAGS",
-                  "value": "--xla_dump_to=/output/None/xla"
+                  "value": "--xla_dump_to=/output/fake-name/xla"
                 },
                 {
                   "name": "TF_CPP_MIN_LOG_LEVEL",
@@ -280,14 +281,14 @@ expected_jobsubmission_json = """
   "apiVersion": "batch/v1",
   "kind": "Job",
   "metadata": {
-    "name": null
+    "name": "fake-name"
   },
   "spec": {
     "backoffLimit": 0,
     "template": {
       "metadata": {
         "labels": {
-          "app": null,
+          "app": "fake-name",
           "app_type": "beam_pipline_submitter"
         }
       },
@@ -332,14 +333,14 @@ expected_jobsubmission_json = """
         ],
         "containers": [
           {
-            "name": null,
+            "name": "fake-name",
             "env": [
               {
                 "name": "PYTHONUNBUFFERED",
                 "value": "1"
               }
             ],
-            "image": "settings-repo/test-image:None",
+            "image": "settings-repo/test-image:fake-name",
             "volumeMounts": [
               {
                 "name": "shared-output",
@@ -351,7 +352,7 @@ expected_jobsubmission_json = """
               "-c"
             ],
             "args": [
-              "python -m fake --command --flink_master_address=1.2.3.4 --flink_parallelism=8 2>&1 | tee /output/beam_pipline_log"
+              "python -m fake --command --flink_master=1.2.3.4 --parallelism=8 --artifacts_dir=fake-output-dir/artifacts_dir 2>&1 | tee /output/beam_pipline_log"
             ]
           }
         ],
@@ -369,11 +370,18 @@ class FlinkTPUGKEJobTest(TestCase):
         self,
         bundler_cls: type[Bundler],
         command: str = "python -m fake --command",
+        location_hint: Optional[str] = None,
         **kwargs,
     ):
-        with mock_gcp_settings([job.__name__, bundler.__name__], default_mock_settings()):
+        mock_setting = default_mock_settings()
+        mock_setting["location_hint"] = location_hint
+
+        with mock_gcp_settings(
+            [job.__name__, jobset_utils.__name__, bundler.__name__], mock_setting
+        ):
             fv = flags.FlagValues()
             job_flink.FlinkTPUGKEJob.define_flags(fv)
+            fv.set_default("name", "fake-name")
             fv.set_default("instance_type", "tpu-v5p-16")
             fv.set_default("output_dir", "fake-output-dir")
             for key, value in kwargs.items():
@@ -389,16 +397,19 @@ class FlinkTPUGKEJobTest(TestCase):
         service_account=[None, "sa"],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_pre_provisioner=[None, False, True],
+        location_hint=["fake-location-hint", None],
     )
     def test_get_flinkdeployment(
         self,
         reservation,
         service_account,
         enable_pre_provisioner,
+        location_hint,
         bundler_cls,
     ):
         with self._job_config(
             bundler_cls,
+            location_hint=location_hint,
             reservation=reservation,
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
@@ -411,6 +422,10 @@ class FlinkTPUGKEJobTest(TestCase):
             expected_flink_deployment["spec"]["serviceAccount"] = (
                 service_account if service_account else "settings-account"
             )
+            if not location_hint:
+                del expected_flink_deployment["spec"]["taskManager"]["podTemplate"]["spec"][
+                    "nodeSelector"
+                ]["cloud.google.com/gke-location-hint"]
             try:
                 self.assertDictEqual(expected_flink_deployment, flink_deployment)
             except AssertionError:

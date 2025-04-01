@@ -24,7 +24,7 @@ from axlearn.common.attention_bias import (
     ZeroAttentionBias,
     sliding_window_causal_mask,
 )
-from axlearn.common.flash_attention import utils
+from axlearn.common.flash_attention import common, utils
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 
 
@@ -126,22 +126,27 @@ class TestFlashAttention(TestCase):
                 source_positions=jnp.arange(seq_len)[None],
             )
 
+        query, key, value = _get_inputs(
+            batch=batch,
+            seq_len=seq_len,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads or num_heads,
+            per_head_dim=per_head_dim,
+            input_dtype=input_dtype,
+        )
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
+            ref_fn = common.ReferenceMHA.default_config().instantiate()
+            test_fn = utils.flash_attention_implementation(
+                backend,
+                query=query,
+                key=key,
+                value=value,
+                bias=bias,
+                tpu_block_size=128,
+            )
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
-                xla_fn = utils.flash_attention_implementation("xla")
-                test_fn = utils.flash_attention_implementation(backend)
-
-                query, key, value = _get_inputs(
-                    batch=batch,
-                    seq_len=seq_len,
-                    num_heads=num_heads,
-                    num_kv_heads=num_kv_heads or num_heads,
-                    per_head_dim=per_head_dim,
-                    input_dtype=input_dtype,
-                )
                 prng_key = jax.random.PRNGKey(0)
-
-                ref_out = xla_fn(query, key, value, bias, prng_key)
+                ref_out = ref_fn(query, key, value, bias, prng_key)
                 test_out = test_fn(query, key, value, bias, prng_key)
                 self.assertNestedAllClose(ref_out, test_out, atol=0.01)
         jax.clear_caches()
@@ -186,21 +191,35 @@ class TestFlashAttention(TestCase):
                 source_positions=jnp.arange(seq_len)[None],
             )
 
+        query, key, value = _get_inputs(
+            batch=batch,
+            seq_len=seq_len,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads or num_heads,
+            per_head_dim=per_head_dim,
+            input_dtype=input_dtype,
+        )
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
+            fwd_fn = utils.flash_attention_implementation(
+                backend,
+                query=query,
+                key=key,
+                value=value,
+                bias=bias,
+                tpu_block_size=128,
+            )
+            dummy_query_step = query[:, :1]
+            decode_fn = utils.flash_attention_implementation(
+                backend,
+                query=dummy_query_step,
+                key=key,
+                value=value,
+                bias=bias,
+                tpu_block_size=128,
+                is_decoding=True,
+            )
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
-                fwd_fn = utils.flash_attention_implementation(backend)
-                decode_fn = utils.flash_attention_implementation(backend, is_decoding=True)
-
-                query, key, value = _get_inputs(
-                    batch=batch,
-                    seq_len=seq_len,
-                    num_heads=num_heads,
-                    num_kv_heads=num_kv_heads or num_heads,
-                    per_head_dim=per_head_dim,
-                    input_dtype=input_dtype,
-                )
                 prng_key = jax.random.PRNGKey(0)
-
                 fwd_out = fwd_fn(query, key, value, bias, prng_key)
                 # Limit generation length to 16 to save test time.
                 query_len = 16

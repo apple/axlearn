@@ -33,6 +33,7 @@
 """Attention layers with pjit partition specs.
 
 On `attention_logit_biases`:
+* This is legacy. Use cfg.mask to avoid unnecessary O(T^2) biases.
 * For methods that take a tensor, a biases Tensor can have one of the following shapes:
   * [target_length, source_length]
   * [batch, target_length, source_length]
@@ -88,7 +89,6 @@ from enum import Enum, unique
 from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 
 import chex
-import einops
 import jax
 from absl import logging
 from jax import numpy as jnp
@@ -305,25 +305,49 @@ class KVCache(BaseKVCache):
         if k_proj.shape[1] != key_positions.shape[1]:
             raise ValueError(f"{k_proj.shape[1]=} != {key_positions.shape[1]=}")
 
-        # Update the cache via one-hot broadcast and addition.
-        # NB: Cache updates can also be done via dynamic slice update. However it was observed
-        # that RLHF training got stuck in some cases.
-        # TODO(ds-hwang): Investigate the root cause.
         cached_key: Tensor = cached_states["key"]
         cached_value: Tensor = cached_states["value"]
-        source_len = cached_key.shape[-1]
+        batch, step_size = k_proj.shape[:2]
         # [B, T, N, H] --> [B, N, H, T].
         k_proj = jnp.einsum("btnh->bnht", k_proj)
         v_proj = jnp.einsum("btnh->bnht", v_proj)
-        # Create a dispatch matrix of shape [B, T=step, S].
-        oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
-        # Create a mask of shape [B, 1, 1, S].
-        negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
-        k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
-        v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
-        # Ensure that we accumulate using the original dtype.
-        cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
-        cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+
+        # On GPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 32.
+        # On TPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 1024.
+        threshold = 32 if jax.default_backend() != "tpu" else 1024
+
+        # dynamic_update_slice_in_dim is typically used for updating tensors, but we found that
+        # when step_size is small, one-hot matmul is 10-20% faster on both TPU and GPU.
+        if step_size < threshold:
+            source_len = cached_key.shape[-1]
+            # Create a dispatch matrix of shape [B, T=step, S].
+            oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
+            # Create a mask of shape [B, 1, 1, S].
+            negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
+
+            k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
+            v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
+
+            # Ensure that we accumulate using the original dtype.
+            cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
+            cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+        else:
+            # Note: KV transpose is an optimization for one-hot matmul and is not related to
+            # dynamic_update_slice_in_dim. As a result, KV transpose only adds overhead for it.
+            # Since small step_size scenarios are more frequent, we accept slowdown in this case.
+
+            # Function to update the cache for a single batch element.
+            def update_single(cached_kv_slice, kv_proj_slice, time_idx):
+                return jax.lax.dynamic_update_slice_in_dim(
+                    cached_kv_slice, kv_proj_slice, time_idx, axis=-1
+                )
+
+            # Use jax.vmap to vectorize over the batch dimension.
+            vmap_update = jax.vmap(update_single)
+            time_step = jnp.broadcast_to(key_positions[:, 0], [batch])
+            cached_key = vmap_update(cached_key, k_proj.astype(cached_key.dtype), time_step)
+            cached_value = vmap_update(cached_value, v_proj.astype(cached_key.dtype), time_step)
+
         updated_state = dict(key=cached_key, value=cached_value)
         chex.assert_equal_shape((updated_state["key"], cached_key))
         chex.assert_equal_shape((updated_state["value"], cached_value))
@@ -1197,9 +1221,9 @@ def _rotary_sinusoidal_positional_embeddings(
     dim_array = jnp.arange(dim // 2).astype(jnp.float32)
     pos_array = positions.astype(jnp.float32)  # [batch_size, seq_len]
     exponents = jnp.power(theta, 2 * dim_array / dim)  # 10000 ** (2i / dim), [dim/2]
-    position_enc = einops.rearrange(pos_array, "b t -> b t 1") / einops.rearrange(
-        exponents, "d -> 1 1 d"
-    )  # [batch_size, seq_len, dim/2]
+
+    # [batch_size, seq_len, dim/2]
+    position_enc = pos_array[:, :, None] / exponents[None, None, :]
 
     rope_part_1 = jnp.sin(position_enc)
     rope_part_2 = jnp.cos(position_enc)
@@ -1296,16 +1320,13 @@ def apply_rotary_position_embeddings(
     """
     # sin/cos: [batch_size, seq_len, 1, dim/2]
     sin, cos = jnp.split(sinusoidal_pos, 2, axis=-1)
-    # Note: '...' is used instead of 'b s n' because downstream uses it with different ranks.
     # sin [θ0,θ1,θ2......θd/2-1] -> sin_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    sin_pos = einops.repeat(sin, "... h -> ... (h k)", k=2)
+    sin_pos = jnp.repeat(sin, 2, axis=-1)
     # cos [θ0,θ1,θ2......θd/2-1] -> cos_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    cos_pos = einops.repeat(cos, "... h -> ... (h k)", k=2)
+    cos_pos = jnp.repeat(cos, 2, axis=-1)
 
     def rotate_half(x):
-        return einops.rearrange(
-            jnp.stack([-x[..., 1::2], x[..., ::2]], axis=-1), "... h k -> ... (h k)", k=2
-        )
+        return jnp.reshape(jnp.stack([-x[..., 1::2], x[..., ::2]], axis=-1), x.shape)
 
     # rotate_half_query_layer [-q1,q0,-q3,q2......,-qd-1,qd-2]
     query = query * cos_pos + rotate_half(query) * sin_pos
@@ -1790,7 +1811,6 @@ class MultiheadAttention(BaseLayer):
             time_step = cached_states["time_step"]
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
-        chex.assert_equal_shape((k_proj, v_proj))
 
         if mode == ForwardMode.FORWARD:
             new_cached_states = dict()
@@ -1976,7 +1996,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        attention_logit_biases: Optional[Tensor],
+        attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Nested[Tensor], Optional[Output]]:
         """Initializes cache for autoregressive cached decoding.
@@ -2055,7 +2075,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        attention_logit_biases: Optional[Tensor],
+        attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
@@ -2126,10 +2146,18 @@ def compute_gqa_logits(q_proj: Tensor, k_proj: Tensor) -> Tensor:
     kv_heads = k_proj.shape[2]
     num_head_group = q_proj.shape[2] // kv_heads
     assert q_proj.shape[2] % kv_heads == 0
-    q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
-    k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
+
+    # [batch, target_length, kv_heads, num_head_group, per_head_dim]
+    q_proj = jnp.reshape(q_proj, [*q_proj.shape[:2], kv_heads, num_head_group, *q_proj.shape[3:]])
+
+    # [batch, source_length, kv_heads, 1, per_head_dim]
+    k_proj = jnp.expand_dims(k_proj, axis=3)
+
+    # [batch, kv_heads, num_head_group, target_length, source_length]
     logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
-    return einops.rearrange(logits, "b k g t s -> b (k g) t s")
+
+    # [batch, num_heads, target_length, source_length]
+    return jnp.reshape(logits, [*logits.shape[:1], -1, *logits.shape[3:]])
 
 
 def compute_gqa_context(probs: Tensor, v_proj: Tensor) -> Tensor:
@@ -2145,10 +2173,18 @@ def compute_gqa_context(probs: Tensor, v_proj: Tensor) -> Tensor:
     kv_heads = v_proj.shape[2]
     num_head_group = probs.shape[1] // kv_heads
     assert probs.shape[1] % kv_heads == 0
-    probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
-    v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
+
+    # [batch, kv_heads, num_head_group, target_length, source_length]
+    probs = jnp.reshape(probs, [*probs.shape[:1], kv_heads, num_head_group, *probs.shape[2:]])
+
+    # [batch, source_length, kv_heads, 1, per_head_dim]
+    v_proj = jnp.expand_dims(v_proj, axis=3)
+
+    # [batch, target_length, kv_heads, num_head_group, per_head_dim]
     context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
-    return einops.rearrange(context, "b t k g h -> b t (k g) h")
+
+    # [batch, target_length, num_heads, per_head_dim]
+    return jnp.reshape(context, [*context.shape[:2], -1, *context.shape[4:]])
 
 
 class GroupedQueryAttention(MultiheadAttention):

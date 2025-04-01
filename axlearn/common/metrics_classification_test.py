@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests classification metrics."""
+
 # pylint: disable=no-self-use
 import logging
 
@@ -8,6 +9,7 @@ import evaluate
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from absl.testing import absltest, parameterized
 from jax import nn
 from jax.experimental import checkify
@@ -87,12 +89,21 @@ class TestMetrics(TestWithTemporaryCWD):
         actual = jit_f_score(label, pred, beta=beta, weight=weight)
         assert_allclose(expected, actual)
 
+    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    def test_f_score_hf(self):
+        batch_size = 100
+        num_classes = 2
+
+        pred = jax.random.randint(jax.random.PRNGKey(123), [batch_size], 0, num_classes)
+        label = jax.random.randint(jax.random.PRNGKey(321), [batch_size], 0, num_classes)
+
+        jit_f_score = jax.jit(f_score, static_argnames=("beta", "eps"))
+
         # Test equivalence with hf (which computes f1).
-        if beta == 1:
-            actual = jit_f_score(pred, label, beta=beta)
-            metric = evaluate.load("glue", config_name="mrpc")
-            expected = metric.compute(predictions=pred, references=label)["f1"]
-            assert_allclose(expected, actual)
+        actual = jit_f_score(pred, label, beta=1)
+        metric = evaluate.load("glue", config_name="mrpc")
+        expected = metric.compute(predictions=pred, references=label)["f1"]
+        assert_allclose(expected, actual)
 
     def test_f_score_validation(self):
         with self.assertRaisesRegex(ValueError, "beta must be positive"):

@@ -87,17 +87,6 @@ def _test_forward_and_backward(
 
 def common_attn_test_params(func):
     params = [
-        pytest.mark.parametrize(
-            "batch_size,num_heads,query_len,per_head_dim",
-            [
-                (1, 1, 384, 64),
-                (2, 2, 256, 64),
-                (1, 1, 512, 128),
-                (2, 2, 384, 128),
-                (1, 8, 384, 128),
-                (2, 4, 384, 128),
-            ],
-        ),
         pytest.mark.parametrize("kv_len", [None, 512]),
         pytest.mark.parametrize("dropout_rate", [0, 0.1]),
         pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"]),
@@ -112,6 +101,18 @@ def common_attn_test_params(func):
     return func
 
 
+@pytest.mark.parametrize(
+    "batch_size,num_heads,query_len,per_head_dim",
+    [
+        (1, 1, 384, 64),
+        (2, 2, 256, 64),
+        (2, 2, 256, 72),
+        (1, 1, 512, 128),
+        (2, 2, 256, 128),
+        (1, 8, 384, 128),
+        (2, 4, 384, 128),
+    ],
+)
 @common_attn_test_params
 def test_triton_fwd_only_against_ref(
     batch_size: int,
@@ -126,6 +127,8 @@ def test_triton_fwd_only_against_ref(
     with_segment_ids: bool,
     dtype: jnp.dtype,
 ):
+    if query_len >= 384 and jax.default_backend() == "cpu":
+        pytest.skip("Too slow on CPU.")
     q, k, v, bias = generate_attention_data(
         batch_size,
         query_len,
@@ -158,6 +161,17 @@ def test_triton_fwd_only_against_ref(
         chex.assert_trees_all_close(o, o_ref, atol=0.03)
 
 
+@pytest.mark.parametrize(
+    "batch_size,num_heads,query_len,per_head_dim",
+    [
+        (1, 1, 384, 64),
+        (2, 2, 256, 64),
+        (1, 1, 512, 128),
+        (2, 2, 256, 128),
+        (1, 8, 384, 128),
+        (2, 4, 384, 128),
+    ],
+)
 @common_attn_test_params
 def test_triton_against_xla_ref(
     batch_size: int,
@@ -172,6 +186,8 @@ def test_triton_against_xla_ref(
     mask_fn: Optional[MaskFn],
     dtype: jnp.dtype,
 ):
+    if query_len >= 384 and jax.default_backend() == "cpu":
+        pytest.skip("Too slow on CPU.")
     q, k, v, bias = generate_attention_data(
         batch_size,
         query_len,

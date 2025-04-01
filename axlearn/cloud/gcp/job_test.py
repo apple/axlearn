@@ -60,6 +60,7 @@ class TPUGKEJobTest(TestCase):
                 if value is not None:
                     # Use setattr rather than set_default to set flags.
                     setattr(fv, key, value)
+            fv.name = "fake-name"
             fv.output_dir = "FAKE"
             fv.instance_type = "tpu-v4-8"
             fv.mark_as_parsed()
