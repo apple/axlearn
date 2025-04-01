@@ -361,7 +361,6 @@ async def _async_deserialize(
     *,
     h2d_limiter: serialization._LimitInFlightBytes,
     byte_limiter: serialization._LimitInFlightBytes,
-    pool: ThreadPoolExecutor,
     single_thread_pool: ThreadPoolExecutor,
 ):
     """Modified from
@@ -454,7 +453,7 @@ async def _async_deserialize(
         layout = Layout(dll, jax.sharding.SingleDeviceSharding(device))
         try:
             await h2d_limiter.wait_for_bytes(out_size)
-            result = await loop.run_in_executor(pool, _blocking_device_put, out, layout)
+            result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
             await h2d_limiter.release_bytes(out_size)
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
@@ -531,14 +530,12 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._loop_thread.start()
-        self._pool = ThreadPoolExecutor(4)
         self._single_thread_pool = ThreadPoolExecutor(1)
 
     def stop(self):
         """Cleans up any internal threads."""
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._loop_thread.join()
-        self._pool.shutdown()
         self._single_thread_pool.shutdown()
 
     def __del__(self):
@@ -604,7 +601,6 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
                     _async_deserialize,
                     byte_limiter=byte_limiter,
                     h2d_limiter=h2d_limiter,
-                    pool=self._pool,
                     single_thread_pool=self._single_thread_pool,
                 ),
                 shardings,
