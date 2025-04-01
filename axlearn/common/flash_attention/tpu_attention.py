@@ -71,14 +71,16 @@ def _to_splash_mask(
             shape=mask_shape, window_size=(left_size, 0), offset=0, shard_count=q_seq_shards
         )
 
-    # This code is reached only when `is_decoding == False` (i.e., forward and prefill) and
-    # `target_len == source_len` (i.e., self-attention) (see `check_tpu_splash_attention`).
-    # In this case, `target_positions` and `source_positions` are always in the range [0, seq_len].
-    target_positions = np.arange(mask_shape[0])[None, :, None]
-    source_positions = np.arange(mask_shape[1])[None, None, :]
-    # `mask.mask` expects rank 3 tensors.
-    mask_array = np.asarray(mask.mask(target_positions, source_positions))
-    mask_array = np.squeeze(mask_array, axis=0)
+    # Because mask.mask() may use jnp ops. e.g. jnp.logical_and.
+    with jax.ensure_compile_time_eval():
+        # This code is reached only when `is_decoding == False` (i.e., forward and prefill) and
+        # `target_len == source_len` (i.e., self-attention) (see `check_tpu_splash_attention`).
+        # `target_positions` and `source_positions` are always in the range [0, seq_len].
+        target_positions = np.arange(mask_shape[0])[None, :, None]
+        source_positions = np.arange(mask_shape[1])[None, None, :]
+        # `mask.mask` expects rank 3 tensors.
+        mask_array = np.asarray(mask.mask(target_positions, source_positions))
+        mask_array = np.squeeze(mask_array, axis=0)
 
     # NumpyMask is backed by a dense [target_len, source_len] numpy array.
     # May consume a large amount of host memory for long sequences at compile time.
