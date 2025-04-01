@@ -617,16 +617,14 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
     """Similar to GlobalAsyncCheckpointManager but with few improvements:
 
-    1. Writing to tensorstore requires no host-to-host copy most of the time. This reduces host
-    memory usage while also reduces blocking time of the checkpointing process.
-    2. Tensorstore calls now run in a background event loop, hiding the cost of `ts.open` and
+    1. Tensorstore calls now run in a background event loop, hiding the cost of `ts.open` and
     `ts.copy`. Now, only D2H blocks training while serialization is fully asynchronous.
-    3. Added additional sharding along data-parallel axis during save to further reduce host memory
+    2. Added additional sharding along data-parallel axis during save to further reduce host memory
     overhead and improves D2H time. It's achieved by sharding the first dim that's divisible by the
     data-parallel dim. We manipulate shard.index to match the sliced shard, so to tensorstore it
     behaves as if we're sharding along the data-parallel axis. If no such dim is found, we use the
     old way to save-restore, i.e. using the first (0th) replica to do the save only.
-    4. Optionally one can specify max_concurrent_gb to limit in-flight host memory during
+    3. Optionally one can specify max_concurrent_gb to limit in-flight host memory during
     device-to-host transfers and tensorstore writes.
 
     Args:
