@@ -2779,8 +2779,11 @@ class MultiheadAttentionTest(TestCase):
             bias=bias,
         )
 
-    @parameterized.product(mode=[ForwardMode.FORWARD, ForwardMode.EXTEND_STEP])
-    def test_gqa_against_mha(self, mode):
+    @parameterized.product(
+        mode=[ForwardMode.FORWARD, ForwardMode.EXTEND_STEP],
+        kv_dtype=[jnp.float64, jnp.float32, jnp.bfloat16],
+    )
+    def test_gqa_against_mha(self, mode, kv_dtype):
         model_dim = 16
         num_heads = 4
         num_kv_heads = 2
@@ -2813,6 +2816,7 @@ class MultiheadAttentionTest(TestCase):
         q = jax.random.uniform(data_key, (batch, seq_len, num_heads, per_head_dim))
         k = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
         v = jax.random.uniform(data_key, (batch, seq_len, num_kv_heads, per_head_dim))
+        q, k, v = q.astype(jnp.float32), k.astype(kv_dtype), v.astype(kv_dtype)
         attention_logit_biases = attention_logit_biases = attention_bias.ZeroAttentionBias()
 
         (test_context, ref_probs), _ = F(
@@ -2849,6 +2853,8 @@ class MultiheadAttentionTest(TestCase):
         )
 
         assert_allclose(ref_context, test_context)
+        self.assertEqual(ref_context.dtype, q.dtype)
+        self.assertEqual(test_context.dtype, q.dtype)
         assert_allclose(ref_probs, ref_probs)
 
 
@@ -2996,9 +3002,15 @@ class ScaleFunctionsTest(TestCase):
             ),
         ],
         mode=[ForwardMode.FORWARD, ForwardMode.EXTEND_STEP],
+        kv_dtype=[jnp.float64, jnp.float32, jnp.bfloat16],
     )
     def test_sigmoid_compute_attention(
-        self, qkv_value: float, expected_value: float, seq_len: int, mode: ForwardMode
+        self,
+        qkv_value: float,
+        expected_value: float,
+        seq_len: int,
+        mode: ForwardMode,
+        kv_dtype: jnp.dtype,
     ):
         model_dim = 16
         num_heads = 4
@@ -3021,9 +3033,9 @@ class ScaleFunctionsTest(TestCase):
         qkv_shape = [batch_size, seq_len, num_heads, num_heads]
         inputs = dict(
             mode=mode,
-            q_proj=jnp.full(qkv_shape, fill_value=qkv_value),
-            k_proj=jnp.full(qkv_shape, fill_value=qkv_value),
-            v_proj=jnp.full(qkv_shape, fill_value=qkv_value),
+            q_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=jnp.float32),
+            k_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype),
+            v_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype),
             attention_logit_biases=attention_bias.CausalAttentionBias(
                 target_positions=jnp.arange(seq_len)[None],
                 source_positions=jnp.arange(seq_len)[None],
@@ -3033,7 +3045,7 @@ class ScaleFunctionsTest(TestCase):
         # Get outputs.
         forward_key = jax.random.PRNGKey(456)
 
-        (_, probs), _ = F(
+        (context, probs), _ = F(
             sigmoid_attention,
             method="_compute_attention",
             state=state,
@@ -3042,6 +3054,7 @@ class ScaleFunctionsTest(TestCase):
             inputs=inputs,
         )
 
+        self.assertEqual(context.dtype, inputs["q_proj"].dtype)
         output_shape = [batch_size, num_heads, seq_len, seq_len]
         indexes = jnp.arange(seq_len)
         # Zeros outside of the causal triangle.
