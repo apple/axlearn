@@ -639,9 +639,10 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
         if use_segment_ids and query_len_multiplier != 1:
             pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
-        if attn_type == "sliding_window" and query_len_multiplier > 1:
+        if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
-            # rows.
+            # rows. "custom" is also sliding window, but uses a different function to test support
+            # for custom mask fns.
             pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
             pytest.skip("Dropout is implemented for GPU only.")
