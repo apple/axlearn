@@ -1612,8 +1612,28 @@ class TransformerFeedForwardMoE(BaseLayer):
             token_position_to_id = gating.combine_tensor[0]
             block_to_expert = gating.dispatch_tensor
             MOE_OUTER_BATCH_AXIS_NAMES = ("data", "fsdp")
+
+            @jax.jit
+            def get_jitted_blockwise_mm(hidden_states,
+                                        expert_affinities_masked,
+                                        gate_weights,
+                                        up_weights,
+                                        down_weights,
+                                        block_size,
+                                        token_position_to_id,
+                                        block_to_expert):
+                
+                return blockwise_mm(hidden_states,
+                                    expert_affinities_masked,
+                                    gate_weights,
+                                    up_weights,
+                                    down_weights,
+                                    cfg.gating.block_size,
+                                    token_position_to_id,
+                                    block_to_expert)
+
             partitioned_blockwise_mm = shard_map(
-                blockwise_mm,
+                get_jitted_blockwise_mm,
                 mesh=thread_resources.env.physical_mesh,
                 in_specs=(
                     cfg.dim_to_mesh_axis_map["ogsM"], # hidden_states
@@ -1625,7 +1645,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                     PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # token_position_to_id
                     PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # block_to_expert
                 ),
-                out_specs=PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
+                out_specs=PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None),
                 check_rep=False
             )
             print("hidden_stateshidden_states::" , hidden_states)
@@ -1646,8 +1666,10 @@ class TransformerFeedForwardMoE(BaseLayer):
                     token_position_to_id,
                     block_to_expert
                 )
-            print("outputssss::" , outputs)
 
+            with jax.named_scope("all_reduce"):
+                outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
+            print("outputssss::" , outputs)
             return outputs
         else:
             raise NotImplementedError
