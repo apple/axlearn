@@ -5134,6 +5134,71 @@ class ConfigHelperTest(TestCase):
     """Tests config utils."""
 
     @parameterized.product(
+        input_linear_cfg=(
+            QKVLinear.default_config(),
+            FusedQKVLinear.default_config(),
+            RoFormerQKVLinear.default_config().set(input_linear=FusedQKVLinear.default_config()),
+        ),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
+    )
+    def test_set_attn_partition_specs(
+        self,
+        input_linear_cfg,
+        fsdp_axis_names,
+        tp_axis_names,
+    ):
+        cfg = attention.MultiheadAttention.default_config()
+        cfg.input_linear = input_linear_cfg
+        attention.set_attention_partition_specs(
+            cfg,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+        )
+
+        input_linear = cfg.input_linear
+        if isinstance(input_linear_cfg, RoFormerQKVLinear.Config):
+            input_linear = input_linear.input_linear
+        # Shard weights.
+        self.assertSequenceEqual(
+            input_linear.layer.param_partition_spec, (fsdp_axis_names, tp_axis_names, None)
+        )
+        self.assertSequenceEqual(
+            cfg.output_linear.param_partition_spec, (fsdp_axis_names, tp_axis_names, None)
+        )
+
+    @parameterized.product(
+        batch_axis_names=("data", ("replica", "data", "fsdp")),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
+        seq_axis_names=("seq",),
+    )
+    def test_set_ffn_partition_specs(
+        self,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
+        seq_axis_names,
+    ):
+        cfg = TransformerFeedForwardLayer.default_config()
+        attention.set_feed_forward_partition_specs(
+            cfg,
+            batch_axis_names=batch_axis_names,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+            seq_axis_names=seq_axis_names,
+        )
+
+        self.assertSequenceEqual(cfg.linear1.param_partition_spec, (fsdp_axis_names, tp_axis_names))
+        self.assertSequenceEqual(cfg.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names))
+        self.assertSequenceEqual(
+            cfg.linear1.output_partition_spec, (batch_axis_names, seq_axis_names, tp_axis_names)
+        )
+        self.assertSequenceEqual(
+            cfg.linear2.output_partition_spec, (batch_axis_names, seq_axis_names, tp_axis_names)
+        )
+
+    @parameterized.product(
         self_attention_input_linear_cfg=(
             QKVLinear.default_config(),
             FusedQKVLinear.default_config(),

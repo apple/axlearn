@@ -317,7 +317,7 @@ class FlinkTPUGKEJob(job.GKEJob):
             spec=dict(
                 image=f"flink:{_FLINK_VERSION}",
                 flinkVersion=f"v{_FLINK_VERSION.replace('.', '_')}",
-                serviceAccount=cfg.service_account,
+                serviceAccount=cfg.builder.service_account,
                 # Standalone mode supports initing Task Manager before beam
                 # pipeline is submitted. This can avoid Task Manager initialization
                 # taking too long and the job submission timeouts.
@@ -502,7 +502,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                         )
                     ),
                     spec=dict(
-                        serviceAccountName=cfg.service_account,
+                        serviceAccountName=cfg.builder.service_account,
                         volumes=[dict(name="shared-output", emptyDir={})],
                         # Makes sure all logs are uploaded before terminating the pod.
                         terminationGracePeriodSeconds=100,

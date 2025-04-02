@@ -224,6 +224,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         accelerator_flags(**common_kwargs)
+        flags.DEFINE_string("command", None, "Command to execute.", **common_kwargs)
         flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
         flags.DEFINE_multi_string(
             "gcsfuse_mount_spec",
@@ -238,6 +239,12 @@ class SingleReplicatedJob(BaseReplicatedJob):
             "host mounts by using this flag repeatedly. Example: "
             "--host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp "
             "--host_mount_spec=name=home,host_path=/home,mount_path=/host-home",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "service_account",
+            None,
+            "If specified, will run job as the service account.",
             **common_kwargs,
         )
         flags.DEFINE_boolean(
