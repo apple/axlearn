@@ -3,64 +3,53 @@
 """Runs and monitors Jobsets on GKE.
 
 This also supports mounting GCS paths as GCS FUSE volumes.
+The common usage is via a bastion using `axlearn gcp launch`.
+
+However, it's also possible to run locally for debugging (examples below).
 
 Example:
 
     # A dummy v5e-16 job.
     # If `gke_cluster` is configured in the config file, you can omit --cluster.
-    axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
+    # This command will block until completion.
+    axlearn gcp launch run --instance_type=tpu-v5litepod-16 \
         --cluster=my-tpu-cluster \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
         -- "sleep 10; echo hello >> /output/tmp.txt"
 
-    # List running jobs.
-    axlearn gcp gke list
-
-    # To stop a job.
-    axlearn gcp gke stop --name=...
-
 """
 
 import enum
 import os
-import sys
 import time
-from collections.abc import Sequence
-from typing import Optional, cast
+from typing import Optional
 
 import kubernetes as k8s
-from absl import app, flags, logging
+from absl import flags, logging
 
 from axlearn.cloud.common.bastion import (
     BASTION_JOB_VERSION_ENV_VAR,
     JobLifecycleEvent,
     JobLifecycleState,
 )
-from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
+from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.event_queue import BaseQueueClient
-from axlearn.cloud.common.utils import configure_logging, generate_job_name, parse_action
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
+from axlearn.cloud.common.utils import generate_job_name
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import GKEJob
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
-from axlearn.cloud.gcp.jobs import runner_utils
-from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL
+from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
     delete_node_pools,
     list_node_pools_by_label_key,
 )
-from axlearn.cloud.gcp.node_pool_provisioner import NodePoolProvisioner, TPUNodePoolProvisioner
-from axlearn.cloud.gcp.utils import (
-    catch_auth,
-    custom_jobset_kwargs,
-    delete_k8s_jobset,
-    k8s_jobset_table,
-    list_k8s_jobsets,
-    load_kube_config,
-)
+from axlearn.cloud.gcp.node_pool_provisioner import NodePoolProvisioner
+from axlearn.cloud.gcp.runners import utils as runner_utils
+from axlearn.cloud.gcp.runners.base import BaseRunnerJob
+from axlearn.cloud.gcp.utils import custom_jobset_kwargs
 from axlearn.cloud.gcp.vertexai_tensorboard import (
     VertexAITensorboardUploader,
     is_vertexai_tensorboard_configured,
@@ -70,18 +59,7 @@ from axlearn.common.config import REQUIRED, Required, config_class, maybe_instan
 FLAGS = flags.FLAGS
 
 
-class JobType(enum.Enum):
-    """Represents possible values for `--job_type`.
-
-    This is used for selecting the type of runner to use, in the cases where the same instance
-    type can map to multiple possible runners.
-    """
-
-    DEFAULT = "default"
-    FLINK = "flink"
-    RAY = "ray"
-
-
+# TODO(markblee): Move this to the builder.
 def _infer_reservation(jobset_spec: dict) -> Optional[str]:
     """Infers reservation given a jobset spec."""
     try:
@@ -96,6 +74,7 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
     return None
 
 
+# TODO(markblee): Move this to the builder.
 def _infer_job_version(jobset_spec: dict) -> Optional[int]:
     """Infers job version given a jobset spec."""
     try:
@@ -111,14 +90,11 @@ def _infer_job_version(jobset_spec: dict) -> Optional[int]:
     return None
 
 
-class GKERunnerJob(GCPJob):
+class GKERunnerJob(BaseRunnerJob):
     """Launches and monitors a GKE job via k8s JobSet API."""
 
-    inner: type[GKEJob]
-    pre_provisioner: type[NodePoolProvisioner]
-
     @config_class
-    class Config(GCPJob.Config):
+    class Config(BaseRunnerJob.Config):
         """Configures GKERunnerJob.
 
         Attributes:
@@ -147,19 +123,11 @@ class GKERunnerJob(GCPJob):
         pre_provisioner: Optional[NodePoolProvisioner.Config] = None
         # The event publisher sends events into queue.
         event_publisher: Optional[BaseQueueClient.Config] = None
-        # Bundler config. TODO(markblee): Remove after migrating launch command.
-        bundler: Required[Bundler.Config] = REQUIRED
-
-    @classmethod
-    def validate_inner(cls):
-        if cls.inner is None:
-            raise ValueError(f"A GKERunnerJob should subclass {cls} and define `inner`.")
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        bundler_flags(required=False, **common_kwargs)
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string(
             "output_dir",
@@ -172,9 +140,6 @@ class GKERunnerJob(GCPJob):
         flags.DEFINE_boolean(
             "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
         )
-        # Allow inner to be unspecified for help/list/stop.
-        if hasattr(cls, "inner"):
-            cls.inner.define_flags(fv)
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
@@ -188,37 +153,27 @@ class GKERunnerJob(GCPJob):
         fv.set_default(
             "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
         )
-        fv.set_default("bundler_type", fv.bundler_type or CloudBuildBundler.TYPE)
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
-        cls.validate_inner()
         cfg: GKERunnerJob.Config = super().from_flags(fv, **kwargs)
-        # Construct wrapped job config. Don't propagate any configs here. Instead, propagate them in
-        # __init__, since the caller may set(...) configs between now and __init__.
-        cfg.inner = cast(GKEJob, cls.inner).from_flags(fv, **kwargs)
-        cfg.max_tries = cfg.inner.max_tries
-        cfg.retry_interval = cfg.inner.retry_interval
-        # Configure bundler at the job level, which will be propagated to inner in __init__. This
-        # ensures that callers do not need to know about the `inner` implementation when configuring
-        # bundler.
-        cfg.bundler = get_bundler_config(
-            bundler_type=fv.bundler_type or ArtifactRegistryBundler.TYPE,
-            spec=fv.bundler_spec,
-            fv=fv,
-        )
         cfg.cluster = cfg.cluster or gcp_settings("gke_cluster", required=False, fv=fv)
-        if cfg.enable_pre_provisioner:
-            cfg.pre_provisioner = cast(NodePoolProvisioner, cls.pre_provisioner).from_flags(fv)
+        # The pre_provisioner will be configured by default in the construction of the runner
+        # config, which allows its flags to be defined up-front. Here, we disable it if user decides
+        # to opt-out.
+        if not fv.enable_pre_provisioner:
+            cfg.pre_provisioner = None
         cfg.event_publisher = event_queue_from_config(flag_values=fv)
+        if is_vertexai_tensorboard_configured(fv):
+            cfg.vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(fv)
         return cfg
 
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
+    def __init__(self, cfg: Config, *, bundler: Bundler):
+        cfg = cfg.clone(max_tries=cfg.inner.max_tries, retry_interval=cfg.inner.retry_interval)
+        super().__init__(cfg, bundler=bundler)
         cfg = self.config
-        self._bundler: Bundler = cfg.bundler.instantiate()
-        # Instantiate inner job impl.
         self._inner: GKEJob = cfg.inner.instantiate(bundler=self._bundler)
+
         # Log sync process.
         self._tb_uploader = None
         if cfg.vertexai_tb_uploader:
@@ -232,7 +187,7 @@ class GKERunnerJob(GCPJob):
                 name=cfg.name,
             ).instantiate()
 
-        self._event_publisher = maybe_instantiate(cfg.event_publisher)
+        self._event_publisher: BaseQueueClient = maybe_instantiate(cfg.event_publisher)
 
     class Status(enum.Enum):
         """GKE JobSet status.
@@ -470,7 +425,7 @@ class GKERunnerJob(GCPJob):
                 logging.info("Newer job version is available. Relaunching the jobset...")
                 self._inner._delete()  # pylint: disable=protected-access
             elif status == GKERunnerJob.Status.NOT_STARTED:
-                logging.info("Task does not exist. Submitting it now...")
+                logging.info("Task has not started. Starting it now...")
                 try:
                     # Note: while this is blocking, the bastion will kill the runner process when it
                     # needs to reschedule.
@@ -504,32 +459,23 @@ class GKERunnerJob(GCPJob):
         self._event_publisher.publish(JobLifecycleEvent(job_name, state, msg))
 
 
-class TPUGKERunnerJob(GKERunnerJob):
-    """A GKERunnerJob that uses TPUGKEJob."""
-
-    inner = TPUGKEJob
-    pre_provisioner = TPUNodePoolProvisioner
+class FlinkGKERunnerJob(GKERunnerJob):
+    """A GKERunnerJob that uses FlinkGKEJob."""
 
     @classmethod
-    def define_flags(cls, fv: flags.FlagValues = FLAGS):
-        super().define_flags(fv)
-        # TODO(markblee): Remove these, which are for backwards compat with old client.
-        flags.DEFINE_alias("tpu_type", "instance_type", flag_values=fv)
-        flags.DEFINE_alias("num_slices", "num_replicas", flag_values=fv)
+    def default_config(cls):
+        # The Flink runner currently is special cased for this setting.
+        # TODO(muyang_yu,markblee): Generalize and remove the restriction.
+        cfg = super().default_config()
+        return cfg.set(
+            inner=FlinkTPUGKEJob.default_config().set(builder=TPUReplicatedJob.default_config())
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg = super().from_flags(fv, **kwargs)
-        if is_vertexai_tensorboard_configured(fv):
-            cfg.vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(fv)
+        cfg.vertexai_tb_uploader = None
         return cfg
-
-
-class FlinkGKERunnerJob(GKERunnerJob):
-    """A GKERunnerJob that uses FlinkGKEJob."""
-
-    inner = FlinkTPUGKEJob
-    pre_provisioner = TPUNodePoolProvisioner
 
     def _get_status(self) -> GKERunnerJob.Status:
         """Retrieves the current status of the job.
@@ -596,147 +542,3 @@ class FlinkGKERunnerJob(GKERunnerJob):
             # Can happen if job was just submitted.
             logging.warning("Got KeyError: %s, attempting to ignore.", e)
         return GKERunnerJob.Status.UNKNOWN
-
-
-class GPUGKERunnerJob(GKERunnerJob):
-    """A GKERunnerJob that uses GPUGKEJob."""
-
-    inner = GPUGKEJob
-
-
-# By default, runners are determined by the accelerator type.
-# But some special runners are determined by the --job_type flag,
-# and this dictionary has the mapping between --job_type to those special
-# runners.
-_JOB_TYPE_TO_RUNNER_JOB = {
-    JobType.FLINK.value: FlinkGKERunnerJob,
-}
-
-
-def _get_runner_or_exit(instance_type: str, flag_values: flags.FlagValues = FLAGS):
-    job_type = flag_values.job_type.lower()
-    if job_type != JobType.DEFAULT.value:
-        if job_type not in _JOB_TYPE_TO_RUNNER_JOB:
-            raise app.UsageError(f"Launcher type {job_type} is not supported in non-default mode.")
-        return _JOB_TYPE_TO_RUNNER_JOB[job_type]
-    if instance_type.startswith("tpu"):
-        return TPUGKERunnerJob
-    elif instance_type.startswith("gpu-a3"):
-        # TODO(markblee): We can directly construct:
-        # GKERunnerJob.with_inner(GKEJob.with_jobset(A3ReplicatedJob))
-        return GPUGKERunnerJob
-    else:
-        raise app.UsageError(f"Unknown instance_type {instance_type}")
-
-
-def _delete_k8s_jobset_and_node_pools(
-    *, project: str, zone: str, cluster: str, jobset_name: str, jobset_namespace: str
-):
-    """Delete jobset and its associated node pools provisioned by the pre-provisioner.
-
-    Args:
-        project: GCP Project name.
-        zone: GCP zone name.
-        cluster: K8s cluster.
-        jobset_name: K8s jobset name.
-        jobset_namespace: K8s jobset namespace.
-    """
-
-    # TODO(ethanli): encapsulate the deletion logic to the runner
-    #  while preserving backwards compatibility.
-
-    logging.info("Deleting jobset %s", jobset_name)
-    delete_k8s_jobset(jobset_name, namespace=jobset_namespace)
-
-    # Delete pre-provisioned node pools associated with the jobset
-    node_pools_by_pre_provisioner_id = list_node_pools_by_label_key(
-        project=project, zone=zone, cluster=cluster, label_key=PRE_PROVISIONER_LABEL
-    )
-
-    node_pools = node_pools_by_pre_provisioner_id.get(jobset_name, [])
-    node_pool_names = []
-    for node_pool in node_pools:
-        node_pool_names.append(node_pool["name"])
-
-    logging.info("Deleting node pools %s", node_pool_names)
-    delete_node_pools(
-        node_pool_names,
-        project=project,
-        zone=zone,
-        cluster=cluster,
-        retry_interval=30,
-        wait_timeout=30 * 60 * len(node_pools),
-    )
-
-
-@catch_auth
-def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
-    action = parse_action(argv, options=["start", "update", "list", "stop"])
-
-    project = gcp_settings("project", fv=flag_values)
-    zone = gcp_settings("zone", fv=flag_values)
-    cluster = flag_values.cluster or gcp_settings("gke_cluster", fv=flag_values, required=False)
-    namespace = flag_values.namespace or "default"
-
-    load_kube_config(project=project, zone=zone, cluster=cluster)
-
-    if action in ("start", "update"):
-        # TODO(markblee): Read the command from flags. If specified, command should not be specified
-        # here. This allows us to support multiple commands (e.g., one per replicated job).
-        command = " ".join(argv[2:])
-        if not command:
-            raise app.UsageError("Command is required.")
-
-        runner = _get_runner_or_exit(flag_values.instance_type, flag_values)
-        job: GKERunnerJob = runner.from_flags(flag_values, command=command).instantiate()
-        job.execute()
-    elif action == "list":
-        print(k8s_jobset_table(list_k8s_jobsets(namespace=namespace)))
-    elif action == "stop":
-        if not flag_values.name:
-            raise app.UsageError("--name is required.")
-
-        _delete_k8s_jobset_and_node_pools(
-            project=project,
-            zone=zone,
-            cluster=cluster,
-            jobset_name=flag_values.name,
-            jobset_namespace=namespace,
-        )
-    else:
-        # Unreachable -- `parse_action` will handle validation.
-        raise app.UsageError(f"Unknown action {action}")
-
-
-def job_type_flags(fv: flags.FlagValues = FLAGS):
-    flags.DEFINE_enum(
-        "job_type",
-        # if job_type is set at the launcher, use any existing value by default.
-        getattr(FLAGS, "job_type", JobType.DEFAULT.value),
-        [member.value for member in JobType],
-        help=(
-            "Which job type to launch:\n"
-            "  default: The default training job.\n"
-            "  flink: A job that will be executed by Flink;\n"
-            "  ray: A job that will be executed by Ray;\n"
-        ),
-        flag_values=fv,
-    )
-
-
-def _private_flags():
-    flags.DEFINE_string("instance_type", None, "Instance type to launch.")
-    job_type_flags(FLAGS)
-    FLAGS(sys.argv, known_only=True)
-    # At minimum define the base GKE runner flags.
-    GKERunnerJob.define_flags(FLAGS)
-    # Allow instance_type to be None when running --help without any flags.
-    # Otherwise, if provided, attempt to define additional per-runner flags.
-    if FLAGS.instance_type:
-        _get_runner_or_exit(FLAGS.instance_type).define_flags(FLAGS)
-
-
-if __name__ == "__main__":
-    configure_logging(logging.INFO)
-    _private_flags()
-    app.run(main)

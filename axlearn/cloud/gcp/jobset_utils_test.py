@@ -458,7 +458,7 @@ class TPUReplicatedJobTest(TestCase):
                 name="test",
                 command="test_command",
                 output_dir="FAKE",
-                replicated_job_name="replicatedJob",
+                job_name="replicatedJob",
             ).instantiate(bundler=bundler_cfg.instantiate())
 
             job_spec = replicated_job()[0]["template"]
