@@ -497,9 +497,7 @@ class FlinkTPUGKEJobTest(TestCase):
         expected_job_submission["spec"]["template"]["spec"]["serviceAccountName"] = (
             service_account if service_account else "settings-account"
         )
-        expected_parallelism = (
-            flink_job._get_num_of_tpu_nodes(system) * flink_threads_per_worker
-        )
+        expected_parallelism = flink_job._get_num_of_tpu_nodes(system) * flink_threads_per_worker
         expected_job_submission["spec"]["template"]["spec"]["containers"][0]["args"][
             0
         ] = _get_expected_job_submission_command(expected_parallelism)
