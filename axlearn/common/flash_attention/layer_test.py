@@ -548,9 +548,10 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
             pytest.skip("Dropout is implemented for GPU only.")
-        if attn_type == "sliding_window" and query_len_multiplier > 1:
+        if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
-            # rows.
+            # rows. "custom" is also sliding window, but uses a different function to test support
+            # for custom mask fns.
             pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
 
         if attn_type == "full":
