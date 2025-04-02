@@ -20,16 +20,20 @@ class GitSummaryMember:
     Attributes:
         label: Value is exposed as label with this name.
         file: Value is exposed as file with this filename.
-        cmd: Command to execute in `execute_command`. Should be specified as a sequence of
-            command line arguments, e.g. `("git", "status")`.
+        cmd: Command to execute in `execute_command`. Can be specified as a string
+            (implies a less safe execution subprocess.run execution with shell=True)
+            or preferably a sequence of command line arguments, e.g. `("git", "status")`.
         indicator_label: If True, value is exposed as an indicator label
             instead of the raw value. Defaults to False.
+        required: If True and the command fails, raise a subprocess.CalledProcessError.
+            If False, return an empty string instead of raising an error. Defaults to True.
     """
 
     label: str
     file: str
-    cmd: Sequence[str]
+    cmd: Union[Sequence[str], str]
     indicator_label: bool = False
+    required: bool = True
 
     def execute_command(self, cwd: str) -> str:
         """Execute GitSummaryMember's command.
@@ -44,7 +48,12 @@ class GitSummaryMember:
             str: Stdout of the executed command.
         """
         return subprocess.run(
-            self.cmd, cwd=cwd, check=True, capture_output=True, text=True
+            self.cmd,
+            cwd=cwd,
+            check=self.required,
+            capture_output=True,
+            text=True,
+            shell=isinstance(self.cmd, str),
         ).stdout.strip("\n")
 
     def to_label(self, val: str) -> str:
@@ -87,7 +96,8 @@ class GitSummaryMembers(enum.Enum):
     Attributes:
         commit: HEAD's git-sha.
         branch: Active branch.
-        origin: URL of a Git remote repository named “origin”.
+        remote: URL where active branch is tracked
+            (in order fallback to origin url, 1st remote url or "").
         diff: Git diff ("" if clean).
         porcelain: Git porcelain ("" if clean).
     """
@@ -100,8 +110,14 @@ class GitSummaryMembers(enum.Enum):
         cmd=("git", "branch", "--show-current"),
         indicator_label=False,
     )
-    origin = GitSummaryMember(
-        label="git-origin", file=".git.origin", cmd=("git", "remote", "get-url", "origin")
+    remote = GitSummaryMember(
+        label="git-remote",
+        file=".git.remote",
+        # get remote url where branch is tracked (if any)
+        cmd="git remote get-url $(git config --get branch.$(git branch --show-current).remote) "
+        "|| git remote get-url origin "  # fallback to origin
+        "|| git config --get-regexp 'remote.*.url' | head -n 1 | cut -d= -f2",  # or 1st remote
+        required=False,  # remote is not always available
     )
     diff = GitSummaryMember(
         label="git-diff-dirty",
@@ -126,8 +142,9 @@ class GitSummary:
 
     Attributes:
         path: Path where the git summary was collected.
-        required: If True, raises a CalledProcessError.
-            if summary was not requested in a valid git repo.
+        required: If True, raise FileNotFoundError if git binary is missing or
+            raise a CalledProcessError, if no valid git repo is located at path.
+            If False, gracefully return an invalid git summary in these circumstances.
         root: Relative path to the git repository root
             or None if invalid git summary.
         summary: Summary members as name:value (see GitSummaryMembers).
