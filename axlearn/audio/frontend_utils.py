@@ -13,7 +13,6 @@ import math
 from functools import partial
 from typing import Callable, Union
 
-import einops
 import jax.numpy as jnp
 import numpy as np
 from jax._src.mesh import thread_resources
@@ -21,6 +20,7 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from numpy.typing import ArrayLike
 
+from axlearn.common import einops
 from axlearn.common.utils import Tensor
 
 
@@ -154,7 +154,8 @@ def frame(x: Tensor, *, frame_size: int, hop_size: int, pad_value: int = 0) -> T
     Returns:
         Windows of shape `[..., num_windows, frame_size]` via frames on the last axis.
     """
-    x, ps = einops.pack([x], "* s")  # Ensure rank 2.
+    orig_shape = x.shape
+    x = jnp.reshape(x, (-1, orig_shape[-1]))  # Ensure rank 2.
 
     def flatten_size(frames, window, hop_size):
         return frames * hop_size - hop_size + window
@@ -184,7 +185,7 @@ def frame(x: Tensor, *, frame_size: int, hop_size: int, pad_value: int = 0) -> T
     frame_x = einops.rearrange(
         frame_x, "b ow iw c-> b ow (iw c)", ow=output_size, iw=frame_ratio, c=chunk_size
     )
-    y = einops.unpack(frame_x, ps, "* f d")[0]
+    y = jnp.reshape(frame_x, (*orig_shape[:-1], *frame_x.shape[-2:]))  # Restore orig_shape[:-1].
     return y
 
 

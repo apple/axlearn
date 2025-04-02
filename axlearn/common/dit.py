@@ -14,10 +14,10 @@ Ref: https://github.com/facebookresearch/DiT
 from typing import Optional, Union
 
 import chex
-import einops
 import jax
 import jax.numpy as jnp
 
+from axlearn.common import einops
 from axlearn.common.attention import MultiheadAttention, scaled_hidden_dim
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (

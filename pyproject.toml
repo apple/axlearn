@@ -22,7 +22,6 @@ dependencies = [
 core = [
     "absl-py==2.1.0",
     "chex==0.1.88",
-    "einops==0.8.0",
     "importlab==0.8.1",  # breaks pytype on 0.8
     "jax==0.4.38",
     "jaxlib==0.4.38",
@@ -60,6 +59,7 @@ dev = [
     "axlearn[audio]",  # audio tests
     "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
+    "einops==0.8.0",  # for unittests only. Do not use it in core impl because it's not thread-safe.
     "evaluate",
     "isort",  # formatting
     "pika==1.3.2",  # used by event queue

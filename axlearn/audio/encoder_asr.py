@@ -11,7 +11,6 @@ from math import prod
 from typing import Any, Optional
 
 import jax.numpy as jnp
-from einops import rearrange
 
 from axlearn.audio.frontend import LogMelFrontend
 from axlearn.audio.spectrum_augmenter import SpectrumAugmenter
@@ -20,6 +19,7 @@ from axlearn.common.attention import SinusoidalPositionalEmbedding
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.conformer import RepeatedConformerLayer
+from axlearn.common.einops import rearrange
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
