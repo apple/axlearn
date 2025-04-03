@@ -137,16 +137,16 @@ class GoodputRecorder(measurement.Recorder):
             --recorder_spec=enable_gcp_step_deviation_metrics=0
         """
         cfg: GoodputRecorder.Config = self.config
+        enable_gcp_goodput_metrics = True
+        enable_gcp_step_deviation_metrics = True
+        include_step_deviation = True
         if jax.process_index() == 0:
             if self._monitor is None:
-                enable_gcp_goodput_metrics = True
-                enable_gcp_step_deviation_metrics = True
-                include_step_deviation = True
-                if cfg.enable_gcp_goodput_metrics != 1:
+                if int(cfg.enable_gcp_goodput_metrics) != 1:
                     enable_gcp_goodput_metrics = False
-                if cfg.enable_gcp_step_deviation_metrics != 1:
+                if int(cfg.enable_gcp_step_deviation_metrics) != 1:
                     enable_gcp_step_deviation_metrics = False
-                if cfg.step_deviation_interval_seconds <= 0:
+                if int(cfg.step_deviation_interval_seconds) <= 0:
                     include_step_deviation = False
 
                 gcp_options = goodput_monitoring.GCPOptions(
@@ -167,7 +167,7 @@ class GoodputRecorder(measurement.Recorder):
 
             self._monitor.start_goodput_uploader(*args, **kwargs)
             logging.info("Started Goodput upload to Tensorboard & GCM in the background!")
-            if cfg.include_step_deviation:
+            if include_step_deviation:
                 self._monitor.start_step_deviation_uploader(*args, **kwargs)
                 logging.info(
                     "Started Step Deviation upload to Tensorboard & GCM in the background!"
