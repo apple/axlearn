@@ -701,6 +701,7 @@ class TestConv2DStateBuilders(TestCase):
         converted_weight = replicate_to_local_data(converted_weight)
         return source_weight, converted_weight
 
+    # pylint: disable=R0917
     def _dummy_model_config(
         self,
         patch_size: tuple[int, ...],
@@ -721,6 +722,7 @@ class TestConv2DStateBuilders(TestCase):
             dtype=jnp.float32,
         )
 
+    # pylint: disable=R0917
     def _mock_image_config(
         self,
         patch_size: tuple[int, ...],
@@ -974,7 +976,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             ref_repeat = torch.nn.Linear(in_features=2, out_features=3, bias=True)
             ref_repeat_params = torch_to_axlearn(ref_repeat)
             # Tile the params across repeat dim.
-            ref_repeat_params = jax.tree_map(
+            ref_repeat_params = jax.tree_util.tree_map(
                 lambda x: jnp.tile(x, [repeat_cfg.num_layers] + [1] * x.ndim), ref_repeat_params
             )
 

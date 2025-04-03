@@ -171,8 +171,8 @@ async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo]):
     The .data field of each shard_info is modified in-place.
     """
     # Note: jax.lax.slice_in_dim in _slice_fn will be cached in jit cache after first call.
-    shard_data = jax.tree_map(_slice_fn, shard_infos)
-    shard_data = jax.tree_map(_transfer_to_host, shard_data)
+    shard_data = jax.tree_util.tree_map(_slice_fn, shard_infos)
+    shard_data = jax.tree_util.tree_map(_transfer_to_host, shard_data)
 
     await asyncio.sleep(0)  # Allow other D2Hs to launch.
 
@@ -205,8 +205,7 @@ def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
 
 
 class TensorstoreSpecModifier:
-    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
-        ...
+    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]): ...
 
 
 async def _async_serialize(
@@ -578,6 +577,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
     # Copied from (with modifications)
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
+    # pylint: disable=R0917
     def deserialize(
         self,
         shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
