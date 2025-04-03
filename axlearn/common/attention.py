@@ -197,6 +197,9 @@ class BaseKVCache(BaseLayer):
         """Configures BaseKVCache."""
 
         # Autoregressive KV cache dtype, which the input KV is converted into.
+        # This dtype is not only used for storing the KV cache, but it also applies to
+        # the returned KV activations. Therefore, before computing attention, we need to cast
+        # the KV tensors to match the query's dtype.
         cache_dtype: Optional[jnp.dtype] = None
 
     class Output(KVState):
@@ -1898,6 +1901,8 @@ class MultiheadAttention(BaseLayer):
             and probs of shape [batch, num_heads, target_length, source_length].
         """
         del mode
+        # KV cache may cast them in lower precision.
+        k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
@@ -2271,6 +2276,8 @@ class SigmoidAttention(MultiheadAttention):
         """See `MultiheadAttention._compute_attention` for details."""
         del mode
         cfg = self.config
+        # KV cache may cast them in lower precision.
+        k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
