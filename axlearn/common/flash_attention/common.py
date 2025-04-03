@@ -293,7 +293,11 @@ class ReferenceMHA(BaseFlashAttention):
 
 
 def get_cpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
-    """Get the suitable DotAlgorithmPreset for the given dtype."""
+    """Get the suitable DotAlgorithmPreset for the given dtype for CPU backend.
+
+    CPU doesn't support different compute and accumulation precision. This should only be used
+    for CPU emulation and unit tests.
+    """
     if dtype == jnp.float32:
         return jax.lax.DotAlgorithmPreset.F32_F32_F32
     if dtype == jnp.float16:
@@ -333,7 +337,7 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
     if dtype == jnp.float32:
         # HIGHEST uses BF16_BF16_F32_X6, which emulates higher precision with 6 BF16 passes.
         # Note: jax.lax.Precision.HIGH (BF16_BF16_F32_X3) is not yet supported. We should use it
-        # when it's supported.
+        # when it's supported as it's twice as fast and precision is ok.
         return jax.lax.Precision.HIGHEST
     if dtype == jnp.bfloat16:
         return jax.lax.Precision.DEFAULT
