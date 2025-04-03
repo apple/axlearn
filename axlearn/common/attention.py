@@ -2247,7 +2247,9 @@ class GroupedQueryAttention(MultiheadAttention):
 class SigmoidAttention(MultiheadAttention):
     """A multi-head sigmoid-based attention layer, instead of softmax.
 
-    TODO(floris_weers): Add paper reference.
+    References:
+        Paper: https://arxiv.org/abs/2409.04431
+        PyTorch implementation: https://github.com/apple/ml-sigmoid-attention
     """
 
     @config_class
@@ -2255,6 +2257,7 @@ class SigmoidAttention(MultiheadAttention):
         """Configures SigmoidAttention."""
 
         seq_len: Required[int] = REQUIRED  # Maximum sequence length used.
+        subtract_seq_len_bias: bool = True  # Whether to subtract seq_len based bias.
 
     def _compute_attention(
         self,
@@ -2275,8 +2278,10 @@ class SigmoidAttention(MultiheadAttention):
         attention_logit_biases = attention_logit_biases.value()
         if attention_logit_biases is None:
             attention_logit_biases = 0
-        # To approximate softmax, we subtract a bias dependent on sequence length.
-        attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
+        if cfg.subtract_seq_len_bias:
+            # To approximate softmax, we subtract a bias dependent on sequence length.
+            # We found that using a dynamic sequence length (per batch-row) does not help.
+            attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
         probs = sigmoid_with_biases(
             logits,
             attention_logit_biases=attention_logit_biases,

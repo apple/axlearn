@@ -4,9 +4,11 @@ decoder/output_norm/scale: 1
 decoder/transformer/repeat/layer/feed_forward/linear1_0/weight: 1
 decoder/transformer/repeat/layer/feed_forward/linear1_1/weight: 1
 decoder/transformer/repeat/layer/feed_forward/linear2/weight: 1
-decoder/transformer/repeat/layer/feed_forward/norm/scale: 1
+decoder/transformer/repeat/layer/feed_forward/postnorm/scale: 1
+decoder/transformer/repeat/layer/feed_forward/prenorm/scale: 1
 decoder/transformer/repeat/layer/self_attention/attention/i_proj/qkv_proj/weight: 1
 decoder/transformer/repeat/layer/self_attention/attention/o_proj/weight: 1
 decoder/transformer/repeat/layer/self_attention/attention/scale_key/norm/scale: 1
 decoder/transformer/repeat/layer/self_attention/attention/scale_query/norm/scale: 1
-decoder/transformer/repeat/layer/self_attention/norm/scale: 1
+decoder/transformer/repeat/layer/self_attention/postnorm/scale: 1
+decoder/transformer/repeat/layer/self_attention/prenorm/scale: 1

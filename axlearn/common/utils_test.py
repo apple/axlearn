@@ -28,6 +28,9 @@ from jax.sharding import PartitionSpec
 from axlearn.common import learner, optimizers, serialization, struct, utils
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import (
+    REQUIRED,
+    ConfigBase,
+    Required,
     config_class,
     config_for_function,
     maybe_instantiate,
@@ -81,6 +84,7 @@ from axlearn.common.utils import (
     input_partition_spec,
     match_regex_rules,
     non_empty_leaf_merge_fn,
+    own_fields,
     per_param_dtype_by_path,
     prune_empty,
     prune_tree,
@@ -2107,6 +2111,22 @@ class TestRematPolicy(TestCase):
         )
         # We have one more recompute of f for remat during backward.
         self.assertEqual(str(remat_backward).count(" dot_general"), 5)
+
+
+class TestOwnFields(TestCase):
+    """Tests the own_fields method."""
+
+    def test_own_fields(self):
+        @config_class
+        class ConfigParent(ConfigBase):
+            parent_field: Required[int] = REQUIRED
+
+        @config_class
+        class ConfigChild(ConfigParent):
+            child_field1: Required[int] = REQUIRED
+            child_field2: Required[int] = REQUIRED
+
+        self.assertSameElements(("child_field1", "child_field2"), own_fields(ConfigChild()))
 
 
 if __name__ == "__main__":
