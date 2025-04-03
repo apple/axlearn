@@ -577,7 +577,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
     # Copied from (with modifications)
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
-    # pylint: disable=R0917
+    # pylint: disable=too-many-arguments
     def deserialize(
         self,
         shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
