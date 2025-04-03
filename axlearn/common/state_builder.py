@@ -291,7 +291,7 @@ class MergeStateConverter(Converter):
 
     def source_to_target(self, source: Builder.State, aux: Builder.State) -> Builder.State:
         """Source is newly loaded state, aux is original state."""
-        new_trainer_state = jax.tree_map(
+        new_trainer_state = jax.tree_util.tree_map(
             self._selector,
             utils.tree_paths(aux.trainer_state),
             aux.trainer_state,

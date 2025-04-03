@@ -163,9 +163,9 @@ def copy_partition(
             dtype=spec.dtype,
             shape=spec.shape,
             mesh_axes=spec.mesh_axes,
-            memory_kind=memory_kind
-            if pattern and re.fullmatch(pattern, path)
-            else spec.memory_kind,
+            memory_kind=(
+                memory_kind if pattern and re.fullmatch(pattern, path) else spec.memory_kind
+            ),
         ),
         tree_paths(specs),
         specs,
@@ -468,7 +468,7 @@ def scale_update_per_param(
             path=context.path() if context else None,
         )
 
-        updates = jax.tree_map(
+        updates = jax.tree_util.tree_map(
             # Apply the scaling to each update.
             lambda g, m: g * m,
             updates,
@@ -704,6 +704,7 @@ def sgd_optimizer(
         )
 
 
+# pylint: disable=R0913
 def adamw_optimizer(
     learning_rate: schedule.Schedule,
     *,
@@ -759,6 +760,7 @@ def adamw_optimizer(
     return chain(*tx)
 
 
+# pylint: disable=R0913
 def adamw_decoupled_optimizer(
     learning_rate: float,
     *,
@@ -822,6 +824,7 @@ def adamw_decoupled_optimizer(
     return chain(*tx)
 
 
+# pylint: disable=R0913
 def adam_optimizer(
     learning_rate: schedule.Schedule,
     *,
@@ -1021,6 +1024,7 @@ def ema(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
+# pylint: disable=R0913
 def adafactor_optimizer(
     learning_rate: schedule.Schedule,
     *,
@@ -1324,6 +1328,7 @@ def skip_and_clip_by_global_norm(
             new_square_ema = decay * norm_square_ema + (1 - decay) * (val**2)
             return new_norm_ema, new_square_ema
 
+        # pylint: disable=R0913
         def _is_valid_step(
             g_norm: Tensor,
             drop_norm: Union[float, DropNormThresholdFn],
@@ -1642,7 +1647,7 @@ def scale_by_lion(
         del params
         mu = optax.update_moment(updates, state.mu, b2, 1)
         if mu_dtype is not None:
-            mu = jax.tree_map(lambda x: x.astype(mu_dtype), mu)
+            mu = jax.tree_util.tree_map(lambda x: x.astype(mu_dtype), mu)
         count_inc = optax.safe_int32_increment(state.count)
         updates = jax.tree.map(lambda g, m: jnp.sign((1.0 - b1) * g + b1 * m), updates, state.mu)
         return updates, ScaleByLionState(count=count_inc, mu=mu)
@@ -1664,6 +1669,7 @@ def scale_by_lion(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
+# pylint: disable=R0917
 def lion_optimizer(
     learning_rate: schedule.Schedule,
     b1: float,
@@ -2104,9 +2110,11 @@ def offload_optimizer(
         # memory usage of all states. Moreover, when the optimizer is run, all activations are
         # released, so we have less memory pressure at that point in time.
         return jax.tree.map(
-            lambda path, tensor: jax.device_put(tensor, TransferToMemoryKind(dst))
-            if re.fullmatch(pattern, path)
-            else tensor,
+            lambda path, tensor: (
+                jax.device_put(tensor, TransferToMemoryKind(dst))
+                if re.fullmatch(pattern, path)
+                else tensor
+            ),
             tree_paths(state),
             state,
         )
