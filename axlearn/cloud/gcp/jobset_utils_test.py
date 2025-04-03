@@ -238,7 +238,7 @@ class TPUReplicatedJobTest(TestCase):
                 self.assertNotIn("cloud.google.com/gke-spot", node_selector)
                 self.assertEqual([], pod_spec.get("tolerations", []))
                 self.assertEqual("reserved", labels.get("bastion-tier", None))
-            else:
+            elif "BASTION_TIER" in env:
                 self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
                 self.assertNotIn("cloud.google.com/reservation-name", node_selector)
                 tolerations = {

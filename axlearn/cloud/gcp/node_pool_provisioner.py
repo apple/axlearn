@@ -100,7 +100,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
         job_sys_property = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
         num_node_pools = acc_cfg.num_replicas
 
-        tier = os.environ.get("BASTION_TIER", 0)
+        tier = os.environ.get("BASTION_TIER", None)
         if tier == "0" and reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, reservation)
             use_spot_vm = False
