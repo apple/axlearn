@@ -43,7 +43,16 @@ from axlearn.cloud.common.utils import configure_logging, generate_job_name, par
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import (
+    GCPJob, 
+    GKEJob, 
+    GPUGKEJob, 
+    TPUGKEJob,
+    A3HighGKEJob,
+    A3MegaGKEJob,
+    A3UltraGKEJob,
+    A4HighGKEJob,
+)
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobs import runner_utils
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL
@@ -603,6 +612,25 @@ class GPUGKERunnerJob(GKERunnerJob):
 
     inner = GPUGKEJob
 
+class A3HighGKERunnerJob(GPUGKERunnerJob):
+    """GPUGKERunnerJob for a3-high"""
+
+    inner = A3HighGKEJob
+
+class A3MegaGKERunnerJob(GPUGKERunnerJob):
+    """GPUGKERunnerJob for a3-mega"""
+
+    inner = A3MegaGKEJob
+
+class A3UltraGKERunnerJob(GPUGKERunnerJob):
+    """GPUGKERunnerJob for a3-ultra"""
+
+    inner = A3UltraGKEJob
+
+class A4HighGKERunnerJob(GPUGKERunnerJob):
+    """GPUGKERunnerJob for a4-high"""
+
+    inner = A4HighGKEJob
 
 # By default, runners are determined by the accelerator type.
 # But some special runners are determined by the --job_type flag,
@@ -621,10 +649,16 @@ def _get_runner_or_exit(instance_type: str, flag_values: flags.FlagValues = FLAG
         return _JOB_TYPE_TO_RUNNER_JOB[job_type]
     if instance_type.startswith("tpu"):
         return TPUGKERunnerJob
-    elif instance_type.startswith("gpu-a3"):
+    elif instance_type.startswith("gpu-a3-high"):
         # TODO(markblee): We can directly construct:
         # GKERunnerJob.with_inner(GKEJob.with_jobset(A3ReplicatedJob))
-        return GPUGKERunnerJob
+        return A3HighGKERunnerJob
+    elif instance_type.startswith("gpu-a3-mega"):
+        return A3MegaGKERunnerJob
+    elif instance_type.startswith("gpu-a3-ultra"):
+        return A3UltraGKERunnerJob
+    elif instance_type.startswith("gpu-a4-high"):
+        return A4HighGKERunnerJob
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")
 

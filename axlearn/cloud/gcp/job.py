@@ -18,8 +18,16 @@ from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
-from axlearn.cloud.gcp.jobset_utils import A3ReplicatedJob, BaseReplicatedJob, TPUReplicatedJob
-from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset
+from axlearn.cloud.gcp.jobset_utils import (
+    GPUReplicatedJob, 
+    BaseReplicatedJob, 
+    TPUReplicatedJob,
+    A3HighReplicatedJob,
+    A3MegaReplicatedJob,
+    A3UltraReplicatedJob,
+    A4HighReplicatedJob,
+)
+from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset, get_credentials
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -200,9 +208,28 @@ class GPUGKEJob(GKEJob):
     See also `gke_runner` as an example.
     """
 
-    builder = A3ReplicatedJob
+    builder = GPUReplicatedJob
     Config = GKEJob.Config
 
+class A3HighGKEJob(GPUGKEJob):
+
+    builder = A3HighReplicatedJob
+    Config = GPUGKEJob.Config
+
+class A3MegaGKEJob(GPUGKEJob):
+
+    builder = A3MegaReplicatedJob
+    Config = GPUGKEJob.Config
+
+class A3UltraGKEJob(GPUGKEJob):
+
+    builder = A3UltraReplicatedJob
+    Config = GPUGKEJob.Config
+
+class A4HighGKEJob(GPUGKEJob):
+
+    builder = A4HighReplicatedJob
+    Config = GPUGKEJob.Config
 
 class CPUJob(GCPJob):
     """Executes arbitrary commands on CPU VMs."""
