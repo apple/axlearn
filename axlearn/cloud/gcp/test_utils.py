@@ -12,8 +12,31 @@ from absl import flags
 from axlearn.cloud.gcp import config
 
 
+def default_mock_settings() -> dict[str, str]:
+    """Default settings to use in tests."""
+
+    return {
+        "project": "settings-project",
+        "zone": "settings-zone",
+        "ttl_bucket": "settings-ttl-bucket",
+        "gke_cluster": "settings-cluster",
+        "gke_reservation": "settings-reservation",
+        "service_account_email": "settings-service-account-email",
+        "k8s_service_account": "settings-account",
+        "docker_repo": "settings-repo",
+        "default_dockerfile": "settings-dockerfile",
+        "location_hint": "settings-location-hint",
+        "subnetwork": "projects/test_project/regions/test_region/subnetworks/test_subnetwork",
+    }
+
+
 @contextlib.contextmanager
-def mock_gcp_settings(module_name: Union[str, Sequence[str]], settings: dict[str, str]):
+def mock_gcp_settings(
+    module_name: Union[str, Sequence[str]], settings: Optional[dict[str, str]] = None
+):
+    if settings is None:
+        settings = default_mock_settings()
+
     def gcp_settings(
         key: str,
         *,

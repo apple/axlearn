@@ -19,298 +19,38 @@ from jax.experimental.pallas.ops.tpu.flash_attention import (
     NUM_SUBLANES,
 )
 from jax.experimental.pallas.ops.tpu.flash_attention import BlockSizes as LegacyBlockSizes
+from jax.experimental.pallas.ops.tpu.flash_attention import SegmentIds as LegacySegmentIds
 from jax.experimental.pallas.ops.tpu.flash_attention import (
-    SegmentIds,
     _flash_attention_dkv_kernel,
     _flash_attention_dq_kernel,
     _flash_attention_kernel,
     _verify_block,
     below_or_on_diag,
 )
+from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds as SplashSegmentIds
 from jax.experimental.pallas.ops.tpu.splash_attention import (
     splash_attention_kernel,
     splash_attention_mask,
 )
 
-from axlearn.common.attention import apply_attention_logit_biases
 from axlearn.common.attention_bias import (
+    BaseAttentionBias,
     CausalAttentionBias,
     MaskFnAttentionBias,
+    SegmentIdAttentionBias,
     SlidingWindowAttentionBias,
     ZeroAttentionBias,
-    as_attention_bias,
+    split,
+)
+from axlearn.common.flash_attention.common import (
+    BaseFlashAttention,
+    get_segment_ids,
+    repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.utils import Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
-
-
-def tpu_flash_attention(
-    query: Tensor,  # [batch_size, target_len, num_heads, head_dim]
-    key: Tensor,  # [batch_size, source_len, num_heads, head_dim]
-    value: Tensor,  # [batch_size, source_len, num_heads, head_dim]
-    bias: Tensor = None,  # [batch_size, num_heads, target_len, source_len]
-    segment_ids: Tensor = None,  # [batch_size, target_len]
-    *,
-    mask: MaskFnOrZero,
-    softmax_scale: float = 1.0,
-    is_decoding: bool = False,
-    block_size: int = 128,
-    interpret: bool = False,
-):
-    """Wraps JAX's TPU flash-attention, with reshapes and softmax-scaling outside kernel.
-
-    An implementation is automatically selected based on the arguments.
-
-    N.B. we apply the softmax scale factor outside of the kernel because:
-        1. within-kernel ordering of attention-bias addition and softmax scaling differ to axlearn,
-        2. it's more efficient to scale outside the kernel vs. fix order of ops in kernel.
-
-    If provided, bias, segment_ids, and mask are applied on top of one another.
-
-    Args:
-        query: The query tensor, of shape [batch_size, target_len, num_heads, head_dim].
-        key: The key tensor, of shape [batch_size, source_len, num_heads, head_dim].
-        value: The value tensor, of shape [batch_size, source_len, num_heads, head_dim].
-        bias: The attention biases, can broadcast to shape
-            [batch_size, num_heads, target_len, source_len].
-        segment_ids: The id of which segment each token belongs to. Attention is not computed
-             between tokens in different segments.
-             Shape:  [batch_size, target_len].
-        mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
-        softmax_scale: A scaling factor applied to the query.
-        is_decoding: Whether it is in decoding.
-        block_size: The block size to use for chunking data in the kernel.
-        interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
-
-    Returns:
-        The context tensor, of shape [batch_size, target_len, num_heads, head_dim].
-
-    Raises:
-        NotImplementedError: If no implementation with support for the arguments is found.
-        ValueError: If the head_dim of the query, key, and value are not all equal.
-        ValueError: if the target or source sequence length is not divisible by block_size.`
-    """
-    if segment_ids is not None:
-        assert query.shape[1] == key.shape[1] and query.shape[1] == value.shape[1]
-    # Apply the softmax scale outside the kernel (see docstring for why).
-    if softmax_scale != 1.0:
-        query *= softmax_scale
-
-    head_dim = query.shape[3]
-
-    if head_dim != key.shape[3]:
-        raise ValueError(
-            f"Per-head dimension of query doesn't equal that of key: "
-            f"{head_dim} != {key.shape[3]}"
-        )
-    if head_dim != value.shape[3]:
-        raise ValueError(
-            f"Per-head dimension of query doesn't equal that of value: "
-            f"{head_dim} != {value.shape[3]}"
-        )
-
-    if query.shape[1] % block_size != 0:
-        raise ValueError(
-            f"Target seq len {query.shape[1]} must be divisible by block size {block_size}."
-        )
-    if key.shape[1] % block_size != 0:
-        raise ValueError(
-            f"Source seq len {key.shape[1]} must be divisible by block size {block_size}."
-        )
-
-    mask: MaskFnOrZero = as_attention_bias(mask)
-
-    # Switch num_heads and seq_len axes.
-    query = jnp.einsum("btnh->bnth", query)
-    key = jnp.einsum("bsnh->bnsh", key)
-    value = jnp.einsum("bsnh->bnsh", value)
-    try:
-        check_tpu_splash_attention(
-            target_len=query.shape[2],
-            source_len=key.shape[2],
-            head_dim=query.shape[3],
-            mask=mask,
-            is_decoding=is_decoding,
-            has_segment_ids=(segment_ids is not None),
-            has_bias=(bias is not None),
-        )
-        block_sizes = splash_attention_kernel.BlockSizes(
-            block_q=block_size,
-            block_kv=block_size,
-            block_kv_compute=block_size,
-            block_q_dkv=block_size,
-            block_kv_dkv=block_size,
-            block_kv_dkv_compute=block_size,
-            # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
-            # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
-            # and 1.14x in 539.5b.
-            use_fused_bwd_kernel=True,
-        )
-        splash_mask = _to_splash_mask(mask, mask_shape=(query.shape[2], key.shape[2]))
-        context = _tpu_splash_attention(
-            query,
-            key,
-            value,
-            splash_mask=splash_mask,
-            segment_ids=segment_ids,
-            block_sizes=block_sizes,
-            interpret=interpret,
-        )
-        logging.info("Using SplashAttention.")
-    except SplashAttentionUnsupportedError as e:
-        # TODO(tom_gunter): See if we can do better block-size tuning.
-        block_sizes = LegacyBlockSizes(
-            block_q=block_size,
-            block_k_major=block_size,
-            block_k=block_size,
-            block_b=1,
-            block_q_major_dkv=block_size,
-            block_k_major_dkv=block_size,
-            block_k_dkv=block_size,
-            block_q_dkv=block_size,
-            block_k_major_dq=block_size,
-            block_k_dq=block_size,
-            block_q_dq=block_size,
-        )
-        causal = isinstance(mask, CausalAttentionBias)
-        if not causal and mask.has_value():
-            bias = apply_attention_logit_biases(mask.value(), bias)
-        context = _legacy_tpu_flash_attention(
-            query,
-            key,
-            value,
-            bias,
-            segment_ids=segment_ids,
-            causal=causal,
-            block_sizes=block_sizes,
-            interpret=interpret,
-        )
-        logging.warning(
-            "Falling back to legacy flash attention because SplashAttention is not supported.\n"
-            "Reason: %s",
-            e,
-        )
-
-    # Restore num_heads and seq_len axes.
-    return jnp.einsum("bnth->btnh", context)
-
-
-@functools.partial(
-    jax.jit,
-    static_argnames=[
-        "causal",
-        "block_sizes",
-        "interpret",
-    ],
-)
-def _legacy_tpu_flash_attention(
-    query: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    key: Tensor,  # [batch_size, num_heads, source_len, head_dim]
-    value: Tensor,  # [batch_size, num_heads, source_len, head_dim]
-    bias: Tensor = None,  # [batch_size, num_heads, target_len, source_len]
-    segment_ids: Tensor = None,  # [batch_size, target_len]
-    *,
-    causal: bool = False,
-    block_sizes: Optional[LegacyBlockSizes] = None,
-    interpret: bool = False,
-) -> Tensor:  # [batch_size, num_heads, target_len, head_dim].
-    """Wraps JAX's legacy TPU flash-attention.
-
-    If provided, bias, segment_ids, and mask are applied on top of one another.
-
-    Args:
-        query: The query tensor, of shape [batch_size, num_heads, target_len, head_dim].
-        key: The key tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        value: The value tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        bias: The attention biases, of shape [batch_size, num_heads, target_len, source_len].
-        segment_ids: The id of which segment each token belongs to. Attention is not computed
-             between tokens in different segments.
-             Shape:  [batch_size, target_len].
-        causal: Whether it's causal attention.
-        block_sizes: An object containing values that can be used to tune the performance
-            such as the block size to chunk things into.
-        interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
-
-    Returns:
-        The context tensor, of shape [batch_size, num_heads, target_len, head_dim].
-
-    Raises:
-        NotImplementedError: If a custom (non-causal, non-full) mask is specified.
-    """
-    context = pallas_tpu_flash_attention(
-        q=query,
-        k=key,
-        v=value,
-        ab=bias,
-        segment_ids=SegmentIds(q=segment_ids, kv=segment_ids) if segment_ids is not None else None,
-        causal=causal,
-        # If softmax_scale==1.0, the kernel skips applying it.
-        softmax_scale=1.0,
-        block_sizes=block_sizes,
-        debug=False,
-        interpret=interpret,
-    )
-    return context
-
-
-class SplashAttentionUnsupportedError(NotImplementedError):
-    """An error indicating splash attention is not supported."""
-
-
-def check_tpu_splash_attention(
-    *,
-    target_len: int,
-    source_len: int,
-    head_dim: int,
-    mask: MaskFnOrZero,
-    is_decoding: bool = False,
-    has_segment_ids: bool = False,
-    has_bias: bool = False,
-):
-    """Checks if splash attention is supported on TPU for the given arguments.
-
-    Args:
-        target_len: The length of the target sequence.
-        source_len: The length of the source sequence.
-        head_dim: The dimension of each head.
-        mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
-        is_decoding: Whether it is in decoding.
-        has_segment_ids: Whether segment_ids is None or not.
-        has_bias: Whether attention involves a bias.
-
-    Raises:
-        SplashAttentionUnsupportedError: If splash attention is not supported for the given
-            arguments.
-    """
-    if has_bias:
-        raise SplashAttentionUnsupportedError("SplashAttention does not support specifying a bias.")
-    with jax.ensure_compile_time_eval():
-        if jnp.any(
-            jnp.asarray([target_len, source_len, head_dim]) % splash_attention_kernel.NUM_LANES != 0
-        ):
-            raise SplashAttentionUnsupportedError(
-                "SplashAttention requires target_len, source_len, head_dim are divisible by"
-                f" {splash_attention_kernel.NUM_LANES}, got {target_len, source_len, head_dim}."
-            )
-    if has_segment_ids:
-        raise SplashAttentionUnsupportedError(
-            "The public API for SplashAttention that we "
-            "currently use does not support segment ids."
-        )
-    if mask.has_value():
-        assert isinstance(mask, MaskFnAttentionBias)
-        if not isinstance(mask, (CausalAttentionBias, SlidingWindowAttentionBias)):
-            raise SplashAttentionUnsupportedError(f"{mask=} is not supported.")
-        if is_decoding:
-            # TODO(dhwang2): support splash decoding via splash NumPy mask.
-            raise SplashAttentionUnsupportedError(
-                "Query and key/value must have same length when mask is used."
-            )
-        else:
-            if target_len != source_len:
-                raise ValueError(f"{target_len=} and {source_len=} must be same in forward().")
 
 
 def _to_splash_mask(
@@ -331,90 +71,24 @@ def _to_splash_mask(
             shape=mask_shape, window_size=(left_size, 0), offset=0, shard_count=q_seq_shards
         )
 
-    with jax.ensure_compile_time_eval():
-        # MaskFn always supports compile time eval.
-        mask_array = np.asarray(mask.bool_value())
-        # Squeeze first two leading dimensions.
-        mask_array = mask_array.reshape(mask_array.shape[-2:])
+    # This code is reached only when `is_decoding == False` (i.e., forward and prefill) and
+    # `target_len == source_len` (i.e., self-attention) (see `check_tpu_splash_attention`).
+    # In this case, `target_positions` and `source_positions` are always in the range [0, seq_len].
+    target_positions = np.arange(mask_shape[0])[None, :, None]
+    source_positions = np.arange(mask_shape[1])[None, None, :]
+    # `mask.mask` expects rank 3 tensors.
+    mask_array = np.asarray(mask.mask(target_positions, source_positions))
+    mask_array = np.squeeze(mask_array, axis=0)
 
     # NumpyMask is backed by a dense [target_len, source_len] numpy array.
     # May consume a large amount of host memory for long sequences at compile time.
     return splash_attention_mask.NumpyMask(array=mask_array)
 
 
-@functools.partial(
-    jax.jit,
-    static_argnames=["splash_mask", "block_sizes", "interpret"],
-)
-def _tpu_splash_attention(
-    query: Tensor,  # [batch_size, num_heads, target_len, head_dim]
-    key: Tensor,  # [batch_size, num_heads, source_len, head_dim]
-    value: Tensor,  # [batch_size, num_heads, source_len, head_dim]
-    *,
-    splash_mask: splash_attention_mask.Mask,
-    segment_ids: Optional[Tensor] = None,  # [batch_size, target_len]
-    block_sizes: Optional[splash_attention_kernel.BlockSizes] = None,
-    interpret: bool = False,
-) -> Tensor:  # [batch_size, num_heads, target_len, head_dim].
-    """Wraps JAX's sparse TPU flash-attention.
-
-    Args:
-        query: The query tensor, of shape [batch_size, num_heads, target_len, head_dim].
-        key: The key tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        value: The value tensor, of shape [batch_size, num_heads, source_len, head_dim].
-        mask: The mask to apply. This is more compute efficient compared to setting bias = -inf.
-        segment_ids: The id of which segment each token belongs to. Attention is not computed
-            between tokens in different segments, [batch_size, target_len].
-        block_sizes: An object containing values that can be used to tune the performance
-            such as the block size to chunk things into.
-        interpret: If True, interpret the kernel using the pallas interpreter. CPU needs it.
-
-    Returns:
-        The context tensor, of shape [batch_size, num_heads, target_len, head_dim].
-
-    Raises:
-        SplashAttentionUnsupportedError: If splash attention does not support the given arguments.
-            This happens if any of the following is true:
-            - bias is not None.
-            - The per_head_dim is not divisible by 128.
-            - segment_ids is not None.
-            - The source and target lengths are different and a nonzero mask is used.
-        TypeError: If mask is not an instance of `MaskFnAttentionBias.
-    """
-
-    # TODO(dhwang2): splash attention can support segment_ids. Support it when needed.
-    del segment_ids
-    num_heads = query.shape[1]
-    kernel = splash_attention_kernel.make_splash_mha(
-        mask=splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads),
-        block_sizes=block_sizes,
-        # TODO(dhwang2): support "seq" and "model" shard.
-        head_shards=1,
-        q_seq_shards=1,
-        interpret=interpret,
-        residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
-    )
-    kernel = jax.vmap(kernel)
-    context = kernel(q=query, k=key, v=value)
-    return context
-
-
 # The following code is adapted from jax-ml/jax:
 # Copyright 2023 The JAX Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
-
-
-@functools.partial(
-    jax.jit,
-    static_argnames=[
-        "causal",
-        "softmax_scale",
-        "block_sizes",
-        "debug",
-        "interpret",
-    ],
-)
-def pallas_tpu_flash_attention(
+def _pallas_tpu_flash_attention(
     q,  # [batch_size, num_heads, q_seq_len, d_model]
     k,  # [batch_size, num_heads, kv_seq_len, d_model]
     v,  # [batch_size, num_heads, kv_seq_len, d_model]
@@ -428,26 +102,7 @@ def pallas_tpu_flash_attention(
     interpret: bool = False,
 ):
     batch_size, num_heads, q_seq_len, d_model = q.shape
-    batch_size_k, num_heads_k, kv_seq_len, d_model_k = k.shape
-    batch_size_v, num_heads_v, kv_seq_len_v, d_model_v = v.shape
-    if batch_size != batch_size_k or batch_size != batch_size_v:
-        raise ValueError(
-            f"Batch size mismatch: got {batch_size}, {batch_size_k} and"
-            f" {batch_size_v} (for q, k, v respectively)"
-        )
-    if num_heads != num_heads_k or num_heads != num_heads_v:
-        raise ValueError(
-            f"Head count mismatch: got {num_heads}, {num_heads_k},"
-            f" {num_heads_v} (for q, k, v respectively)"
-        )
-    if d_model != d_model_k:
-        raise ValueError(
-            f"Model dimension mismatch: got {d_model} and {d_model_k} (for q and k" " respectively)"
-        )
-    if d_model != d_model_v:
-        raise NotImplementedError("V model dimension unequal to KV model dimension unsupported")
-    if kv_seq_len != kv_seq_len_v:
-        raise ValueError(f"KV sequence length mismatch: got {kv_seq_len} and {kv_seq_len_v}")
+    _, _, kv_seq_len, _ = k.shape
     if ab is not None:
         if ab.shape not in [
             (batch_size, num_heads, q_seq_len, kv_seq_len),
@@ -1200,3 +855,165 @@ def _flash_attention_bwd_dq(
 
     # dab is just ds
     return dq, ds
+
+
+class TPUFlashAttention(BaseFlashAttention):
+    """Wraps the common checks for TPU attention implementations."""
+
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+            return False
+        block_size = self.cfg.tpu_block_size
+        if not self._check_block_size(query=query, key=key, block_size=block_size):
+            return False
+        if self.cfg.dropout_rate != 0.0:
+            return self._log_unsupported("dropout is not supported.")
+        return True
+
+
+class TPUSplashAttention(TPUFlashAttention):
+    """Wraps SplashAttention.
+
+    This kernel should be used for majority of the cases, except when
+    1. explicit bias is used.
+    2. head_dim is not a multiple of 128.
+
+    In these two cases, we fallback to the legacy implementation.
+    """
+
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+            return False
+        _, _, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        head_dim = query.shape[-1]
+
+        if explicit_bias.has_value():
+            return self._log_unsupported("explicit bias is not supported.")
+
+        if head_dim % splash_attention_kernel.NUM_LANES != 0:
+            return self._log_unsupported(
+                f"{head_dim=} is not divisible by {splash_attention_kernel.NUM_LANES=}"
+            )
+        logging.info("Using %s.", self.name())
+        return True
+
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
+        del prng_key
+        mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
+        seg_ids = None
+        if segment_id_tensor is not None:
+            seg_ids = SplashSegmentIds(q=segment_id_tensor, kv=segment_id_tensor)
+
+        # Switch num_heads and seq_len axes.
+        query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
+        key = jnp.einsum("bsnh->bnsh", key)
+        value = jnp.einsum("bsnh->bnsh", value)
+
+        block_size = self.cfg.tpu_block_size
+        block_sizes = splash_attention_kernel.BlockSizes(
+            block_q=block_size,
+            block_kv=block_size,
+            block_kv_compute=block_size,
+            block_q_dkv=block_size,
+            block_kv_dkv=block_size,
+            block_kv_dkv_compute=block_size,
+            # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
+            # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
+            # and 1.14x in 539.5b.
+            use_fused_bwd_kernel=True,
+        )
+        splash_mask = _to_splash_mask(mask, mask_shape=(query.shape[2], key.shape[2]))
+        num_heads = query.shape[1]
+        kernel = splash_attention_kernel.make_splash_mha(
+            mask=splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads),
+            block_sizes=block_sizes,
+            # TODO(dhwang2): support "seq" and "model" shard.
+            head_shards=1,
+            q_seq_shards=1,
+            interpret=self.cfg.interpret,
+            residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
+        )
+        kernel = jax.vmap(kernel)
+        context = kernel(q=query, k=key, v=value, segment_ids=seg_ids)
+        return jnp.einsum("bnth->btnh", context)
+
+
+class LegacyTPUFlashAttention(TPUFlashAttention):
+    """Wraps the legacy (deprecated) implementation of TPU attention."""
+
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+            return False
+        logging.info("Using %s.", self.name())
+        return True
+
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
+        del prng_key
+        causal_mask, segment_ids, explicit_bias = split(
+            bias, CausalAttentionBias, SegmentIdAttentionBias
+        )
+        segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
+        seg_ids = None
+        if segment_id_tensor is not None:
+            seg_ids = LegacySegmentIds(q=segment_id_tensor, kv=segment_id_tensor)
+        key = repeat_kv_heads(query.shape[2], key)
+        value = repeat_kv_heads(query.shape[2], value)
+        # Switch num_heads and seq_len axes.
+        query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
+        key = jnp.einsum("bsnh->bnsh", key)
+        value = jnp.einsum("bsnh->bnsh", value)
+
+        block_size = self.cfg.tpu_block_size
+        # TODO(tom_gunter): See if we can do better block-size tuning.
+        block_sizes = LegacyBlockSizes(
+            block_q=block_size,
+            block_k_major=block_size,
+            block_k=block_size,
+            block_b=1,
+            block_q_major_dkv=block_size,
+            block_k_major_dkv=block_size,
+            block_k_dkv=block_size,
+            block_q_dkv=block_size,
+            block_k_major_dq=block_size,
+            block_k_dq=block_size,
+            block_q_dq=block_size,
+        )
+        context = _pallas_tpu_flash_attention(
+            query,
+            key,
+            value,
+            ab=explicit_bias.value(),
+            segment_ids=seg_ids,
+            causal=causal_mask.has_value(),
+            block_sizes=block_sizes,
+            interpret=self.cfg.interpret,
+        )
+        return jnp.einsum("bnth->btnh", context)

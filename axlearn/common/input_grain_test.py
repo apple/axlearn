@@ -597,6 +597,7 @@ class InputTest(parameterized.TestCase):
         with self.assertRaisesRegex(ValueError, "per-feed batch"):
             next(grain_input.batches(iter(grain_input)))
 
+    # TODO(markblee): Parameterize dispatcher.
     @pytest.mark.tpu
     def test_dispatch_tpu(self):
         """Test that logical batching works on every other host.
@@ -627,6 +628,7 @@ class InputTest(parameterized.TestCase):
             process_count=process_count,
             process_index=process_index,
         )
+        cfg.partition_spec = PartitionSpec("x")
         cfg.input_dispatcher = dispatcher
 
         with jax.sharding.Mesh(np.array(jax.devices()).reshape(batch_sharding, -1), ("x", "y")):
@@ -634,12 +636,12 @@ class InputTest(parameterized.TestCase):
             it = iter(grain_input)
             for batch in grain_input.batches(it):
                 physical_batch = host_to_global_device_array(batch)
-                batch = grain_input.dispatch_global_batch(physical_batch, batch_axis_names="x")
+                batch = grain_input.dispatch_global_batch(physical_batch)
 
                 # Should match the logical batch size.
                 self.assertEqual(batch["input_ids"].shape[0], logical_batch_size)
                 # Should be sharded along batch axes.
-                self.assertEqual(batch["input_ids"].sharding.spec, PartitionSpec("x"))
+                self.assertEqual(batch["input_ids"].sharding.spec, cfg.partition_spec)
                 # Should contain the right ids.
                 self.assertEqual([0, 1, 2, 3], replicate_to_local_data(batch)["input_ids"].tolist())
                 break

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
-set -e
+set +e
+# Reload Driver 
+sudo rmmod neuron; sudo modprobe neuron
+
 # Neuron env vars for distributed training based on SLURM
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 if [ -z "$SLURM_JOB_NODELIST" ]; then
@@ -44,9 +47,12 @@ export NEURON_FSDP_NUM_LAYER_COALESCE=-1
 export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
 export NEURON_HLO_ANALYZER=1
 export NEURON_DISABLE_BOUNDARY_MARKER=1
+export NEURON_FSDP_CC_MULTISTREAM=0
 
 # Neuron runtime flags
-export NEURON_RT_DBG_CC_DMA_PACKET_SIZE=4096 && export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
+export NEURON_SCRATCHPAD_PAGE_SIZE=1024
+export NEURON_RT_DBG_CC_DMA_PACKET_SIZE=4096
+export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
 export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
@@ -76,17 +82,22 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} -O1"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --tensorizer-options='--enable-hoist-fsdp-collectives'"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --hbm-scratchpad-page-size=1024"
 
-if [ "$PROFILE_MODE" = "capture_postrun" ] || [ "$PROFILE_MODE" = "tracerun" ]; then
+if [ "$PROFILE_MODE" = "capture_postrun" ] || [ "$PROFILE_MODE" = "tracerun" ] || [ "$FOR_PROFILE" = "1" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-compiler-debug-mode=penguin"
 	export XLA_IR_DEBUG=1
 	export XLA_HLO_DEBUG=1
 	if [ "$PROFILE_MODE" = "capture_postrun" ]; then
 		# runs a step and captures profile immediately after
 		export AXLEARN_MAX_STEP=1
-	else
+	elif [ "$PROFILE_MODE" = "tracerun" ]; then
 		export NEURON_RT_INSPECT_OUTPUT_DIR="${RT_PROFILE_DUMP_PATH}"
 		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
+		# export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
+		# export NEURON_RT_PROFILE_BUF_DMA_MB=256
+	else
+		echo ""
 	fi
 fi
 
@@ -106,7 +117,12 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 deactivate || true
-source ../jaxmoe/bin/activate
+
+if [ -z "$VENV_NAME" ]; then
+	VENV_NAME=jaxmoe
+fi
+
+source ../$VENV_NAME/bin/activate
 
 echo "Listing apt dependencies"
 apt list --installed | grep neuron
@@ -162,12 +178,13 @@ profile() {
 	log_dir=logs
 	mkdir -p $profile_dir $upload_dir
 
-	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | tail -n1)
+	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | head -n1)
 
-	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
-	export NEURON_RT_PROFILE_BUF_DMA_MB=256
-	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
+	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
+	# export NEURON_RT_PROFILE_BUF_DMA_MB=256
+	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
 	export NEURON_RT_VIRTUAL_CORE_SIZE=2
+	# export NEURON_RT_PROFILE_BUF_INFER_STATUS_MB=4
 	neuron-profile capture -r 64 --num-exec 3 \
 		--collectives-worker-count $((64* $SLURM_JOB_NUM_NODES)) \
 		--collectives-worker-start-id $((64 * $SLURM_PROCID)) \
@@ -224,3 +241,5 @@ else
 		profile $SLURM_JOB_ID $SLURM_JOB_NAME $S3_PROFILE_BASE_PATH
 	fi
 fi
+
+./get_memory_split.sh

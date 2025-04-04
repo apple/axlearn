@@ -2,18 +2,14 @@
 
 """Utilities for executing commands on GCP.
 
-Note that these utilities do not handle resource management.
+See also ``On configuration`` in `axlearn/cloud/gcp/job.py`.
 """
 
-import atexit
 import logging
-import os
-import pathlib
-import re
 import shlex
 import subprocess
 from collections.abc import Sequence
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 import kubernetes as k8s
 from absl import flags
@@ -23,21 +19,8 @@ from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
-from axlearn.cloud.gcp.jobset_utils import (
-    A3ReplicatedJob,
-    AcceleratorConfig,
-    BaseReplicatedJob,
-    TPUReplicatedJob,
-    accelerator_flags,
-)
-from axlearn.cloud.gcp.scopes import DEFAULT_TPU_SCOPES
-from axlearn.cloud.gcp.tpu import get_queued_tpu_node, get_tpu_node, qrm_resource, tpu_resource
-from axlearn.cloud.gcp.utils import (
-    custom_jobset_kwargs,
-    delete_k8s_jobset,
-    get_credentials,
-    running_from_vm,
-)
+from axlearn.cloud.gcp.jobset_utils import A3ReplicatedJob, BaseReplicatedJob, TPUReplicatedJob
+from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset, get_credentials
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -62,11 +45,11 @@ class GCPJob(Job):
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_string("project", default_project(), "The GCP project name.", **common_kwargs)
-        flags.DEFINE_string("zone", default_zone(), "The GCP zone name.", **common_kwargs)
+        flags.DEFINE_string("project", None, "The GCP project name.", **common_kwargs)
+        flags.DEFINE_string("zone", None, "The GCP zone name.", **common_kwargs)
         flags.DEFINE_string(
             "env_id",
-            default_env_id(),
+            None,
             "The env_id, used along with project to identify `gcp_settings`.",
             **common_kwargs,
         )
@@ -78,6 +61,14 @@ class GCPJob(Job):
             **common_kwargs,
         )
 
+    @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        super().set_defaults(fv)
+        fv.set_default("project", default_project())
+        fv.set_default("zone", default_zone())
+        fv.set_default("env_id", default_env_id())
+
+    # TODO(markblee): Remove this from GCPJob.
     def _get_job_credentials(
         self,
         impersonate_scopes: Optional[Sequence[str]] = None,
@@ -99,153 +90,6 @@ class GCPJob(Job):
         )
 
 
-class TPUQRMJob(GCPJob):
-    """Executes arbitrary commands on TPU-VMs."""
-
-    @config_class
-    class Config(GCPJob.Config):
-        """Configures TPUQRMJob.
-
-        Attributes:
-            accelerator: TPU configuration.
-        """
-
-        accelerator: AcceleratorConfig = AcceleratorConfig()
-
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
-        self._local_home = pathlib.Path.home()
-        self._use_iap = None  # Infer from public IP.
-
-    @classmethod
-    def define_flags(cls, fv: flags.FlagValues):
-        super().define_flags(fv)
-        accelerator_flags(flag_values=fv, allow_override=True)
-
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg: TPUQRMJob.Config = super().from_flags(fv, **kwargs)
-        cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
-        return cfg
-
-    def _ensure_ssh_keys(self):
-        """Ensures SSH keys exist, or raises ValueError. Only necessary on remote VM."""
-        # Seem to need to nuke this every time to avoid MITM warnings.
-        hosts_file = self._local_home / ".ssh/google_compute_known_hosts"
-        if hosts_file.exists():
-            hosts_file.unlink()
-
-        ssh_key = self._local_home / ".ssh/google_compute_engine"
-        proc = subprocess_run(f"ssh-add {ssh_key}", check=False, capture_output=True)
-        if proc.returncode:
-            logging.warning("SSH key %s does not exist yet.", ssh_key)
-
-    def _infer_iap(self):
-        """Infers whether instance has public IP. If not, we tunnel through IAP."""
-        if self._use_iap is None:
-            cfg: TPUQRMJob.Config = self.config
-            if cfg.accelerator.num_replicas > 1:
-                node = get_queued_tpu_node(
-                    cfg.name,
-                    qrm_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
-                )
-            else:
-                node = get_tpu_node(
-                    cfg.name,
-                    tpu_resource(self._get_job_credentials(DEFAULT_TPU_SCOPES)),
-                )
-            if node is None:
-                raise ValueError(f"Expected TPU {cfg.name} to exist")
-            for endpoint in node.get("networkEndpoints", []):
-                for access_config in endpoint.get("accessConfig", []):
-                    if access_config.get("natIP", None):
-                        logging.info("Detected a public IP, not using IAP.")
-                        self._use_iap = False
-                        return False
-            logging.info("Didn't find a public IP, using IAP.")
-            self._use_iap = True
-        return self._use_iap
-
-    def _execute_remote_cmd(
-        self,
-        cmd: str,
-        *,
-        worker: Union[int, str] = "all",
-        detached_session: Optional[str] = None,
-        batch_size: Union[int, str] = 100,
-        extra_ssh_flags: str = "",
-        **kwargs,
-    ) -> Sequence[subprocess.CompletedProcess]:
-        """Executes a command on existing TPU-VM(s).
-
-        Args:
-            cmd: Command to run.
-            worker: Worker ID. Defaults to "all".
-            wait: Whether to wait for process to complete. If True, waits for command to complete,
-                and returns a completed process. Caller can inspect outputs or exit codes. If False,
-                spawns and returns a process. Caller can listen to logs in realtime.
-            detached_session: If not None, run commands behind `screen` in detached mode. This is
-                useful for persisting commands even if SSH is terminated. If not None, should be a
-                string containing the session name.
-            batch_size: Number of concurrent command executions. If 'all', run all commands
-                simultaneously.
-            extra_ssh_flags: Extra gcloud ssh flags.
-            **kwargs: Forwarded to subprocess.
-
-        Returns:
-            A list of completed subprocesses. Each corresponds to execution of the command on a
-            single slice.
-
-        Raises:
-            ValueError: If the name of the detached screen session is too long.
-        """
-        cfg: TPUQRMJob.Config = self.config
-        from_vm = running_from_vm()
-        cmd = _prepare_cmd_for_gcloud_ssh(f"pushd /root && {cmd}")
-        if from_vm:
-            self._ensure_ssh_keys()
-            extra_ssh_flags = f"--internal-ip {extra_ssh_flags}"
-        elif self._infer_iap():
-            # Infer IAP flag if not running from VM.
-            extra_ssh_flags = f"--tunnel-through-iap {extra_ssh_flags}"
-        cmd = f"sudo bash -c {cmd}"
-        if detached_session:
-            # Even though the official limit is 100 chars, screen seems to silently exit even before
-            # that.
-            if len(detached_session) > 80:
-                raise ValueError(f"Screen name {detached_session} is too long.")
-            cmd = f"sudo screen -dmS {detached_session} {cmd}"
-        logging.debug("Executing remote command on worker [%s]: '%s'", worker, cmd)
-        if cfg.accelerator.num_replicas > 1:
-            slices = [f"{cfg.name}-{i}" for i in range(cfg.accelerator.num_replicas)]
-        else:
-            slices = [cfg.name]
-        procs = []
-        for s in slices:
-            cmd_for_slice = (
-                f"gcloud alpha compute -q tpus tpu-vm ssh {s} "
-                f"--project={cfg.project} "
-                f"--zone={cfg.zone} "
-                f"--worker={worker} "
-                f"--batch-size={batch_size} "
-                f'{extra_ssh_flags} --command="{cmd}"'
-            )
-            proc = subprocess_run(cmd_for_slice, **_prepare_subprocess_kwargs(kwargs))
-            procs.append(proc)
-        return procs
-
-    def _execute(self) -> Any:
-        """Performs some computation on remote TPU-VMs."""
-        cfg: TPUQRMJob.Config = self.config
-        self._execute_remote_cmd(cfg.command)
-
-    def execute(self) -> Any:
-        """Wraps _execute with ssh-agent and retries. All args and kwargs are forwarded."""
-        if running_from_vm():
-            _start_ssh_agent()
-        return super().execute()
-
-
 # TODO(markblee): Rename to GKEJobSet.
 class GKEJob(GCPJob):
     """Base GKE JobSet interface."""
@@ -259,32 +103,19 @@ class GKEJob(GCPJob):
 
         Attributes:
             builder: A builder that returns one or more replicated job specs.
-            accelerator: Accelerator configuration.
-            env_vars: Optional env vars to set.
             namespace: The namespace to use within the k8s cluster.
                 https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-            enable_pre_provisioner: Whether to enable pre-provisioner.
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
-            output_dir: Optional; The output directory of the GKE job outputs.
-                Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
-                This directory is used by the sidecar container to sync outputs to GCS using gsutil.
-                Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
         """
 
         builder: Required[BaseReplicatedJob.Config] = REQUIRED
-        accelerator: AcceleratorConfig = AcceleratorConfig()
-        env_vars: dict[str, str] = {}
         namespace: str = "default"
-        # This config is made Optional for backwards compatibility. Default is False.
-        enable_pre_provisioner: Optional[bool] = None
         queue: Optional[str] = None
-        output_dir: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        accelerator_flags(**common_kwargs)
         flags.DEFINE_string(
             "queue",
             None,
@@ -294,37 +125,33 @@ class GKEJob(GCPJob):
         cls.builder.define_flags(fv)
 
     @classmethod
+    def set_defaults(cls, fv):
+        super().set_defaults(fv)
+        fv.set_default("max_tries", fv.max_tries or 10)
+        fv.set_default("retry_interval", fv.retry_interval or 60)
+        fv.set_default(
+            "service_account", gcp_settings("k8s_service_account", default="default", fv=fv)
+        )
+
+    @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         cfg: GKEJob.Config = super().from_flags(fv, **kwargs)
-        # TODO(markblee): This is usually propagated from parent. Reduce redundant defaults.
-        cfg.service_account = cfg.service_account or gcp_settings(
-            "k8s_service_account", default="default", fv=fv
-        )
-        cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
+        # The command is not used at the jobset, but at the builder(s).
+        cfg.command = None
         cfg.builder = cls.builder.from_flags(fv, **kwargs)
         return cfg
 
-    def __init__(self, cfg):
-        bundler_cfg = cfg.bundler
-        bundler_cfg = getattr(bundler_cfg, "inner", bundler_cfg)
-        if bundler_cfg is None or not issubclass(bundler_cfg.klass, BaseDockerBundler):
-            raise NotImplementedError(f"Only docker bundler supported, got: {bundler_cfg}")
+    def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
         super().__init__(cfg)
         cfg: GKEJob.Config = self.config
+        if cfg.bundler is not None:
+            raise ValueError("Pass instantiated bundler directly.")
+        self._bundler = bundler
         # This instantiatees a builder for constructing replicated job specs, which will be managed
         # together under the jobset represented by this class.
         # Note the distinction from bundlers, which are responsible for bundling any code assets
         # required to run the job.
-        self._builder: BaseReplicatedJob = cfg.builder.set(
-            name=cfg.name,
-            command=cfg.command,
-            accelerator=cfg.accelerator,
-            project=cfg.project,
-            env_vars=cfg.env_vars,
-            service_account=cfg.service_account,
-            enable_pre_provisioner=cfg.enable_pre_provisioner,
-            output_dir=cfg.output_dir,
-        ).instantiate(bundler=self._bundler)
+        self._builder: BaseReplicatedJob = cfg.builder.instantiate(bundler=bundler)
 
     def _delete(self):
         cfg: GKEJob.Config = self.config
@@ -449,39 +276,6 @@ def _prepare_subprocess_kwargs(kwargs: dict) -> dict:
     kwargs.setdefault("check", True)
     kwargs.setdefault("capture_output", kwargs.keys().isdisjoint(["stdout", "stderr"]))
     return kwargs
-
-
-def _kill_ssh_agent():
-    """Terminates ssh-agent, e.g. as started by `_start_ssh_agent`."""
-    subprocess_run("ssh-agent -k", check=False, capture_output=True)
-    os.environ.pop("SSH_AUTH_SOCK", None)
-    os.environ.pop("SSH_AGENT_PID", None)
-
-
-def _start_ssh_agent():
-    """Starts ssh-agent for SSH key handling.
-
-    The ssh-agent is automatically terminated when the program exits.
-    """
-    # pylint: disable=line-too-long
-    if not os.getenv("SSH_AGENT_PID"):
-        logging.info("ssh-agent is not running, starting it now...")
-        process = subprocess_run("ssh-agent -s", stdout=subprocess.PIPE, check=True, text=True)
-        # Example format:
-        # Linux:
-        # SSH_AUTH_SOCK=/tmp/ssh-g4aYlFVLLugX/agent.52090; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=52091; export SSH_AGENT_PID;\necho Agent pid 52091;\n
-        # Mac:
-        # SSH_AUTH_SOCK=/var/folders/j0/blx8mk5j1hlc0k110xsbrxw00000gn/T//ssh-ZAf5XlQX7tWM/agent.7841; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=7842; export SSH_AGENT_PID;\necho Agent pid 7842;\n
-        match = re.search(
-            r"SSH_AUTH_SOCK=([^;]+);.*SSH_AGENT_PID=([^;]+);",
-            process.stdout,
-            re.MULTILINE | re.DOTALL,
-        )
-        auth_sock, agent_pid = match.groups()  # pytype: disable=attribute-error
-        os.environ["SSH_AUTH_SOCK"] = auth_sock
-        os.environ["SSH_AGENT_PID"] = agent_pid
-        atexit.register(_kill_ssh_agent)
-    logging.info("ssh-agent is running.")
 
 
 def _prepare_cmd_for_gcloud_ssh(cmd: str) -> str:

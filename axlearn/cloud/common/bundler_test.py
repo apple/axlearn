@@ -14,11 +14,13 @@ import toml
 from absl import flags
 from absl.testing import parameterized
 
-from axlearn.cloud.common import bundler, config
+from axlearn.cloud.common import bundler, config, git_summary
 from axlearn.cloud.common.bundler import BaseTarBundler, Bundler, DockerBundler, get_bundler_config
 from axlearn.cloud.common.config import CONFIG_DIR, CONFIG_FILE, DEFAULT_CONFIG_FILE
 from axlearn.cloud.common.config_test import create_default_config
 from axlearn.common.test_utils import TestCase, TestWithTemporaryCWD, temp_chdir
+
+git_summary_path = f"{git_summary.__name__}.{git_summary.GitSummary.__name__}"
 
 
 @contextmanager
@@ -279,10 +281,11 @@ class DockerBundlerTest(TestWithTemporaryCWD):
         mock_build = mock.Mock(side_effect=mock_build_fn)
         with mock.patch.multiple(
             bundler.__name__,
-            running_from_source=mock.Mock(return_value=False),
-            get_git_status=mock.Mock(return_value=""),
             docker_push=mock.Mock(return_value=123),
             docker_build=mock_build,
+        ), mock.patch.multiple(
+            f"{git_summary.__name__}.{git_summary.GitSummary.__name__}",
+            is_valid=mock.Mock(return_value=False),
         ):
             _create_dummy_config(self._temp_root.name)
 
@@ -309,24 +312,30 @@ class DockerBundlerTest(TestWithTemporaryCWD):
                 self.assertEqual(mock_build.call_count, 1)
 
     @parameterized.product(running_from_source=[True, False], allow_dirty=[False, True])
-    @mock.patch(f"{bundler.__name__}.get_git_branch", return_value="FAKE_BRANCH")
-    @mock.patch(f"{bundler.__name__}.get_git_revision", return_value="FAKE_REVISION")
-    @mock.patch(f"{bundler.__name__}.get_git_status", return_value=["FAKE_FILE"])
+    @mock.patch(
+        f"{git_summary_path}.to_labels",
+        return_value={"fake-kabel": "fake-label-value"},
+    )
+    @mock.patch(f"{git_summary_path}.to_disk", return_value=[])
     def test_call_unclean(
         self,
-        get_git_status,
-        get_git_revision,
-        get_git_branch,
+        to_disk,
+        to_labels,
         running_from_source,
         allow_dirty,
     ):
         _create_dummy_config(self._temp_root.name)
 
         mock_running_from_source = mock.patch(
-            f"{bundler.__name__}.running_from_source",
+            f"{git_summary_path}.is_valid",
             return_value=running_from_source,
         )
-        with mock_running_from_source as mock_source, _fake_dockerfile() as dockerfile:
+        mock_is_dirty = mock.patch(f"{git_summary_path}.is_dirty", return_value=True)
+        with (
+            mock_running_from_source as mock_source,
+            mock_is_dirty as mock_dirty,
+            _fake_dockerfile() as dockerfile,
+        ):
             b = (
                 DockerBundler.default_config()
                 .set(
@@ -350,6 +359,6 @@ class DockerBundlerTest(TestWithTemporaryCWD):
                 self.assertEqual(not should_raise, mock_push.called)
 
             self.assertGreater(mock_source.call_count, 0)
-            self.assertEqual(running_from_source, get_git_status.called)
-            self.assertEqual(running_from_source and allow_dirty, get_git_branch.called)
-            self.assertEqual(running_from_source and allow_dirty, get_git_revision.called)
+            self.assertEqual(running_from_source, mock_dirty.called)
+            self.assertEqual(running_from_source and allow_dirty, to_disk.called)
+            self.assertEqual(running_from_source and allow_dirty, to_labels.called)

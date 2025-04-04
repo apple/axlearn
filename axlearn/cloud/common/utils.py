@@ -61,7 +61,8 @@ def handle_popen(proc: subprocess.Popen):
 
 def generate_job_name() -> str:
     """Generate a unique job name."""
-    return f"{os.environ['USER'].replace('_', '')}-{uuid.uuid4().hex.lower()[:6]}"
+    prefix = os.environ.get("USER", "job").replace("_", "")
+    return f"{prefix}-{uuid.uuid4().hex.lower()[:6]}"
 
 
 def generate_job_id() -> str:
@@ -73,16 +74,6 @@ def generate_job_id() -> str:
 def get_git_revision(revision: str) -> str:
     """Gets the commit hash for the revision."""
     return subprocess.check_output(["git", "rev-parse", revision]).decode("ascii").strip()
-
-
-def get_git_branch() -> str:
-    """Returns current git branch."""
-    return subprocess.check_output(["git", "branch", "--show-current"]).decode("ascii").strip()
-
-
-def get_git_status() -> str:
-    """Returns current git status."""
-    return subprocess.check_output(["git", "status", "--short"]).decode("ascii").strip()
 
 
 def get_package_root(root_module_name: str = ROOT_MODULE_NAME) -> str:
@@ -107,36 +98,6 @@ def get_package_root(root_module_name: str = ROOT_MODULE_NAME) -> str:
             return curr
         curr = os.path.dirname(curr)
     raise ValueError(f"Not running within {root_module_name} (searching up from '{init}').")
-
-
-def get_repo_root() -> str:
-    """Returns the absolute path of the repo root, as defined by a directory with `.git` containing
-    `ROOT_MODULE_NAME` as a subdirectory.
-
-    Returns:
-        The absolute path of the project root.
-
-    Raises:
-        ValueError: If run from outside a repo containing `ROOT_MODULE_NAME`.
-    """
-    repo_root = os.path.dirname(get_package_root())
-    if not os.path.exists(os.path.join(repo_root, ".git")):
-        raise ValueError(f"Not running within a repo (no .git directory under '{repo_root})")
-    return repo_root
-
-
-def running_from_source() -> bool:
-    """Returns whether this function is called from source (instead of an installed package).
-
-    Returns:
-        True iff running from source.
-    """
-    try:
-        get_repo_root()
-        return True
-    except ValueError as e:
-        logging.info(str(e))
-    return False
 
 
 def get_pyproject_version() -> str:
@@ -398,8 +359,49 @@ class FlagConfigurable(Configurable):
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         """Populate config partially using parsed absl flags."""
+        # Define default flags before reading flag values. Note that in the common case, a child
+        # class will invoke `super().set_defaults` prior to defining its own defaults, which
+        # allows parents to define defaults that are overridden in the child.
+        cls.set_defaults(fv)
         flag_values = {**fv.flag_values_dict(), **kwargs}
         cfg = cls.default_config()
         return cfg.set(
             **{field: flag_values[field] for field in cfg.keys() if field in flag_values}
         )
+
+    @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        """Sets default values for `fv`.
+
+        Instead of setting defaults in `define_flags` or `from_flags`, this method applies defaults
+        after flag parsing (allowing access to values in `fv`) while ensuring that a parent's
+        `set_defaults` is invoked before the child's.
+
+        This allows the child to have more flexibility in choosing whether a default value should be
+        overridden, inherited, or inferred from another flag. For example, to inherit a default, one
+        can do:
+        ```
+        # Calling the super method defines parent flags first.
+        super().set_defaults(fv)
+
+        # Use the existing default (if any), else use our own default.
+        fv.set_default("my_flag", fv.my_flag or "backup-default")
+        ```
+        On the other hand, to override a default, one can do:
+        ```
+        # Register parent defaults first.
+        super().set_defaults(fv)
+
+        # Override the default for "my_flag".
+        fv.set_default("my_flag", "override-default")
+        ```
+        Or, to infer a flag from another:
+        ```
+        # Register parent defaults first.
+        super().set_defaults(fv)
+
+        # Override the default for "my_flag" using the value of another flag.
+        fv.set_default("my_flag", f"{fv.my_other_flag}-with-suffix")
+        ```
+        """
+        del fv

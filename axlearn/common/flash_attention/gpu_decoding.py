@@ -45,11 +45,19 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+from absl import logging
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import check_compute_capability
 from jax.experimental import pallas as pl
 
-from axlearn.common.attention_bias import NEG_INF, MaskFn
+from axlearn.common.attention_bias import (
+    NEG_INF,
+    BaseAttentionBias,
+    MaskFn,
+    MaskFnAttentionBias,
+    split,
+)
+from axlearn.common.flash_attention.common import BaseSingleStepDecoding
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
 from axlearn.common.utils import Tensor
 
@@ -75,6 +83,11 @@ def _attn_forward_kernel(
 ):
     _, head_dim = q_ref.shape
     split_k_seq_len, _ = k_ref.shape
+    precision = (
+        lax.Precision.HIGHEST
+        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
+        else lax.Precision.DEFAULT
+    )
     prog_i, prog_j = pl.program_id(1), pl.program_id(2)
     q_mask = (block_h * prog_i + jnp.arange(block_h) < qhead_per_kvhead)[:, None]
 
@@ -98,7 +111,7 @@ def _attn_forward_kernel(
             def compute():
                 curr_k_slice = pl.ds(start_k * block_k, block_k)
                 k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
-                qk = pl.dot(q, k.T, allow_tf32=False)  # [block_h, block_k]
+                qk = pl.dot(q, k.T, precision=precision)  # [block_h, block_k]
                 if bias_ref is not None:
                     qk += pl.load(
                         bias_ref, (slice(None), curr_k_slice), mask=mask[None, :], other=0.0
@@ -115,7 +128,7 @@ def _attn_forward_kernel(
                 l_curr = s_curr.sum(axis=-1)
                 l_next = l_prev_corr + l_curr
                 v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
-                o_curr = pl.dot(s_curr.astype(v.dtype), v, allow_tf32=False)
+                o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
 
                 # Flash2 unscaled_o.
                 o_next = correction[:, None] * o_prev + o_curr
@@ -265,94 +278,57 @@ def _decode_attn_unbatched(
     return o.astype(q.dtype)
 
 
-@functools.partial(
-    jax.jit,
-    static_argnames=[
-        "softmax_scale",
-        "block_h",
-        "block_k",
-        "num_warps",
-        "num_stages",
-        "interpret",
-        "debug",
-        "mask_fn",
-    ],
-)
-def flash_decoding(
-    q: Tensor,
-    k: Tensor,
-    v: Tensor,
-    kv_seq_len: Optional[Tensor],
-    *,
-    bias: Optional[Tensor] = None,
-    softmax_scale: float = 1.0,
-    mask_fn: Optional[MaskFn] = None,
-    block_h: int = 16,
-    block_k: int = 128,
-    num_warps: int = 4,
-    num_stages: int = 2,
-    interpret: bool = False,
-    debug: bool = False,
-):
-    """Runs flash decoding with GQA support.
+class GPUDecoding(BaseSingleStepDecoding):
+    """Implements GPU FlashDecoding with GQA support."""
 
-    Args:
-        q: Tensor of shape [batch_size, 1, num_q_heads, head_dim].
-        k: Tensor of shape [batch_size, padded_kv_seq_len, num_kv_heads, head_dim].
-        v: Tensor of shape [batch_size, padded_kv_seq_len, num_kv_heads, head_dim].
-        kv_seq_len: Tensor that can broadcast to [batch_size], indicating the actual kv sequence
-            length for each sequence in the batch. If None, assumes k and v are not padded in the
-            sequence dimension.
-        bias: Tensor that can broadcast to [batch_size, q_heads, 1, padded_kv_seq_len].
-            Defaults to None.
-        softmax_scale: Softmax scale.
-        mask_fn: Mask function to use. Preferred over bias.
-        block_h: Block dimension for num_q_heads // num_kv_heads. Defaults to 16, which is the
-            minimal size required for pl.dot. Increase the block size for better performance if
-            num_q_heads // num_kv_heads > 16.
-        block_k: Block dimension along the sequence dim. Defaults to 128. Decrease if SMEM usage
-            exceeds limit.
-        num_warps: See the compiler options of `pl.pallas_call`. Default to 4 wraps which have the
-            best performance in most settings.
-        num_stages: See the compiler options of `pl.pallas_call`. Default to 2 which is faster than
-            no software pipelining. Higher values may cause SMEM OOM.
-        interpret: See `pl.pallas_call`.
-        debug: See `pl.pallas_call`.
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
+        del prng_key
+        mask, explicit_bias = split(bias, MaskFnAttentionBias)
+        if mask is None or mask.target_positions is None:
+            raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
+        mask_fn = mask.mask
+        kv_seq_len = mask.target_positions[:, -1] + 1
+        logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
 
-    Returns:
-        A tensor with the same shape and dtype as q.
-    """
-    q = q.squeeze(1)
-    batch_size, q_heads, head_dim = q.shape
-    padded_kv_seq_len, kv_heads = k.shape[1], k.shape[2]
-    if k.shape != v.shape:
-        raise RuntimeError(f"Expect k and v to have the same shape. Got {k.shape=}, {v.shape=}!")
-    if q_heads % kv_heads != 0:
-        raise RuntimeError(
-            f"Expect number of kv heads divides number of q heads. Got {kv_heads=}, {q_heads=}!"
-        )
-    if kv_seq_len is not None:
+        query = query.squeeze(1)
+        batch_size, q_heads, head_dim = query.shape
+        padded_kv_seq_len, kv_heads = key.shape[1], key.shape[2]
         kv_seq_len = jnp.broadcast_to(jnp.asarray(kv_seq_len), (batch_size,))
-    else:
-        kv_seq_len = jnp.full((batch_size,), padded_kv_seq_len, dtype=jnp.int32)
-    q_heads_per_kv_head = q_heads // kv_heads
-    q = q.reshape(batch_size, kv_heads, q_heads_per_kv_head, head_dim)
+        q_heads_per_kv_head = q_heads // kv_heads
+        query = query.reshape(batch_size, kv_heads, q_heads_per_kv_head, head_dim)
 
-    if bias is not None:
-        bias = jnp.broadcast_to(bias, (batch_size, q_heads, 1, padded_kv_seq_len))
-        bias = bias.reshape(batch_size, kv_heads, q_heads_per_kv_head, padded_kv_seq_len)
+        bias = explicit_bias.value()
+        if bias is not None:
+            logging.info(
+                "Using explicit_bias=%s for FlashDecoding. "
+                "This is not expected unless an explicit Tensor bias is used.",
+                bias,
+            )
+            bias = jnp.broadcast_to(bias, (batch_size, q_heads, 1, padded_kv_seq_len))
+            bias = bias.reshape(batch_size, kv_heads, q_heads_per_kv_head, padded_kv_seq_len)
 
-    inner = functools.partial(
-        _decode_attn_unbatched,
-        softmax_scale=softmax_scale,
-        block_h=block_h,
-        block_k=block_k,
-        num_warps=num_warps,
-        num_stages=num_stages,
-        interpret=interpret,
-        debug=debug,
-        mask_fn=mask_fn,
-        batch_size=batch_size,
-    )
-    o = jax.vmap(inner)(q, k, v, bias, kv_seq_len)
-    return o.reshape(batch_size, 1, q_heads, head_dim)
+        inner = functools.partial(
+            _decode_attn_unbatched,
+            softmax_scale=self.cfg.softmax_scale,
+            # Minimum block size is 16 to allow pl.dot to lower successfully.
+            block_h=max(16, pl.next_power_of_2(q_heads_per_kv_head)),
+            block_k=self.cfg.gpu_block_size,
+            num_warps=4,
+            num_stages=2,
+            interpret=self.cfg.interpret,
+            debug=False,
+            mask_fn=mask_fn,
+            batch_size=batch_size,
+        )
+        return jax.vmap(inner)(query, key, value, bias, kv_seq_len).reshape(
+            batch_size, 1, q_heads, head_dim
+        )

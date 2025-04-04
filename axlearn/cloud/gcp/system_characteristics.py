@@ -484,9 +484,17 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
     ),
 }
 
-# Reference doc https://cloud.google.com/tpu/docs/tpus-in-gke.
+# Reference doc https://cloud.google.com/kubernetes-engine/docs/concepts/plan-tpus
 GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS = {
     "ct5p-hightpu-4t": 448,
     "ct4p-hightpu-4t": 407,
     "ct5lp-hightpu-4t": 192,
+    "ct6e-standard-4t": 720,
+}
+
+# Reference doc https://cloud.google.com/kubernetes-engine/docs/concepts/plan-tpus
+GCE_MACHINE_TYPE_TO_CPU_CHARACTERISTICS = {
+    "ct5p-hightpu-4t": 208,
+    "ct4p-hightpu-4t": 240,
+    "ct6e-standard-4t": 180,
 }

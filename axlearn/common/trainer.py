@@ -24,7 +24,7 @@ from axlearn.common import measurement, utils
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import BaseCheckpointer, Checkpointer
-from axlearn.common.compiler_options import infer_xsc_compiler_options
+from axlearn.common.compiler_options import infer_xla_performance_flags, infer_xsc_compiler_options
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -52,8 +52,10 @@ from axlearn.common.utils import (
     Nested,
     NestedTensor,
     PartitionSpec,
+    PerParamFn,
     Tensor,
     TensorSpec,
+    canonicalize_per_param_dtype,
     count_model_params,
     flatten_items,
     match_regex_rules,
@@ -174,9 +176,14 @@ class SpmdTrainer(Module):
         # of golden configs.
         prune_empty_state_updates: bool = True
 
-        # Cast float inputs and model parameters to this dtype for the train step.
-        # If None, we do not cast.
-        train_dtype: Optional[jnp.dtype] = None
+        # Cast float inputs and model parameters to dtype for the train step.
+        # This parameter can either be:
+        # 1. A `jnp.dtype`, where both float inputs and model parameters will
+        #    be cast to this dtype.
+        # 2. A `ConfigOr[PerParamFn[jnp.dtype]]`, allowing different dtypes to be applied to
+        #    different parameters during training.
+        # If not provided, the default value is `None`, no casting applied.
+        train_dtype: Optional[Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]]] = None
 
         # If > 0, run a watchdog thread to print the thread stack traces if step does not
         # increment within this interval.
@@ -243,8 +250,9 @@ class SpmdTrainer(Module):
                 cfg.model.param_init,
             )
 
-        if cfg.train_dtype is not None:
-            utils.validate_float_dtype(cfg.train_dtype)
+        self._per_param_train_dtype = maybe_instantiate(
+            canonicalize_per_param_dtype(cfg.train_dtype)
+        )
 
         # Create the device mesh.
         if devices is None:
@@ -288,7 +296,10 @@ class SpmdTrainer(Module):
         # properly.
         with self.mesh():
             self.input: Input = self._add_child(
-                "input", maybe_set_config(cfg.input, is_training=True)
+                "input",
+                maybe_set_config(
+                    cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names), is_training=True
+                ),
             )
             # Start from the beginning of the input dataset by default.
             self._input_iter = iter(self.input.dataset())
@@ -328,6 +339,9 @@ class SpmdTrainer(Module):
                 evaler_cfg.summary_writer.dir = evaler_cfg.summary_writer.dir or os.path.join(
                     cfg.dir, "summaries", evaler_name
                 )
+                maybe_set_config(
+                    evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
+                )
                 self._evalers[evaler_name] = self._add_child(
                     evaler_name,
                     evaler_cfg,
@@ -352,8 +366,7 @@ class SpmdTrainer(Module):
         return self._trainer_state_partition_specs
 
     def _train_step_input_partition_specs(self):
-        # By default, each input tensor is fully partitioned along the batch axis.
-        return utils.input_partition_spec()
+        return self.input.partition_spec
 
     def model_params_for_eval(self):
         state = self.trainer_state
@@ -577,12 +590,14 @@ class SpmdTrainer(Module):
 
                     self._step = self._step + 1
                     self.vlog(3, "Start step %s", self.step)
-
                     if os.getenv("NEURON_RT_INSPECT_DEVICE_PROFILE", "0" ) == "1" and num_steps == 2:
                         assert os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR") is not None
                         with jax.profiler.trace(os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR")):
                             output = self._run_step(
-                                utils.host_to_global_device_array(input_batch),
+                                utils.host_to_global_device_array(
+                                    input_batch,
+                                    partition=self._train_step_input_partition_specs(),
+                                ),
                                 force_run_evals=(
                                     force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                                 ),
@@ -591,7 +606,10 @@ class SpmdTrainer(Module):
                             time.sleep(600)
                     else:
                         output = self._run_step(
-                            input_batch,
+                            utils.host_to_global_device_array(
+                                input_batch,
+                                partition=self._train_step_input_partition_specs(),
+                            ),
                             force_run_evals=(
                                 force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                             ),
@@ -600,7 +618,6 @@ class SpmdTrainer(Module):
                         if max_step_ is not None and max_step_  == num_steps:
                             logging.info(f"Done running {num_steps}, exiting")
                             break
-
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
                     if num_steps % 100 == 0:
@@ -1012,24 +1029,29 @@ class SpmdTrainer(Module):
             and self._compiled_train_step is not None
         ):
             return self._compiled_train_step
-        if not with_xsc:
-            self._compiled_train_step = self.compile_train_step(
-                trainer_state=trainer_state, input_batch=input_batch
-            )
-            return self._compiled_train_step
+        cfg: SpmdTrainer.Config = self.config
         # Get device kinds and assert that they are homogenous.
+        # TODO(markblee): Get devices from self._mesh.devices.
         device_kinds = set(d.device_kind for d in jax.devices())
         if len(device_kinds) != 1:
             raise RuntimeError(f"Heterogenous device kinds ({device_kinds}) are not supported.")
+        device_kind = device_kinds.pop()
+        options = infer_xla_performance_flags(
+            mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
+        )
+        if not with_xsc:
+            self._compiled_train_step = self.compile_train_step(
+                trainer_state=trainer_state, input_batch=input_batch, compiler_options=options
+            )
+            return self._compiled_train_step
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
+
         compiled_jit_train_step_fn = self.compile_train_step(
             trainer_state=trainer_state,
             input_batch=input_batch,
-            compiler_options=infer_xsc_compiler_options(
-                halt_on_detection=True,
-                repeat_count=1,
-                # Replicate LLO if running on single-core-per-chip device-kind.
-                replicate_llo=device_kinds.pop() in ["TPU v5e", "TPU v6e"],
+            compiler_options=options
+            | infer_xsc_compiler_options(
+                halt_on_detection=True, repeat_count=1, device_kind=device_kind
             ),
         )
         return compiled_jit_train_step_fn
@@ -1157,26 +1179,24 @@ class SpmdTrainer(Module):
             # Note(Jan 2022):
             # pjit currently requires all parameters to be specified as positional args.
             lowered_train_step = jit_train_step.lower(trainer_state, input_batch)
-            return lowered_train_step.compile(compiler_options=compiler_options)
+            compiled = lowered_train_step.compile(compiler_options=compiler_options)
+            logging.log_first_n(logging.INFO, aot_model_analysis(compiled), 1)
+            return compiled
 
     def _train_step(
         self,
         state: TrainerState,
         input_batch: dict[str, Any],
     ) -> tuple[TrainerState, NestedTensor]:
-        cfg = self.config
         # Shard and (possibly) dispatch the input batch.
-        if hasattr(self.input, "dispatch_global_batch"):
-            input_batch = self.input.dispatch_global_batch(
-                input_batch, batch_axis_names=cfg.batch_axis_names
-            )
-
+        input_batch = self.input.dispatch_global_batch(input_batch)
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
 
         def train_cast(in_tree):
-            return utils.cast_floats(in_tree, to_dtype=cfg.train_dtype)
+            per_param_train_dtype = self._per_param_train_dtype(in_tree)
+            return utils.cast_floats_per_param(in_tree, per_param_train_dtype)
 
         # A nested tree of booleans.
         should_compute_gradients = self.learner.should_update_with_optimizers(state.model)
@@ -1301,3 +1321,96 @@ def select_mesh_config(trainer_config: SpmdTrainer.Config, *, mesh_selector: str
                 # Override configs from ConfigModifier.
                 mesh_rule_fn = maybe_instantiate(mesh_rule)
                 trainer_config = mesh_rule_fn(trainer_config)
+
+
+def aot_model_analysis(compiled: jax.stages.Compiled) -> str:
+    """Performs the model analysis on the AOT compiled JAX program.
+
+    Refer to https://docs.jax.dev/en/latest/jax.stages.html#jax.stages.Compiled
+
+    Note: memory_analysis() and cost_analysis() are internal statistics used by the XLA compiler,
+    and there is no official documentation for them.
+    The human-readable interpretation provided here is based on best guesses from reviewing
+    the XLA source code. If there are any inaccuracies, please update accordingly.
+    * memory_analysis:
+    https://github.com/openxla/xla/blob/101045ad079d17701986060666feda0e70d6c4cf/xla/pjrt/pjrt_executable.h#L284
+    * cost_analysis:
+    https://github.com/openxla/xla/blob/101045ad079d17701986060666feda0e70d6c4cf/xla/service/hlo_cost_analysis.h#L41
+
+    Args:
+        compiled: The compiled JAX program.
+
+    Returns:
+        memory_analysis: String, model analysis results.
+    """
+    # e.g. _CheckifyCompiledFnWrapper doesn't have memory_analysis attribute.
+    if not hasattr(compiled, "memory_analysis"):
+        return ""
+
+    def m_or_g(x, suffix=""):
+        if x is None:
+            return None
+        m = 1024**2
+        g = 1024**3
+        if x > g:
+            return f"{x / g:.1f}G{suffix}"
+        else:
+            return f"{x / m:.1f}M{suffix}"
+
+    mb_or_gb = lambda x: m_or_g(x, "B")
+    analysis_results = ""
+    mem_stats = compiled.memory_analysis()
+    # According to the doc, some platforms may not support it.
+    if mem_stats is not None:
+        analysis_results += "======= Memory Analysis ==================================\n"
+        try:
+            total_hbm = (
+                mem_stats.argument_size_in_bytes
+                + mem_stats.output_size_in_bytes
+                + mem_stats.temp_size_in_bytes
+                + mem_stats.generated_code_size_in_bytes
+            )
+            analysis_results += (
+                f"Input memory: {mb_or_gb(mem_stats.argument_size_in_bytes)}\n"
+                + f"Output memory: {mb_or_gb(mem_stats.output_size_in_bytes)}\n"
+                + f"Temp memory: {mb_or_gb(mem_stats.temp_size_in_bytes)}\n"
+                + f"Code memory: {mb_or_gb(mem_stats.generated_code_size_in_bytes)}\n"
+                + f"Total HBM memory: {mb_or_gb(total_hbm)}\n"
+            )
+        except AttributeError as e:
+            # Some platforms may return different format.
+            analysis_results += f"{mem_stats}\n"
+            logging.warning("Attempt to parse mem_stats=%s failed: %s", mem_stats, e)
+
+    cost_stats = compiled.cost_analysis()
+    analysis_results += "======= Cost Analysis ====================================\n"
+    # According to the doc, some platforms may not support it.
+    if cost_stats and isinstance(cost_stats, list):
+        cost_stats = cost_stats[0]
+    if cost_stats and isinstance(cost_stats, dict):
+        analysis_results += (
+            f"FLOPS: {m_or_g(cost_stats.get('flops'))}\n"
+            + f"The number of exp/log/sin/cos ops: {m_or_g(cost_stats.get('transcendentals'))}\n"
+            + f"The total memory traffic: {mb_or_gb(cost_stats.get('bytes accessed'))}\n"
+            + f"  HBM access: {mb_or_gb(cost_stats.get('bytes accessed0{}'))}\n"
+            + f"  L2 cache access: {mb_or_gb(cost_stats.get('bytes accessed1{}'))}\n"
+            + f"  Register usage: {mb_or_gb(cost_stats.get('bytes accessed2{}'))}\n"
+            + f"  Output data transferred: {mb_or_gb(cost_stats.get('bytes accessedout{}'))}\n"
+            + "Hardware utilization scores\n"
+            + f"  Tensor Cores / MatMul units: {cost_stats.get('utilization0{}')}\n"
+            + f"  ALU (Arithmetic Logic Unit): {cost_stats.get('utilization1{}')}\n"
+            + f"  Memory Load/Store Units: {cost_stats.get('utilization2{}')}\n"
+            + f"  L1 Cache Operations: {cost_stats.get('utilization3{}')}\n"
+            + f"  L2 Cache Operations: {cost_stats.get('utilization4{}')}\n"
+            + f"  Special Function Units (exp/log/sin/cos): {cost_stats.get('utilization5{}')}\n"
+            + f"  Integer Units (for indexing, loop counters): {cost_stats.get('utilization6{}')}\n"
+            + f"  Branch Divergence (Control Flow Processing): {cost_stats.get('utilization7{}')}\n"
+            + f"  Load Balancing / Dispatch): {cost_stats.get('utilization8{}')}\n"
+            + f"  Texture Units (or Rarely Used Compute Units): {cost_stats.get('utilization9{}')}"
+        )
+    else:
+        # Some platforms may return different format unlike CPU, TPU (v5p) and GPU (H100).
+        analysis_results += f"{cost_stats}\n"
+        logging.warning("Attempt to parse cost_stats=%s but failed.", cost_stats)
+
+    return analysis_results

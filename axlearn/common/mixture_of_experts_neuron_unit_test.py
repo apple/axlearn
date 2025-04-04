@@ -9,11 +9,10 @@
 # google/praxis:
 # Copyright 2022 The Pax Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
-"""Integration Test for mixture_of_experts.py"""
+"""Unit Test for mixture_of_experts.py"""
 from functools import partial
 
 import jax
-import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 
 from axlearn.common.module import functional as F
@@ -22,7 +21,6 @@ from axlearn.common.utils_neuron import TestConfig
 from axlearn.common.utils_neuron import get_training_configs
 
 test_configs = get_training_configs(is_unit=True)
-print(test_configs)
 
 # pylint: disable=no-self-use,protected-access
 class TestImplCorrectnessUnit(TestCase):
@@ -39,20 +37,22 @@ class TestImplCorrectnessUnit(TestCase):
     @parameterized.named_parameters(test_configs)
     def test_fwd_correctness(self, cfg: TestConfig):
 
-        @partial(jax.jit, out_shardings=cfg.out_shard_test) # cannot specify both backend and sharding together
-        def test_fwd_call():
-            test_output, _ = self._fwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
+        cfg.instantiate()
+
+        @partial(jax.jit, static_argnums=0) 
+        def test_fwd_call(test_layer, test_state, test_inputs):
+            test_output, _ = self._fwd_call(test_layer, test_state, test_inputs)
             return test_output
 
-        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
-        def golden_fwd_call():
-            golden_output, _ =  self._fwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
+        @partial(jax.jit, static_argnums=0)
+        def golden_fwd_call(golden_layer, golden_state, golden_inputs):
+            golden_output, _ =  self._fwd_call(golden_layer, golden_state, golden_inputs)
             return golden_output
 
         with cfg.mesh_test:
-            test_output = test_fwd_call()
+            test_output = test_fwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
         with cfg.mesh_golden:
-            golden_output = golden_fwd_call()
+            golden_output = golden_fwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
 
         if cfg.conv_output != None:
             test_output = cfg.conv_output(test_output)
@@ -64,28 +64,30 @@ class TestImplCorrectnessUnit(TestCase):
     @parameterized.named_parameters(test_configs)
     def test_bwd_correctness(self, cfg: TestConfig):
 
-        @partial(jax.jit, out_shardings=cfg.out_shard_test)
-        def test_bwd_call():
+        cfg.instantiate()
+
+        @partial(jax.jit, static_argnums=0) 
+        def test_bwd_call(test_layer, test_state, test_inputs):
             def loss_fn(state):
-                test_output, _ = self._fwd_call(cfg.test_layer, state, cfg.test_inputs)
+                test_output, _ = self._fwd_call(test_layer, state, test_inputs)
                 return cfg.loss_fn(test_output)
             
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.test_state)
+            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(test_state)
             return  loss, grads
 
-        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
-        def golden_bwd_call():
+        @partial(jax.jit, static_argnums=0)
+        def golden_bwd_call(golden_layer, golden_state, golden_inputs):
             def loss_fn(state):
-                golden_output, _ = self._fwd_call(cfg.golden_layer, state, cfg.golden_inputs)
+                golden_output, _ = self._fwd_call(golden_layer, state, golden_inputs)
                 return cfg.loss_fn(golden_output)
             
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.golden_state)
+            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(golden_state)
             return loss, grads
 
         with cfg.mesh_test:
-            test_loss, test_grads = test_bwd_call()
+            test_loss, test_grads = test_bwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
         with cfg.mesh_golden:
-             golden_loss, golden_grads = golden_bwd_call()
+             golden_loss, golden_grads = golden_bwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
 
         # Transfer results to CPU before comparison
         test_loss = jax.tree_map(jax.device_get, test_loss)

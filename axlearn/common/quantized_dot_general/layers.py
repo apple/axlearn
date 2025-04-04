@@ -31,9 +31,10 @@ from jax import numpy as jnp
 from jax.lax import DotDimensionNumbers, Precision
 from jax.typing import DTypeLike
 
-from axlearn.common.base_layer import BaseLayer
+from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import config_class
 from axlearn.common.module import Module
+from axlearn.common.param_init import constant_initializer
 from axlearn.common.quantized_dot_general.activation_clipping import BaseActivationClippingLayer
 from axlearn.common.quantized_dot_general.utils import (
     is_einsum_swapped_operands,
@@ -63,6 +64,23 @@ class ClippingChoice(Enum):
     OUTPUT_ACTIVATION = 1
 
 
+# TODO(hanzhi-zhou): use StrEnum once we upgrade to Python 3.11.
+class FP8ScaleParams(Enum):
+    INPUT_SCALE = "input_scale"
+    KERNEL_SCALE = "kernel_scale"
+    OUTPUT_GRADE_SCALE = "output_grad_scale"
+
+
+class FP8AmaxHistoryParams(Enum):
+    INPUT_AMAX_HISTORY = "input_amax_history"
+    KERNEL_AMAX_HISTORY = "kernel_amax_history"
+    OUTPUT_GRAD_AMAX_HISTORY = "output_grad_amax_history"
+
+
+def get_all_fp8_param_names():
+    return [x.value for x in FP8ScaleParams] + [x.value for x in FP8AmaxHistoryParams]
+
+
 class QuantizedDotGeneral(BaseLayer):
     """Hardware accelerated quantized dot general layer.
 
@@ -80,12 +98,20 @@ class QuantizedDotGeneral(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
+        """Configures QuantizedDotGeneral."""
+
         # Type of quantization.
         quantization_type: Optional[DotGeneralQuantizationType] = None
         # Activation clipping method. Only necessary for int8 quantization.
         activation_clipping: Optional[BaseActivationClippingLayer.Config] = None
         # Which tensor to apply clipping to. Defaults to input activation.
         clipping_choice: ClippingChoice = ClippingChoice.INPUT_ACTIVATION
+        # The length of the absolute maximum (amax) history for fp8 delayed scaling in which the
+        # scaling factor is computed based on the amax stats from prior iterations. If set to
+        # 0, None or negative, in-batch scaling will be used, and the scaling factor is computed
+        # from the activations of the current iteration. For more details, see
+        # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/fp8_primer.html
+        fp8_amax_history_length: Optional[int] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -113,11 +139,15 @@ class QuantizedDotGeneral(BaseLayer):
             self.lhs_act_dot_general: DotGeneral = lhs_activation_aqt_config()
             # Dot general with mirrored config where lhs and rhs are swapped.
             self.rhs_act_dot_general: DotGeneral = rhs_activation_aqt_config()
+            if cfg.fp8_amax_history_length is not None:
+                raise ValueError(
+                    "fp8_amax_history_length should not be specified when using "
+                    "Int8 quantization."
+                )
         elif cfg.quantization_type == DotGeneralQuantizationType.FP_8:
             # TODO(jiarui): Is there a way to identify if we are running on H100?
             if jax.default_backend() != "gpu":
                 raise NotImplementedError("Fp8 quantization is only available on H100 GPU")
-            raise NotImplementedError("Fp8 quantization on GPU is not yet implemented")
         elif cfg.quantization_type is not None:
             raise KeyError(
                 f"Unrecognized quantization type {cfg.quantization_type}. "
@@ -127,6 +157,29 @@ class QuantizedDotGeneral(BaseLayer):
         # Init activation clipping.
         if cfg.activation_clipping is not None:
             self._add_child("activation_clipping", cfg.activation_clipping)
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        specs = super()._create_layer_parameter_specs()
+        cfg: QuantizedDotGeneral.Config = self.config
+        if cfg.quantization_type == DotGeneralQuantizationType.FP_8:
+            scale_spec = ParameterSpec(
+                shape=(),
+                dtype=jnp.float32,
+                mesh_axes=(),
+                initializer=constant_initializer(1.0),
+                weight_decay_scale=0,
+            )
+            specs.update({k.value: scale_spec for k in FP8ScaleParams})
+            if cfg.fp8_amax_history_length is not None and cfg.fp8_amax_history_length > 0:
+                amax_spec = ParameterSpec(
+                    shape=[cfg.fp8_amax_history_length],
+                    dtype=jnp.float32,
+                    mesh_axes=(None,),
+                    initializer=constant_initializer(0.0),
+                    weight_decay_scale=0,
+                )
+                specs.update({k.value: amax_spec for k in FP8AmaxHistoryParams})
+        return specs
 
     def _dot_general_maybe_quantized(
         self,
@@ -166,7 +219,7 @@ class QuantizedDotGeneral(BaseLayer):
             the ``lhs`` non-contracting/non-batch dimensions, and finally the ``rhs``
             non-contracting/non-batch dimensions.
         """
-        cfg = self.config
+        cfg: QuantizedDotGeneral.Config = self.config
         # Choose between quantization options.
         # Assumes that config and hardware pairing is already validated in __init__.
         if cfg.quantization_type is None:
@@ -192,12 +245,59 @@ class QuantizedDotGeneral(BaseLayer):
                 preferred_element_type=preferred_element_type,
             )
         elif cfg.quantization_type == DotGeneralQuantizationType.FP_8:
-            raise NotImplementedError("Fp8 quantization on GPU is not yet implemented")
+            fn = (
+                self._fp8_dot_delayed_scaling
+                if cfg.fp8_amax_history_length
+                else self._fp8_dot_in_batch_scaling
+            )
+            return fn(
+                lhs,
+                rhs,
+                dimension_numbers=dimension_numbers,
+                precision=precision,
+                preferred_element_type=preferred_element_type,
+            )
         else:
             raise KeyError(
                 f"Unrecognized quantization type {cfg.quantization_type}. "
                 f"Available types {list(DotGeneralQuantizationType)}"
             )
+
+    # pylint: disable=unused-argument
+    def _fp8_dot_in_batch_scaling(
+        self, lhs, rhs, dimension_numbers, precision, preferred_element_type
+    ):
+        # Use delayed import to avoid global dependency on flax.linen.
+        # pylint: disable-next=import-outside-toplevel
+        from axlearn.common.quantized_dot_general import fp8_ops
+
+        logging.log_first_n(logging.INFO, "Using fp8 in-batch scaling.", n=1)
+        return fp8_ops.q_dot_dq_in_batch(
+            lhs,
+            rhs,
+            *(self.parameters[x.value] for x in FP8ScaleParams),
+            dimension_numbers,
+            preferred_element_type=preferred_element_type,
+        )
+
+    def _fp8_dot_delayed_scaling(
+        self, lhs, rhs, dimension_numbers, precision, preferred_element_type
+    ):
+        # Use delayed import to avoid global dependency on flax.linen.
+        # pylint: disable-next=import-outside-toplevel
+        from axlearn.common.quantized_dot_general import fp8_ops
+
+        logging.log_first_n(logging.INFO, "Using fp8 delayed scaling.", n=1)
+        return fp8_ops.q_dot_dq_delayed(
+            lhs,
+            rhs,
+            *(self.parameters[x.value] for x in FP8ScaleParams),
+            *(self.parameters[x.value] for x in FP8AmaxHistoryParams),
+            preferred_element_type,
+            dimension_numbers,
+            precision,
+            preferred_element_type=preferred_element_type,
+        )
 
     def einsum_maybe_quantized(self, subscripts, *, activation: Tensor, kernel: Tensor) -> Tensor:
         """jnp.einsum which uses hardware accelerated quantization if applicable.

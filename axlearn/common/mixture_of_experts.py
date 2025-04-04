@@ -72,7 +72,7 @@ def down_proj(x, wo_weight):
 @partial(jax.jit, static_argnums=(0,))
 def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
     # Expected shapes:
-    # permuted_output: (O, G, E, M)
+    # permuted_output: (O, G, E*C, M)
     # token_permutation_idx: (O, G, S, K)
     # expert_index: (O, G, S, K)
     # expert_affinities_masked: (O, G, S, E)
@@ -102,8 +102,9 @@ def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, e
 
     # Sum across the top-k dimension
     combined_output = jnp.sum(weighted_output_k, axis=3)  # Shape: (O, G, S, M)
+    dest_output = dest_output.at[0].set(combined_output)  # Shape: (1, O, G, S, M)
 
-    return combined_output
+    return dest_output
 
 def _router_z_loss(logits: Tensor) -> Tensor:
     """Loss that encourages router logits to remain small and improves stability.
@@ -751,90 +752,6 @@ class TopKGatingGather(TopKGating):
     
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
-    
-    @staticmethod
-    def cumsum_4d_matmul(x: jnp.ndarray, axis: int = -1, tril_size: int = 2048):
-        """Efficient cumsum implementation using triangular matrix multiplication.
-        This only works for inputs of dtype int32.
-
-        Args:
-            x: Input array of shape (d0, d1, d2, d3)
-            axis: Axis along which to compute cumsum (0-3)
-            tril_size: Size of triangular matrix for tiling
-        Returns:
-            Array of same shape with cumulative sum along specified axis
-        """
-        assert x.dtype == jnp.int32, f"cumsum_4d_matmul expected int32, got {x.dtype}"
-
-        if axis < 0:
-            axis = x.ndim + axis
-
-        # Create triangular matrix once
-        tril = jnp.tril(jnp.ones((tril_size, tril_size), dtype=jnp.int32))
-
-        # Move the target axis to first position
-        if axis != 0:
-            perm = list(range(4))
-            perm[0], perm[axis] = perm[axis], perm[0]
-            x = jnp.transpose(x, perm)
-        # Get shapes
-        axis_size = x.shape[0]
-        batch_size = np.prod(x.shape[1:])
-
-        # Reshape to 2D for efficient matmul
-        x_2d = x.reshape(axis_size, batch_size)
-
-        # Process data based on size
-        if axis_size <= tril_size:
-            # Single matmul for small sizes
-            tril_slice = lax.dynamic_slice(
-                tril,
-                (0, 0),
-                (axis_size, axis_size)
-            )
-            result = jnp.matmul(tril_slice, x_2d, precision=lax.Precision.HIGHEST)
-        else:
-            # Process in tiles
-            num_full_tiles = axis_size // tril_size
-            remainder_size = axis_size % tril_size
-
-            # Process full tiles with rolling sum
-            full_tiles = x_2d[:num_full_tiles * tril_size].reshape(
-                num_full_tiles, tril_size, batch_size
-            )
-
-            def process_tile(rolling_sum, x_tile):
-                output = rolling_sum + jnp.matmul(tril, x_tile, precision=lax.Precision.HIGHEST)
-                # Last row becomes new rolling sum
-                new_rolling_sum = output[-1:, :]
-                return new_rolling_sum, output
-
-            rolling_sum = jnp.zeros((1, batch_size), dtype=full_tiles.dtype)
-            last_rolling_sum, results = jax.lax.scan(process_tile, rolling_sum, full_tiles)
-            result = results.reshape(-1, batch_size)
-
-            # Process remainder if any
-            if remainder_size > 0:
-                x_remainder = x_2d[num_full_tiles * tril_size :]
-                tril_remainder = tril[:remainder_size, :remainder_size]
-                remainder_result = last_rolling_sum + jnp.matmul(
-                    tril_remainder, x_remainder, precision=lax.Precision.HIGHEST
-                )
-
-                # Concatenate remainder
-                result = jnp.concatenate([result, remainder_result], axis=0)
-
-        # Reshape back to 4D
-        result = result.reshape(x.shape)
-
-        # Transpose back if necessary
-        if axis != 0:
-            inv_perm = [0] * 4
-            for i, p in enumerate(perm):
-                inv_perm[p] = i
-            result = jnp.transpose(result, inv_perm)
-
-        return result
 
     @staticmethod
     def compute_expert_mask(expert_index, num_experts):
@@ -1029,7 +946,7 @@ class TopKGatingGather(TopKGating):
         with jax.named_scope("expert_index"):
             # Compute expert indices based on affinities
             # top_k happens on last axis of operand, so the expert axis
-            k = min(cfg.top_k, cfg.num_experts)
+            k = min(int(cfg.top_k), int(cfg.num_experts))
             _, expert_index = jax.lax.top_k(raw_gates, k)
             # expert_index: (O, G, S, top_k)
             expert_index = expert_index.astype(jnp.int32)
@@ -1054,8 +971,7 @@ class TopKGatingGather(TopKGating):
             # cumsum over S dim
             # position_in_expert: [O, G, S*topk, E]
             expert_mask = expert_mask.astype(jnp.int32)
-            position_in_expert = self.cumsum_4d_matmul(expert_mask, axis=-2).astype(jnp.float64)
-            
+            position_in_expert = _cum_sum(expert_mask, axis=-2).astype(jnp.float64)
             expert_mask_pre_capacity_drop = expert_mask
             expert_mask_k_pre_capacity_drop = expert_mask_pre_capacity_drop.reshape(O, G, k, S, E)
             expert_mask_k_pre_capacity_drop = jnp.sum(expert_mask_k_pre_capacity_drop, axis=2)
@@ -1340,6 +1256,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # O may be lower than fsdp axis
         # TODO(huilgolr): what to do here
 
+        x = with_sharding_constraint(x, PartitionSpec(("data", "fsdp"), "expert", None))
         with jax.named_scope("router"):
             logits = jnp.einsum("ogsm,me->ogse", x, self.parameters["gate_weight"])
 
@@ -1382,13 +1299,15 @@ class TransformerFeedForwardMoE(BaseLayer):
                         down_proj, 
                         mesh=thread_resources.env.physical_mesh,
                         in_specs=(
-                            PartitionSpec(("data", "fsdp"), "expert", None, None, "model"),
-                            PartitionSpec("expert", "model", None),
+                            cfg.dim_to_mesh_axis_map["oegch"],
+                            cfg.dim_to_mesh_axis_map["ehM"],
                         ),
-                        out_specs=PartitionSpec(("data", "fsdp"), "expert", None, None, None),
+                        out_specs=cfg.dim_to_mesh_axis_map["oegcM"],
                         check_rep=False
                     )
                     x = down_proj_sm(x, self.parameters["wo_weight"])
+                    x = self._remat_name(x, f"linear2")
+
                 x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcM"])
                 x = jnp.einsum("oegcm->ogecm", x)
                 x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecM"])
@@ -1418,9 +1337,9 @@ class TransformerFeedForwardMoE(BaseLayer):
                             cfg.dim_to_mesh_axis_map["ogse"],
                             cfg.dim_to_mesh_axis_map["ogse"],
                             cfg.dim_to_mesh_axis_map["ogse"],
-                            PartitionSpec("model", ("data", "fsdp"), "expert", None, None),
+                            cfg.dim_to_mesh_axis_map["hoesm"],
                         ),
-                        out_specs=PartitionSpec("model", ("data", "fsdp"), "expert", None, None),
+                        out_specs=cfg.dim_to_mesh_axis_map["hoesm"],
                         check_rep=False
                     )
                     output = combine_outputs_sm(
@@ -1481,6 +1400,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                 x_i = jnp.einsum("oegcm,emh->oegch", x, self.parameters[f"wi_{i}_weight"])
                 x_i = with_sharding_constraint(x_i, cfg.dim_to_mesh_axis_map["oegch"])
                 x_i = get_activation_fn(activation)(x_i)
+                x = self._remat_name(x, f"linear1_{i}")
                 activations.append(x_i)
             assert len(activations) == 2, cfg.activation
             return activations[0] * activations[1]

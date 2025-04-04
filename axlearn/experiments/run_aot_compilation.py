@@ -1,18 +1,31 @@
 # Copyright © 2023 Apple Inc.
 
-"""A command-line tool to perform AoT (ahead-of-time) compilation.
+"""A command-line tool to perform AoT (ahead-of-time) compilation on CPU using the JAX TPU library.
+
+And it prints useful information.
+Note: jax[tpu] doesn't support MacOS (as of 2025/03/05).
+Note: If --topology=cpu-<digit> (e.g. cpu-1024) is used, installing the JAX TPU library is not
+    required. AOT is performed using the JAX CPU library instead.
 
 pip install 'jax[tpu]==0.4.28' -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
 python -m axlearn.experiments.run_aot_compilation \
     --module=axlearn.experiments.text.gpt.c4_trainer \
-    --config=fuji-7B \
+    --config=fuji-1B-v3 \
     --topology=v4-1024 1> /tmp/aot_stdout
 
+For CPU fallback,
+XLA_FLAGS=--xla_dump_to=/tmp/aot_xla_dump \
 python -m axlearn.experiments.run_aot_compilation \
     --module=axlearn.experiments.text.gpt.c4_trainer \
-    --config=fuji-7B \
+    --config=fuji-1B-v3 \
+    --topology=cpu-1024 1> /tmp/aot_stdout
+
+For TPU slices,
+python -m axlearn.experiments.run_aot_compilation \
+    --module=axlearn.experiments.text.gpt.c4_trainer \
+    --config=fuji-1B-v3 \
     --topology=v5e-256 --topology_num_slices=4 1> /tmp/aot_stdout
 
 Reference: https://jax.readthedocs.io/en/latest/aot.html
@@ -20,20 +33,20 @@ Reference: https://jax.readthedocs.io/en/latest/aot.html
 import pickle
 from typing import Optional
 
-import prefixed
+import chex
+import jax
 from absl import app, flags, logging
 from jax.experimental.serialize_executable import serialize
 
-from axlearn.common import compiler_options
-from axlearn.common.aot_compilation import compile_trainer_programs
-from axlearn.common.trainer import SpmdTrainer, select_mesh_config
+from axlearn.common import aot_compilation, compiler_options
+from axlearn.common.trainer import SpmdTrainer, aot_model_analysis, select_mesh_config
 from axlearn.common.utils import set_data_dir
 from axlearn.common.utils_spmd import setup
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
 flags.DEFINE_string("module", None, "The trainer config module.", required=True)
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
-flags.DEFINE_string("topology", None, "The TPU topology.")
+flags.DEFINE_string("topology", None, "The TPU topology.", required=True)
 flags.DEFINE_integer("topology_num_slices", 1, "The number of TPU slices.")
 flags.DEFINE_string(
     "data_dir", "FAKE", "Sets the environment variable `DATA_DIR` to the given `data_dir`."
@@ -53,32 +66,25 @@ def _compile_and_dump_programs(
     compile_topology: Optional[str],
     compile_topology_num_slices: int = 1,
 ):
-    programs = compile_trainer_programs(
-        trainer_config,
-        topology=compile_topology,
-        topology_num_slices=compile_topology_num_slices,
-        compiler_options=compiler_options.default_xla_options(
+    if compile_topology is not None:
+        xla_options = compiler_options.default_xla_options(
             instance_type=f"tpu-{compile_topology}",
             num_slices=compile_topology_num_slices,
             backend="tpu",
-        ),
+        )
+    else:
+        xla_options = None
+    programs = aot_compilation.compile_trainer_programs(
+        trainer_config,
+        topology=compile_topology,
+        topology_num_slices=compile_topology_num_slices,
+        compiler_options=xla_options,
     )
     for program_name, program in programs.items():
         print(f"== Text: {program_name} ==")
         print(program.as_text())
         print()
-        print(f"== Cost analysis {program_name} ==")
-        print(program.cost_analysis())
-        print()
-        print(f"== Memory analysis {program_name} ==")
-        memory_analysis = program.memory_analysis()
-        for k in dir(memory_analysis):
-            v = getattr(memory_analysis, k)
-            if k.startswith("_"):
-                continue
-            if "bytes" in k:
-                v = f"{prefixed.Float(v):!.3K}B"
-            print(f"\t{k}: {v}")
+        print(aot_model_analysis(program))
         print()
 
         # Serialization does not work for CPU devices:
@@ -99,10 +105,19 @@ def main(_):
             config_module=FLAGS.module,
         )
         cfg: SpmdTrainer.Config = trainer_config_fn()
-        select_mesh_config(cfg, mesh_selector=_mesh_selector(FLAGS.topology))
+        if FLAGS.topology.startswith("cpu-"):
+            jax.config.update("jax_threefry_partitionable", True)
+            n_cpus = FLAGS.topology.split("-")[1]
+            if not n_cpus.isdigit():
+                raise ValueError(f"{FLAGS.topology} must be `cpu-digit` format for CPU fallback.")
+            chex.set_n_cpu_devices(int(n_cpus))
+            compile_topology = None
+        else:
+            select_mesh_config(cfg, mesh_selector=_mesh_selector(FLAGS.topology))
+            compile_topology = FLAGS.topology
         _compile_and_dump_programs(
             cfg,
-            compile_topology=FLAGS.topology,
+            compile_topology=compile_topology,
             compile_topology_num_slices=FLAGS.topology_num_slices,
         )
 

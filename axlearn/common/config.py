@@ -807,6 +807,7 @@ class Configurable:
 
     @property
     def config(self: C) -> Config[C]:
+        # TODO(markblee): Consider supporting copy-on-write behavior.
         return copy.deepcopy(self._config)
 
     def __repr__(self):

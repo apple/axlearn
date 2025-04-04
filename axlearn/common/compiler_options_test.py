@@ -31,7 +31,7 @@ class CompilerOptionsTest(test_utils.TestCase):
 
     def test_xsc_compiler_options(self):
         options = compiler_options.infer_xsc_compiler_options(
-            halt_on_detection=False, repeat_count=2, replicate_llo=True
+            halt_on_detection=False, repeat_count=2, device_kind="TPU v6e"
         )
         expected_options = dict(
             xla_tpu_enable_sdc_checker=True,
@@ -55,3 +55,29 @@ class CompilerOptionsTest(test_utils.TestCase):
     )
     def test_tpu_version_alias(self, tpu_type: str, expected: str):
         self.assertEqual(expected, compiler_options.infer_tpu_version(tpu_type))
+
+    def test_xla_performance_flags(self):
+        self.assertEqual(
+            {},
+            compiler_options.infer_xla_performance_flags(
+                mesh_shape=[4, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v6 lite"
+            ),
+        )
+        self.assertNotEqual(
+            {},
+            compiler_options.infer_xla_performance_flags(
+                mesh_shape=[64, 4], mesh_axis_names=("fsdp", "model"), device_kind="TPU v6 lite"
+            ),
+        )
+        self.assertNotEqual(
+            {},
+            compiler_options.infer_xla_performance_flags(
+                mesh_shape=[32, 8], mesh_axis_names=("fsdp", "model"), device_kind="TPU v6 lite"
+            ),
+        )
+        self.assertEqual(
+            {},
+            compiler_options.infer_xla_performance_flags(
+                mesh_shape=[64, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v5p"
+            ),
+        )

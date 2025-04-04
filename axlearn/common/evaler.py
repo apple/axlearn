@@ -15,6 +15,7 @@ import jax
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
+from jax.sharding import PartitionSpec
 
 from axlearn.common import input_base, struct, summary_writer, utils
 from axlearn.common.base_model import BaseModel
@@ -188,11 +189,11 @@ class BaseMetricCalculator(Module):
             in_shardings=(
                 self._model_param_partition_specs,  # model_params.
                 None,  # replicated_inputs (e.g., prng_key).
-                utils.input_partition_spec(),  # per_example_inputs.
+                self._input_partition_spec(),  # per_example_inputs.
             ),
             out_shardings=dict(
                 replicated=None,
-                per_example=utils.input_partition_spec(),
+                per_example=self._input_partition_spec(),
             ),
         )
 
@@ -239,6 +240,14 @@ class BaseMetricCalculator(Module):
             inputs=model_inputs,
             is_training=False,
         )
+
+    def _input_partition_spec(self) -> PartitionSpec:
+        module = self.parent
+        while module is not None and not isinstance(module, SpmdEvaler):
+            module = module.parent
+        if module is not None and hasattr(module.input, "partition_spec"):
+            return module.input.partition_spec
+        return utils.input_partition_spec()
 
     def _dispatch_global_batch(self, input_batch: NestedTensor) -> NestedTensor:
         module = self.parent
@@ -592,7 +601,9 @@ class SpmdEvaler(Module):
         if cfg.eval_dtype is not None:
             utils.validate_float_dtype(cfg.eval_dtype)
 
-        self._add_child("input", maybe_set_config(cfg.input, is_training=False))
+        self.input: input_base.Input = self._add_child(  # pytype: disable=annotation-type-mismatch
+            "input", maybe_set_config(cfg.input, is_training=False)
+        )
         self._add_child(
             "metric_calculator",
             cfg.metric_calculator.set(eval_dtype=cfg.eval_dtype),
@@ -691,7 +702,10 @@ class SpmdEvaler(Module):
 
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
                 with jax.profiler.TraceAnnotation(f"{cfg.name}.forward"):
-                    global_input_batch = utils.host_to_global_device_array(input_batch)
+                    global_input_batch = utils.host_to_global_device_array(
+                        input_batch,
+                        partition=self.input.partition_spec,
+                    )
                     forward_outputs = self.metric_calculator.forward(
                         global_input_batch,
                         model_params=model_params,

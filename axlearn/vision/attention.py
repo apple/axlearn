@@ -241,7 +241,8 @@ class WindowedAttention(MultiheadAttention):
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
-        kv_state = KVState(k_proj=k_proj, v_proj=v_proj)
+        key_positions = jnp.arange(k_proj.shape[1])[None]
+        kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
         return_aux = return_aux or set()
         return self.Output(
             data=outputs,

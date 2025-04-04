@@ -15,10 +15,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
 from axlearn.common.config import REQUIRED, ConfigBase, ConfigModifier, Required, config_class
-from axlearn.common.flash_attention.utils import (
-    MultiHeadAttentionImpl,
-    flash_attention_implementation,
-)
+from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor, with_sharding_constraint
 
@@ -159,13 +156,11 @@ class FlashAttention(GroupedQueryAttention):
         cfg: FlashAttention.Config = self.config
         backend = self._backend()
 
+        orig_k_proj = k_proj
+        orig_v_proj = v_proj
         # Repeats key/value heads dim if necessary.
         k_proj = self._maybe_repeat_kv_heads(k_proj)
         v_proj = self._maybe_repeat_kv_heads(v_proj)
-
-        batch, target_len, num_heads, _ = q_proj.shape
-        _, source_len, _, _ = k_proj.shape
-
         attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
         # Note: prefill (INIT_STATE) is not is_decoding because query and key have the same shape.
@@ -173,13 +168,30 @@ class FlashAttention(GroupedQueryAttention):
         # an extend_step even if we aren't in decoding. A more robust method could instead directly
         # look at whether we need gradients or not, which could be done by adding a custom_vjp.
         is_decoding = mode == ForwardMode.EXTEND_STEP
-        jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
+        jit_attn = flash_attention_implementation(
             backend=backend,
+            query=q_proj,
+            key=k_proj,
+            value=v_proj,
+            bias=attention_logit_biases,
             softmax_scale=1.0,
             is_decoding=is_decoding,
-            block_size=cfg.tpu_block_size,
+            # TODO(hanzhi-zhou): Refactor backend specific config passing.
+            tpu_block_size=cfg.tpu_block_size,
             dropout_rate=cfg.dropout.rate,
         )
+        if jit_attn is None:
+            # Fall back to standard attention if no backend kernels are supported.
+            return super()._compute_attention(
+                mode=mode,
+                q_proj=q_proj,
+                k_proj=orig_k_proj,
+                v_proj=orig_v_proj,
+                attention_logit_biases=attention_logit_biases,
+            )
+
+        batch, target_len, num_heads, _ = q_proj.shape
+        _, source_len, _, _ = k_proj.shape
 
         attention_logit_biases_spec = self._logit_biases_spec(attention_logit_biases)
         attention_logit_biases = with_sharding_constraint(

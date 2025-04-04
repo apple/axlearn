@@ -2,7 +2,9 @@
 
 """Tests language modeling inputs."""
 
+import functools
 import os
+from typing import Callable
 
 import grain.python as grain
 import numpy as np
@@ -16,8 +18,10 @@ from axlearn.common.input_grain_lm import (
     _drop_empty_targets,
     _make_autoregressive_inputs,
     _trim_or_pad_and_batch,
+    streaming_packing,
     text_to_lm_eval_input,
     text_to_lm_training_input,
+    windowed_packing,
 )
 from axlearn.common.input_grain_text import with_regex_mapping
 from axlearn.common.input_grain_text_test import t5_sentence_piece_vocab_file
@@ -26,6 +30,85 @@ from axlearn.common.test_utils import TestCase
 
 class MakeAutoregressveInputsTest(TestCase):
     """Tests `make_autoregressive_inputs`."""
+
+    def _test_checkpointing(self, ds: grain.DatasetIterator):
+        """Utility to test ds checkpointing."""
+
+        max_steps = 10
+        values_without_interruption: list[dict] = []
+        checkpoints = []
+
+        for _ in range(max_steps):
+            checkpoints.append(ds.get_state())
+            values_without_interruption.append(next(ds))
+
+        def check(starting_step, ds):
+            for i in range(starting_step, max_steps):
+                actual = next(ds)
+                expected = values_without_interruption[i]
+                for k, v in expected.items():
+                    self.assertNestedEqual(v, actual[k])
+
+        # Try resuming from an existing iterator, to ensure that entire state is reset.
+        for starting_step in range(max_steps):
+            ds.set_state(checkpoints[starting_step])  # Restore using the same iterator as above.
+            check(starting_step, ds)
+
+        # Try resuming from a fresh iterator from any step and validate that outcome is the same.
+        for starting_step in range(max_steps):
+            ds = iter(ds)
+            ds.set_state(checkpoints[starting_step])
+            check(starting_step, ds)
+
+    @parameterized.parameters(
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25]),
+                np.array([7, 8, 9]),
+                np.array([71, 25, 323]),
+            ],
+            max_len=2,
+            window_size=3,
+            packing_fn=streaming_packing,
+            max_padding_fraction=0.5,
+        ),
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3]),
+                np.array([7, 8]),
+                np.array([1, 2]),
+                np.array([10, 10]),
+                np.array([9, 2]),
+                np.array([4, 4]),
+                np.array([9, 9]),
+                np.array([42, 41]),
+                np.array([16, 16]),
+            ],
+            max_len=2,
+            window_size=1,
+            packing_fn=streaming_packing,
+            max_padding_fraction=0.5,
+        ),
+    )
+    def test_make_autoregressive_checkpointing(
+        self,
+        target_labels: list,
+        max_len: int,
+        window_size: int = 1,
+        packing_fn: Callable = windowed_packing,
+        max_padding_fraction: float = 1.0,
+    ):
+        """Note that there is no real "checkpoints"."""
+        split_fn = functools.partial(
+            _trim_or_pad_and_batch, max_padding_fraction=max_padding_fraction
+        )
+        ds = fake_grain_source([{"target_labels": x} for x in target_labels])
+        ds = _make_autoregressive_inputs(
+            ds, max_len=max_len, split_fn=split_fn, window_size=window_size, packing_fn=packing_fn
+        )
+        self._test_checkpointing(iter(ds))
 
     @parameterized.parameters(
         # Test a case without windowing.
@@ -96,17 +179,274 @@ class MakeAutoregressveInputsTest(TestCase):
             max_len=6,
             window_size=3,  # Does not divide number of inputs evenly.
         ),
+        # Test a case without windowing.
+        dict(
+            target_labels=[
+                np.array([10, 11, 12, 1, 21, 22, 23, 24, 1, 25]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([10, 11, 12, 1, 21, 22, 23, 24, 1, 25]),
+                    input_ids=np.array([25, 10, 11, 12, 1, 21, 22, 23, 24, 1]),
+                ),
+            ],
+            max_len=10,
+            packing_fn=streaming_packing,
+        ),
+        # No windowing, with truncating.
+        dict(
+            target_labels=[
+                np.array([10, 11, 12, 1, 21, 22, 23, 24, 1, 25]),
+            ],
+            expected=[
+                dict(
+                    input_ids=np.array([25, 10, 11, 12, 1]),
+                    target_labels=np.array([10, 11, 12, 1, 21]),
+                ),
+                dict(
+                    input_ids=np.array([21, 22, 23, 24, 1]),
+                    target_labels=np.array([22, 23, 24, 1, 25]),
+                ),
+            ],
+            max_len=5,
+            packing_fn=streaming_packing,
+        ),
+        # Windowing across ragged with padding.
+        dict(
+            target_labels=[
+                np.array([10, 11, 12, 1, 21]),
+                np.array([100, 1, 102, 103, 104, 105]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([10, 11, 12, 1, 21, 100, 1, 102]),
+                    input_ids=np.array([105, 10, 11, 12, 1, 21, 100, 1]),
+                ),
+                dict(
+                    target_labels=np.array([103, 104, 105, -1, -1, -1, -1, -1]),
+                    input_ids=np.array([102, 103, 104, -1, -1, -1, -1, -1]),
+                ),
+            ],
+            max_len=8,
+            window_size=2,  # Divides number of inputs evenly.
+            packing_fn=streaming_packing,
+        ),
+        # Windowing across ragged with padding.
+        dict(
+            target_labels=[
+                np.array([10, 11, 12, 1, 21]),
+                np.array([100, 1, 102, 103, 104, 105, 106]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([10, 11, 12, 1, 21, 100]),
+                    input_ids=np.array([105, 10, 11, 12, 1, 21]),
+                ),
+                dict(
+                    target_labels=np.array([1, 102, 103, 104, 105, 106]),
+                    input_ids=np.array([100, 1, 102, 103, 104, 105]),
+                ),
+            ],
+            max_len=6,
+            window_size=3,  # Does not divide number of inputs evenly.
+            packing_fn=streaming_packing,
+        ),
+        # One sequence that's significantly longer than max_len.
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([33, 33, 1, 3, 5, 7]),
+                    input_ids=np.array([7, 33, 33, 1, 3, 5]),
+                ),
+                dict(
+                    target_labels=np.array([9, 11, 13, 15, 17, 19]),
+                    input_ids=np.array([19, 9, 11, 13, 15, 17]),
+                ),
+                dict(
+                    target_labels=np.array([21, 23, 25, -1, -1, -1]),
+                    input_ids=np.array([-1, 21, 23, -1, -1, -1]),
+                ),
+            ],
+            max_len=6,
+            window_size=6,
+            packing_fn=streaming_packing,
+        ),
+        # Keep this example
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25]),
+                np.array([7, 8, 9]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([33, 33, 1, 3, 5, 7]),
+                    input_ids=np.array([7, 33, 33, 1, 3, 5]),
+                ),
+                dict(
+                    target_labels=np.array([9, 11, 13, 15, 17, 19]),
+                    input_ids=np.array([19, 9, 11, 13, 15, 17]),
+                ),
+                dict(
+                    target_labels=np.array([21, 23, 25, 7, 8, 9]),
+                    input_ids=np.array([9, 21, 23, 25, 7, 8]),
+                ),
+            ],
+            max_len=6,
+            window_size=3,
+            packing_fn=streaming_packing,
+            max_padding_fraction=0.5,
+        ),
+        # Drop this example.
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3, 5, 7, 9, 11, 13, 15, 17]),
+                np.array([7, 8, 9]),
+                np.array([1, 2, 3, 4, 5, 6]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([33, 33, 1, 3, 5, 7]),
+                    input_ids=np.array([7, 33, 33, 1, 3, 5]),
+                ),
+                dict(
+                    target_labels=np.array([9, 11, 13, 15, 17, 7]),
+                    input_ids=np.array([7, 9, 11, 13, 15, 17]),
+                ),
+                dict(
+                    target_labels=np.array([1, 2, 3, 4, 5, 6]),
+                    input_ids=np.array([6, 1, 2, 3, 4, 5]),
+                ),
+            ],
+            max_len=6,
+            window_size=3,
+            packing_fn=streaming_packing,
+            max_padding_fraction=0.5,
+        ),
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3]),
+                np.array([1, 2, 3, 4, 5, 6]),
+            ],
+            expected=[
+                dict(
+                    target_labels=np.array([33, 33]),
+                    input_ids=np.array([33, 33]),
+                ),
+                dict(
+                    target_labels=np.array([1, 3]),
+                    input_ids=np.array([3, 1]),
+                ),
+                dict(
+                    target_labels=np.array([1, 2]),
+                    input_ids=np.array([2, 1]),
+                ),
+                dict(
+                    target_labels=np.array([3, 4]),
+                    input_ids=np.array([4, 3]),
+                ),
+                dict(
+                    target_labels=np.array([5, 6]),
+                    input_ids=np.array([6, 5]),
+                ),
+            ],
+            max_len=2,
+            window_size=3,
+            packing_fn=streaming_packing,
+            max_padding_fraction=0.5,
+        ),
     )
     def test_make_autoregressive_inputs(
-        self, target_labels: list, expected: list, max_len: int, window_size: int = 1
+        self,
+        target_labels: list,
+        expected: list,
+        max_len: int,
+        window_size: int = 1,
+        packing_fn: Callable = windowed_packing,
+        max_padding_fraction: float = 1.0,
     ):
-        split_fn = _trim_or_pad_and_batch
+        split_fn = functools.partial(
+            _trim_or_pad_and_batch, max_padding_fraction=max_padding_fraction
+        )
         ds = fake_grain_source([{"target_labels": x} for x in target_labels])
         ds = _make_autoregressive_inputs(
-            ds, max_len=max_len, split_fn=split_fn, window_size=window_size
+            ds, max_len=max_len, split_fn=split_fn, window_size=window_size, packing_fn=packing_fn
         )
         actual = list(ds)
-        self.assertNestedEqual(expected, actual)
+        self.assertEqual(len(expected), len(actual))
+        for exp, act in zip(expected, actual):
+            self.assertNestedEqual(exp["target_labels"], act["target_labels"])
+            # The first element of input_id is rolled over from the last element of this sequence.
+            # Skipping it.
+            self.assertNestedEqual(exp["input_ids"][1:], act["input_ids"][1:])
+
+    @parameterized.parameters(
+        dict(
+            target_labels=[
+                np.array([33, 33]),
+                np.array([1, 3, 5, 7, 9, 11, 13, 15, 17]),
+                np.array([7, 8, 9]),
+                np.array([1, 2, 3, 4, 5, 6]),
+            ],
+            max_len=6,
+            window_size=3,
+            max_padding_fraction=0.5,
+        ),
+        dict(
+            target_labels=[
+                np.array([10, 11, 12, 1, 21]),
+                np.array([100, 1, 102, 103, 104, 105]),
+            ],
+            max_len=8,
+            window_size=2,  # Divides number of inputs evenly.
+        ),
+    )
+    def test_windowed_packing_streaming_packing_parity(
+        self,
+        target_labels: list,
+        max_len: int,
+        window_size: int = 1,
+        max_padding_fraction: float = 1.0,
+    ):
+        split_fn = functools.partial(
+            _trim_or_pad_and_batch, max_padding_fraction=max_padding_fraction
+        )
+        ds = fake_grain_source([{"target_labels": x} for x in target_labels])
+        ds = _make_autoregressive_inputs(
+            ds,
+            max_len=max_len,
+            split_fn=split_fn,
+            window_size=window_size,
+            packing_fn=windowed_packing,
+        )
+        windowed_packing_results = list(ds)
+        ds = fake_grain_source([{"target_labels": x} for x in target_labels])
+        ds = _make_autoregressive_inputs(
+            ds,
+            max_len=max_len,
+            split_fn=split_fn,
+            window_size=window_size,
+            packing_fn=streaming_packing,
+        )
+        streaming_packing_results = list(ds)
+        self.assertEqual(len(windowed_packing_results), len(streaming_packing_results))
+        for windowed_result, streaming_result in zip(
+            windowed_packing_results, streaming_packing_results
+        ):
+            self.assertNestedEqual(
+                windowed_result["target_labels"], streaming_result["target_labels"]
+            )
+            # The first element of input_id is rolled over from the last element of this sequence.
+            # Skipping it.
+            self.assertNestedEqual(
+                windowed_result["input_ids"][1:], streaming_result["input_ids"][1:]
+            )
 
 
 class TrimOrPadAndBatchTest(TestCase):
