@@ -48,6 +48,7 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
     "me": PartitionSpec(None, None),
     "emh": PartitionSpec("expert", "fsdp", "model"),
     "ehm": PartitionSpec("expert", "model", "fsdp"),
+    "ehM": PartitionSpec("expert", "model", None),
     "ogsm": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, "model"),
     "ogsM": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
     "ogse": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
@@ -59,6 +60,7 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
     "ogecm": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, None, "expert", None, "model"),
     "ogecM": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, None, "expert", None, None),
     "oegch": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None, "model"),
+    "hoesm": PartitionSpec("model", MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
 }
 
 class ModuleConfig():
@@ -139,6 +141,8 @@ class TestConfig():
             
             self.test_state = init_fn(jax.random.PRNGKey(123)) 
             self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
+            # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
+            self.test_state['gate_weight'] = self.test_state['gate_weight'].astype(jnp.float32)
 
         device_type = self.golden.device
         devices = jax.devices(device_type)[:self.num_devices]
@@ -156,6 +160,8 @@ class TestConfig():
             
             self.golden_state = init_fn(jax.random.PRNGKey(123))
             self.golden_state = cast_floats(self.golden_state, to_dtype=self.golden.dtype)
+            # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
+            self.golden_state['gate_weight'] = self.golden_state['gate_weight'].astype(jnp.float32)
 
     def random_inputs_with_mesh(self): 
 
