@@ -570,7 +570,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
             if cfg.reservation_project is not None:
                 selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
             labels.update({"bastion-tier": "reserved"})
-        else:
+        elif tier != "disabled":
             logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
             tolerations.append(
@@ -598,7 +598,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         if cfg.enable_pre_provisioner:
             # Used by pre-provisioner.
             selector.update({PRE_PROVISIONER_LABEL: cfg.name})
-        else:
+        elif tier != "disabled":
             # Used by GCP auto-provisioner.
             selector.update(
                 {
