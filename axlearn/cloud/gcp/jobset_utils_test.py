@@ -270,6 +270,7 @@ class TPUReplicatedJobTest(TestCase):
                     )
                 else:
                     self.assertNotIn("cloud.google.com/gke-spot", node_selector)
+                    self.assertNotIn("provisioner-nodepool-id", node_selector)
                 self.assertNotIn("cloud.google.com/reservation-name", node_selector)
 
             self.assertEqual(len(pod_spec["containers"]), 1)
