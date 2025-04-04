@@ -278,7 +278,7 @@ class GKERunnerJob(GCPJob):
                 **custom_jobset_kwargs(),
             )
 
-            tier = os.environ.get("BASTION_TIER", None)
+            tier = os.environ.get("BASTION_TIER", 0)
             reservation = _infer_reservation(resp["spec"])
             if runner_utils.should_recreate_job(tier, reservation):
                 return GKERunnerJob.Status.RESCHEDULED
@@ -396,7 +396,7 @@ class GKERunnerJob(GCPJob):
             node_pool_config = node_pool.get("config", {})
             reservation_affinity = node_pool_config.get("reservationAffinity", {})
             taints = node_pool_config.get("taints", [])
-            tier = os.environ.get("BASTION_TIER", None)
+            tier = os.environ.get("BASTION_TIER", 0)
             has_reservation = (
                 reservation_affinity.get("key") == "compute.googleapis.com/reservation-name"
                 and len(reservation_affinity.get("values", [])) > 0
