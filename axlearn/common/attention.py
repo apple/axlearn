@@ -84,9 +84,8 @@ TODO(changlan): Merge the use of `positions` and `time_step` to reduce cognitive
 import enum
 import functools
 import math
-from collections.abc import Sequence
 from enum import Enum, unique
-from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Sequence, Union
 
 import chex
 import jax
@@ -198,6 +197,9 @@ class BaseKVCache(BaseLayer):
         """Configures BaseKVCache."""
 
         # Autoregressive KV cache dtype, which the input KV is converted into.
+        # This dtype is not only used for storing the KV cache, but it also applies to
+        # the returned KV activations. Therefore, before computing attention, we need to cast
+        # the KV tensors to match the query's dtype.
         cache_dtype: Optional[jnp.dtype] = None
 
     class Output(KVState):
@@ -1899,6 +1901,8 @@ class MultiheadAttention(BaseLayer):
             and probs of shape [batch, num_heads, target_length, source_length].
         """
         del mode
+        # KV cache may cast them in lower precision.
+        k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
@@ -2248,7 +2252,9 @@ class GroupedQueryAttention(MultiheadAttention):
 class SigmoidAttention(MultiheadAttention):
     """A multi-head sigmoid-based attention layer, instead of softmax.
 
-    TODO(floris_weers): Add paper reference.
+    References:
+        Paper: https://arxiv.org/abs/2409.04431
+        PyTorch implementation: https://github.com/apple/ml-sigmoid-attention
     """
 
     @config_class
@@ -2256,6 +2262,7 @@ class SigmoidAttention(MultiheadAttention):
         """Configures SigmoidAttention."""
 
         seq_len: Required[int] = REQUIRED  # Maximum sequence length used.
+        subtract_seq_len_bias: bool = True  # Whether to subtract seq_len based bias.
 
     def _compute_attention(
         self,
@@ -2269,6 +2276,8 @@ class SigmoidAttention(MultiheadAttention):
         """See `MultiheadAttention._compute_attention` for details."""
         del mode
         cfg = self.config
+        # KV cache may cast them in lower precision.
+        k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
@@ -2276,8 +2285,10 @@ class SigmoidAttention(MultiheadAttention):
         attention_logit_biases = attention_logit_biases.value()
         if attention_logit_biases is None:
             attention_logit_biases = 0
-        # To approximate softmax, we subtract a bias dependent on sequence length.
-        attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
+        if cfg.subtract_seq_len_bias:
+            # To approximate softmax, we subtract a bias dependent on sequence length.
+            # We found that using a dynamic sequence length (per batch-row) does not help.
+            attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
         probs = sigmoid_with_biases(
             logits,
             attention_logit_biases=attention_logit_biases,
@@ -3547,6 +3558,52 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         )
 
 
+def set_attention_partition_specs(
+    cfg: MultiheadAttention.Config,
+    *,
+    fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
+    tp_axis_names: Union[str, Sequence[str]] = "model",
+):
+    """Sets `cfg` to shard attention weights over both fsdp and tp axes.
+
+    Args:
+        cfg: A MultiheadAttention layer config to apply sharding spec to.
+        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
+        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+    """
+    # Shard weights.
+    input_linear_cfg = cfg.input_linear
+    if hasattr(input_linear_cfg, "input_linear"):
+        input_linear_cfg = input_linear_cfg.input_linear
+    input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+    cfg.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+
+
+def set_feed_forward_partition_specs(
+    cfg: TransformerFeedForwardLayer.Config,
+    *,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
+    fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
+    tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
+):
+    """Sets `cfg` to shard FFN weights over both fsdp and tp axes.
+
+    Args:
+        cfg: A TransformerFeedForwardLayer layer config to apply sharding spec to.
+        batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
+        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
+        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+    """
+    # Shard weights.
+    cfg.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
+    cfg.linear2.param_partition_spec = (tp_axis_names, fsdp_axis_names)
+    # Encourage the right activation sharding.
+    cfg.linear1.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
+    cfg.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
+
+
 def set_double_shard_weights_config(
     cfg: Union[TransformerLayer.Config, Sequence[TransformerLayer.Config]],
     *,
@@ -3566,31 +3623,29 @@ def set_double_shard_weights_config(
     """
 
     # pytype: disable=attribute-error
-    def set_attn_partition_specs(attn_layer: MultiheadAttention.Config):
-        # Shard weights.
-        input_linear_cfg = attn_layer.input_linear
-        if hasattr(input_linear_cfg, "input_linear"):
-            input_linear_cfg = input_linear_cfg.input_linear
-        input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
-        attn_layer.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
-
-    def set_ffn_partition_specs(ff_layer: TransformerFeedForwardLayer.Config):
-        # Shard weights.
-        ff_layer.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
-        ff_layer.linear2.param_partition_spec = (tp_axis_names, fsdp_axis_names)
-        # Encourage the right activation sharding.
-        ff_layer.linear1.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
-        ff_layer.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
-
     if not isinstance(cfg, Sequence):
         cfg = [cfg]
 
     for layer_cfg in cfg:
-        set_attn_partition_specs(layer_cfg.self_attention.attention)
+        set_attention_partition_specs(
+            layer_cfg.self_attention.attention,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+        )
         if layer_cfg.cross_attention is not None:
-            set_attn_partition_specs(layer_cfg.cross_attention.attention)
+            set_attention_partition_specs(
+                layer_cfg.cross_attention.attention,
+                fsdp_axis_names=fsdp_axis_names,
+                tp_axis_names=tp_axis_names,
+            )
         if isinstance(layer_cfg.feed_forward, TransformerFeedForwardLayer.Config):
-            set_ffn_partition_specs(layer_cfg.feed_forward)
+            set_feed_forward_partition_specs(
+                layer_cfg.feed_forward,
+                batch_axis_names=batch_axis_names,
+                fsdp_axis_names=fsdp_axis_names,
+                tp_axis_names=tp_axis_names,
+                seq_axis_names=seq_axis_names,
+            )
     # pytype: enable=attribute-error
 
 

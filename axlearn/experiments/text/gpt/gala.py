@@ -12,10 +12,11 @@ The Gala models are set up for baselines for various papers:
 
 """
 import itertools
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, TypeAlias, Union, cast
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
+    ALiBiAttentionLogitBiasLayer,
     FusedQKVLinear,
     KVCache,
     RoFormerQKVLinear,
@@ -48,13 +49,45 @@ VOCAB_SIZE = 32 * 1024
 
 MAX_SEQUENCE_LENGTH = 4096
 
+SupportedNormStructure: TypeAlias = Literal["prenorm", "hybridnorm", "postnorm"]
+SupportedPositionEncoding: TypeAlias = Literal["rope", "alibi"]
+
+MODEL_SIZE_CONFIG_ARGS_BASE = {
+    "norm_structure": "prenorm",
+    "position_encoding": "rope",
+}
+
+# Additional configs that should be generated, on top of the base configs.
+# Base configs use rope+prenorm (see `MODEL_SIZE_CONFIG_ARGS_BASE`).
+MODEL_SIZE_CONFIG_ARGS_ADDITIONAL = {
+    "1B": [
+        {
+            "norm_structure": "hybridnorm",
+            "position_encoding": "alibi",
+            "flash_only": True,
+        }
+    ],
+    "7B": [
+        {
+            "norm_structure": "hybridnorm",
+            "position_encoding": "alibi",
+        }
+    ],
+}
+
 
 # 85M is the base model for mup-simple.
 _BASE_MODEL_HIDDEN_DIM = 768
 
 
 def get_trainer_kwargs(
-    model_size: str, *, vocab_size: int, max_sequence_length: int, flash_attention: bool = False
+    model_size: str,
+    *,
+    vocab_size: int,
+    max_sequence_length: int,
+    flash_attention: bool = False,
+    norm_structure: SupportedNormStructure = "prenorm",
+    position_encoding: SupportedPositionEncoding = "rope",
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     # dict() is more readable here.
@@ -158,7 +191,12 @@ def get_trainer_kwargs(
 
     # If a model is smaller than the base model, do not scale.
     linear_layer_lr_multiplier = min(_BASE_MODEL_HIDDEN_DIM / model_kwargs["hidden_dim"], 1.0)
-    trainer_kwargs["model_cfg"] = model_config(flash_attention=flash_attention, **model_kwargs)
+    trainer_kwargs["model_cfg"] = model_config(
+        flash_attention=flash_attention,
+        norm_structure=norm_structure,
+        position_encoding=position_encoding,
+        **model_kwargs,
+    )
     trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
         max_step=trainer_kwargs["max_step"],
         # Enable mup-simple.
@@ -180,6 +218,8 @@ def model_config(
     dropout_rate: float = 0.0,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
+    norm_structure: SupportedNormStructure = "prenorm",
+    position_encoding: SupportedPositionEncoding = "rope",
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -193,22 +233,35 @@ def model_config(
         ffn_dim: The feed-forward dimension or config function.
             If None, defaults to a setting from https://arxiv.org/abs/2002.05202.
         flash_attention: If True, use flash attention implementation.
+        norm_structure: Norm structure to use for ffn and attention.
+            Options: See `SupportedNormStructure`.
+        position_encoding: Position encoding to use.
+            Options: See `SupportedPositionEncoding`.
 
     Returns:
         A causal LM config.
     """
-    # Use RoPE by default.
-    # RoPE <https://arxiv.org/abs/2104.09864> for positional encodings.
-    # `CausalAttentionLogitBiasLayer` is already applied in the attention impl.
-    attention_mask = None
-    # RoPE embeddings: https://arxiv.org/abs/2104.09864.
-    attention_qkv_linear = RoFormerQKVLinear.default_config().set(
-        input_linear=FusedQKVLinear.default_config(),
-        rotary_value=False,
-    )
-    attention_kv_cache = KVCache.default_config().set(cache_dtype=STEP_DTYPE)
 
     transformer_layer_cfg = TransformerLayer.default_config()
+
+    if position_encoding == "rope":
+        # RoPE <https://arxiv.org/abs/2104.09864> for positional encodings.
+        # `CausalAttentionLogitBiasLayer` is already applied in the attention impl.
+        attention_mask = None
+        # RoPE embeddings: https://arxiv.org/abs/2104.09864.
+        attention_qkv_linear = RoFormerQKVLinear.default_config().set(
+            input_linear=FusedQKVLinear.default_config(),
+            rotary_value=False,
+        )
+    elif position_encoding == "alibi":
+        attention_mask = ALiBiAttentionLogitBiasLayer.default_config().set(
+            num_heads=num_heads,
+        )
+        attention_qkv_linear = FusedQKVLinear.default_config()
+    else:
+        raise ValueError(f"'{position_encoding}' not supported!")
+    attention_kv_cache = KVCache.default_config().set(cache_dtype=STEP_DTYPE)
+
     if flash_attention:
         transformer_layer_cfg.self_attention.attention = flash_attention_config()
 
@@ -246,8 +299,26 @@ def model_config(
         attention_qkv_linear=attention_qkv_linear,
         attention_kv_cache=attention_kv_cache,
         layer_cfg=transformer_layer_cfg,
+        ffn_structure=norm_structure,
+        atten_structure=norm_structure,
     )
     return cfg
+
+
+def config_name_suffix(
+    *,
+    norm_structure: SupportedNormStructure,
+    position_encoding: SupportedPositionEncoding,
+    enable_flash: bool,
+) -> str:
+    suffix = []
+    if norm_structure != "prenorm":
+        suffix.append(norm_structure)
+    if position_encoding != "rope":
+        suffix.append(position_encoding)
+    if enable_flash:
+        suffix.append("flash")
+    return "-".join(suffix)
 
 
 def trainer_configs(
@@ -265,7 +336,7 @@ def trainer_configs(
 
     vocab_size = VOCAB_SIZE
 
-    # For each model size create a flash/noflash version.
+    # For each model size, norm structure and position encoding create a flash/noflash version.
     for (
         model_size,
         enable_flash,
@@ -274,26 +345,43 @@ def trainer_configs(
         {True, False},
     ):
         seq_len = MAX_SEQUENCE_LENGTH
-        suffix = "flash" if enable_flash else ""
-        config_name = make_config_name(arch=arch, model_size=model_size, version=suffix)
-        kwargs = get_trainer_kwargs(
-            model_size,
-            vocab_size=vocab_size,
-            flash_attention=enable_flash,
-            max_sequence_length=seq_len,
-        )
+        for config_args in [
+            MODEL_SIZE_CONFIG_ARGS_BASE,
+            *MODEL_SIZE_CONFIG_ARGS_ADDITIONAL.get(model_size, []),
+        ]:
+            if config_args.get("flash_only") and not enable_flash:
+                continue
+            norm_structure = cast(SupportedNormStructure, config_args["norm_structure"])
+            position_encoding = cast(SupportedPositionEncoding, config_args["position_encoding"])
+            config_name = make_config_name(
+                arch=arch,
+                model_size=model_size,
+                version=config_name_suffix(
+                    norm_structure=norm_structure,
+                    position_encoding=position_encoding,
+                    enable_flash=enable_flash,
+                ),
+            )
+            kwargs = get_trainer_kwargs(
+                model_size,
+                vocab_size=vocab_size,
+                flash_attention=enable_flash,
+                max_sequence_length=seq_len,
+                norm_structure=norm_structure,
+                position_encoding=position_encoding,
+            )
 
-        # Test models sometimes override it to a very small length.
-        seq_len = kwargs.pop("max_sequence_length", seq_len)
+            # Test models sometimes override it to a very small length.
+            seq_len = kwargs.pop("max_sequence_length", seq_len)
 
-        # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
-        config_map[config_name] = get_trainer_config_fn(
-            train_input_source=train_input_source(
-                vocab_size=vocab_size, max_sequence_length=seq_len
-            ),
-            evalers=evaler_config_dict(
-                eval_input_sources(vocab_size=vocab_size, max_sequence_length=seq_len),
-            ),
-            **kwargs,
-        )
+            # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
+            config_map[config_name] = get_trainer_config_fn(
+                train_input_source=train_input_source(
+                    vocab_size=vocab_size, max_sequence_length=seq_len
+                ),
+                evalers=evaler_config_dict(
+                    eval_input_sources(vocab_size=vocab_size, max_sequence_length=seq_len),
+                ),
+                **kwargs,
+            )
     return config_map
