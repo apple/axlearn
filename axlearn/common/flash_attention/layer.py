@@ -153,6 +153,23 @@ class FlashAttention(GroupedQueryAttention):
         v_proj: Tensor,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
+        """Computes attention context and probs.
+
+        Note: KV cache may cast k_proj/v_proj in lower precision, so flash attention kernel must
+        cast them to q_proj.dtype.
+
+        Args:
+            mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
+                details.
+            q_proj: [batch_size, target_length, num_heads, per_head_dim].
+            k_proj: [batch_size, source_length, num_heads, per_head_dim].
+            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+            attention_logit_biases: See ``On attention logit biases`` in the file comments.
+
+        Returns:
+            The context of shape [batch_size, target_length, num_heads, per_head_dim],
+            and probs of shape [batch, num_heads, target_length, source_length].
+        """
         cfg: FlashAttention.Config = self.config
         backend = self._backend()
 

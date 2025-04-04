@@ -45,25 +45,26 @@ To avoid such ambiguities, we apply a few rules of thumb when implementing a Job
 import logging
 import time
 import traceback
-from typing import Any, Optional
+from typing import Any
 
 from absl import flags
 
-from axlearn.cloud.common.bundler import Bundler, bundler_flags
 from axlearn.cloud.common.utils import FlagConfigurable
 from axlearn.common.config import REQUIRED, Required, config_class
 
 
-# TODO(markblee): Add a `define_flag` util to enforce some of the rules in file docstring + basic
-# book keeping like reusing helpstrings between flags.
+# TODO(markblee): Consider replacing `Job` with a decorator. This is more flexible than subclassing:
+# 1. It allows jobs to omit max_tries/retry_interval configs if retries are not necessary;
+# 2. It allows the job to subclass from other base classes, not just `Job`.
+# 3. It allows jobs to implement interfaces other than `_execute`.
 class Job(FlagConfigurable):
     """Base Job definition.
 
     Job's main API method is `execute`, which sets up the environment according to `bundler`,
-    runs the specified `command`, and retries if necessary.
+    runs the `_execute` method, and retries if necessary.
 
-    Subclasses of `Job` further specify the platform (e.g., TPUs on GCP) on which the job
-    should run.
+    Subclasses of `Job` further specify the platform (e.g., TPUs on GCP) on which the job should
+    run, as well as the implementation of `_execute` (e.g., what commands to run).
 
     The implementation of `execute` should be idempotent---invoking `execute` multiple times
     should be equivalent to invoking it once.
@@ -71,28 +72,15 @@ class Job(FlagConfigurable):
 
     @config_class
     class Config(FlagConfigurable.Config):
-        """Configures Job."""
+        """Configures Job.
 
-        # TODO(markblee): Convert all comments into config class docstrings.
-        # TODO(markblee): Pare down the configs at the Job level (e.g., name, commmand, bundler).
+        Attributes:
+            max_tries: Max attempts to execute the Job.
+            retry_interval: Retry interval in seconds.
+        """
 
-        # Job name.
-        name: Required[str] = REQUIRED
-        # Max attempts to execute the Job.
         max_tries: Required[int] = REQUIRED
-        # Retry interval in seconds.
         retry_interval: Required[float] = REQUIRED
-        # Command to execute on remote compute.
-        command: Optional[str] = None
-        # Bundler. See `axlearn.cloud.common.bundler` for valid bundlers.
-        bundler: Optional[Bundler.Config] = None
-
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
-        cfg = self.config
-        self._bundler = None
-        if cfg.bundler:
-            self._bundler: Bundler = cfg.bundler.instantiate()
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -104,8 +92,6 @@ class Job(FlagConfigurable):
         See also ``On configuration`` in file docstring.
         """
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        # Note: don't use generate_job_name() here, as not all environments define $USER.
-        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_integer("max_tries", None, "Max attempts to execute the job.", **common_kwargs)
         flags.DEFINE_integer(
             "retry_interval",
@@ -113,12 +99,6 @@ class Job(FlagConfigurable):
             "Interval in seconds between attempts.",
             **common_kwargs,
         )
-        # Allow bundler to be optional.
-        bundler_flags(required=False, **common_kwargs)
-
-    @property
-    def bundler(self):
-        return self._bundler
 
     def _delete(self):
         """Cleans up the job. Called on termination when all retries are exhausted.

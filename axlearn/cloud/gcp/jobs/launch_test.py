@@ -38,7 +38,7 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.utils import GCPAPI
-from axlearn.common.config import config_for_function, maybe_instantiate
+from axlearn.common.config import config_class, config_for_function, maybe_instantiate
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -88,6 +88,19 @@ class TestUtils(parameterized.TestCase):
 
 
 class _DummyRunner(Job):
+    """A dummy runner."""
+
+    @config_class
+    class Config(Job.Config):
+        """Configures DummyRunner."""
+
+        # pylint: disable-next=unnecessary-lambda
+        bundler: Bundler.Config = config_for_function(lambda: mock.Mock())
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self._bundler = cfg.bundler.instantiate()
+
     def _execute(self):
         pass
 
@@ -108,7 +121,6 @@ def _common_bastion_managed_job_kwargs() -> dict:
         runner=_DummyRunner.default_config().set(
             max_tries=1,
             retry_interval=60,
-            command="",
         ),
     )
 
@@ -429,11 +441,9 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             self.assertEqual(cfg.project, project or mock_settings["project"])
             self.assertEqual(cfg.zone, zone or mock_settings["zone"])
             self.assertEqual(cfg.namespace, namespace or "default")
-            self.assertIsNone(cfg.bundler)
             if action in ("start", "update"):
                 self.assertIsNotNone(cfg.runner)
                 self.assertIsNotNone(cfg.runner.bundler)
-                self.assertIn("tpu", cfg.runner.bundler.extras)
                 self.assertEqual(bundler_exclude or BUNDLE_EXCLUDE, cfg.runner.bundler.exclude)
                 if bundler_type is None:
                     # Defaults to cloud build.
@@ -482,7 +492,9 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
 
         # Bundler should be propagated to runner.
         if action in ("start", "update"):
-            self.assertIsNotNone(job.runner.bundler)
+            # pytype: disable=attribute-error
+            self.assertIsNotNone(job._runner._bundler)  # pylint: disable=protected-access
+            # pytype: enable=attribute-error
 
     @parameterized.parameters(
         dict(name="test_job", expected=ValueError("invalid characters")),

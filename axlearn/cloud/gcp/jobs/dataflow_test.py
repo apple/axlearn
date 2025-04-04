@@ -59,6 +59,10 @@ class DataflowJobTest(TestWithTemporaryCWD):
             self.assertEqual("settings-dockerfile", cfg.bundler.dockerfile)
             self.assertEqual("settings-repo", cfg.bundler.repo)
 
+            dataflow_job = cfg.instantiate()
+            # pylint: disable-next=protected-access
+            self.assertIsInstance(dataflow_job._bundler, cfg.bundler.klass)
+
     def test_dataflow_spec_from_flags(self):
         with _mock_gcp_settings() as settings:
             fv = _mock_flags()

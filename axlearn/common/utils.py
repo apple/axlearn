@@ -27,6 +27,7 @@ import traceback
 import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
+from functools import cache
 from typing import (
     Any,
     Callable,
@@ -39,6 +40,7 @@ from typing import (
     runtime_checkable,
 )
 
+import attr
 import jax
 import jax.flatten_util
 import numpy as np
@@ -55,6 +57,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
 from axlearn.common.config import (
+    ConfigBase,
     ConfigOr,
     FunctionConfigBase,
     config_for_function,
@@ -1670,11 +1673,11 @@ def create_hybrid_device_mesh(
         A np.ndarray of JAX devices with `ici_mesh_shape * dcn_mesh_shape` as its shape that can be
         fed into jax.sharding.Mesh for hybrid parallelism.
     """
-    attr = "process_index" if process_is_granule else "slice_index"
-    assert hasattr(devices[0], attr)
+    device_attr = "process_index" if process_is_granule else "slice_index"
+    assert hasattr(devices[0], device_attr)
     granule_dict = collections.defaultdict(list)
     for dev in devices:
-        granule_dict[getattr(dev, attr)].append(dev)
+        granule_dict[getattr(dev, device_attr)].append(dev)
     granules = list(granule_dict[key] for key in sorted(granule_dict.keys()))
     if np.prod(mesh_shape.dcn_mesh_shape) != len(granules):
         raise ValueError(
@@ -1730,13 +1733,13 @@ def create_device_mesh(
     # Check if the devices are part of a multi-granule configuration.
     # <https://github.com/google/jax/blob/b81b79c1b0d2ec/jax/experimental/mesh_utils.py#L313>
     device_platform = devices[0].platform
-    attr = "process_index" if device_platform != "tpu" else "slice_index"
-    is_multi_granule_env = hasattr(devices[0], attr)
+    device_attr = "process_index" if device_platform != "tpu" else "slice_index"
+    is_multi_granule_env = hasattr(devices[0], device_attr)
     if not all(el.platform == device_platform for el in devices):
         raise NotImplementedError(f"Not all devices had platform: {device_platform}.")
 
     num_granules = (
-        max(getattr(el, attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
+        max(getattr(el, device_attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
     )
     num_devices = len(devices)
     assert num_devices % num_granules == 0, "Number of devices should divide number of granules."
@@ -1807,7 +1810,7 @@ def create_device_mesh(
     return create_hybrid_device_mesh(
         mesh_shape,
         devices=devices,
-        process_is_granule=attr == "process_index",
+        process_is_granule=device_attr == "process_index",
     )
 
 
@@ -1997,3 +2000,18 @@ def prune_empty(in_tree: Nested[Tensor]) -> Nested[Tensor]:
     """
     # Note that falsey values or empty Tensors are not considered empty.
     return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
+
+
+def own_fields(cfg: ConfigBase) -> Sequence[str]:
+    """Returns fields that are defined by `cfg`, rather than any of its ancestors."""
+
+    bases = cfg.__class__.__bases__
+    if len(bases) > 1:
+        raise ValueError(f"Configs should not use multiple inheritance: {bases}")
+
+    @cache
+    def get_base_keys(base: type):
+        return attr.fields_dict(base)
+
+    base_keys = get_base_keys(bases[0])
+    return [k for k in cfg.keys() if k not in base_keys]

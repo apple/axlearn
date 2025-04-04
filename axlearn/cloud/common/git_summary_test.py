@@ -56,18 +56,30 @@ class GitSummaryTest(parameterized.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 _ = GitSummary(path=td, required=True)
 
-    def test_valid_summary(self):
+    @parameterized.parameters("", "git@github.com:YYY/XXX.git")
+    def test_valid_summary(self, remote):
         git_sha_pattern = r"^[a-f0-9]{7,40}$"
         with tempfile.TemporaryDirectory() as repo:
             # create a valid repo and test .is_valid
-            origin = "git@github.com:YYY/XXX.git"
             checkedin_file = "checkedin_file"
-            subprocess.run(
+            setup_cmd = (
                 "git init "
-                f"&& git remote add origin {origin}"
                 f"&& touch {checkedin_file} "
                 f"&& git add {checkedin_file} "
-                "&& git -c user.name=XXX -c user.email=xxx@yyy.com commit -m init",
+                "&& git -c user.name=XXX -c user.email=xxx@yyy.com commit -m init "
+                + (
+                    (
+                        f"&& git remote add origin {remote} "
+                        "&& git config branch.$(git branch --show-current).remote origin "
+                        "&& git config branch.$(git branch --show-current).merge refs/heads/"
+                        "$(git branch --show-current)"
+                    )
+                    if remote
+                    else ""
+                )
+            )
+            subprocess.run(
+                setup_cmd,
                 cwd=repo,
                 check=True,
                 shell=True,
@@ -80,7 +92,7 @@ class GitSummaryTest(parameterized.TestCase):
             assert summary.root == "."
             assert re.match(git_sha_pattern, summary[GitSummaryMembers.commit]) is not None
             assert summary[GitSummaryMembers.branch] in {"main", "master"}
-            assert summary[GitSummaryMembers.origin] == origin
+            assert summary[GitSummaryMembers.remote] == remote
             assert not summary[GitSummaryMembers.diff]
             assert not summary[GitSummaryMembers.porcelain]
             self._test_labels(summary)
@@ -121,7 +133,7 @@ class GitSummaryTest(parameterized.TestCase):
         expected_keys = {
             "git-commit",
             "git-branch",
-            "git-origin",
+            "git-remote",
             "git-diff-dirty",
             "git-porcelain-dirty",
         }
@@ -133,7 +145,7 @@ class GitSummaryTest(parameterized.TestCase):
         expected_files = {
             ".git.commit",
             ".git.branch",
-            ".git.origin",
+            ".git.remote",
             ".git.diff",
             ".git.porcelain",
         }

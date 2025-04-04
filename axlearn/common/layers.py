@@ -351,8 +351,8 @@ class LayerNorm(LayerNormStateless):
         return x
 
 
-class RMSNorm(BaseNormalizationLayer):
-    """Reference: https://github.com/bzhangGo/rmsnorm."""
+class RMSNormStateless(BaseNormalizationLayer):
+    """Stateless version of https://github.com/bzhangGo/rmsnorm."""
 
     @config_class
     class Config(BaseNormalizationLayer.Config):
@@ -365,6 +365,28 @@ class RMSNorm(BaseNormalizationLayer):
         # If not None, how to partition output activation values.
         output_partition_spec: Optional[tuple[Optional[str]]] = None
 
+    def _forward(self, x: Tensor) -> Tensor:
+        cfg = self.config
+        x = maybe_shard(x, cfg.input_partition_spec)
+        x_dtype = x.dtype
+        if cfg.forward_dtype is not None:
+            x = x.astype(cfg.forward_dtype)
+        moment2 = (x * x).mean(axis=-1, keepdims=True)
+        x = x * jax.lax.rsqrt(moment2 + cfg.eps)
+        x = x.astype(x_dtype)
+        return x
+
+    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
+        del paddings  # paddings do not affect LayerNorm results
+        cfg = self.config
+        x = self._forward(x)
+        x = maybe_shard(x, cfg.output_partition_spec)
+        return x
+
+
+class RMSNorm(RMSNormStateless):
+    """Reference: https://github.com/bzhangGo/rmsnorm."""
+
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
@@ -374,14 +396,7 @@ class RMSNorm(BaseNormalizationLayer):
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         del paddings  # paddings do not affect LayerNorm results
         cfg = self.config
-        x = maybe_shard(x, cfg.input_partition_spec)
-        x_dtype = x.dtype
-        if cfg.forward_dtype is not None:
-            x = x.astype(cfg.forward_dtype)
-        moment2 = (x * x).mean(axis=-1, keepdims=True)
-        x = x * jax.lax.rsqrt(moment2 + cfg.eps)
-        x = x.astype(x_dtype)
-        x = x * self.parameters["scale"]
+        x = self._forward(x) * self.parameters["scale"]
         x = maybe_shard(x, cfg.output_partition_spec)
         return x
 
