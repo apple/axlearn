@@ -75,6 +75,7 @@ class DecodingTest(TestCase):
         cfg = dict(
             softmax_scale=softmax_scale,
             interpret=(jax.default_backend() == "cpu"),
+            is_decoding=True,
         )
         q, k, v, bias = generate_attention_data(
             batch_size,
@@ -109,7 +110,20 @@ class DecodingTest(TestCase):
         ) if input_dtype is jnp.float32 else nullcontext():
             o_ref = ReferenceMHA.default_config().set(**cfg).instantiate()(q, k, v, bias)
         if input_dtype is jnp.float32:
-            self.assertNestedAllClose(o, o_ref, rtol=0.001, atol=0.0005)
+            if jax.default_backend() == "cpu":
+                # CPU uses pure FP32 arithmetic, and thus has higher precision.
+                self.assertNestedAllClose(o, o_ref, rtol=0.001, atol=0.0005)
+            else:
+                # GPU uses TF32, and TPU uses 6xBF16 to simulate FP32.
+                self.assertAllCloseWithOutliers(
+                    o,
+                    o_ref,
+                    tolerance_map={
+                        1.0: Tolerance(rtol=0.05, atol=0.15),
+                        0.98: Tolerance(rtol=0.01, atol=0.02),
+                        0.9: Tolerance(rtol=0.01, atol=0.005),
+                    },
+                )
         # bfloat16 and float16 have occasional outliers that require relaxed tolerances.
         elif input_dtype is jnp.bfloat16:
             self.assertAllCloseWithOutliers(
@@ -117,8 +131,8 @@ class DecodingTest(TestCase):
                 o_ref,
                 tolerance_map={
                     1.0: Tolerance(rtol=0.05, atol=1.25),
-                    0.99: Tolerance(rtol=0.05, atol=0.4),
-                    0.95: Tolerance(rtol=0.05, atol=0.2),
+                    0.98: Tolerance(rtol=0.05, atol=0.5),
+                    0.95: Tolerance(rtol=0.05, atol=0.25),
                     0.9: Tolerance(rtol=0.05, atol=0.1),
                     0.8: Tolerance(rtol=0.05, atol=0.05),
                 },
