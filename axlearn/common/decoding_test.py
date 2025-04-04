@@ -221,13 +221,9 @@ class DecodeTest(parameterized.TestCase):
         # with no length normalization and length normalization.
         # bp_scores[0][2] should be nobp_scores[0][0] / (len('START-AA-ENDPAD') ** alpha)
         # Here len('START-AA-ENDPAD') is 4 since PAD is ignored.
-        np.testing.assert_almost_equal(
-            no_bp_scores[0][0] / (4**alpha), bp_scores[0][2], decimal=5
-        )
+        np.testing.assert_almost_equal(no_bp_scores[0][0] / (4**alpha), bp_scores[0][2], decimal=5)
         # no_bp_scores[0][2] and bp_scores[0][0] correspond the log probs of 'START-AAB-END'
-        np.testing.assert_almost_equal(
-            no_bp_scores[0][2] / (5**alpha), bp_scores[0][0], decimal=5
-        )
+        np.testing.assert_almost_equal(no_bp_scores[0][2] / (5**alpha), bp_scores[0][0], decimal=5)
 
     def test_add_decoding_dim(self):
         x = np.array([[0, 5, 1, 0], [0, 8, 6, 9]], dtype=np.int32)
@@ -827,6 +823,7 @@ class DecodeTest(parameterized.TestCase):
         prefix_merger=[None, _TokenSumPrefixMerger()],
         brevity_penalty=[None, decoding.brevity_penalty_fn(bp_type="hf", alpha=1.0)],
     )
+    # pylint: disable=R0917
     def test_beam_search_prefill(
         self,
         prompt_length: Sequence[int],
@@ -1554,7 +1551,7 @@ class DecodeTest(parameterized.TestCase):
         )
 
         # Compare against expected.
-        target = jnp.asarray(jax.tree_map(vocab.tokenizer.piece_to_id, expected))
+        target = jnp.asarray(jax.tree_util.tree_map(vocab.tokenizer.piece_to_id, expected))
         self.assertTrue(jnp.all(sequences == target))
 
         # Check that the token scores are 0 for pad_id tokens.

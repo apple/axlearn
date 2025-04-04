@@ -532,7 +532,8 @@ class BaseLayer(Module):
         return FanAxes(in_axis=-2, out_axis=-1)
 
     def _remat_name(self, x: Tensor, name: str) -> Tensor:
-        """Tags 'x' with 'name' using a custom jax.core.Primitive, which is otherwise a no-op.
+        """Tags 'x' with 'name' using a custom jax.extend.core.Primitive, which
+        is otherwise a no-op.
 
         This is useful for custom activation rematerialization policies, as it allows
         us to filter on tagged points in the jaxpr.

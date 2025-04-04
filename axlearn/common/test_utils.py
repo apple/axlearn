@@ -469,14 +469,16 @@ def _complete_param_init_spec_tree(
 
     # Complete the param_init_specs to match the params treedef.
     # Replace with Nones so that jax doesn't treat them as leaves.
-    params_with_nones = jax.tree_map(
+    params_with_nones = jax.tree_util.tree_map(
         partial(replace_keys, mapping={k: None for k in delegates}), params, is_leaf=is_leaf
     )
     _, treedef = jax.tree_util.tree_flatten(params_with_nones)
     inits_with_nones = jax.tree_util.tree_unflatten(treedef, param_init_specs)
 
     # Replace the Nones with a delegate.
-    return jax.tree_map(partial(replace_keys, mapping=delegates), inits_with_nones, is_leaf=is_leaf)
+    return jax.tree_util.tree_map(
+        partial(replace_keys, mapping=delegates), inits_with_nones, is_leaf=is_leaf
+    )
 
 
 def read_param_init_specs_recursively(
