@@ -25,7 +25,10 @@ def infer_module_qualname(cls: type) -> str:
 
     Using `cls.__module__` naively may return "__main__".
     """
-    module_spec = inspect.getmodule(cls).__spec__
+    module = inspect.getmodule(cls)
+    if module is None:
+        raise ValueError(f"Unable to get module for {cls}.")
+    module_spec = module.__spec__  # pytype: disable=attribute-error
     return module_spec.name
 
 

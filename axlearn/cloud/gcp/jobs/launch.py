@@ -16,6 +16,9 @@ monitoring the job on the bastion. The API follows a similar API as training, wh
 a specific runner to be used. Run with `--help` to display a list of runners, or with
 `--runner_name` and `--help` to see all possible flags for a specific runner.
 
+Some additional background on runners can be found in the infrastructure documentation:
+https://github.com/apple/axlearn/blob/main/docs/04-infrastructure.md#bastion-runners
+
 Possible actions: [start|update|stop|list|run]
 
     Start: submits a job to the queue.
@@ -37,6 +40,9 @@ Examples:
     # This internally attempts to infer the --runner_name automatically.
     axlearn gcp launch --instance_type=tpu-v4-8 --help
 
+    # View all launch flags for a specific runner.
+    axlearn gcp launch --runner_name=gke_tpu_single --help
+
     # Simple TPU launch, running locally.
     axlearn gcp launch run --instance_type=tpu-v4-8 \
         --bundler_spec=image=tpu --bundler_spec=dockerfile=Dockerfile -- python3 my_script.py
@@ -44,6 +50,16 @@ Examples:
     # Simple TPU launch, submitting to bastion to run instead of locally.
     axlearn gcp launch --instance_type=tpu-v4-32 \
         --bundler_spec=image=tpu --bundler_spec=dockerfile=Dockerfile -- python3 my_script.py
+
+    # Simple TPU launch, targeting a specific runner.
+    # By default, this users `axlearn.cloud.gcp.runners` as the runner module.
+    axlearn gcp launch --runner_name=gke_tpu_single --instance_type=tpu-v4-32 \
+        --bundler_spec=image=tpu --bundler_spec=dockerfile=Dockerfile -- python3 my_script.py
+
+    # Simple TPU launch, targeting a specific runner in a custom module.
+    # In this case, the available flags depend on the custom runner implementation.
+    axlearn gcp launch --runner_module=my.custom.module --runner_name=my_custom_runner \
+        --instance_type=my-custom-instance ... -- python3 my_script.py
 
     # Dry-run: prints the job config without launching.
     axlearn gcp launch --instance_type=tpu-v4-32 --dry_run -- python3 my_script.py
@@ -440,14 +456,12 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
             project: Used for load_kube_config.
             zone: Used to infer total quota.
             cluster: K8s cluster.
-            # num_replicas: Number of replicas.
         """
 
         namespace: str = "default"
         project: Required[str] = REQUIRED
         zone: Required[str] = REQUIRED
         cluster: Required[str] = REQUIRED
-        # num_replicas: int = 1
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):

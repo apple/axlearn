@@ -448,9 +448,9 @@ class FlinkTPUGKEJobTest(TestCase):
         expected_flink_deployment["spec"]["serviceAccount"] = (
             service_account if service_account else self._settings["k8s_service_account"]
         )
-        expected_flink_deployment["spec"]["flinkConfiguration"]["taskmanager.numberOfTaskSlots"] = (
-            str(flink_threads_per_worker)
-        )
+        expected_flink_deployment["spec"]["flinkConfiguration"][
+            "taskmanager.numberOfTaskSlots"
+        ] = str(flink_threads_per_worker)
         if not location_hint:
             del expected_flink_deployment["spec"]["taskManager"]["podTemplate"]["spec"][
                 "nodeSelector"
@@ -496,9 +496,9 @@ class FlinkTPUGKEJobTest(TestCase):
             service_account if service_account else "settings-account"
         )
         expected_parallelism = flink_job._get_num_of_tpu_nodes(system) * flink_threads_per_worker
-        expected_job_submission["spec"]["template"]["spec"]["containers"][0]["args"][0] = (
-            _get_expected_job_submission_command(expected_parallelism)
-        )
+        expected_job_submission["spec"]["template"]["spec"]["containers"][0]["args"][
+            0
+        ] = _get_expected_job_submission_command(expected_parallelism)
         try:
             self.assertDictEqual(expected_job_submission, job_submission)
         except AssertionError:

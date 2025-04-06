@@ -661,8 +661,8 @@ class MainTest(parameterized.TestCase):
         # Test that runner name is inferred from job type.
         dict(action="start", instance_type="tpu-v4-8", job_type="flink", expected="gke_tpu_flink"),
         # Test that runner name is requird if using runner action.
-        dict(action="start", expected=app.UsageError("required")),
-        dict(action="run", expected=app.UsageError("required")),
+        dict(action="start", expected=app.UsageError("Unable to infer --runner_name")),
+        dict(action="run", expected=app.UsageError("Unable to infer --runner_name")),
         # Test that runner name is optional if not using runner action.
         dict(action="list", expected=None),
         dict(action="stop", expected=None),
