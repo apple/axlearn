@@ -148,7 +148,8 @@ register_validator(
 
 
 class RematPolicy(Protocol):
-    def __call__(self, prim: Primitive, *args: Any, **params: Any) -> Union[RematType, bool]: ...
+    def __call__(self, prim: Primitive, *args: Any, **params: Any) -> Union[RematType, bool]:
+        ...
 
 
 def save_and_offload_only_these_names_regex(
