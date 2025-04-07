@@ -228,7 +228,7 @@ def _update(x: dict, updates: dict):
 class CompositeLossWeights(Module):
     """Computes loss weights."""
 
-    def forward(self, child_metrics: dict[str, tuple[Tensor, Nested[Tensor]]]) -> dict[str, float]:
+    def forward(self, child_metrics: dict[str, tuple[Tensor, Nested[Tensor]]]) -> dict[str, Tensor]:
         """Computes per-child loss weights from child metrics.
 
         Args:
@@ -293,7 +293,7 @@ class CompositeLossMetrics(BaseLossMetrics):
             )
 
         if "loss_weights" in self.children:
-            loss_weights: dict[str, float] = self.loss_weights(all_child_metrics)
+            loss_weights: dict[str, Tensor] = self.loss_weights(all_child_metrics)
         else:
             loss_weights = None
 
