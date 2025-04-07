@@ -112,12 +112,19 @@ class TPUReplicatedJobTest(TestCase):
 
     @parameterized.product(
         [
-            dict(env={}, reservation=None, reservation_project=None, expect_reserved=False),
+            dict(
+                env={},
+                reservation=None,
+                reservation_project=None,
+                expect_reserved=False,
+                expect_spot_selector=True,
+            ),
             dict(
                 env={"BASTION_TIER": "0"},
                 reservation=None,
                 reservation_project=None,
                 expect_reserved=False,
+                expect_spot_selector=True,
             ),
             dict(
                 env={
@@ -128,6 +135,7 @@ class TPUReplicatedJobTest(TestCase):
                 reservation="test-reservation",
                 reservation_project=None,
                 expect_reserved=True,
+                expect_spot_selector=False,
             ),
             dict(
                 env={
@@ -138,18 +146,28 @@ class TPUReplicatedJobTest(TestCase):
                 reservation="test-reservation",
                 reservation_project="test-reservation-project",
                 expect_reserved=True,
+                expect_spot_selector=False,
             ),
             dict(
                 env={"BASTION_TIER": "1", BASTION_JOB_VERSION_ENV_VAR: "2"},
                 reservation="test-reservation",
                 reservation_project=None,
                 expect_reserved=False,
+                expect_spot_selector=True,
             ),
             dict(
                 env={_BASTION_SERIALIZED_JOBSPEC_ENV_VAR: _create_serialized_job_spec(5, "user-2")},
                 reservation="test-reservation",
                 reservation_project=None,
                 expect_reserved=False,
+                expect_spot_selector=True,
+            ),
+            dict(
+                env={"BASTION_TIER": "disabled"},
+                reservation=None,
+                reservation_project=None,
+                expect_reserved=False,
+                expect_spot_selector=False,
             ),
         ],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
@@ -173,6 +191,7 @@ class TPUReplicatedJobTest(TestCase):
         self,
         bundler_cls: type[Bundler],
         expect_reserved: bool,
+        expect_spot_selector: bool,
         enable_ici_resiliency: bool,
         env: dict,
         reservation: Optional[str] = None,
@@ -239,15 +258,20 @@ class TPUReplicatedJobTest(TestCase):
                 self.assertEqual([], pod_spec.get("tolerations", []))
                 self.assertEqual("reserved", labels.get("bastion-tier", None))
             else:
-                self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
+                if expect_spot_selector:
+                    self.assertEqual("true", node_selector.get("cloud.google.com/gke-spot", None))
+                    self.assertEqual("spot", labels.get("bastion-tier", None))
+                    tolerations = {
+                        kv["key"]: (kv["value"], kv["effect"])
+                        for kv in pod_spec.get("tolerations", [])
+                    }
+                    self.assertEqual(
+                        ("true", "NoSchedule"), tolerations.get("cloud.google.com/gke-spot", None)
+                    )
+                else:
+                    self.assertNotIn("cloud.google.com/gke-spot", node_selector)
+                    self.assertNotIn("provisioner-nodepool-id", node_selector)
                 self.assertNotIn("cloud.google.com/reservation-name", node_selector)
-                tolerations = {
-                    kv["key"]: (kv["value"], kv["effect"]) for kv in pod_spec.get("tolerations", [])
-                }
-                self.assertEqual(
-                    ("true", "NoSchedule"), tolerations.get("cloud.google.com/gke-spot", None)
-                )
-                self.assertEqual("spot", labels.get("bastion-tier", None))
 
             self.assertEqual(len(pod_spec["containers"]), 1)
 
