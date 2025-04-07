@@ -205,7 +205,8 @@ def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
 
 
 class TensorstoreSpecModifier:
-    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]): ...
+    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
+        ...
 
 
 async def _async_serialize(
