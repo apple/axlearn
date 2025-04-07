@@ -223,6 +223,7 @@ class SpmdTrainer(Module):
         parent: Optional[Module],
         devices: Optional[np.ndarray] = None,
     ):
+        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
@@ -253,7 +254,6 @@ class SpmdTrainer(Module):
         self._per_param_train_dtype = maybe_instantiate(
             canonicalize_per_param_dtype(cfg.train_dtype)
         )
-        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
         # Create the device mesh.
         if devices is None:
             self._step_log(
@@ -568,8 +568,10 @@ class SpmdTrainer(Module):
             )
 
             # Prepare training.
+            self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
             if not self._prepare_training(prng_key):
                 return None
+            self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
 
             self._is_initialized = True
 
@@ -580,40 +582,53 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                for input_batch in self.input.batches(self._input_iter):
-                    logging.log_first_n(
-                        logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
-                    )
+                input_iterator = self.input.batches(self._input_iter)
+                while True:
+                    self._maybe_record_event(measurement.Event.START_DATA_LOADING)
+                    try:
+                        input_batch = next(input_iterator)
+                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
+                        logging.log_first_n(
+                            logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
+                        )
 
-                    # Stop or start tracing if necessary.
-                    stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
+                        # Stop or start tracing if necessary.
+                        stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
 
-                    self._step = self._step + 1
-                    self.vlog(3, "Start step %s", self.step)
-                    self._maybe_record_event(measurement.Event.START_STEP, self._step)
-                    output = self._run_step(
-                        utils.host_to_global_device_array(
-                            input_batch,
-                            partition=self._train_step_input_partition_specs(),
-                        ),
-                        force_run_evals=(
-                            force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
-                        ),
-                    )
-                    self.vlog(3, "Done step %s", self.step)
-                    num_steps += 1
-                    if num_steps % 100 == 0:
-                        now = time.perf_counter()
-                        average_step_time = (now - start_time) / num_steps
-                        self._step_log("Average step time: %s seconds", average_step_time)
-                        self.summary_writer(self.step, {"average_step_time": average_step_time})
-                        num_steps = 0
-                        start_time = now
-                    if self.step >= cfg.max_step:
-                        self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
+                        self._step = self._step + 1
+                        self.vlog(3, "Start step %s", self.step)
+                        self._maybe_record_event(measurement.Event.START_STEP, self._step)
+                        output = self._run_step(
+                            utils.host_to_global_device_array(
+                                input_batch,
+                                partition=self._train_step_input_partition_specs(),
+                            ),
+                            force_run_evals=(
+                                force_run_eval_sets_at_max_step
+                                if self.step >= cfg.max_step
+                                else None
+                            ),
+                        )
+                        self.vlog(3, "Done step %s", self.step)
+                        num_steps += 1
+                        if num_steps % 100 == 0:
+                            now = time.perf_counter()
+                            average_step_time = (now - start_time) / num_steps
+                            self._step_log("Average step time: %s seconds", average_step_time)
+                            self.summary_writer(self.step, {"average_step_time": average_step_time})
+                            num_steps = 0
+                            start_time = now
+                        if self.step >= cfg.max_step:
+                            self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
+                            break
+                    except StopIteration:
+                        # Add END_DATA_LOADING event here to close the unpaired START_DATA_LOADING
+                        # event.
+                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         break
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
+
             self._step_log("Checkpointer flushed.")
             return output
 
@@ -854,7 +869,6 @@ class SpmdTrainer(Module):
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
         self.restore_checkpoint(restore_step=None)
-        self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
         if self.step is None:
             # If we didn't restore from checkpoint, attempt to build initial state according
             # to `cfg.init_state_builder` and initialize the remaining parameters.
@@ -873,7 +887,6 @@ class SpmdTrainer(Module):
 
             with fs.open(os.path.join(cfg.dir, "model_analysis.txt"), "w") as f:
                 f.write(model_analysis)
-        self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
         # Log config.
         self.summary_writer.log_config(cfg, step=self.step)
 
@@ -910,7 +923,6 @@ class SpmdTrainer(Module):
             restore_input_iter = cfg.save_input_iterator
             try:
                 # Try to restore with `input_iter`.
-                self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                 step, ckpt_state = self.checkpointer.restore(
                     step=restore_step,
                     state=(
@@ -924,7 +936,6 @@ class SpmdTrainer(Module):
                         step,
                         restore_input_iter,
                     )
-                self._maybe_record_event(measurement.Event.END_DATA_LOADING)
             except ValueError as e:
                 logging.warning(
                     "Attempt to restore checkpoint with restore_input_iter=%s failed: %s",
@@ -932,7 +943,6 @@ class SpmdTrainer(Module):
                     e,
                 )
                 # Restore with a different restore_input_iter setting.
-                self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                 restore_input_iter = not restore_input_iter
                 step, ckpt_state = self.checkpointer.restore(
                     step=restore_step,
@@ -947,7 +957,6 @@ class SpmdTrainer(Module):
                         step,
                         restore_input_iter,
                     )
-                self._maybe_record_event(measurement.Event.END_DATA_LOADING)
             if step is not None:
                 self._step = step
                 self._trainer_state = TrainerState(
