@@ -223,7 +223,6 @@ class SpmdTrainer(Module):
         parent: Optional[Module],
         devices: Optional[np.ndarray] = None,
     ):
-        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
@@ -241,6 +240,7 @@ class SpmdTrainer(Module):
         self._device_monitor = maybe_instantiate(cfg.device_monitor)
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
+        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
