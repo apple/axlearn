@@ -33,7 +33,6 @@ from axlearn.cloud.gcp.jobs.launch import (
     _get_runner_or_exit,
     _infer_runner_name,
     _JobType,
-    _parse_command_from_argv,
     _prelaunch_flags,
     _private_flags,
     _RegistryMember,
@@ -684,15 +683,65 @@ class MainTest(parameterized.TestCase):
                 launch.main(argv, fv=fv)
                 self.assertEqual(expected, fv.runner_name)
 
+    # TODO(markblee): Add more tests for the flag command path.
     @parameterized.product(
         [
-            dict(command="test command"),
-            dict(command="test 'command with quotes'"),
-            dict(command="'if [ true ]; then echo 1; fi'"),
+            # Tests that we should be able to pass multiple string-separated tokens.
+            dict(
+                command="test command",
+                action="start",
+                # This is the command that goes to "run".
+                expected="test command",
+                as_flag=False,
+            ),
+            # Same test with "run".
+            dict(
+                command="test command",
+                action="run",
+                expected="test command",
+                as_flag=False,
+            ),
+            # Same test with flags instead of argv.
+            dict(
+                command="test command",
+                action="run",
+                expected="test command",
+                as_flag=True,
+            ),
+            # Quotes or other shell constructs require the entire command to be quoted.
+            dict(
+                command="'test \"command with quotes\"'",
+                action="start",
+                # This is the command that goes to "run".
+                expected="'test \"command with quotes\"'",
+                as_flag=False,
+            ),
+            # Same test with "run".
+            dict(
+                command="'test \"command with quotes\"'",
+                action="run",
+                # The command itself shouldn't be quoted (so it can provided directly to k8s yaml);
+                # but the inner quotes should be retained.
+                expected='test "command with quotes"',
+                as_flag=False,
+            ),
+            # Shell commands can be provided by quoting.
+            dict(
+                command="'if [ true ]; then echo 1; fi'",
+                action="submit",
+                expected="'if [ true ]; then echo 1; fi'",
+                as_flag=False,
+            ),
+            dict(
+                command="'if [ true ]; then echo 1; fi'",
+                action="run",
+                # The command itself shouldn't be quoted (so it can provided directly to k8s yaml).
+                expected="if [ true ]; then echo 1; fi",
+                as_flag=False,
+            ),
         ],
-        as_flag=[False, True],
     )
-    def test_main_command(self, command, as_flag):
+    def test_main_command(self, command, action, expected, as_flag=False):
         """Tests that command specified as positional turns into flag."""
         argv_flags = [
             "--bastion=fake-bastion",
@@ -701,7 +750,7 @@ class MainTest(parameterized.TestCase):
             "--bundler_spec=image=tpu",
             "--dry_run",  # Don't run anything.
         ]
-        argv = ["cli", "start"] + argv_flags
+        argv = ["cli", action] + argv_flags
         if as_flag:
             argv.append(f"--command={shlex.quote(command)}")
         else:
@@ -715,9 +764,9 @@ class MainTest(parameterized.TestCase):
                 cmd_fv(run_argv, known_only=True)
                 actual_command = cmd_fv.command
             else:
-                actual_command = _parse_command_from_argv(run_argv)
+                actual_command = cfg.command.split(" -- ")[-1]
 
-            self.assertEqual(command, actual_command, msg=f"{actual_command=}")
+            self.assertEqual(expected, actual_command, msg=f"{actual_command=}")
             # Check that original flags are retained.
             self.assertContainsSubset(argv_flags, run_argv)
 

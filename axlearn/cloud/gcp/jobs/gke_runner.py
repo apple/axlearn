@@ -26,7 +26,7 @@ def main(argv: Sequence[str]):
 
     cfg = launch._get_launcher_or_exit(action=action, require_runner=True, flag_values=FLAGS)
     # Use sys.argv instead of argv from params, since the param argv has '--' stripped.
-    command = launch._parse_command_from_argv(sys.argv)
+    command = launch._parse_command_from_argv(sys.argv, action=action)
 
     # Retain flags that are used by the launch.
     fv = flags.FlagValues()

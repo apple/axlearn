@@ -308,6 +308,7 @@ class BaseBastionManagedJob(FlagConfigurable):
             # command again, this time on the bastion with action="run".
             # For backwards compatibility with legacy behavior where command is specified with argv
             # after `--`, we take any command supplied via `kwargs` and use argv.
+            # TODO(markblee): Handle quoting for flag commands that contain spaces.
             own_flags = " ".join(fv.flags_into_string().split("\n"))
             cfg.command = f"python3 -m {infer_module_qualname(cls)} run {own_flags}"
             if command is not None:
@@ -570,13 +571,18 @@ def _get_launcher_or_exit(
     return launch_cfg
 
 
-def _parse_command_from_argv(argv) -> str:
+def _parse_command_from_argv(argv: Sequence[str], *, action: str) -> str:
     # Parse the command from argv. Note that argv may or may not contain action, so we explicitly
     # look for '--' and extract all args after it.
     command = ""
     for i, arg in enumerate(argv):
         if arg.strip() == "--":
-            command = shlex.join(argv[i + 1 :])
+            # For "run", we don't do additional quoting as the joined command is supplied directly
+            # to the runner (e.g. k8s manifest), without going through the shell.
+            # For "submit", we quote since the command will be shipped to the bastion, at which
+            # point it goes through the shell before "run".
+            # TODO(markblee): Improve/simplify this behavior.
+            command = " ".join(argv[i + 1 :]) if action == "run" else shlex.join(argv[i + 1 :])
             break
     return command
 
@@ -589,7 +595,7 @@ def main(_, fv: flags.FlagValues = FLAGS):
     )
 
     # Use sys.argv instead of argv from params, since the param argv has '--' stripped.
-    command = _parse_command_from_argv(sys.argv)
+    command = _parse_command_from_argv(sys.argv, action=action)
 
     # If command is supplied, treat as a single --command flag.
     # In all other cases, we expect one or more commands specified as flags.
