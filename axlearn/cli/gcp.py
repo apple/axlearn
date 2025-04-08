@@ -59,11 +59,6 @@ def add_cmd_group(*, parent: CommandGroup):
         help="Launch arbitrary commands on remote compute",
     )
     gcp_cmd.add_cmd_from_module(
-        "tpu",
-        module="axlearn.cloud.gcp.jobs.tpu_runner",
-        help="Create a TPU-VM and execute the given command on it",
-    )
-    gcp_cmd.add_cmd_from_module(
         "vm",
         module="axlearn.cloud.gcp.jobs.cpu_runner",
         help="Create a VM and execute the given command on it",

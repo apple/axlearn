@@ -37,10 +37,10 @@ from axlearn.cloud.common.bastion import (
     JobLifecycleEvent,
     JobLifecycleState,
 )
-from axlearn.cloud.common.bundler import get_bundler_config
+from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
 from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import configure_logging, generate_job_name, parse_action
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, with_tpu_extras
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GCPJob, GKEJob, GPUGKEJob, TPUGKEJob
@@ -60,7 +60,6 @@ from axlearn.cloud.gcp.utils import (
     k8s_jobset_table,
     list_k8s_jobsets,
     load_kube_config,
-    running_from_vm,
 )
 from axlearn.cloud.gcp.vertexai_tensorboard import (
     VertexAITensorboardUploader,
@@ -123,6 +122,7 @@ class GKERunnerJob(GCPJob):
         """Configures GKERunnerJob.
 
         Attributes:
+            name: The name of the jobset.
             inner: GKE job configuration.
             output_dir: Output directory for artifacts (e.g. XLA dumps).
             namespace: K8s namespace propagated to inner.
@@ -132,8 +132,10 @@ class GKERunnerJob(GCPJob):
             enable_pre_provisioner: Whether to enable pre-provisioner.
             pre_provisioner: Optional pre-provisioner configuration.
             event_publisher: Optional event publisher configuration.
+            bundler: Bundler config.
         """
 
+        name: Required[str] = REQUIRED
         inner: Required[GKEJob.Config] = REQUIRED
         output_dir: Required[str] = REQUIRED
         namespace: str = "default"
@@ -145,6 +147,8 @@ class GKERunnerJob(GCPJob):
         pre_provisioner: Optional[NodePoolProvisioner.Config] = None
         # The event publisher sends events into queue.
         event_publisher: Optional[BaseQueueClient.Config] = None
+        # Bundler config. TODO(markblee): Remove after migrating launch command.
+        bundler: Required[Bundler.Config] = REQUIRED
 
     @classmethod
     def validate_inner(cls):
@@ -155,6 +159,7 @@ class GKERunnerJob(GCPJob):
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        bundler_flags(required=False, **common_kwargs)
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string(
             "output_dir",
@@ -175,19 +180,20 @@ class GKERunnerJob(GCPJob):
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
         # Don't override `name` if already specified, since the default is non-deterministic.
-        fv.set_default("name", fv["name"].default or generate_job_name())
+        # NOTE: Accessing fv.name directly reads any values or default values set on either --name
+        # or its aliases. On the other hand, accessing fv["name"].default ignores any values or
+        # default values set by aliases.
+        fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("namespace", "default")
         fv.set_default(
             "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
         )
+        fv.set_default("bundler_type", fv.bundler_type or CloudBuildBundler.TYPE)
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cls.validate_inner()
         cfg: GKERunnerJob.Config = super().from_flags(fv, **kwargs)
-        # Not used at the runner, but at the inner definition(s).
-        cfg.command = None
-        cfg.service_account = None
         # Construct wrapped job config. Don't propagate any configs here. Instead, propagate them in
         # __init__, since the caller may set(...) configs between now and __init__.
         cfg.inner = cast(GKEJob, cls.inner).from_flags(fv, **kwargs)
@@ -210,6 +216,7 @@ class GKERunnerJob(GCPJob):
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
+        self._bundler: Bundler = cfg.bundler.instantiate()
         # Instantiate inner job impl.
         self._inner: GKEJob = cfg.inner.instantiate(bundler=self._bundler)
         # Log sync process.
@@ -464,15 +471,10 @@ class GKERunnerJob(GCPJob):
                 self._inner._delete()  # pylint: disable=protected-access
             elif status == GKERunnerJob.Status.NOT_STARTED:
                 logging.info("Task does not exist. Submitting it now...")
-                # Only bundle on first start, not if we're resuming monitoring.
-                # If running from bastion VM, bundling should have happened on the user's machine.
-                if not running_from_vm():
-                    self._inner.bundler.bundle(cfg.name)
-                bundler = self._inner.bundler
                 try:
                     # Note: while this is blocking, the bastion will kill the runner process when it
                     # needs to reschedule.
-                    bundler.wait_until_finished(cfg.name)
+                    self._bundler.wait_until_finished(cfg.name)
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return
@@ -499,7 +501,6 @@ class GKERunnerJob(GCPJob):
         # Publish events to event queue.
         if not self._event_publisher:
             return
-
         self._event_publisher.publish(JobLifecycleEvent(job_name, state, msg))
 
 
@@ -521,8 +522,6 @@ class TPUGKERunnerJob(GKERunnerJob):
         cfg = super().from_flags(fv, **kwargs)
         if is_vertexai_tensorboard_configured(fv):
             cfg.vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(fv)
-        # TODO(markblee): Remove if not needed for GKE path, which doesn't use tar bundling.
-        cfg.bundler = with_tpu_extras(cfg.bundler)
         return cfg
 
 

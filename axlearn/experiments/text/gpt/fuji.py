@@ -353,6 +353,9 @@ def get_trainer_kwargs(
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
+                            GradientAccumulationModifier.default_config().set(
+                                grad_acc_steps=4,
+                            ),
                         ],
                     ),
                 ),

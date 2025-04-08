@@ -1,7 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities to retrieve quotas."""
-import copy
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -28,12 +27,6 @@ class QuotaInfo:
     # A nested mapping. Key is project identifier, value is mapping from resource type to
     # per-project resource proportions.
     project_resources: ProjectResourceMap[float]
-
-
-@dataclass
-class UserQuotaInfo(QuotaInfo):
-    """Per-user quota information for job scheduling."""
-
     # Maps project id -> sequence of user ids that are members.
     project_membership: dict[str, Sequence[str]]
 
@@ -46,20 +39,13 @@ class UserQuotaInfo(QuotaInfo):
                     user_in_projects.append(project_id.lower())
         return user_in_projects
 
-    def quota_info(self) -> QuotaInfo:
-        """Returns a `QuotaInfo` with the non-user information from this instance."""
-        return QuotaInfo(
-            total_resources=copy.deepcopy(self.total_resources),
-            project_resources=copy.deepcopy(self.project_resources),
-        )
-
 
 class QuotaFn(Protocol):
-    def __call__(self) -> UserQuotaInfo:
+    def __call__(self) -> QuotaInfo:
         """A callable that returns quota information for scheduling."""
 
 
-def get_resource_limits(path: str) -> UserQuotaInfo:
+def get_resource_limits(path: str) -> QuotaInfo:
     """Attempts to read resource limits, both total and per-project.
 
     Also reads user quota project membership.
@@ -78,7 +64,7 @@ def get_resource_limits(path: str) -> UserQuotaInfo:
         total_resources = cfg["total_resources"]
         if not isinstance(total_resources, Sequence):
             total_resources = [total_resources]
-        return UserQuotaInfo(
+        return QuotaInfo(
             total_resources=total_resources,
             project_resources=cfg["project_resources"],
             project_membership=cfg["project_membership"],

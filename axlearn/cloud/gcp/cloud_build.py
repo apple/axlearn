@@ -153,8 +153,14 @@ def _get_latest_build_status_in_region(
         # Sort builds by creation time and pick the latest.
         builds.sort(key=lambda build: build.create_time)
         latest_build = builds[-1]
-        logging.info(
-            "Latest build found in region '%s' for image '%s': %s", region, image_name, latest_build
+        # Logging latest_build can lead to very verbose logs, so we only log once.
+        logging.log_first_n(
+            logging.INFO,
+            "Latest build found in region '%s' for image '%s': %s",
+            1,
+            region,
+            image_name,
+            latest_build,
         )
         return CloudBuildStatus.from_build_status(latest_build.status)
 

@@ -33,6 +33,7 @@
 """Attention layers with pjit partition specs.
 
 On `attention_logit_biases`:
+* This is legacy. Use cfg.mask to avoid unnecessary O(T^2) biases.
 * For methods that take a tensor, a biases Tensor can have one of the following shapes:
   * [target_length, source_length]
   * [batch, target_length, source_length]
@@ -83,12 +84,10 @@ TODO(changlan): Merge the use of `positions` and `time_step` to reduce cognitive
 import enum
 import functools
 import math
-from collections.abc import Sequence
 from enum import Enum, unique
-from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Sequence, Union
 
 import chex
-import einops
 import jax
 from absl import logging
 from jax import numpy as jnp
@@ -198,6 +197,9 @@ class BaseKVCache(BaseLayer):
         """Configures BaseKVCache."""
 
         # Autoregressive KV cache dtype, which the input KV is converted into.
+        # This dtype is not only used for storing the KV cache, but it also applies to
+        # the returned KV activations. Therefore, before computing attention, we need to cast
+        # the KV tensors to match the query's dtype.
         cache_dtype: Optional[jnp.dtype] = None
 
     class Output(KVState):
@@ -305,25 +307,49 @@ class KVCache(BaseKVCache):
         if k_proj.shape[1] != key_positions.shape[1]:
             raise ValueError(f"{k_proj.shape[1]=} != {key_positions.shape[1]=}")
 
-        # Update the cache via one-hot broadcast and addition.
-        # NB: Cache updates can also be done via dynamic slice update. However it was observed
-        # that RLHF training got stuck in some cases.
-        # TODO(ds-hwang): Investigate the root cause.
         cached_key: Tensor = cached_states["key"]
         cached_value: Tensor = cached_states["value"]
-        source_len = cached_key.shape[-1]
+        batch, step_size = k_proj.shape[:2]
         # [B, T, N, H] --> [B, N, H, T].
         k_proj = jnp.einsum("btnh->bnht", k_proj)
         v_proj = jnp.einsum("btnh->bnht", v_proj)
-        # Create a dispatch matrix of shape [B, T=step, S].
-        oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
-        # Create a mask of shape [B, 1, 1, S].
-        negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
-        k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
-        v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
-        # Ensure that we accumulate using the original dtype.
-        cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
-        cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+
+        # On GPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 32.
+        # On TPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 1024.
+        threshold = 32 if jax.default_backend() != "tpu" else 1024
+
+        # dynamic_update_slice_in_dim is typically used for updating tensors, but we found that
+        # when step_size is small, one-hot matmul is 10-20% faster on both TPU and GPU.
+        if step_size < threshold:
+            source_len = cached_key.shape[-1]
+            # Create a dispatch matrix of shape [B, T=step, S].
+            oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
+            # Create a mask of shape [B, 1, 1, S].
+            negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
+
+            k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
+            v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
+
+            # Ensure that we accumulate using the original dtype.
+            cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
+            cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+        else:
+            # Note: KV transpose is an optimization for one-hot matmul and is not related to
+            # dynamic_update_slice_in_dim. As a result, KV transpose only adds overhead for it.
+            # Since small step_size scenarios are more frequent, we accept slowdown in this case.
+
+            # Function to update the cache for a single batch element.
+            def update_single(cached_kv_slice, kv_proj_slice, time_idx):
+                return jax.lax.dynamic_update_slice_in_dim(
+                    cached_kv_slice, kv_proj_slice, time_idx, axis=-1
+                )
+
+            # Use jax.vmap to vectorize over the batch dimension.
+            vmap_update = jax.vmap(update_single)
+            time_step = jnp.broadcast_to(key_positions[:, 0], [batch])
+            cached_key = vmap_update(cached_key, k_proj.astype(cached_key.dtype), time_step)
+            cached_value = vmap_update(cached_value, v_proj.astype(cached_key.dtype), time_step)
+
         updated_state = dict(key=cached_key, value=cached_value)
         chex.assert_equal_shape((updated_state["key"], cached_key))
         chex.assert_equal_shape((updated_state["value"], cached_value))
@@ -1197,9 +1223,9 @@ def _rotary_sinusoidal_positional_embeddings(
     dim_array = jnp.arange(dim // 2).astype(jnp.float32)
     pos_array = positions.astype(jnp.float32)  # [batch_size, seq_len]
     exponents = jnp.power(theta, 2 * dim_array / dim)  # 10000 ** (2i / dim), [dim/2]
-    position_enc = einops.rearrange(pos_array, "b t -> b t 1") / einops.rearrange(
-        exponents, "d -> 1 1 d"
-    )  # [batch_size, seq_len, dim/2]
+
+    # [batch_size, seq_len, dim/2]
+    position_enc = pos_array[:, :, None] / exponents[None, None, :]
 
     rope_part_1 = jnp.sin(position_enc)
     rope_part_2 = jnp.cos(position_enc)
@@ -1296,16 +1322,13 @@ def apply_rotary_position_embeddings(
     """
     # sin/cos: [batch_size, seq_len, 1, dim/2]
     sin, cos = jnp.split(sinusoidal_pos, 2, axis=-1)
-    # Note: '...' is used instead of 'b s n' because downstream uses it with different ranks.
     # sin [θ0,θ1,θ2......θd/2-1] -> sin_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    sin_pos = einops.repeat(sin, "... h -> ... (h k)", k=2)
+    sin_pos = jnp.repeat(sin, 2, axis=-1)
     # cos [θ0,θ1,θ2......θd/2-1] -> cos_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    cos_pos = einops.repeat(cos, "... h -> ... (h k)", k=2)
+    cos_pos = jnp.repeat(cos, 2, axis=-1)
 
     def rotate_half(x):
-        return einops.rearrange(
-            jnp.stack([-x[..., 1::2], x[..., ::2]], axis=-1), "... h k -> ... (h k)", k=2
-        )
+        return jnp.reshape(jnp.stack([-x[..., 1::2], x[..., ::2]], axis=-1), x.shape)
 
     # rotate_half_query_layer [-q1,q0,-q3,q2......,-qd-1,qd-2]
     query = query * cos_pos + rotate_half(query) * sin_pos
@@ -1790,7 +1813,6 @@ class MultiheadAttention(BaseLayer):
             time_step = cached_states["time_step"]
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
-        chex.assert_equal_shape((k_proj, v_proj))
 
         if mode == ForwardMode.FORWARD:
             new_cached_states = dict()
@@ -1879,6 +1901,8 @@ class MultiheadAttention(BaseLayer):
             and probs of shape [batch, num_heads, target_length, source_length].
         """
         del mode
+        # KV cache may cast them in lower precision.
+        k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
@@ -1976,7 +2000,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        attention_logit_biases: Optional[Tensor],
+        attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[Nested[Tensor], Optional[Output]]:
         """Initializes cache for autoregressive cached decoding.
@@ -2055,7 +2079,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        attention_logit_biases: Optional[Tensor],
+        attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
@@ -2126,10 +2150,18 @@ def compute_gqa_logits(q_proj: Tensor, k_proj: Tensor) -> Tensor:
     kv_heads = k_proj.shape[2]
     num_head_group = q_proj.shape[2] // kv_heads
     assert q_proj.shape[2] % kv_heads == 0
-    q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
-    k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
+
+    # [batch, target_length, kv_heads, num_head_group, per_head_dim]
+    q_proj = jnp.reshape(q_proj, [*q_proj.shape[:2], kv_heads, num_head_group, *q_proj.shape[3:]])
+
+    # [batch, source_length, kv_heads, 1, per_head_dim]
+    k_proj = jnp.expand_dims(k_proj, axis=3)
+
+    # [batch, kv_heads, num_head_group, target_length, source_length]
     logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
-    return einops.rearrange(logits, "b k g t s -> b (k g) t s")
+
+    # [batch, num_heads, target_length, source_length]
+    return jnp.reshape(logits, [*logits.shape[:1], -1, *logits.shape[3:]])
 
 
 def compute_gqa_context(probs: Tensor, v_proj: Tensor) -> Tensor:
@@ -2145,10 +2177,18 @@ def compute_gqa_context(probs: Tensor, v_proj: Tensor) -> Tensor:
     kv_heads = v_proj.shape[2]
     num_head_group = probs.shape[1] // kv_heads
     assert probs.shape[1] % kv_heads == 0
-    probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
-    v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
+
+    # [batch, kv_heads, num_head_group, target_length, source_length]
+    probs = jnp.reshape(probs, [*probs.shape[:1], kv_heads, num_head_group, *probs.shape[2:]])
+
+    # [batch, source_length, kv_heads, 1, per_head_dim]
+    v_proj = jnp.expand_dims(v_proj, axis=3)
+
+    # [batch, target_length, kv_heads, num_head_group, per_head_dim]
     context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
-    return einops.rearrange(context, "b t k g h -> b t (k g) h")
+
+    # [batch, target_length, num_heads, per_head_dim]
+    return jnp.reshape(context, [*context.shape[:2], -1, *context.shape[4:]])
 
 
 class GroupedQueryAttention(MultiheadAttention):
@@ -2212,7 +2252,9 @@ class GroupedQueryAttention(MultiheadAttention):
 class SigmoidAttention(MultiheadAttention):
     """A multi-head sigmoid-based attention layer, instead of softmax.
 
-    TODO(floris_weers): Add paper reference.
+    References:
+        Paper: https://arxiv.org/abs/2409.04431
+        PyTorch implementation: https://github.com/apple/ml-sigmoid-attention
     """
 
     @config_class
@@ -2220,6 +2262,7 @@ class SigmoidAttention(MultiheadAttention):
         """Configures SigmoidAttention."""
 
         seq_len: Required[int] = REQUIRED  # Maximum sequence length used.
+        subtract_seq_len_bias: bool = True  # Whether to subtract seq_len based bias.
 
     def _compute_attention(
         self,
@@ -2233,6 +2276,8 @@ class SigmoidAttention(MultiheadAttention):
         """See `MultiheadAttention._compute_attention` for details."""
         del mode
         cfg = self.config
+        # KV cache may cast them in lower precision.
+        k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
@@ -2240,8 +2285,10 @@ class SigmoidAttention(MultiheadAttention):
         attention_logit_biases = attention_logit_biases.value()
         if attention_logit_biases is None:
             attention_logit_biases = 0
-        # To approximate softmax, we subtract a bias dependent on sequence length.
-        attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
+        if cfg.subtract_seq_len_bias:
+            # To approximate softmax, we subtract a bias dependent on sequence length.
+            # We found that using a dynamic sequence length (per batch-row) does not help.
+            attention_logit_biases = attention_logit_biases - jnp.log(cfg.seq_len)
         probs = sigmoid_with_biases(
             logits,
             attention_logit_biases=attention_logit_biases,
@@ -3468,6 +3515,52 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
         )
 
 
+def set_attention_partition_specs(
+    cfg: MultiheadAttention.Config,
+    *,
+    fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
+    tp_axis_names: Union[str, Sequence[str]] = "model",
+):
+    """Sets `cfg` to shard attention weights over both fsdp and tp axes.
+
+    Args:
+        cfg: A MultiheadAttention layer config to apply sharding spec to.
+        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
+        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+    """
+    # Shard weights.
+    input_linear_cfg = cfg.input_linear
+    if hasattr(input_linear_cfg, "input_linear"):
+        input_linear_cfg = input_linear_cfg.input_linear
+    input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+    cfg.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+
+
+def set_feed_forward_partition_specs(
+    cfg: TransformerFeedForwardLayer.Config,
+    *,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
+    fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
+    tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
+):
+    """Sets `cfg` to shard FFN weights over both fsdp and tp axes.
+
+    Args:
+        cfg: A TransformerFeedForwardLayer layer config to apply sharding spec to.
+        batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
+        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
+        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+    """
+    # Shard weights.
+    cfg.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
+    cfg.linear2.param_partition_spec = (tp_axis_names, fsdp_axis_names)
+    # Encourage the right activation sharding.
+    cfg.linear1.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
+    cfg.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
+
+
 def set_double_shard_weights_config(
     cfg: Union[TransformerLayer.Config, Sequence[TransformerLayer.Config]],
     *,
@@ -3487,31 +3580,29 @@ def set_double_shard_weights_config(
     """
 
     # pytype: disable=attribute-error
-    def set_attn_partition_specs(attn_layer: MultiheadAttention.Config):
-        # Shard weights.
-        input_linear_cfg = attn_layer.input_linear
-        if hasattr(input_linear_cfg, "input_linear"):
-            input_linear_cfg = input_linear_cfg.input_linear
-        input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
-        attn_layer.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
-
-    def set_ffn_partition_specs(ff_layer: TransformerFeedForwardLayer.Config):
-        # Shard weights.
-        ff_layer.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
-        ff_layer.linear2.param_partition_spec = (tp_axis_names, fsdp_axis_names)
-        # Encourage the right activation sharding.
-        ff_layer.linear1.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
-        ff_layer.linear2.output_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
-
     if not isinstance(cfg, Sequence):
         cfg = [cfg]
 
     for layer_cfg in cfg:
-        set_attn_partition_specs(layer_cfg.self_attention.attention)
+        set_attention_partition_specs(
+            layer_cfg.self_attention.attention,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+        )
         if layer_cfg.cross_attention is not None:
-            set_attn_partition_specs(layer_cfg.cross_attention.attention)
+            set_attention_partition_specs(
+                layer_cfg.cross_attention.attention,
+                fsdp_axis_names=fsdp_axis_names,
+                tp_axis_names=tp_axis_names,
+            )
         if isinstance(layer_cfg.feed_forward, TransformerFeedForwardLayer.Config):
-            set_ffn_partition_specs(layer_cfg.feed_forward)
+            set_feed_forward_partition_specs(
+                layer_cfg.feed_forward,
+                batch_axis_names=batch_axis_names,
+                fsdp_axis_names=fsdp_axis_names,
+                tp_axis_names=tp_axis_names,
+                seq_axis_names=seq_axis_names,
+            )
     # pytype: enable=attribute-error
 
 

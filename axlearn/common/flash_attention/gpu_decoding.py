@@ -111,6 +111,7 @@ def _attn_forward_kernel(
             def compute():
                 curr_k_slice = pl.ds(start_k * block_k, block_k)
                 k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
+                k = k.astype(q.dtype)
                 qk = pl.dot(q, k.T, precision=precision)  # [block_h, block_k]
                 if bias_ref is not None:
                     qk += pl.load(
@@ -128,6 +129,7 @@ def _attn_forward_kernel(
                 l_curr = s_curr.sum(axis=-1)
                 l_next = l_prev_corr + l_curr
                 v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
+                v = v.astype(q.dtype)
                 o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
 
                 # Flash2 unscaled_o.

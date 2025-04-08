@@ -2,9 +2,8 @@
 
 """Tests GKERunnerJob."""
 
-# pylint: disable=no-self-use,protected-access
-import contextlib
-from collections.abc import Iterator, Sequence
+# pylint: disable=no-self-use,protected-access,unnecessary-lambda
+from collections.abc import Sequence
 from typing import Optional, Union, cast
 from unittest import mock
 
@@ -16,7 +15,6 @@ from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.job import GPUGKEJob
 from axlearn.cloud.gcp.jobs import gke_runner
-from axlearn.cloud.gcp.jobs.bastion_vm_test import _mock_job
 from axlearn.cloud.gcp.jobs.gke_runner import (
     JobType,
     _get_runner_or_exit,
@@ -26,7 +24,8 @@ from axlearn.cloud.gcp.jobs.gke_runner import (
 from axlearn.cloud.gcp.jobs.launch import _prelaunch_flags
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
-from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
+from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings, mock_job
+from axlearn.common.config import config_for_function
 
 
 def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Optional[int] = None):
@@ -60,27 +59,29 @@ def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Opti
 class GPUGKERunnerJobTest(parameterized.TestCase):
     """Tests GPUGKERunnerJob."""
 
-    @contextlib.contextmanager
-    def _job_config(
-        self, *, command: str, **kwargs
-    ) -> Iterator[tuple[gke_runner.GPUGKERunnerJob.Config, dict]]:
+    def run(self, result=None):
         mock_user = mock.patch("os.environ", {"USER": "test"})
-        mock_settings = default_mock_settings()
+        self._settings = default_mock_settings()
         with (
             mock_user,
             mock_gcp_settings(
                 [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
-                settings=mock_settings,
+                settings=self._settings,
             ),
         ):
-            fv = flags.FlagValues()
-            gke_runner.GPUGKERunnerJob.define_flags(fv)
-            for key, value in kwargs.items():
-                if value is not None:
-                    setattr(fv, key, value)
-            fv.set_default("instance_type", "gpu-a3-highgpu-8g-256")
-            fv.mark_as_parsed()
-            yield gke_runner.GPUGKERunnerJob.from_flags(fv, command=command), mock_settings
+            return super().run(result)
+
+    def _job_config(self, *, command: str, **kwargs) -> gke_runner.GPUGKERunnerJob.Config:
+        fv = flags.FlagValues()
+        gke_runner.GPUGKERunnerJob.define_flags(fv)
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(fv, key, value)
+        fv.set_default("instance_type", "gpu-a3-highgpu-8g-256")
+        fv.mark_as_parsed()
+        cfg = gke_runner.GPUGKERunnerJob.from_flags(fv, command=command)
+        cfg.bundler = config_for_function(lambda: mock.Mock())
+        return cfg
 
     @parameterized.product(
         name=[None, "test-name"],
@@ -88,22 +89,22 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
         gcsfuse_mount_spec=[None, ["gcs_path=my-test-path"]],
     )
     def test_from_flags(self, name, cluster, gcsfuse_mount_spec):
-        with self._job_config(
+        cfg = self._job_config(
             command="test-command",
             name=name,
             cluster=cluster,
             gcsfuse_mount_spec=gcsfuse_mount_spec,
-        ) as (cfg, mock_settings):
-            if name:
-                self.assertEqual(cfg.name, name)
-            else:
-                self.assertIsNotNone(cfg.name)
-            self.assertEqual(cfg.cluster, cluster or mock_settings["gke_cluster"])
-            self.assertEqual(cfg.inner.builder.name, cfg.name)
-            self.assertEqual(cfg.inner.builder.command, "test-command")
-            if gcsfuse_mount_spec:
-                fuse = cast(GPUGKEJob.Config, cfg.inner).builder.gcsfuse_mount
-                self.assertEqual(fuse.gcs_path, "my-test-path")
+        )
+        if name:
+            self.assertEqual(cfg.name, name)
+        else:
+            self.assertIsNotNone(cfg.name)
+        self.assertEqual(cfg.cluster, cluster or self._settings["gke_cluster"])
+        self.assertEqual(cfg.inner.builder.name, cfg.name)
+        self.assertEqual(cfg.inner.builder.command, "test-command")
+        if gcsfuse_mount_spec:
+            fuse = cast(GPUGKEJob.Config, cfg.inner).builder.gcsfuse_mount
+            self.assertEqual(fuse.gcs_path, "my-test-path")
 
     @parameterized.product(
         status=[
@@ -113,73 +114,69 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
         ],
     )
     def test_exit(self, status):
-        with self._job_config(
+        cfg = self._job_config(
             command="",
             name="test-name",
             cluster="test-cluster",
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
-            job: gke_runner.GPUGKERunnerJob = cfg.instantiate()
+        )
+        job: gke_runner.GPUGKERunnerJob = cfg.instantiate()
 
-            mock_job = mock.patch.multiple(
-                job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
-            )
-
-            with mock_job:
-                job._execute()
+        with mock.patch.multiple(
+            job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
+        ):
+            job._execute()
 
     def test_delete(self):
-        with self._job_config(command="", name="test-name", cluster="test-cluster") as (cfg, _):
-            cfg.bundler.set(image="test")
+        cfg = self._job_config(command="", name="test-name", cluster="test-cluster")
+        job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
-
-            mock_job = mock.patch.multiple(
-                job,
-                _inner=mock.DEFAULT,
-                _pre_provisioner=mock.DEFAULT,
-            )
-
-            with mock_job:
-                job._delete()
-                job._inner._delete.assert_called()  # pytype: disable=attribute-error
+        with mock.patch.multiple(
+            job,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        ):
+            job._delete()
+            job._inner._delete.assert_called()  # pytype: disable=attribute-error
 
     def test_start(self):
-        with self._job_config(
+        cfg = self._job_config(
             command="",
             name="test-name",
             cluster="test-cluster",
-        ) as (
-            cfg,
-            _,
+        )
+        job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
+
+        with mock.patch.multiple(
+            job,
+            _get_status=mock.Mock(
+                side_effect=[
+                    gke_runner.GKERunnerJob.Status.NOT_STARTED,
+                    gke_runner.GKERunnerJob.Status.COMPLETED,
+                ]
+            ),
+            _delete=mock.DEFAULT,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
         ):
-            cfg.bundler.set(image="test")
-
-            job: gke_runner.GPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
-
-            mock_job = mock.patch.multiple(
-                job,
-                _get_status=mock.Mock(
-                    side_effect=[
-                        gke_runner.GKERunnerJob.Status.NOT_STARTED,
-                        gke_runner.GKERunnerJob.Status.COMPLETED,
-                    ]
-                ),
-                _get_job_credentials=mock.DEFAULT,
-                _delete=mock.DEFAULT,
-                _inner=mock.DEFAULT,
-                _pre_provisioner=mock.DEFAULT,
-            )
-
-            with mock_job:
-                job._execute()
-                job._inner.execute.assert_called()  # pytype: disable=attribute-error
+            job._execute()
+            job._inner.execute.assert_called()  # pytype: disable=attribute-error
 
 
 class TPUGKERunnerJobTest(parameterized.TestCase):
     """Tests TPUGKERunnerJob."""
 
-    @contextlib.contextmanager
+    def run(self, result=None):
+        mock_user = mock.patch("os.environ", {"USER": "test"})
+        self._settings = default_mock_settings()
+        with (
+            mock_user,
+            mock_gcp_settings(
+                [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                settings=self._settings,
+            ),
+        ):
+            return super().run(result)
+
     def _job_config(
         self,
         *,
@@ -187,29 +184,22 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         command: str,
         env_vars: Optional[dict] = None,
         **kwargs,
-    ) -> Iterator[tuple[gke_runner.TPUGKERunnerJob.Config, dict]]:
-        mock_user = mock.patch("os.environ", {"USER": "test"})
-        mock_settings = default_mock_settings()
-        with (
-            mock_user,
-            mock_gcp_settings(
-                [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
-                mock_settings,
-            ),
-        ):
-            fv = flags.FlagValues()
-            gke_runner.TPUGKERunnerJob.define_flags(fv)
-            # Set `name` as a default; since implementations typically use `generate_job_name`, we
-            # want to exercise the case that the default value of name is not overridden.
-            fv.set_default("name", name)
-            for key, value in kwargs.items():
-                if value is not None:
-                    setattr(fv, key, value)
-            if env_vars:
-                fv.env = [f"{k}:{v}" for k, v in env_vars.items()]
-            fv.set_default("instance_type", "tpu-v4-8")
-            fv.mark_as_parsed()
-            yield gke_runner.TPUGKERunnerJob.from_flags(fv, command=command), mock_settings
+    ) -> gke_runner.TPUGKERunnerJob.Config:
+        fv = flags.FlagValues()
+        gke_runner.TPUGKERunnerJob.define_flags(fv)
+        # Set `name` as a default; since implementations typically use `generate_job_name`, we
+        # want to exercise the case that the default value of name is not overridden.
+        fv.set_default("name", name)
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(fv, key, value)
+        if env_vars:
+            fv.env = [f"{k}:{v}" for k, v in env_vars.items()]
+        fv.set_default("instance_type", "tpu-v4-8")
+        fv.mark_as_parsed()
+        cfg = gke_runner.TPUGKERunnerJob.from_flags(fv, command=command)
+        cfg.bundler = config_for_function(lambda: mock.Mock())
+        return cfg
 
     @parameterized.product(
         name=[None, "test-name"],
@@ -219,48 +209,45 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         env_vars=[None, {"test": "123"}],
     )
     def test_from_flags(self, name, cluster, enable_pre_provisioner, gcsfuse_mount_spec, env_vars):
-        with self._job_config(
+        cfg = self._job_config(
             command="test-command",
             name=name,
             cluster=cluster,
             enable_pre_provisioner=enable_pre_provisioner,
             gcsfuse_mount_spec=gcsfuse_mount_spec,
             env_vars=env_vars,
-        ) as (cfg, mock_settings):
-            if name:
-                self.assertEqual(cfg.name, name)
-            else:
-                self.assertIsNotNone(cfg.name)
-            self.assertEqual(cfg.cluster, cluster or mock_settings["gke_cluster"])
-            self.assertEqual(cfg.enable_pre_provisioner, enable_pre_provisioner)
-            builder_cfg: TPUReplicatedJob.Config = cfg.inner.builder
-            self.assertIsInstance(builder_cfg, TPUReplicatedJob.Config)
-            self.assertEqual(builder_cfg.name, cfg.name)
-            self.assertEqual(builder_cfg.output_dir, cfg.output_dir)
-            self.assertIn(cfg.name, cfg.output_dir)
-            if gcsfuse_mount_spec:
-                fuse = builder_cfg.gcsfuse_mount
-                self.assertEqual(fuse.gcs_path, "my-test-path")
+        )
+        if name:
+            self.assertEqual(cfg.name, name)
+        else:
+            self.assertIsNotNone(cfg.name)
+        self.assertEqual(cfg.cluster, cluster or self._settings["gke_cluster"])
+        self.assertEqual(cfg.enable_pre_provisioner, enable_pre_provisioner)
+        builder_cfg: TPUReplicatedJob.Config = cfg.inner.builder
+        self.assertIsInstance(builder_cfg, TPUReplicatedJob.Config)
+        self.assertEqual(builder_cfg.name, cfg.name)
+        self.assertEqual(builder_cfg.output_dir, cfg.output_dir)
+        self.assertIn(cfg.name, cfg.output_dir)
+        if gcsfuse_mount_spec:
+            fuse = builder_cfg.gcsfuse_mount
+            self.assertEqual(fuse.gcs_path, "my-test-path")
 
-            # Test that TPU defaults are set.
-            self.assertIn("TPU_TYPE", builder_cfg.env_vars)
-            if env_vars is not None:
-                for k, v in env_vars.items():
-                    self.assertEqual(builder_cfg.env_vars[k], v)
+        # Test that TPU defaults are set.
+        self.assertIn("TPU_TYPE", builder_cfg.env_vars)
+        if env_vars is not None:
+            for k, v in env_vars.items():
+                self.assertEqual(builder_cfg.env_vars[k], v)
 
-            # Should be instantiable.
-            cfg.bundler.image = "FAKE"
-            runner: gke_runner.TPUGKERunnerJob = cfg.instantiate()
+        # Should be instantiable.
+        # cfg.bundler.image = "FAKE"
+        runner: gke_runner.TPUGKERunnerJob = cfg.instantiate()
 
-            # Inner should have consistent configs.
-            final_config = runner.config
-            inner_config = runner._inner.config
-            for key, value in final_config.items():
-                if (
-                    key not in ("klass", "bundler", "service_account")
-                    and key in inner_config.keys()
-                ):
-                    self.assertEqual(value, getattr(inner_config, key), msg=key)
+        # Inner should have consistent configs.
+        final_config = runner.config
+        inner_config = runner._inner.config
+        for key, value in final_config.items():
+            if key not in ("klass", "bundler", "service_account") and key in inner_config.keys():
+                self.assertEqual(value, getattr(inner_config, key), msg=key)
 
     def test_default_name(self):
         """Tests that default name works even when env doesn't contain USER."""
@@ -286,21 +273,18 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         enable_pre_provisioner=[None, False, True],
     )
     def test_exit(self, status, enable_pre_provisioner):
-        with self._job_config(
+        cfg = self._job_config(
             command="",
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
-            job: gke_runner.TPUGKERunnerJob = cfg.instantiate()
+        )
+        job: gke_runner.TPUGKERunnerJob = cfg.instantiate()
 
-            mock_job = mock.patch.multiple(
-                job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
-            )
-
-            with mock_job:
-                job._execute()
+        with mock.patch.multiple(
+            job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
+        ):
+            job._execute()
 
     @parameterized.parameters(
         dict(
@@ -612,31 +596,30 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         spec: dict,
         enable_pre_provisioner: Optional[bool] = None,
     ):
-        with self._job_config(
+        cfg = self._job_config(
             command="test-command",
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
             num_replicas=num_slices,
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
-            job: gke_runner.TPUGKERunnerJob = cfg.instantiate()
+        )
+        job: gke_runner.TPUGKERunnerJob = cfg.instantiate()
 
-            if isinstance(status, Exception):
-                mock_get_status = mock.Mock(side_effect=status)
-            else:
-                mock_get_status = mock.Mock(return_value=dict(status=status, spec=spec))
+        if isinstance(status, Exception):
+            mock_get_status = mock.Mock(side_effect=status)
+        else:
+            mock_get_status = mock.Mock(return_value=dict(status=status, spec=spec))
 
-            with (
-                mock.patch.dict(
-                    "os.environ", {"BASTION_TIER": tier, BASTION_JOB_VERSION_ENV_VAR: job_version}
-                ),
-                mock.patch(
-                    "kubernetes.client.CustomObjectsApi",
-                    return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
-                ),
-            ):
-                self.assertEqual(expected, job._get_status())
+        with (
+            mock.patch.dict(
+                "os.environ", {"BASTION_TIER": tier, BASTION_JOB_VERSION_ENV_VAR: job_version}
+            ),
+            mock.patch(
+                "kubernetes.client.CustomObjectsApi",
+                return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
+            ),
+        ):
+            self.assertEqual(expected, job._get_status())
 
     @parameterized.parameters(
         # Don't need to reschedule if no node-pool exists.
@@ -823,152 +806,150 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         tier=None,
         enable_pre_provisioner=False,
     ):
-        with self._job_config(
+        cfg = self._job_config(
             command="test-command",
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
-            # Node pool test cases assume "test-name".
-            self.assertEqual("test-name", cfg.name)
+        )
+        # Node pool test cases assume "test-name".
+        self.assertEqual("test-name", cfg.name)
 
-            job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
+        job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
-                job,
-                _get_status=mock.Mock(
-                    side_effect=[
-                        gke_runner.GKERunnerJob.Status.RESCHEDULED,
-                        gke_runner.GKERunnerJob.Status.COMPLETED,
-                    ]
-                ),
-                _get_job_credentials=mock.DEFAULT,
-                _delete=mock.DEFAULT,
-                _inner=mock.DEFAULT,
-                _pre_provisioner=mock.DEFAULT,
-            )
-            mock_list_node_pools_by_label_key = mock.Mock(return_value=node_pool_by_provisioner)
-            mock_delete_node_pools = mock.Mock()
-            mock_node_pool = mock.patch.multiple(
-                gke_runner.__name__,
-                delete_node_pools=mock_delete_node_pools,
-                list_node_pools_by_label_key=mock_list_node_pools_by_label_key,
-            )
-            mock_env = mock.patch("os.environ", {"BASTION_TIER": tier} if tier is not None else {})
-            with mock_env, mock_job, mock_node_pool:
-                job._reschedule()
+        patch_job = mock.patch.multiple(
+            job,
+            _get_status=mock.Mock(
+                side_effect=[
+                    gke_runner.GKERunnerJob.Status.RESCHEDULED,
+                    gke_runner.GKERunnerJob.Status.COMPLETED,
+                ]
+            ),
+            _delete=mock.DEFAULT,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        )
+        mock_list_node_pools_by_label_key = mock.Mock(return_value=node_pool_by_provisioner)
+        mock_delete_node_pools = mock.Mock()
+        mock_node_pool = mock.patch.multiple(
+            gke_runner.__name__,
+            delete_node_pools=mock_delete_node_pools,
+            list_node_pools_by_label_key=mock_list_node_pools_by_label_key,
+        )
+        mock_env = mock.patch("os.environ", {"BASTION_TIER": tier} if tier is not None else {})
+        with mock_env, patch_job, mock_node_pool:
+            job._reschedule()
 
-                self.assertEqual(expect_delete_count, mock_delete_node_pools.call_count)
+            self.assertEqual(expect_delete_count, mock_delete_node_pools.call_count)
 
-                # Jobset should always be deleted.
-                job._inner._delete.assert_called()  # pytype: disable=attribute-error
+            # Jobset should always be deleted.
+            job._inner._delete.assert_called()  # pytype: disable=attribute-error
 
     @parameterized.parameters(None, False, True)
     def test_delete(self, enable_pre_provisioner):
-        with self._job_config(
+        cfg = self._job_config(
             name="test-name",
             command="",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
-            job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
+        )
+        job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
-                job,
-                _inner=mock.DEFAULT,
-                _pre_provisioner=mock.DEFAULT,
-            )
+        with mock.patch.multiple(
+            job,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        ):
+            job._delete()
 
-            with mock_job:
-                job._delete()
+            job._inner._delete.assert_called()  # pytype: disable=attribute-error
 
-                job._inner._delete.assert_called()  # pytype: disable=attribute-error
-
-                if enable_pre_provisioner:
-                    # pytype: disable=attribute-error
-                    job._pre_provisioner.delete_for.assert_called()
-                    # pytype: enable=attribute-error
+            if enable_pre_provisioner:
+                # pytype: disable=attribute-error
+                job._pre_provisioner.delete_for.assert_called()
+                # pytype: enable=attribute-error
 
     @parameterized.parameters(None, False, True)
     def test_start(self, enable_pre_provisioner):
-        with self._job_config(
+        cfg = self._job_config(
             command="test-command",
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
-            job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
+        )
+        job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            mock_job = mock.patch.multiple(
-                job,
-                _get_status=mock.Mock(
-                    side_effect=[
-                        gke_runner.GKERunnerJob.Status.NOT_STARTED,
-                        gke_runner.GKERunnerJob.Status.COMPLETED,
-                    ]
-                ),
-                _get_job_credentials=mock.DEFAULT,
-                _delete=mock.DEFAULT,
-                _inner=mock.DEFAULT,
-                _pre_provisioner=mock.DEFAULT,
-            )
+        with mock.patch.multiple(
+            job,
+            _get_status=mock.Mock(
+                side_effect=[
+                    gke_runner.GKERunnerJob.Status.NOT_STARTED,
+                    gke_runner.GKERunnerJob.Status.COMPLETED,
+                ]
+            ),
+            _delete=mock.DEFAULT,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        ):
+            job._execute()
 
-            with mock_job:
-                job._execute()
+            if enable_pre_provisioner:
+                # pytype: disable=attribute-error
+                job._pre_provisioner.create_for.assert_called()
+                # pytype: enable=attribute-error
 
-                if enable_pre_provisioner:
-                    # pytype: disable=attribute-error
-                    job._pre_provisioner.create_for.assert_called()
-                    # pytype: enable=attribute-error
-
-                job._inner.execute.assert_called()  # pytype: disable=attribute-error
+            job._inner.execute.assert_called()  # pytype: disable=attribute-error
 
     @parameterized.parameters(None, False, True)
     def test_update(self, enable_pre_provisioner):
-        with self._job_config(
+        cfg = self._job_config(
             command="test-command",
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
+        )
+        job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
 
-            job: gke_runner.TPUGKERunnerJob = cfg.set(status_interval_seconds=0).instantiate()
+        with mock.patch.multiple(
+            job,
+            _get_status=mock.Mock(
+                side_effect=[
+                    gke_runner.GKERunnerJob.Status.UPDATING,
+                    gke_runner.GKERunnerJob.Status.COMPLETED,
+                ]
+            ),
+            _delete=mock.DEFAULT,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        ):
+            job._execute()
 
-            mock_job = mock.patch.multiple(
-                job,
-                _get_status=mock.Mock(
-                    side_effect=[
-                        gke_runner.GKERunnerJob.Status.UPDATING,
-                        gke_runner.GKERunnerJob.Status.COMPLETED,
-                    ]
-                ),
-                _get_job_credentials=mock.DEFAULT,
-                _delete=mock.DEFAULT,
-                _inner=mock.DEFAULT,
-                _pre_provisioner=mock.DEFAULT,
-            )
+            # pytype: disable=attribute-error
+            job._pre_provisioner.delete_for.assert_not_called()
+            job._inner._delete.assert_called()
+            # pytype: enable=attribute-error
 
-            with mock_job:
-                job._execute()
-
-                # pytype: disable=attribute-error
-                job._pre_provisioner.delete_for.assert_not_called()
-                job._inner._delete.assert_called()
-                # pytype: enable=attribute-error
+    def test_name_alias(self):
+        with (
+            mock_gcp_settings(
+                [gke_runner.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                default_mock_settings(),
+            ),
+        ):
+            fv = flags.FlagValues()
+            gke_runner.TPUGKERunnerJob.define_flags(fv)
+            fv.mark_as_parsed()
+            self.assertIsNone(fv.name)
+            self.assertIsNone(fv["name"].default)
+            flags.DEFINE_alias("alias_name", "name", flag_values=fv)
+            fv.set_default("alias_name", "test-name")
+            gke_runner.TPUGKERunnerJob.set_defaults(fv)
+            self.assertEqual(fv.name, fv.alias_name)
+            self.assertEqual(fv["name"].default, fv.alias_name)
 
 
 class FlinkGKERunnerJobTest(parameterized.TestCase):
-    @contextlib.contextmanager
-    def _job_config(
-        self,
-        *,
-        command: str,
-        **kwargs,
-    ) -> Iterator[tuple[gke_runner.GPUGKERunnerJob.Config, dict]]:
+    def run(self, result=None):
         mock_user = mock.patch("os.environ", {"USER": "test"})
         mock_settings = default_mock_settings()
         with (
@@ -978,13 +959,23 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
                 mock_settings,
             ),
         ):
-            fv = flags.FlagValues()
-            gke_runner.GPUGKERunnerJob.define_flags(fv)
-            for key, value in kwargs.items():
-                if value is not None:
-                    setattr(fv, key, value)
-            fv.mark_as_parsed()
-            yield gke_runner.FlinkGKERunnerJob.from_flags(fv, command=command), mock_settings
+            return super().run(result)
+
+    def _job_config(
+        self,
+        *,
+        command: str,
+        **kwargs,
+    ) -> gke_runner.GPUGKERunnerJob.Config:
+        fv = flags.FlagValues()
+        gke_runner.GPUGKERunnerJob.define_flags(fv)
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(fv, key, value)
+        fv.mark_as_parsed()
+        cfg = gke_runner.FlinkGKERunnerJob.from_flags(fv, command=command)
+        cfg.bundler = config_for_function(lambda: mock.Mock())
+        return cfg
 
     @parameterized.product(
         (
@@ -1050,32 +1041,31 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
         status: dict,
         expected: gke_runner.GKERunnerJob.Status,
     ):
-        with self._job_config(
+        cfg = self._job_config(
             command="test-command",
             name="test-name",
             cluster="test-cluster",
             instance_type="v5p-8",
-        ) as (cfg, _):
-            cfg.bundler.set(image="test")
-            job: gke_runner.FlinkGKERunnerJob = cfg.instantiate()
+        )
+        job: gke_runner.FlinkGKERunnerJob = cfg.instantiate()
 
-            if isinstance(status, Exception):
-                mock_get_status = mock.Mock(side_effect=status)
+        if isinstance(status, Exception):
+            mock_get_status = mock.Mock(side_effect=status)
+        else:
+            mock_get_status = mock.Mock(return_value=status)
+
+        with (
+            mock.patch(
+                "kubernetes.client.CustomObjectsApi",
+                return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
+            ),
+        ):
+            if isinstance(expected, Exception):
+                with self.assertRaises(Exception) as context:
+                    job._get_status()
+                self.assertEqual(str(expected), str(context.exception))
             else:
-                mock_get_status = mock.Mock(return_value=status)
-
-            with (
-                mock.patch(
-                    "kubernetes.client.CustomObjectsApi",
-                    return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
-                ),
-            ):
-                if isinstance(expected, Exception):
-                    with self.assertRaises(Exception) as context:
-                        job._get_status()
-                    self.assertEqual(str(expected), str(context.exception))
-                else:
-                    self.assertEqual(expected, job._get_status())
+                self.assertEqual(expected, job._get_status())
 
 
 class MainTest(parameterized.TestCase):
@@ -1117,18 +1107,17 @@ class MainTest(parameterized.TestCase):
             "zone": "settings-zone",
             "gke_cluster": "settings-cluster",
         }
-        mock_job = _mock_job(
-            runner,
-            bundler_kwargs={},
-            settings_kwargs=mock_settings,
-        )
         mock_utils = mock.patch.multiple(
             gke_runner.__name__,
             load_kube_config=mock.DEFAULT,
             delete_k8s_jobset=mock.DEFAULT,
             list_node_pools_by_label_key=mock.DEFAULT,
         )
-        with mock_gcp_settings(gke_runner.__name__, mock_settings), mock_job, mock_utils as m:
+        with (
+            mock_gcp_settings(gke_runner.__name__, mock_settings),
+            mock_job(runner),
+            mock_utils as m,
+        ):
             fv = flags.FlagValues()
             gke_runner.TPUGKERunnerJob.define_flags(fv)
             _prelaunch_flags(fv=fv)
@@ -1176,11 +1165,6 @@ class MainTest(parameterized.TestCase):
         ),
     )
     def test_stop(self, node_pool_by_provisioner, expect_delete_np_count):
-        mock_job = _mock_job(
-            gke_runner.TPUGKERunnerJob,
-            bundler_kwargs={},
-            settings_kwargs={},
-        )
         mock_settings = {
             "project": "settings-project",
             "zone": "settings-zone",
@@ -1194,7 +1178,11 @@ class MainTest(parameterized.TestCase):
             list_node_pools_by_label_key=mock.Mock(return_value=node_pool_by_provisioner),
             delete_node_pools=mock.DEFAULT,
         )
-        with mock_gcp_settings(gke_runner.__name__, mock_settings), mock_job, mock_utils:
+        with (
+            mock_gcp_settings(gke_runner.__name__, mock_settings),
+            mock_job(gke_runner.TPUGKERunnerJob),
+            mock_utils,
+        ):
             fv = flags.FlagValues()
             gke_runner.TPUGKERunnerJob.define_flags(fv)
             fv.set_default("name", "test-job-0")
