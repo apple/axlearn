@@ -72,7 +72,7 @@ def down_proj(x, wo_weight):
 @partial(jax.jit, static_argnums=(0,))
 def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
     # Expected shapes:
-    # permuted_output: (O, G, E, M)
+    # permuted_output: (O, G, E*C, M)
     # token_permutation_idx: (O, G, S, K)
     # expert_index: (O, G, S, K)
     # expert_affinities_masked: (O, G, S, E)
@@ -102,8 +102,9 @@ def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, e
 
     # Sum across the top-k dimension
     combined_output = jnp.sum(weighted_output_k, axis=3)  # Shape: (O, G, S, M)
+    dest_output = dest_output.at[0].set(combined_output)  # Shape: (1, O, G, S, M)
 
-    return combined_output
+    return dest_output
 
 def _router_z_loss(logits: Tensor) -> Tensor:
     """Loss that encourages router logits to remain small and improves stability.
