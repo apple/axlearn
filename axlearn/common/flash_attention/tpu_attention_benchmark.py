@@ -30,16 +30,11 @@ import time
 from typing import Callable, Optional
 
 import jax
-import jax.numpy as jnp
 
-from axlearn.common.attention_bias import (
-    CausalAttentionBias,
-    CompositeAttentionBias,
-    SlidingWindowAttentionBias,
-    TensorAttentionBias,
-    sliding_window_causal_mask,
-)
-from axlearn.common.flash_attention.utils import flash_attention_implementation, mha_reference
+from axlearn.common.attention_bias import causal_mask
+from axlearn.common.flash_attention.common import ReferenceMHA
+from axlearn.common.flash_attention.test_utils import generate_attention_data
+from axlearn.common.flash_attention.utils import flash_attention_implementation
 
 _BENCHMARK_CONFIGS = {
     "1.2b": dict(
@@ -51,7 +46,8 @@ _BENCHMARK_CONFIGS = {
         per_head_dim=128,
     ),
     "29.6b": dict(
-        num_heads=56,
+        num_heads=8,
+        num_kv_heads=1,
         per_head_dim=128,
     ),
     "65.2b": dict(
@@ -91,75 +87,59 @@ def _benchmark(
     block_size: int,
     num_heads: int,
     per_head_dim: int,
+    num_kv_heads: Optional[int] = None,
+    is_decoding: bool = False,
     causal: bool = True,
     use_bias: bool = False,
-    use_segment_ids: bool = False,
     sliding_window_size: Optional[int] = None,
 ):
     """Benchmarks TPU FlashAttention vs reference impl."""
-    k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
-    q = jax.random.normal(k1, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-    k = jax.random.normal(k2, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-    v = jax.random.normal(k3, (batch_size, seq_len, num_heads, per_head_dim), dtype=jnp.bfloat16)
-
-    bias = None
-    if use_bias:
-        bias = jax.random.normal(k4, (batch_size, num_heads, seq_len, seq_len), dtype=jnp.bfloat16)
-    segment_ids = None
-    if use_segment_ids:
-        segment_ids = jnp.cumsum(
-            jax.random.bernoulli(k5, shape=(batch_size, seq_len)).astype(jnp.int32), axis=1
-        )
-
-    softmax_scale = per_head_dim**-0.5
-    ref_fwd_time = _time_call(
-        lambda: mha_reference(
-            q, k, v, bias, segment_ids, causal=causal, softmax_scale=softmax_scale
-        )
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        1 if is_decoding else seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        num_kv_heads or num_heads,
+        mask_fn=causal_mask if causal and not sliding_window_size else None,
+        sliding_window_sz=sliding_window_size,
+        attention_bias_type="4d" if use_bias else None,
+        query_offset=seq_len - 1 if is_decoding else 0,
     )
-
-    grad_fn = jax.jit(
-        jax.grad(
-            lambda q, k, v, b, s: mha_reference(
-                q, k, v, b, s, causal=causal, softmax_scale=softmax_scale
-            ).mean(),
-            argnums=(0, 1, 2),
-        )
-    )
-    ref_bwd_time = _time_call(lambda: grad_fn(q, k, v, bias, segment_ids)[0])
-
-    mask = None
-    if causal and sliding_window_size is None:
-        mask = CausalAttentionBias(
-            target_positions=jnp.arange(seq_len)[None],
-            source_positions=jnp.arange(seq_len)[None],
-        )
-    elif causal:
-        mask = SlidingWindowAttentionBias(
-            sliding_window_causal_mask(sliding_window_size),
-            sliding_window_size=sliding_window_size,
-            target_positions=jnp.arange(seq_len)[None],
-            source_positions=jnp.arange(seq_len)[None],
-        )
-    if use_bias:
-        bias = CompositeAttentionBias([mask, TensorAttentionBias(bias)])
-    else:
-        bias = CompositeAttentionBias([mask])
-
+    softmax_scale = q.shape[-1] ** 0.5
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
+    ref_mha_impl = (
+        ReferenceMHA.default_config()
+        .set(softmax_scale=softmax_scale, tpu_block_size=block_size, is_decoding=is_decoding)
+        .instantiate()
+    )
     mha_impl = flash_attention_implementation(
-        "tpu", softmax_scale=softmax_scale, block_size=block_size
+        "tpu",
+        query=q,
+        key=k,
+        value=v,
+        bias=bias,
+        softmax_scale=softmax_scale,
+        tpu_block_size=block_size,
+        is_decoding=is_decoding,
     )
 
+    ref_fwd_time = _time_call(lambda: ref_mha_impl(q, k, v, bias))
     flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias))
 
-    flash_grad_fn = jax.jit(
-        jax.grad(lambda q, k, v, b: mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
-    )
-    flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
+    if not is_decoding:
+        flash_grad_fn = jax.jit(
+            jax.grad(lambda q, k, v, b: ref_mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
+        )
+        ref_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
+        flash_grad_fn = jax.jit(
+            jax.grad(lambda q, k, v, b: mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
+        )
+        flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
 
     print(f"ref_fwd:{ref_fwd_time:.4f}s, flash_fwd:{flash_fwd_time:.4f}s")
-    print(f"ref_bwd:{ref_bwd_time:.4f}s, flash_bwd:{flash_bwd_time:.4f}s\n")
+    if not is_decoding:
+        print(f"ref_bwd:{ref_bwd_time:.4f}s, flash_bwd:{flash_bwd_time:.4f}s\n")
 
 
 if __name__ == "__main__":
@@ -171,6 +151,7 @@ if __name__ == "__main__":
             batch_size=2,
             seq_len=1024 * 8,
             block_size=4 * 128,
-            sliding_window_size=1024,
+            sliding_window_size=4096,
+            is_decoding=False,
             **cfg,
         )

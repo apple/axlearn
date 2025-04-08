@@ -29,8 +29,8 @@ class PartitionByPathAndRankTest(TestCase):
             },
             expected={
                 'custom_call_target="Sharding"': 3,
-                "sharding={devices=[2,2]<=[4]}": 2,
-                "sharding={devices=[2,2]<=[4] last_tile_dim_replicate}": 1,
+                "sharding={devices=[4,2]<=[8]}": 2,
+                "sharding={devices=[4,2]<=[8] last_tile_dim_replicate}": 1,
             },
         ),
         dict(
@@ -44,8 +44,8 @@ class PartitionByPathAndRankTest(TestCase):
                 # target_labels sharded over (data, seq), input_ids over (data).
                 # target_num_bytes is not constrained.
                 'custom_call_target="Sharding"': 2,
-                "sharding={devices=[2,1,2]<=[4] last_tile_dim_replicate}": 1,
-                "sharding={devices=[2,2]<=[4]}": 1,
+                "sharding={devices=[4,1,2]<=[8] last_tile_dim_replicate}": 1,
+                "sharding={devices=[4,2]<=[8]}": 1,
             },
         ),
         dict(
@@ -57,8 +57,8 @@ class PartitionByPathAndRankTest(TestCase):
             expected={
                 # target_labels over (data, seq), target_num_bytes over (data).
                 'custom_call_target="Sharding"': 2,
-                "sharding={devices=[2,2]<=[4]}": 1,
-                "sharding={devices=[2,2]<=[4] last_tile_dim_replicate}": 1,
+                "sharding={devices=[4,2]<=[8]}": 1,
+                "sharding={devices=[4,2]<=[8] last_tile_dim_replicate}": 1,
             },
         ),
         dict(
@@ -75,14 +75,7 @@ class PartitionByPathAndRankTest(TestCase):
             expected=ValueError("No rules matched"),
         ),
     )
-    # TODO(markblee): Add a pytest marker for multi-device tests.
-    @pytest.mark.skipif(
-        jax.device_count() != 4 or jax.process_count() != 1,
-        reason=(
-            "Incorrect device & process count for mesh.\n"
-            "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
-        ),
-    )
+    @pytest.mark.for_8_devices
     def test_partition_by_path_rank(self, config: dict, expected: Union[dict, Exception]):
         batch_size = 4
         seq_len = 8
@@ -94,7 +87,7 @@ class PartitionByPathAndRankTest(TestCase):
         partition_fn = partition_by_path_rank(config)
 
         with jax.sharding.Mesh(
-            np.array(jax.devices()).reshape(2, 2)[..., None],
+            np.array(jax.devices()).reshape(4, 2)[..., None],
             axis_names=("data", "seq", "model"),
         ):
             if isinstance(expected, Exception):
@@ -139,13 +132,7 @@ def dispatch_and_check_sharding(
 class InputTest(TestCase):
     """Tests Input."""
 
-    @pytest.mark.skipif(
-        jax.device_count() != 4 or jax.process_count() != 1,
-        reason=(
-            "Incorrect device & process count for mesh.\n"
-            "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
-        ),
-    )
+    @pytest.mark.for_8_devices
     def test_dispatch_global_batch(self):
         batch_size = 4
         seq_len = 8
@@ -154,10 +141,13 @@ class InputTest(TestCase):
             "target_labels": jnp.ones((batch_size, seq_len), dtype=jnp.int32),
             "target_num_bytes": jnp.ones((batch_size,), dtype=jnp.int32),
         }
-        input_cfg = Input.default_config().set(name="test")
+        input_cfg = Input.default_config().set(
+            name="test",
+            partition_spec=PartitionSpec("data"),
+        )
 
         with jax.sharding.Mesh(
-            np.array(jax.devices()).reshape(2, 2)[..., None],
+            np.array(jax.devices()).reshape(4, 2)[..., None],
             axis_names=("data", "seq", "model"),
         ):
 

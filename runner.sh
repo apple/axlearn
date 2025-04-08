@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
-set -e
+set +e
+# Reload Driver 
+sudo rmmod neuron; sudo modprobe neuron
+
 # Neuron env vars for distributed training based on SLURM
 nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 if [ -z "$SLURM_JOB_NODELIST" ]; then
@@ -21,7 +24,7 @@ export NEURON_PJRT_PROCESS_INDEX=$SLURM_NODEID
 hostname
 
 JOB_ID=${SLURM_JOB_ID}
-ARTIFACTS_PATH="artifacts/"
+ARTIFACTS_PATH="artifacts"
 TEST_ARTIFACTS_PATH="${ARTIFACTS_PATH}/${JOB_ID}"
 if [ "$1" != "profile" ]; then
 	mkdir -p "$TEST_ARTIFACTS_PATH"
@@ -31,22 +34,32 @@ HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
 PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/profiles
 RT_PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/rt_profiles
 
-export XLA_FLAGS="--xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
 # export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_snapshots"
-export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_as_proto"
 
 # PJRT Flags 
-export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=1
-export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
+if [ "$AXLEARN_REPEATED" = "1" ]; then
+	export NEURON_FSDP_REPEATED=1
+	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives,neuron_move_all_gather_while_loop,neuron-fixed-point-collectives-combiner,neuron-token-threading-repeated"
+else
+	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives"
+	export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=1
+	export NEURON_FSDP=1
+	export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
+	export NEURON_FSDP_NUM_LAYER_COALESCE=-1
+fi
 export NEURON_ENABLE_INT_MATMUL_DOWNCAST=1
-export NEURON_FSDP=1
-export NEURON_FSDP_NUM_LAYER_COALESCE=-1
+export NEURON_FSDP_CC_MULTISTREAM=0
 export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
 export NEURON_HLO_ANALYZER=1
 export NEURON_DISABLE_BOUNDARY_MARKER=1
+export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_as_proto"
+export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_as_text --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
+
 
 # Neuron runtime flags
-export NEURON_RT_DBG_CC_DMA_PACKET_SIZE=4096 && export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
+export NEURON_SCRATCHPAD_PAGE_SIZE=1024
+export NEURON_RT_DBG_CC_DMA_PACKET_SIZE=4096
+export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
 export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
@@ -74,19 +87,35 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --no-internal-hlo-remat"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --enable-mixed-precision-accumulation"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} -O1"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --tensorizer-options='--enable-hoist-fsdp-collectives'"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --hbm-scratchpad-page-size=1024"
 
-if [ "$PROFILE_MODE" = "capture_postrun" ] || [ "$PROFILE_MODE" = "tracerun" ]; then
+if [ "$AXLEARN_REPEATED" = "1" ]; then
+	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--recursive-layer-det=false --dump-after-to-file=pre-par-pipe-end,post-par-pipe-begin'"
+fi
+
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
+
+if [ "$NEURON_FSDP_CC_MULTISTREAM" = "1" ]; then
+	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-disable-dge-levels spill_reload"
+	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-backend-options='--run-shared-allocation-before-post-sched=true' --ccop-pipeline-buffer-size=2000"
+	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--disable-early-opt-barrier-removal'"
+fi
+
+if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ] || [ "$AXLEARN_PROFILE_MODE" = "tracerun" ] || [ "$FOR_PROFILE" = "1" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-compiler-debug-mode=penguin"
 	export XLA_IR_DEBUG=1
 	export XLA_HLO_DEBUG=1
-	if [ "$PROFILE_MODE" = "capture_postrun" ]; then
+	if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ]; then
 		# runs a step and captures profile immediately after
 		export AXLEARN_MAX_STEP=1
-	else
+	elif [ "$AXLEARN_PROFILE_MODE" = "tracerun" ]; then
 		export NEURON_RT_INSPECT_OUTPUT_DIR="${RT_PROFILE_DUMP_PATH}"
 		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
+		# export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
+		# export NEURON_RT_PROFILE_BUF_DMA_MB=256
+	else
+		echo ""
 	fi
 fi
 
@@ -99,27 +128,33 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 
 # use to add debug logging at module level in xla
 # export TF_CPP_MIN_LOG_LEVEL=0
-# export TF_CPP_VMODULE="gather_scatter_handler=5"
+# export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=3"
 
 # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="cache/"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 deactivate || true
-source ../jaxmoe/bin/activate
 
-echo "Listing apt dependencies"
-apt list --installed | grep neuron
-echo "Listing pip dependencies"
-pip list | grep neuron
-echo "Done listing dependencies"
-printenv | grep NEURON
-printenv | grep XLA
-printenv | grep AXLEARN || true
-printenv | grep PROFILE_MODE || true
-printenv | grep FOR_BIRSIM || true
-which python
+if [ -z "$VENV_NAME" ]; then
+	VENV_NAME=jaxmoe
+fi
 
+source ../$VENV_NAME/bin/activate
+
+if [ $SLURM_PROCID -eq 0 ]; then
+	echo "Listing apt dependencies"
+	apt list --installed | grep neuron | tee -a ${TEST_ARTIFACTS_PATH}/packages.txt
+	echo "Listing pip dependencies"
+	pip list | grep neuron | tee -a ${TEST_ARTIFACTS_PATH}/packages.txt
+	echo "Done listing dependencies"
+	printenv | grep NEURON | tee -a ${TEST_ARTIFACTS_PATH}/env.txt
+	printenv | grep XLA | tee -a ${TEST_ARTIFACTS_PATH}/env.txt
+	printenv | grep AXLEARN | tee -a ${TEST_ARTIFACTS_PATH}/env.txt || true
+	printenv | grep FOR_BIRSIM | tee -a ${TEST_ARTIFACTS_PATH}/env.txt || true
+	printenv | grep CUSTOM_TAG | tee -a ${TEST_ARTIFACTS_PATH}/env.txt || true
+	which python
+fi
 # TC MALLOC HACK
 LIBTCMALLOC=$(find /usr/lib/x86_64-linux-gnu -name "libtcmalloc.so.*" | sort -V | tail -n 1)
  
@@ -162,12 +197,13 @@ profile() {
 	log_dir=logs
 	mkdir -p $profile_dir $upload_dir
 
-	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | tail -n1)
+	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | head -n1)
 
-	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
-	export NEURON_RT_PROFILE_BUF_DMA_MB=256
-	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
+	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
+	# export NEURON_RT_PROFILE_BUF_DMA_MB=256
+	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
 	export NEURON_RT_VIRTUAL_CORE_SIZE=2
+	# export NEURON_RT_PROFILE_BUF_INFER_STATUS_MB=4
 	neuron-profile capture -r 64 --num-exec 3 \
 		--collectives-worker-count $((64* $SLURM_JOB_NUM_NODES)) \
 		--collectives-worker-start-id $((64 * $SLURM_PROCID)) \
@@ -197,11 +233,13 @@ profile() {
 	fi
 }
 
+python runners/tagger.py --submit
+
 if [ "$S3_PROFILE_BASE_PATH" = "" ]; then
 	export S3_PROFILE_BASE_PATH="s3://kaena-tempdata/huilgolr/fs-moe/profiles"
 fi
 
-if [ "$PROFILE_MODE" = "capture" ]; then
+if [ "$AXLEARN_PROFILE_MODE" = "capture" ]; then
 	profile $PROFILE_JOB_ID $PROFILE_JOB_NAME $S3_PROFILE_BASE_PATH
 else
 	set -x
@@ -220,7 +258,9 @@ else
 		--distributed_coordinator=$MASTER_ADDR:$JAX_COORDINATOR_PORT --num_processes=$num_nodes \
 		--process_id=$NEURON_PJRT_PROCESS_INDEX
 
-	if [ "$PROFILE_MODE" = "capture_postrun" ]; then
+	if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ]; then
 		profile $SLURM_JOB_ID $SLURM_JOB_NAME $S3_PROFILE_BASE_PATH
 	fi
 fi
+
+./get_memory_split.sh

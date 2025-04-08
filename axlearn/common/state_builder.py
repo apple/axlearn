@@ -30,7 +30,6 @@ from axlearn.common.checkpointer import (
     check_state_structure,
     parse_step_from_dir,
 )
-from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -1266,6 +1265,10 @@ class OrbaxStateBuilder(BaseStateStorageBuilder):
 
     def __call__(self, state: BaseStateStorageBuilder.State) -> BaseStateStorageBuilder.State:
         cfg: OrbaxStateBuilder.Config = self.config
+        # Use lazy-import to avoid global dependency on Orbax.
+        # pylint: disable-next=import-outside-toplevel
+        from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
+
         reader_cfg: OrbaxCheckpointer.Config = OrbaxCheckpointer.default_config()
         reader_cfg.name = cfg.name + "-reader"
         reader_cfg.validation_type = cfg.validation

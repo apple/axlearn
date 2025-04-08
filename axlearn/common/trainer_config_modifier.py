@@ -17,7 +17,14 @@ from axlearn.common.config import (
 )
 from axlearn.common.gradient_accumulation import with_minibatch_steps
 from axlearn.common.metrics import MetricAccumulator
+from axlearn.common.quantized_dot_general.layers import (
+    DenseGeneralBaseLayer,
+    DotGeneralQuantizationType,
+    QuantizedDotGeneral,
+    get_all_fp8_param_names,
+)
 from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.update_transformation import OverrideInplaceUpdateTransformation
 from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
 
 
@@ -277,4 +284,39 @@ class ChainConfigModifier(ConfigModifier):
         """
         for config_modifier_fn in self._config_modifiers:
             cfg = config_modifier_fn(cfg)
+        return cfg
+
+
+class FP8ConfigModifier(ConfigModifier):
+    """Update the trainer config to use FP8 training."""
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configure FP8ConfigModifier. See QuantizedDotGeneral.Config."""
+
+        fp8_amax_history_length: Required[int] = REQUIRED
+
+    def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
+        """Override dense layer to use FP8 quantized dot and add gradient rules for FP8 stats."""
+        override_cfg: FP8ConfigModifier.Config = self.config
+        quantized_dot_general = QuantizedDotGeneral.default_config().set(
+            quantization_type=DotGeneralQuantizationType.FP_8,
+            fp8_amax_history_length=override_cfg.fp8_amax_history_length,
+        )
+
+        def visit_fn(_, value):
+            if isinstance(value, DenseGeneralBaseLayer.Config):
+                value.quantized_dot_general = quantized_dot_general
+
+        def enter_fn(_, value, default_kv):
+            return None if isinstance(value, DenseGeneralBaseLayer.Config) else default_kv
+
+        cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+
+        update_cfg: OverrideInplaceUpdateTransformation.Config = (
+            OverrideInplaceUpdateTransformation.default_config()
+        )
+        update_cfg.rules = [f".*/{x}" for x in get_all_fp8_param_names()]
+        update_cfg.transformation = cfg.learner.optimizer
+        cfg.learner.optimizer = update_cfg
         return cfg

@@ -668,7 +668,9 @@ class SlidingWindowAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-
 
     @classmethod
     # pylint: disable-next=arguments-renamed
-    def default_config(cls, sliding_window_size: int) -> ClassConfigBase[MaskFnAttentionBias]:
+    def default_config(
+        cls, sliding_window_size: int
+    ) -> ClassConfigBase["SlidingWindowAttentionBias"]:
         return config_for_class(SlidingWindowAttentionBias).set(
             mask=sliding_window_causal_mask(sliding_window_size=sliding_window_size),
             sliding_window_size=sliding_window_size,

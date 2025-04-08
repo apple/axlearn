@@ -6,7 +6,7 @@ import collections
 import json
 import re
 import shlex
-from typing import Any, Optional, Protocol
+from typing import Optional, Protocol
 
 from absl import flags
 
@@ -15,8 +15,7 @@ from axlearn.cloud.common.bastion import JobStatus
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.types import ResourceType
 from axlearn.cloud.common.utils import Table
-from axlearn.cloud.gcp.tpu import TpuInfo, list_tpu_info, tpu_resource
-from axlearn.cloud.gcp.utils import get_credentials, list_k8s_jobsets
+from axlearn.cloud.gcp.utils import list_k8s_jobsets
 
 
 def serialized_flags_for_job(fv: flags.FlagValues, job: type[Job]) -> list[str]:
@@ -44,8 +43,14 @@ def serialized_flags_for_job(fv: flags.FlagValues, job: type[Job]) -> list[str]:
     return filtered
 
 
-def match_by_regex(match_regex: dict[str, str], gcp_api: str):
+def match_by_regex(*, match_regex: dict[str, str], gcp_api: str, job_type: str):
     """Matches action and instance type by regex.
+
+    Args
+        match_regex: Dictionary of regex to match against action and instance type.
+        gcp_api: GCP API client.
+        job_type: Job type to match, note that it has higher priority
+          than other matching conditions.
 
     For example:
 
@@ -56,9 +61,16 @@ def match_by_regex(match_regex: dict[str, str], gcp_api: str):
     be invoked for any other action.
     """
     match_gcp_api = gcp_api
+    match_job_type = job_type
 
-    def fn(*, action: str, instance_type: str, gcp_api: str) -> bool:
+    def fn(*, action: str, instance_type: str, gcp_api: str, job_type: str) -> bool:
         """Returns True iff the launcher supports the given action and instance_type."""
+
+        # job_type has a higher priority then other condition since it will decide which
+        # runner in runner.inner to be used.
+        if match_job_type != "default":
+            return match_job_type.lower() == job_type.lower()
+
         return (
             gcp_api.lower() == match_gcp_api.lower()
             and action in match_regex
@@ -163,59 +175,6 @@ def project_usage_table(jobs: dict[str, BastionJob]) -> Table:
                 usage_by_project[project_id][resource_type][0] += usage
                 usage_by_project[project_id][resource_type][1] += 1
     return _usage_table(usage_by_project)
-
-
-def with_qrm_tpu_state(fn: JobsToTableFn) -> JobsToTableFn:
-    """Amends the table with column(s) pertaining to state of QRM TPUs.
-
-    Jobs for which no TPU state exists will be assigned "PENDING" state.
-    """
-
-    def table_fn(jobs: dict[str, BastionJob]) -> Table:
-        table: Table = fn(jobs)
-        tpu_state = _qrm_tpu_state_from_jobs(jobs)
-        table.add_col("QRM_STATE", tpu_state["job_name_to_states"].values())
-        return table
-
-    return table_fn
-
-
-def _qrm_tpu_state_from_jobs(
-    jobs: dict[str, BastionJob], tpu_infos: Optional[list[TpuInfo]] = None
-) -> dict[str, Any]:
-    """Retrieves QRM TPU states for the given jobs."""
-    if tpu_infos is None:
-        tpu_infos = list_tpu_info(tpu_resource(get_credentials()))
-
-    tpu_infos = {tpu_info.name: tpu_info for tpu_info in tpu_infos}
-    tpu_to_job_name = {}
-    job_name_to_states = collections.defaultdict(set)
-
-    # Gather TPU states for each job.
-    for job in jobs.values():
-        tpu_names = [job.spec.name]
-
-        # In the multislice case, tpu_names come from job_name-<slice>.
-        # TODO(markblee): Don't rely on parsing flags.
-        if matches := re.search(r"--(?:num_slices|num_replicas)[= ](\d+)", job.spec.command):
-            num_replicas = int(matches[1])
-            if num_replicas > 1:
-                tpu_names = [f"{job.spec.name}-{slice_idx}" for slice_idx in range(num_replicas)]
-
-        # Gather unique TPU states for the given job.
-        for tpu_name in tpu_names:
-            if tpu_name in tpu_infos:
-                tpu_to_job_name[tpu_name] = job.spec.name
-                tpu_state = tpu_infos[tpu_name].state or "UNKNOWN"
-            else:
-                tpu_state = "PENDING"
-            job_name_to_states[job.spec.name].add(tpu_state)
-
-    return dict(
-        running_tpu_infos=tpu_infos,
-        running_tpu_to_job_name=tpu_to_job_name,
-        job_name_to_states=job_name_to_states,
-    )
 
 
 def with_k8s_jobset_state(fn: JobsToTableFn, *, namespace: str) -> JobsToTableFn:

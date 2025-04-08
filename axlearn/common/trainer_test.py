@@ -12,19 +12,21 @@ import os.path
 import shutil
 import tempfile
 import unittest
-from collections.abc import Iterable, Sequence
-from typing import Any, Callable, Literal, Optional, Union
+from collections.abc import Sequence
+from typing import Any, Callable, Literal, Optional
 
 import chex
 import jax
 import jax.random
 import numpy as np
+import pytest
 import tensorflow as tf
 from absl import flags, logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax._src.interpreters import pxla
 from jax.experimental import checkify
+from jax.sharding import PartitionSpec
 
 from axlearn.common import (
     debug_utils,
@@ -34,6 +36,7 @@ from axlearn.common import (
     param_init,
     struct_test,
     test_utils,
+    utils_spmd,
 )
 from axlearn.common.base_layer import NestedParameterSpec, ParameterSpec, RematSpec
 from axlearn.common.base_model import BaseModel
@@ -46,11 +49,13 @@ from axlearn.common.checkpointer import (
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
+from axlearn.common.input_base import Input
+from axlearn.common.input_dispatch import SpmdInputDispatcher
 from axlearn.common.learner import UpdateType, should_update_with_optimizers
 from axlearn.common.module import Module
 from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
-from axlearn.common.trainer import SpmdTrainer, TrainerState, select_mesh_config
+from axlearn.common.trainer import SpmdTrainer, TrainerState, aot_model_analysis, select_mesh_config
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     GradientAccumulationModifier,
@@ -61,11 +66,10 @@ from axlearn.common.utils import (
     Nested,
     NestedTensor,
     Tensor,
-    as_numpy_array,
     as_tensor,
-    dispatch_input_batch,
     flatten_items,
     match_regex_rules,
+    tree_paths,
 )
 
 FLAGS = flags.FLAGS
@@ -75,11 +79,11 @@ NUM_CLASSES = 16
 os.environ["TPU_SKIP_MDS_QUERY"] = "1"
 
 
-class DummyInput(Module):
+class DummyInput(Input):
     """A dummy input."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Input.Config):
         """Configures DummyInput."""
 
         is_training: Required[bool] = REQUIRED
@@ -94,6 +98,19 @@ class DummyInput(Module):
             raise ValueError("total_num_batches should be None iff is_training")
         self._tmp_dir = tempfile.mkdtemp()
         self._record_file = self._write_records(self._tmp_dir)
+
+    @property
+    def _batch_size(self):
+        cfg: DummyInput.Config = self.config
+        if "input_dispatcher" in self.children:
+            if cfg.batch_size != self.input_dispatcher.feed_logical_batch_size:
+                logging.info(
+                    "Replacing batch_size=%s with feed_logical_batch_size=%s.",
+                    cfg.batch_size,
+                    self.input_dispatcher.feed_logical_batch_size,
+                )
+                return self.input_dispatcher.feed_logical_batch_size
+        return cfg.batch_size
 
     def __del__(self):
         shutil.rmtree(self._tmp_dir)
@@ -128,7 +145,7 @@ class DummyInput(Module):
             batch = dict(
                 image=jax.random.randint(
                     image_key,
-                    shape=[cfg.batch_size, 224, 224, 3],
+                    shape=[self._batch_size, 224, 224, 3],
                     minval=0,
                     maxval=256,
                     dtype=np.int32,
@@ -137,7 +154,7 @@ class DummyInput(Module):
             if cfg.include_labels:
                 batch["label"] = jax.random.randint(
                     label_key,
-                    shape=[cfg.batch_size],
+                    shape=[self._batch_size],
                     minval=0,
                     maxval=NUM_CLASSES,
                     dtype=np.int32,
@@ -147,28 +164,16 @@ class DummyInput(Module):
     def dataset(self) -> tf.data.Dataset:
         cfg = self.config
         features = {
-            "image": tf.io.FixedLenFeature(shape=(cfg.batch_size, 224, 224, 3), dtype=tf.float32),
+            "image": tf.io.FixedLenFeature(shape=(self._batch_size, 224, 224, 3), dtype=tf.float32),
         }
         if cfg.include_labels:
-            features["label"] = tf.io.FixedLenFeature(shape=(cfg.batch_size,), dtype=tf.int64)
+            features["label"] = tf.io.FixedLenFeature(shape=(self._batch_size,), dtype=tf.int64)
         ds = tf.data.TFRecordDataset(filenames=[self._record_file]).map(
             lambda record_bytes: tf.io.parse_single_example(record_bytes, features=features)
         )
         if cfg.total_num_batches is None:
             ds = ds.repeat()
         return ds
-
-    def batches(self, it: tf.data.Iterator) -> Iterable[NestedTensor]:
-        for input_batch in it:
-            yield as_numpy_array(input_batch)
-
-    def dispatch_global_batch(
-        self,
-        global_physical_batch: NestedTensor,
-        *,
-        batch_axis_names: Union[str, Sequence[str]] = "data",
-    ) -> NestedTensor:
-        return dispatch_input_batch(global_physical_batch, batch_axis_names=batch_axis_names)
 
     def __iter__(self):
         # Use a different __iter__ than iter(self.dataset()), to test that input iter can be
@@ -324,7 +329,9 @@ class DummyStateBuilder(TrainerStateBuilder):
 class TrainerTest(test_utils.TestCase):
     """Tests SpmdTrainer."""
 
-    def _trainer_config(self):
+    def _trainer_config(self, input_cfg: Optional[Input.Config] = None) -> SpmdTrainer.Config:
+        if input_cfg is None:
+            input_cfg = DummyInput.default_config()
         return SpmdTrainer.default_config().set(
             name="base_trainer",
             vlog=3,
@@ -334,7 +341,7 @@ class TrainerTest(test_utils.TestCase):
             model=DummyModel.default_config().set(
                 dtype=jnp.float32, param_init=param_init.DefaultInitializer.default_config()
             ),
-            input=DummyInput.default_config(),
+            input=input_cfg,
             learner=learner.Learner.default_config().set(
                 optimizer=config_for_function(optimizers.sgd_optimizer).set(
                     learning_rate=0.1,
@@ -349,7 +356,7 @@ class TrainerTest(test_utils.TestCase):
             ),
             evalers=dict(
                 eval_dummy=SpmdEvaler.default_config().set(
-                    input=DummyInput.default_config().set(total_num_batches=2),
+                    input=input_cfg.clone(total_num_batches=2),
                 ),
             ),
         )
@@ -510,7 +517,7 @@ class TrainerTest(test_utils.TestCase):
         original_compile_train_step_fn = trainer.compile_train_step
 
         def mock_compile_train_step(*args, compiler_options=None, **kwargs):
-            if compiler_options is not None:
+            if compiler_options:
                 compiled_with_options_call_count[0] += 1
             return original_compile_train_step_fn(
                 *args, compiler_options=compiler_options, **kwargs
@@ -557,11 +564,12 @@ class TrainerTest(test_utils.TestCase):
     @parameterized.parameters(
         {"platform": "cpu", "mesh_shape": (1, 1)},
         {"platform": "tpu", "mesh_shape": (4, 1)},
+        {"platform": "gpu", "mesh_shape": (8, 1)},
     )
     # pylint: enable=duplicate-code
     def test_compile_train_step(self, *, platform, mesh_shape):
         if not test_utils.is_supported_platform(platform):
-            return
+            pytest.skip(reason=f"Unsupported config: {platform=}, {mesh_shape=}.")
         cfg = SpmdTrainer.default_config().set(name="test_trainer", train_dtype=jnp.bfloat16)
         cfg.dir = tempfile.mkdtemp()
         cfg.mesh_axis_names = ("data", "model")
@@ -586,6 +594,10 @@ class TrainerTest(test_utils.TestCase):
         compiled_with_input_batch = trainer.compile_train_step(input_batch=input_batch)
         # In a single-host environment, both compiled functions should match.
         self.assertEqual(compiled_without_args.as_text(), compiled_with_input_batch.as_text())
+        self.assertEqual(
+            aot_model_analysis(compiled_without_args),
+            aot_model_analysis(compiled_with_input_batch),
+        )
 
         # A version compiled with non-default compiled args should be different.
         compiled_with_compiler_options = trainer.compile_train_step(
@@ -599,6 +611,10 @@ class TrainerTest(test_utils.TestCase):
         )
         self.assertEqual(
             compiled_without_args.as_text(), compiled_with_trainer_state_and_input_batch.as_text()
+        )
+        self.assertEqual(
+            aot_model_analysis(compiled_without_args),
+            aot_model_analysis(compiled_with_trainer_state_and_input_batch),
         )
 
     @parameterized.parameters(
@@ -1057,6 +1073,148 @@ class TrainerTest(test_utils.TestCase):
                 flatten_items(init_params), flatten_items(updated_params)
             ):
                 self.assertGreater(np.max(np.abs(updated_p - init_p)), 1e-3, msg=path)
+
+    def _dummy_input_checking_model(
+        self, global_logical_batch_size: int, partition_spec: PartitionSpec
+    ) -> DummyModel.Config:
+        """Builds a model that sanity checks its input batch."""
+
+        def check_shape(x: Tensor):
+            self.assertEqual(x.shape[0], global_logical_batch_size)
+
+        def check_sharding(path: str, x: Tensor):
+            # It's useful to compare normalized PartitionSpecs with `_normalized_spec`, e.g.
+            # ("data",) vs "data"; so we disable the lint.
+            # pylint: disable=protected-access
+            if x.shape[0] > 1:
+                jax.debug.inspect_array_sharding(
+                    x,
+                    callback=lambda sharding: self.assertEqual(
+                        partition_spec._normalized_spec(x.ndim),
+                        sharding.spec._normalized_spec(x.ndim),
+                        msg=f"{path=}, {sharding=}",
+                    ),
+                )
+
+        class DummyCheckingModel(DummyModel):
+            """A dummy model that checks inputs."""
+
+            def __init__(self, cfg, *, parent):
+                super().__init__(cfg, parent=parent)
+                self.forward_called = False
+
+            def forward(self, input_batch: Nested[Tensor]):
+                if self.is_training:
+                    # Check that input batch has the right shape and sharding.
+                    jax.tree.map(check_shape, input_batch)
+                    jax.tree.map(check_sharding, tree_paths(input_batch), input_batch)
+                    self.forward_called = True
+                return super().forward(input_batch)
+
+        return DummyCheckingModel.default_config().set(dtype=jnp.float32)
+
+    def _dummy_input_checking_input(self, global_logical_batch_size: int) -> DummyInput.Config:
+        """Builds a dummy input that checks whether dispatch has been called."""
+
+        class DummyCheckingDispatcher(SpmdInputDispatcher):
+            """A dummy dispatcher that checks calls."""
+
+            def __init__(self, cfg, *, parent):
+                super().__init__(cfg, parent=parent)
+                self.logical_to_physical = False
+                self.physical_to_logical = False
+
+            def logical_to_physical_batch(self, *args, **kwargs):
+                self.logical_to_physical = True
+                return super().logical_to_physical_batch(*args, **kwargs)
+
+            def physical_to_logical_batch(self, *args, **kwargs):
+                self.physical_to_logical = True
+                return super().physical_to_logical_batch(*args, **kwargs)
+
+        dispatch_cfg = DummyCheckingDispatcher.default_config().set(
+            global_logical_batch_size=global_logical_batch_size,
+        )
+        return DummyInput.default_config().set(input_dispatcher=dispatch_cfg)
+
+    def _test_input_dispatch(self, multiple: float, backend: Optional[str] = None):
+        """Tests input dispatch under a few scenarios:
+        1. global_logical_batch_size == process_count.
+            In this case each process produces one example.
+        2. global_logical_batch_size > process_count.
+            In this case each process produces more than one example.
+        3. global_logical_batch_size < process_count.
+            In this case some processes are padding feeds.
+
+        In all scenarios we should be able to entirely bypass logical dispatch by constructing
+        per-feed logical batches and forming the global array directly, as long as the
+        global_logical_batch_size divides batch_axis_names uniformly.
+        """
+        if backend is not None:
+            utils_spmd.setup(jax_backend=backend)
+
+        device_count = jax.device_count()
+        process_count = jax.process_count()
+        print(f"{device_count=}, {process_count=}")
+        assert device_count > 1
+
+        batch_axis_size = int(process_count * multiple)
+        if batch_axis_size < 1:
+            pytest.skip(reason=f"Incompatible {process_count=} and {multiple=}")
+
+        mesh_shape = (batch_axis_size, device_count // batch_axis_size)
+        global_logical_batch_size = mesh_shape[0]
+        batch_axis_names = ("data",)
+
+        input_cfg = self._dummy_input_checking_input(global_logical_batch_size)
+        cfg = self._trainer_config(input_cfg)
+        cfg.batch_axis_names = batch_axis_names
+        cfg.max_step = 3
+        cfg.mesh_shape = mesh_shape
+        cfg.model = self._dummy_input_checking_model(
+            global_logical_batch_size, partition_spec=PartitionSpec(batch_axis_names)
+        )
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+
+        dispatcher = trainer.input.input_dispatcher
+
+        # Check that dispatcher has right partition specs.
+        self.assertEqual(dispatcher.config.partition_spec, PartitionSpec(batch_axis_names))
+
+        # Validate that input partition spec is expected.
+        with trainer.mesh():
+            self.assertEqual(
+                PartitionSpec(batch_axis_names),
+                # pylint: disable-next=protected-access
+                trainer._train_step_input_partition_specs(),
+            )
+
+        # Sanity check testing configs. We don't really use global_physical_batch_size without the
+        # dispatch steps.
+        # 1. Logical batch should divide batch axes.
+        self.assertEqual(dispatcher.config.global_logical_batch_size % batch_axis_size, 0)
+        # 2. Logical batch and num feeds should be what we requested above.
+        self.assertEqual(dispatcher.config.global_logical_batch_size, process_count * multiple)
+        # In the case of at least one-per-process (multiple >= 1), we have process_count feeds.
+        # Otherwise, in the case of multiple < 1, a subset of processes act as logical feeds.
+        self.assertEqual(dispatcher.num_logical_feeds, min(process_count, process_count * multiple))
+
+        trainer.run(jax.random.PRNGKey(0))
+        self.assertTrue(trainer.model.forward_called)
+        self.assertTrue(trainer.input.input_dispatcher.logical_to_physical)
+        self.assertTrue(trainer.input.input_dispatcher.physical_to_logical)
+
+    @parameterized.parameters([1, 2])
+    @pytest.mark.for_8_devices
+    def test_input_dispatch_basic(self, multiple: float):
+        """Tests input dispatch with at least 1 per process."""
+        self._test_input_dispatch(multiple)
+
+    @parameterized.parameters([1 / 2, 1 / 4])
+    @pytest.mark.tpu
+    def test_input_dispatch_every_other_process(self, multiple: float):
+        """Tests input dispatch with some padding feeds. Requires process_count > 1."""
+        self._test_input_dispatch(multiple, backend="tpu")
 
 
 class SelectMeshConfigTest(test_utils.TestCase):

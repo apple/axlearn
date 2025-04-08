@@ -73,7 +73,7 @@ def down_proj(x, wo_weight):
 @partial(jax.jit, static_argnums=(0,))
 def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
     # Expected shapes:
-    # permuted_output: (O, G, E, M)
+    # permuted_output: (O, G, E*C, M)
     # token_permutation_idx: (O, G, S, K)
     # expert_index: (O, G, S, K)
     # expert_affinities_masked: (O, G, S, E)
@@ -103,8 +103,9 @@ def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, e
 
     # Sum across the top-k dimension
     combined_output = jnp.sum(weighted_output_k, axis=3)  # Shape: (O, G, S, M)
+    dest_output = dest_output.at[0].set(combined_output)  # Shape: (1, O, G, S, M)
 
-    return combined_output
+    return dest_output
 
 def _router_z_loss(logits: Tensor) -> Tensor:
     """Loss that encourages router logits to remain small and improves stability.
@@ -753,90 +754,6 @@ class TopKGatingGather(TopKGating):
     
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
-    
-    @staticmethod
-    def cumsum_4d_matmul(x: jnp.ndarray, axis: int = -1, tril_size: int = 2048):
-        """Efficient cumsum implementation using triangular matrix multiplication.
-        This only works for inputs of dtype int32.
-
-        Args:
-            x: Input array of shape (d0, d1, d2, d3)
-            axis: Axis along which to compute cumsum (0-3)
-            tril_size: Size of triangular matrix for tiling
-        Returns:
-            Array of same shape with cumulative sum along specified axis
-        """
-        assert x.dtype == jnp.int32, f"cumsum_4d_matmul expected int32, got {x.dtype}"
-
-        if axis < 0:
-            axis = x.ndim + axis
-
-        # Create triangular matrix once
-        tril = jnp.tril(jnp.ones((tril_size, tril_size), dtype=jnp.int32))
-
-        # Move the target axis to first position
-        if axis != 0:
-            perm = list(range(4))
-            perm[0], perm[axis] = perm[axis], perm[0]
-            x = jnp.transpose(x, perm)
-        # Get shapes
-        axis_size = x.shape[0]
-        batch_size = np.prod(x.shape[1:])
-
-        # Reshape to 2D for efficient matmul
-        x_2d = x.reshape(axis_size, batch_size)
-
-        # Process data based on size
-        if axis_size <= tril_size:
-            # Single matmul for small sizes
-            tril_slice = lax.dynamic_slice(
-                tril,
-                (0, 0),
-                (axis_size, axis_size)
-            )
-            result = jnp.matmul(tril_slice, x_2d, precision=lax.Precision.HIGHEST)
-        else:
-            # Process in tiles
-            num_full_tiles = axis_size // tril_size
-            remainder_size = axis_size % tril_size
-
-            # Process full tiles with rolling sum
-            full_tiles = x_2d[:num_full_tiles * tril_size].reshape(
-                num_full_tiles, tril_size, batch_size
-            )
-
-            def process_tile(rolling_sum, x_tile):
-                output = rolling_sum + jnp.matmul(tril, x_tile, precision=lax.Precision.HIGHEST)
-                # Last row becomes new rolling sum
-                new_rolling_sum = output[-1:, :]
-                return new_rolling_sum, output
-
-            rolling_sum = jnp.zeros((1, batch_size), dtype=full_tiles.dtype)
-            last_rolling_sum, results = jax.lax.scan(process_tile, rolling_sum, full_tiles)
-            result = results.reshape(-1, batch_size)
-
-            # Process remainder if any
-            if remainder_size > 0:
-                x_remainder = x_2d[num_full_tiles * tril_size :]
-                tril_remainder = tril[:remainder_size, :remainder_size]
-                remainder_result = last_rolling_sum + jnp.matmul(
-                    tril_remainder, x_remainder, precision=lax.Precision.HIGHEST
-                )
-
-                # Concatenate remainder
-                result = jnp.concatenate([result, remainder_result], axis=0)
-
-        # Reshape back to 4D
-        result = result.reshape(x.shape)
-
-        # Transpose back if necessary
-        if axis != 0:
-            inv_perm = [0] * 4
-            for i, p in enumerate(perm):
-                inv_perm[p] = i
-            result = jnp.transpose(result, inv_perm)
-
-        return result
 
     def compute_expert_mask(self, cfg, expert_index, num_experts):
         """Helper function which computes top_k-hot encoded expert_mask from the given expert_index.
@@ -1018,13 +935,35 @@ class TopKGatingGather(TopKGating):
         O, G, sk, E = expert_mask.shape
         k = cfg.top_k
         S = sk // k
+
+        with jax.named_scope("expert_index"):
+            # Compute expert indices based on affinities
+            # top_k happens on last axis of operand, so the expert axis
+            k = min(int(cfg.top_k), int(cfg.num_experts))
+            _, expert_index = jax.lax.top_k(raw_gates, k)
+            # expert_index: (O, G, S, top_k)
+            expert_index = expert_index.astype(jnp.int32)
+
+            # expert_index: (O, G, top_k, S)
+            expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
+            # expert_index: (O, G, S * top_k)
+            expert_index = expert_index.reshape(O, G, S*k)
+
+        with jax.named_scope("expert_mask"):
+            # Use expert indices to compute mask
+            # expert_mask: [O, G, S*topk, E]
+            expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
+
+        # Only use top 1 tokens for calculationg aux loss.
+        with jax.named_scope("aux_loss"):
+            aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
+
         with jax.named_scope("position_in_expert"):
             # Compute cumulative sums of assignment
             # indicators for each expert, i.e. index e \in 0..E-1 independently.
             # cumsum over S dim
             # position_in_expert: [O, G, S*topk, E]
-            position_in_expert = self.cumsum_4d_matmul(expert_mask.astype(jnp.int32), axis=-2).astype(jnp.float32)
-            
+            position_in_expert = _cum_sum(expert_mask.astype(jnp.int32), axis=-2).astype(jnp.float64)
             expert_mask_pre_capacity_drop = expert_mask
             expert_mask_k_pre_capacity_drop = expert_mask_pre_capacity_drop.reshape(O, G, k, S, E)
             expert_mask_k_pre_capacity_drop = jnp.sum(expert_mask_k_pre_capacity_drop, axis=2)
@@ -1478,16 +1417,14 @@ class TransformerFeedForwardMoE(BaseLayer):
             token_assignments= gating.dispatch_tensor
             
             token_assignments = with_sharding_constraint(token_assignments, cfg.dim_to_mesh_axis_map["ogec"])
-            token_assignments = token_assignments[..., None]       # (O, G, E, C, 1)
-            token_assignments = jnp.expand_dims(token_assignments, axis=2)  # (O, G, 1, E, C, 1)
-            
-            # Permute hidden_states using token_assignments to get expert_aligned_hidden_states
-            x = x[..., None, None, :]      # (O, G, S, 1, 1, M)
-            # expert_aligned_hidden_states: (O, G, 1, E, C, M)
-            expert_aligned_hidden_states = jnp.take_along_axis(x, token_assignments, axis=2)
-            O, G, _, E, C, M = expert_aligned_hidden_states.shape
-            # expert_aligned_hidden_states: (O, E, G, C, M)
-            expert_aligned_hidden_states = jnp.einsum("oegcm->ogecm", expert_aligned_hidden_states.squeeze(2))
+            O, G, E, C = token_assignments.shape
+            _, _, _, M = x.shape
+
+            idx_o = jnp.arange(O)[:, None, None, None]  # (O, 1, 1, 1)
+            idx_g = jnp.arange(G)[None, :, None, None]  # (1, G, 1, 1)
+            expert_aligned_hidden_states = x[idx_o, idx_g, token_assignments] # (O, G, E, C, M)
+            expert_aligned_hidden_states = jnp.einsum("ogecm->oegcm", expert_aligned_hidden_states)
+
             expert_aligned_hidden_states = with_sharding_constraint(expert_aligned_hidden_states, cfg.dim_to_mesh_axis_map["oegcM"])
 
         # Perform MLP operations
@@ -1502,13 +1439,14 @@ class TransformerFeedForwardMoE(BaseLayer):
                     down_proj, 
                     mesh=thread_resources.env.physical_mesh,
                     in_specs=(
-                        PartitionSpec(("data", "fsdp"), "expert", None, None, "model"),
-                        PartitionSpec("expert", "model", None),
+                        cfg.dim_to_mesh_axis_map["oegch"],
+                        cfg.dim_to_mesh_axis_map["ehM"],
                     ),
-                    out_specs=PartitionSpec(("data", "fsdp"), "expert", None, None, None),
+                    out_specs=cfg.dim_to_mesh_axis_map["oegcM"],
                     check_rep=False
                 )
                 x = down_proj_sm(x, self.parameters["wo_weight"])
+                x = self._remat_name(x, f"linear2")
             x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcM"])
             x = jnp.einsum("oegcm->ogecm", x)
             x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecM"])
@@ -1538,19 +1476,14 @@ class TransformerFeedForwardMoE(BaseLayer):
                         cfg.dim_to_mesh_axis_map["ogse"],
                         cfg.dim_to_mesh_axis_map["ogse"],
                         cfg.dim_to_mesh_axis_map["ogse"],
-                        PartitionSpec("model", ("data", "fsdp"), "expert", None, None),
+                        cfg.dim_to_mesh_axis_map["hoesm"],
                     ),
-                    out_specs=PartitionSpec("model", ("data", "fsdp"), "expert", None, None),
+                    out_specs=cfg.dim_to_mesh_axis_map["hoesm"],
                     check_rep=False
                 )
                 output = combine_outputs_sm(
                     min_k, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, output
                 )
-                # In jax0.4.33, this op is hardcoded to fp32
-                # TODO: verify that this becomes bf16 when jax is upgraded, 
-                # and that the AR becomes RS once the cast op in between goes away.
-                # it may not go away because of a reshape in between this and the slice, need to check.
-                # TODO: does this need to be in fp32 for high TP
                 output = jnp.sum(output, axis=0, dtype=permuted_output.dtype)
             else:
                 output = jnp.zeros((O, G, group_len, cfg.input_dim), dtype=input_dtype)
@@ -1701,6 +1634,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         # O may be lower than fsdp axis
         # TODO(huilgolr): what to do here
 
+        x = with_sharding_constraint(x, PartitionSpec(("data", "fsdp"), "expert", None))
         with jax.named_scope("router"):
             logits = jnp.einsum("ogsm,me->ogse", x, self.parameters["gate_weight"])
 
@@ -1752,6 +1686,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                 x_i = jnp.einsum("oegcm,emh->oegch", x, self.parameters[f"wi_{i}_weight"])
                 x_i = with_sharding_constraint(x_i, cfg.dim_to_mesh_axis_map["oegch"])
                 x_i = get_activation_fn(activation)(x_i)
+                x = self._remat_name(x, f"linear1_{i}")
                 activations.append(x_i)
             assert len(activations) == 2, cfg.activation
             return activations[0] * activations[1]

@@ -4,7 +4,13 @@
 # This module must not depend on any jax/axlearn modules so that
 # importing this module does not result in initializing jax.
 import re
-from typing import Any, Dict, Union
+import typing
+from typing import Any, Dict, Sequence, Union
+
+from absl import logging
+
+if typing.TYPE_CHECKING:
+    from axlearn.common.utils import MeshShape
 
 
 def default_xla_options(
@@ -78,10 +84,26 @@ def default_xla_options(
             # v6e training caused by allreduce over DCN. This flag doesn't impact performance.
             xla_tpu_iova_dma_chunk_size_bytes=1048576,
         )
+
+        # These flags enable SparseCore (SC).
+        options.update(
+            xla_tpu_use_tc_device_shape_on_sc="true",
+            xla_sc_enable_instruction_fusion="false",
+            xla_sc_disjoint_spmem="false",
+            xla_sc_disable_megacore_partitioning="true",
+        )
+
+        # Collective fusions are mutually exclusive with SparseCore offloading. We enable allgather
+        # fusion and allreduce SC offloading by default.
+        options.update(
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
+            # Always enable SparseCore offloading for allreduce.
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+        )
+
         options.update(
             # Improved performance for v6e.
             xla_tpu_enable_async_collective_fusion="true",
-            xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
             xla_tpu_enable_async_collective_fusion_multiple_steps="true",
             xla_tpu_overlap_compute_collective_tc="true",
             xla_enable_async_all_gather="true",
@@ -101,20 +123,10 @@ def default_xla_options(
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
-            # Sparsecore offloading for all reduce.
-            # Uncomment below flags to enable it.
-            xla_sc_disable_megacore_partitioning="true",
-            xla_tpu_use_tc_device_shape_on_sc="true",
             tpu_use_continuations="true",
-            xla_sc_enable_instruction_fusion="false",
-            xla_sc_disjoint_spmem="false",
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )
-        # This flag can be removed after upgrading to Jax 0.4.38.
-        # Uncomment for sparsecore offloading.
-        # options["2a886c8_chip_config_name"] = "megachip_tccontrol"
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
@@ -136,6 +148,8 @@ def default_xla_options(
             # Similar to megascale_graph_hang_threshold but specific to within a launch_id.
             # Default is 1m.
             megascale_graph_within_launch_hang_threshold="10m",
+            # TODO(ethanli): temporary workaround to avoid memory leak in megascale.
+            megascale_grpc_enable_xor_tracer="false",
         )
 
     # Validate options. Will never fail if this function is implemented correctly.
@@ -199,7 +213,7 @@ def infer_xsc_compiler_options(
     *,
     halt_on_detection: bool = True,
     repeat_count: int = 1,
-    replicate_llo: bool = False,
+    device_kind: str,
 ) -> dict[str, Union[str, Any]]:
     """Infers compiler options for running compiled function with XLA SDC check enabled.
 
@@ -217,7 +231,7 @@ def infer_xsc_compiler_options(
     Args:
         halt_on_detection: Whether to halt the program and raise a Python exception on detection.
         repeat_count: Number of times to repeatedly call the program and validate outputs.
-        replicate_llo: LLO sequence duplication, useful for single-core chips (e.g. v5e, v6e).
+        device_kind: Device kind obtained from `jax.devices()[0].device_kind`.
 
     Returns:
         A dictionary of compiler options that enable SDC checks.
@@ -230,8 +244,9 @@ def infer_xsc_compiler_options(
         xla_tpu_sdc_check_repeat_count=repeat_count,
         # Raise Python exception on error.
         xla_tpu_sdc_check_halt_on_detection=halt_on_detection,
-        # Duplicate LLO sequences.
-        xla_tpu_sdc_replicate_llo=replicate_llo,
+        # Duplicate LLO sequences. Required for single-core-per-chip device kind.
+        xla_tpu_sdc_replicate_llo=device_kind
+        in ["TPU v5e", "TPU v5 lite", "TPU v6e", "TPU v6 lite"],
         # Alternate primary/secondary core for each re-run for platforms with 2 cores per device.
         xla_tpu_sdc_checker_alternate_megacore_cores=True,
         # XLA ICI SDC Checker flags:
@@ -256,3 +271,44 @@ def infer_xsc_compiler_options(
 
 _TPU_VERSION_ALIASES = {"v5e": "v5litepod"}
 _TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")
+
+
+def infer_xla_performance_flags(
+    *, mesh_shape: "MeshShape", mesh_axis_names: Sequence[str], device_kind: str
+) -> dict[str, str]:
+    """Performs automatic XLA flag tuning based on mesh shape and device kind."""
+    if device_kind not in ["TPU v6e", "TPU v6 lite"]:
+        return {}
+    # Sparse core offloading all collectives can improve performance of model parallelism on
+    # v6e. However, it negative impacts the performance of some pure FSDP runs by about 6%.
+    # Therefore, we enable them selectively on mesh shapes that have model parallelism.
+    # TODO(hanzhi-zhou): Check if these flags also improve performance on fsdp=16, model=16.
+    target_configurations = [dict(fsdp=32, model=8), dict(fsdp=64, model=4)]
+    current_configuration = {}
+    for name, size in zip(mesh_axis_names, mesh_shape):
+        if name in ("fsdp", "model"):
+            current_configuration[name] = size
+    if current_configuration in target_configurations:
+        flags = dict(
+            # Perf optimization.
+            xla_tpu_sparse_core_all_gather_latency_multiplier="2",
+            # Must disable continuation fusion to enable sparse core offloading.
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
+            xla_tpu_enable_async_collective_fusion_fuse_all_reduce="false",
+            xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
+            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_tpu_enable_all_gather_offload_tracing="true",
+            xla_tpu_enable_reduce_scatter_offload_tracing="true",
+            xla_tpu_enable_all_reduce_offload_tracing="true",
+        )
+        logging.log_first_n(
+            logging.INFO,
+            "Adding new XLA flags for %s:\n%s",
+            1,
+            str(current_configuration),
+            str(flags),
+        )
+        return flags
+    return {}

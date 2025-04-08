@@ -10,133 +10,129 @@
 """FlashAttention kernel benchmarks.
 
 Tor run: python3 gpu_attention_benchmark.py > out.txt
-Requires Jax >= 0.4.36. Sample numbers on H100 SXM5 with Jax == 0.4.36:
+Sample numbers on H100 SXM5 with Jax == 0.4.38:
 is_decode=True, use_bwd=False, num_heads=8, num_kv_heads=8, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn
-bs=1,seq_len=1024                       0.020832      0.017536      0.024128
-bs=1,seq_len=4096                       0.037472      0.021248      0.058656
-bs=1,seq_len=8192                       0.034016      0.032576      0.108576
-bs=1,seq_len=131072                     0.229856      0.198944      1.558464
-bs=4,seq_len=1024                       0.021632      0.023296      0.024352
-bs=4,seq_len=4096                       0.068064      0.055168      0.061312
-bs=4,seq_len=8192                       0.080352      0.075968      0.109696
-bs=4,seq_len=131072                     0.824576      0.703360      1.560768
-bs=8,seq_len=1024                       0.033536      0.030304      0.024448
-bs=8,seq_len=4096                       0.089056      0.071712      0.062944
-bs=8,seq_len=8192                       0.128960      0.114848      0.112736
-bs=8,seq_len=131072                     1.620032      1.373088      1.566208
-bs=16,seq_len=1024                      0.050368      0.048064      0.036608
-bs=16,seq_len=4096                      0.134816      0.116320      0.104320
-bs=16,seq_len=8192                      0.234880      0.200384      0.191936
-bs=16,seq_len=131072                    3.219008      2.726912      2.784768
-bs=32,seq_len=1024                      0.078112      0.070816      0.061568
-bs=32,seq_len=4096                      0.235648      0.203296      0.191936
-bs=32,seq_len=8192                      0.442080      0.371936      0.365152
-bs=32,seq_len=131072                    6.404832      5.448480      5.541504
+                                                  jax           axlearn       jax-cudnn
+bs=1,seq_len=1024                                 0.022144      0.020960      0.043520
+bs=1,seq_len=4096                                 0.038880      0.026912      0.119872
+bs=1,seq_len=8192                                 0.034336      0.037056      0.222784
+bs=1,seq_len=131072                               0.233728      0.199520      3.113216
+bs=4,seq_len=1024                                 0.025760      0.023392      0.043200
+bs=4,seq_len=4096                                 0.066336      0.055488      0.119680
+bs=4,seq_len=8192                                 0.078976      0.077792      0.221600
+bs=4,seq_len=131072                               0.830560      0.702752      3.263360
+bs=8,seq_len=1024                                 0.043392      0.033632      0.043872
+bs=8,seq_len=4096                                 0.090624      0.074976      0.121024
+bs=8,seq_len=8192                                 0.132480      0.116960      0.223904
+bs=8,seq_len=131072                               1.628800      1.372448      3.149344
+bs=16,seq_len=1024                                0.058080      0.051520      0.047520
+bs=16,seq_len=4096                                0.134080      0.118848      0.124288
+bs=16,seq_len=8192                                0.236288      0.202720      0.217920
+bs=16,seq_len=131072                              3.194208      2.721792      3.102272
+bs=32,seq_len=1024                                0.083200      0.074112      0.077760
+bs=32,seq_len=4096                                0.282784      0.203488      0.219808
+bs=32,seq_len=8192                                0.443488      0.371360      0.411392
+bs=32,seq_len=131072                              6.384032      5.438784      6.138784
 is_decode=True, use_bwd=False, num_heads=8, seq_len=32768, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn
-bs=1,num_kv_heads=1                     0.027648      0.058464      0.398816
-bs=1,num_kv_heads=8                     0.076096      0.070368      0.398912
-bs=8,num_kv_heads=1                     0.101696      0.078560      0.399040
-bs=8,num_kv_heads=8                     0.426656      0.367616      0.403360
+                                                  jax           axlearn       jax-cudnn
+bs=1,num_kv_heads=1                               0.033344      0.061408      0.863968
+bs=1,num_kv_heads=8                               0.078976      0.076832      0.800064
+bs=8,num_kv_heads=1                               0.110240      0.082464      1.464544
+bs=8,num_kv_heads=8                               0.431200      0.372608      0.814688
 is_decode=True, use_bwd=False, num_heads=8, num_kv_heads=8, per_head_dim=128
-                                        jax           axlearn       jax-cudnn
-bs=1,seq_len=131072,sw_sz=-1            0.230336      0.199968      1.559168
-bs=1,seq_len=131072,sw_sz=4096          0.235296      0.051296      4.414048
-bs=1,seq_len=131072,sw_sz=16384         0.235904      0.062976      4.385216
-bs=8,seq_len=131072,sw_sz=-1            1.619008      1.372768      1.570272
-bs=8,seq_len=131072,sw_sz=4096          1.635424      0.194720      4.390976
-bs=8,seq_len=131072,sw_sz=16384         1.632832      0.321280      4.361984
+                                                  jax           axlearn       jax-cudnn
+bs=1,seq_len=131072,sw_sz=-1                      0.236064      0.202016      3.098304
+bs=1,seq_len=131072,sw_sz=4096                    0.235904      0.058176      3.091552
+bs=1,seq_len=131072,sw_sz=16384                   0.236960      0.066272      3.093632
+bs=8,seq_len=131072,sw_sz=-1                      1.633824      1.374656      3.183424
+bs=8,seq_len=131072,sw_sz=4096                    1.632896      0.196224      3.124256
+bs=8,seq_len=131072,sw_sz=16384                   1.622656      0.318752      3.104640
 is_decode=False, use_bwd=False, num_heads=32, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-bs=2                                    3.573152      0.899136      0.458144      0.839488
-bs=4                                    7.099072      1.721024      0.870624      1.608000
-bs=8                                    14.183424     3.369152      1.705248      3.126688
+                                                  jax           axlearn       jax-cudnn
+bs=2                                              6.151616      0.903744      0.453472
+bs=4                                              11.448928     1.728224      0.868096
+bs=8                                              23.125055     3.385728      1.692704
 is_decode=False, use_bwd=False, bs=2, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-num_heads=12                            1.277984      0.387104      0.198784      0.360832
-num_heads=16                            1.812416      0.488224      0.251104      0.455040
-num_heads=32                            3.580384      0.900160      0.453920      2.424960
-num_heads=48                            5.318784      1.315072      0.662368      1.220640
-num_heads=72                            7.986816      1.925024      0.973344      1.792544
+                                                  jax           axlearn       jax-cudnn
+num_heads=12                                      2.344864      0.388864      0.200256
+num_heads=16                                      3.104704      0.493696      0.250944
+num_heads=32                                      6.151008      0.902208      0.452736
+num_heads=48                                      9.222688      1.319168      0.661536
+num_heads=72                                      12.914016     1.946592      0.968800
 is_decode=False, use_bwd=False, bs=2, num_heads=32, num_kv_heads=None, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-seq_len=256                             0.048288      0.015136      0.015520      0.014944
-seq_len=512                             0.108736      0.038464      0.027296      0.037024
-seq_len=1024                            0.299776      0.095840      0.052128      0.089120
-seq_len=2048                            0.933824      0.274720      0.144736      0.254912
-seq_len=4096                            3.570368      0.899776      0.452832      2.431424
-seq_len=8192                            14.231360     3.270272      1.649280      3.052800
+                                                  jax           axlearn       jax-cudnn
+seq_len=256                                       0.052096      0.016224      0.015360
+seq_len=512                                       0.133024      0.038944      0.027648
+seq_len=1024                                      0.428480      0.095648      0.052288
+seq_len=2048                                      1.448448      0.273632      0.141568
+seq_len=4096                                      6.142496      0.905152      0.453632
+seq_len=8192                                      19.964993     3.300000      1.638720
 is_decode=False, use_bwd=False, bs=2, num_heads=32, num_kv_heads=None, seq_len=4096, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-per_head_dim=16                         3.263456      0.523584      0.304416      0.468032
-per_head_dim=32                         3.316736      0.547872      0.306144      0.514304
-per_head_dim=64                         3.415104      0.691200      0.308704      0.616896
-per_head_dim=128                        3.571488      0.898720      0.455296      2.428064
+                                                  jax           axlearn       jax-cudnn
+per_head_dim=16                                   5.845152      0.527168      0.309536
+per_head_dim=32                                   5.905984      0.560672      0.310912
+per_head_dim=64                                   5.972000      0.684672      0.313184
+per_head_dim=128                                  6.147936      0.902272      0.453280
+is_decode=False, use_bwd=False, num_kv_heads=None, per_head_dim=128
+                                                  jax           axlearn       jax-cudnn
+bs=1,num_heads=4,seq_len=8192,sw_sz=1024          1.528320      0.080000      0.052032
+bs=1,num_heads=4,seq_len=8192,sw_sz=4096          1.528800      0.249504      0.138400
+bs=1,num_heads=4,seq_len=16384,sw_sz=1024         5.917536      0.150784      0.094304
+bs=1,num_heads=4,seq_len=16384,sw_sz=4096         5.918464      0.477888      0.263616
+bs=1,num_heads=4,seq_len=32768,sw_sz=1024         24.009888     0.287040      0.174208
+bs=1,num_heads=4,seq_len=32768,sw_sz=4096         23.968737     0.920320      0.498016
 is_decode=False, use_bwd=True, num_heads=32, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-bs=2                                    10.707744     3.956448      1.958240      4.454080
-bs=4                                    21.305376     8.083104      3.799424      9.148736
-bs=8                                    42.545246     16.388351     7.600864      18.032385
+                                                  jax           axlearn       jax-cudnn
+bs=2                                              6.134624      0.940480      0.488192
+bs=4                                              11.365568     1.791296      0.922528
+bs=8                                              22.983904     3.470272      1.795264
 is_decode=False, use_bwd=True, bs=2, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-num_heads=12                            4.081632      1.524320      0.834816      1.692224
-num_heads=16                            5.411136      2.013376      1.061248      2.227840
-num_heads=32                            10.724896     3.964064      1.959168      4.461600
-num_heads=48                            15.999936     6.114784      2.883072      6.932064
-num_heads=72                            23.977665     9.295424      4.333504      10.293408
+                                                  jax           axlearn       jax-cudnn
+num_heads=12                                      2.335136      0.406336      0.215584
+num_heads=16                                      3.088672      0.513216      0.272192
+num_heads=32                                      6.135712      0.941312      0.488288
+num_heads=48                                      9.171968      1.371936      0.705792
+num_heads=72                                      12.810016     2.001088      1.032000
 is_decode=False, use_bwd=True, bs=2, num_heads=32, num_kv_heads=None, per_head_dim=128, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-seq_len=256                             0.092320      0.057280      0.052928      0.064896
-seq_len=512                             0.294752      0.137600      0.108864      0.156992
-seq_len=1024                            0.883040      0.361856      0.237632      0.415168
-seq_len=2048                            2.855808      1.125152      0.625536      1.285472
-seq_len=4096                            10.700160     3.963456      1.955680      4.454624
-seq_len=8192                            42.416161     15.214400     6.937056      16.611712
+                                                  jax           axlearn       jax-cudnn
+seq_len=256                                       0.054560      0.026080      0.025824
+seq_len=512                                       0.137696      0.052096      0.039616
+seq_len=1024                                      0.424864      0.109216      0.067808
+seq_len=2048                                      1.447232      0.297248      0.164768
+seq_len=4096                                      6.145216      0.939520      0.486816
+seq_len=8192                                      19.973057     3.357696      1.695168
 is_decode=False, use_bwd=True, bs=2, num_heads=32, num_kv_heads=None, seq_len=4096, sw_sz=-1
-                                        jax           axlearn       jax-cudnn     jax-pallas
-per_head_dim=16                         10.013792     1.822496      1.190880      1.670848
-per_head_dim=32                         10.118080     1.984032      1.224000      2.017568
-per_head_dim=64                         10.279040     2.543008      1.270880      2.492608
-per_head_dim=128                        10.704416     3.942368      1.963296      4.455680
-
-is_decode=False, use_bwd=False, bs=1, num_heads=4, num_kv_heads=None, per_head_dim=128
-                                        jax           axlearn       jax-cudnn     jax-pallas
-seq_len=8192,sw_sz=1024                 0.882752      0.079968      0.325088      0.319456
-seq_len=8192,sw_sz=4096                 0.882272      0.250880      0.325152      0.914560
-seq_len=16384,sw_sz=1024                4.639008      0.150720      0.971968      0.948480
-seq_len=16384,sw_sz=4096                4.635008      0.471840      0.977888      2.816384
-seq_len=32768,sw_sz=1024                25.747295     0.286272      3.327232      3.198048
-seq_len=32768,sw_sz=4096                25.761728     0.916800      3.305376      9.667904
-
-is_decode=False, use_bwd=True, bs=1, num_heads=4, num_kv_heads=None, per_head_dim=128
-                                        jax           axlearn       jax-cudnn     jax-pallas
-seq_len=8192,sw_sz=1024                 2.481056      0.313504      1.625088      1.154720
-seq_len=8192,sw_sz=4096                 2.475456      0.955936      1.610944      1.152000
-seq_len=16384,sw_sz=1024                14.337056     0.592704      4.390048      4.075360
-seq_len=16384,sw_sz=4096                14.300768     1.845344      4.402304      4.078464
-seq_len=32768,sw_sz=1024                44.028992     1.149792      16.766592     15.573600
-seq_len=32768,sw_sz=4096                43.984417     3.662720      16.771521     15.582080
-
+                                                  jax           axlearn       jax-cudnn
+per_head_dim=16                                   5.843936      0.541312      0.319744
+per_head_dim=32                                   5.892192      0.563232      0.324736
+per_head_dim=64                                   5.955232      0.700224      0.333440
+per_head_dim=128                                  6.132384      0.941472      0.489696
+is_decode=False, use_bwd=True, num_kv_heads=None, per_head_dim=128
+                                                  jax           axlearn       jax-cudnn
+bs=1,num_heads=4,seq_len=8192,sw_sz=1024          1.528192      0.091232      0.064576
+bs=1,num_heads=4,seq_len=8192,sw_sz=4096          1.530336      0.262080      0.148960
+bs=1,num_heads=4,seq_len=16384,sw_sz=1024         5.922656      0.164960      0.107584
+bs=1,num_heads=4,seq_len=16384,sw_sz=4096         5.914208      0.493888      0.277248
+bs=1,num_heads=4,seq_len=32768,sw_sz=1024         23.976608     0.308416      0.195104
+bs=1,num_heads=4,seq_len=32768,sw_sz=4096         24.004320     0.942208      0.517792
 """
 # pylint: enable=line-too-long
 import itertools
-from functools import partial
 from typing import Any, Optional, Protocol, Union
 
 import jax
 import jax.numpy as jnp
 from jax.experimental.mosaic.gpu.profiler import _event_elapsed, _event_record, has_registrations
-from jax.experimental.pallas.ops.gpu.attention import mha as pallas_mha
 
-from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
+from axlearn.common.attention_bias import causal_mask
+from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.gpu_attention import (
-    NEG_INF,
-    cudnn_dot_product_attention,
-    flash_attention,
+    CuDNNGPUFlashAttentionWithExplicitBias,
+    PallasGPUFlashAttention,
 )
-from axlearn.common.flash_attention.gpu_decoding import Tensor, flash_decoding
-from axlearn.common.flash_attention.utils import mha_reference
+from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
+from axlearn.common.flash_attention.test_utils import generate_attention_data
+from axlearn.common.utils import Tensor
 
 X = jnp.zeros((8192, 8192))
 Y = jnp.zeros((8192, 8192))
@@ -164,13 +160,12 @@ def measure(f: BenchFn, *args: Tensor) -> tuple[Tensor, float]:
     launch overhead to cuda event.
 
     Args:
-      f: The function to measure. It must accept at least one argument and return
-        at least one output to be measurable.
-      *args: The arguments to pass to ``f``.
-      **kwargs: The keyword arguments to pass to ``f``.
+        f: The function to measure. It must accept at least one argument and return
+            at least one output to be measurable.
+        *args: The arguments to pass to ``f``.
 
     Returns:
-      The return value of ``f`` and the elapsed time in milliseconds.
+        The return value of ``f`` and the elapsed time in milliseconds.
     """
     if not has_registrations:
         raise RuntimeError("This function requires jaxlib >=0.4.36 with CUDA support.")
@@ -215,93 +210,43 @@ def bench_flash_attention(
         num_kv_heads = num_heads
     q_seq_len = 1 if is_decode else seq_len
     if is_decode:
-        if "pallas" in library:
-            q_seq_len = 16  # min supported seq length for triton and pallas
-        else:
-            q_seq_len = 1
+        cfg = dict(is_decoding=True)
+        q_seq_len = 1
     else:
+        cfg = dict()
         q_seq_len = seq_len
-    q = jax.random.normal(
-        jax.random.PRNGKey(0),
-        (bs, q_seq_len, num_heads, per_head_dim),
+    mask_fn = causal_mask
+    if sw_sz != -1:
+        mask_fn = None
+
+    q, k, v, bias = generate_attention_data(
+        bs,
+        q_seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        num_kv_heads=num_kv_heads,
+        mask_fn=mask_fn,
+        sliding_window_sz=sw_sz,
         dtype=jnp.float16,
+        query_offset=seq_len - 1 if is_decode else 0,
     )
-    k = jax.random.normal(
-        jax.random.PRNGKey(1), (bs, seq_len, num_kv_heads, per_head_dim), dtype=jnp.float16
-    )
-    v = jax.random.normal(
-        jax.random.PRNGKey(2), (bs, seq_len, num_kv_heads, per_head_dim), dtype=jnp.float16
-    )
-    # Bias is not supported in pallas, so we don't include it here.
-    bias = None
-    if sw_sz != -1 and not is_decode:
-        mask_fn = sliding_window_causal_mask(sw_sz)
-        # We convert mask into a bias tensor for jax and cudnn.
-        assert bias is None
-        mask = mask_fn(jnp.arange(seq_len)[:, None], jnp.arange(seq_len)[None, :])
-        bias = jnp.zeros((1, 1, seq_len, seq_len), dtype=jnp.float16)
-        bias = jnp.where(mask, bias, NEG_INF)
-    else:
-        mask_fn = causal_mask
+
     if "axlearn" in library:
-        args = (q, k, v)
-        if use_bwd:
-
-            @jax.jit
-            def triton_fn(q, k, v):
-                # Use mean rather than sum so that gradients won't overflow.
-                return flash_attention(q, k, v, mask_fn=mask_fn).mean()
-
-            fn = jax.grad(triton_fn, argnums=(0, 1, 2))
-        else:
-            if q_seq_len == 1:
-                fn = partial(flash_decoding, kv_seq_len=None, mask_fn=mask_fn)
-                args = (q, k, v)
-            else:
-                fn = partial(flash_attention, mask_fn=mask_fn)
-    elif "pallas" in library:
-        k = k.repeat(num_heads // num_kv_heads, axis=2)
-        v = v.repeat(num_heads // num_kv_heads, axis=2)
-        args = (q, k, v)
-        if use_bwd:
-
-            @jax.jit
-            def pallas_fn(q, k, v):
-                return pallas_mha(q, k, v, segment_ids=None, causal=True).mean()
-
-            fn = jax.grad(pallas_fn, argnums=(0, 1, 2))
-        else:
-            fn = partial(pallas_mha, segment_ids=None, causal=not is_decode)
+        base_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
+        if q_seq_len == 1:
+            base_fn = GPUDecoding.default_config().set(**cfg).instantiate()
     elif "cudnn" in library:
-        k = k.repeat(num_heads // num_kv_heads, axis=2)
-        v = v.repeat(num_heads // num_kv_heads, axis=2)
-        args = (q, k, v, bias)
-
-        if use_bwd:
-
-            @jax.jit
-            def cudnn_fn(q, k, v, bias):
-                return cudnn_dot_product_attention(q, k, v, bias=bias, causal=True).mean()
-
-            fn = jax.grad(cudnn_fn, argnums=(0, 1, 2))
-        else:
-            fn = partial(cudnn_dot_product_attention, causal=not is_decode)
+        base_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
     else:
-        k = k.repeat(num_heads // num_kv_heads, axis=2)
-        v = v.repeat(num_heads // num_kv_heads, axis=2)
-        args = (q, k, v, bias)
+        base_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-        if use_bwd:
-
-            @jax.jit
-            def ref_fn(q, k, v, bias):
-                return mha_reference(q, k, v, bias, causal=True).mean()
-
-            fn = jax.grad(ref_fn, argnums=(0, 1, 2))
-        else:
-            fn = partial(mha_reference, causal=not is_decode)
-
-    return measure(fn, *args)
+    assert base_fn.is_supported(query=q, key=k, value=v, bias=bias)
+    if use_bwd:
+        fn = lambda *args: base_fn(*args).mean()
+    else:
+        fn = base_fn
+    return measure(fn, q, k, v, bias)
 
 
 def _sweep(
@@ -388,7 +333,7 @@ def bench_flash_attention_fwd_bwd(use_bwd: bool):
         per_head_dim=128,
         sw_sz=-1,
     )
-    libraries = ["jax", "axlearn", "jax-cudnn", "jax-pallas"]
+    libraries = ["jax", "axlearn", "jax-cudnn"]
     benchmark_sweep(libraries, common_kwargs, bs=[2, 4, 8])
     benchmark_sweep(libraries, common_kwargs, num_heads=[12, 16, 32, 48, 72])
     # 256 to 8192.

@@ -1,13 +1,18 @@
 #!/bin/bash
-#SBATCH --nodes 1
 #SBATCH --cpus-per-task 127
 #SBATCH --output logs/%j_%x.out
 
-export AXLEARN_MIXTRAL_MOE=${1:-1}
-export AXLEARN_NUM_LAYERS=${2:-4}
-export AXLEARN_REMAT_LAYER=${3:-true}
-export AXLEARN_MODEL_NAME=${4:-"envy-Mistral-toy"}
-export AXLEARN_TP_DEGREE=${5:-4}
-export AXLEARN_JAX_BACKEND=${6:-neuron}
-srun -l setup_node.sh ../mar-artifacts/
+export AXLEARN_NUM_LAYERS=$((4 * SLURM_NNODES))
+export AXLEARN_REMAT_LAYER=true
+export AXLEARN_MODEL_NAME="envy-Mistral-16x10B"
+export AXLEARN_TP_DEGREE=4
+export AXLEARN_TRAIN_BATCH_SIZE=$((16 * SLURM_NNODES))
+#export AXLEARN_REPEATED=1
+# export AXLEARN_PROFILE_MODE="tracerun"
+
+if [ ${1:-0} = "1" ]; then
+    srun -l setup_node.sh ../apr-artifacts/
+else
+    echo "Skip installing"
+fi
 srun -l runner.sh

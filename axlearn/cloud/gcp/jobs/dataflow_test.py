@@ -16,29 +16,21 @@ from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.jobs import cpu_runner, dataflow
 from axlearn.cloud.gcp.jobs.cpu_runner_test import mock_vm
 from axlearn.cloud.gcp.jobs.dataflow import DataflowJob, _docker_bundler_to_flags, main
-from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import maybe_set_config
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
 @contextlib.contextmanager
 def _mock_gcp_settings():
-    mock_settings = {
-        "project": "test_project",
-        "zone": "test_zone",
-        "docker_repo": "test_repo",
-        "default_dockerfile": "test_dockerfile",
-        "ttl_bucket": "test_ttl_bucket",
-        "service_account_email": "test_service_account",
-        "subnetwork": "projects/test_project/regions/test_region/subnetworks/test_subnetwork",
-    }
+    mock_settings = default_mock_settings()
     mocks = [
         mock_gcp_settings(module.__name__, settings=mock_settings)
         for module in [dataflow, bundler, cpu_runner]
     ]
     mocks += [
-        mock.patch(f"{job.__name__}.default_project", return_value="test_project"),
-        mock.patch(f"{job.__name__}.default_zone", return_value="test_zone"),
+        mock.patch(f"{job.__name__}.default_project", return_value=mock_settings["project"]),
+        mock.patch(f"{job.__name__}.default_zone", return_value=mock_settings["zone"]),
     ]
     with contextlib.ExitStack() as stack:
         for m in mocks:
@@ -50,8 +42,8 @@ def _mock_flags():
     fv = flags.FlagValues()
     DataflowJob.define_flags(fv)
     fv.mark_as_parsed()
-    fv.set_default("bundler_spec", ["image=test_image"])
-    fv.set_default("name", "test_name")
+    fv.bundler_spec = ["image=test_image"]
+    fv.name = "test_name"
     return fv
 
 
@@ -64,8 +56,8 @@ class DataflowJobTest(TestWithTemporaryCWD):
             # Ensure worker bundler is constructed properly.
             self.assertEqual(cfg.bundler.klass.TYPE, ArtifactRegistryBundler.TYPE)
             self.assertEqual("test_image", cfg.bundler.image)
-            self.assertEqual("test_dockerfile", cfg.bundler.dockerfile)
-            self.assertEqual("test_repo", cfg.bundler.repo)
+            self.assertEqual("settings-dockerfile", cfg.bundler.dockerfile)
+            self.assertEqual("settings-repo", cfg.bundler.repo)
 
     def test_dataflow_spec_from_flags(self):
         with _mock_gcp_settings() as settings:
@@ -79,7 +71,7 @@ class DataflowJobTest(TestWithTemporaryCWD):
 
             # Test specs read from settings.
             self.assertEqual(settings["project"], dataflow_spec["project"])
-            self.assertEqual(settings["zone"], dataflow_spec["region"])
+            self.assertTrue(settings["zone"].startswith(dataflow_spec["region"]))
             self.assertEqual(
                 settings["service_account_email"],
                 dataflow_spec["service_account_email"],
@@ -102,14 +94,11 @@ class DataflowJobTest(TestWithTemporaryCWD):
             self.assertEqual(fv.vm_type, dataflow_spec["worker_machine_type"])
 
             # Test overriding specs (including a multi-flag)
-            fv.set_default(
-                "dataflow_spec",
-                [
-                    "project=other_project",
-                    "temp_location=other_location",
-                    "experiments=exp1,exp2",
-                ],
-            )
+            fv.dataflow_spec = [
+                "project=other_project",
+                "temp_location=other_location",
+                "experiments=exp1,exp2",
+            ]
             cfg = DataflowJob.from_flags(fv)
             # pylint: disable-next=protected-access
             dataflow_spec, _ = DataflowJob._dataflow_spec_from_flags(cfg, fv)

@@ -11,7 +11,7 @@ import numpy as np
 import tensorflow as tf
 
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.module import Module
+from axlearn.common.input_base import Input
 from axlearn.common.utils import Nested, Tensor, as_numpy_array, as_tensor
 
 if TYPE_CHECKING:
@@ -19,11 +19,11 @@ if TYPE_CHECKING:
     from axlearn.common.input_tf_data import BuildDatasetFn
 
 
-class EmptyInput(Module):
+class EmptyInput(Input):
     """Produces empty inputs."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Input.Config):
         """Configures EmptyInput."""
 
         is_training: Required[bool] = REQUIRED

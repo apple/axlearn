@@ -20,6 +20,7 @@ from typing import Any, Callable, Literal, Optional, Protocol, Union
 
 import jax
 import optax
+from absl import logging
 from jax.sharding import PartitionSpec
 
 from axlearn.common import struct
@@ -28,7 +29,15 @@ from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, ma
 from axlearn.common.learner_base import LearnerModule
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import (
+    Nested,
+    Tensor,
+    flatten_items,
+    match_regex_rules,
+    non_empty_leaf_merge_fn,
+    tree_merge,
+    tree_paths,
+)
 
 
 class UpdateTransformation(LearnerModule):
@@ -252,7 +261,7 @@ def mask_tree(tree: dict, *, keep: dict, mask_value: Any) -> dict:
 
     Returns:
         A masked tree the same structure as tree, the leaf is masked as MaskNode() if
-         the corresponding keep leaf is False.
+            the corresponding keep leaf is False.
 
     """
     # For sub-learner optimizer state, only the subset of parameters
@@ -263,3 +272,83 @@ def mask_tree(tree: dict, *, keep: dict, mask_value: Any) -> dict:
         tree,
         is_leaf=lambda x: x is None,
     )
+
+
+class OverrideInplaceUpdateTransformation(WrappedPartitionedGradientTransformation):
+    """An update transformation that provides rules to override inplace updates.
+
+    This update transformation moves gradients that match rules in `delta_updates` to
+    `inplace_updates`, then applies `PartionedGradientTransformation.update`. Also, optimizer
+    states won't be created for parameters that match these rules.
+    """
+
+    @config_class
+    class Config(WrappedPartitionedGradientTransformation.Config):
+        """Configures `OverrideInplaceUpdateTransformation`.
+
+        Attributes:
+            rules: list of regex rules to match.
+        """
+
+        rules: Required[Sequence[str]] = REQUIRED
+
+    def _is_passthrough(self, params: Nested[Any]) -> Nested[bool]:
+        """Gets a pytree of bools with True indicating a parameter or gradient is passthrough.
+
+        Passthrough parameters are parameters that do not match the rules and follow the same
+        semantic as a regular `WrappedPartitionedGradientTransformation`.
+        """
+        cfg: OverrideInplaceUpdateTransformation.Config = self.config
+        rules = [(rule, False) for rule in cfg.rules]
+        return jax.tree.map(
+            lambda path: match_regex_rules(path, rules=rules, default_value=True),
+            tree_paths(params),
+        )
+
+    def _keep_passthrough(self, params: Nested[Any]) -> Nested[Any]:
+        """Given a pytree of params, keeps only the passthrough params."""
+        return mask_tree(params, keep=self._is_passthrough(params), mask_value=optax.MaskedNode())
+
+    def create_state_partition_specs(
+        self, model_param_specs: Nested[ParameterSpec]
+    ) -> Union[Nested[PartitionSpec], tuple[Nested[PartitionSpec]],]:
+        return self.transformation.partition(self._keep_passthrough(model_param_specs))
+
+    def init(self, model_params: Nested[OptParam]) -> Nested[Tensor] | tuple[Nested[Tensor], ...]:
+        return self.transformation.init(self._keep_passthrough(model_params))
+
+    def transform_update(self, updates: Updates) -> Updates:
+        is_passthrough = self._is_passthrough(updates.delta_updates)
+        override_inplace_updates = mask_tree(
+            updates.delta_updates,
+            keep=jax.tree.map(lambda x: not x, is_passthrough),
+            mask_value=optax.MaskedNode(),
+        )
+        for path, value in flatten_items(override_inplace_updates):
+            logging.info(
+                "Applying inplace_updates instead of delta_updates for %s: %s%s.",
+                path,
+                str(value.dtype),
+                str(value.shape),
+            )
+
+        passthrough_updates = super().transform_update(
+            updates.mask(lambda _: is_passthrough, fields=["delta_updates", "opt_params"])
+        )
+
+        # Merge inplace updates back to `delta_updates` to make sure `delta_updates` has the same
+        # tree structure as updates.opt_params, which is required by `Learner`. This won't affect
+        # optimization result since `inplace_updates` will take priority.
+        return dataclasses.replace(
+            updates,
+            delta_updates=tree_merge(
+                passthrough_updates.delta_updates,
+                secondary=override_inplace_updates,
+                leaf_merge_fn=non_empty_leaf_merge_fn,
+            ),
+            inplace_updates=tree_merge(
+                updates.inplace_updates,
+                secondary=override_inplace_updates,
+                leaf_merge_fn=non_empty_leaf_merge_fn,
+            ),
+        )

@@ -63,7 +63,6 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
     "oegch": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None, "model"),
 }
 
-
 def _topkgather_to_topk(output, top_k, cf):
     tok_perm_idx, expert_index, exp_aff_mask = output.combine_tensor
 
