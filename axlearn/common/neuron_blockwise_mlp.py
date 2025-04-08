@@ -129,9 +129,9 @@ def _blockwise_mm_fwd(
             expert_affinities_masked,
             gate_up_weight,
             down_proj_weight,
+            token_position_to_id,
+            block_to_expert,
             block_size=block_size,
-            token_position_to_id=token_position_to_id,
-            block_to_expert=block_to_expert,
         )
 
     print("out:::", out)
