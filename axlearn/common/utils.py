@@ -1429,11 +1429,6 @@ def tree_merge(
     # Use the override function if primary or secondary is a leaf.
     if not (isinstance(primary, dict) or isinstance(secondary, dict)):
         return copy.deepcopy(leaf_merge_fn(primary, secondary))
-    # pylint: disable-next=unidiomatic-typecheck
-    if type(primary) != type(secondary):
-        raise ValueError(
-            f"Incompatible subtree types: primary={type(primary)}, secondary={type(secondary)}"
-        )
     # Use type() so that if primary is a VDict, out_tree is also a VDict.
     out_tree = type(primary)(primary)
     for k in secondary:
