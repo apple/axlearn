@@ -688,6 +688,7 @@ class MainTest(parameterized.TestCase):
         [
             dict(command="test command"),
             dict(command="test 'command with quotes'"),
+            dict(command="'if [ true ]; then echo 1; fi'"),
         ],
         as_flag=[False, True],
     )

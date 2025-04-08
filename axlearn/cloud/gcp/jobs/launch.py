@@ -308,7 +308,6 @@ class BaseBastionManagedJob(FlagConfigurable):
             # command again, this time on the bastion with action="run".
             # For backwards compatibility with legacy behavior where command is specified with argv
             # after `--`, we take any command supplied via `kwargs` and use argv.
-            # own_flags = " ".join(serialized_flags_for_config(cfg, fv))
             own_flags = " ".join(fv.flags_into_string().split("\n"))
             cfg.command = f"python3 -m {infer_module_qualname(cls)} run {own_flags}"
             if command is not None:
