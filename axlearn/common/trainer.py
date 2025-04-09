@@ -18,6 +18,7 @@ from absl import logging
 from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
+from jax_neuronx.experimental import debug_callback
 
 from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
@@ -614,6 +615,7 @@ class SpmdTrainer(Module):
                                 force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                             ),
                         )
+                        break
                         max_step_ = os.getenv("AXLEARN_MAX_STEP", None)
                         if max_step_ is not None and max_step_  == num_steps:
                             logging.info(f"Done running {num_steps}, exiting")
@@ -1126,7 +1128,8 @@ class SpmdTrainer(Module):
         return evaler_summaries
 
     def _pjit_train_step(self) -> jax.stages.Wrapped:
-        return pjit(
+        return debug_callback(
+            pjit(
             self._train_step,
             in_shardings=(
                 self._trainer_state_partition_specs,
@@ -1142,6 +1145,7 @@ class SpmdTrainer(Module):
             ),
             donate_argnums=(0,),  # donate the state
         )
+    )
 
     def compile_train_step(
         self,

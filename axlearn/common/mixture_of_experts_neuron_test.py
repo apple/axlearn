@@ -28,7 +28,7 @@ class TestImplCorrectnessInteg(TestCase, ModuleTester):
         builder.reset()
         builder.with_dimensions(batch_size=16, seq_len=4096, input_dim=6144,)
         builder.with_expert_settings(
-            hidden_dim=15*1024, outer_batch=1,
+            hidden_dim=15*1024, outer_batch=16,
             num_groups=1, num_experts=16,
             expert_capacity=None, 
             train_capacity_factor=2,

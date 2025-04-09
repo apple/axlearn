@@ -1156,7 +1156,6 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         O, G, S, E = logits.shape
         raw_gates = self.router(cfg, logits)
         expert_capacity = self.compute_expert_capacity(cfg, logits)
-        print('capacity', expert_capacity)
         # expert_index: (O, G, S, top_k)
         expert_index = self.compute_expert_index(cfg, raw_gates)
         # expert_mask: (O, G, S*topk, E)
@@ -1215,12 +1214,9 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         block_position_indices = block_position_indices.at[:,:,:,1:].set(block_position_indices[:,:,:,1:] + expert_block_offsets[:,:,:,:-1])
         block_position_indices = jnp.where(expert_mask_after_dropping==0, 0, block_position_indices)
 
-        print('bpi', block_position_indices)
         # token_position_to_id: (O, G, N*B)
         # for every position in the block, gets the token id in sequence
         token_position_to_id = self.get_token_position_to_id(cfg, block_position_indices, num_blocks,)
-        print('tpid', token_position_to_id)
-
         router_z_loss = _router_z_loss(logits)
 
         return self.Output(
@@ -1583,13 +1579,11 @@ class TransformerFeedForwardMoE(BaseLayer):
                 out_specs=PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None),
                 check_rep=False
             )
-            print("hidden_stateshidden_states::" , hidden_states)
 
-            print("expert_affinities_maskedexpert_affinities_masked::" , expert_affinities_masked)
-
-            print("token_position_to_id::" , token_position_to_id)
-
-            print("block_to_expert::" , block_to_expert)
+            jax.debug.print("hidden_states: {x}", x=hidden_states)
+            jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
+            jax.debug.print("token_position_to_id: {x}", x=token_position_to_id)
+            jax.debug.print("block_to_expert: {x}", x=block_to_expert)
 
             outputs = partitioned_blockwise_mm(
                     hidden_states,
@@ -1604,7 +1598,7 @@ class TransformerFeedForwardMoE(BaseLayer):
 
             with jax.named_scope("all_reduce"):
                 outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
-            print("outputssss::" , outputs)
+            jax.debug.print("outputs: {x}", x=outputs)
             return outputs
         else:
             raise NotImplementedError

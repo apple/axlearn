@@ -3,7 +3,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-
+from jax_neuronx.experimental import debug_callback
 # TODO(apoorvtintin): remove pytype disable when dependencies are public.
 # pytype: disable=import-error
 # Import needed to enable JAX cache on Neuron.
@@ -110,10 +110,6 @@ def _blockwise_mm_fwd(
             axis=2
         )
 
-    print("gate:::", gate_up_weight)
-    print("hidden_states:::", hidden_states)
-    print("down:::", down_proj_weight)
-
     # hidden_states = jnp.zeros_like(hidden_states)
     # expert_affinities_masked = jnp.zeros_like(expert_affinities_masked)
     # gate_up_weight = jnp.zeros_like(gate_up_weight)
@@ -124,7 +120,15 @@ def _blockwise_mm_fwd(
 
     # out: (S+1, H)
     # out = blockwise_mm_nki[VNC(2)](
-    
+    print(
+        hidden_states,
+        expert_affinities_masked,
+        gate_up_weight,
+        down_proj_weight,
+        token_position_to_id,
+        block_to_expert,
+        block_size
+    )
     with jax.named_scope("make NKI call"):
         out, gate_up_activations_T, down_activations = _blockwise_mm_nki_call[VNC(2)](
             hidden_states,
@@ -135,10 +139,6 @@ def _blockwise_mm_fwd(
             block_to_expert,
             block_size=block_size,
         )
-
-    print("out:::", out)
-    print("gate_up_activations_T:::", gate_up_activations_T)
-    print("down_activations:::", down_activations)
 
     # return out[:-1, :], (hidden_states, expert_affinities_masked, gate_up_weight, 
     #             down_proj_weight, down_activations, gate_up_activations_T, 
@@ -163,12 +163,10 @@ def _blockwise_mm_bwd(
     grad_output =  jnp.squeeze(grad_output, axis=(0,1,2))
     padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
     grad_output = jnp.concat([grad_output, padding_h], axis=0)
+    
+    jax.debug.print("grad_output: {x}", x=grad_output)
+    jax.debug.print("hidden_states: {x}", x=hidden_states)
 
-    print("gate grads::::", grad_output)
-
-    print("hidden states::, ", hidden_states.shape)
-
-    print("block sizeeee:::" , block_size)
     # Compute gradients
     hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = _blockwise_mm_bwd_nki_call[VNC(2)](
         hidden_states,
@@ -183,12 +181,11 @@ def _blockwise_mm_bwd(
         block_size=block_size,
     )
 
-    print("gate grads::::", gate_up_proj_weight_grad)
-    print("down_weight_grad grads::::", down_weight_grad)
+    # jax.debug.print("hidden_states_grad: {x}", x=hidden_states_grad)
+    # jax.debug.print("affinities_grad: {x}", x=affinities_grad)
+    # jax.debug.print("gate_up_proj_weight_grad: {x}", x=gate_up_proj_weight_grad)
+    # jax.debug.print("down_weight_grad: {x}", x=down_weight_grad)
     
-    print("gate hidden_states_grad::::", hidden_states_grad)
-    print("affinities_grad grads::::", affinities_grad)
-
     sliced_tensor = hidden_states_grad[:-1,:]
     hidden_states_grad = sliced_tensor.reshape(1, 1, -1, H)
     
@@ -197,9 +194,6 @@ def _blockwise_mm_bwd(
 
     affinities_grad = jnp.reshape(affinities_grad, (-1, E))
     affinities_grad = affinities_grad[:-1, :].reshape(1, 1, -1, E)
-
-    print("gate hidden_states_grad::::", hidden_states_grad)
-    print("affinities_grad grads::::", affinities_grad)
 
     gate_proj_weight_grad = gate_up_proj_weight_grad[:, :, 0, :]  # Shape: (E, H, I)
     up_proj_weight_grad = gate_up_proj_weight_grad[:, :, 1, :]
