@@ -57,6 +57,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 # # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="/shared/aahila/compiler/cache/"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
+source ../jaxmoe/bin/activate
 
 echo "setup env vars"
 if [ "$1" = "unit" ]; then
