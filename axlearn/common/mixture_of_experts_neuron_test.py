@@ -26,13 +26,13 @@ class TestImplCorrectnessInteg(TestCase, ModuleTester):
     def test_fwd_correctness_blockwise(self):
         builder = TestConfigBuilder()
         builder.reset()
-        builder.with_dimensions(batch_size=16, seq_len=32, input_dim=4096, )
+        builder.with_dimensions(batch_size=16, seq_len=4096, input_dim=6144,)
         builder.with_expert_settings(
-            hidden_dim=6144, outer_batch=1, 
-            num_groups=1, num_experts=4,
+            hidden_dim=15*1024, outer_batch=1,
+            num_groups=1, num_experts=16,
             expert_capacity=None, 
-            train_capacity_factor=1.2,
-            block_size=128,
+            train_capacity_factor=2,
+            block_size=512,
             use_blockwise_kernel=True)
         builder.with_mesh_settings({"fsdp":-1, "model":4})
         # gating_config = builder.build_gating_layer_config(test_device="neuron")

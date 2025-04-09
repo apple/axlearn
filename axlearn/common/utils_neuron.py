@@ -153,17 +153,19 @@ class TestConfig():
     def instantiate_modules_with_mesh(self):
         device_type = self.test.device
         devices = jax.devices(device_type)[:self.num_devices]
-        self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
-        with self.mesh_test: 
-            self.test_layer  = self.test.module.instantiate(parent=None) 
-            self.test_state  = self.test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
+        self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES)
+        with jax.default_device(jax.devices('cpu')[0]):
+            with self.mesh_test: 
+                self.test_layer  = self.test.module.instantiate(parent=None) 
+                self.test_state  = self.test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
 
         device_type = self.golden.device
         devices = jax.devices(device_type)[:self.num_devices]
-        self.mesh_golden = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
-        with self.mesh_golden: 
-            self.golden_layer  = self.golden.module.instantiate(parent=None) 
-            self.golden_state  = self.golden_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
+        self.mesh_golden = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES)
+        with jax.default_device(jax.devices('cpu')[0]):
+            with self.mesh_golden: 
+                self.golden_layer  = self.golden.module.instantiate(parent=None) 
+                self.golden_state  = self.golden_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
 
     def random_inputs_with_mesh(self):
         input_key = 'inputs' if self.test.layer == "MoE" else 'logits'
