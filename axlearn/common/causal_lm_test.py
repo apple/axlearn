@@ -572,19 +572,21 @@ class CompositeLossMetricsTest(TestCase):
                 del kwargs
                 return input_batch[self.name], {}
 
+        class FixedLossWeights(causal_lm.CompositeLossWeights):
+            def forward(self, child_metrics):
+                del child_metrics
+                return {"test0": 0.5, "test1": 1.0}
+
         cfg = causal_lm.CompositeLossMetrics.default_config().set(
             name="test",
             metrics={
                 "test0": DummyMetrics.default_config(),
                 "test1": DummyMetrics.default_config(),
             },
+            loss_weights=FixedLossWeights.default_config(),
         )
 
-        # Test mismatched keys.
-        with self.assertRaisesRegex(ValueError, "keys"):
-            cfg.set(loss_weights={"test0": 0.5}).instantiate(parent=None)
-
-        metrics = cfg.set(loss_weights={"test0": 0.5, "test1": 1.0}).instantiate(parent=None)
+        metrics = cfg.instantiate(parent=None)
 
         (loss, _), _ = functional(
             metrics,
