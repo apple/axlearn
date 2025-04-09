@@ -18,6 +18,7 @@ from jax.sharding import NamedSharding, Mesh
 from axlearn.common.module import functional as F
 from axlearn.common.mixture_of_experts import (
     TopKGating,
+    Top2Gating,
     TransformerFeedForwardMoE,
     TopKGatingGather,
     TopKGatingGatherBlockwise,
@@ -29,7 +30,7 @@ from axlearn.common.layers import (
     StochasticDepth,
     RMSNorm,
 )
-jax.config.update('jax_platform_name', 'cpu')
+# jax.config.update('jax_platform_name', 'cpu')
 from axlearn.common.utils import PartitionSpec, infer_mesh_shape, cast_floats
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
 
@@ -114,7 +115,9 @@ class TestConfig():
         self.loss_fn = loss_fn
         self.conv_output = conv_output
         self.num_devices = None 
-        self.mesh_dims = self.get_mesh_from_spec(mesh_spec)
+
+        self.mesh_spec=mesh_spec
+        
         self.prefix = prefix
 
         self.mesh_test = None 
@@ -123,11 +126,13 @@ class TestConfig():
         self.golden_inputs = dict()  
         self.out_shard_test = None
         self.out_shard_golden = None
-        if test.layer == "MoE":
-            self.set_outer_batch()
-
+        
     def init(self):
+        self.mesh_dims = self.get_mesh_from_spec(self.mesh_spec)
+        if self.test.layer == "MoE":
+            self.set_outer_batch()
         self.instantiate_modules_with_mesh() 
+
         self.random_inputs_with_mesh()
         #specify empty outsharding for jax.jit because we transfer tensors to host and compare
         out_pspec = PartitionSpec()  
@@ -195,17 +200,16 @@ class TestConfigBuilder:
         }
         return self
     
-    def with_dimensions(self, batch_size, seq_len, input_dim, dtype):
+    def with_dimensions(self, batch_size, seq_len, input_dim, dtype=jnp.float32):
         # Only two data types currently supported
-        _dtype = jnp.float32
         if dtype == 'bfloat16':
-            _dtype = jnp.bfloat16
+            dtype = jnp.bfloat16
 
         self.params.update({
             "batch_size": batch_size,
             "seq_len": seq_len,
             "input_dim": input_dim,
-            "dtype": _dtype
+            "dtype": dtype
         })
         return self
     
@@ -219,6 +223,7 @@ class TestConfigBuilder:
             "train_capacity_factor": train_capacity_factor,
             "use_blockwise_kernel": use_blockwise_kernel,
             "block_size": block_size,
+            "activation": ("nn.silu", "linear"),
         })
         return self
     
@@ -229,7 +234,6 @@ class TestConfigBuilder:
         return self 
 
     def build_moe_topkgather_setup(self):
-        print(self.params["use_blockwise_kernel"])
         if self.params["use_blockwise_kernel"] is False:
             gating_config = TopKGatingGather.default_config().set(
                     name="gating",
@@ -254,7 +258,8 @@ class TestConfigBuilder:
             "gating": gating_config,
             # "norm" : RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
             "dropout" : Dropout.default_config().set(rate=None),
-            "stochastic_depth" : StochasticDepth.default_config().set(rate=None)
+            "stochastic_depth" : StochasticDepth.default_config().set(rate=None),
+            "activation": self.params["activation"],
         }
     
     def build_moe_top2_setup(self):
@@ -269,7 +274,8 @@ class TestConfigBuilder:
                 name="gating",
                 top_k=self.params["top_k"],
                 train_capacity_factor=self.params["train_capacity_factor"]
-            )
+            ),
+            "activation": self.params["activation"],
         }
     
     def build_gating_setup(self, gating_class=Top2Gating):
@@ -286,7 +292,7 @@ class TestConfigBuilder:
     def build_moe_layer_config(self, test_device="neuron"):
         return TestConfig(
             test=ModuleConfig(TransformerFeedForwardMoE, test_device, "MoE", config=self.build_moe_topkgather_setup()),
-            golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", config=self.build_moe_top2_setup()),
+            golden=ModuleConfig(TransformerFeedForwardMoE, test_device, "MoE", config=self.build_moe_top2_setup()),
             input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
             loss_fn=lambda x: x.mean(),
             mesh_spec=self.params["mesh_spec"],

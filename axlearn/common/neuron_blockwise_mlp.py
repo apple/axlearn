@@ -10,8 +10,9 @@ import jax.numpy as jnp
 import jax_neuronx  # pylint: disable=unused-import
 import neuronxcc.nki.language as nl
 from jax import custom_vjp
+
 # from neuronxcc.nki._private_kernels.blockwise_mm import (
-from .blockwise_mm import (
+from axlearn.common.blockwise_mm import (
         # blockwise_mm as blockwise_mm_nki,
         blockwise_mm_selective_cp as blockwise_mm_nki,
         # blockwise_mm_baseline_shard_hidden as blockwise_mm_nki,
@@ -123,6 +124,7 @@ def _blockwise_mm_fwd(
 
     # out: (S+1, H)
     # out = blockwise_mm_nki[VNC(2)](
+    
     with jax.named_scope("make NKI call"):
         out, gate_up_activations_T, down_activations = _blockwise_mm_nki_call[VNC(2)](
             hidden_states,

@@ -772,17 +772,15 @@ class TopKGatingGather(TopKGating):
         with jax.named_scope("expert_mask"):
             # expert_mask: top_k-hot encoded expert assignment per token -> (T, E)        
             # Initialize expert_mask with zeros
-            # expert_index: (O, G, top_k, S)
-            expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
-            O, G, k, S = expert_index.shape
+            O, G, Sxtop_k = expert_index.shape
             # expert_index: (O, G, S * top_k)
-            expert_index = expert_index.reshape(O, G, S*k)
-            expert_mask = jnp.zeros((O, G, S*k, num_experts), dtype=jnp.float32)
+            expert_index = expert_index.reshape(O, G, Sxtop_k)
+            expert_mask = jnp.zeros((O, G, Sxtop_k, num_experts), dtype=jnp.float32)
 
             idx_O, idx_G, idx_Sxtop_k = jnp.meshgrid(
                 jnp.arange(O),
                 jnp.arange(G),
-                jnp.arange(S*k),
+                jnp.arange(Sxtop_k),
                 indexing='ij'
             )
 
@@ -952,7 +950,7 @@ class TopKGatingGather(TopKGating):
         with jax.named_scope("expert_mask"):
             # Use expert indices to compute mask
             # expert_mask: [O, G, S*topk, E]
-            expert_mask = self.compute_expert_mask(expert_index, cfg.num_experts)
+            expert_mask = self.compute_expert_mask(cfg, expert_index, cfg.num_experts)
 
         # Only use top 1 tokens for calculationg aux loss.
         with jax.named_scope("aux_loss"):
@@ -1008,6 +1006,10 @@ class TopKGatingGather(TopKGating):
             # expert_index: (O, G, S, top_k)
             _, expert_index = jax.lax.top_k(raw_gates, k)
             expert_index = expert_index.astype(jnp.int32)
+            # expert_index: (O, G, top_k, S)
+            expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
+            # expert_index: (O, G, S * top_k)
+            expert_index = expert_index.reshape(O, G, S*k)
         return expert_index
 
     # pylint: disable-next=too-many-statements
@@ -1207,7 +1209,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # after masking this represents for each token, 
         # the position in blocks if all tokens in blocks were laid out in a linear array
         # b0t0, b0t1,..., b1t0, b1t1,...
-        block_position_indices = self.cumsum_4d_matmul(expert_mask_after_dropping.astype(jnp.int32), axis=-2).astype(jnp.int32)
+        block_position_indices = _cum_sum(expert_mask_after_dropping.astype(jnp.int32), axis=-2).astype(jnp.int32)
         # O G 1 E
         expert_block_offsets = jnp.expand_dims(cumulative_blocks_per_expert * cfg.block_size, 2)
         block_position_indices = block_position_indices.at[:,:,:,1:].set(block_position_indices[:,:,:,1:] + expert_block_offsets[:,:,:,:-1])
