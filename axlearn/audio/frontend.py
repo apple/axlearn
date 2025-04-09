@@ -11,7 +11,6 @@ from collections.abc import Sequence
 from functools import partial
 from typing import Callable, Optional, Protocol
 
-import einops
 import jax.numpy as jnp
 
 from axlearn.audio.frontend_utils import (
@@ -27,6 +26,7 @@ from axlearn.audio.frontend_utils import (
     pre_emphasis,
     windowing,
 )
+from axlearn.common import einops
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (
     REQUIRED,
