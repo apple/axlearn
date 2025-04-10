@@ -116,6 +116,11 @@ from axlearn.common.param_init import (
     WeightInitializer,
 )
 from axlearn.common.pipeline import BaseSchedule, GPipeSchedule, StreamSchedule
+from axlearn.common.quantized_dot_general.layers import (
+    DotGeneralQuantizationType,
+    QuantizedDotGeneral,
+    set_quantized_dot_general_recursively,
+)
 from axlearn.common.test_utils import TestCase, assert_allclose, dummy_segments_positions
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import (
@@ -1378,9 +1383,16 @@ class QKVLinearTest(TestCase):
         ],
         with_positions=[True, False],
         value_dim_ratio=[1, 2],
+        fp8_amax_history_length=[None, 0, 1],
+        cross_attention=[True, False],
     )
     def test_qkv_equality(
-        self, test_cls: type[attention.BaseQKVLinear], with_positions: bool, value_dim_ratio: int
+        self,
+        test_cls: type[attention.BaseQKVLinear],
+        with_positions: bool,
+        value_dim_ratio: int,
+        fp8_amax_history_length: int,
+        cross_attention: bool,
     ):
         """Tests that the QKVLinear variants are equivalent when num_kv_heads=num_heads."""
         if value_dim_ratio != 1 and test_cls in (
@@ -1388,6 +1400,12 @@ class QKVLinearTest(TestCase):
             attention.FusedGroupedQKVLinear,
         ):
             pytest.skip(reason="Fused QKV doesn't support different value dim.")
+        if fp8_amax_history_length is not None and jax.default_backend() != "gpu":
+            pytest.skip(reason="FP8 is only supported on H100!")
+        if cross_attention and test_cls is attention.FusedGroupedQKVLinear:
+            pytest.skip(reason="FusedGroupedQKVLinear doesn't support cross attention.")
+        if value_dim_ratio != 1 and not cross_attention:
+            pytest.skip(reason="Value dim ratio only makes sense for cross attention.")
         with utils.numeric_checks(True):
             model_dim = 12
             num_heads = 4
@@ -1401,12 +1419,27 @@ class QKVLinearTest(TestCase):
             )
             base_cfg = QKVLinear.default_config().set(**layer_kwargs)
             test_cfg = test_cls.default_config().set(**layer_kwargs)
+
+            if fp8_amax_history_length is not None:
+                fp8_config = QuantizedDotGeneral.default_config().set(
+                    quantization_type=DotGeneralQuantizationType.FP_8,
+                    fp8_amax_history_length=fp8_amax_history_length,
+                )
+                set_quantized_dot_general_recursively(
+                    base_cfg,
+                    quantized_dot_general=fp8_config,
+                )
+                set_quantized_dot_general_recursively(
+                    test_cfg,
+                    quantized_dot_general=fp8_config,
+                )
             maybe_set_config(test_cfg, num_kv_heads=num_heads)
             base_layer = base_cfg.set(name="base").instantiate(parent=None)
             test_layer = test_cfg.set(name="test").instantiate(parent=None)
 
             # Construct base layer state.
             base_state = base_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+            test_state = test_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
             # Map state to fused version.
             if test_cls == attention.FusedQKVLinear:
@@ -1414,7 +1447,7 @@ class QKVLinearTest(TestCase):
                     [base_state[el]["weight"] for el in ("q_proj", "k_proj", "v_proj")]
                 )
                 bias = jnp.array([base_state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")])
-                test_state = {"qkv_proj": dict(weight=weight, bias=bias)}
+                test_state["qkv_proj"].update(weight=weight, bias=bias)
             elif test_cls == attention.FusedGroupedQKVLinear:
                 # Concatenate along the num_heads dim.
                 weight = jnp.concatenate(
@@ -1423,20 +1456,20 @@ class QKVLinearTest(TestCase):
                 bias = jnp.concatenate(
                     [base_state[el]["bias"] for el in ("q_proj", "k_proj", "v_proj")], axis=0
                 )
-                test_state = {"qkv_proj": dict(weight=weight, bias=bias)}
+                test_state["qkv_proj"].update(weight=weight, bias=bias)
             else:
-                test_state = base_state
+                for el in ("q_proj", "k_proj", "v_proj"):
+                    test_state[el].update(base_state[el])
 
             # Construct test inputs.
             batch_size, src_len, tgt_len = 2, 6, 6
             query = jax.random.uniform(jax.random.PRNGKey(0), [batch_size, tgt_len, model_dim])
-            key = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, src_len, model_dim])
-            value = jax.random.uniform(
-                jax.random.PRNGKey(2), [batch_size, src_len, model_dim * value_dim_ratio]
-            )
-
-            # In the fused GQA case, we assume query=key=value.
-            if test_cls == attention.FusedGroupedQKVLinear:
+            if cross_attention:
+                key = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, src_len, model_dim])
+                value = jax.random.uniform(
+                    jax.random.PRNGKey(2), [batch_size, src_len, model_dim * value_dim_ratio]
+                )
+            else:
                 key = value = None
 
             positions = jnp.arange(tgt_len)[None] if with_positions else None
@@ -1455,7 +1488,19 @@ class QKVLinearTest(TestCase):
                 )
             for layer_a, layer_b in combinations(layer_names, 2):
                 # Check that the outputs are close for all pairs.
-                self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
+                atol = 0.000001
+                if fp8_amax_history_length is not None and (
+                    test_cls is FusedGroupedQKVLinear
+                    or (test_cls is FusedQKVLinear and not cross_attention)
+                ):
+                    # When using FP8, the QKV input and weight in QKVLinear has their own
+                    # scaling factor. FusedGroupedQKVLinear only has one scaling factor per weight.
+                    # FusedQKVLinear has one scaling factor when using self attention, and one per
+                    # QKV when using cross attention.
+                    # When the number of scaling factor of the test cls differ from the baseline,
+                    # we expect higher tolerance.
+                    atol = 0.075
+                self.assertNestedAllClose(outputs[layer_a], outputs[layer_b], atol=atol)
 
     @parameterized.parameters(
         dict(layer_cls=attention.QKVLinear, expected=4),
