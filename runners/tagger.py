@@ -1,4 +1,6 @@
 import os
+
+import re
 import glob
 import subprocess
 import argparse
@@ -17,8 +19,17 @@ logging.basicConfig(
 INDEX_DIR=os.path.join("logs", "index")
 LOGS_DIR="logs"
 ARTIFACTS_DIR="artifacts"
-PREFIX = 'rh'
-SLURM_SCRIPT_NAME="rh_run.slurm"
+
+try:
+    PREFIX = re.match("(/fsx/)[^/]+(?=/*)", os.getcwd())[0].split('/')[2]
+except RuntimeError:
+    PREFIX = ''
+
+SLURM_SCRIPT_NAME="run.slurm"
+
+if PREFIX:
+    SLURM_SCRIPT_NAME = PREFIX + "_" + SLURM_SCRIPT_NAME
+
 os.makedirs(INDEX_DIR, exist_ok=True)
 
 # def write_keys(key_to_search, f, tags=None):
@@ -172,12 +183,14 @@ if __name__ == "__main__":
             os.path.join(INDEX_DIR, job_id)
         )
         tags = load_tags(job_id)
-        name = build_name_with_main_attrs(tags)
-        name = f"{PREFIX}_{name}"
-        subprocess.run(
-            f"scontrol update job {job_id} name={name}", shell=True
-        )
-        logging.info(f"Changed slurm job name to {name}")
+        job_name = os.environ.get('SLURM_JOB_NAME')
+        if job_name == SLURM_SCRIPT_NAME:
+            name = build_name_with_main_attrs(tags)
+            name = f"{PREFIX}_{name}"
+            subprocess.run(
+                f"scontrol update job {job_id} name={name}", shell=True
+            )
+            logging.info(f"Changed slurm job name to {name}")
 
     elif args.list:
         files = sorted(
