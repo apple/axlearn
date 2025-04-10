@@ -357,9 +357,10 @@ class FlagConfigurableTest(parameterized.TestCase):
                 fv.set_default("child_only", "child-default")
 
         fv = flags.FlagValues()
-        Child.define_flags(fv)
+        cfg = Child.default_config()
+        utils.define_flags(cfg, fv)
         fv.mark_as_parsed()
-        Child.from_flags(fv)
+        utils.from_flags(cfg, fv)
 
         # "parent-only" and "child-only" should follow original defaults.
         self.assertEqual(fv.parent_only, "parent-default")

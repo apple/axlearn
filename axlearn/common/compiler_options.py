@@ -180,6 +180,7 @@ class NotTpuError(ValueError):
     pass
 
 
+# TODO(markblee): Generalize to other accelerators.
 def infer_tpu_type(instance_type: str) -> str:
     """Infers tpu type (e.g. v4-8) from instance type (e.g. tpu-v4-8 or v4-8)."""
     if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
@@ -187,6 +188,7 @@ def infer_tpu_type(instance_type: str) -> str:
     return instance_type.replace("tpu-", "")
 
 
+# TODO(markblee): Generalize to other accelerators.
 def infer_tpu_version(tpu_type: str) -> str:
     """Infer TPU version from the TPU type.
 

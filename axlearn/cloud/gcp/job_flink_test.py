@@ -10,7 +10,8 @@ from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.gcp import bundler, job, job_flink, jobset_utils
+from axlearn.cloud.common.utils import define_flags, from_flags
+from axlearn.cloud.gcp import bundler, job_flink, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.test_utils import TestCase
@@ -384,7 +385,7 @@ class FlinkTPUGKEJobTest(TestCase):
         self._settings = default_mock_settings()
         with (
             mock_gcp_settings(
-                [job.__name__, jobset_utils.__name__, bundler.__name__],
+                [jobset_utils.__name__, bundler.__name__],
                 settings=self._settings,
             ),
         ):
@@ -396,14 +397,13 @@ class FlinkTPUGKEJobTest(TestCase):
         command: str = "python -m fake --command",
         location_hint: Optional[str] = None,
         **kwargs,
-    ):
+    ) -> tuple[job_flink.FlinkTPUGKEJob.Config, Bundler.Config]:
         self._settings["location_hint"] = location_hint
         fv = flags.FlagValues()
-        flags.DEFINE_string("instance_type", "tpu-v5p-16", "", flag_values=fv)
-        flags.DEFINE_string("output_dir", "fake-output-dir", "", flag_values=fv)
-        fv.mark_as_parsed()
-        fv.output_dir = "fake-output-dir"
-        job_flink.FlinkTPUGKEJob.define_flags(fv)
+        cfg = job_flink.FlinkTPUGKEJob.default_config().set(
+            builder=jobset_utils.TPUReplicatedJob.default_config()
+        )
+        define_flags(cfg, fv)
         fv.set_default("name", "fake-name")
         fv.set_default("instance_type", "tpu-v5p-16")
         fv.set_default("output_dir", "fake-output-dir")
@@ -411,7 +411,7 @@ class FlinkTPUGKEJobTest(TestCase):
             if value is not None:
                 setattr(fv, key, value)
         fv.mark_as_parsed()
-        cfg = job_flink.FlinkTPUGKEJob.from_flags(fv, command=command)
+        cfg = from_flags(cfg, fv, command=command)
         bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
         return cfg, bundler_cfg
 
@@ -446,7 +446,7 @@ class FlinkTPUGKEJobTest(TestCase):
         flink_deployment = flink_job._build_flink_deployment(system)
         expected_flink_deployment = json.loads(expected_flink_deployment_json)
         expected_flink_deployment["spec"]["serviceAccount"] = (
-            service_account if service_account else "settings-account"
+            service_account if service_account else self._settings["k8s_service_account"]
         )
         expected_flink_deployment["spec"]["flinkConfiguration"][
             "taskmanager.numberOfTaskSlots"
@@ -455,8 +455,6 @@ class FlinkTPUGKEJobTest(TestCase):
             del expected_flink_deployment["spec"]["taskManager"]["podTemplate"]["spec"][
                 "nodeSelector"
             ]["cloud.google.com/gke-location-hint"]
-
-        self.assertNestedEqual(expected_flink_deployment, flink_deployment)
         try:
             self.assertDictEqual(expected_flink_deployment, flink_deployment)
         except AssertionError:

@@ -4,7 +4,7 @@
 
 from absl.testing import parameterized
 
-from axlearn.cloud.gcp.jobs import runner_utils
+from axlearn.cloud.gcp.runners import utils as runner_utils
 
 
 class UtilsTest(parameterized.TestCase):
