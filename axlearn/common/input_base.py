@@ -114,7 +114,7 @@ def partition_by_path_rank(
                 "specify `PartitionSpec.UNCONSTRAINED` explicitly."
             )
 
-        return jax.tree_util.tree_map(maybe_constrain, tree_paths(input_batch), input_batch)
+        return jax.tree.map(maybe_constrain, tree_paths(input_batch), input_batch)
 
     return fn
 
