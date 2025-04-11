@@ -168,6 +168,8 @@ async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo]):
     # Note: jax.lax.slice_in_dim in _slice_fn will be cached in jit cache after first call.
     shard_data = jax.tree.map(_slice_fn, shard_infos)
     shard_data = jax.tree.map(_transfer_to_host, shard_data)
+    shard_data = jax.tree.map(_slice_fn, shard_infos)
+    shard_data = jax.tree.map(_transfer_to_host, shard_data)
 
     await asyncio.sleep(0)  # Allow other D2Hs to launch.
 
@@ -448,7 +450,12 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
 
             future_arrays = jax.tree.map(
-                functools.partial(serialization.async_deserialize, byte_limiter=byte_limiter),
+                functools.partial(
+                    _async_deserialize,
+                    byte_limiter=byte_limiter,
+                    h2d_limiter=h2d_limiter,
+                    single_thread_pool=self._single_thread_pool,
+                ),
                 shardings,
                 tensorstore_specs,
                 [None] * len(tensorstore_specs) if global_shapes is None else global_shapes,
