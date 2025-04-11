@@ -1669,7 +1669,7 @@ def scale_by_lion(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-# pylint: disable=R0917
+# pylint: disable=too-many-arguments
 def lion_optimizer(
     learning_rate: schedule.Schedule,
     b1: float,
