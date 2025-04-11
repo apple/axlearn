@@ -41,6 +41,7 @@ from axlearn.common.attention_bias import (
 from axlearn.common.flash_attention.common import (
     BaseSingleStepDecoding,
     build_mask,
+    get_tpu_dot_precision,
     query_iterator_indices,
 )
 from axlearn.common.utils import Tensor
@@ -69,9 +70,7 @@ def _tpu_decoding_kernel(
     batch_index = pl.program_id(0)
     non_empty_kv_block_index = pl.program_id(2)
     _, block_k = k_ref.shape
-    precision = (
-        lax.Precision.HIGHEST if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype) else None
-    )
+    precision = get_tpu_dot_precision(q_ref.dtype)
 
     # o is the buffer where we accumulate the output on sram.
     # m_i and l_i (see FlashAttention paper) are updated during the k,v loop.

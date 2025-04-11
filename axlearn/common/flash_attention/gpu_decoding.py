@@ -57,7 +57,7 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     split,
 )
-from axlearn.common.flash_attention.common import BaseSingleStepDecoding
+from axlearn.common.flash_attention.common import BaseSingleStepDecoding, get_gpu_dot_precision
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
 from axlearn.common.utils import Tensor
 
@@ -83,11 +83,7 @@ def _attn_forward_kernel(
 ):
     _, head_dim = q_ref.shape
     split_k_seq_len, _ = k_ref.shape
-    precision = (
-        lax.Precision.HIGHEST
-        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
-        else lax.Precision.DEFAULT
-    )
+    precision = get_gpu_dot_precision(q_ref.dtype)
     prog_i, prog_j = pl.program_id(1), pl.program_id(2)
     q_mask = (block_h * prog_i + jnp.arange(block_h) < qhead_per_kvhead)[:, None]
 
