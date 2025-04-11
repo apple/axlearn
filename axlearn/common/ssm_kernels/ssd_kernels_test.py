@@ -97,7 +97,7 @@ def segsum(x):
     https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/ssd_minimal.py.
     """
     T = x.size(-1)
-    x = jnp.repeat(x[..., None], T, axis=-1)
+    x = repeat(x, "... d -> ... d e", e=T)
     mask = torch.tril(torch.ones(T, T, device=x.device, dtype=bool), diagonal=-1)
     x = x.masked_fill(~mask, 0)
     x_segsum = torch.cumsum(x, dim=-2)
