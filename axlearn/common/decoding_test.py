@@ -827,8 +827,7 @@ class DecodeTest(parameterized.TestCase):
         prefix_merger=[None, _TokenSumPrefixMerger()],
         brevity_penalty=[None, decoding.brevity_penalty_fn(bp_type="hf", alpha=1.0)],
     )
-    # pylint: disable=R0917
-    # pylint: disable=R0917
+    # pylint: disable=too-many-arguments
     def test_beam_search_prefill(
         self,
         prompt_length: Sequence[int],
