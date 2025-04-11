@@ -468,7 +468,7 @@ def scale_update_per_param(
             path=context.path() if context else None,
         )
 
-        updates = jax.tree_util.tree_map(
+        updates = jax.tree.map(
             # Apply the scaling to each update.
             lambda g, m: g * m,
             updates,
@@ -1647,7 +1647,7 @@ def scale_by_lion(
         del params
         mu = optax.update_moment(updates, state.mu, b2, 1)
         if mu_dtype is not None:
-            mu = jax.tree_util.tree_map(lambda x: x.astype(mu_dtype), mu)
+            mu = jax.tree.map(lambda x: x.astype(mu_dtype), mu)
         count_inc = optax.safe_int32_increment(state.count)
         updates = jax.tree.map(lambda g, m: jnp.sign((1.0 - b1) * g + b1 * m), updates, state.mu)
         return updates, ScaleByLionState(count=count_inc, mu=mu)

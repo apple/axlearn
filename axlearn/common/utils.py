@@ -408,7 +408,7 @@ def tree_paths(
         Note that None is not considered a leaf by jax.tree_util, hence also preserved by
         tree_paths.
     """
-    return jax.tree_util.tree_map_with_path(
+    return jax.tree.map_with_path(
         lambda kp, _: separator.join(_key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
     )
 
