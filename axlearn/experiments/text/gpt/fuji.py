@@ -44,6 +44,7 @@ from axlearn.common.trainer_config_modifier import (
     ModuleConfigModifier,
     PartitionSpecModifier,
     RematSpecModifier,
+    FP8ConfigModifier,
 )
 from axlearn.common.utils import (
     extended_checkpoint_policies,
@@ -471,8 +472,22 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
                 # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                # Enable support for FP8 training on A3 / A4 instance types
+                (
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(  
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            #FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=1
+                            #)
+                        ],
+                    ),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
@@ -672,6 +687,32 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                (
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(  
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
+                            ),
+                            #FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=1
+                            #)
+                        ],
+                    ),
+                ),
+                (
+                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(  
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
+                            ),
+                            #FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=1
+                            #)
+                        ],
+                    ),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
