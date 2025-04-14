@@ -16,25 +16,35 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Sequence
-from typing import Any, Callable, Literal, Optional, Protocol, Union
+from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, Union, cast
 
 import jax
+import jax.numpy as jnp
 import optax
 from absl import logging
 from jax.sharding import PartitionSpec
 
 from axlearn.common import struct
 from axlearn.common.base_layer import ParameterSpec
-from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigOr,
+    InstantiableConfig,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 from axlearn.common.learner_base import LearnerModule
 from axlearn.common.module import Module, OutputCollection
-from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
+from axlearn.common.optimizer_base import OptParam, OptStateSpec, PartitionedGradientTransformation
 from axlearn.common.utils import (
     Nested,
     Tensor,
     flatten_items,
     match_regex_rules,
     non_empty_leaf_merge_fn,
+    prune_empty,
+    prune_tree,
     tree_merge,
     tree_paths,
 )
@@ -98,6 +108,88 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
         # Optimizer state from a PartitionedGradientTransformation may be a tuple, so we have to
         # assign it via the parent.
         self.get_invocation_context().set_state_update(optimizer_state)
+        return dataclasses.replace(updates, delta_updates=param_updates)
+
+
+class ShouldUpdateState(NamedTuple):
+    count: Tensor  # Number of steps
+    val: Tensor
+
+
+class ConditionalUpdateTransformation(UpdateTransformation):
+    """A wrapper around a `UpdateTransformation` to conditionally allow or stop
+    gradient and optimizer state updates based on `update_schedule`.
+    """
+
+    @config_class
+    class Config(UpdateTransformation.Config):
+        inner: Required[InstantiableConfig] = REQUIRED
+        update_schedule: Optional[Callable[[Union[int, Tensor]], Union[bool, Tensor]]] = None
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module] = None):
+        super().__init__(cfg, parent=parent)
+        inner = cfg.inner
+        if not isinstance(inner, LearnerModule.Config):
+            inner = WrappedPartitionedGradientTransformation.default_config().set(
+                transformation=inner
+            )
+        self.inner = cast(UpdateTransformation, self._add_child("inner", inner))
+        self._update_schedule = cfg.update_schedule
+        if self._update_schedule is None:
+            self._update_schedule = lambda step: True
+
+    def create_state_partition_specs(
+        self, model_param_specs: Nested[ParameterSpec]
+    ) -> Nested[PartitionSpec]:
+        specs = self.inner.create_state_partition_specs(model_param_specs)
+        should_update_specs = ShouldUpdateState(
+            count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+            val=OptStateSpec(dtype=jnp.bool, shape=[], mesh_axes=PartitionSpec()),
+        )
+        return {"should_update": should_update_specs, "inner": specs}
+
+    def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
+        state = self.inner.init(model_params)
+        should_update_state = ShouldUpdateState(
+            count=jnp.zeros([], jnp.int32), val=jnp.ones([], jnp.bool)
+        )
+        return {"should_update": should_update_state, "inner": state}
+
+    def transform_update(self, updates: Updates) -> Updates:
+        count_inc = optax.safe_int32_increment(self.state["should_update"].count)
+        val = self._update_schedule(count_inc)
+        should_update_state = ShouldUpdateState(count=count_inc, val=val)
+
+        inplace_updates = prune_tree(
+            prune_empty(updates.inplace_updates), lambda _, v: v == optax.MaskedNode()
+        )
+        if inplace_updates:
+            raise NotImplementedError(
+                "`inplace_updates` are not supported when ConditionalUpdateTransformation "
+                f"is used. Got: {inplace_updates}. Consider moving state updates into "
+                "CompositeLearner or other sub-learners."
+            )
+
+        prev_state = self.state["inner"]
+        # Backward and optimizer state computation need to be carried out
+        # regardless of should_update value.
+        new_updates = self.inner.transform_update(updates=updates)
+        new_state = self.get_invocation_context().get_state_updates()["inner"]
+
+        def real_transform(_):
+            return new_updates.delta_updates, new_state
+
+        def stop_transform(_):
+            return jax.tree_map(jnp.zeros_like, updates.delta_updates), prev_state
+
+        # We do the computation regardless of the should_update value, so we could have
+        # equally used jnp.where() here instead.
+        param_updates, optimizer_state = jax.lax.cond(
+            should_update_state.val, real_transform, stop_transform, operand=None
+        )
+
+        self.add_state_update("should_update", should_update_state)
+        self.add_state_update("inner", optimizer_state)
         return dataclasses.replace(updates, delta_updates=param_updates)
 
 
