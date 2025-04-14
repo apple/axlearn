@@ -123,7 +123,7 @@ set `--recorder_spec=step_deviation_interval_seconds=-1`.
 
 AXLearn has an additional option of pushing goodput, badput and step time
 deviation metrics to Google Cloud Monitoring. By default if goodput monitoring
-is enabled, the data starts getting uploaded to Google Cloud Monitoring. Set
+is enabled, the data gets published to Google Cloud Monitoring. Set
 `--recorder_spec=enable_gcp_goodput_metrics=0` and
 `--recorder_spec=enable_gcp_step_deviation_metrics=0` to disable goodput and
 step_deviation uploads to GCM respectively.
@@ -139,8 +139,8 @@ step_deviation uploads to GCM respectively.
         --recorder_spec=upload_dir=my-output-directory/summaries \
         --recorder_spec=upload_interval=30 \
         --recorder_spec=step_deviation_interval_seconds=30 \
-        --recorder_spec=enable_gcp_goodput_metrics=1 \
-        --recorder_spec=enable_gcp_step_deviation_metrics=1
+        --recorder_spec=enable_gcp_goodput_metrics=1 \ # Optional - This is enabled by default
+        --recorder_spec=enable_gcp_step_deviation_metrics=1 # Optional - This is enabled by default
 ```
 
 #### Visualization in Google Cloud Monitoring
@@ -153,9 +153,11 @@ To visualize the collected metrics within Google Cloud Monitoring:
     a.  [**Productive Time:**](https://cloud.google.com/monitoring/api/metrics_gcp#:~:text=workload/goodput_time)
     Represents the cumulative duration the workload spent on productive tasks,
     measured by `compute.googleapis.com/workload/goodput_time`.
+
     b.  [**Non-Productive Time:**](https://cloud.google.com/monitoring/api/metrics_gcp#:~:text=workload/badput_time)
     Represents the cumulative duration the workload spent on non-productive tasks,
     measured by `compute.googleapis.com/workload/badput_time`.
+
     c.  [**Performance:**](https://cloud.google.com/monitoring/api/metrics_gcp#:~:text=workload/performance)
     Represents the workload's performance metric, specifically step deviation
     in this context, measured by `compute.googleapis.com/workload/performance`.
