@@ -45,7 +45,7 @@ from axlearn.cloud.common.bastion import (
     set_runtime_options,
 )
 from axlearn.cloud.common.cleaner import Cleaner
-from axlearn.cloud.common.quota import UserQuotaInfo
+from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.scheduler_test import mock_quota_config
 from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap
@@ -257,7 +257,7 @@ class TestDownloadJobBatch(parameterized.TestCase):
                 user_state_dir="FAKE_USER_STATES",
                 local_spec_dir="FAKE",
                 remove_invalid_job_specs=True,
-                quota=lambda: UserQuotaInfo(
+                quota=lambda: QuotaInfo(
                     total_resources=None,
                     project_resources=None,
                     project_membership=project_membership,

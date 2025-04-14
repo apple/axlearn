@@ -10,7 +10,7 @@ from unittest import mock
 
 from absl.testing import absltest, parameterized
 
-from axlearn.cloud.common.quota import QuotaInfo, UserQuotaInfo
+from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import (
     JobMetadata,
     JobQueue,
@@ -572,7 +572,7 @@ class TierSchedulerTest(parameterized.TestCase):
 
 def _mock_get_resource_limits(*args):
     del args
-    return UserQuotaInfo(
+    return QuotaInfo(
         total_resources=[{"v4": 15, "v3": 8, "v5": 5}],
         project_resources={
             "project1": {"v4": 10, "v5": 5},
@@ -670,6 +670,7 @@ class TestJobScheduler(parameterized.TestCase):
                 "project_b": {"gpu": 1},
                 "project_c": {"gpu": 1},
             },
+            project_membership={},
         )
         cfg = JobScheduler.default_config().set(
             quota=config_for_function(lambda: lambda *args: quota_info),

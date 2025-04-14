@@ -53,7 +53,7 @@ from collections.abc import Sequence
 
 from absl import app, flags, logging
 
-from axlearn.cloud.common.bundler import get_bundler_config
+from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
 from axlearn.cloud.common.utils import configure_logging, generate_job_name, parse_action
 from axlearn.cloud.gcp.bundler import GCSTarBundler
 from axlearn.cloud.gcp.config import gcp_settings
@@ -75,7 +75,8 @@ _SYNC_OUTPUTS_SESSION_NAME = "sync_outputs"
 FLAGS = flags.FLAGS
 
 
-# TODO(markblee): Unify some of this with tpu_runner.
+# TODO(markblee): Move this to `runners` and make it bastion compatible.
+# This requires some minor interface changes and adding support for cleaning cpu jobs.
 class CPURunnerJob(CPUJob):
     """Runs and monitors a command on a VM."""
 
@@ -95,11 +96,14 @@ class CPURunnerJob(CPUJob):
         local_output_dir: str = "/output"
         # Whether to retain the VM after job completes.
         retain_vm: bool = False
+        # Bundler config.
+        bundler: Required[Bundler.Config] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        bundler_flags(required=False, **common_kwargs)
         flags.DEFINE_string(
             "output_dir",
             None,
@@ -140,6 +144,7 @@ class CPURunnerJob(CPUJob):
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         cfg = self.config
+        self.bundler: Bundler = cfg.bundler.instantiate()
         self._output_dir = pathlib.Path(cfg.local_output_dir) / cfg.name
         self._status_file = self._output_dir / "status"
         self._run_log = self._output_dir / "run.log"
@@ -176,7 +181,7 @@ class CPURunnerJob(CPUJob):
         cfg: CPURunnerJob.Config = self.config
         logging.info("Installing the bundle...")
         self._execute_remote_cmd(
-            self._bundler.install_command(self._bundler.id(cfg.name)),
+            self.bundler.install_command(self.bundler.id(cfg.name)),
             shell=True,
         )
 
@@ -187,14 +192,14 @@ class CPURunnerJob(CPUJob):
             cfg.name,
             vm_type=cfg.vm_type,
             disk_size=cfg.disk_size,
-            credentials=self._get_job_credentials(),
-            bundler_type=self._bundler.TYPE,
+            credentials=get_credentials(),
+            bundler_type=self.bundler.TYPE,
         )
 
     def _delete(self):
         """Stops the job and optionally deletes the VM."""
         cfg: CPURunnerJob.Config = self.config
-        credentials = self._get_job_credentials()
+        credentials = get_credentials()
         if not get_vm_node(cfg.name, _compute_resource(credentials)):
             logging.info("VM %s doesn't exist, nothing to do.", cfg.name)
             return
@@ -253,7 +258,7 @@ class CPURunnerJob(CPUJob):
     def _get_status(self):
         """Gets current job status."""
         cfg: CPURunnerJob.Config = self.config
-        vm = get_vm_node(cfg.name, _compute_resource(self._get_job_credentials()))
+        vm = get_vm_node(cfg.name, _compute_resource(get_credentials()))
         if vm is None or get_vm_node_status(vm) != "BOOTED":
             return CPURunnerJob.Status.NOT_STARTED
 
@@ -332,7 +337,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             raise app.UsageError("Command is required.")
 
         cfg.set(command=command)
-        job = cfg.instantiate()
+        job: CPURunnerJob = cfg.instantiate()
         # If not on bastion, bundle early so the user can cd away from cwd.
         if not running_from_vm():
             job.bundler.bundle(cfg.name)

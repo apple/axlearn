@@ -18,16 +18,22 @@ from axlearn.cloud.common.bastion import (
     deserialize_jobspec,
 )
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.common.utils import FlagConfigurable, parse_kv_flags
+from axlearn.cloud.common.utils import (
+    AcceleratorConfig,
+    FlagConfigurable,
+    accelerator_flags,
+    parse_kv_flags,
+)
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
-from axlearn.cloud.gcp.tpu import get_default_env
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
+from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import infer_tpu_type
-from axlearn.common.config import REQUIRED, ConfigBase, Required, config_class
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
 # Set 80% of the max value as the requested memory.
@@ -46,27 +52,6 @@ _METADATA_GOOGLE_INTERNAL_IP = "169.254.169.254"
 # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
 _ANNOTATION_ADDITIONAL_NODE_NETWORKS = "tpu-provisioner.cloud.google.com/additional-node-networks"
 _ANNOTATION_NODE_SERVICE_ACCOUNT = "tpu-provisioner.cloud.google.com/node-service-account"
-
-
-@config_class
-class AcceleratorConfig(ConfigBase):
-    """Configures job resources, e.g. TPU or GPU.
-
-    Attributes:
-        instance_type: Instance type, e.g. tpu-v4-8.
-        num_replicas: Number of replicas, e.g. TPU slices.
-    """
-
-    instance_type: Required[str] = REQUIRED
-    num_replicas: int = 1
-
-
-def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
-    """Defines resource flags, e.g. --instance_type and --num_replicas."""
-    flags.DEFINE_string("instance_type", None, "Instance type.", flag_values=flag_values, **kwargs)
-    flags.DEFINE_integer(
-        "num_replicas", 1, "Number of replicas.", flag_values=flag_values, **kwargs
-    )
 
 
 # Use kw_only=True so that subclasses can have a mix of default and non-default attributes.
@@ -239,6 +224,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         accelerator_flags(**common_kwargs)
+        flags.DEFINE_string("command", None, "Command to execute.", **common_kwargs)
         flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
         flags.DEFINE_multi_string(
             "gcsfuse_mount_spec",
@@ -253,6 +239,12 @@ class SingleReplicatedJob(BaseReplicatedJob):
             "host mounts by using this flag repeatedly. Example: "
             "--host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp "
             "--host_mount_spec=name=home,host_path=/home,mount_path=/host-home",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "service_account",
+            None,
+            "If specified, will run job as the service account.",
             **common_kwargs,
         )
         flags.DEFINE_boolean(
@@ -383,6 +375,12 @@ class TPUReplicatedJob(SingleReplicatedJob):
         self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
+        validate_jobset_name(
+            cfg.name,
+            num_workers=infer_tpu_workers(self._tpu_type),
+            num_replicas=cfg.accelerator.num_replicas,
+            job_name=cfg.replicated_job_name,
+        )
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
         if cfg.additional_node_networks and not cfg.service_account:
             raise ValueError("service_account must be set if additional_node_networks is set.")
@@ -572,7 +570,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
             if cfg.reservation_project is not None:
                 selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
             labels.update({"bastion-tier": "reserved"})
-        else:
+        elif tier != "disabled":
             logging.info("Found tier=%s in env. Using spot quota", tier)
             selector.update({"cloud.google.com/gke-spot": "true"})
             tolerations.append(
@@ -600,7 +598,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         if cfg.enable_pre_provisioner:
             # Used by pre-provisioner.
             selector.update({PRE_PROVISIONER_LABEL: cfg.name})
-        else:
+        elif tier != "disabled":
             # Used by GCP auto-provisioner.
             selector.update(
                 {

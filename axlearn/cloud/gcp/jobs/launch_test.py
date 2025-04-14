@@ -3,7 +3,6 @@
 """Tests launchers."""
 # pylint: disable=protected-access
 
-import contextlib
 import copy
 from datetime import datetime
 from typing import Optional
@@ -15,14 +14,14 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobState as BastionJobState
 from axlearn.cloud.common.bastion import JobStatus, deserialize_jobspec, new_jobspec
-from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE
+from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, Bundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp import job as gcp_job
 from axlearn.cloud.gcp.jobs import bastion_vm, gke_runner, launch
-from axlearn.cloud.gcp.jobs.gke_runner import FlinkGKERunnerJob, JobType
+from axlearn.cloud.gcp.jobs.gke_runner import FlinkGKERunnerJob, JobType, job_type_flags
 from axlearn.cloud.gcp.jobs.launch import (
     BaseBastionManagedJob,
     BastionDirectory,
@@ -39,7 +38,7 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.utils import GCPAPI
-from axlearn.common.config import config_for_function, maybe_instantiate
+from axlearn.common.config import config_class, config_for_function, maybe_instantiate
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
 
@@ -89,6 +88,19 @@ class TestUtils(parameterized.TestCase):
 
 
 class _DummyRunner(Job):
+    """A dummy runner."""
+
+    @config_class
+    class Config(Job.Config):
+        """Configures DummyRunner."""
+
+        # pylint: disable-next=unnecessary-lambda
+        bundler: Bundler.Config = config_for_function(lambda: mock.Mock())
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self._bundler = cfg.bundler.instantiate()
+
     def _execute(self):
         pass
 
@@ -109,7 +121,6 @@ def _common_bastion_managed_job_kwargs() -> dict:
         runner=_DummyRunner.default_config().set(
             max_tries=1,
             retry_interval=60,
-            command="",
         ),
     )
 
@@ -430,11 +441,9 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             self.assertEqual(cfg.project, project or mock_settings["project"])
             self.assertEqual(cfg.zone, zone or mock_settings["zone"])
             self.assertEqual(cfg.namespace, namespace or "default")
-            self.assertIsNone(cfg.bundler)
             if action in ("start", "update"):
                 self.assertIsNotNone(cfg.runner)
                 self.assertIsNotNone(cfg.runner.bundler)
-                self.assertIn("tpu", cfg.runner.bundler.extras)
                 self.assertEqual(bundler_exclude or BUNDLE_EXCLUDE, cfg.runner.bundler.exclude)
                 if bundler_type is None:
                     # Defaults to cloud build.
@@ -483,7 +492,9 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
 
         # Bundler should be propagated to runner.
         if action in ("start", "update"):
-            self.assertIsNotNone(job.runner.bundler)
+            # pytype: disable=attribute-error
+            self.assertIsNotNone(job._runner._bundler)  # pylint: disable=protected-access
+            # pytype: enable=attribute-error
 
     @parameterized.parameters(
         dict(name="test_job", expected=ValueError("invalid characters")),
@@ -493,30 +504,38 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
         class FakeBastionDirectory(BastionDirectory):
             pass
 
-        tpu_gke_job = BastionManagedGKEJob.with_runner(_DummyRunner)
-        cfg = tpu_gke_job.default_config().set(
-            **_common_bastion_managed_job_kwargs(),
-            namespace="default",
-            project="test-project",
-            cluster="test-cluster",
-            bastion_dir=FakeBastionDirectory.default_config().set(root_dir="temp_dir"),
-        )
-        cfg.set(name=name)
+        class DummyBundler(Bundler):
+            pass
+
+        with (
+            mock_gcp_settings(
+                [launch.__name__, bastion_vm.__name__, gke_runner.__name__, bundler.__name__],
+            ),
+        ):
+            fv = flags.FlagValues()
+            tpu_gke_job = BastionManagedGKEJob.with_runner(gke_runner.TPUGKERunnerJob)
+            tpu_gke_job.define_flags(fv)
+            job_type_flags(fv)
+            fv.name = name
+            fv.instance_type = "tpu-v4-8"
+            fv.mark_as_parsed()
+
+            cfg = tpu_gke_job.from_flags(fv, command="", action="start")
+            cfg.runner.bundler = DummyBundler.default_config()
+            cfg.set(bastion_dir=FakeBastionDirectory.default_config().set(root_dir=""))
+
         patch_kube_config = mock.patch(f"{launch.__name__}.load_kube_config")
         patch_execute = mock.patch(f"{launch.__name__}.{BaseBastionManagedJob.__name__}._execute")
 
-        if isinstance(expected, Exception):
-            ctx = self.assertRaisesRegex(type(expected), str(expected))
-        else:
-            ctx = contextlib.nullcontext()
-
-        with ctx, patch_kube_config, patch_execute as mock_execute:
-            job: BastionManagedGKEJob = cfg.instantiate()
-            job_spec = job._execute()
-
+        with patch_kube_config, patch_execute as mock_execute:
             if isinstance(expected, Exception):
+                with self.assertRaisesRegex(type(expected), str(expected)):
+                    job: BastionManagedGKEJob = cfg.instantiate()
+
                 mock_execute.assert_not_called()
             else:
+                job: BastionManagedGKEJob = cfg.instantiate()
+                job_spec = job._execute()
                 mock_execute.assert_called_once()
                 self.assertIsNotNone(job_spec)
 
@@ -564,3 +583,12 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             updated_version = (job_spec.metadata.version or 0) + 1
 
             self.assertEqual(updated_job_spec.metadata.version, updated_version)
+
+    def test_instance_type(self):
+        """Tests --instance_type is retained for backwards compat."""
+
+        fv = flags.FlagValues()
+        flags.DEFINE_string("instance_type", "tpu-v4-8", "", flag_values=fv)
+        BastionManagedGKEJob.with_runner(_DummyRunner).define_flags(fv)
+        fv.mark_as_parsed()
+        self.assertEqual(fv.instance_type, "tpu-v4-8")

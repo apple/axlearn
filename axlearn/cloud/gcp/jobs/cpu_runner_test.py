@@ -16,7 +16,6 @@ from absl import app, flags
 from absl.testing import parameterized
 
 from axlearn.cloud.gcp import bundler
-from axlearn.cloud.gcp import job as gcp_job
 from axlearn.cloud.gcp.bundler import GCSTarBundler
 from axlearn.cloud.gcp.jobs import cpu_runner
 from axlearn.cloud.gcp.jobs.cpu_runner import _COMMAND_SESSION_NAME, CPURunnerJob, main
@@ -81,13 +80,7 @@ def mock_vm(module_name: str, running_from_vm: bool = True):
 
 @contextlib.contextmanager
 def _mock_credentials():
-    mocks = [
-        mock.patch(f"{gcp_job.__name__}.get_credentials"),
-        mock.patch(f"{cpu_runner.__name__}.get_credentials"),
-    ]
-    with contextlib.ExitStack() as stack:
-        for m in mocks:
-            stack.enter_context(m)
+    with mock.patch(f"{cpu_runner.__name__}.get_credentials"):
         yield
 
 
@@ -133,9 +126,11 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
         mock_generate_job_name = mock.patch(
             f"{cpu_runner.__name__}.generate_job_name", return_value="test-name"
         )
-        with mock_generate_job_name, mock_gcp_settings(
-            cpu_runner.__name__, settings=mock_settings
-        ), mock_gcp_settings(bundler.__name__, settings=mock_settings):
+        with (
+            mock_generate_job_name,
+            mock_gcp_settings(cpu_runner.__name__, settings=mock_settings),
+            mock_gcp_settings(bundler.__name__, settings=mock_settings),
+        ):
             cfg = CPURunnerJob.from_flags(fv)
 
         self.assertIsInstance(cfg.bundler, GCSTarBundler.Config)
@@ -291,9 +286,10 @@ class CPURunnerJobTest(TestWithTemporaryCWD):
                 job._execute()
                 mocks["_delete"].assert_called()
 
-            with self.assertRaisesRegex(ValueError, "failed"), mock_status(
-                CPURunnerJob.Status.FAILED
-            ) as mocks:
+            with (
+                self.assertRaisesRegex(ValueError, "failed"),
+                mock_status(CPURunnerJob.Status.FAILED) as mocks,
+            ):
                 job._execute()
                 mocks["_delete"].assert_called()
 

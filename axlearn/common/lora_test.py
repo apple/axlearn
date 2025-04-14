@@ -266,7 +266,7 @@ class LoraFusedQKVLinearTest(TestCase):
         # Compute extend_step.
         (cached_states, _), _ = F(
             layer,
-            inputs=dict(time_step=None, query=query, attention_logit_biases=None),
+            inputs=dict(time_step=None, query=query),
             is_training=False,
             state=layer_params,
             prng_key=prng_key,
@@ -277,7 +277,6 @@ class LoraFusedQKVLinearTest(TestCase):
             step_inputs = dict(
                 cached_states=cached_states,
                 query=query[:, i : i + 1],
-                attention_logit_biases=None,
             )
             (cached_states, step_outs), _ = F(
                 layer,

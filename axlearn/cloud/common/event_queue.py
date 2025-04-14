@@ -127,6 +127,14 @@ class BaseQueueClient(Configurable):
         raise NotImplementedError(type(self))
 
 
+def is_rabbit_mq_configured() -> bool:
+    """Returns True iff RabbitMQ secrets are configured."""
+    return (
+        os.getenv("RABBITMQ_USER", None) is not None
+        and os.getenv("RABBITMQ_PASSWORD", None) is not None
+    )
+
+
 class RabbitMQClient(BaseQueueClient):
     """Implementation of BaseQueueClient using RabbitMQ.
 
