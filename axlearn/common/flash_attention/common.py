@@ -290,3 +290,55 @@ class ReferenceMHA(BaseFlashAttention):
         if self.cfg.dropout_rate > 0:
             probs = dropout(probs, prng_key=prng_key, rate=self.cfg.dropout_rate, mask=dropout_mask)
         return compute_gqa_context(probs, value)
+
+
+def get_cpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
+    """Get the suitable DotAlgorithmPreset for the given dtype for CPU backend.
+
+    CPU doesn't support different compute and accumulation precision. This should only be used
+    for CPU emulation and unit tests.
+    """
+    if dtype == jnp.float32:
+        return jax.lax.DotAlgorithmPreset.F32_F32_F32
+    if dtype == jnp.float16:
+        return jax.lax.DotAlgorithmPreset.F16_F16_F16
+    if dtype == jnp.bfloat16:
+        return jax.lax.DotAlgorithmPreset.BF16_BF16_BF16
+    raise ValueError(f"Unsupported dtype {dtype}")
+
+
+# See https://docs.jax.dev/en/latest/jax.lax.html#jax.lax.DotAlgorithm for information.
+def get_gpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
+    """Get the suitable DotAlgorithmPreset for the given dtype."""
+    # General rules:
+    # 1. Must accumulate in FP32 precision.
+    # 2. Must use TensorCore.
+    if jax.default_backend() == "cpu":
+        return get_cpu_dot_precision(dtype)
+    if dtype == jnp.float32:
+        # We can use F32_F32_F32, but it disables the use of TensorCore and makes it more than 10x
+        # slower on H100, as matmul fallbacks to using CUDA cores.
+        return jax.lax.DotAlgorithmPreset.TF32_TF32_F32
+    if dtype == jnp.float16:
+        return jax.lax.DotAlgorithmPreset.F16_F16_F32
+    if dtype == jnp.bfloat16:
+        return jax.lax.DotAlgorithmPreset.BF16_BF16_F32
+    raise ValueError(f"Unsupported dtype {dtype}")
+
+
+# See https://docs.jax.dev/en/latest/jax.lax.html#jax.lax.DotAlgorithm for information.
+def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
+    """Get the suitable DotAlgorithmPreset for the given dtype.
+
+    TPU Pallas lowering doesn't yet support DotAlgorithmPreset. Use Precision instead.
+    """
+    if jax.default_backend() == "cpu":
+        return get_cpu_dot_precision(dtype)
+    if dtype == jnp.float32:
+        # HIGHEST uses BF16_BF16_F32_X6, which emulates higher precision with 6 BF16 passes.
+        # Note: jax.lax.Precision.HIGH (BF16_BF16_F32_X3) is not yet supported. We should use it
+        # when it's supported as it's twice as fast and precision is ok.
+        return jax.lax.Precision.HIGHEST
+    if dtype == jnp.bfloat16:
+        return jax.lax.Precision.DEFAULT
+    raise ValueError(f"Unsupported dtype {dtype}")

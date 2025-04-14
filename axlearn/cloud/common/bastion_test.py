@@ -716,10 +716,11 @@ class BastionTest(parameterized.TestCase):
                         "terminate.side_effect": ValueError,
                     },
                 },
+                job_id="b2e03d4a-ceb9-4ce5-9df8-112c109d9416",
             ),
         ],
     )
-    def test_append_to_job_history_event_publish(self, popen_spec):
+    def test_append_to_job_history_event_publish(self, popen_spec, job_id):
         """Test event publishing."""
         mock_proc = _mock_piped_popen_fn(popen_spec)
         job = Job(
@@ -732,6 +733,7 @@ class BastionTest(parameterized.TestCase):
                     project_id="test_project",
                     creation_time=datetime.now(),
                     resources={"v4": 8},
+                    job_id=job_id,
                 ),
             ),
             state=JobState(status=JobStatus.PENDING),
@@ -749,7 +751,10 @@ class BastionTest(parameterized.TestCase):
             mock_event_publisher.publish.assert_called()
             mock_event_publisher.publish.assert_called_once_with(
                 JobLifecycleEvent(
-                    job_name="test_job", state=JobLifecycleState.STARTING, details="Job is starting"
+                    job_name="test_job",
+                    state=JobLifecycleState.STARTING,
+                    details="Job is starting",
+                    job_id="b2e03d4a-ceb9-4ce5-9df8-112c109d9416",
                 )
             )
 
