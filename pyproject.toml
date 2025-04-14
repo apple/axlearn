@@ -23,8 +23,8 @@ core = [
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.4.38",
-    "jaxlib==0.4.38",
+    "jax==0.4.35",
+    "jaxlib==0.4.35",
     "ml-dtypes==0.4.1",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
