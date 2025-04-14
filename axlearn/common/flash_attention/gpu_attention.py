@@ -43,6 +43,10 @@ from jax._src.cudnn.fused_attention_stablehlo import (
 )
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
+try:
+    from transformer_engine.jax.flax.transformer import DotProductAttention
+except:
+    pass
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -985,3 +989,93 @@ class CuDNNGPUFlashAttentionWithExplicitBias(CuDNNGPUFlashAttention):
     """
 
     _allow_explicit_bias = True
+
+
+class ROCmTransformerEngineFlashAttention(BaseFlashAttention):
+    """
+    """
+
+    _allow_explicit_bias = False
+
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+            return False
+        
+        try:
+            from transformer_engine.jax.flax.transformer import DotProductAttention
+        except ImportError:
+            return self._log_unsupported("could not import Transformer Engine")
+        
+        if self.cfg.is_decoding:
+            return self._log_unsupported("currently only training has been tested with this attention implementation.")
+        else:
+            # cuDNN has no concept of block size. It only requires the length of query and
+            # key/value to be even.
+            if not self._check_block_size(query=query, key=key, block_size=2):
+                return False
+            
+        if query.dtype not in (jnp.float16, jnp.bfloat16):
+            return self._log_unsupported(
+                f"{query.dtype=} is not supported. Only supports float16 and bfloat16."
+            )
+
+        if jax.default_backend() == "cpu":
+            return self._log_unsupported("we're on CPU emulation.")
+        
+        head_dim = query.shape[-1]
+        if head_dim % 8 != 0:
+            return self._log_unsupported(f"{head_dim=} is not divisible by 8.")
+        if head_dim > 128:
+            return self._log_unsupported(f"{head_dim=} > 128")
+        _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
+
+        if sliding.has_value():
+            return self._log_unsupported("sliding window attention has not been tested currently.")
+        if explicit_bias.has_value() and not self._allow_explicit_bias:
+            return self._log_unsupported("we don't allow explicit bias at this stage.")
+        
+        logging.info("Using %s.", self.name())
+        return True
+
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
+
+        args = dict(
+            query=query,
+            key=repeat_kv_heads(query.shape[2], key),
+            value=repeat_kv_heads(query.shape[2], value),
+        )
+
+        _, _, num_query_heads, head_dim = query.shape
+        _, _, num_kv_heads, _ = key.shape
+        
+        causal, _, _ = split(
+            bias, CausalAttentionBias, SlidingWindowAttentionBias
+        )
+        mask_type = "causal" if causal.has_value() else "no_mask"
+
+        rocm_te_dot_product_attention = DotProductAttention(
+            head_dim=head_dim,
+            num_attention_heads=num_query_heads,
+            num_gqa_groups=num_kv_heads,
+            attn_mask_type=mask_type,
+            attn_bias_type="no_bias",
+            attention_dropout=self.cfg.dropout_rate,
+            dtype=query.dtype,
+            qkv_layout="BSHD_BSHD_BSHD",
+            transpose_batch_sequence=False,
+            scale_factor=self.cfg.softmax_scale,
+        )
+    
+        return rocm_te_dot_product_attention.apply({}, rngs={'dropout': prng_key}, **args)
