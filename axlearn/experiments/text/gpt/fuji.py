@@ -62,7 +62,11 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
+from axlearn.experiments.trainer_config_utils import (
+    TrainerConfigFn,
+    V6eFlashConfigModifier,
+    A4FlashConfigModifier,
+)
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -475,17 +479,32 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
-                # Enable support for FP8 training on A3 / A4 instance types
+                # Enable support for FP8 training on H100/200 instance types
                 (
-                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
                             ),
                             #FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=1
+                            #    fp8_amax_history_length=128
                             #)
+                        ],
+                    ),
+                ),
+                # Ensure the gpu_block_size is updated for Blackwell (B200 / A4)
+                (
+                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(  
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            A4FlashConfigModifier.default_config(),
+                            #FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=128
+                            #),
                         ],
                     ),
                 ),
@@ -696,7 +715,7 @@ def get_trainer_kwargs(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
                             ),
                             #FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=1
+                            #    fp8_amax_history_length=128
                             #)
                         ],
                     ),
@@ -708,8 +727,9 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
                             ),
+                            A4FlashConfigModifier.default_config(),
                             #FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=1
+                            #    fp8_amax_history_length=128
                             #)
                         ],
                     ),

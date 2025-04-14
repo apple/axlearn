@@ -1141,16 +1141,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
         env_vars.update(
             {
                 "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
-                # More debugging.
-                "TF_CPP_MIN_LOG_LEVEL": "0",
-                # Enable auto PGLE available in jax 0.4.33
-                "JAX_ENABLE_PGLE": "True",
-                "JAX_PGLE_PROFILING_RUNS": "3",
-                # This is needed for flash attention + auto PGLE to work
-                "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
-                # XLA team flags used this not sure what it does yet. See maxtext_wrapper.py
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
@@ -1299,15 +1290,7 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         env_vars.update(
             {
                 "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64",
-                # More debugging.
-                "TF_CPP_MIN_LOG_LEVEL": "0",
-                # Enable auto PGLE available in jax 0.4.33
-                "JAX_ENABLE_PGLE": "True",
-                "JAX_PGLE_PROFILING_RUNS": "3",
-                # This is needed for flash attention + auto PGLE to work
-                "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
@@ -1423,13 +1406,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         env_vars.update(
             {
                 "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64",
-                # Enable auto PGLE available in jax 0.4.33
-                "JAX_ENABLE_PGLE": "True",
-                "JAX_PGLE_PROFILING_RUNS": "3",
-                # This is needed for flash attention + auto PGLE to work
-                "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",

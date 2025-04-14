@@ -6,7 +6,7 @@ from typing import Optional
 from typing_extensions import Protocol
 
 from axlearn.common.config import InstantiableConfig, config_class
-from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier, GPUFlashBlockSizeModifier
 
 
 class TrainerConfigFn(Protocol):
@@ -39,3 +39,13 @@ class V6eFlashConfigModifier(FlashBlockSizeModifier):
         """Configures V6eFlashConfigModifier."""
 
         tpu_block_size: int = 1024
+
+
+class A4FlashConfigModifier(GPUFlashBlockSizeModifier):
+    """Modified the gpu_block_size config NVIDIA B200 (A4)."""
+
+    @config_class
+    class Config(GPUFlashBlockSizeModifier.Config):
+        """Configures A4FlashConfigModifier."""
+
+        gpu_block_size: int = 64

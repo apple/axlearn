@@ -48,8 +48,10 @@ class FlashAttention(GroupedQueryAttention):
         causal: bool = False
         # The block size used to tile attention computation (for TPU only).
         # Should be less than the target sequence length and a multiple of 128 on TPU.
-        # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.
         tpu_block_size: int = 512
+        # The default GPU block-size of 128 works on most accelerators
+        # NVIDIA Blackwell (B200) requires a smaller block-size
+        gpu_block_size: int = 128
 
         # SPMD partition specs:
         # B - batch dim,
@@ -195,6 +197,7 @@ class FlashAttention(GroupedQueryAttention):
             is_decoding=is_decoding,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
+            gpu_block_size=cfg.gpu_block_size,
             dropout_rate=cfg.dropout.rate,
         )
         if jit_attn is None:
@@ -341,3 +344,31 @@ class FlashBlockSizeModifier(ConfigModifier):
 
         cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
         return cfg
+
+
+class GPUFlashBlockSizeModifier(ConfigModifier):
+    """Modified the gpu_block_size config of FlashAttention."""
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configures FlashBlockSizeModifier."""
+
+        gpu_block_size: Required[int] = REQUIRED
+
+    def __call__(self, cfg: ConfigBase) -> ConfigBase:
+        gpu_block_size = self.config.gpu_block_size
+
+        def is_flash_config(cfg):
+            return isinstance(cfg, FlashAttention.Config)
+
+        def visit_fn(_, value):
+            if is_flash_config(value):
+                value = cast(FlashAttention.Config, value)
+                value.gpu_block_size = gpu_block_size
+
+        def enter_fn(_, value, default_kv):
+            return None if is_flash_config(value) else default_kv
+
+        cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+        return cfg
+    
