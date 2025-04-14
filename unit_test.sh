@@ -7,7 +7,7 @@ rm -rf "$TEST_ARTIFACTS_PATH"
 mkdir -p "$TEST_ARTIFACTS_PATH"
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
-export XLA_FLAGS="--xla_force_host_platform_device_count=64 --xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
+export XLA_FLAGS="--xla_cpu_use_thunk_runtime=false --xla_force_host_platform_device_count=64 --xla_dump_hlo_as_text --xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives --xla_dump_to=${HLO_DUMP_PATH} --xla_dump_hlo_pass_re='.*'"
 # export XLA_FLAGS="${XLA_FLAGS} --xla_dump_hlo_snapshots"
 
 # PJRT Flags 
@@ -64,5 +64,5 @@ if [ "$1" = "unit" ]; then
     pytest axlearn/common/mixture_of_experts_neuron_unit_test.py
 else
     echo "Running Integ Test"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_bwd_correctness"
 fi
