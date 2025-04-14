@@ -368,15 +368,7 @@ class AcceleratorConfig(ConfigBase):
 
 def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
     """Defines resource flags, e.g. --instance_type and --num_replicas."""
-    flags.DEFINE_string(
-        "instance_type",
-        # --instance_type is often defined at the launcher, so use any existing value by default.
-        # TODO(markblee): Remove this after we migrate launch command away from `--instance_type`.
-        getattr(flag_values, "instance_type", None),
-        "Instance type.",
-        flag_values=flag_values,
-        **kwargs,
-    )
+    flags.DEFINE_string("instance_type", None, "Instance type.", flag_values=flag_values, **kwargs)
     flags.DEFINE_integer(
         "num_replicas", 1, "Number of replicas.", flag_values=flag_values, **kwargs
     )
@@ -482,7 +474,7 @@ def from_flags(cfg: _C, fv: flags.FlagValues, **kwargs) -> _C:
         if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "from_flags"):
             return default_kv
         klass: FlagConfigurable = value.klass
-        klass.from_flags(fv, prebuilt_cfg=value, _set_defaults=False, **kwargs)
+        klass.from_flags(fv, prebuilt_cfg=value, **kwargs)
         return default_kv
 
     # Set all defaults across the hierarchy first, so that default override can happen.
@@ -518,10 +510,6 @@ class FlagConfigurable(Configurable):
 
         To read flags recursively, use `utils.from_flags`.
         """
-        # TODO(markblee): This branch is for backwards compatibility. It will be removed once all
-        # components move towards `from_flags`.
-        if kwargs.pop("_set_defaults", True):
-            cls.set_defaults(fv)
         cfg: FlagConfigurable.Config = kwargs.pop("prebuilt_cfg", cls.default_config())
         flag_values = {**fv.flag_values_dict(), **kwargs}
         return cfg.set(

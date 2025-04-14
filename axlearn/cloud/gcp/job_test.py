@@ -1,43 +1,21 @@
 # Copyright © 2023 Apple Inc.
 
-"""Tests jobs by launching commands on TPUs/VMs.
-
-    python3 -m axlearn.cloud.gcp.job_test TPUJobTest.test_execute_from_local \
-        --tpu_type=v4-8 --project=my-project --zone=my-zone
-
-    python3 -m axlearn.cloud.gcp.job_test CPUJobTest.test_execute_from_local \
-        --project=my-project --zone=my-zone
-
-"""
+"""Tests jobs by launching commands on TPUs/VMs."""
 # pylint: disable=protected-access
 
-import contextlib
 from typing import Optional, cast
 from unittest import mock
 
-from absl import flags, logging
-from absl.testing import absltest, parameterized
+from absl import flags
+from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.common.utils import configure_logging
+from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import bundler, job, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
-from axlearn.cloud.gcp.utils import common_flags
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
-
-
-@contextlib.contextmanager
-def mock_job(module_name: str):
-    with mock.patch(f"{module_name}.get_credentials", return_value=None):
-        yield
-
-
-def _private_flags():
-    common_flags()
-    flags.DEFINE_string("tpu_type", "v4-8", "TPU type to test with")
-
 
 FLAGS = flags.FLAGS
 
@@ -49,7 +27,7 @@ class TPUGKEJobTest(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [job.__name__, jobset_utils.__name__, bundler.__name__],
+            [jobset_utils.__name__, bundler.__name__],
             settings=self._settings,
         ):
             return super().run(result)
@@ -63,7 +41,10 @@ class TPUGKEJobTest(TestCase):
         **kwargs,
     ) -> tuple[job.GKEJob.Config, Bundler.Config]:
         fv = flags.FlagValues()
-        job.TPUGKEJob.define_flags(fv)
+        cfg = job.GKEJob.default_config().set(
+            builder=jobset_utils.TPUReplicatedJob.default_config()
+        )
+        define_flags(cfg, fv)
         for key, value in kwargs.items():
             if value is not None:
                 # Use setattr rather than set_default to set flags.
@@ -72,7 +53,7 @@ class TPUGKEJobTest(TestCase):
         fv.output_dir = "FAKE"
         fv.instance_type = "tpu-v4-8"
         fv.mark_as_parsed()
-        cfg = job.TPUGKEJob.from_flags(fv, command=command)
+        from_flags(cfg, fv, command=command)
         # Test that retries are configured on fv by default.
         self.assertIsNotNone(fv["max_tries"].default)
         self.assertIsNotNone(fv["retry_interval"].default)
@@ -123,8 +104,16 @@ class TPUGKEJobTest(TestCase):
         # Should work with wrapped bundlers.
         if wrap_bundler:
             bundler_cfg = WrappedBundler.default_config().set(inner=bundler_cfg)
-        gke_job: job.TPUGKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        gke_job = cfg.instantiate(bundler=bundler_cfg.instantiate())
         self.assertEqual("v4-8", gke_job._builder._tpu_type)  # pytype: disable=attribute-error
+
+    def test_delete(self):
+        patch_delete = mock.patch(f"{job.__name__}.delete_k8s_jobset")
+        with patch_delete as mock_delete:
+            cfg, _ = self._job_config(command="test-command", bundler_cls=CloudBuildBundler)
+            gke_job = cfg.instantiate(bundler=mock.Mock())
+            gke_job._delete()  # pylint: disable=protected-access
+            mock_delete.assert_called()
 
 
 class GPUGKEJobTest(TestCase):
@@ -134,7 +123,7 @@ class GPUGKEJobTest(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [job.__name__, jobset_utils.__name__, bundler.__name__],
+            [jobset_utils.__name__, bundler.__name__],
             settings=self._settings,
         ):
             return super().run(result)
@@ -143,15 +132,14 @@ class GPUGKEJobTest(TestCase):
         self, *, command: str, bundler_cls: type[Bundler], **kwargs
     ) -> tuple[job.GKEJob.Config, Bundler.Config]:
         fv = flags.FlagValues()
-        job.GPUGKEJob.define_flags(fv)
+        cfg = job.GKEJob.default_config().set(builder=jobset_utils.A3ReplicatedJob.default_config())
+        define_flags(cfg, fv)
         for key, value in kwargs.items():
             if value is not None:
                 # Use setattr rather than set_default to set flags.
                 setattr(fv, key, value)
         fv.mark_as_parsed()
-        cfg: job.GPUGKEJob.Config = job.GPUGKEJob.from_flags(fv, command=command)
-        cfg.max_tries = 1
-        cfg.retry_interval = 1
+        cfg = from_flags(cfg, fv, command=command)
         bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
         return cfg, bundler_cfg
 
@@ -172,6 +160,7 @@ class GPUGKEJobTest(TestCase):
                 inner: Required[Bundler.Config] = REQUIRED
 
         command = "test-command"
+        settings = default_mock_settings()
         cfg, bundler_cfg = self._job_config(
             command=command,
             bundler_cls=bundler_cls,
@@ -182,14 +171,14 @@ class GPUGKEJobTest(TestCase):
         )
         self.assertEqual(
             cfg.builder.service_account,
-            service_account or self._settings.get("k8s_service_account", "default"),
+            service_account or settings.get("k8s_service_account", "default"),
         )
         # Should work with wrapped bundlers.
         if wrap_bundler:
             bundler_cfg = WrappedBundler.default_config().set(inner=bundler_cfg)
         # Should be instantiable.
-        gke_job: job.GPUGKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
-        job_cfg: job.GPUGKEJob.Config = gke_job.config
+        gke_job: job.GKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        job_cfg: job.GKEJob.Config = gke_job.config
 
         # Command/instance_type should be read by the builder.
         self.assertEqual(command, job_cfg.builder.command)
@@ -211,7 +200,7 @@ class GPUGKEJobTest(TestCase):
             instance_type="gpu-a3-highgpu-8g-256",
             queue=queue,
         )
-        gke_job: job.GPUGKEJob = cfg.set(name="test").instantiate(bundler=bundler_cfg.instantiate())
+        gke_job: job.GKEJob = cfg.set(name="test").instantiate(bundler=bundler_cfg.instantiate())
         # pylint: disable-next=protected-access
         jobset = gke_job._build_jobset()
         jobset_annotations = jobset["metadata"]["annotations"]
@@ -220,9 +209,3 @@ class GPUGKEJobTest(TestCase):
             self.assertNotIn("kueue.x-k8s.io/queue-name", jobset_annotations)
         else:
             self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)
-
-
-if __name__ == "__main__":
-    _private_flags()
-    configure_logging(logging.INFO)
-    absltest.main()

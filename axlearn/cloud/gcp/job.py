@@ -17,10 +17,10 @@ from absl import flags
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
-from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
-from axlearn.cloud.gcp.jobset_utils import A3ReplicatedJob, BaseReplicatedJob, TPUReplicatedJob
+from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
+from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
 from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset
-from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
 
 
@@ -53,13 +53,6 @@ class GCPJob(Job):
             "The env_id, used along with project to identify `gcp_settings`.",
             **common_kwargs,
         )
-        flags.DEFINE_string(
-            "service_account",
-            None,
-            "If specified, will run job as the service account. "
-            "Otherwise will fallback to application-default credentials.",
-            **common_kwargs,
-        )
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
@@ -74,9 +67,6 @@ class GCPJob(Job):
 class GKEJob(GCPJob):
     """Base GKE JobSet interface."""
 
-    # Flags defined in `builder.define_flags` will be considered part of this class' flag API.
-    builder: type[BaseReplicatedJob]
-
     @config_class
     class Config(GCPJob.Config):
         """Configures GKEJob.
@@ -86,38 +76,32 @@ class GKEJob(GCPJob):
             namespace: The namespace to use within the k8s cluster.
                 https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
+            annotations: JobSet annotations (or config instantiating to annotations).
         """
 
         builder: Required[BaseReplicatedJob.Config] = REQUIRED
         namespace: str = "default"
+        # TODO(markblee): queue can be expressed with `annotations`.
         queue: Optional[str] = None
+        annotations: Optional[ConfigOr[dict]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string(
             "queue",
             None,
             "The name of the Kueue LocalQueue to use. If not set, no queue is used.",
             **common_kwargs,
         )
-        cls.builder.define_flags(fv)
 
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
         fv.set_default("max_tries", fv.max_tries or 10)
         fv.set_default("retry_interval", fv.retry_interval or 60)
-        fv.set_default(
-            "service_account", gcp_settings("k8s_service_account", default="default", fv=fv)
-        )
-
-    @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg: GKEJob.Config = super().from_flags(fv, **kwargs)
-        cfg.builder = cls.builder.from_flags(fv, **kwargs)
-        return cfg
 
     def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
         super().__init__(cfg)
@@ -144,7 +128,7 @@ class GKEJob(GCPJob):
             A nested dict corresponding to a k8s JobSet config.
         """
         cfg: GKEJob.Config = self.config
-        annotations = {}
+        annotations = maybe_instantiate(cfg.annotations or {})
         if cfg.queue:
             annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
         return dict(
@@ -172,36 +156,13 @@ class GKEJob(GCPJob):
         )
 
 
-class TPUGKEJob(GKEJob):
-    """A TPU job represented as a k8s JobSet.
+def exclusive_topology_annotations() -> dict:
+    """Used for TPU GKEJob.
 
-    See also `gke_runner` as an example.
+    The exclusive topology annotation will ensure that all Pods will have affinity rules added that
+    will ensure that they are fully scheduled on the same pod-slice node-pools.
     """
-
-    builder = TPUReplicatedJob
-    Config = GKEJob.Config
-
-    def _build_jobset(self):
-        jobset = super()._build_jobset()
-        jobset["metadata"]["annotations"].update(
-            {
-                # The exclusive topology annotation will ensure that all Pods will have affinity
-                # rules added that will ensure that they are fully scheduled on the same
-                # pod-slice node-pools.
-                "alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool",
-            }
-        )
-        return jobset
-
-
-class GPUGKEJob(GKEJob):
-    """A GPU job represented as a k8s JobSet.
-
-    See also `gke_runner` as an example.
-    """
-
-    builder = A3ReplicatedJob
-    Config = GKEJob.Config
+    return {"alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
 
 
 class CPUJob(GCPJob):

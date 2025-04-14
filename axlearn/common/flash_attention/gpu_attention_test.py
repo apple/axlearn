@@ -249,6 +249,7 @@ def test_sliding_window_mask(
         per_head_dim,
         sliding_window_sz=sliding_window_size,
         with_segment_ids=use_segment_ids,
+        dtype=jnp.float16,
     )
 
     cfg = dict(

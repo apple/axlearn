@@ -733,7 +733,7 @@ class Bastion(Configurable):
 
     def _append_to_job_history(self, job: Job, *, msg: str, state: JobLifecycleState):
         with fs_open(os.path.join(self._job_history_dir, f"{job.spec.name}"), "a") as f:
-            curr_time = datetime.now(timezone.utc).strftime("%m%d %H:%M:%S")
+            curr_time = datetime.now(timezone.utc).strftime("%Y%m%d-%H:%M:%S")
             f.write(f"{curr_time} {msg}\n")
         # Publish event into queue.
         if self._event_publisher:
@@ -886,11 +886,13 @@ class Bastion(Configurable):
         for job_name in {*active_jobs.keys(), *self._active_jobs.keys()}:
             # Detected new job: exists in remote, but not local.
             if job_name not in self._active_jobs:
-                logging.info("Detected new job %s.", job_name)
-                self._active_jobs[job_name] = active_jobs[job_name]
+                job = active_jobs[job_name]
+                job_id = job.spec.metadata.job_id
+                logging.info("Detected new job %s (job_id=%s).", job_name, job_id)
+                self._active_jobs[job_name] = job
                 self._append_to_job_history(
-                    active_jobs[job_name],
-                    msg="PENDING: detected jobspec",
+                    job,
+                    msg=f"PENDING: detected jobspec ({job_id=})",
                     # When Bastion restarts, we will see this for every job.
                     # Leave to consumer to handle this case.
                     state=JobLifecycleState.QUEUED,

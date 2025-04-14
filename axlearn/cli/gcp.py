@@ -74,11 +74,6 @@ def add_cmd_group(*, parent: CommandGroup):
         help="Run Dataflow jobs locally or on GCP",
     )
     gcp_cmd.add_cmd_from_module(
-        "gke",
-        module="axlearn.cloud.gcp.jobs.gke_runner",
-        help="Run jobs on GKE.",
-    )
-    gcp_cmd.add_cmd_from_module(
         "logs",
         module="axlearn.cloud.gcp.jobs.logs",
         help="View job Cloud Logging logs.",
