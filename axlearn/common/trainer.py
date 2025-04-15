@@ -240,6 +240,7 @@ class SpmdTrainer(Module):
         self._device_monitor = maybe_instantiate(cfg.device_monitor)
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
+        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -253,6 +254,7 @@ class SpmdTrainer(Module):
         self._per_param_train_dtype = maybe_instantiate(
             canonicalize_per_param_dtype(cfg.train_dtype)
         )
+
         # Create the device mesh.
         if devices is None:
             self._step_log(
@@ -625,7 +627,6 @@ class SpmdTrainer(Module):
                         break
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
-
             self._step_log("Checkpointer flushed.")
             return output
 
