@@ -707,7 +707,6 @@ def sgd_optimizer(
         )
 
 
-# pylint: disable=R0913
 def adamw_optimizer(
     learning_rate: schedule.Schedule,
     *,
@@ -763,7 +762,6 @@ def adamw_optimizer(
     return chain(*tx)
 
 
-# pylint: disable=R0913
 def adamw_decoupled_optimizer(
     learning_rate: float,
     *,
@@ -827,7 +825,6 @@ def adamw_decoupled_optimizer(
     return chain(*tx)
 
 
-# pylint: disable=R0913
 def adam_optimizer(
     learning_rate: schedule.Schedule,
     *,
@@ -1027,7 +1024,6 @@ def ema(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-# pylint: disable=R0913
 def adafactor_optimizer(
     learning_rate: schedule.Schedule,
     *,
@@ -1331,7 +1327,6 @@ def skip_and_clip_by_global_norm(
             new_square_ema = decay * norm_square_ema + (1 - decay) * (val**2)
             return new_norm_ema, new_square_ema
 
-        # pylint: disable=R0913
         def _is_valid_step(
             g_norm: Tensor,
             drop_norm: Union[float, DropNormThresholdFn],
@@ -1672,7 +1667,6 @@ def scale_by_lion(
     return PartitionedGradientTransformation(init=init_fn, update=update_fn, partition=partition_fn)
 
 
-# pylint: disable=too-many-arguments
 def lion_optimizer(
     learning_rate: schedule.Schedule,
     b1: float,
