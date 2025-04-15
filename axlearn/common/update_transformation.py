@@ -111,9 +111,9 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
         return dataclasses.replace(updates, delta_updates=param_updates)
 
 
-class ShouldUpdateState(NamedTuple):
-    count: Tensor  # Number of steps
-    val: Tensor
+class _ShouldUpdateState(NamedTuple):
+    count: Tensor  # Number of steps.
+    val: Tensor  # Bool tensor indicating whether updates should happen.
 
 
 class ConditionalUpdateTransformation(UpdateTransformation):
@@ -123,7 +123,9 @@ class ConditionalUpdateTransformation(UpdateTransformation):
 
     @config_class
     class Config(UpdateTransformation.Config):
+        # The wrapped UpdateTransformation
         inner: Required[InstantiableConfig] = REQUIRED
+        # A function that takes as input an int32 scalar tensor, and returns a bool scalar tensor
         update_schedule: Optional[Callable[[Union[int, Tensor]], Union[bool, Tensor]]] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module] = None):
@@ -142,7 +144,7 @@ class ConditionalUpdateTransformation(UpdateTransformation):
         self, model_param_specs: Nested[ParameterSpec]
     ) -> Nested[PartitionSpec]:
         specs = self.inner.create_state_partition_specs(model_param_specs)
-        should_update_specs = ShouldUpdateState(
+        should_update_specs = _ShouldUpdateState(
             count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
             val=OptStateSpec(dtype=jnp.bool, shape=[], mesh_axes=PartitionSpec()),
         )
@@ -150,7 +152,7 @@ class ConditionalUpdateTransformation(UpdateTransformation):
 
     def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
         state = self.inner.init(model_params)
-        should_update_state = ShouldUpdateState(
+        should_update_state = _ShouldUpdateState(
             count=jnp.zeros([], jnp.int32), val=jnp.ones([], jnp.bool)
         )
         return {"should_update": should_update_state, "inner": state}
@@ -158,7 +160,7 @@ class ConditionalUpdateTransformation(UpdateTransformation):
     def transform_update(self, updates: Updates) -> Updates:
         count_inc = optax.safe_int32_increment(self.state["should_update"].count)
         val = self._update_schedule(count_inc)
-        should_update_state = ShouldUpdateState(count=count_inc, val=val)
+        should_update_state = _ShouldUpdateState(count=count_inc, val=val)
 
         inplace_updates = prune_tree(
             prune_empty(updates.inplace_updates), lambda _, v: v == optax.MaskedNode()
