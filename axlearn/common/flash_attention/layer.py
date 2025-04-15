@@ -320,42 +320,17 @@ def default_output_dim_to_partition_spec(
 
 
 class FlashBlockSizeModifier(ConfigModifier):
-    """Modified the tpu_block_size config of FlashAttention."""
+    """Modifies the tpu_block_size or gpu_block_size config of FlashAttention."""
 
     @config_class
     class Config(ConfigModifier.Config):
         """Configures FlashBlockSizeModifier."""
 
-        tpu_block_size: Required[int] = REQUIRED
+        tpu_block_size: Optional[int] = 512
+        gpu_block_size: Optional[int] = 128
 
     def __call__(self, cfg: ConfigBase) -> ConfigBase:
         tpu_block_size = self.config.tpu_block_size
-
-        def is_flash_config(cfg):
-            return isinstance(cfg, FlashAttention.Config)
-
-        def visit_fn(_, value):
-            if is_flash_config(value):
-                value = cast(FlashAttention.Config, value)
-                value.tpu_block_size = tpu_block_size
-
-        def enter_fn(_, value, default_kv):
-            return None if is_flash_config(value) else default_kv
-
-        cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
-        return cfg
-
-
-class GPUFlashBlockSizeModifier(ConfigModifier):
-    """Modified the gpu_block_size config of FlashAttention."""
-
-    @config_class
-    class Config(ConfigModifier.Config):
-        """Configures FlashBlockSizeModifier."""
-
-        gpu_block_size: Required[int] = REQUIRED
-
-    def __call__(self, cfg: ConfigBase) -> ConfigBase:
         gpu_block_size = self.config.gpu_block_size
 
         def is_flash_config(cfg):
@@ -364,7 +339,10 @@ class GPUFlashBlockSizeModifier(ConfigModifier):
         def visit_fn(_, value):
             if is_flash_config(value):
                 value = cast(FlashAttention.Config, value)
-                value.gpu_block_size = gpu_block_size
+                if (tpu_block_size != 512):
+                    value.tpu_block_size = tpu_block_size
+                if (gpu_block_size != 128):
+                    value.gpu_block_size = gpu_block_size
 
         def enter_fn(_, value, default_kv):
             return None if is_flash_config(value) else default_kv

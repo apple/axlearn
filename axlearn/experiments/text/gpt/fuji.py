@@ -62,11 +62,8 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import (
-    TrainerConfigFn,
-    V6eFlashConfigModifier,
-    A4FlashConfigModifier,
-)
+from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -463,7 +460,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            V6eFlashConfigModifier.default_config(),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=1024),
                         ],
                     ),
                 ),
@@ -501,7 +498,8 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
                             ),
-                            A4FlashConfigModifier.default_config(),
+                            # Modify the GPU block-size for B200 platform (needed for Pallas kernels)
+                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
                             #FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
                             #),
@@ -676,7 +674,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            V6eFlashConfigModifier.default_config(),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=1024),
                         ],
                     ),
                 ),
@@ -696,7 +694,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            V6eFlashConfigModifier.default_config(),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=1024),
                             GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
@@ -727,7 +725,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
                             ),
-                            A4FlashConfigModifier.default_config(),
+                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
                             #FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
                             #)

@@ -1123,8 +1123,6 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_enable_latency_hiding_scheduler=true",
             "--xla_gpu_enable_triton_gemm=false",
             "--xla_gpu_enable_highest_priority_async_stream=true",
-            # Increase combine threshold to 1GB for improved performance.
-            # A3 and TCPX performs bad with smaller message sizes.
             "--xla_gpu_all_reduce_combine_threshold_bytes=134217728",
             "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=33554432",
@@ -1142,10 +1140,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             {
                 "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
-                # Ensure the TCPX libs get picked up
                 "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
                 "NCCL_FASTRAK_CTRL_DEV": "eth0",
                 "NCCL_FASTRAK_IFNAME": "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8",
@@ -1168,18 +1164,11 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "NCCL_PROTO": "Simple",
                 "NCCL_DEBUG": "WARN",
                 "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
-                # Enable GPU Direct RDMA when GPU and NIC are same PCI switch.
                 "NCCL_NET_GDR_LEVEL": "PIX",
-                # TCPX requires disabling PXN.
-                # "NCCL_P2P_PXN_LEVEL": "0",
-                # Improves performance but can be tweaked.
                 "NCCL_DYNAMIC_CHUNK_SIZE": "524288",
                 "NCCL_P2P_NET_CHUNKSIZE": "524288",
                 "NCCL_P2P_PCI_CHUNKSIZE": "524288",
                 "NCCL_P2P_NVL_CHUNKSIZE": "1048576",
-                # The number of sockets per thread improves performance.
-                # "NCCL_NSOCKS_PERTHREAD": "4",
-                # "NCCL_SOCKET_NTHREADS": "1",
                 # Use the system NIC for NCCL control plane comms.
                 "NCCL_SOCKET_IFNAME": "eth0",
                 # TCPX is not compatible with NVLS.
@@ -1291,7 +1280,6 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
             {
                 "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "NCCL_DEBUG": "WARN",
@@ -1384,8 +1372,6 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         env_vars: dict[str, str] = GPUReplicatedJob_main_container["env"]
 
         default_xla_flags = [
-            # Maxtext XLA flags:
-            # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
             "--xla_gpu_enable_latency_hiding_scheduler=true",
             "--xla_gpu_enable_triton_gemm=false",
             "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
@@ -1407,7 +1393,6 @@ class A4HighReplicatedJob(GPUReplicatedJob):
             {
                 "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                # Needed to help resolve GPU OOM on fuji v2 70B
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "NCCL_DEBUG": "WARN",

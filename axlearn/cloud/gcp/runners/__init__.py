@@ -38,27 +38,10 @@ def named_runner_configs(
             ),
             pre_provisioner=TPUNodePoolProvisioner.default_config(),
         ),
-        "gke_gpu_a3_high": GKERunnerJob.default_config().set(
-            inner=GKEJob.default_config().set(
-                builder=A3HighReplicatedJob.default_config(),
-            ),
-        ),
-        "gke_gpu_a3_mega": GKERunnerJob.default_config().set(
-            inner=GKEJob.default_config().set(
-                builder=A3MegaReplicatedJob.default_config(),
-            ),
-        ),
-        "gke_gpu_a3_ultra": GKERunnerJob.default_config().set(
-            inner=GKEJob.default_config().set(
-                builder=A3UltraReplicatedJob.default_config(),
-            ),
-        ),
-        "gke_gpu_a4_high": GKERunnerJob.default_config().set(
-            inner=GKEJob.default_config().set(
-                builder=A4HighReplicatedJob.default_config(),
-            ),
-        ),
     }
+
+    # Get the GPU runners from the helper function
+    runners.update(get_gpu_runners())
 
     # Returning all runners is useful for users to discover runners (e.g. CLI help).
     if runner is None:
@@ -66,3 +49,25 @@ def named_runner_configs(
     elif runner in runners:
         return runners[runner]
     raise ValueError(f"Unrecognized runner: {runner}")
+
+
+def get_gpu_runners() -> dict[str, BaseRunnerJob.Config]:
+    """Creates a list of GPU runners."""
+
+    runner_list = {
+        "gke_gpu_a3_high_single": A3HighReplicatedJob,
+        "gke_gpu_a3_mega_single": A3MegaReplicatedJob,
+        "gke_gpu_a3_ultra_single": A3UltraReplicatedJob,
+        "gke_gpu_a4_high_single": A4HighReplicatedJob,
+    }
+
+    runner_configs = {}
+
+    for name, config in runner_list.items():
+        runner_configs[name] = GKERunnerJob.default_config().set(
+            inner=GKEJob.default_config().set(
+                builder=config.default_config()
+            )
+        )
+
+    return runner_configs
