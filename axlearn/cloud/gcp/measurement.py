@@ -60,9 +60,7 @@ class GoodputRecorder(measurement.Recorder):
         uploads. Set to less than or equal to 0 to disable step deviation uploads.
         """
         cfg: measurement.Recorder.Config = cls.default_config()
-        kwargs = parse_kv_flags(fv.recorder_spec, delimiter="=")
-
-        cfg = maybe_set_config(cfg, **kwargs)
+        cfg = maybe_set_config(cfg, **parse_kv_flags(fv.recorder_spec, delimiter="="))
         return cfg.instantiate()
 
     def __init__(self, cfg):
