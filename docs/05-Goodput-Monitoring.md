@@ -83,7 +83,7 @@ To enable Goodput recording and monitoring on AXLearn, follow the example below.
 
 
 ```bash
-    axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
+    axlearn gcp launch run --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
         --name=<unique-readable-name> \
@@ -102,7 +102,7 @@ the upload frequency by setting
 set `--recorder_spec=step_deviation_interval_seconds=-1`.
 
 ```bash
-   axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
+   axlearn gcp launch run --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
         --name=<unique-readable-name> \
@@ -123,13 +123,13 @@ set `--recorder_spec=step_deviation_interval_seconds=-1`.
 
 AXLearn has an additional option of pushing goodput, badput and step time
 deviation metrics to Google Cloud Monitoring. By default if goodput monitoring
-is enabled, the data gets published to Google Cloud Monitoring. Set
-`--recorder_spec=enable_gcp_goodput_metrics=0` and
-`--recorder_spec=enable_gcp_step_deviation_metrics=0` to disable goodput and
+is enabled, the data gets published to Google Cloud Monitoring. Set the variables
+`enable_gcp_goodput_metrics` and
+`enable_gcp_step_deviation_metrics` to `False` in `cloud/gcp/measurement.py` to disable goodput and
 step_deviation uploads to GCM respectively.
 
 ```bash
-   axlearn gcp gke start --instance_type=tpu-v5litepod-16 \
+   axlearn gcp launch run --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
         --name=<unique-readable-name> \
@@ -139,8 +139,6 @@ step_deviation uploads to GCM respectively.
         --recorder_spec=upload_dir=my-output-directory/summaries \
         --recorder_spec=upload_interval=30 \
         --recorder_spec=step_deviation_interval_seconds=30 \
-        --recorder_spec=enable_gcp_goodput_metrics=1 \ # Optional - This is enabled by default
-        --recorder_spec=enable_gcp_step_deviation_metrics=1 # Optional - This is enabled by default
 ```
 
 #### Visualization in Google Cloud Monitoring

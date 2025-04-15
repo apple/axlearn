@@ -240,7 +240,6 @@ class SpmdTrainer(Module):
         self._device_monitor = maybe_instantiate(cfg.device_monitor)
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
-        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -568,10 +567,8 @@ class SpmdTrainer(Module):
             )
 
             # Prepare training.
-            self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
             if not self._prepare_training(prng_key):
                 return None
-            self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
 
             self._is_initialized = True
 
@@ -865,10 +862,12 @@ class SpmdTrainer(Module):
             A boolean indicating whether the model training should start. If not, return
                 None from the `run` function.
         """
+        self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
         cfg = self.config
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
         self.restore_checkpoint(restore_step=None)
+
         if self.step is None:
             # If we didn't restore from checkpoint, attempt to build initial state according
             # to `cfg.init_state_builder` and initialize the remaining parameters.
@@ -887,6 +886,7 @@ class SpmdTrainer(Module):
 
             with fs.open(os.path.join(cfg.dir, "model_analysis.txt"), "w") as f:
                 f.write(model_analysis)
+
         # Log config.
         self.summary_writer.log_config(cfg, step=self.step)
 
@@ -895,6 +895,7 @@ class SpmdTrainer(Module):
             return False
 
         self._jit_train_step = self._pjit_train_step()
+        self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:

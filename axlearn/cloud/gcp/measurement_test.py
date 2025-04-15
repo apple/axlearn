@@ -24,8 +24,6 @@ class GoodputRecorderTest(parameterized.TestCase):
                 "upload_dir=/test/path/to/upload",
                 "upload_interval=15",
                 "step_deviation_interval_seconds=30",
-                "enable_gcp_goodput_metrics=1",
-                "enable_gcp_step_deviation_metrics=1",
             ],
         ),
     )
@@ -74,8 +72,6 @@ class GoodputRecorderTest(parameterized.TestCase):
                 "upload_dir=/test/path/to/upload",
                 "upload_interval=15",
                 "step_deviation_interval_seconds=-1",
-                "enable_gcp_goodput_metrics=1",
-                "enable_gcp_step_deviation_metrics=-1",
             ],
         )
         fv.mark_as_parsed()
@@ -120,8 +116,6 @@ class GoodputRecorderTest(parameterized.TestCase):
                 "upload_dir=/test/path/to/upload",
                 "upload_interval=15",
                 "step_deviation_interval_seconds=30",
-                "enable_gcp_goodput_metrics=1",
-                "enable_gcp_step_deviation_metrics=1",
             ],
         )
         fv.mark_as_parsed()
