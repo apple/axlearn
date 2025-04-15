@@ -44,9 +44,15 @@ else
 	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives"
 	export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=1
 	export NEURON_FSDP=1
-	export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
+	if [ -n "$CUSTOM_TAG_rsshift" ]; then
+		export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=$CUSTOM_TAG_rsshift
+	# else
+		# unset
+		# export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
+	fi
 	export NEURON_FSDP_NUM_LAYER_COALESCE=-1
 fi
+export NEURON_COLLECTIVE_PERMUTE_TO_ALL_GATHER=1
 export NEURON_ENABLE_INT_MATMUL_DOWNCAST=1
 export NEURON_FSDP_CC_MULTISTREAM=0
 export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
@@ -128,7 +134,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 
 # use to add debug logging at module level in xla
 # export TF_CPP_MIN_LOG_LEVEL=0
-# export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=3"
+# export TF_CPP_VMODULE="neuron_token_threading=4"
 
 # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="cache/"
@@ -197,7 +203,7 @@ profile() {
 	log_dir=logs
 	mkdir -p $profile_dir $upload_dir
 
-	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | head -n1)
+	neff_path=$(ls ${job_dir}/neuron_dump/*program1/file.neff | head -n1)
 
 	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
 	# export NEURON_RT_PROFILE_BUF_DMA_MB=256
@@ -261,6 +267,5 @@ else
 	if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ]; then
 		profile $SLURM_JOB_ID $SLURM_JOB_NAME $S3_PROFILE_BASE_PATH
 	fi
+	./get_memory_split.sh
 fi
-
-./get_memory_split.sh

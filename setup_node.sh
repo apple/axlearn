@@ -23,8 +23,8 @@ SECONDS=0
 sudo apt-get update - > /dev/null
 
 # Needed for TC_MALLOC fix
-# sudo apt-get -f install -y
-# sudo apt-get install -y google-perftools
+sudo apt-get -f install -y
+sudo apt-get install -y google-perftools
 
 # Binaries to use:
 ###
