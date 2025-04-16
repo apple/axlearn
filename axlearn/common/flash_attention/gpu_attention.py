@@ -992,7 +992,9 @@ class CuDNNGPUFlashAttentionWithExplicitBias(CuDNNGPUFlashAttention):
 
 
 class ROCmTransformerEngineFlashAttention(BaseFlashAttention):
-    """
+    """Wraps Transformer Engine DotProductAttention to enable Flash Attention on ROCm.
+
+    Currently it has only been tested on standard Llama-like configs, and training only.
     """
 
     _allow_explicit_bias = False
