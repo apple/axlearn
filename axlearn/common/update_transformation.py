@@ -113,12 +113,20 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
 
 class _ShouldUpdateState(NamedTuple):
     count: Tensor  # Number of steps.
-    val: Tensor  # Bool tensor indicating whether updates should happen.
 
 
 class ConditionalUpdateTransformation(UpdateTransformation):
-    """A wrapper around a `UpdateTransformation` to conditionally allow or stop
-    gradient and optimizer state updates based on `update_schedule`.
+    """A wrapper around a `UpdateTransformation` to conditionally allow or skip
+    parameter and optimizer state updates based on `update_schedule`.
+
+    Specifically,
+    - If `update_schedule` evaluates to False/zero, the delta updates will be set to 0 and
+        the inner optimizer state will not change.
+    - If `update_schedule` evaluates to True/non-zero, the param and state updates from the
+        inner optimizer will be applied.
+    - The update schedule step count will always be incremented.
+
+    In-place parameter updates from `inner` are not supported.
     """
 
     @config_class
@@ -146,21 +154,17 @@ class ConditionalUpdateTransformation(UpdateTransformation):
         specs = self.inner.create_state_partition_specs(model_param_specs)
         should_update_specs = _ShouldUpdateState(
             count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
-            val=OptStateSpec(dtype=jnp.bool, shape=[], mesh_axes=PartitionSpec()),
         )
         return {"should_update": should_update_specs, "inner": specs}
 
     def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
         state = self.inner.init(model_params)
-        should_update_state = _ShouldUpdateState(
-            count=jnp.zeros([], jnp.int32), val=jnp.ones([], jnp.bool)
-        )
+        should_update_state = _ShouldUpdateState(count=jnp.zeros([], jnp.int32))
         return {"should_update": should_update_state, "inner": state}
 
     def transform_update(self, updates: Updates) -> Updates:
-        count_inc = optax.safe_int32_increment(self.state["should_update"].count)
-        val = self._update_schedule(count_inc)
-        should_update_state = _ShouldUpdateState(count=count_inc, val=val)
+        curr_step = self.state["should_update"].count
+        should_update = self._update_schedule(curr_step)
 
         inplace_updates = prune_tree(
             prune_empty(updates.inplace_updates), lambda _, v: v == optax.MaskedNode()
@@ -187,9 +191,10 @@ class ConditionalUpdateTransformation(UpdateTransformation):
         # We do the computation regardless of the should_update value, so we could have
         # equally used jnp.where() here instead.
         param_updates, optimizer_state = jax.lax.cond(
-            should_update_state.val, real_transform, stop_transform, operand=None
+            should_update, real_transform, stop_transform, operand=None
         )
 
+        should_update_state = _ShouldUpdateState(count=optax.safe_int32_increment(curr_step))
         self.add_state_update("should_update", should_update_state)
         self.add_state_update("inner", optimizer_state)
         return dataclasses.replace(updates, delta_updates=param_updates)
