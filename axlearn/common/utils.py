@@ -31,10 +31,12 @@ from functools import cache
 from typing import (
     Any,
     Callable,
+    List,
     Literal,
     NamedTuple,
     Optional,
     Protocol,
+    Tuple,
     TypeVar,
     Union,
     runtime_checkable,
@@ -42,14 +44,13 @@ from typing import (
 
 import attr
 import jax
-import jax.flatten_util
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax._src.ad_checkpoint import name_p
 from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
-from jax._src.tree_util import KeyEntry, KeyPath
+from jax._src.tree_util import KeyEntry, KeyPath, flatten_one_level_with_keys
 from jax.ad_checkpoint import Offloadable, Recompute, Saveable
 from jax.experimental import mesh_utils, multihost_utils
 from jax.extend.core import Primitive
@@ -1853,7 +1854,7 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
     return grouped_lines
 
 
-def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
+def pytree_children(node: Any) -> List[Tuple[KeyEntry, Any]]:
     """Generate the (key, value) pairs for the immediate children of a pytree `node`.
 
     The returned children match those returned by
@@ -1866,22 +1867,12 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
         assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
         ```
     """
-    # pylint: disable-next=protected-access
-    registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
-
-    key_handler = registry_with_keypaths.get(type(node))
-    if key_handler:
-        key_children, _ = key_handler.flatten_with_keys(node)
-        return key_children
-
-    flat = jax.tree_util.default_registry.flatten_one_level(node)
-    if flat is None:
+    try:
+        # pylint: disable-next=protected-access
+        key_child_pairs, _ = flatten_one_level_with_keys(node)
+        return list(key_child_pairs)
+    except ValueError:
         return []
-
-    if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
-        # Handle namedtuple as a special case, based on heuristic.
-        return [(jax.tree_util.GetAttrKey(s), getattr(node, s)) for s in node._fields]
-    return [(jax.tree_util.FlattenedIndexKey(i), c) for i, c in enumerate(flat[0])]
 
 
 def find_cycles(tree: Nested) -> dict[str, KeyPath]:
