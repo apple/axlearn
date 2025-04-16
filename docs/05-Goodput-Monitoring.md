@@ -124,9 +124,9 @@ set `--recorder_spec=step_deviation_interval_seconds=-1`.
 AXLearn has an additional option of pushing goodput, badput and step time
 deviation metrics to Google Cloud Monitoring. By default if goodput monitoring
 is enabled, the data gets published to Google Cloud Monitoring. Set the variables
-`enable_gcp_goodput_metrics` and
-`enable_gcp_step_deviation_metrics` to `False` in `cloud/gcp/measurement.py` to disable goodput and
-step_deviation uploads to GCM respectively.
+`enable_gcp_goodput_metrics` and `enable_gcp_step_deviation_metrics` to `False` in
+`goodput_monitoring.GCPOptions` in `cloud/gcp/measurement.py` to disable goodput and step_deviation
+uploads to GCM respectively.
 
 ```bash
    axlearn gcp launch run --instance_type=tpu-v5litepod-16 \

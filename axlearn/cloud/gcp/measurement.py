@@ -117,23 +117,18 @@ class GoodputRecorder(measurement.Recorder):
         information if data is not being uploaded correctly.
 
         Default behavior is to push metrics to Google Cloud Monitoring.
-        This behavior can be overridden by setting following the variables to False:
-        - enable_gcp_goodput_metrics=False
-        - enable_gcp_step_deviation_metrics=False
+        This behavior can be overridden by configuring `goodput_monitoring.GCPOptions`
         """
         cfg: GoodputRecorder.Config = self.config
-        enable_gcp_goodput_metrics = True
-        enable_gcp_step_deviation_metrics = True
         include_step_deviation = True
         if jax.process_index() == 0:
             if self._monitor is None:
                 if int(cfg.step_deviation_interval_seconds) <= 0:
                     include_step_deviation = False
-                    enable_gcp_step_deviation_metrics = False
 
                 gcp_options = goodput_monitoring.GCPOptions(
-                    enable_gcp_goodput_metrics=enable_gcp_goodput_metrics,
-                    enable_gcp_step_deviation_metrics=enable_gcp_step_deviation_metrics,
+                    enable_gcp_goodput_metrics=True,
+                    enable_gcp_step_deviation_metrics=include_step_deviation,
                 )
                 self._monitor = goodput_monitoring.GoodputMonitor(
                     job_name=cfg.name,
