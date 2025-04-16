@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
@@ -76,10 +76,13 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             dict(frame_size_ms=31.9375, hop_size_ms=10),
         ],
         pre_emphasis=[True, False],
+        sample_rate=[16_000, 24_000],
     )
     @pytest.mark.fp64
-    def test_against_ref(self, frame_size_ms, hop_size_ms, pre_emphasis):
-        sample_rate, batch_size, max_seconds = 16_000, 4, 13
+    def test_against_ref(self, frame_size_ms, hop_size_ms, pre_emphasis, sample_rate):
+        if sample_rate == 24_000 and frame_size_ms == 31.9375:
+            pytest.skip(reason="ms_to_samples is not integer in the case.")
+        batch_size, max_seconds = 4, 13
         num_filters = 80
 
         # Construct fake inputs.
@@ -100,7 +103,6 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             coeff=0.97,
             num_filters=num_filters,
             lower_edge_hertz=125.0,
-            upper_edge_hertz=7600.0,
             mel_floor=1.0,
             pre_emphasis=pre_emphasis,
         )
@@ -371,7 +373,6 @@ def _ref_frontend(
     coeff: float,
     num_filters: int,
     lower_edge_hertz: float,
-    upper_edge_hertz: float,
     mel_floor: float,
     pre_emphasis: bool,
 ):
@@ -398,7 +399,7 @@ def _ref_frontend(
         num_filters=num_filters,
         sample_rate=sample_rate,
         lower_edge_hertz=lower_edge_hertz,
-        upper_edge_hertz=upper_edge_hertz,
+        upper_edge_hertz=0.95 * (sample_rate // 2),
         compute_energy=False,
         mel_floor=mel_floor,
     )
@@ -435,3 +436,7 @@ def _ref_stft_frontend(
         tf.maximum(tf.math.abs(outputs), tf.experimental.numpy.finfo(outputs.dtype).tiny)
     )
     return outputs, output_paddings
+
+
+if __name__ == "__main__":
+    absltest.main()

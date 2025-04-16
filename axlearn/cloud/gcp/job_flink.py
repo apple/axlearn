@@ -47,8 +47,6 @@ def _custom_flinkdeployment_kwargs() -> dict[str, str]:
 class FlinkTPUGKEJob(job.GKEJob):
     """A Job that submits a Flink + Beam bundle and monitors its status."""
 
-    builder = TPUReplicatedJob
-
     @config_class
     class Config(job.GKEJob.Config):
         """Configures FlinkTPUGKEJob.
@@ -75,10 +73,13 @@ class FlinkTPUGKEJob(job.GKEJob):
         )
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg: FlinkTPUGKEJob.Config = super().from_flags(fv, **kwargs)
-        cfg.builder = cls.builder.from_flags(fv, **kwargs)
-        return cfg
+    def default_config(cls):
+        return super().default_config().set(builder=TPUReplicatedJob.default_config())
+
+    def __init__(self, cfg: Config, *, bundler):
+        super().__init__(cfg, bundler=bundler)
+        if not isinstance(cfg.builder, TPUReplicatedJob.Config):
+            raise NotImplementedError(type(cfg.builder))
 
     def _delete(self):
         """This is a non-blocking method to delete the flink deployment and submitter job.

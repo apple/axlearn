@@ -165,6 +165,7 @@ class BaseReplicatedJob(FlagConfigurable):
     def define_flags(cls, fv):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        # NOTE: the parent typically sets these flags, so we leave them as None.
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string(
             "output_dir",
@@ -197,6 +198,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         """Configures SingleReplicatedJob.
 
         Attributes:
+            job_name: Name of the replicated job.
             command: Command to be executed.
             accelerator: Accelerator configuration.
             project: GCP Project.
@@ -209,6 +211,8 @@ class SingleReplicatedJob(BaseReplicatedJob):
             enable_pre_provisioner: Whether to enable pre-provisioner.
         """
 
+        # We disambiguate from "name" which often refers to the jobset.
+        job_name: Required[str] = REQUIRED
         command: Required[str] = REQUIRED
         project: Required[str] = REQUIRED
         accelerator: AcceleratorConfig = AcceleratorConfig()
@@ -224,6 +228,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         accelerator_flags(**common_kwargs)
+        flags.DEFINE_string("job_name", "job", "Replicated job name.", **common_kwargs)
         flags.DEFINE_string("command", None, "Command to execute.", **common_kwargs)
         flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
         flags.DEFINE_multi_string(
@@ -307,7 +312,6 @@ class TPUReplicatedJob(SingleReplicatedJob):
                 to attach to the node pool. This is needed to support multiple NIC.
                 Refer to GKE TPU provisioner for more context:
                 https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
-            replicated_job_name: Name of the replicated job. Default value is "job".
         """
 
         reservation: Optional[str] = None
@@ -317,7 +321,6 @@ class TPUReplicatedJob(SingleReplicatedJob):
         enable_tpu_smart_repair: bool = False
         priority_class: Optional[str] = None
         additional_node_networks: Optional[str] = None
-        replicated_job_name: str = "job"
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -379,14 +382,12 @@ class TPUReplicatedJob(SingleReplicatedJob):
             cfg.name,
             num_workers=infer_tpu_workers(self._tpu_type),
             num_replicas=cfg.accelerator.num_replicas,
-            job_name=cfg.replicated_job_name,
+            job_name=cfg.job_name,
         )
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
         if cfg.additional_node_networks and not cfg.service_account:
             raise ValueError("service_account must be set if additional_node_networks is set.")
-        self._load_balancer = _LoadBalancer(
-            jobset_name=cfg.name, replicated_job_name=cfg.replicated_job_name
-        )
+        self._load_balancer = _LoadBalancer(jobset_name=cfg.name, replicated_job_name=cfg.job_name)
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
@@ -709,7 +710,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         # NOTE: the suffix here impacts how long job names can be.
         return [
             dict(
-                name=cfg.replicated_job_name,
+                name=cfg.job_name,
                 replicas=cfg.accelerator.num_replicas,
                 template=job_spec,
             )

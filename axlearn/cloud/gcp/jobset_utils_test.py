@@ -181,11 +181,7 @@ class TPUReplicatedJobTest(TestCase):
             None,
         ],
         priority_class=[None, "such-high-priority"],
-        additional_node_networks=[
-            None,
-            "network-1:subnet-1",
-            "network-1:subnet-1,network-2:subnet-2",
-        ],
+        additional_node_networks=[None, "network-1:subnet-1,network-2:subnet-2"],
     )
     def test_build_pod(
         self,
@@ -205,7 +201,7 @@ class TPUReplicatedJobTest(TestCase):
         additional_node_networks: Optional[str] = None,
     ):
         with (
-            mock.patch.dict("os.environ", env),
+            mock.patch("os.environ", env),
             self._job_config(
                 bundler_cls,
                 host_mount_spec=host_mount_spec,
@@ -458,7 +454,7 @@ class TPUReplicatedJobTest(TestCase):
                 name="test",
                 command="test_command",
                 output_dir="FAKE",
-                replicated_job_name="replicatedJob",
+                job_name="replicatedJob",
             ).instantiate(bundler=bundler_cfg.instantiate())
 
             job_spec = replicated_job()[0]["template"]
