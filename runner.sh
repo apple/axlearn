@@ -39,7 +39,8 @@ RT_PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/rt_profiles
 # PJRT Flags 
 if [ "$AXLEARN_REPEATED" = "1" ]; then
 	export NEURON_FSDP_REPEATED=1
-	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives,neuron_move_all_gather_while_loop,neuron-fixed-point-collectives-combiner,neuron-token-threading-repeated"
+	# ,neuron-token-threading-repeated
+	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives,neuron_move_all_gather_while_loop,neuron-fixed-point-collectives-combiner"
 else
 	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives"
 	export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=1
@@ -203,7 +204,8 @@ profile() {
 	log_dir=logs
 	mkdir -p $profile_dir $upload_dir
 
-	neff_path=$(ls ${job_dir}/neuron_dump/*program1/file.neff | head -n1)
+	# pick the largest neff, to ignore small second neff produced in multinode scenarios
+	neff_path=$(ls -lS ${job_dir}/neuron_dump/*program*/file.neff | head -n1)
 
 	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
 	# export NEURON_RT_PROFILE_BUF_DMA_MB=256
@@ -239,8 +241,6 @@ profile() {
 	fi
 }
 
-python runners/tagger.py --submit
-
 if [ "$S3_PROFILE_BASE_PATH" = "" ]; then
 	export S3_PROFILE_BASE_PATH="s3://kaena-tempdata/huilgolr/fs-moe/profiles"
 fi
@@ -248,7 +248,6 @@ fi
 if [ "$AXLEARN_PROFILE_MODE" = "capture" ]; then
 	profile $PROFILE_JOB_ID $PROFILE_JOB_NAME $S3_PROFILE_BASE_PATH
 else
-	set -x
 	# MIXTRAL_MOE being
 	# 0 adds dense MLP layers
 	# 1 adds all sparse MLP layers
@@ -256,7 +255,9 @@ else
 	# export MIXTRAL_MOE=$1
 	# export NUM_LAYERS=$2
 	# envy-Mistral-${AXLEARN_MODEL_NAME}
-
+	
+	python runners/tagger.py --submit
+	set -ex
 	python -m axlearn.common.launch_trainer_main \
 		--module=text.gpt.c4_trainer --config=$AXLEARN_MODEL_NAME \
 		--trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \

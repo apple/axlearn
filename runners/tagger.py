@@ -12,7 +12,7 @@ import sys
 from prettytable import PrettyTable
         
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARN,
     format='%(message)s'
 )
 
@@ -20,15 +20,13 @@ INDEX_DIR=os.path.join("logs", "index")
 LOGS_DIR="logs"
 ARTIFACTS_DIR="artifacts"
 
-try:
-    PREFIX = re.match("(/fsx/)[^/]+(?=/*)", os.getcwd())[0].split('/')[2]
-except RuntimeError:
-    PREFIX = ''
-
-SLURM_SCRIPT_NAME="run.slurm"
-
-if PREFIX:
-    SLURM_SCRIPT_NAME = PREFIX + "_" + SLURM_SCRIPT_NAME
+# try:
+#     PREFIX = re.match("(/fsx/)[^/]+(?=/*)", os.getcwd())[0].split('/')[2]
+# except RuntimeError:
+#     PREFIX = ''
+# SLURM_SCRIPT_NAME="runs.slurm"
+# if PREFIX:
+#     SLURM_SCRIPT_NAME = PREFIX + "_" + SLURM_SCRIPT_NAME
 
 os.makedirs(INDEX_DIR, exist_ok=True)
 
@@ -71,7 +69,7 @@ def build_name_with_main_attrs(tags):
     logging.debug(f"Loaded tags {tags}")
     
     job_name_parts = []
-    job_name_parts.append(tags['AXLEARN_MODEL_NAME'].split('-')[-1])
+    job_name_parts.append(tags.get('AXLEARN_MODEL_NAME', '-').split('-')[-1])
     
     num_nodes=int(tags.get('SLURM_JOB_NUM_NODES', 1))
     if num_nodes > 1:
@@ -112,6 +110,11 @@ def build_name_with_main_attrs(tags):
 def get_index_path(job_id):
     return os.path.join(INDEX_DIR, job_id)
 
+def get_log_file_path(job_id):
+    log_file = f"{os.path.join(LOGS_DIR, job_id)}"
+    logs = glob.glob(f"{log_file}_*")
+    assert len(logs) == 1, "No log file found"
+    return logs[0]
 
 def describe_job(job_id, tag_types="none", filter=None, log_versions=False, t=None):
     loaded_tags = load_tags(job_id)
@@ -120,12 +123,12 @@ def describe_job(job_id, tag_types="none", filter=None, log_versions=False, t=No
             if loaded_tags.get(k) is None or loaded_tags[k].lower() != v.lower():
                 return  # Skip this job if it doesn't match the filter
 
-    log_file = f"{os.path.join(LOGS_DIR, job_id)}_{SLURM_SCRIPT_NAME}.out"
+    log_file = get_log_file_path(job_id)
 
     job_ARTIFACTS_DIR = os.path.join(ARTIFACTS_DIR, job_id)
     # Find the first match of neuron log file using regex pattern
     neuron_log_pattern = os.path.join(job_ARTIFACTS_DIR, "neuron_dump", "pid*-program*", "log-neuron-cc.txt")
-    neuron_log_matches = glob.glob(neuron_log_pattern)
+    neuron_log_matches = sorted(glob.glob(neuron_log_pattern), key=os.path.getsize)
     row = []
     row.append(job_id)
     logging.info(f"{job_id}: ")
@@ -138,6 +141,8 @@ def describe_job(job_id, tag_types="none", filter=None, log_versions=False, t=No
     logging.info(f"  artifacts_dir: {job_ARTIFACTS_DIR}")
     row.append(job_ARTIFACTS_DIR)
     if neuron_log_matches:
+        
+        neuron_log_matches=neuron_log_matches[-1]
         logging.info(f"  neuron_log: {neuron_log_matches}")
         row.append(neuron_log_matches)
     else:
@@ -159,6 +164,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process job mode.")
 
     parser.add_argument("--submit", "-s", action="store_true")
+
+    parser.add_argument("--clean_job", nargs='+')
     
     parser.add_argument("--tail", "-t", action="store_true", help="tail log")
     parser.add_argument("--tail_compiler", "-tc", action="store_true", help="tail log")
@@ -184,14 +191,16 @@ if __name__ == "__main__":
         )
         tags = load_tags(job_id)
         job_name = os.environ.get('SLURM_JOB_NAME')
-        if job_name == SLURM_SCRIPT_NAME:
+        if os.getenv('RENAME_JOB', 'false') == 'true':
+            PREFIX = os.getenv('RENAME_JOB_PREFIX', '.')
             name = build_name_with_main_attrs(tags)
             name = f"{PREFIX}_{name}"
             subprocess.run(
                 f"scontrol update job {job_id} name={name}", shell=True
             )
             logging.info(f"Changed slurm job name to {name}")
-
+        full_artifacts_dir = os.path.realpath(ARTIFACTS_DIR)
+        subprocess.run(f'cd {LOGS_DIR}; ln -s {os.path.basename(job_id)} {full_artifacts_dir}/{job_id}/log', shell=True)
     elif args.list:
         files = sorted(
             os.listdir(INDEX_DIR), 
@@ -220,14 +229,30 @@ if __name__ == "__main__":
             sort_live_range_report(fpath)
     elif args.tail:
         assert args.j is not None, "Pass -j if --tail is set"
-        log_file = f"{os.path.join(LOGS_DIR, args.j)}"
-        subprocess.run(f"tail -f {log_file}_{SLURM_SCRIPT_NAME}.out", shell=True)
+        log = get_log_file_path(args.j)
+        subprocess.run(f"tail -f {log}", shell=True)
     elif args.tail_compiler:
         assert args.j is not None, "Pass -j if --tail is set"
         job_id = int(args.j)
-        command = f"ls -b artifacts/{job_id}/neuron_dump/*-program*/log-neuron-cc.txt | tail -n1 | xargs ls"
-        result = subprocess.run(command, shell=True, capture_output=True)
-        log_file = result.stdout.decode("utf-8").strip()
-        subprocess.run(f"tail -f {log_file}", shell=True)
-        
+        matches = sorted(glob.glob(f"artifacts/{job_id}/neuron_dump/*-program*/log-neuron-cc.txt"), key=os.path.getsize)
+        assert len(matches) == 1, "No neuron log file found"
+        if matches:
+            log_file = matches[-1]
+            print(log_file)
+            subprocess.run(f"tail -f {log_file}", shell=True)
+    elif args.clean_job:
+        for j in args.clean_job:
+            try:
+                shutil.rmtree(f"{ARTIFACTS_DIR}/{j}")    
+            except FileNotFoundError:
+                pass
+            try:
+                log = get_log_file_path(j)
+                os.remove(f"{log}")
+            except FileNotFoundError:
+                pass
+            try:
+                os.remove(f"{INDEX_DIR}/{j}")
+            except FileNotFoundError:
+                pass
 
