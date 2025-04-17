@@ -79,7 +79,7 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL", "Mistral-8x7B", "Mistral-toy", "Mistral-16x10B")
+MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL", "Mistral-8x7B", "Mistral-8x20B", "Mistral-toy", "Mistral-16x10B")
 
 NUM_EXPERTS = {
     "test": 8,
@@ -87,6 +87,7 @@ NUM_EXPERTS = {
     "Switch-Large": 128,
     "Switch-XXL": 64,
     "Mistral-8x7B": 8,
+    "Mistral-8x20B": 8,
     "Mistral-toy": 8,
     "Mistral-16x10B": 16,
 }
@@ -100,7 +101,8 @@ MAX_SEQUENCE_LENGTH = {
     "Switch-Large": 8192,
     "Switch-XXL": 8192,
     "Mistral-toy": 256,
-    "Mistral-8x7B": 2048,
+    "Mistral-8x7B": 4096,
+    "Mistral-8x20B": 4096,
     "Mistral-16x10B": 4096,
 }
 
@@ -146,7 +148,7 @@ def get_remat_policy():
                     prevent_cse=True,
                     policy=jax_remat_policies.nothing_saveable,
                 ),
-            } if os.getenv('AXLEARN_REMAT_LAYER', 'true') == 'true' else {}
+            }
         )
     elif remat_config == 'nonmatmul':
         remat_policy = RematSpecModifier.default_config().set(
@@ -211,14 +213,18 @@ def _generate_trn2_custom_configs(
         A _Trn2CustomConfig object that contains the generated modifications.
     """
     # TRN2 specific model config modifications.
-    trn2_module_modifications = [
-        # Neuron compiler has a module to detect repeating blocks and reuse them during compilation.
-        # So compile time does not grow with the number of layers.
-        ModuleConfigModifier.default_config().set(
-            target_config="model.decoder.transformer",
-            modification=StackedTransformerLayer.default_config(),
-        )
-    ]
+    if int(os.getenv("AXLEARN_REPEATED", 0)) == 0:
+        trn2_module_modifications = [
+            # Neuron compiler has a module to detect repeating blocks and reuse them during compilation.
+            # So compile time does not grow with the number of layers.
+            ModuleConfigModifier.default_config().set(
+                target_config="model.decoder.transformer",
+                modification=StackedTransformerLayer.default_config(),
+            )
+        ]
+    else:
+        trn2_module_modifications = []
+
     trn2_partition_spec_modifications = [
         PartitionSpecModifier.default_config().set(
             partition_specs={
@@ -495,18 +501,37 @@ def get_trainer_kwargs(
             # TODO(kelvin-zou): not verified with real job.
             mesh_shape=mesh_shape_from_axes(fsdp=-1, expert=16, model=8),
         )
-    elif model_size in ["Mistral-8x7B", "Mistral-toy"]:
-        # Num of parameters: 47B.
+    elif "Mistral" in model_size:
         ffn_layer_types = get_ffn_layer_types()
-        tp_degree=int(os.getenv("AXLEARN_TP_DEGREE", 4))
-        neuron_mesh = mesh_shape_from_axes(fsdp=-1, model=tp_degree)
         remat_policy = get_remat_policy()
+        tp_degree=int(os.getenv("AXLEARN_TP_DEGREE", 4))
+        fsdp_degree=int(os.getenv("AXLEARN_FSDP_DEGREE", -1))
+        neuron_mesh = mesh_shape_from_axes(fsdp=fsdp_degree, model=tp_degree)
+        num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4))
+        if model_size == "Mistral-toy":
+            num_heads = 32
+            head_size = 32
+            ffn_scale_factor=3.5
+        elif model_size == "Mistral-8x7B":
+            # 32 layers gets to 47B
+            num_heads = 32
+            head_size = 128
+            ffn_scale_factor=3.5
+        elif model_size in ["Mistral-16x10B", "Mistral-8x20B"]:
+            head_size = 128
+            num_heads = 48
+            if model_size == "Mistral-16x10B":
+                # 32 layers gets to 147B
+                ffn_scale_factor=2.5
+            elif model_size == "Mistral-8x20B":
+                # 60 layers gets to 150B
+                ffn_scale_factor=2.66
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4)),
-                hidden_dim=32 * 32 if model_size == "Mistral-toy" else 32 * 128,
-                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=128),
-                num_heads=32,
+                num_layers=num_layers,
+                hidden_dim=num_heads*head_size,
+                ffn_dim=scaled_hidden_dim(scale=ffn_scale_factor, round_up_to_multiples_of=128),
+                num_heads=num_heads,
                 num_kv_heads=max(8, tp_degree),
                 num_experts=NUM_EXPERTS[model_size],
                 train_capacity_factor=2.0,
@@ -516,7 +541,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
             max_sequence_length=int(os.getenv("AXLEARN_MAX_SEQ_LEN", max_sequence_length)),
-            train_batch_size=int(os.getenv("AXLEARN_TRAIN_BATCH_SIZE", 128)),
+            train_batch_size=int(os.getenv("AXLEARN_TRAIN_BATCH_SIZE", 16)),
             max_step=250_000,
             mesh_shape=mesh_shape_from_axes(fsdp=-1, model=8),
             mesh_rules=(
@@ -550,60 +575,6 @@ def get_trainer_kwargs(
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
                             remat_policy,
-                        ],
-                    ),
-                ),
-            ),
-        )
-    elif model_size == "Mistral-16x10B":
-        # Num of parameters: 150B.
-        ffn_layer_types = get_ffn_layer_types()
-        tp_degree=int(os.getenv("AXLEARN_TP_DEGREE", 4))
-        neuron_mesh = mesh_shape_from_axes(fsdp=-1, model=tp_degree)
-        trainer_kwargs = dict(
-            model_kwargs=dict(
-                # hidden size of 64*128 has 11B params per layer, with 3.5 factor, used to create compiler ticket 
-                # hidden size of 48*128 has 6.6B params per layer, with 3.5 factor
-                # hidden size of 48*128 has 5.5 params per layer, with 3 factor
-                # hidden size of 48*128 has 4.8 params per layer, with 2.5 factor
-                # hidden size of 64*64 has  params per layer, with 3.5 factor
-                num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 32)),
-                hidden_dim=48*128,
-                ffn_dim=scaled_hidden_dim(scale=2.5, round_up_to_multiples_of=128),
-                num_heads=48,
-                num_kv_heads=tp_degree,
-                num_experts=NUM_EXPERTS[model_size],
-                train_capacity_factor=2.0,
-                num_groups=1,
-                ffn_layer_types=ffn_layer_types,
-                ffn_sparse_top_k=4,
-                outer_batch_size=get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, neuron_mesh),
-            ),
-            learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
-            max_sequence_length=int(os.getenv("AXLEARN_MAX_SEQ_LEN", max_sequence_length)),
-            train_batch_size=int(os.getenv("AXLEARN_TRAIN_BATCH_SIZE", 128)),
-            max_step=250_000,
-            mesh_shape=mesh_shape_from_axes(fsdp=-1, model=8),
-            mesh_rules=(
-                (
-                    "neuron-(trn2|trn2n).48xlarge-64",
-                    ChainConfigModifier.default_config().set(
-                        config_modifiers=[
-                            MeshShapeModifier.default_config().set(
-                                # TP within the chip, FSDP across chips.
-                                # Each TRN2 chip has 4 XLA cores.
-                                mesh_shape=neuron_mesh
-                            ),
-                            *trn2_config.module_modifications,
-                            *trn2_config.partition_spec_modifications,
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
-                                        policy=jax_remat_policies.nothing_saveable,
-                                    ),
-                                } if os.getenv('AXLEARN_REMAT_LAYER', 'true') == 'true' else {}
-                            ),
                         ],
                     ),
                 ),

@@ -30,7 +30,11 @@ from axlearn.common.layers import (
 jax.config.update('jax_platform_name', 'cpu')
 from axlearn.common.utils import PartitionSpec, infer_mesh_shape, cast_floats
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
+<<<<<<< HEAD
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
+=======
+from axlearn.experiments.text.gpt.envy import MOE_OUTER_BATCH_AXIS_NAMES, MOE_DIM_TO_MESH_AXIS_MAP
+>>>>>>> origin/aws-moe
 
 # FP32 test tolerances
 TEST_TOLS_FP32 = {
@@ -43,6 +47,7 @@ TEST_TOLS_BF16 = {
     "rtol": 1e-2,
 }
 
+<<<<<<< HEAD
 MOE_OUTER_BATCH_AXIS_NAMES = ("data", "fsdp")
 
 MOE_DIM_TO_MESH_AXIS_MAP = {
@@ -64,6 +69,8 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
     "hoesm": PartitionSpec("model", MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
 }
 
+=======
+>>>>>>> origin/aws-moe
 class ModuleConfig():
     def __init__(self, module = None, device = "cpu", layer = None, dtype = jnp.float32):
         assert module is not None

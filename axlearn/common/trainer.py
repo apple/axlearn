@@ -603,7 +603,8 @@ class SpmdTrainer(Module):
                                 ),
                             )
                             logging.info(f"Done profiling step 3, waiting for sigint. Run the following command within next 5 min: 'scancel --signal=SIGINT {os.environ.get('SLURM_JOBID')}'")
-                            time.sleep(600)
+                            time.sleep(1800)
+                            import sys; sys.exit(0)
                     else:
                         output = self._run_step(
                             utils.host_to_global_device_array(
@@ -617,7 +618,7 @@ class SpmdTrainer(Module):
                         max_step_ = os.getenv("AXLEARN_MAX_STEP", None)
                         if max_step_ is not None and max_step_  == num_steps:
                             logging.info(f"Done running {num_steps}, exiting")
-                            break
+                            import sys; sys.exit(0)
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
                     if num_steps % 100 == 0:

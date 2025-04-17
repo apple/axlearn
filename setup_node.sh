@@ -23,8 +23,8 @@ SECONDS=0
 sudo apt-get update - > /dev/null
 
 # Needed for TC_MALLOC fix
-# sudo apt-get -f install -y
-# sudo apt-get install -y google-perftools
+sudo apt-get -f install -y
+sudo apt-get install -y google-perftools
 
 # Binaries to use:
 ###
@@ -36,14 +36,14 @@ COLLECTIVES=$ENV_DROP_DIR/aws-neuronx-collectives-*.deb
 TOOLS=$ENV_DROP_DIR/aws-neuronx-tools-*.deb
 DKMS=$ENV_DROP_DIR/aws-neuronx-dkms_*.deb
 
-sudo dpkg -i $RUNTIME $COLLECTIVES $TOOLS #$DKMS
+sudo dpkg -i $RUNTIME $COLLECTIVES #$TOOLS #$DKMS
 
 # sudo apt-get install -y linux-headers-$(uname -r) || true
 # sudo apt-get remove -y aws-neuronx-devtools || true
 
 # sudo apt-get remove -y --allow-change-held-packages aws-neuronx-tools aws-neuronx-collectives aws-neuronx-runtime-lib
 # # Install Neuron OS packages and dependencies
-sudo dpkg -i $RUNTIME $COLLECTIVES $TOOLS #$DKMS
+sudo dpkg -i $RUNTIME $COLLECTIVES #$TOOLS #$DKMS
 # sudo apt-get -o Dpkg::Options::="--force-overwrite" install --reinstall --allow-downgrades -y aws-neuronx-dkms
 
 # # Tracing collectives
