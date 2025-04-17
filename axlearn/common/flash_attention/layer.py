@@ -339,10 +339,8 @@ class FlashBlockSizeModifier(ConfigModifier):
         def visit_fn(_, value):
             if is_flash_config(value):
                 value = cast(FlashAttention.Config, value)
-                if (tpu_block_size != 512):
-                    value.tpu_block_size = tpu_block_size
-                if (gpu_block_size != 128):
-                    value.gpu_block_size = gpu_block_size
+                value.tpu_block_size = tpu_block_size
+                value.gpu_block_size = gpu_block_size
 
         def enter_fn(_, value, default_kv):
             return None if is_flash_config(value) else default_kv

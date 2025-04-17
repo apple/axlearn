@@ -484,6 +484,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
                             ),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
                             #FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
                             #)
@@ -500,6 +501,7 @@ def get_trainer_kwargs(
                             ),
                             # Modify the GPU block-size for B200 platform (needed for Pallas kernels)
                             FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
                             #FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
                             #),
@@ -712,6 +714,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
                             ),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
                             #FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
                             #)
@@ -725,6 +728,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
                             ),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
                             FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
                             #FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
