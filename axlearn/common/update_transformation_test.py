@@ -358,8 +358,8 @@ class ConditionalUpdateTransformationTest(test_utils.TestCase):
             learner: Learner = cfg.instantiate(parent=None)
             return learner
 
-        # learner updates at step 1 and step 3
-        learner = get_learner_from_su(should_update_schedule_fn=lambda step: step % 2 == 1)
+        # learner updates at step 0 and step 2 (step is 0-based)
+        learner = get_learner_from_su(should_update_schedule_fn=lambda step: step % 2 == 0)
         # learner2 is a regular learner
         learner2 = get_learner_from_su()
         v_spec = ParameterSpec(
