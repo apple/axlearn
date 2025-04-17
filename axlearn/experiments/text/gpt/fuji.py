@@ -35,6 +35,7 @@ from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
+from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
@@ -46,6 +47,7 @@ from axlearn.common.trainer_config_modifier import (
     RematSpecModifier,
 )
 from axlearn.common.utils import (
+    combine_remat_policies,
     extended_checkpoint_policies,
     save_and_offload_only_these_names_regex,
 )
@@ -462,8 +464,30 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
-                # tpu-v5p.
-                ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
+                (
+                    "tpu-v5p-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                # fsdp=8 is also ok, only 2% slower step time.
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(combine_remat_policies).set(
+                                            policy_1=config_for_function(
+                                                save_or_offload_flash_attention_policy
+                                            ),
+                                            policy_2=jax_remat_policies.dots_saveable,
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 # H100/A100 80G.
                 # Maximum per-node batch size = 64, hence need >= 32 nodes.
                 # Without sequence sharding, the maximum number of devices <= batch_size,
@@ -620,6 +644,36 @@ def get_trainer_kwargs(
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
                                         policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v5p-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.FLASH_ATTENTION.value,
+                                                    ".*linear1_0",
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
