@@ -30,6 +30,7 @@ from axlearn.common.layers import (
 jax.config.update('jax_platform_name', 'cpu')
 from axlearn.common.utils import PartitionSpec, infer_mesh_shape, cast_floats
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
+from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 
 # FP32 test tolerances
 TEST_TOLS_FP32 = {
@@ -66,7 +67,16 @@ MOE_DIM_TO_MESH_AXIS_MAP = {
 class ModuleConfig():
     def __init__(self, module = None, device = "cpu", layer = None, dtype = jnp.float32):
         assert module is not None
-        self.module = module.default_config().set(name="test", dtype=dtype)
+        model_param_init = DefaultInitializer.default_config().set(
+            init_by_param_name={
+                PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(
+                    fan="fan_in", distribution="normal"
+                )
+            }
+        )
+        self.module = module.default_config().set(name="test",
+                                                  dtype=dtype,
+                                                  param_init=model_param_init,)
         self.device = device
         self.layer = layer # None for top_k, else "MoE"
         self.dtype = dtype
@@ -144,9 +154,9 @@ class TestConfig():
             # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
             self.golden_state['gate_weight'] = self.golden_state['gate_weight'].astype(jnp.float32)
 
-        print("Test devices: ", devices)
         device_type = self.test.device
         devices = jax.devices(device_type)[:self.num_devices]
+        print("Test devices: ", devices)
         self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
         with self.mesh_test:
             self.test_layer  = self.test.module.instantiate(parent=None) 
@@ -319,7 +329,7 @@ class TestConfigBuilder:
                 test=ModuleConfig(TransformerFeedForwardMoE, "neuron", "MoE", self.params['dtype']),
                 golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
-                loss_fn=lambda x: x.mean(),
+                loss_fn=lambda x: jnp.mean(x)*1e2,
                 mesh_spec=self.params["mesh_spec"],
                 prefix="_moe")
             )
@@ -353,7 +363,7 @@ class TestConfigBuilder:
                 test=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
-                loss_fn=lambda x: x.mean(),
+                loss_fn=lambda x: jnp.mean(x)*1e2,
                 mesh_spec=self.params["mesh_spec"],
                 prefix="_moe"
                 )
@@ -393,8 +403,8 @@ class TestConfigBuilder:
         # grid_space.append(Mistral8x7B_toy_single)
 
         # 8B Configs
-        # Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        # grid_space.append(Mistral8B_base)
+        Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8B_base)
         # Mistral8B_top1_cap1 = (16, 4096, 2048, 7168, 8, 1, 1, 4, 1, {"fsdp":-1, "model":4}, "bfloat16")
         # grid_space.append(Mistral8B_top1_cap1)
         # Mistral8B_8k = (16, 8192, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
@@ -415,8 +425,8 @@ class TestConfigBuilder:
         # Mistral8B_top4 = (16, 4096, 2048, 7168, 8, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
         # grid_space.append(Mistral8B_top4)
         
-        Mistral8B_seq256 = (16, 256, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral8B_seq256)
+        # Mistral8B_seq256 = (16, 256, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_seq256)
         # Mistral150B_base = (16, 256, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
         # grid_space.append(Mistral150B_base)
 
