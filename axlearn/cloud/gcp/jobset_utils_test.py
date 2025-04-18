@@ -544,9 +544,11 @@ class A3HighReplicatedJobTest(TestCase):
             pod = gke_job._build_pod()
             pod_spec = pod["spec"]
 
-            self.assertEqual(len(pod_spec["containers"]), 2)
+            self.assertEqual(len(pod_spec["containers"]), 1)
+            self.assertEqual(len(pod_spec["initContainers"]), 2)
             containers = {container["name"]: container for container in pod_spec["containers"]}
-            self.assertIn("tcpx-daemon", containers)
+            init_containers = {init_container["name"]: init_container for init_container in pod_spec["initContainers"]}
+            self.assertIn("tcpx-daemon", init_containers)
             main_container = containers["test"]
             main_container_env = main_container["env"]
             main_container_env_vars = {env["name"]: env for env in main_container_env}

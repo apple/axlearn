@@ -48,6 +48,7 @@ class FlashAttention(GroupedQueryAttention):
         causal: bool = False
         # The block size used to tile attention computation (for TPU only).
         # Should be less than the target sequence length and a multiple of 128 on TPU.
+        # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.
         tpu_block_size: int = 512
         # The default GPU block-size of 128 works on most accelerators
         # NVIDIA Blackwell (B200) requires a smaller block-size

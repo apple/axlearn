@@ -41,7 +41,7 @@ def named_runner_configs(
     }
 
     # Get the GPU runners from the helper function
-    runners.update(get_gpu_runners())
+    runners.update(_get_gpu_runners())
 
     # Returning all runners is useful for users to discover runners (e.g. CLI help).
     if runner is None:

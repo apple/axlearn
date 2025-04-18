@@ -738,6 +738,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
             {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
         ]
 
+        # These are common across all GPUReplicatedJobs, used for connecting between replicas
         env_vars: dict[str, str] = {}
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
@@ -867,14 +868,14 @@ class A3HighReplicatedJob(GPUReplicatedJob):
         cfg: A3HighReplicatedJob.Config = self.config
 
         base_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = GPUReplicatedJob_main_container["volumeMounts"]
+        volume_mounts = base_main_container["volumeMounts"]
 
         for volume in [
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
         ]: volume_mounts.append(volume)
 
-        env_vars: dict[str, str] = GPUReplicatedJob_main_container["env"]
+        env_vars: dict[str, str] = base_main_container["env"]
 
         default_xla_flags = [
             "--xla_gpu_enable_latency_hiding_scheduler=true",
@@ -1005,7 +1006,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
                 "mountPath": "/run/tcpx",
             },
         ]
-
+        # See the reference for TCPX on a3-high linked here: https://cloud.google.com/compute/docs/gpus/gpudirect#provide-access 
         command = [
             "bash",
             "-c",
@@ -1078,7 +1079,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "mountPath": "/run/tcpx",
             },
         ]
-
+        # a3-mega uses TCPXO, slightly different from a3-high TCPX. See reference: https://cloud.google.com/cluster-toolkit/docs/machine-learning/a3-mega-enable-gpudirect-tcpxo 
         command = [
             "bash",
             "-c",
@@ -1109,8 +1110,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
         """
         cfg: A3MegaReplicatedJob.Config = self.config
 
-        GPUReplicatedJob_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = GPUReplicatedJob_main_container["volumeMounts"]
+        base_main_container: Nested[Any] = super()._build_main_container()
+        volume_mounts = base_main_container["volumeMounts"]
 
         for volume in [
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
@@ -1118,8 +1119,10 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             {"name": "aperture-devices", "mountPath": "/dev/aperture_devices"},
         ]: volume_mounts.append(volume)
 
-        env_vars: dict[str, str] = GPUReplicatedJob_main_container["env"]
+        env_vars: dict[str, str] = base_main_container["env"]
 
+        # A list of XLA flags and their functions is linked here: https://docs.jax.dev/en/latest/xla_flags.html#gpu-xla-flags
+        # These flags have been tuned by GCP for a3-mega
         default_xla_flags = [
             "--xla_gpu_enable_latency_hiding_scheduler=true",
             "--xla_gpu_enable_triton_gemm=false",
@@ -1143,6 +1146,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+                # The NCCL_FASTRAK config cannot be changed
+                # This config is based on: https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3mega/nemo-training/templates/nemo-launcher-job.yaml 
                 "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
                 "NCCL_FASTRAK_CTRL_DEV": "eth0",
                 "NCCL_FASTRAK_IFNAME": "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8",
@@ -1249,14 +1254,14 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         """
         cfg: A3UltraReplicatedJob.Config = self.config
 
-        GPUReplicatedJob_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = GPUReplicatedJob_main_container["volumeMounts"]
+        base_main_container: Nested[Any] = super()._build_main_container()
+        volume_mounts = base_main_container["volumeMounts"]
 
         for volume in [
             {"name": "gib", "mountPath": "/usr/local/gib"},
         ]: volume_mounts.append(volume)
 
-        env_vars: dict[str, str] = GPUReplicatedJob_main_container["env"]
+        env_vars: dict[str, str] = base_main_container["env"]
 
         default_xla_flags = [
             # Maxtext XLA flags:
@@ -1363,15 +1368,16 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         """
         cfg: A4HighReplicatedJob.Config = self.config
 
-        GPUReplicatedJob_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = GPUReplicatedJob_main_container["volumeMounts"]
+        base_main_container: Nested[Any] = super()._build_main_container()
+        volume_mounts = base_main_container["volumeMounts"]
 
         for volume in [
             {"name": "gib", "mountPath": "/usr/local/gib"},
         ]: volume_mounts.append(volume)
 
-        env_vars: dict[str, str] = GPUReplicatedJob_main_container["env"]
+        env_vars: dict[str, str] = base_main_container["env"]
 
+        # See Maxtext reference for XLA flags: https://github.com/AI-Hypercomputer/gpu-recipes/blob/main/training/a4/llama3-1-70b/maxtext-pretraining-gke/values.yaml 
         default_xla_flags = [
             "--xla_gpu_enable_latency_hiding_scheduler=true",
             "--xla_gpu_enable_triton_gemm=false",
