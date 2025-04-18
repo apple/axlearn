@@ -963,6 +963,8 @@ class PallasGPUFlashAttention(BaseFlashAttention):
             mask_fn=mask.mask if mask.has_value() else None,
             dropout_rate=self.cfg.dropout_rate,
             interpret=self.cfg.interpret,
+            block_q=self.cfg.gpu_block_size,
+            block_k=self.cfg.gpu_block_size,
         )
 
 
