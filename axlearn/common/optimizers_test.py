@@ -3,6 +3,7 @@
 """Tests optimization modules."""
 # pylint: disable=no-self-use,too-many-lines
 import itertools
+import math
 import tempfile
 from collections.abc import Sequence
 from typing import Any, NamedTuple, Optional
@@ -1272,6 +1273,34 @@ class OptimizerTest(TestCase):
         update = jnp.array(5.0)
         scaled_update, _ = schedule_fn.update(update, state, params)
         self.assertEqual(scaled_update, update * scale)
+
+    def test_scale_by_schedule_cosine_with_linear_warmup(self):
+        params = OptParam(
+            value=jnp.asarray([1.0], dtype=jnp.float32),
+            factorization_spec=None,
+            weight_decay_scale=1.0,
+        )
+        peak_lr, warmup_steps, max_step = 0.1, 10, 100
+        schedule_fn = scale_by_schedule(
+            config_for_function(schedule.cosine_with_linear_warmup).set(
+                peak_lr=peak_lr,
+                warmup_steps=warmup_steps,
+                max_step=max_step,
+            )
+        )
+        state = schedule_fn.init(params)
+        update = jnp.array(5.0)
+        for i in range(max_step + 1):
+            scaled_update, state = schedule_fn.update(update, state, params)
+            if i < warmup_steps:
+                scale = peak_lr / warmup_steps * i
+            else:
+                scale = (
+                    peak_lr
+                    * 0.5
+                    * (1 + math.cos((i - warmup_steps) / (max_step - warmup_steps) * math.pi))
+                )
+            np.testing.assert_allclose(scaled_update, update * scale, atol=1e-6, rtol=1e-6)
 
     @parameterized.product(
         learning_rate=(0.01,),
