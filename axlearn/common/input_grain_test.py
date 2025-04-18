@@ -30,7 +30,6 @@ from axlearn.common.input_grain import (
     sample_from_datasets,
     shard_dataset,
     shard_dataset_with_proportion,
-    trim_and_pack_dataset,
     unbatch,
 )
 from axlearn.common.test_utils import TestCase
@@ -47,8 +46,8 @@ def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
 
 
 class _PlusOne(grain.MapTransform):
-    def map(self, x: int) -> int:
-        return x + 1
+    def map(self, element: int) -> int:
+        return element + 1
 
 
 class UtilsTest(TestCase):
@@ -328,59 +327,6 @@ class UtilsTest(TestCase):
         ds = unbatch(maybe_to_iter_dataset(ds))
         ds = iter(ds)
         self.assertNestedEqual({"x": 1, "y": 1, "z": np.array([1, 2, 3, 4])}, next(ds))
-
-    @parameterized.parameters(
-        dict(
-            feature_lens={"input_ids": 5},
-            expected=[
-                {
-                    "input_ids": np.array([1, 2, 3, 4, 5]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0]),
-                },
-                {
-                    "input_ids": np.array([11, 12, 13, 14, 7]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0]),
-                },
-                {
-                    "input_ids": np.array([8, 0, 0, 0, 0]),
-                    "input_ids_segment_ids": np.array([1, 0, 0, 0, 0]),
-                    "input_ids_positions": np.array([0, 0, 0, 0, 0]),
-                },
-            ],
-        ),
-        dict(
-            feature_lens={"input_ids": 6},
-            expected=[
-                {
-                    "input_ids": np.array([1, 2, 3, 4, 5, 6]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0, 1]),
-                },
-                {
-                    "input_ids": np.array([11, 12, 13, 14, 7, 8]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2, 3]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0, 0]),
-                },
-            ],
-        ),
-    )
-    def test_packing(self, feature_lens: dict, expected: list):
-        examples = [
-            {"input_ids": np.array([1, 2, 3, 4])},
-            {"input_ids": np.array([5, 6])},
-            {"input_ids": np.array([11, 12, 13, 14])},
-            {"input_ids": np.array([7])},
-            {"input_ids": np.array([8])},
-        ]
-
-        def cast_ints(example):
-            return jax.tree.map(lambda x: x.astype(np.int32), example)
-
-        ds = fake_grain_source(examples)
-        ds = trim_and_pack_dataset(maybe_to_iter_dataset(ds), feature_lengths=feature_lens)
-        self.assertNestedEqual(cast_ints(expected), cast_ints(list(iter(ds))))
 
     def test_rekey(self):
         # Test rekey with repeat, dropping original inputs.

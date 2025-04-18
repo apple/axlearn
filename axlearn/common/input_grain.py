@@ -41,7 +41,6 @@ from absl import logging
 from array_record.python.array_record_data_source import PathLikeOrFileInstruction
 from grain._src.python.data_loader import _determine_worker_count
 from grain._src.python.dataset import dataset as dataset_base
-from grain._src.python.dataset.transformations import packing
 from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
 
@@ -394,28 +393,6 @@ def _ensure_iter_dataset(ds: Dataset):
             f"Expected a {grain.IterDataset.__name__}, got {type(ds)}. "
             f"Please use {maybe_to_iter_dataset.__name__} to convert the dataset."
         )
-
-
-def trim_and_pack_dataset(ds: Dataset, *, feature_lengths: utils.Nested[int]) -> Dataset:
-    """Similar to `seqio.trim_and_pack_dataset`.
-
-    Different from `seqio.trim_and_pack_dataset`, elements may be packed out of order if doing so
-    produces less padding. Further, elements may be truncated (with remainder dropped). See
-    `SingleBinPackIterDataset` in `grain` or test cases for details.
-
-    Args:
-        ds: A Dataset containing keys in `feature_lengths`.
-        feature_lengths: A (nested) mapping from of feature key to target length.
-            Packing will happen across 0th dimension. Features must be array-like.
-
-    Returns:
-        A Dataset with packed features. Similar to `seqio.trim_and_pack_dataset`, packing introduces
-        additional fields for each feature:
-        - `{feature}_segment_ids`: segment IDs for each packed example, where 0's represent padding;
-        - `{feature}_positions`: positions for each segment, where 0's represent padding.
-    """
-    _ensure_iter_dataset(ds)
-    return packing.SingleBinPackIterDataset(parent=ds, length_struct=feature_lengths)
 
 
 class _ShardDataset(slice_dataset.SliceMapDataset):
