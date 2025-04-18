@@ -51,7 +51,7 @@ class FlashAttention(GroupedQueryAttention):
         tpu_block_size: int = 512
         # The default GPU block-size of 128 works on most accelerators
         # NVIDIA Blackwell (B200) requires a smaller block-size
-        gpu_block_size: int = 128
+        gpu_block_size: Optional[int] = None
 
         # SPMD partition specs:
         # B - batch dim,
