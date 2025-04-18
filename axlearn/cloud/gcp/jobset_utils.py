@@ -1028,6 +1028,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
     def _build_init_containers(self) -> Nested[Any]:
         return [self._build_a3_high_tcpx_init_container(), self._build_a3_high_sidecar_container()]
 
+
 class A3MegaReplicatedJob(GPUReplicatedJob):
     """Builds a replicated job spec for an a3-mega GPU job, to be used with JobSet API."""
 
