@@ -21,6 +21,7 @@ from axlearn.common.input_grain import (
     BuildDatasetFn,
     Dataset,
     Input,
+    RaggedTensor,
     _set_read_config_recursively,
     maybe_to_iter_dataset,
     pad_for_evaluation,
@@ -306,6 +307,27 @@ class UtilsTest(TestCase):
             ds = fake_grain_source([{"x": np.array([]), "y": np.array([])}])
             ds = unbatch(maybe_to_iter_dataset(ds))
             list(ds)
+
+    def test_unbatch_ragged(self):
+        # Test unbatching with ragged tensors.
+        ds = fake_grain_source(
+            [
+                {
+                    "x": np.array([1, 2, 3]),
+                    "y": np.array([1, 2, 3]),
+                    "z": RaggedTensor(
+                        [
+                            np.array([1, 2, 3, 4]),
+                            np.array([5, 6, 7, 8]),
+                            np.array([9, 10, 11, 12]),
+                        ]
+                    ),
+                },
+            ]
+        )
+        ds = unbatch(maybe_to_iter_dataset(ds))
+        ds = iter(ds)
+        self.assertNestedEqual({"x": 1, "y": 1, "z": np.array([1, 2, 3, 4])}, next(ds))
 
     @parameterized.parameters(
         dict(

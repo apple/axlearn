@@ -64,6 +64,10 @@ Tensor = np.ndarray
 PadExampleFn = Callable[[Any], Any]
 
 
+class RaggedTensor(list):
+    pass
+
+
 @runtime_checkable
 class _CallableTransform(Protocol):
     def __call__(self, example: Any) -> Any:
@@ -98,6 +102,25 @@ class BuildDatasetFn(Protocol):
 def _copy_tree(x: _T) -> _T:
     """Copies tree structure without copying values."""
     return jax.tree.map(lambda v: v, x)
+
+
+def _ragged_batch_size(tensor: Union[Tensor, RaggedTensor]) -> int:  # type: ignore
+    """Determines the batch_size of the (optionally ragged) tensor.
+
+    Ragged tensor are represented as list of np.ndarray.
+
+    Args:
+        tensor: A tensor, which could be an Tensor or RaggedTensor.
+
+    Returns:
+        batch_size of the tensor.
+    """
+    if isinstance(tensor, RaggedTensor):
+        return len(tensor)
+    elif hasattr(tensor, "shape"):
+        return tensor.shape[0]
+    else:
+        raise NotImplementedError(type(tensor))
 
 
 def array_record_dataset(
@@ -208,7 +231,9 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
                     continue  # Parent produced an empty batch, continue.
 
                 # Make sure all leaves have same batch dim.
-                if not all(leaves[0].shape[0] == x.shape[0] for x in leaves[1:]):
+                if not all(
+                    _ragged_batch_size(leaves[0]) == _ragged_batch_size(x) for x in leaves[1:]
+                ):
                     raise ValueError(
                         f"Expected all leaves to have same batch dim: {utils.shapes(example)}"
                     )
@@ -216,7 +241,9 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
 
             leaves, structure = self._current_batch
             assert len(leaves) > 0, self._current_batch
-            batch_size = leaves[0].shape[0]  # All leaves have same batch size due to check above.
+            batch_size = _ragged_batch_size(
+                leaves[0]
+            )  # All leaves have same batch size due to check above.
             if batch_size == 0 and self._skip_empty_batch:
                 example = None
             else:
