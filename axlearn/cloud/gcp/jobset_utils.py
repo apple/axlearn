@@ -866,7 +866,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
         """
         cfg: A3HighReplicatedJob.Config = self.config
 
-        GPUReplicatedJob_main_container: Nested[Any] = super()._build_main_container()
+        base_main_container: Nested[Any] = super()._build_main_container()
         volume_mounts = GPUReplicatedJob_main_container["volumeMounts"]
 
         for volume in [
