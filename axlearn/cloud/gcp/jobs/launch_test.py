@@ -872,3 +872,22 @@ class MainTest(parameterized.TestCase):
             fv(argv)  # Parse flags.
             launch.main(argv, fv=fv)
             mock_instantiate.assert_called_once()
+
+    @parameterized.parameters(dict(argv=[]), dict(argv=["--env_id=test-env"]))
+    def test_list(self, argv):
+        argv = ["cli", "list", *argv]  # Don't run anything.
+        mock_job = mock.Mock()
+
+        def instantiate(cfg: BaseBastionManagedJob.Config):
+            self.assertIsNotNone(cfg.env_id)
+            return mock_job
+
+        patch_job = mock.patch.object(
+            BaseBastionManagedJob.Config, "instantiate", side_effect=instantiate, autospec=True
+        )
+        with mock.patch("sys.argv", argv), patch_job:
+            fv = flags.FlagValues()  # Don't modify global FLAGS.
+            _private_flags(fv)
+            fv(argv)  # Parse flags.
+            launch.main(argv, fv=fv)
+            self.assertTrue(mock_job.list.called)
