@@ -11,6 +11,7 @@ from axlearn.common.flash_attention.gpu_attention import (
     CuDNNGPUFlashAttention,
     CuDNNGPUFlashAttentionWithExplicitBias,
     PallasGPUFlashAttention,
+    ROCmTransformerEngineFlashAttention,
 )
 from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
 from axlearn.common.flash_attention.tpu_attention import LegacyTPUFlashAttention, TPUSplashAttention
@@ -24,6 +25,7 @@ BACKENDS = dict(
     gpu=[
         GPUDecoding,
         # For GPU, prefer cuDNN (without bias) whenever possible, as it's the fastest.
+        ROCmTransformerEngineFlashAttention,
         CuDNNGPUFlashAttention,
         # Fallbacks to Pallas if cuDNN cannot be used without instantiating bias tensors.
         PallasGPUFlashAttention,

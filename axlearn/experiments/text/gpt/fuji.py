@@ -707,6 +707,24 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
+                (
+                    "amd-mi300-single-node",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=jax_remat_policies.nothing_saveable
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
             ),
         )
     else:
@@ -857,7 +875,7 @@ def trainer_configs(
                     arch=arch, model_size="golden-run-test", version=f"v{version.value}"
                 )
             ] = wrapper
-        if model_size in ("1B", "3B", "7B", "8B"):
+        if model_size in ("1B", "3B", "7B", "8B", "70B"):
 
             def make_single_host_config(base_config_name: str) -> SpmdTrainer.Config:
                 """Make a single-host variant of the base config.
