@@ -201,6 +201,7 @@ class EvalerTest(TestCase):
         ("tpu", (2, 4), jnp.float32),
     )
     def test_spmd_evaler(self, platform, mesh_shape, step_dtype):
+        # TODO(matthew_e_hopkins): test fails starting jax 0.5.0
         if not test_utils.is_supported_platform(platform):
             return
         with jax.sharding.Mesh(mesh_utils.create_device_mesh(mesh_shape), ("data", "model")):
