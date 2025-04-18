@@ -51,7 +51,7 @@ def named_runner_configs(
     raise ValueError(f"Unrecognized runner: {runner}")
 
 
-def get_gpu_runners() -> dict[str, BaseRunnerJob.Config]:
+def _get_gpu_runners() -> dict[str, BaseRunnerJob.Config]:
     """Creates a list of GPU runners."""
 
     runner_list = {
