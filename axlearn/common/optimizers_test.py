@@ -684,7 +684,7 @@ class OptimizerTest(TestCase):
         )
         state = optimizer.init(params)
 
-        grads = jax.tree_map(jnp.ones_like, opt_param_values(params))
+        grads = jax.tree.map(jnp.ones_like, opt_param_values(params))
 
         updates, _ = optimizer.update(grads, state=state, params=params)
         updated_value = optax.apply_updates(opt_param_values(params), updates)

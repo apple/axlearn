@@ -291,7 +291,7 @@ class MergeStateConverter(Converter):
 
     def source_to_target(self, source: Builder.State, aux: Builder.State) -> Builder.State:
         """Source is newly loaded state, aux is original state."""
-        new_trainer_state = jax.tree_map(
+        new_trainer_state = jax.tree.map(
             self._selector,
             utils.tree_paths(aux.trainer_state),
             aux.trainer_state,
@@ -866,7 +866,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
 
         for target_scope, source_scope in self.scopes.items():
             orig_source_model = utils.get_recursively(source.trainer_state.model, source_scope)
-            source_model = jax.tree_util.tree_map_with_path(
+            source_model = jax.tree.map_with_path(
                 lambda path, leaf, source_scope=source_scope: _copy_leaf(
                     path, leaf, source_scope=source_scope
                 ),

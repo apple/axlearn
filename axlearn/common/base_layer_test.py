@@ -126,7 +126,7 @@ def _callback_primitive(forward, backward):
         backward()
         return (x,)
 
-    prim = jax.core.Primitive("passthrough_with_callback")
+    prim = jax.extend.core.Primitive("passthrough_with_callback")
     prim.def_impl(forward_impl)
     prim.def_abstract_eval(forward_impl)
     jax.interpreters.ad.deflinear(prim, backward_impl)
@@ -302,7 +302,7 @@ class BaseLayerTest(TestCase):
         tagged_params = [el for el in jaxpr.eqns if "name" in el.params]
         self.assertEqual(len(tagged_params), 1)
         tagged_param = tagged_params.pop()
-        self.assertIsInstance(tagged_param.primitive, jax.core.Primitive)
+        self.assertIsInstance(tagged_param.primitive, jax.extend.core.Primitive)
         self.assertEqual(tagged_param.primitive.name, "name")
         self.assertEqual(f"{type(test_module).__name__}.{var_tag}", tagged_param.params.get("name"))
 

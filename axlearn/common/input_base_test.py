@@ -123,7 +123,7 @@ def dispatch_and_check_sharding(
     @partial(pjit, in_shardings=None)
     def fn(input_batch):
         output_batch = ds.dispatch_global_batch(input_batch)
-        jax.tree_map(check_sharding, tree_paths(output_batch), output_batch)
+        jax.tree.map(check_sharding, tree_paths(output_batch), output_batch)
         return output_batch
 
     fn.lower(input_batch).compile()
