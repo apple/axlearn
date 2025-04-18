@@ -197,7 +197,7 @@ class FlashAttention(GroupedQueryAttention):
             is_decoding=is_decoding,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
-            gpu_block_size=cfg.gpu_block_size,
+            gpu_block_size=cfg.gpu_block_size or 128,
             dropout_rate=cfg.dropout.rate,
         )
         if jit_attn is None:
