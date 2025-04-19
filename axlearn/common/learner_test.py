@@ -186,7 +186,7 @@ class LearnerTest(TestCase):
         )
         learning_rate_fn = schedule.as_schedule_fn(learning_rate)
         weight_decay = 1e-4
-        step = 0
+        step = 1
         sgd_cfg = config_for_function(sgd_optimizer).set(
             learning_rate=learning_rate,
             decouple_weight_decay=True,
@@ -315,9 +315,9 @@ class LearnerTest(TestCase):
         self.assertNestedAllClose(
             {
                 "learning_rate": learning_rate_fn(step),
-                "lr_schedule_step": 0,
+                "lr_schedule_step": step,
                 "gradient_norm": 1.0093285,
-                "schedule_step": 0,
+                "schedule_step": step,
                 "schedule_scale": -1.0 * learning_rate_fn(step),
             },
             summaries,
@@ -487,9 +487,9 @@ class LearnerTest(TestCase):
         self.assertNestedAllClose(
             {
                 "learning_rate": learning_rate_fn(step),
-                "lr_schedule_step": 0,
+                "lr_schedule_step": 1,
                 "gradient_norm": expected_grad_norm,
-                "schedule_step": 0,
+                "schedule_step": 1,
                 "schedule_scale": -1.0 * learning_rate_fn(step),
             },
             summaries["optimizer"],
@@ -649,13 +649,13 @@ class LearnerTest(TestCase):
         self.assertNestedAllClose(
             {
                 "optimizer/learning_rate": 1.0,
-                "optimizer/lr_schedule_step": 0,
+                "optimizer/lr_schedule_step": 1,
                 "optimizer/gradient_norm": jnp.sqrt(jnp.sum(2 * expected_grad**2)),
                 "param_rms/weight": jnp.sqrt((0 + 4 + 4 + 9) / 4),
                 "param_rms/moving_mean": 0.5,
                 "grad_rms/weight": jnp.sqrt(jnp.mean(expected_grad**2)),
                 "grad_rms/moving_mean": jnp.sqrt(jnp.mean(expected_grad**2)),
-                "optimizer/schedule_step": 0,
+                "optimizer/schedule_step": 1,
                 "optimizer/schedule_scale": -1.0,
             },
             output_collection.summaries,

@@ -133,6 +133,8 @@ def scale_by_factored_rms(
         """Apply gradient transformation."""
         if params is None:
             raise ValueError("param is None")
+        # Step starts from 1.
+        count_inc = optax.safe_int32_increment(state.count)
 
         def _update(grad, v_row, v_col, v, param, step):
             grad = grad.astype(jnp.float32)
@@ -170,7 +172,7 @@ def scale_by_factored_rms(
 
         # Transform grad and compute new per-parameter stats.
         output = jax.tree.map(
-            lambda *args: _update(*args, state.count),
+            lambda *args: _update(*args, count_inc),
             grads,
             state.v_row,
             state.v_col,
@@ -180,7 +182,7 @@ def scale_by_factored_rms(
 
         # Unpack updates / stats and return.
         updates = jax.tree.map(lambda o: o.update, output)
-        return updates, _to_state(optax.safe_int32_increment(state.count), output)
+        return updates, _to_state(count_inc, output)
 
     @dataclasses.dataclass
     class VxSpec:

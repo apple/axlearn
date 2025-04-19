@@ -3,6 +3,7 @@
 """Tests optimization modules."""
 # pylint: disable=no-self-use,too-many-lines
 import itertools
+import math
 import tempfile
 from collections.abc import Sequence
 from typing import Any, NamedTuple, Optional
@@ -40,6 +41,7 @@ from axlearn.common.optimizers import (
     ema,
     l2_regularizer,
     lion_optimizer,
+    named_chain,
     offload_optimizer,
     opt_param_values,
     param_ema,
@@ -699,6 +701,58 @@ class OptimizerTest(TestCase):
             params["head"].value + 1.0,
         )
 
+    def test_weight_decay_with_learning_rate_exponent(self):
+        """Tests add_decayed_weights with learning_rate_exponent=1.
+
+        It should scale weight decay with the given learning rate schedule.
+        """
+        weight_decay = 0.1
+        lr_schedule = config_for_function(adafactor_decay_rate)
+        optimizer = named_chain(
+            weight_decay=config_for_function(add_decayed_weights).set(
+                weight_decay=weight_decay,
+                learning_rate=lr_schedule,
+                learning_rate_exponent=1,
+            ),
+            flip=config_for_function(scale_by_schedule).set(step_size_fn=-1),
+        )
+        param_values = dict(
+            weight=jnp.ones([1, 1], dtype=jnp.float32),
+            moving_mean=jnp.ones([1, 1], dtype=jnp.float32),
+        )
+        state = None
+        for step in range(1, 5):
+            lr = lr_schedule.instantiate()(step)
+            params = dict(
+                weight=OptParam(
+                    value=param_values["weight"],
+                    factorization_spec=None,
+                    weight_decay_scale=None,
+                ),
+                moving_mean=OptParam(
+                    value=param_values["moving_mean"],
+                    factorization_spec=None,
+                    weight_decay_scale=0.0,
+                ),
+            )
+            if state is None:
+                state = optimizer.init(params)
+            grads = dict(
+                # Use gradients=0.01.
+                weight=jnp.ones([1, 1], dtype=jnp.float32) * 0.01,
+                moving_mean=jnp.zeros([1, 1], dtype=jnp.float32),
+            )
+            updates, state = optimizer.update(grads, state=state, params=params)
+            updated_value = optax.apply_updates(opt_param_values(params), updates)
+            # Weight is decayed with weight_decay * lr (and grads).
+            self.assertNestedAllClose(
+                updated_value["weight"],
+                params["weight"].value * (1 - weight_decay * lr) - grads["weight"],
+            )
+            # moving_mean is not decayed.
+            self.assertNestedAllClose(updated_value["moving_mean"], params["moving_mean"].value)
+            param_values = updated_value
+
     @parameterized.named_parameters(
         ("no_per_param_scale", 1.0, None),
         ("bias_0.5", 0.5, None),
@@ -1273,12 +1327,46 @@ class OptimizerTest(TestCase):
         scaled_update, _ = schedule_fn.update(update, state, params)
         self.assertEqual(scaled_update, update * scale)
 
+    def test_scale_by_schedule_cosine_with_linear_warmup(self):
+        params = OptParam(
+            value=jnp.asarray([1.0], dtype=jnp.float32),
+            factorization_spec=None,
+            weight_decay_scale=1.0,
+        )
+        peak_lr, warmup_steps, max_step = 0.1, 10, 100
+        schedule_fn = scale_by_schedule(
+            config_for_function(schedule.cosine_with_linear_warmup).set(
+                peak_lr=peak_lr,
+                warmup_steps=warmup_steps,
+                max_step=max_step,
+            )
+        )
+        state = schedule_fn.init(params)
+        update = jnp.array(5.0)
+        # Note scale_by_schedule starts at step 1 (not step 0).
+        for i in range(1, max_step + 1):
+            scaled_update, state = schedule_fn.update(update, state, params)
+            if i < warmup_steps:
+                scale = peak_lr / warmup_steps * i
+            else:
+                scale = (
+                    peak_lr
+                    * 0.5
+                    * (1 + math.cos((i - warmup_steps) / (max_step - warmup_steps) * math.pi))
+                )
+            np.testing.assert_allclose(scaled_update, update * scale, atol=1e-6, rtol=1e-6)
+
     @parameterized.product(
         learning_rate=(0.01,),
         b1=(0.9,),
         b2=(0.95,),
         eps=(1e-30,),
-        update_schedule=(0.1,),
+        update_schedule=(
+            0.1,
+            config_for_function(schedule.cosine_with_linear_warmup).set(
+                peak_lr=1, warmup_steps=100, max_step=1000
+            ),
+        ),
         weight_decay=(1e-4,),
     )
     def test_adastar_vs_adamw_decoupled(
