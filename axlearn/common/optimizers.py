@@ -207,6 +207,9 @@ def scale_by_schedule(
 ) -> PartitionedGradientTransformation:
     """Scales updates using a custom schedule for the step size.
 
+    Unlike optax.scale_by_schedule, this implementation uses 1-based steps, i.e., the first
+    step will be 1 to be consistent with the step count in trainer, summaries, and checkpoints.
+
     Args:
         step_size_fn: A function that takes an update count as input and returns a scale factor
             to multiply the updates by.
@@ -220,17 +223,25 @@ def scale_by_schedule(
     schedule_fn = schedule.as_schedule_fn(step_size_fn)
     summary_name_prefix = "" if name is None else f"{name}/"
 
-    def wrapped_schedule_fn(step):
-        scale_multiplier = schedule_fn(step)
+    def init_fn(params):
+        del params
+        return optax.ScaleByScheduleState(count=jnp.zeros([], jnp.int32))
+
+    def update_fn(updates, state, params=None):
+        del params
+        count_inc = optax.safe_int32_increment(state.count)
+        scale = schedule_fn(count_inc)
         context = current_context()
         if context:
-            context.add_summary(summary_name_prefix + "schedule_step", step)
-            context.add_summary(summary_name_prefix + "schedule_scale", scale_multiplier)
-        return scale_multiplier
+            context.add_summary(summary_name_prefix + "schedule_step", count_inc)
+            context.add_summary(summary_name_prefix + "schedule_scale", scale)
+        updates = jax.tree.map(lambda g: jnp.array(scale, dtype=g.dtype) * g, updates)
+        return updates, optax.ScaleByScheduleState(count=count_inc)
 
-    return with_partition_fn(
-        optax.scale_by_schedule(wrapped_schedule_fn),
-        lambda _: optax.ScaleByScheduleState(
+    return PartitionedGradientTransformation(
+        init=init_fn,
+        update=update_fn,
+        partition=lambda _: optax.ScaleByScheduleState(
             count=OptStateSpec(shape=[], dtype=jnp.int32, mesh_axes=PartitionSpec())
         ),
     )

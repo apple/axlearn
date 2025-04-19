@@ -1290,7 +1290,8 @@ class OptimizerTest(TestCase):
         )
         state = schedule_fn.init(params)
         update = jnp.array(5.0)
-        for i in range(max_step + 1):
+        # Note scale_by_schedule starts at step 1 (not step 0).
+        for i in range(1, max_step + 1):
             scaled_update, state = schedule_fn.update(update, state, params)
             if i < warmup_steps:
                 scale = peak_lr / warmup_steps * i
