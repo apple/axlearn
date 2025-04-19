@@ -230,12 +230,12 @@ def scale_by_schedule(
     def update_fn(updates, state, params=None):
         del params
         count_inc = optax.safe_int32_increment(state.count)
-        scale = schedule_fn(count_inc)
+        step_size = schedule_fn(count_inc)
         context = current_context()
         if context:
             context.add_summary(summary_name_prefix + "schedule_step", count_inc)
-            context.add_summary(summary_name_prefix + "schedule_scale", scale)
-        updates = jax.tree.map(lambda g: jnp.array(scale, dtype=g.dtype) * g, updates)
+            context.add_summary(summary_name_prefix + "schedule_scale", step_size)
+        updates = jax.tree.map(lambda g: jnp.array(step_size, dtype=g.dtype) * g, updates)
         return updates, optax.ScaleByScheduleState(count=count_inc)
 
     return PartitionedGradientTransformation(
