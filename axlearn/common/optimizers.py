@@ -1314,7 +1314,6 @@ def skip_and_clip_by_global_norm(
 
     def update_fn(updates, state, params=None):
         inner_state = state.inner_state
-        count = state.count
         grad_norm_ema = state.grad_norm_ema
         grad_norm_square_ema = state.grad_norm_square_ema
         drop_stats = state.drop_stats
@@ -1373,7 +1372,7 @@ def skip_and_clip_by_global_norm(
                 drop_norm,
                 norm_ema=grad_norm_ema,
                 norm_square_ema=grad_norm_square_ema,
-                count=count,
+                count=state.count,
                 drop_stats=drop_stats,
             )
             is_valid_step = jnp.logical_and(is_finite, is_valid_step)
@@ -1390,8 +1389,8 @@ def skip_and_clip_by_global_norm(
         if use_adaptive_drop_norm:
             count_inc = jnp.where(
                 is_valid_step,
-                optax.safe_int32_increment(count),
-                count,
+                optax.safe_int32_increment(state.count),
+                state.count,
             )
             new_norm_ema, new_norm_square_ema = _moment(
                 g_norm, grad_norm_ema, grad_norm_square_ema, count_inc
