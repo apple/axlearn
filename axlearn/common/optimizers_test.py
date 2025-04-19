@@ -41,6 +41,7 @@ from axlearn.common.optimizers import (
     ema,
     l2_regularizer,
     lion_optimizer,
+    named_chain,
     offload_optimizer,
     opt_param_values,
     param_ema,
@@ -699,6 +700,54 @@ class OptimizerTest(TestCase):
             updated_value["head"],
             params["head"].value + 1.0,
         )
+
+    def test_weight_decay_with_learning_rate_exponent(self):
+        weight_decay = 0.1
+        lr_schedule = config_for_function(adafactor_decay_rate)
+        optimizer = named_chain(
+            weight_decay=config_for_function(add_decayed_weights).set(
+                weight_decay=weight_decay,
+                learning_rate=lr_schedule,
+                learning_rate_exponent=1,
+            ),
+            flip=config_for_function(scale_by_schedule).set(step_size_fn=-1),
+        )
+        param_values = dict(
+            weight=jnp.ones([1, 1], dtype=jnp.float32),
+            moving_mean=jnp.ones([1, 1], dtype=jnp.float32),
+        )
+        state = None
+        for step in range(1, 5):
+            lr = lr_schedule.instantiate()(step)
+            params = dict(
+                weight=OptParam(
+                    value=param_values["weight"],
+                    factorization_spec=None,
+                    weight_decay_scale=None,
+                ),
+                moving_mean=OptParam(
+                    value=param_values["moving_mean"],
+                    factorization_spec=None,
+                    weight_decay_scale=0.0,
+                ),
+            )
+            if state is None:
+                state = optimizer.init(params)
+            grads = dict(
+                # Use gradients=0.01.
+                weight=jnp.ones([1, 1], dtype=jnp.float32) * 0.01,
+                moving_mean=jnp.zeros([1, 1], dtype=jnp.float32),
+            )
+            updates, state = optimizer.update(grads, state=state, params=params)
+            updated_value = optax.apply_updates(opt_param_values(params), updates)
+            # Weight is decayed with weight_decay * lr.
+            self.assertNestedAllClose(
+                updated_value["weight"],
+                params["weight"].value * (1 - weight_decay * lr) - grads["weight"],
+            )
+            # moving_mean is not decayed.
+            self.assertNestedAllClose(updated_value["moving_mean"], params["moving_mean"].value)
+            param_values = updated_value
 
     @parameterized.named_parameters(
         ("no_per_param_scale", 1.0, None),

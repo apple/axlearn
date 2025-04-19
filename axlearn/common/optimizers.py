@@ -573,11 +573,12 @@ def add_decayed_weights(
         if params is None:
             raise ValueError(optax.NO_PARAMS_MSG)  # pylint: disable=no-member
 
-        if not learning_rate_exponent:
+        if learning_rate_exponent is None:
             lr_scale = 1.0
         else:
             learning_rate_fn = schedule.as_schedule_fn(learning_rate)
-            lr = learning_rate_fn(state.count)
+            count_inc = optax.safe_int32_increment(state.count)
+            lr = learning_rate_fn(count_inc)
             lr_scale = lr**learning_rate_exponent
 
         param_scales = _weight_decay_scales(params, per_param_scale=per_param_scale)
@@ -592,7 +593,7 @@ def add_decayed_weights(
         if learning_rate_exponent is None:
             updated_state = state
         else:
-            updated_state = AddDecayedWeightsState(optax.safe_int32_increment(state.count))
+            updated_state = AddDecayedWeightsState(count_inc)
         return updates, updated_state
 
     def partition_fn(param_specs):
@@ -937,7 +938,8 @@ def ema(
 
     def update_fn(updates, state, params=None):
         del params
-        decay_t = decay_fn(state.count)
+        count_inc = optax.safe_int32_increment(state.count)
+        decay_t = decay_fn(count_inc)
 
         def _to_qint_tensor_ema(value: Tensor) -> _TensorEma:
             # Map value to integer with a symmetric quantization scheme.
@@ -971,7 +973,6 @@ def ema(
             return _UpdateResult(update=update, tensor_ema=_to_tensor_ema(new_ema))
 
         # Transform updates and compute new per-tensor EMA.
-        count_inc = optax.safe_int32_increment(state.count)
         update_results = jax.tree.map(
             lambda update, ema, scale: _update(update, ema=ema, qstep_size=scale, count=count_inc),
             updates,
@@ -1387,20 +1388,20 @@ def skip_and_clip_by_global_norm(
             optax.safe_int32_increment(state.nonvalid_count),
         )
         if use_adaptive_drop_norm:
-            inc_count = jnp.where(
+            count_inc = jnp.where(
                 is_valid_step,
                 optax.safe_int32_increment(count),
                 count,
             )
             new_norm_ema, new_norm_square_ema = _moment(
-                g_norm, grad_norm_ema, grad_norm_square_ema, inc_count
+                g_norm, grad_norm_ema, grad_norm_square_ema, count_inc
             )
             new_norm_ema = jnp.where(is_valid_step, new_norm_ema, grad_norm_ema)
             new_norm_square_ema = jnp.where(
                 is_valid_step, new_norm_square_ema, grad_norm_square_ema
             )
         else:
-            inc_count = None
+            count_inc = None
             new_norm_ema = None
             new_norm_square_ema = None
         context = current_context()
@@ -1413,8 +1414,8 @@ def skip_and_clip_by_global_norm(
                 context.add_summary(
                     "gradient_norm_std_ema", _stddev(new_norm_ema, new_norm_square_ema)
                 )
-            if inc_count is not None:
-                context.add_summary("count", inc_count)
+            if count_inc is not None:
+                context.add_summary("count", count_inc)
             if new_drop_stats is not None:
                 for key, val in new_drop_stats.items():
                     context.add_summary(f"count_exceeds_{key}", val)
@@ -1441,7 +1442,7 @@ def skip_and_clip_by_global_norm(
         )
 
         return final_updates, SkipClipState(
-            count=inc_count,
+            count=count_inc,
             nonvalid_count=nonvalid_count,
             grad_norm_ema=new_norm_ema,
             grad_norm_square_ema=new_norm_square_ema,
@@ -1599,10 +1600,10 @@ def param_ema(
         if params is None:
             raise ValueError("params are required for param_ema.")
 
-        decay_t = decay_fn(state.count)
+        count_inc = optax.safe_int32_increment(state.count)
+        decay_t = decay_fn(count_inc)
 
         # Transform updates and compute new per-tensor EMA.
-        count_inc = optax.safe_int32_increment(state.count)
         new_ema = jax.tree.map(
             lambda param, ema: (1 - decay_t) * param.value + decay_t * ema,
             params,
@@ -1851,7 +1852,7 @@ def adastar_optimizer(
 
     def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam):
         """Applies (stage 1) gradient transformation to compute raw_updates."""
-        incremented_count = optax.safe_int32_increment(state.count)
+        count_inc = optax.safe_int32_increment(state.count)
 
         if params is None:
             raise ValueError("param is None")
@@ -1863,7 +1864,7 @@ def adastar_optimizer(
                 return x, None
             value = acc = decay * acc + (1 - decay) * x
             if debias:
-                value = optax.bias_correction(acc, decay=decay, count=incremented_count)
+                value = optax.bias_correction(acc, decay=decay, count=count_inc)
             return value, acc
 
         def _split_update_results(
@@ -1978,7 +1979,7 @@ def adastar_optimizer(
                 ),
                 summary_suffix="corr_param_smoothed_updates",
             )
-        return smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
+        return smoothed_updates, _AdastarState(count=count_inc, pps=pps_tree)
 
     def partition_fn(param_specs):
         def _partition(param_spec: ParameterSpec):
@@ -1999,15 +2000,15 @@ def adastar_optimizer(
         )
 
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
-        step = state
+        step_inc = optax.safe_int32_increment(state)
 
         def _update2(u: Tensor, param: OptParam):
             lr_scaled_updates = learning_rate * u
             updates_with_wd = lr_scaled_updates + weight_decay * param.value
-            schedule_scale = update_schedule(step)
+            schedule_scale = update_schedule(step_inc)
             context = current_context()
             if context:
-                context.add_summary("schedule_step", step)
+                context.add_summary("schedule_step", step_inc)
                 context.add_summary("schedule_scale", schedule_scale)
                 context.add_summary("learning_rate", learning_rate * schedule_scale)
                 context.add_summary("weight_decay_rate", weight_decay * schedule_scale)
@@ -2019,7 +2020,7 @@ def adastar_optimizer(
             params,
             is_leaf=lambda x: x is None,
         )
-        return updates2, optax.safe_int32_increment(step)
+        return updates2, step_inc
 
     # Stage 1.
     tx = {

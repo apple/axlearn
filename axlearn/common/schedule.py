@@ -167,8 +167,8 @@ def adafactor_decay_rate(c: float = 0.8, step_offset: int = 0) -> ScheduleFn:
     """
 
     def fn(step):
-        step = jnp.maximum(step - step_offset, 0)
-        return 1 - (step + 1) ** (-c)
+        step = jnp.maximum(step - step_offset, 1)
+        return 1 - step ** (-c)
 
     return fn
 
@@ -183,8 +183,8 @@ def decay_bias_correction(decay: float) -> ScheduleFn:
     """
 
     def fn(step):
-        t = jnp.asarray(step, dtype=jnp.float32) + 1.0
-        return decay * (1.0 - jnp.power(decay, t - 1.0)) / (1.0 - jnp.power(decay, t))
+        t = jnp.asarray(step, dtype=jnp.float32)
+        return decay * (1.0 - jnp.power(decay, t - 1)) / (1.0 - jnp.power(decay, t))
 
     return fn
 
