@@ -153,14 +153,16 @@ def adafactor(
 def adafactor_decay_rate(c: float = 0.8, step_offset: int = 0) -> ScheduleFn:
     """Returns the beta2 schedule described in section 7.2 of https://arxiv.org/abs/1804.04235.
 
-    step = max(step - step_offset, 0)
-    beta2 = 1 - (step + 1) ** (-c)
+    We assume that the first step is step_offset + 1.
+
+    step = max(step - step_offset, 1)
+    beta2 = 1 - step ** (-c)
 
     Args:
         c: The exponent.
         step_offset: The initial step number. If finetuning with some existing learner state, set
-            offset to the number of steps to ensure that decay rate is reset. If `step_offset` is
-            larger than `step`, we clamp to 0.
+            offset to the number of steps to ensure that decay rate is reset.
+            If `step` is less than or equal to `step_offset`, we clamp to `step - step_offset` to 1.
 
     Returns:
         The beta2 schedule.
@@ -174,7 +176,18 @@ def adafactor_decay_rate(c: float = 0.8, step_offset: int = 0) -> ScheduleFn:
 
 
 def decay_bias_correction(decay: float) -> ScheduleFn:
-    """Applies bias correction to the given decay.
+    """Returns a ScheduleFn that applies bias correction to the given decay.
+
+    Example usage:
+        sch_fn = decay_bias_correction(0.9)
+        ema = 0
+        for step in range(1, num_steps + 1):
+            # Note that steps start from 1. decay_t will always be 0 when step=1.
+            decay_t = sch_fn(step)
+            # ema will be a bias corrected exponential moving average of value(step), e.g.,
+            # after step 1, ema = value(1);
+            # after step 2, ema = (value(1) * decay + value(2)) / (decay + 1)
+            ema = ema * decay_t + value(step) * (1 - decay_t)
 
     Reference:
     https://arxiv.org/pdf/1804.04235.pdf, section 7.1.
