@@ -702,6 +702,10 @@ class OptimizerTest(TestCase):
         )
 
     def test_weight_decay_with_learning_rate_exponent(self):
+        """Tests add_decayed_weights with learning_rate_exponent=1.
+
+        It should scale weight decay with the given learning rate schedule.
+        """
         weight_decay = 0.1
         lr_schedule = config_for_function(adafactor_decay_rate)
         optimizer = named_chain(
@@ -740,7 +744,7 @@ class OptimizerTest(TestCase):
             )
             updates, state = optimizer.update(grads, state=state, params=params)
             updated_value = optax.apply_updates(opt_param_values(params), updates)
-            # Weight is decayed with weight_decay * lr.
+            # Weight is decayed with weight_decay * lr (and grads).
             self.assertNestedAllClose(
                 updated_value["weight"],
                 params["weight"].value * (1 - weight_decay * lr) - grads["weight"],
@@ -1357,7 +1361,12 @@ class OptimizerTest(TestCase):
         b1=(0.9,),
         b2=(0.95,),
         eps=(1e-30,),
-        update_schedule=(0.1,),
+        update_schedule=(
+            0.1,
+            config_for_function(schedule.cosine_with_linear_warmup).set(
+                peak_lr=1, warmup_steps=100, max_step=1000
+            ),
+        ),
         weight_decay=(1e-4,),
     )
     def test_adastar_vs_adamw_decoupled(
