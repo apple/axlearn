@@ -1328,7 +1328,7 @@ def skip_and_clip_by_global_norm(
             # bias correrction decay
             # Sec 7.1 https://arxiv.org/pdf/1804.04235.pdf
             decay = grad_norm_ema_decay
-            decay *= (1 - decay**count) / (1 - decay ** (count + 1))
+            decay *= (1 - decay**count) / (1 - decay ** (optax.safe_int32_increment(count)))
             new_norm_ema = decay * norm_ema + (1 - decay) * val
             new_square_ema = decay * norm_square_ema + (1 - decay) * (val**2)
             return new_norm_ema, new_square_ema
