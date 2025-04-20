@@ -211,7 +211,7 @@ def scale_by_schedule(
     step will be 1 to be consistent with the step count in trainer, summaries, and checkpoints.
 
     Args:
-        step_size_fn: A function that takes an update count as input and returns a scale factor
+        step_size_fn: A function that takes the current step as input and returns a scale factor
             to multiply the updates by.
         name: Name for this transformation (used to group logged summaries).
             If None, will not group logged summaries under a name.
@@ -575,11 +575,13 @@ def add_decayed_weights(
 
         if learning_rate_exponent is None:
             lr_scale = 1.0
+            updated_state = state
         else:
             learning_rate_fn = schedule.as_schedule_fn(learning_rate)
             count_inc = optax.safe_int32_increment(state.count)
             lr = learning_rate_fn(count_inc)
             lr_scale = lr**learning_rate_exponent
+            updated_state = AddDecayedWeightsState(count_inc)
 
         param_scales = _weight_decay_scales(params, per_param_scale=per_param_scale)
         f = lambda g, p, s: g + weight_decay * lr_scale * p.value * s
@@ -590,10 +592,6 @@ def add_decayed_weights(
             param_scales,
             is_leaf=lambda x: x is None,
         )
-        if learning_rate_exponent is None:
-            updated_state = state
-        else:
-            updated_state = AddDecayedWeightsState(count_inc)
         return updates, updated_state
 
     def partition_fn(param_specs):
@@ -965,16 +963,16 @@ def ema(
             return value.astype(qstep_size.dtype) * jnp.expand_dims(qstep_size, axis=0)
 
         # pylint: disable-next=redefined-outer-name
-        def _update(value: Tensor, ema: Tensor, qstep_size: Tensor, count: Tensor) -> _UpdateResult:
+        def _update(value: Tensor, ema: Tensor, qstep_size: Tensor) -> _UpdateResult:
             update = new_ema = (1 - decay_t) * value + decay_t * _to_float(ema, qstep_size)
             if debias:
-                bias_correction = 1 - decay_t**count
+                bias_correction = 1 - decay_t**count_inc
                 update = new_ema / bias_correction.astype(new_ema.dtype)
             return _UpdateResult(update=update, tensor_ema=_to_tensor_ema(new_ema))
 
         # Transform updates and compute new per-tensor EMA.
         update_results = jax.tree.map(
-            lambda update, ema, scale: _update(update, ema=ema, qstep_size=scale, count=count_inc),
+            lambda update, ema, scale: _update(update, ema=ema, qstep_size=scale),
             updates,
             state.ema,
             state.scale,
@@ -1169,9 +1167,9 @@ class DropNormThresholdFn(typing_extensions.Protocol):
         """Returns the drop_norm thresholds given the gradient norm stats.
 
         Args:
-            count: the number of training steps.
+            count: the number of previous updates to mean/stddev.
             mean: the running average of gradient norms.
-            stdev: the running average of gradient norm variance.
+            stddev: the running average of gradient norm variance.
 
         Returns:
             A dict where keys represent threshold names and values are scalar tensors representing
@@ -1203,7 +1201,7 @@ def drop_norm_by_grad_norm_stddev(
     """Return drop norm thresholds based on grad norm stddev."""
 
     def fn(count: Tensor, mean: Tensor, stddev: Tensor) -> dict[str, Tensor]:
-        # We do not drop norm for the first `min_count` data batches,
+        # We do not drop norm until we have collected stats for at least `min_count` steps,
         # otherwise the threshold is `mean + stddev * k` for multiplier `k`.
         thresholds = {}
         for v in multipliers:
@@ -1330,7 +1328,7 @@ def skip_and_clip_by_global_norm(
             # bias correrction decay
             # Sec 7.1 https://arxiv.org/pdf/1804.04235.pdf
             decay = grad_norm_ema_decay
-            decay *= (1 - decay ** (count - 1)) / (1 - decay**count)
+            decay *= (1 - decay**count) / (1 - decay ** (count + 1))
             new_norm_ema = decay * norm_ema + (1 - decay) * val
             new_square_ema = decay * norm_square_ema + (1 - decay) * (val**2)
             return new_norm_ema, new_square_ema
@@ -1372,6 +1370,8 @@ def skip_and_clip_by_global_norm(
                 drop_norm,
                 norm_ema=grad_norm_ema,
                 norm_square_ema=grad_norm_square_ema,
+                # Note that `count` for `drop_norm` represents the number of updates to
+                # mean/stddev, so we pass `state.count` rather than `count_inc`.
                 count=state.count,
                 drop_stats=drop_stats,
             )
@@ -1393,7 +1393,7 @@ def skip_and_clip_by_global_norm(
                 state.count,
             )
             new_norm_ema, new_norm_square_ema = _moment(
-                g_norm, grad_norm_ema, grad_norm_square_ema, count_inc
+                g_norm, grad_norm_ema, grad_norm_square_ema, state.count
             )
             new_norm_ema = jnp.where(is_valid_step, new_norm_ema, grad_norm_ema)
             new_norm_square_ema = jnp.where(

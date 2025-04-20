@@ -133,12 +133,10 @@ def scale_by_factored_rms(
         """Apply gradient transformation."""
         if params is None:
             raise ValueError("param is None")
-        # Step starts from 1.
-        count_inc = optax.safe_int32_increment(state.count)
 
-        def _update(grad, v_row, v_col, v, param, step):
+        def _update(grad, v_row, v_col, v, param, count):
             grad = grad.astype(jnp.float32)
-            decay_rate_t = decay_rate(step)
+            decay_rate_t = decay_rate(count)
 
             # Scaled by factorized second moment statistics.
             new_v_row = jnp.zeros((1,), dtype=jnp.float32)
@@ -170,6 +168,8 @@ def scale_by_factored_rms(
 
             return _UpdateResult(update, new_v_row, new_v_col, new_v)
 
+        # Step starts from 1.
+        count_inc = optax.safe_int32_increment(state.count)
         # Transform grad and compute new per-parameter stats.
         output = jax.tree.map(
             lambda *args: _update(*args, count_inc),
