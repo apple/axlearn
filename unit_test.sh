@@ -64,5 +64,5 @@ if [ "$1" = "unit" ]; then
     pytest axlearn/common/mixture_of_experts_neuron_unit_test.py
 else
     echo "Running Integ Test"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_bwd_correctness"
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_bwd_correctness"
 fi

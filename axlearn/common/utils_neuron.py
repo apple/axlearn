@@ -134,6 +134,8 @@ class TestConfig():
             # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
             self.golden_state['gate_weight'] = self.golden_state['gate_weight'].astype(jnp.float32)
 
+        golden_state_cpu = jax.device_get(self.golden_state)
+
         device_type = self.test.device
         devices = jax.devices(device_type)[:self.num_devices]
         print("Test devices: ", devices)
@@ -143,15 +145,20 @@ class TestConfig():
             test_param_specs = self.test_layer.create_parameter_specs_recursively()
             test_param_partition_specs = jax.tree.map(lambda spec: spec.sharding, test_param_specs)
             
-            def _init_state(prng_key):
-                if self.test.module == self.golden.module:
-                    params = self.golden_state
-                else:
-                    params = self.test_layer.initialize_parameters_recursively(prng_key)
-                return params
-            init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings = test_param_partition_specs) 
+            if self.test.module == self.golden.module:
+                print("Using golden state parameters")
+                self.test_state = {}
+                for key, value in golden_state_cpu.items():
+                    # print(f"Transferring and sharding {key} to test devices...")
+                    # First put on a single device
+                    self.test_state[key] = jax.device_put(value, test_param_partition_specs[key])
+            else:
+                def _init_state(prng_key):
+                    return self.test_layer.initialize_parameters_recursively(prng_key)
+                init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings=test_param_partition_specs)
+                self.test_state = init_fn(jax.random.PRNGKey(123)) 
             
-            self.test_state = init_fn(jax.random.PRNGKey(123)) 
+            # self.test_state = init_fn(jax.random.PRNGKey(123))
             self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
             # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
             self.test_state['gate_weight'] = self.test_state['gate_weight'].astype(jnp.float32)
@@ -383,23 +390,15 @@ class TestConfigBuilder:
         # grid_space.append(Mistral8x7B_toy_single)
 
         # 8B Configs
-        Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral8B_base)
+        # Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_base)
         # Mistral8B_top1_cap1 = (16, 4096, 2048, 7168, 8, 1, 1, 4, 1, {"fsdp":-1, "model":4}, "bfloat16")
         # grid_space.append(Mistral8B_top1_cap1)
         # Mistral8B_8k = (16, 8192, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
         # grid_space.append(Mistral8B_8k)
 
-        # # 50B Config
-        # Mistral50B_base = (16, 2048, 4096, 14336, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        # grid_space.append(Mistral50B_base)
-
-        # # 150B Config
-        # Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        # grid_space.append(Mistral150B_base)
-
-        # Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        # grid_space.append(Mistral8B_base)
+        Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8B_base)
         # Mistral8B_top1 = (16, 4096, 2048, 7168, 8, 1, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
         # grid_space.append(Mistral8B_top1)
         # Mistral8B_top4 = (16, 4096, 2048, 7168, 8, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
@@ -422,6 +421,14 @@ class TestConfigBuilder:
         # grid_space.append(Mistral8B_tp16)
         # Mistral8B_tp64 = (1, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":64}, "bfloat16")
         # grid_space.append(Mistral8B_tp64)
+
+        # # 50B Config
+        # Mistral50B_base = (16, 2048, 4096, 14336, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral50B_base)
+
+        # # 150B Config
+        # Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral150B_base)
 
         # Mistral50B_base = (16, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
         # grid_space.append(Mistral50B_base)
