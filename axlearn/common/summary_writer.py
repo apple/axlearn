@@ -390,7 +390,8 @@ class WandBWriter(BaseWriter):
         )
 
     @processor_zero_only
-    def __call__(self, step: int, values: dict[str, Any]):
+    def __call__(self, step: int, values: dict[str, Any]) -> None:
+        """Convert nested summary values to wandb acceptable format and upload run data."""
         cfg = self.config
         if step % cfg.write_every_n_steps != 0:
             return
@@ -410,6 +411,13 @@ class WandBWriter(BaseWriter):
 
             if isinstance(value, ImageSummary):
                 return [wandb.Image(el) for el in raw_value]
+            elif isinstance(value, AudioSummary):
+                # W&B calls soundfile.write and saves a wav file with int16 dtype.
+                sample_rate = value.sample_rate
+                assert raw_value.ndim == 3, raw_value.shape
+                assert np.issubdtype(raw_value.dtype, np.floating), raw_value.dtype
+                raw_value = (raw_value * 32768).clip(-32768, 32767).astype(np.int16)
+                return [wandb.Audio(el, sample_rate=sample_rate) for el in raw_value]
             return raw_value
 
         def is_leaf(x):
