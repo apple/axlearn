@@ -743,6 +743,21 @@ class GPUReplicatedJob(SingleReplicatedJob):
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 
+        # List of XLA flags across all A3 and A4 instances
+        global_gpu_xla_flags = [
+            "--xla_gpu_enable_latency_hiding_scheduler=true",
+            "--xla_gpu_enable_triton_gemm=false",
+            "--xla_gpu_enable_pipelined_all_gather=true",
+            "--xla_gpu_enable_pipelined_reduce_scatter=true",
+            "--xla_gpu_enable_pipelined_all_reduce=true",
+            "--xla_gpu_enable_while_loop_double_buffering=true",
+            "--xla_gpu_enable_all_gather_combine_by_dim=false",
+            "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
+            "--xla_disable_hlo_passes=rematerialization",
+            " ", # Leave a trailing space for A3 / A4-specific XLA flags to be added
+        ]
+        env_vars["XLA_FLAGS"] = " ".join(global_gpu_xla_flags)
+
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -877,8 +892,8 @@ class A3HighReplicatedJob(GPUReplicatedJob):
 
         env_vars: dict[str, str] = base_main_container["env"]
 
-        default_xla_flags = [
-            "--xla_gpu_enable_latency_hiding_scheduler=true",
+        # XLA flags for a3-high (H100 with TCPX)
+        platform_xla_flags = [
             # Allows combining multiple all reduce into single all reduce.
             "--xla_gpu_all_reduce_contiguous",
             # Increase combine threshold to 1GB for improved performance.
@@ -887,7 +902,8 @@ class A3HighReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824",
         ]
-        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
             {
@@ -1122,23 +1138,15 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
         env_vars: dict[str, str] = base_main_container["env"]
 
         # A list of XLA flags and their functions is linked here: https://docs.jax.dev/en/latest/xla_flags.html#gpu-xla-flags
-        # These flags have been tuned by GCP for a3-mega
-        default_xla_flags = [
-            "--xla_gpu_enable_latency_hiding_scheduler=true",
-            "--xla_gpu_enable_triton_gemm=false",
+        # These flags have been tuned by GCP for a3-mega (H100 with TCPXO)
+        platform_xla_flags = [
             "--xla_gpu_enable_highest_priority_async_stream=true",
             "--xla_gpu_all_reduce_combine_threshold_bytes=134217728",
             "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=33554432",
-            "--xla_gpu_enable_pipelined_all_gather=true",
-            "--xla_gpu_enable_pipelined_reduce_scatter=true",
-            "--xla_gpu_enable_pipelined_all_reduce=true",
-            "--xla_gpu_enable_while_loop_double_buffering=true",
-            "--xla_gpu_enable_all_gather_combine_by_dim=false",
-            "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
-            "--xla_disable_hlo_passes=rematerialization",
         ]
-        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
             {
@@ -1263,24 +1271,16 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
 
         env_vars: dict[str, str] = base_main_container["env"]
 
-        default_xla_flags = [
-            # Maxtext XLA flags:
-            # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
-            "--xla_gpu_enable_latency_hiding_scheduler=true",
-            "--xla_gpu_enable_triton_gemm=false",
+        # These flags have been tuned by GCP for a3-ultra (H200 with InfiniBand), see the following reference:
+        # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
+        platform_xla_flags = [
             "--xla_gpu_graph_level=0",
             "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
             "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=16777216",
-            "--xla_gpu_enable_pipelined_all_gather=true",
-            "--xla_gpu_enable_pipelined_reduce_scatter=true",
-            "--xla_gpu_enable_pipelined_all_reduce=true",
-            "--xla_gpu_enable_all_gather_combine_by_dim=false",
-            "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
-            "--xla_disable_hlo_passes=rematerialization",
-            "--xla_gpu_enable_while_loop_double_buffering=true",
         ]
-        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
             {
@@ -1289,7 +1289,6 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "NCCL_DEBUG": "WARN",
-                "NCCL_SOCKET_IFNAME": "=eth0,eth1",
                 "NCCL_CROSS_NIC": "0",
                 "NCCL_NET_GDR_LEVEL": "PIX",
                 "NCCL_P2P_NET_CHUNKSIZE": "131072",
@@ -1377,24 +1376,17 @@ class A4HighReplicatedJob(GPUReplicatedJob):
 
         env_vars: dict[str, str] = base_main_container["env"]
 
+        # These flags have been tuned by GCP for a4-high (B200 with InfiniBand)
         # See Maxtext reference for XLA flags: https://github.com/AI-Hypercomputer/gpu-recipes/blob/main/training/a4/llama3-1-70b/maxtext-pretraining-gke/values.yaml 
-        default_xla_flags = [
-            "--xla_gpu_enable_latency_hiding_scheduler=true",
-            "--xla_gpu_enable_triton_gemm=false",
+        platform_xla_flags = [
             "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
             "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=2147483648",
-            "--xla_gpu_enable_pipelined_all_gather=true",
-            "--xla_gpu_enable_pipelined_reduce_scatter=true",
-            "--xla_gpu_enable_pipelined_all_reduce=true",
-            "--xla_gpu_enable_all_gather_combine_by_dim=false",
-            "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
-            "--xla_disable_hlo_passes=rematerialization",
-            "--xla_gpu_enable_while_loop_double_buffering=true",
             "--xla_gpu_cudnn_gemm_fusion_level=3",
             "--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL",
         ]
-        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
             {
@@ -1403,7 +1395,6 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "NCCL_DEBUG": "WARN",
-                "NCCL_SOCKET_IFNAME": "=eth0,eth1",
                 "NCCL_CROSS_NIC": "0",
                 "NCCL_NET_GDR_LEVEL": "PIX",
                 "NCCL_P2P_NET_CHUNKSIZE": "131072",
