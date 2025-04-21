@@ -229,9 +229,9 @@ class Input(Module):
                 def check_per_feed_batch(x: Tensor):
                     expected = self.input_dispatcher.feed_logical_batch_size
                     actual = x.shape[0]
-                    if expected != actual:
+                    if actual > expected:
                         raise ValueError(
-                            f"Expected per-feed batch size to be {expected}, got: {actual}"
+                            f"Expected per-feed batch size to be at most {expected}, got: {actual}"
                         )
 
                 jax.tree.map(check_per_feed_batch, input_batch)
