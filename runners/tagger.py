@@ -141,10 +141,12 @@ def describe_job(job_id, tag_types="none", filter=None, log_versions=False, t=No
     logging.info(f"  artifacts_dir: {job_ARTIFACTS_DIR}")
     row.append(job_ARTIFACTS_DIR)
     if neuron_log_matches:
-        
         neuron_log_matches=neuron_log_matches[-1]
+        neuron_dir = os.path.dirname(neuron_log_matches)
+        live_range_log = os.path.join(neuron_dir, 'LiveRangeReport_PostHloPart.txt')
         logging.info(f"  neuron_log: {neuron_log_matches}")
-        row.append(neuron_log_matches)
+        logging.info(f"  live_range: {live_range_log}")
+        row.append((neuron_log_matches, live_range_log))
     else:
         row.append("")
     # not printed in table
@@ -175,7 +177,7 @@ if __name__ == "__main__":
     parser.add_argument("-a", type=str, choices=["all", "axlearn", "none"], default="none", help="Log attributes for jobs listed")
     parser.add_argument("-v", action="store_true", help="Log package versions for jobs listed")
     parser.add_argument("-f", "--filter", action="store_true", help="filter with --keys")
-    parser.add_argument("-k", "--keys", nargs='+', help="Keys to search for (can provide multiple)")
+    parser.add_argument("-k", "--keys", help="Keys to search for k=v(can provide multiple as comma separated)")
     
     parser.add_argument("--describe", "-d", action="store_true")
     parser.add_argument("-j", type=str, help="job id to describe")
@@ -210,7 +212,8 @@ if __name__ == "__main__":
         search_keys_and_vals = {}
         if args.filter:
             assert args.keys, "Pass keys as k=v when trying to filter jobs"
-            for kv in args.keys:
+            kvs = args.keys.split(',')
+            for kv in kvs:
                 k, v = kv.split('=')
                 search_keys_and_vals[k] = v
         
