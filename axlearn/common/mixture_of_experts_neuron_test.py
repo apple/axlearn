@@ -106,7 +106,7 @@ class TestImplCorrectnessInteg(TestCase):
         
         # Compare gradients
         self.assertNestedAllClose(test_grads, golden_grads,
-                                atol=cfg.test.tol["atol"], rtol=cfg.test.ctol["rtol"])
+                                atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
         
         # Compare outputs
         self.assertNestedAllClose(test_output, golden_output,
