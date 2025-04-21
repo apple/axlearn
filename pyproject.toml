@@ -154,9 +154,9 @@ orbax = [
     "humanize==4.10.0",
     "orbax-checkpoint==0.11.1",
 ]
-# Grain input processing. Currently does not support macos.
+# Grain input processing. 0.2.6 onwards supports macos.
 grain = [
-    "grain==0.2.3; platform_machine == 'x86_64'",
+    "grain==0.2.7",
 ]
 # Audio dependencies.
 audio = [

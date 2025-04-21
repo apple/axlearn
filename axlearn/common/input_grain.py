@@ -41,7 +41,6 @@ from absl import logging
 from array_record.python.array_record_data_source import PathLikeOrFileInstruction
 from grain._src.python.data_loader import _determine_worker_count
 from grain._src.python.dataset import dataset as dataset_base
-from grain._src.python.dataset.transformations import packing
 from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
 
@@ -62,6 +61,10 @@ SequenceOr = Union[Sequence[_T], _T]
 Tensor = np.ndarray
 # Same as `input_tf_data.PadExampleFn`.
 PadExampleFn = Callable[[Any], Any]
+
+
+class RaggedTensor(list):
+    pass
 
 
 @runtime_checkable
@@ -98,6 +101,25 @@ class BuildDatasetFn(Protocol):
 def _copy_tree(x: _T) -> _T:
     """Copies tree structure without copying values."""
     return jax.tree.map(lambda v: v, x)
+
+
+def _ragged_batch_size(tensor: Union[Tensor, RaggedTensor]) -> int:  # type: ignore
+    """Determines the batch_size of the (optionally ragged) tensor.
+
+    Ragged tensor are represented as list of np.ndarray.
+
+    Args:
+        tensor: A tensor, which could be an Tensor or RaggedTensor.
+
+    Returns:
+        batch_size of the tensor.
+    """
+    if isinstance(tensor, RaggedTensor):
+        return len(tensor)
+    elif hasattr(tensor, "shape"):
+        return tensor.shape[0]
+    else:
+        raise NotImplementedError(type(tensor))
 
 
 def array_record_dataset(
@@ -208,7 +230,9 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
                     continue  # Parent produced an empty batch, continue.
 
                 # Make sure all leaves have same batch dim.
-                if not all(leaves[0].shape[0] == x.shape[0] for x in leaves[1:]):
+                if not all(
+                    _ragged_batch_size(leaves[0]) == _ragged_batch_size(x) for x in leaves[1:]
+                ):
                     raise ValueError(
                         f"Expected all leaves to have same batch dim: {utils.shapes(example)}"
                     )
@@ -216,7 +240,9 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
 
             leaves, structure = self._current_batch
             assert len(leaves) > 0, self._current_batch
-            batch_size = leaves[0].shape[0]  # All leaves have same batch size due to check above.
+            batch_size = _ragged_batch_size(
+                leaves[0]
+            )  # All leaves have same batch size due to check above.
             if batch_size == 0 and self._skip_empty_batch:
                 example = None
             else:
@@ -367,28 +393,6 @@ def _ensure_iter_dataset(ds: Dataset):
             f"Expected a {grain.IterDataset.__name__}, got {type(ds)}. "
             f"Please use {maybe_to_iter_dataset.__name__} to convert the dataset."
         )
-
-
-def trim_and_pack_dataset(ds: Dataset, *, feature_lengths: utils.Nested[int]) -> Dataset:
-    """Similar to `seqio.trim_and_pack_dataset`.
-
-    Different from `seqio.trim_and_pack_dataset`, elements may be packed out of order if doing so
-    produces less padding. Further, elements may be truncated (with remainder dropped). See
-    `SingleBinPackIterDataset` in `grain` or test cases for details.
-
-    Args:
-        ds: A Dataset containing keys in `feature_lengths`.
-        feature_lengths: A (nested) mapping from of feature key to target length.
-            Packing will happen across 0th dimension. Features must be array-like.
-
-    Returns:
-        A Dataset with packed features. Similar to `seqio.trim_and_pack_dataset`, packing introduces
-        additional fields for each feature:
-        - `{feature}_segment_ids`: segment IDs for each packed example, where 0's represent padding;
-        - `{feature}_positions`: positions for each segment, where 0's represent padding.
-    """
-    _ensure_iter_dataset(ds)
-    return packing.SingleBinPackIterDataset(parent=ds, length_struct=feature_lengths)
 
 
 class _ShardDataset(slice_dataset.SliceMapDataset):
