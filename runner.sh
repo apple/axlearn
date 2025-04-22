@@ -39,14 +39,24 @@ RT_PROFILE_DUMP_PATH=${TEST_ARTIFACTS_PATH}/rt_profiles
 # PJRT Flags 
 if [ "$AXLEARN_REPEATED" = "1" ]; then
 	export NEURON_FSDP_REPEATED=1
-	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives,neuron_move_all_gather_while_loop,neuron-fixed-point-collectives-combiner,neuron-token-threading-repeated"
+	# ,neuron-token-threading-repeated
+	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives,neuron_move_all_gather_while_loop,neuron-fixed-point-collectives-combiner"
 else
+	# cancel-all-gather-dynamic-slice-2d
 	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives"
 	export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=1
 	export NEURON_FSDP=1
-	export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
+	if [ -n "$CUSTOM_TAG_rsshift" ]; then
+		export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=$CUSTOM_TAG_rsshift
+	# else
+		# unset
+		# export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
+	fi
 	export NEURON_FSDP_NUM_LAYER_COALESCE=-1
 fi
+# 10 also was fast enough for a particular set of nodes
+# export NEURON_REMAT_LARGE_BROADCAST_MIN_SIZE_IN_MB=100
+export NEURON_COLLECTIVE_PERMUTE_TO_ALL_GATHER=1
 export NEURON_ENABLE_INT_MATMUL_DOWNCAST=1
 export NEURON_FSDP_CC_MULTISTREAM=0
 export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1
@@ -91,10 +101,12 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --hbm-scratchpad-page-size=1024"
 
 if [ "$AXLEARN_REPEATED" = "1" ]; then
-	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--recursive-layer-det=false --dump-after-to-file=pre-par-pipe-end,post-par-pipe-begin'"
+	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--recursive-layer-det=false --dump-after-to-file=pre-par-pipe-end,post-par-pipe-begin --remat-rope=false --verify-hlo'"
+else
+	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
 fi
 
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
+
 
 if [ "$NEURON_FSDP_CC_MULTISTREAM" = "1" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-disable-dge-levels spill_reload"
@@ -113,7 +125,7 @@ if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ] || [ "$AXLEARN_PROFILE_MODE" 
 		export NEURON_RT_INSPECT_OUTPUT_DIR="${RT_PROFILE_DUMP_PATH}"
 		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
 		# export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
-		# export NEURON_RT_PROFILE_BUF_DMA_MB=256
+		# export NEURON_RT_PROFILE_BUF_DMA_MB=1024
 	else
 		echo ""
 	fi
@@ -128,7 +140,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 
 # use to add debug logging at module level in xla
 # export TF_CPP_MIN_LOG_LEVEL=0
-# export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=3"
+# export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=4"
 
 # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="cache/"
@@ -197,10 +209,11 @@ profile() {
 	log_dir=logs
 	mkdir -p $profile_dir $upload_dir
 
-	neff_path=$(ls ${job_dir}/neuron_dump/**/file.neff | head -n1)
+	# pick the largest neff, to ignore small second neff produced in multinode scenarios
+	neff_path=$(ls -S ${job_dir}/neuron_dump/*program*/file.neff | head -n1)
 
-	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
-	# export NEURON_RT_PROFILE_BUF_DMA_MB=256
+	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
+	export NEURON_RT_PROFILE_BUF_DMA_MB=256
 	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
 	export NEURON_RT_VIRTUAL_CORE_SIZE=2
 	# export NEURON_RT_PROFILE_BUF_INFER_STATUS_MB=4
@@ -233,8 +246,6 @@ profile() {
 	fi
 }
 
-python runners/tagger.py --submit
-
 if [ "$S3_PROFILE_BASE_PATH" = "" ]; then
 	export S3_PROFILE_BASE_PATH="s3://kaena-tempdata/huilgolr/fs-moe/profiles"
 fi
@@ -242,7 +253,6 @@ fi
 if [ "$AXLEARN_PROFILE_MODE" = "capture" ]; then
 	profile $PROFILE_JOB_ID $PROFILE_JOB_NAME $S3_PROFILE_BASE_PATH
 else
-	set -x
 	# MIXTRAL_MOE being
 	# 0 adds dense MLP layers
 	# 1 adds all sparse MLP layers
@@ -250,7 +260,9 @@ else
 	# export MIXTRAL_MOE=$1
 	# export NUM_LAYERS=$2
 	# envy-Mistral-${AXLEARN_MODEL_NAME}
-
+	
+	python runners/tagger.py --submit
+	set -ex
 	python -m axlearn.common.launch_trainer_main \
 		--module=text.gpt.c4_trainer --config=$AXLEARN_MODEL_NAME \
 		--trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR \
@@ -261,6 +273,5 @@ else
 	if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ]; then
 		profile $SLURM_JOB_ID $SLURM_JOB_NAME $S3_PROFILE_BASE_PATH
 	fi
+	./get_memory_split.sh
 fi
-
-./get_memory_split.sh
