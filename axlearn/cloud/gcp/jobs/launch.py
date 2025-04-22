@@ -132,7 +132,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp import runners
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
 from axlearn.cloud.gcp.jobs.launch_utils import (
     JobsToTableFn,
@@ -204,6 +204,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         # Command to submit to the bastion.
         command: Optional[str] = None
         # Used along with project to identify `gcp_settings`.
+        # TODO(markblee): Move to where project/zone are defined and use `common_flags`.
         env_id: Optional[str] = None
         # Where to run the remote job.
         zone: Required[str] = REQUIRED
@@ -240,6 +241,12 @@ class BaseBastionManagedJob(FlagConfigurable):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         bundler_flags(required=False, **common_kwargs)
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
+        flags.DEFINE_string(
+            "env_id",
+            None,
+            "The env_id, used along with project to identify `gcp_settings`.",
+            **common_kwargs,
+        )
         flags.DEFINE_string("bastion", None, "Name of bastion VM to use.", **common_kwargs)
         flags.DEFINE_integer(
             "priority",
@@ -272,6 +279,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         super().set_defaults(fv)
         # Don't override `name` if already specified, since the default is non-deterministic.
         fv.set_default("name", fv.name or generate_job_name())
+        fv.set_default("env_id", default_env_id())
 
     @classmethod
     def from_flags(
