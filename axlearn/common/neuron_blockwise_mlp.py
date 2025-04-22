@@ -164,8 +164,8 @@ def _blockwise_mm_bwd(
     padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
     grad_output = jnp.concat([grad_output, padding_h], axis=0)
     
-    jax.debug.print("grad_output: {x}", x=grad_output)
-    jax.debug.print("hidden_states: {x}", x=hidden_states)
+    # jax.debug.print("grad_output: {x}", x=grad_output)
+    # jax.debug.print("hidden_states: {x}", x=hidden_states)
 
     # Compute gradients
     hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = _blockwise_mm_bwd_nki_call[VNC(2)](

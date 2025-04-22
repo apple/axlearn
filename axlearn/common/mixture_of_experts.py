@@ -1580,10 +1580,10 @@ class TransformerFeedForwardMoE(BaseLayer):
                 check_rep=False
             )
 
-            jax.debug.print("hidden_states: {x}", x=hidden_states)
-            jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
-            jax.debug.print("token_position_to_id: {x}", x=token_position_to_id)
-            jax.debug.print("block_to_expert: {x}", x=block_to_expert)
+            # jax.debug.print("hidden_states: {x}", x=hidden_states)
+            # jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
+            # jax.debug.print("token_position_to_id: {x}", x=token_position_to_id)
+            # jax.debug.print("block_to_expert: {x}", x=block_to_expert)
 
             outputs = partitioned_blockwise_mm(
                     hidden_states,
@@ -1598,7 +1598,7 @@ class TransformerFeedForwardMoE(BaseLayer):
 
             with jax.named_scope("all_reduce"):
                 outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
-            jax.debug.print("outputs: {x}", x=outputs)
+            # jax.debug.print("outputs: {x}", x=outputs)
             return outputs
         else:
             raise NotImplementedError
