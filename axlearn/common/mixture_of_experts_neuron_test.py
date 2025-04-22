@@ -19,8 +19,10 @@ from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils_neuron import TestConfig
 from axlearn.common.utils_neuron import get_training_configs
+import os
 
-test_configs = get_training_configs()
+is_unit = os.getenv('IS_UNIT', 'false').lower() == 'true'
+test_configs = get_training_configs(is_unit)
 
 # pylint: disable=no-self-use,protected-access
 class TestImplCorrectnessInteg(TestCase):
@@ -67,25 +69,21 @@ class TestImplCorrectnessInteg(TestCase):
 
         @partial(jax.jit, static_argnums=0)
         def test_bwd_call(test_layer, test_state, test_inputs):
-            test_output, _ = self._fwd_call(test_layer, test_state, test_inputs)
-            
             def loss_fn(state):
-                output, _ = self._fwd_call(test_layer, state, test_inputs)
-                return cfg.loss_fn(output)
-            
-            loss, grads = jax.value_and_grad(loss_fn)(test_state)
-            return loss, grads, test_output
+                output, aux = self._fwd_call(test_layer, state, test_inputs)
+                return cfg.loss_fn(output), output  # Return both loss and output
+
+            (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(test_state)
+            return loss, grads, output
 
         @partial(jax.jit, static_argnums=0)
         def golden_bwd_call(golden_layer, golden_state, golden_inputs):
-            golden_output, _ = self._fwd_call(golden_layer, golden_state, golden_inputs)
-
             def loss_fn(state):
-                output, _ = self._fwd_call(golden_layer, state, golden_inputs)
-                return cfg.loss_fn(output)
-            
-            loss, grads = jax.value_and_grad(loss_fn)(golden_state)
-            return loss, grads, golden_output
+                output, aux = self._fwd_call(golden_layer, state, golden_inputs)
+                return cfg.loss_fn(output), output  # Return both loss and output
+
+            (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(golden_state)
+            return loss, grads, output
 
         with cfg.mesh_test:
             test_loss, test_grads, test_output = test_bwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
