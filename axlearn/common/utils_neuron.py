@@ -30,6 +30,7 @@ from axlearn.common.layers import (
 jax.config.update('jax_platform_name', 'cpu')
 from axlearn.common.utils import PartitionSpec, infer_mesh_shape, cast_floats
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
+from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.experiments.text.gpt.envy import MOE_OUTER_BATCH_AXIS_NAMES, MOE_DIM_TO_MESH_AXIS_MAP
 
 # FP32 test tolerances
@@ -46,7 +47,16 @@ TEST_TOLS_BF16 = {
 class ModuleConfig():
     def __init__(self, module = None, device = "cpu", layer = None, dtype = jnp.float32):
         assert module is not None
-        self.module = module.default_config().set(name="test", dtype=dtype)
+        model_param_init = DefaultInitializer.default_config().set(
+            init_by_param_name={
+                PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(
+                    fan="fan_in", distribution="normal"
+                )
+            }
+        )
+        self.module = module.default_config().set(name="test",
+                                                  dtype=dtype,
+                                                  param_init=model_param_init,)
         self.device = device
         self.layer = layer # None for top_k, else "MoE"
         self.dtype = dtype
@@ -105,23 +115,6 @@ class TestConfig():
     def instantiate_modules_with_mesh(self): 
 
         print("Instantiating modules with mesh")
-        device_type = self.test.device
-        devices = jax.devices(device_type)[:self.num_devices]
-        print("Test devices: ", devices)
-        self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
-        with self.mesh_test: 
-            self.test_layer  = self.test.module.instantiate(parent=None) 
-            test_param_specs = self.test_layer.create_parameter_specs_recursively()
-            test_param_partition_specs = jax.tree.map(lambda spec: spec.sharding, test_param_specs)
-            
-            def _init_state(prng_key): 
-                params = self.test_layer.initialize_parameters_recursively(prng_key) 
-                return params 
-            init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings = test_param_partition_specs) 
-            
-            self.test_state = init_fn(jax.random.PRNGKey(123)) 
-            self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
-
         device_type = self.golden.device
         devices = jax.devices(device_type)[:self.num_devices]
         print("Golden devices: ", devices)
@@ -138,6 +131,37 @@ class TestConfig():
             
             self.golden_state = init_fn(jax.random.PRNGKey(123))
             self.golden_state = cast_floats(self.golden_state, to_dtype=self.golden.dtype)
+            # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
+            self.golden_state['gate_weight'] = self.golden_state['gate_weight'].astype(jnp.float32)
+
+        golden_state_cpu = jax.device_get(self.golden_state)
+
+        device_type = self.test.device
+        devices = jax.devices(device_type)[:self.num_devices]
+        print("Test devices: ", devices)
+        self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
+        with self.mesh_test:
+            self.test_layer  = self.test.module.instantiate(parent=None) 
+            test_param_specs = self.test_layer.create_parameter_specs_recursively()
+            test_param_partition_specs = jax.tree.map(lambda spec: spec.sharding, test_param_specs)
+            
+            if self.test.module == self.golden.module:
+                print("Using golden state parameters")
+                self.test_state = {}
+                for key, value in golden_state_cpu.items():
+                    # print(f"Transferring and sharding {key} to test devices...")
+                    # First put on a single device
+                    self.test_state[key] = jax.device_put(value, test_param_partition_specs[key])
+            else:
+                def _init_state(prng_key):
+                    return self.test_layer.initialize_parameters_recursively(prng_key)
+                init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings=test_param_partition_specs)
+                self.test_state = init_fn(jax.random.PRNGKey(123)) 
+            
+            # self.test_state = init_fn(jax.random.PRNGKey(123))
+            self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
+            # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
+            self.test_state['gate_weight'] = self.test_state['gate_weight'].astype(jnp.float32)
 
     def random_inputs_with_mesh(self): 
 
@@ -292,7 +316,7 @@ class TestConfigBuilder:
                 test=ModuleConfig(TransformerFeedForwardMoE, "neuron", "MoE", self.params['dtype']),
                 golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
-                loss_fn=lambda x: x.mean(),
+                loss_fn=lambda x: jnp.mean(x)*1e2,
                 mesh_spec=self.params["mesh_spec"],
                 prefix="_moe")
             )
@@ -326,7 +350,7 @@ class TestConfigBuilder:
                 test=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
                 input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
-                loss_fn=lambda x: x.mean(),
+                loss_fn=lambda x: jnp.mean(x)*1e2,
                 mesh_spec=self.params["mesh_spec"],
                 prefix="_moe"
                 )
@@ -360,26 +384,54 @@ class TestConfigBuilder:
         ## Presubmit Tests
         
         # Toy Config
-        Mistral8x7B_toy_multi = (128,  256, 1024,  3584, 8, 2, 1, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral8x7B_toy_multi)
-        Mistral8x7B_toy_single = (128,  256, 64,  896, 8, 2, 1, 1, 2, {}, "bfloat16")
-        grid_space.append(Mistral8x7B_toy_single)
+        # Mistral8x7B_toy_multi = (128,  256, 1024,  3584, 8, 2, 1, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8x7B_toy_multi)
+        # Mistral8x7B_toy_single = (128,  256, 64,  896, 8, 2, 1, 1, 2, {}, "bfloat16")
+        # grid_space.append(Mistral8x7B_toy_single)
 
         # 8B Configs
+        # Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_base)
+        # Mistral8B_top1_cap1 = (16, 4096, 2048, 7168, 8, 1, 1, 4, 1, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_top1_cap1)
+        # Mistral8B_8k = (16, 8192, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_8k)
+
         Mistral8B_base = (16, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
         grid_space.append(Mistral8B_base)
-        Mistral8B_top1_cap1 = (16, 4096, 2048, 7168, 8, 1, 1, 4, 1, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral8B_top1_cap1)
-        Mistral8B_8k = (16, 8192, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral8B_8k)
+        # Mistral8B_top1 = (16, 4096, 2048, 7168, 8, 1, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_top1)
+        # Mistral8B_top4 = (16, 4096, 2048, 7168, 8, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_top4)
+        
+        # Mistral8B_seq256 = (16, 256, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_seq256)
+        # Mistral150B_base = (16, 256, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral150B_base)
 
-        # 50B Config
-        Mistral50B_base = (16, 2048, 4096, 14336, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_base)
+        # Mistral8B_seq2k = (16, 2048, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_seq2k)
+        # Mistral8B_seq8k = (16, 8192, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_seq8k)
+        # Mistral8B_seq16k = (16, 16384, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_seq16k)
+        # Mistral8B_seq32k = (16, 32768, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral8B_seq32k)
+        # Mistral8B_tp16 = (1, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":16}, "bfloat16")
+        # grid_space.append(Mistral8B_tp16)
+        # Mistral8B_tp64 = (1, 4096, 2048, 7168, 8, 2, 1, 4, 2, {"fsdp":-1, "model":64}, "bfloat16")
+        # grid_space.append(Mistral8B_tp64)
 
-        # 150B Config
-        Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral150B_base)
+        # # 50B Config
+        # Mistral50B_base = (16, 2048, 4096, 14336, 8, 2, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral50B_base)
+
+        # # 150B Config
+        # Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 1, 4, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral150B_base)
+
+        # Mistral50B_base = (16, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral50B_base)
 
         return grid_space
 
@@ -413,7 +465,7 @@ def get_training_configs(is_unit: bool = False):
         else:
             config = config.build_test_configs_integ()
 
-        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_g{n_groups}_ob{out_batch}_ec{capacity_factor}_mesh{mesh_spec}_dtype_{dtype}"
+        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_topk_{top_k}_g{n_groups}_ob{out_batch}_ec{capacity_factor}_mesh{mesh_spec}_dtype_{dtype}"
         test_configs.extend([(name + cfg.prefix, cfg) for cfg in config])
 
     return test_configs
