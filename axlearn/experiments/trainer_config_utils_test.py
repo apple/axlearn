@@ -10,7 +10,7 @@ from axlearn.common.input_fake import FakeLmInput
 from axlearn.common.test_utils import mock_trainer_config
 from axlearn.common.trainer_test import DummyModel
 from axlearn.experiments import TrainerConfigFn
-from axlearn.experiments.trainer_config_utils import with_overrides
+from axlearn.experiments.trainer_config_utils import V6eFlashConfigModifier, with_overrides
 from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
 
 
@@ -45,7 +45,7 @@ class TrainerConfigUtilsTest(parameterized.TestCase):
     def test_flash_config_modifier(self):
         cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
         cfg.layer = FlashAttention.default_config()
-        cfg_modifier = FlashBlockSizeModifier.default_config().set(tpu_block_size=1024).instantiate()
+        cfg_modifier = V6eFlashConfigModifier.default_config().instantiate()
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.layer.tpu_block_size, 1024)
 

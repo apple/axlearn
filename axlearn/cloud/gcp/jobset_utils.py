@@ -718,12 +718,14 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
 
 class GPUReplicatedJob(SingleReplicatedJob):
-    """Builds a replicated job spec for a generic GPU job (A3, A3 Mega, A3 Ultra, A4), to be used with JobSet API."""
+    """ Builds a replicated job spec for a generic GPU job (A3, A3 Mega, A3 Ultra, A4),
+        to be used with JobSet API.
+    """
 
     Config = SingleReplicatedJob.Config
 
     def _build_init_containers(self) -> list[Nested[Any]]:
-        return []            
+        return []
 
     def _build_main_container(self) -> Nested[Any]:
         """Builds the base container with common elements across all GPU jobs
@@ -740,7 +742,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
 
         # These are common across all GPUReplicatedJobs, used for connecting between replicas
         env_vars: dict[str, str] = {}
-        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
+        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-{cfg.job_name}-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 
         # List of XLA flags across all A3 and A4 instances
@@ -754,9 +756,10 @@ class GPUReplicatedJob(SingleReplicatedJob):
             "--xla_gpu_enable_all_gather_combine_by_dim=false",
             "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
             "--xla_disable_hlo_passes=rematerialization",
-            " ", # Leave a trailing space for A3 / A4-specific XLA flags to be added
         ]
         env_vars["XLA_FLAGS"] = " ".join(global_gpu_xla_flags)
+        # Leave trailing space for A3 / A4-specific XLA flags to be added later
+        env_vars["XLA_FLAGS"] += " "
 
         return dict(
             name=cfg.name,
@@ -770,7 +773,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
             env=env_vars,
             volumeMounts=volume_mounts,
         )
-    
+
     def _build_volumes(self) -> Nested[Any]:
         """Builds a config for volumes."""
         volumes = [
@@ -785,7 +788,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
         ]
 
         return volumes
-    
+
     def _build_pod(self) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
@@ -850,7 +853,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
         )
         # NOTE: the suffix here impacts how long job names can be.
         return [dict(name="job", replicas=1, template=job_spec)]
-    
+
 class A3HighReplicatedJob(GPUReplicatedJob):
     """Builds a replicated job spec for an a3-high GPU job, to be used with JobSet API."""
 
@@ -861,7 +864,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
 
         volumes: Nested[Any] = super()._build_volumes()
 
-        for volume in [ 
+        for volume in [
             {
                 "name": "tcpx-socket",
                 "emptyDir": {},
@@ -902,7 +905,8 @@ class A3HighReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824",
         ]
-        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
         env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
@@ -984,7 +988,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
             env=k8s_env_vars,
             volumeMounts=volume_mounts,
         )
-    
+
     def _build_a3_high_tcpx_init_container(self) -> Nested[Any]:
         """Builds the init container for TCPX use with a3-high"""
 
@@ -1004,7 +1008,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
             env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
             volumeMounts=volume_mounts,
         )
-    
+
     def _build_a3_high_sidecar_container(self) -> Nested[Any]:
         """Builds a sidecar container which is required by A3
         for GPU to GPU RDMA like networking.
@@ -1022,7 +1026,8 @@ class A3HighReplicatedJob(GPUReplicatedJob):
                 "mountPath": "/run/tcpx",
             },
         ]
-        # See the reference for TCPX on a3-high linked here: https://cloud.google.com/compute/docs/gpus/gpudirect#provide-access 
+        # See the reference for TCPX on a3-high linked here:
+        # https://cloud.google.com/compute/docs/gpus/gpudirect#provide-access
         command = [
             "bash",
             "-c",
@@ -1059,6 +1064,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "mountPath": "/var/lib/tcpx",
             },
         ]
+        # a3-mega uses TCPXO, slightly different from a3-high TCPX. See reference:
+        # https://cloud.google.com/cluster-toolkit/docs/machine-learning/a3-mega-enable-gpudirect-tcpxo
         command = [
             "bash",
             "-c",
@@ -1095,7 +1102,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "mountPath": "/run/tcpx",
             },
         ]
-        # a3-mega uses TCPXO, slightly different from a3-high TCPX. See reference: https://cloud.google.com/cluster-toolkit/docs/machine-learning/a3-mega-enable-gpudirect-tcpxo 
+        # a3-mega uses TCPXO, slightly different from a3-high TCPX. See reference:
+        # https://cloud.google.com/cluster-toolkit/docs/machine-learning/a3-mega-enable-gpudirect-tcpxo
         command = [
             "bash",
             "-c",
@@ -1114,9 +1122,10 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             volumeMounts=volume_mounts,
             restartPolicy="Always"
         )
-    
+
     def _build_init_containers(self) -> Nested[Any]:
-        return [self._build_a3_mega_tcpx_init_container(), self._build_a3_mega_tcpx_sidecar_container()]
+        return [self._build_a3_mega_tcpx_init_container(),
+                self._build_a3_mega_tcpx_sidecar_container()]
 
     def _build_main_container(self) -> Nested[Any]:
         """Builds the config for the container running the job.
@@ -1137,7 +1146,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
 
         env_vars: dict[str, str] = base_main_container["env"]
 
-        # A list of XLA flags and their functions is linked here: https://docs.jax.dev/en/latest/xla_flags.html#gpu-xla-flags
+        # A list of XLA flags and their functions is linked here:
+        # https://docs.jax.dev/en/latest/xla_flags.html#gpu-xla-flags
         # These flags have been tuned by GCP for a3-mega (H100 with TCPXO)
         platform_xla_flags = [
             "--xla_gpu_enable_highest_priority_async_stream=true",
@@ -1145,7 +1155,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=33554432",
         ]
-        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
         env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
@@ -1232,7 +1243,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
 
         volumes: Nested[Any] = super()._build_volumes()
 
-        for volume in [ 
+        for volume in [
             {
                 "name": "tcpx-socket",
                 "emptyDir": {},
@@ -1271,7 +1282,8 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
 
         env_vars: dict[str, str] = base_main_container["env"]
 
-        # These flags have been tuned by GCP for a3-ultra (H200 with InfiniBand), see the following reference:
+        # These flags have been tuned by GCP for a3-ultra (H200 with InfiniBand),
+        # see the following reference:
         # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
         platform_xla_flags = [
             "--xla_gpu_graph_level=0",
@@ -1279,7 +1291,8 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=16777216",
         ]
-        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
         env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
@@ -1303,7 +1316,9 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
                 "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE": (
                     "/root/axlearn/cloud/gcp/nccl/a3_ultra/guest_config.txtpb"
                 ),
-                "NCCL_TUNER_CONFIG_PATH": "/root/axlearn/cloud/gcp/nccl/a3_ultra/tuner_config.txtpb",
+                "NCCL_TUNER_CONFIG_PATH": (
+                    "/root/axlearn/cloud/gcp/nccl/a3_ultra/tuner_config.txtpb"
+                ),
             }
         )
 
@@ -1345,7 +1360,7 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
 
         volumes: Nested[Any] = super()._build_volumes()
 
-        for volume in [ 
+        for volume in [
             {
                 "name": "gib",
                 "hostPath": {"path": "/home/kubernetes/bin/gib"},
@@ -1353,7 +1368,7 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         ]: volumes.append(volume)
 
         return volumes
-    
+
 class A4HighReplicatedJob(GPUReplicatedJob):
     """Builds a replicated job spec for an a4-high GPU job, to be used with JobSet API."""
 
@@ -1377,7 +1392,8 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         env_vars: dict[str, str] = base_main_container["env"]
 
         # These flags have been tuned by GCP for a4-high (B200 with InfiniBand)
-        # See Maxtext reference for XLA flags: https://github.com/AI-Hypercomputer/gpu-recipes/blob/main/training/a4/llama3-1-70b/maxtext-pretraining-gke/values.yaml 
+        # See Maxtext reference for XLA flags:
+        # https://github.com/AI-Hypercomputer/gpu-recipes/blob/main/training/a4/llama3-1-70b/maxtext-pretraining-gke/values.yaml
         platform_xla_flags = [
             "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
             "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
@@ -1385,7 +1401,8 @@ class A4HighReplicatedJob(GPUReplicatedJob):
             "--xla_gpu_cudnn_gemm_fusion_level=3",
             "--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL",
         ]
-        # Add platform-specific XLA flags to the common flags (see global_gpu_xla_flags in GPUReplicatedJob)
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
         env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
@@ -1451,7 +1468,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
 
         volumes: Nested[Any] = super()._build_volumes()
 
-        for volume in [ 
+        for volume in [
             {
                 "name": "gib",
                 "hostPath": {"path": "/home/kubernetes/bin/gib"},
@@ -1459,3 +1476,4 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         ]: volumes.append(volume)
 
         return volumes
+    

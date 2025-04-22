@@ -205,7 +205,8 @@ def test_triton_against_xla_ref(
         interpret=jax.default_backend() == "cpu",
         dropout_rate=dropout_rate,
         # Override the gpu_block_size if running on the B200 platform
-        gpu_block_size=64 if jax.default_backend() == "gpu" and "NVIDIA B200" in jax.devices("gpu")[0].device_kind else block_size,
+        gpu_block_size=64 if jax.default_backend() == "gpu"
+            and "NVIDIA B200" in jax.devices("gpu")[0].device_kind else block_size,
     )
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()

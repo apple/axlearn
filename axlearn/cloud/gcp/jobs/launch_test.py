@@ -94,7 +94,7 @@ class TestUtils(parameterized.TestCase):
 
     @parameterized.parameters(
         dict(instance_type="tpu-v4-8", expected="gke_tpu_single"),
-        dict(instance_type="gpu-a3-highgpu-8g", expected="gke_gpu_a3_single"),
+        dict(instance_type="gpu-a3-highgpu-8g", expected="gke_gpu_a3_high_single"),
         dict(job_type=_JobType.FLINK.value, expected="gke_tpu_flink"),
         dict(expected=app.UsageError("runner_name")),
     )

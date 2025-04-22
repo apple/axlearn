@@ -14,7 +14,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
-from axlearn.common.config import REQUIRED, ConfigBase, ConfigModifier, Required, config_class
+from axlearn.common.config import ConfigBase, ConfigModifier, config_class
 from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor, with_sharding_constraint
