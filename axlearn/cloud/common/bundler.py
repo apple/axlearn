@@ -111,8 +111,8 @@ class Bundler(Configurable):
     def _local_dir_context(
         self, temp_dir: Optional[tempfile.TemporaryDirectory] = None
     ) -> tempfile.TemporaryDirectory:
-        """Copies contents of local directory to `target_dir`, excluding `exclude` paths,
-        and returns the directory.
+        """Copies contents of local directory to `temp_dir`, excluding `exclude` paths, and returns
+        the directory.
 
         Caller is expected to use as a context manager to ensure proper cleanup.
 
