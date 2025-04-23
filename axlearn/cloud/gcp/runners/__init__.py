@@ -65,9 +65,7 @@ def _get_gpu_runners() -> dict[str, BaseRunnerJob.Config]:
 
     for name, config in runner_list.items():
         runner_configs[name] = GKERunnerJob.default_config().set(
-            inner=GKEJob.default_config().set(
-                builder=config.default_config()
-            )
+            inner=GKEJob.default_config().set(builder=config.default_config())
         )
 
     return runner_configs

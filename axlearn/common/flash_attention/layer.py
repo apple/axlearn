@@ -348,4 +348,3 @@ class FlashBlockSizeModifier(ConfigModifier):
 
         cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
         return cfg
-    

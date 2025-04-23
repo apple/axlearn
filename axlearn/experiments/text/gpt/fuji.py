@@ -35,6 +35,7 @@ from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
 from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
@@ -45,7 +46,6 @@ from axlearn.common.trainer_config_modifier import (
     ModuleConfigModifier,
     PartitionSpecModifier,
     RematSpecModifier,
-    FP8ConfigModifier,
 )
 from axlearn.common.utils import (
     combine_remat_policies,
@@ -63,9 +63,13 @@ from axlearn.experiments.text.gpt.common import (
     mesh_shape_from_axes,
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
-from axlearn.experiments.text.gpt.common import scaled_hidden_dim
+from axlearn.experiments.text.gpt.common import (
+    scaled_hidden_dim,
+)
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
-from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
+
+# Import the FP8ConfigModifier below if using FP8 training. See config for A3 / A4 instances below
+# from axlearn.common.trainer_config_modifier import FP8ConfigModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -503,13 +507,13 @@ def get_trainer_kwargs(
                     "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
-                            MeshShapeModifier.default_config().set(  
+                            MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
                             ),
                             # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            #FP8ConfigModifier.default_config().set(
+                            # FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
-                            #)
+                            # )
                         ],
                     ),
                 ),
@@ -524,9 +528,9 @@ def get_trainer_kwargs(
                             # Modify the GPU block-size for B200 platform (Pallas kernels)
                             FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
                             # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            #FP8ConfigModifier.default_config().set(
+                            # FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
-                            #),
+                            # ),
                         ],
                     ),
                 ),
@@ -767,9 +771,9 @@ def get_trainer_kwargs(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
                             ),
                             # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            #FP8ConfigModifier.default_config().set(
+                            # FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
-                            #)
+                            # )
                         ],
                     ),
                 ),
@@ -777,15 +781,15 @@ def get_trainer_kwargs(
                     "gpu-(a4-highgpu-8g)-(256|512|1024)",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
-                            MeshShapeModifier.default_config().set(  
+                            MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
                             ),
                             # Modify the GPU block-size for B200 platform (Pallas kernels)
                             FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
                             # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            #FP8ConfigModifier.default_config().set(
+                            # FP8ConfigModifier.default_config().set(
                             #    fp8_amax_history_length=128
-                            #)
+                            # )
                         ],
                     ),
                 ),

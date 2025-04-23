@@ -130,4 +130,3 @@ cpu_affinity {
 }
 cpu_affinity_check_policy: POLICY_RECOMMENDED
 cpu_affinity_check_level: CHECK_STRICT
-

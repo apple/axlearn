@@ -37,7 +37,9 @@ import jax.numpy as jnp
 import numpy as np
 from absl import logging
 from jax import lax
-from jax._src.cudnn.fused_attention_stablehlo import MaskType
+from jax._src.cudnn.fused_attention_stablehlo import (
+    MaskType,
+)
 from jax._src.cudnn.fused_attention_stablehlo import (
     dot_product_attention as cudnn_dot_product_attention,
 )

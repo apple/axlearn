@@ -718,8 +718,8 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
 
 class GPUReplicatedJob(SingleReplicatedJob):
-    """ Builds a replicated job spec for a generic GPU job (A3, A3 Mega, A3 Ultra, A4),
-        to be used with JobSet API.
+    """Builds a replicated job spec for a generic GPU job (A3, A3 Mega, A3 Ultra, A4),
+    to be used with JobSet API.
     """
 
     Config = SingleReplicatedJob.Config
@@ -729,7 +729,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
 
     def _build_main_container(self) -> Nested[Any]:
         """Builds the base container with common elements across all GPU jobs
-        
+
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
@@ -854,6 +854,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
         # NOTE: the suffix here impacts how long job names can be.
         return [dict(name="job", replicas=1, template=job_spec)]
 
+
 class A3HighReplicatedJob(GPUReplicatedJob):
     """Builds a replicated job spec for an a3-high GPU job, to be used with JobSet API."""
 
@@ -873,7 +874,8 @@ class A3HighReplicatedJob(GPUReplicatedJob):
                 "name": "tcpx-nccl-plugin-volume",
                 "emptyDir": {},
             },
-        ]: volumes.append(volume)
+        ]:
+            volumes.append(volume)
 
         return volumes
 
@@ -891,7 +893,8 @@ class A3HighReplicatedJob(GPUReplicatedJob):
         for volume in [
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
-        ]: volume_mounts.append(volume)
+        ]:
+            volume_mounts.append(volume)
 
         env_vars: dict[str, str] = base_main_container["env"]
 
@@ -1046,7 +1049,6 @@ class A3HighReplicatedJob(GPUReplicatedJob):
             volumeMounts=volume_mounts,
         )
 
-
     def _build_init_containers(self) -> Nested[Any]:
         return [self._build_a3_high_tcpx_init_container(), self._build_a3_high_sidecar_container()]
 
@@ -1078,6 +1080,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
         return dict(
             name="tcpx-nccl-plugin-installer",
             image=(
+                # pylint: disable=line-too-long
                 "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/nccl-plugin-gpudirecttcpx-dev:latest"
             ),
             command=command,
@@ -1120,12 +1123,14 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             command=command,
             env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
             volumeMounts=volume_mounts,
-            restartPolicy="Always"
+            restartPolicy="Always",
         )
 
     def _build_init_containers(self) -> Nested[Any]:
-        return [self._build_a3_mega_tcpx_init_container(),
-                self._build_a3_mega_tcpx_sidecar_container()]
+        return [
+            self._build_a3_mega_tcpx_init_container(),
+            self._build_a3_mega_tcpx_sidecar_container(),
+        ]
 
     def _build_main_container(self) -> Nested[Any]:
         """Builds the config for the container running the job.
@@ -1142,7 +1147,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
             {"name": "aperture-devices", "mountPath": "/dev/aperture_devices"},
-        ]: volume_mounts.append(volume)
+        ]:
+            volume_mounts.append(volume)
 
         env_vars: dict[str, str] = base_main_container["env"]
 
@@ -1166,7 +1172,8 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 # The NCCL_FASTRAK config cannot be changed
-                # This config is based on: https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3mega/nemo-training/templates/nemo-launcher-job.yaml 
+                # pylint: disable=line-too-long
+                # This config is based on: https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3mega/nemo-training/templates/nemo-launcher-job.yaml
                 "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
                 "NCCL_FASTRAK_CTRL_DEV": "eth0",
                 "NCCL_FASTRAK_IFNAME": "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8",
@@ -1256,9 +1263,11 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "name": "aperture-devices",
                 "hostPath": {"path": "/dev/aperture_devices"},
             },
-        ]: volumes.append(volume)
+        ]:
+            volumes.append(volume)
 
         return volumes
+
 
 class A3UltraReplicatedJob(GPUReplicatedJob):
     """Builds a replicated job spec for an a3-ultra GPU job, to be used with JobSet API."""
@@ -1278,7 +1287,8 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
 
         for volume in [
             {"name": "gib", "mountPath": "/usr/local/gib"},
-        ]: volume_mounts.append(volume)
+        ]:
+            volume_mounts.append(volume)
 
         env_vars: dict[str, str] = base_main_container["env"]
 
@@ -1365,9 +1375,11 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
                 "name": "gib",
                 "hostPath": {"path": "/home/kubernetes/bin/gib"},
             },
-        ]: volumes.append(volume)
+        ]:
+            volumes.append(volume)
 
         return volumes
+
 
 class A4HighReplicatedJob(GPUReplicatedJob):
     """Builds a replicated job spec for an a4-high GPU job, to be used with JobSet API."""
@@ -1387,7 +1399,8 @@ class A4HighReplicatedJob(GPUReplicatedJob):
 
         for volume in [
             {"name": "gib", "mountPath": "/usr/local/gib"},
-        ]: volume_mounts.append(volume)
+        ]:
+            volume_mounts.append(volume)
 
         env_vars: dict[str, str] = base_main_container["env"]
 
@@ -1473,7 +1486,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "name": "gib",
                 "hostPath": {"path": "/home/kubernetes/bin/gib"},
             },
-        ]: volumes.append(volume)
+        ]:
+            volumes.append(volume)
 
         return volumes
-    

@@ -515,7 +515,9 @@ class A3HighReplicatedJobTest(TestCase):
             fv.set_default("instance_type", "gpu-a3-highgpu-8g-256")
             fv.set_default("num_replicas", num_replicas)
             fv.mark_as_parsed()
-            cfg: jobset_utils.A3HighReplicatedJob.Config = jobset_utils.A3HighReplicatedJob.from_flags(fv)
+            cfg: jobset_utils.A3HighReplicatedJob.Config = (
+                jobset_utils.A3HighReplicatedJob.from_flags(fv)
+            )
             cfg.project = jobset_utils.gcp_settings("project", required=True, fv=fv)
             cfg.command = "test-command"
             cfg.env_vars = env_vars if env_vars is not None else {}
@@ -547,7 +549,10 @@ class A3HighReplicatedJobTest(TestCase):
             self.assertEqual(len(pod_spec["containers"]), 1)
             self.assertEqual(len(pod_spec["initContainers"]), 2)
             containers = {container["name"]: container for container in pod_spec["containers"]}
-            init_containers = {init_container["name"]: init_container for init_container in pod_spec["initContainers"]}
+            init_containers = {
+                init_container["name"]: init_container
+                for init_container in pod_spec["initContainers"]
+            }
             self.assertIn("tcpx-daemon", init_containers)
             main_container = containers["test"]
             main_container_env = main_container["env"]
