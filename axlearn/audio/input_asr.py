@@ -52,7 +52,7 @@ def speech_input(
         lengths = tf.shape(inputs)[-1]
         inputs = input_tf_data.trim_and_pad_tensor(inputs, max_len=max_len)
         example["inputs"] = tf.cast(inputs, tf.float32)
-        example["paddings"] = tf.cast(tf.range(max_len) >= lengths, tf.int32)
+        example["paddings"] = tf.cast(tf.range(max_len) >= lengths, tf.bool)
         return example
 
     processors = []
@@ -196,7 +196,7 @@ def pad_example_fn(element_spec: Nested[Any]) -> Nested[Any]:
     """
     example = input_tf_data.default_pad_example_fn(element_spec)
     # Set source paddings to 1s.
-    example["source"]["paddings"] = tf.ones_like(example["source"]["paddings"], dtype=tf.int32)
+    example["source"]["paddings"] = tf.ones_like(example["source"]["paddings"], dtype=tf.bool)
     # Set text tokens to -1s.
     example["target"]["input_ids"] = -1 * tf.ones_like(
         example["target"]["input_ids"], dtype=tf.int32
