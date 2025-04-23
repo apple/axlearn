@@ -741,7 +741,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
         ]
 
         # These are common across all GPUReplicatedJobs, used for connecting between replicas
-        env_vars: dict[str, str] = {}
+        env_vars: dict[str, Nested[str]] = {}
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-{cfg.job_name}-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 
@@ -863,9 +863,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
     def _build_volumes(self) -> Nested[Any]:
         """Builds a config for volumes."""
 
-        volumes: Nested[Any] = super()._build_volumes()
-
-        for volume in [
+        return super()._build_volumes() + [
             {
                 "name": "tcpx-socket",
                 "emptyDir": {},
@@ -874,10 +872,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
                 "name": "tcpx-nccl-plugin-volume",
                 "emptyDir": {},
             },
-        ]:
-            volumes.append(volume)
-
-        return volumes
+        ]
 
     def _build_main_container(self) -> Nested[Any]:
         """Builds the config for the container running the job.
@@ -888,15 +883,12 @@ class A3HighReplicatedJob(GPUReplicatedJob):
         cfg: A3HighReplicatedJob.Config = self.config
 
         base_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = base_main_container["volumeMounts"]
-
-        for volume in [
+        volume_mounts = base_main_container["volumeMounts"] + [
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
-        ]:
-            volume_mounts.append(volume)
+        ]
 
-        env_vars: dict[str, str] = base_main_container["env"]
+        env_vars = base_main_container["env"]
 
         # XLA flags for a3-high (H100 with TCPX)
         platform_xla_flags = [
@@ -1049,7 +1041,7 @@ class A3HighReplicatedJob(GPUReplicatedJob):
             volumeMounts=volume_mounts,
         )
 
-    def _build_init_containers(self) -> Nested[Any]:
+    def _build_init_containers(self) -> list[Nested[Any]]:
         return [self._build_a3_high_tcpx_init_container(), self._build_a3_high_sidecar_container()]
 
 
@@ -1126,7 +1118,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             restartPolicy="Always",
         )
 
-    def _build_init_containers(self) -> Nested[Any]:
+    def _build_init_containers(self) -> list[Nested[Any]]:
         return [
             self._build_a3_mega_tcpx_init_container(),
             self._build_a3_mega_tcpx_sidecar_container(),
@@ -1141,16 +1133,13 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
         cfg: A3MegaReplicatedJob.Config = self.config
 
         base_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = base_main_container["volumeMounts"]
-
-        for volume in [
+        volume_mounts = base_main_container["volumeMounts"] + [
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
             {"name": "aperture-devices", "mountPath": "/dev/aperture_devices"},
-        ]:
-            volume_mounts.append(volume)
+        ]
 
-        env_vars: dict[str, str] = base_main_container["env"]
+        env_vars = base_main_container["env"]
 
         # A list of XLA flags and their functions is linked here:
         # https://docs.jax.dev/en/latest/xla_flags.html#gpu-xla-flags
@@ -1248,9 +1237,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
     def _build_volumes(self) -> Nested[Any]:
         """Builds a config for volumes."""
 
-        volumes: Nested[Any] = super()._build_volumes()
-
-        for volume in [
+        return super()._build_volumes() + [
             {
                 "name": "tcpx-socket",
                 "emptyDir": {},
@@ -1263,10 +1250,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "name": "aperture-devices",
                 "hostPath": {"path": "/dev/aperture_devices"},
             },
-        ]:
-            volumes.append(volume)
-
-        return volumes
+        ]
 
 
 class A3UltraReplicatedJob(GPUReplicatedJob):
@@ -1283,14 +1267,11 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         cfg: A3UltraReplicatedJob.Config = self.config
 
         base_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = base_main_container["volumeMounts"]
-
-        for volume in [
+        volume_mounts = base_main_container["volumeMounts"] + [
             {"name": "gib", "mountPath": "/usr/local/gib"},
-        ]:
-            volume_mounts.append(volume)
+        ]
 
-        env_vars: dict[str, str] = base_main_container["env"]
+        env_vars = base_main_container["env"]
 
         # These flags have been tuned by GCP for a3-ultra (H200 with InfiniBand),
         # see the following reference:
@@ -1368,17 +1349,12 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
     def _build_volumes(self) -> Nested[Any]:
         """Builds a config for volumes."""
 
-        volumes: Nested[Any] = super()._build_volumes()
-
-        for volume in [
+        return super()._build_volumes() + [
             {
                 "name": "gib",
                 "hostPath": {"path": "/home/kubernetes/bin/gib"},
             },
-        ]:
-            volumes.append(volume)
-
-        return volumes
+        ]
 
 
 class A4HighReplicatedJob(GPUReplicatedJob):
@@ -1395,14 +1371,11 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         cfg: A4HighReplicatedJob.Config = self.config
 
         base_main_container: Nested[Any] = super()._build_main_container()
-        volume_mounts = base_main_container["volumeMounts"]
-
-        for volume in [
+        volume_mounts = base_main_container["volumeMounts"] + [
             {"name": "gib", "mountPath": "/usr/local/gib"},
-        ]:
-            volume_mounts.append(volume)
+        ]
 
-        env_vars: dict[str, str] = base_main_container["env"]
+        env_vars = base_main_container["env"]
 
         # These flags have been tuned by GCP for a4-high (B200 with InfiniBand)
         # See Maxtext reference for XLA flags:
@@ -1479,14 +1452,9 @@ class A4HighReplicatedJob(GPUReplicatedJob):
     def _build_volumes(self) -> Nested[Any]:
         """Builds a config for volumes."""
 
-        volumes: Nested[Any] = super()._build_volumes()
-
-        for volume in [
+        return super()._build_volumes() + [
             {
                 "name": "gib",
                 "hostPath": {"path": "/home/kubernetes/bin/gib"},
             },
-        ]:
-            volumes.append(volume)
-
-        return volumes
+        ]
