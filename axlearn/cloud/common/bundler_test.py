@@ -140,6 +140,18 @@ class BundlerTest(TestWithTemporaryCWD):
             self.assertEqual("hello world", (temp_bundle / "test.txt").read_text())
             self.assertTrue((temp_bundle / CONFIG_DIR / CONFIG_FILE).exists())
 
+    def test_local_dir_context_temp_dir(self):
+        # Create a dummy config.
+        _create_dummy_config(self._temp_root.name)
+
+        b = Bundler.default_config().instantiate()
+        temp_dir = tempfile.TemporaryDirectory()
+        with temp_dir:
+            # pylint: disable-next=protected-access
+            self.assertEqual(temp_dir, b._local_dir_context(temp_dir=temp_dir))
+            temp_dir = pathlib.Path(temp_dir.name) / "axlearn"
+            self.assertTrue((temp_dir / CONFIG_DIR / CONFIG_FILE).exists())
+
     def test_bundler_exclude(self):
         """Tests that bundler_exclude is respected."""
 
