@@ -19,7 +19,7 @@ for subdir in "$base_path/neuron_core0/stats/memory_usage/device_mem"/*; do
     fi
 done
 
-echo "Peak:"
+echo -n "Peak: "
 sum_files "$base_path/neuron_core0/stats/memory_usage/device_mem/peak" "$base_path/neuron_core1/stats/memory_usage/device_mem/peak" | numfmt --to=si --suffix=B
 
 echo -e "\nTotal:"

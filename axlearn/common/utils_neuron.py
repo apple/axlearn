@@ -6,6 +6,7 @@
 # Copyright 2022 The Pax Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Utils for tests for mixture_of_experts.py"""
+import os
 from functools import partial
 from itertools import product
 import math
@@ -14,13 +15,11 @@ import jax
 import jax.numpy as jnp
 from jax.experimental import mesh_utils
 from jax.sharding import NamedSharding, Mesh
-from axlearn.common.module import functional as F
+
 from axlearn.common.mixture_of_experts import (
     TopKGating,
-    Top2Gating,
     TransformerFeedForwardMoE,
     TopKGatingGather,
-    TopKGatingGatherBlockwise,
     get_outer_batch_from_mesh
 )
 
@@ -29,9 +28,11 @@ from axlearn.common.layers import (
     StochasticDepth,
     RMSNorm,
 )
-# jax.config.update('jax_platform_name', 'cpu')
+jax.config.update('jax_platform_name', 'cpu')
 from axlearn.common.utils import PartitionSpec, infer_mesh_shape, cast_floats
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
+from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
+from axlearn.experiments.text.gpt.envy import MOE_OUTER_BATCH_AXIS_NAMES, MOE_DIM_TO_MESH_AXIS_MAP
 
 # FP32 test tolerances
 TEST_TOLS_FP32 = {
@@ -44,24 +45,140 @@ TEST_TOLS_BF16 = {
     "rtol": 1e-2,
 }
 
-MOE_OUTER_BATCH_AXIS_NAMES = ("data", "fsdp")
+class ModuleConfig():
+    def __init__(self, module = None, device = "cpu", layer = None, dtype = jnp.float32):
+        assert module is not None
+        model_param_init = DefaultInitializer.default_config().set(
+            init_by_param_name={
+                PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(
+                    fan="fan_in", distribution="normal"
+                )
+            }
+        )
+        self.module = module.default_config().set(name="test",
+                                                  dtype=dtype,
+                                                  param_init=model_param_init,)
+        self.device = device
+        self.layer = layer # None for top_k, else "MoE"
+        self.dtype = dtype
+        self.tol = TEST_TOLS_FP32 if dtype == jnp.float32 else TEST_TOLS_BF16
 
-MOE_DIM_TO_MESH_AXIS_MAP = {
-    "me": PartitionSpec(None, None),
-    "emh": PartitionSpec("expert", "fsdp", "model"),
-    "ehm": PartitionSpec("expert", "model", "fsdp"),
-    "ogsm": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, "model"),
-    "ogsM": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
-    "ogse": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
-    "ogec": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None),
-    # Dispatch and combine tensors.
-    "ogsec": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, None, None, "expert", None),
-    "oegcm": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None, "model"),
-    "oegcM": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None, None),
-    "ogecm": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, None, "expert", None, "model"),
-    "ogecM": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, None, "expert", None, None),
-    "oegch": PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None, None, "model"),
-}
+class TestConfig():
+    def __init__(self, setup, test: ModuleConfig, golden: ModuleConfig = None, 
+                 input_shape: tuple = None, loss_fn = None, conv_output = None, 
+                 mesh_spec: dict = None, prefix = None):
+        self.setup = setup
+        self.test = test
+        self.golden = golden if golden is not None else test
+        self.input_shape = input_shape
+        self.loss_fn = loss_fn
+        self.conv_output = conv_output
+        self.num_devices = None 
+        self.mesh_dims = self.get_mesh_from_spec(mesh_spec)
+        self.prefix = prefix
+
+        self.mesh_test = None 
+        self.mesh_golden = None
+        self.test_inputs = dict() 
+        self.golden_inputs = dict()  
+        self.out_shard_test = None
+        self.out_shard_golden = None        
+
+        for spec, val in setup[0].items():
+            setattr(self.test.module, spec, val)
+
+        for spec, val in setup[1].items():
+            setattr(self.golden.module, spec, val)
+
+        if test.layer == "MoE":
+            self.set_outer_batch()
+
+    def instantiate(self):
+                        
+        self.instantiate_modules_with_mesh() 
+        self.random_inputs_with_mesh()
+
+    def get_mesh_from_spec(self, mesh_spec):  
+
+        mesh = mesh_shape_from_axes(**mesh_spec)
+        mesh = infer_mesh_shape(mesh, num_devices=self.num_devices) 
+        self.num_devices = math.prod(mesh)
+        print("Inferred mesh: ", mesh)
+
+        return mesh 
+
+    def set_outer_batch(self):
+
+        outer_batch = get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, self.mesh_dims)
+        setattr(self.test.module, "outer_batch", outer_batch)
+        setattr(self.golden.module, "outer_batch", outer_batch)
+
+    def instantiate_modules_with_mesh(self): 
+
+        print("Instantiating modules with mesh")
+        device_type = self.golden.device
+        devices = jax.devices(device_type)[:self.num_devices]
+        print("Golden devices: ", devices)
+        self.mesh_golden = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
+        with self.mesh_golden: 
+            self.golden_layer  = self.golden.module.instantiate(parent=None) 
+            golden_param_specs = self.golden_layer.create_parameter_specs_recursively() 
+            golden_param_partition_specs = jax.tree.map(lambda spec: spec.sharding, golden_param_specs) 
+            
+            def _init_state(prng_key):
+                params = self.golden_layer.initialize_parameters_recursively(prng_key)
+                return params
+            init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings=golden_param_partition_specs)
+            
+            self.golden_state = init_fn(jax.random.PRNGKey(123))
+            self.golden_state = cast_floats(self.golden_state, to_dtype=self.golden.dtype)
+            # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
+            self.golden_state['gate_weight'] = self.golden_state['gate_weight'].astype(jnp.float32)
+
+        golden_state_cpu = jax.device_get(self.golden_state)
+
+        device_type = self.test.device
+        devices = jax.devices(device_type)[:self.num_devices]
+        print("Test devices: ", devices)
+        self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES) 
+        with self.mesh_test:
+            self.test_layer  = self.test.module.instantiate(parent=None) 
+            test_param_specs = self.test_layer.create_parameter_specs_recursively()
+            test_param_partition_specs = jax.tree.map(lambda spec: spec.sharding, test_param_specs)
+            
+            if self.test.module == self.golden.module:
+                print("Using golden state parameters")
+                self.test_state = {}
+                for key, value in golden_state_cpu.items():
+                    # print(f"Transferring and sharding {key} to test devices...")
+                    # First put on a single device
+                    self.test_state[key] = jax.device_put(value, test_param_partition_specs[key])
+            else:
+                def _init_state(prng_key):
+                    return self.test_layer.initialize_parameters_recursively(prng_key)
+                init_fn = jax.jit(_init_state, in_shardings=(None,), out_shardings=test_param_partition_specs)
+                self.test_state = init_fn(jax.random.PRNGKey(123)) 
+            
+            # self.test_state = init_fn(jax.random.PRNGKey(123))
+            self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
+            # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
+            self.test_state['gate_weight'] = self.test_state['gate_weight'].astype(jnp.float32)
+
+    def random_inputs_with_mesh(self): 
+
+        input_key = 'inputs' if self.test.layer == "MoE" else 'logits'
+        pspec = PartitionSpec(('data','fsdp'), 'model', None) if self.test.layer == "MoE" else PartitionSpec() # seq-parallel inputs
+
+        in_shard_test = NamedSharding(mesh=self.mesh_test, spec = pspec) 
+        in_shard_golden = NamedSharding(mesh=self.mesh_golden, spec = pspec)
+        
+        print(self.input_shape) 
+        with jax.default_device(jax.devices("cpu")[0]):    # create tensors on host to avoid OOM  
+            inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=self.input_shape, dtype=self.test.dtype) 
+        
+        inputs = jax.device_get(inputs)   # device_put seg-faults without this 
+        self.test_inputs[input_key] = jax.device_put(inputs, in_shard_test)
+        self.golden_inputs[input_key] = jax.device_put(inputs, in_shard_golden)
 
 def _topkgather_to_topk(output, top_k, cf):
     tok_perm_idx, expert_index, exp_aff_mask = output.combine_tensor
@@ -94,92 +211,6 @@ def _topkgather_to_topk(output, top_k, cf):
         router_z_loss=output.router_z_loss
     )
 
-class ModuleConfig():
-    def __init__(self, module = None, device = "cpu", layer = None, config=None):
-        assert module is not None
-        self.module = module.default_config().set(name="test")
-        if config:
-            for k in config:
-                setattr(self.module, k, config[k])
-        self.device = device
-        self.layer = layer # None for topk, else "MoE"
-
-class TestConfig():
-    def __init__(self, test: ModuleConfig, golden: ModuleConfig = None, 
-                 input_shape: tuple = None, loss_fn = None, conv_output = None, 
-                 mesh_spec: dict = None, prefix = None):
-        self.test = test
-        self.golden = golden if golden is not None else test
-        self.input_shape = input_shape
-        self.loss_fn = loss_fn
-        self.conv_output = conv_output
-        self.num_devices = None 
-
-        self.mesh_spec=mesh_spec
-        
-        self.prefix = prefix
-
-        self.mesh_test = None 
-        self.mesh_golden = None
-        self.test_inputs = dict() 
-        self.golden_inputs = dict()  
-        self.out_shard_test = None
-        self.out_shard_golden = None
-        
-    def init(self):
-        self.mesh_dims = self.get_mesh_from_spec(self.mesh_spec)
-        if self.test.layer == "MoE":
-            self.set_outer_batch()
-        self.instantiate_modules_with_mesh() 
-
-        self.random_inputs_with_mesh()
-        #specify empty outsharding for jax.jit because we transfer tensors to host and compare
-        out_pspec = PartitionSpec()  
-        self.out_shard_test = NamedSharding(mesh=self.mesh_test, spec = out_pspec) 
-        self.out_shard_golden = NamedSharding(mesh=self.mesh_golden, spec = out_pspec)
-
-    def get_mesh_from_spec(self, mesh_spec):  
-        mesh = mesh_shape_from_axes(**mesh_spec)
-        mesh = infer_mesh_shape(mesh, num_devices=self.num_devices) 
-        self.num_devices = math.prod(mesh)
-        return mesh 
-
-    def set_outer_batch(self):
-        outer_batch = get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, self.mesh_dims)
-        setattr(self.test.module, "outer_batch", outer_batch)
-        setattr(self.golden.module, "outer_batch", outer_batch)
-
-    def instantiate_modules_with_mesh(self):
-        device_type = self.test.device
-        devices = jax.devices(device_type)[:self.num_devices]
-        self.mesh_test = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES)
-        with jax.default_device(jax.devices('cpu')[0]):
-            with self.mesh_test: 
-                self.test_layer  = self.test.module.instantiate(parent=None) 
-                self.test_state  = self.test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
-
-        device_type = self.golden.device
-        devices = jax.devices(device_type)[:self.num_devices]
-        self.mesh_golden = Mesh(mesh_utils.create_device_mesh(self.mesh_dims, devices=devices), MESH_AXIS_NAMES)
-        with jax.default_device(jax.devices('cpu')[0]):
-            with self.mesh_golden: 
-                self.golden_layer  = self.golden.module.instantiate(parent=None) 
-                self.golden_state  = self.golden_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123)) 
-
-    def random_inputs_with_mesh(self):
-        input_key = 'inputs' if self.test.layer == "MoE" else 'logits'
-        pspec = PartitionSpec(('data','fsdp'), None, 'model') if self.test.layer == "MoE" else PartitionSpec() 
-
-        in_shard_test = NamedSharding(mesh=self.mesh_test, spec = pspec) 
-        in_shard_golden = NamedSharding(mesh=self.mesh_golden, spec = pspec)
-
-        with jax.default_device(jax.devices("cpu")[0]):    # create tensors on host to avoid OOM  
-            inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=self.input_shape) 
-        
-        inputs = jax.device_get(inputs)   # device_put seg-faults without this 
-        self.test_inputs[input_key] = jax.device_put(inputs, in_shard_test)
-        self.golden_inputs[input_key] = jax.device_put(inputs, in_shard_golden)
-
 class TestConfigBuilder:
     def __init__(self):
         self.reset()
@@ -194,37 +225,33 @@ class TestConfigBuilder:
             "top_k" : 2,
             "num_groups": 1,
             "outer_batch": 1,
-            "expert_capacity": 1000,
-            "train_capacity_factor": None,
-            "use_blockwise_kernel": False,
+            "train_capacity_factor": 2,
             "mesh_spec": {}   # dict with keys from MESH_AXIS_NAMES, empty for single core test
         }
         return self
     
-    def with_dimensions(self, batch_size, seq_len, input_dim, dtype=jnp.float32):
+    def with_dimensions(self, batch_size, seq_len, input_dim, dtype):
         # Only two data types currently supported
+        _dtype = jnp.float32
         if dtype == 'bfloat16':
-            dtype = jnp.bfloat16
+            _dtype = jnp.bfloat16
 
         self.params.update({
             "batch_size": batch_size,
             "seq_len": seq_len,
             "input_dim": input_dim,
-            "dtype": dtype
+            "dtype": _dtype
         })
         return self
     
-    def with_expert_settings(self, hidden_dim, outer_batch, num_groups, num_experts, expert_capacity, train_capacity_factor=None, use_blockwise_kernel=False, block_size=None):
+    def with_expert_settings(self, hidden_dim, outer_batch, num_groups, num_experts, top_k=2, train_capacity_factor=None):
         self.params.update({
             "hidden_dim": hidden_dim,
             "outer_batch" : outer_batch,
             "num_groups": num_groups,
             "num_experts": num_experts,
-            "expert_capacity": expert_capacity,
-            "train_capacity_factor": train_capacity_factor,
-            "use_blockwise_kernel": use_blockwise_kernel,
-            "block_size": block_size,
-            "activation": ("nn.silu", "linear"),
+            "top_k": top_k,
+            "train_capacity_factor": train_capacity_factor
         })
         return self
     
@@ -233,22 +260,8 @@ class TestConfigBuilder:
             "mesh_spec": mesh_spec
         })
         return self 
-
+    
     def build_moe_topkgather_setup(self):
-        if self.params["use_blockwise_kernel"] is False:
-            gating_config = TopKGatingGather.default_config().set(
-                    name="gating",
-                    expert_capacity=self.params["expert_capacity"],
-                    train_capacity_factor=self.params["train_capacity_factor"],
-            )
-        else:
-            gating_config = TopKGatingGatherBlockwise.default_config().set(
-                    name="gating",
-                    expert_capacity=self.params["expert_capacity"],
-                    train_capacity_factor=self.params["train_capacity_factor"],
-                    block_size=self.params["block_size"],
-            )
-        
         return {
             "input_dim": self.params["input_dim"],
             "hidden_dim": self.params["hidden_dim"],
@@ -256,11 +269,15 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
-            "gating": gating_config,
+            "activation": ("nn.silu","linear"),
+            "gating": TopKGatingGather.default_config().set(
+                name="gating",
+                top_k=self.params["top_k"],
+                train_capacity_factor=self.params["train_capacity_factor"]
+            ),
             # "norm" : RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),
             "dropout" : Dropout.default_config().set(rate=None),
-            "stochastic_depth" : StochasticDepth.default_config().set(rate=None),
-            "activation": self.params["activation"],
+            "stochastic_depth" : StochasticDepth.default_config().set(rate=None)
         }
     
     def build_moe_top2_setup(self):
@@ -271,192 +288,278 @@ class TestConfigBuilder:
             "num_groups": self.params["num_groups"],
             "outer_batch": self.params["outer_batch"],
             "dim_to_mesh_axis_map": MOE_DIM_TO_MESH_AXIS_MAP,
+            "activation": ("nn.silu","linear"),
             "gating": TopKGating.default_config().set(
                 name="gating",
                 top_k=self.params["top_k"],
                 train_capacity_factor=self.params["train_capacity_factor"]
-            ),
-            "activation": self.params["activation"],
+            )
         }
     
-    def build_gating_setup(self, gating_class=Top2Gating):
-        
-        x = {
-            "expert_capacity": self.params["expert_capacity"],
+    def build_gating_setup(self):
+        return {
             "num_experts": self.params["num_experts"],
-            "train_capacity_factor": self.params["train_capacity_factor"],
+            "top_k": self.params["top_k"],
+            "train_capacity_factor": self.params["train_capacity_factor"]
         }
-        if gating_class == TopKGatingGatherBlockwise:
-            x["block_size"] = self.params["block_size"]
-        return x
-            
-    def build_moe_layer_config(self, test_device="neuron"):
-        return TestConfig(
-            test=ModuleConfig(TransformerFeedForwardMoE, test_device, "MoE", config=self.build_moe_topkgather_setup()),
-            golden=ModuleConfig(TransformerFeedForwardMoE, test_device, "MoE", config=self.build_moe_top2_setup()),
-            input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
-            loss_fn=lambda x: x.mean(),
-            mesh_spec=self.params["mesh_spec"],
-            prefix="_moe"
-        )
-
-    def build_gating_layer_config(self, test_device="neuron", conv_output=True):
-        seq_len = (self.params["batch_size"]*self.params["seq_len"])//(self.params["outer_batch"] * self.params["num_groups"])
-        test_gating_class = TopKGatingGatherBlockwise if self.params["use_blockwise_kernel"] else TopKGatingGather
-        conv_output=partial(_topkgather_to_topk, expert_cap=self.params["expert_capacity"]) if conv_output else None
-        return TestConfig(
-            test=ModuleConfig(test_gating_class, test_device, layer=None, config=self.build_gating_setup(gating_class=test_gating_class)),
-            golden=ModuleConfig(Top2Gating, "cpu", layer=None, config=self.build_gating_setup(gating_class=Top2Gating)),
-            input_shape=(self.params["outer_batch"], self.params["num_groups"], seq_len, self.params["num_experts"]),
-            conv_output=conv_output,
-            loss_fn=lambda x: x.load_balance_loss,
-            mesh_spec=self.params["mesh_spec"],
-            prefix="_gating"
-        )
     
-    def build_test_configs_unit(self):
-        test_configs = [] 
-        test_configs.append(self.build_moe_layer_config(test_device="cpu"))
-        if not self.params["mesh_spec"]: # gating tests only for single-core config
-            test_configs.append(self.build_gating_layer_config(test_device="cpu"))
-        return test_configs
-        
     def build_test_configs_integ(self):
+
+        seq_len = (self.params["batch_size"]*self.params["seq_len"])//(self.params["outer_batch"] * self.params["num_groups"])
+
         test_configs = [] 
-        test_configs.append(self.build_moe_layer_config())
+        test_configs.append(
+            TestConfig(
+                setup=[
+                    self.build_moe_topkgather_setup(),
+                    self.build_moe_topkgather_setup()
+                ],
+                test=ModuleConfig(TransformerFeedForwardMoE, "neuron", "MoE", self.params['dtype']),
+                golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
+                input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
+                loss_fn=lambda x: jnp.mean(x)*1e2,
+                mesh_spec=self.params["mesh_spec"],
+                prefix="_moe")
+            )
         if not self.params["mesh_spec"]: # gating tests only for single-core config
-            test_configs.append(self.build_gating_layer_config())
-            # does conv_output need to be removed for neuron
+            test_configs.append(
+            TestConfig(
+                setup=[
+                    self.build_gating_setup(),
+                    self.build_gating_setup()
+                ],
+                test=ModuleConfig(TopKGatingGather, "neuron", dtype=self.params['dtype']),
+                golden=ModuleConfig(TopKGatingGather, "cpu", dtype=self.params['dtype']),
+                input_shape=(self.params["outer_batch"], self.params["num_groups"], seq_len, self.params["num_experts"]),
+                loss_fn=lambda x: x.load_balance_loss,
+                mesh_spec=self.params["mesh_spec"],
+                prefix="_gating")
+            )
         return test_configs
 
-    def build_grid_space(self):
-        # Grid space for testing
-        # batchs =            [1, 4]
-        # seqs =              [16, 128]
-        # input_dims =        [64]
-        # hidden_dims =       [128]
-        # num_experts =       [2, 8]
-        # num_groups =        [1, 4]
-        # outer_batches =     [1, 2]
-        # expert_capacities = [2, 1000]
-        # mesh_specs       =  [{}, {"fsdp":-1, "model":4}]  #empty spec for single-core
+    def build_test_configs_unit(self):
 
-        grid_space = [] 
-        # grid_space = list(product(batchs, seqs, input_dims, hidden_dims, num_experts, 
-        #                           num_groups, outer_batches, expert_capacities, mesh_specs))
+        seq_len = (self.params["batch_size"]*self.params["seq_len"])//(self.params["outer_batch"] * self.params["num_groups"])
+
+        test_configs = [] 
+        test_configs.append(
+            TestConfig(
+                setup=[
+                    self.build_moe_topkgather_setup(),
+                    self.build_moe_top2_setup()
+                ],
+                test=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
+                golden=ModuleConfig(TransformerFeedForwardMoE, "cpu", "MoE", self.params['dtype']),
+                input_shape=(self.params["batch_size"], self.params["seq_len"], self.params["input_dim"]),
+                loss_fn=lambda x: jnp.mean(x)*1e2,
+                mesh_spec=self.params["mesh_spec"],
+                prefix="_moe"
+                )
+            )
+        if not self.params["mesh_spec"]: # gating tests only for single-core config
+            test_configs.append(
+                TestConfig(
+                    setup=[
+                        self.build_gating_setup(),
+                        self.build_gating_setup()
+                    ],
+                    test=ModuleConfig(TopKGatingGather, "cpu", dtype=self.params['dtype']),
+                    golden=ModuleConfig(TopKGating, "cpu", dtype=self.params['dtype']),
+                    input_shape=(self.params["outer_batch"], self.params["num_groups"], seq_len, self.params["num_experts"]),
+                    conv_output=partial(_topkgather_to_topk, top_k=self.params["top_k"], cf=self.params["train_capacity_factor"]),
+                    loss_fn=lambda x: x.load_balance_loss,
+                    mesh_spec=self.params["mesh_spec"],
+                    prefix="_gating"
+                )
+            )
+        return test_configs
+    
+    def build_grid_space(self):
+        # Grid space for testing: Presubmit
+
+        grid_space = []
 
         # Custom Configs
-        # b s i h e g ob ec        
-        # grid_space.extend([(2, 100, 64, 128, 2, 1, 1, 5)])
-        # 
-        Mistral8x7B_toy = (2,  256, 1024,  3584, 8, 1, 1, 32, {"fsdp":-1, "model":4})
-        grid_space.append(Mistral8x7B_toy) 
+        # b s i h e top_k g ob cf mesh dtype
+        
+        # 12B Configs
+        Mistral12B_base = (16, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_base)
+        Mistral12B_top1 = (16, 4096, 2048, 7168, 8, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_top1)
+        Mistral12B_top4 = (16, 4096, 2048, 7168, 8, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_top4)
+        Mistral12B_8k =  (16, 8192, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_8k)
+        Mistral12B_expert1 = (16, 4096, 2048, 7168, 1, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_expert1)
+        Mistral12B_group1 = (16, 4096, 2048, 7168, 8, 2, 1, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_group1)
+
+
+        # # 50B Config
+        Mistral50B_base = (16, 2048, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_base)
+
+        # # 150B Configs
+        Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral150B_base)
+        Mistral8x20B_base = (16, 4096, 6144, 16384, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8x20B_base)
 
         return grid_space
 
-    def build_configs(self, batch, seq, input_dim,  hidden_dim, n_experts, n_groups, out_batch, capacity, mesh_spec, use_blockwise_kernel=False, is_unit=False):
-        
-        if mesh_spec and batch < 16: # need large batch to parallelize
-            batch = batch*16 
-        
-        capacity_factor = 2 if not capacity else None 
+    def build_grid_space_12B(self):
+        # Grid space for testing
 
-        self.reset()
-        self.with_dimensions(batch, seq, input_dim)
-        self.with_expert_settings(
+        grid_space = []
+
+        # Custom Configs
+        # b s i h e top_k g ob cf mesh dtype
+
+        # 12B Configs
+        Mistral12B_base = (16, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_base)
+        Mistral12B_top1 = (16, 4096, 2048, 7168, 8, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_top1)
+        Mistral12B_top4 = (16, 4096, 2048, 7168, 8, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_top4)
+        Mistral12B_seq256 = (16, 256, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_seq256)
+        Mistral12B_seq2k = (16, 2048, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_seq2k)
+        Mistral12B_seq8k = (16, 8192, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_seq8k)
+        Mistral12B_seq16k = (16, 16384, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_seq16k)
+        Mistral12B_seq32k = (16, 32768, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_seq32k)
+        # Mistral12B_tp8 = (8, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":8}, "bfloat16")
+        # grid_space.append(Mistral12B_tp8)
+        Mistral12B_tp16 = (4, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":16}, "bfloat16")
+        grid_space.append(Mistral12B_tp16)
+        # Mistral12B_tp32 = (2, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":32}, "bfloat16")
+        # grid_space.append(Mistral12B_tp32)
+        Mistal8B_tp64 = (1, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":64}, "bfloat16")
+        grid_space.append(Mistal8B_tp64)
+        Mistral12B_expert1 = (16, 4096, 2048, 7168, 1, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_expert1)
+        Mistral12B_expert7 = (16, 4096, 2048, 7168, 7, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_expert7)
+        Mistral12B_group1 = (16, 4096, 2048, 7168, 8, 2, 1, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral12B_group1)
+        Mistal8B_group4 = (16, 4096, 2048, 7168, 8, 2, 4, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistal8B_group4)
+
+        return grid_space
+
+    def build_grid_space_50B(self):
+        # Grid space for testing
+
+        grid_space = []
+
+        # Custom Configs
+        # b s i h e top_k g ob cf mesh dtype
+
+        # 50B Configs
+        Mistral50B_base = (16, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_base)
+        Mistral50B_top1 = (16, 4096, 4096, 14336, 8, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_top1)
+        Mistral50B_top4 = (16, 4096, 4096, 14336, 8, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_top4)
+        Mistral50B_seq256 = (16, 256, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_seq256)
+        Mistral50B_seq2k = (16, 2048, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_seq2k)
+        Mistral50B_seq8k = (16, 8192, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_seq8k)
+        Mistral50B_seq16k = (16, 16384, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_seq16k)
+        Mistral50B_seq32k = (16, 32768, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral50B_seq32k)
+        # Mistral50B_tp8 = (8, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":8}, "bfloat16")
+        # grid_space.append(Mistral50B_tp8)
+        Mistral50B_tp16 = (4, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":16}, "bfloat16")
+        grid_space.append(Mistral50B_tp16)
+        # Mistral50B_tp32 = (2, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":32}, "bfloat16")
+        # grid_space.append(Mistral50B_tp32)
+        Mistal50B_tp64 = (1, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":64}, "bfloat16")
+        grid_space.append(Mistal50B_tp64)
+
+
+        return grid_space
+
+    def build_grid_space_150B(self):
+
+        grid_space = []
+        # Custom Configs
+        # b s i h e top_k g ob cf mesh dtype
+
+        Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral150B_base)
+        Mistral150B_top1 = (16, 4096, 6144, 15360, 16, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral150B_top1)
+        Mistral150B_top2 = (16, 4096, 6144, 15360, 16, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16") # 2 experts
+        grid_space.append(Mistral150B_top2)
+        Mistral150B_seq256 = (16, 256, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral150B_seq256)
+        Mistral150B_seq2k = (16, 2048, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral150B_seq2k)
+        # Mistral150B_seq8k = (16, 8192, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16") 
+        # grid_space.append(Mistral150B_seq8k)
+        # Mistral150B_seq16k = (16, 16384, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral150B_seq16k)
+        # Mistral150B_seq32k = (16, 32768, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        # grid_space.append(Mistral150B_seq32k)
+        Mistral150B_tp16 = (4, 4096, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":16}, "bfloat16")
+        grid_space.append(Mistral150B_tp16)
+        Mistral150B_tp64 = (1, 4096, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":64}, "bfloat16")
+        grid_space.append(Mistral150B_tp64)
+        Mistral8x20B_base = (16, 4096, 6144, 16384, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
+        grid_space.append(Mistral8x20B_base)
+
+        return grid_space
+
+    
+def get_training_configs(is_unit: bool = False):
+
+    builder = TestConfigBuilder()
+
+    test_suite = os.environ.get("TEST_SUITE", 'presubmit').lower()
+    if test_suite == 'presubmit':
+        grid_space = builder.build_grid_space()
+    elif test_suite == '12b':
+        grid_space = builder.build_grid_space_12B()
+    elif test_suite == '50b':
+        grid_space = builder.build_grid_space_50B()
+    elif test_suite == '150b':
+        grid_space = builder.build_grid_space_150B()
+    else:
+        raise ValueError(f"Unknown test suite: {test_suite}")
+
+    test_configs = []
+    for (batch, seq, input_dim,  hidden_dim, n_experts, top_k, n_groups,
+         out_batch, capacity_factor, mesh_spec, dtype) in grid_space[:1]:
+        
+        
+        config = builder.reset()
+        config = config.with_dimensions(batch, seq, input_dim, dtype)
+        config = config.with_expert_settings(
             hidden_dim,
             out_batch,
             n_groups,
             n_experts,
-            expert_capacity=capacity,
-            use_blockwise_kernel=use_blockwise_kernel,
+            top_k,
             train_capacity_factor=capacity_factor
         )
-        self.with_mesh_settings(mesh_spec)
+        config = config.with_mesh_settings(mesh_spec)
         if is_unit:
-            configs = self.build_test_configs_unit()
+            config = config.build_test_configs_unit()
         else:
-            configs = self.build_test_configs_integ()
-        return configs
-    
-def get_training_configs(is_unit: bool = False):
-    builder = TestConfigBuilder()
+            config = config.build_test_configs_integ()
 
-    test_configs = []
-
-    for (batch, seq, input_dim,  hidden_dim, n_experts, n_groups, out_batch, capacity, mesh_spec) in builder.build_grid_space():
-        if batch % out_batch != 0:
-            continue
-        config = builder.build_configs(batch, seq, input_dim,  hidden_dim, n_experts, n_groups, out_batch, capacity, mesh_spec, is_unit=is_unit)
-        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_g{n_groups}_ob{out_batch}_ec{capacity}_mesh{mesh_spec}"
+        name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_topk{top_k}_g{n_groups}_ob{out_batch}_ec{capacity_factor}_mesh{mesh_spec}_dtype_{dtype}"
         test_configs.extend([(name + cfg.prefix, cfg) for cfg in config])
 
     return test_configs
-
-class ModuleTester:
-    def _fwd_call(self, layer, state, inputs):
-        return F(
-                layer,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(123),
-                state=state,
-                inputs=inputs,
-        )
-
-    def _test_fwd_internal(self, cfg, assert_outputs=True):
-        cfg.init()
-        @partial(jax.jit, out_shardings=cfg.out_shard_test) # cannot specify both backend and sharding together
-        def test_fwd_call():
-            test_output, _ = self._fwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
-            return test_output
-
-        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
-        def golden_fwd_call():
-            golden_output, _ =  self._fwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
-            return golden_output
-
-        with cfg.mesh_test:
-            test_output = test_fwd_call()
-        # with cfg.mesh_golden:
-        #     golden_output = golden_fwd_call()
-
-        # if cfg.conv_output != None:
-        #     test_output = cfg.conv_output(test_output)
-        
-        # Transfer results to CPU before comparison
-        # if assert_outputs:
-        #     self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output))
-
-    def _test_bwd_internal(self, cfg):
-        cfg.init()
-        @partial(jax.jit, out_shardings=cfg.out_shard_test)
-        def test_bwd_call():
-            def loss_fn(state):
-                test_output, _ = self._fwd_call(cfg.test_layer, state, cfg.test_inputs)
-                return cfg.loss_fn(test_output)
-            
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.test_state)
-            return  loss, grads
-
-        @partial(jax.jit, out_shardings=cfg.out_shard_golden)
-        def golden_bwd_call():
-            def loss_fn(state):
-                golden_output, _ = self._fwd_call(cfg.golden_layer, state, cfg.golden_inputs)
-                return cfg.loss_fn(golden_output)
-            
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(cfg.golden_state)
-            return loss, grads
-
-        with cfg.mesh_test:
-            test_loss, test_grads = test_bwd_call()
-        with cfg.mesh_golden:
-             golden_loss, golden_grads = golden_bwd_call()
-
-        # Transfer results to CPU before comparison
-        test_loss = jax.tree_map(jax.device_get, test_loss)
-        golden_loss = jax.tree_map(jax.device_get, golden_loss)
-        test_grads = jax.tree_map(jax.device_get, test_grads)
-        golden_grads = jax.tree_map(jax.device_get, golden_grads)
-        
-        self.assertNestedAllClose(test_loss, golden_loss)
-        self.assertNestedAllClose(test_grads, golden_grads)

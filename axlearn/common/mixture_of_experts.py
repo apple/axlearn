@@ -1681,8 +1681,8 @@ class TransformerFeedForwardMoE(BaseLayer):
             for i, activation in enumerate(cfg.activation):
                 x_i = jnp.einsum("oegcm,emh->oegch", x, self.parameters[f"wi_{i}_weight"])
                 x_i = with_sharding_constraint(x_i, cfg.dim_to_mesh_axis_map["oegch"])
+                x_i = self._remat_name(x_i, f"linear1_{i}")
                 x_i = get_activation_fn(activation)(x_i)
-                x = self._remat_name(x, f"linear1_{i}")
                 activations.append(x_i)
             assert len(activations) == 2, cfg.activation
             return activations[0] * activations[1]
