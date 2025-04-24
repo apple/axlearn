@@ -63,9 +63,7 @@ from axlearn.experiments.text.gpt.common import (
     mesh_shape_from_axes,
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
-from axlearn.experiments.text.gpt.common import (
-    scaled_hidden_dim,
-)
+from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
 
 # Import the FP8ConfigModifier below if using FP8 training. See config for A3 / A4 instances below
