@@ -7,21 +7,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from absl import flags
 
-from axlearn.open_api.mock_utils import mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
-
-_module_root = "axlearn"
-
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.common import Generator
-from axlearn.open_api.generator import generate_from_requests
-from axlearn.open_api.openai import OpenAIClient
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.common import Generator
+    from axlearn.open_api.generator import generate_from_requests
+    from axlearn.open_api.openai import OpenAIClient
 
 # pylint: enable=wrong-import-position
 
+_MODULE_ROOT = "axlearn"
 
+
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
     """Unit test for generate_from_requests."""
 
@@ -37,7 +36,7 @@ class TestGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
         self.open_api._clients = [MagicMock(), MagicMock()]
 
     @patch(
-        f"{_module_root}.open_api.common.Generator._async_generate_from_request",
+        f"{_MODULE_ROOT}.open_api.common.Generator._async_generate_from_request",
         new_callable=AsyncMock,
     )
     async def test_async_generate_from_requests(self, mock_async_generate_from_request):
@@ -67,7 +66,7 @@ class TestGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response["response"], "test response")
 
     @patch(
-        f"{_module_root}.open_api.common.Generator._async_generate_from_request",
+        f"{_MODULE_ROOT}.open_api.common.Generator._async_generate_from_request",
         new_callable=AsyncMock,
     )
     async def test_async_generate_from_requests_with_n(self, mock_async_generate_from_request):

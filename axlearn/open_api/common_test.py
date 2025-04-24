@@ -7,24 +7,24 @@ import unittest
 from datetime import timedelta
 from unittest.mock import mock_open, patch
 
-from axlearn.open_api.mock_utils import mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.common import (
-    check_vllm_readiness,
-    flatten_responses,
-    load_requests,
-    parse_decode_parameters,
-    repeat_requests,
-    write_metrics,
-    write_responses,
-)
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.common import (
+        check_vllm_readiness,
+        flatten_responses,
+        load_requests,
+        parse_decode_parameters,
+        repeat_requests,
+        write_metrics,
+        write_responses,
+    )
 
 # pylint: enable=wrong-import-position
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestUtilities(unittest.TestCase):
     """Unit tests for utilities function."""
 
@@ -82,6 +82,7 @@ class TestUtilities(unittest.TestCase):
         self.assertEqual(squeezed[1]["id"], "002")
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestLoadRequests(unittest.TestCase):
     """Unit test for load_requests"""
 
@@ -126,6 +127,7 @@ class TestLoadRequests(unittest.TestCase):
                 load_requests("dummy_path", max_instances=10)
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestWriteMetrics(unittest.TestCase):
     """Unit tests for write_metrics."""
 
