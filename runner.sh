@@ -260,7 +260,10 @@ else
 	# export MIXTRAL_MOE=$1
 	# export NUM_LAYERS=$2
 	# envy-Mistral-${AXLEARN_MODEL_NAME}
-	
+	if [ -e job_explorer/tagger.py ]; then
+		python job_explorer/tagger.py --submit --root_dir ./
+	fi
+
 	set -ex
 	python -m axlearn.common.launch_trainer_main \
 		--module=text.gpt.c4_trainer --config=$AXLEARN_MODEL_NAME \
