@@ -116,7 +116,7 @@ from axlearn.cloud.common.bastion import BastionDirectory
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import new_jobspec, serialize_jobspec
 from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
-from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
+from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import JobSpec, ResourceMap
 from axlearn.cloud.common.utils import (
@@ -132,7 +132,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp import runners
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
 from axlearn.cloud.gcp.jobs.launch_utils import (
     JobsToTableFn,
@@ -204,6 +204,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         # Command to submit to the bastion.
         command: Optional[str] = None
         # Used along with project to identify `gcp_settings`.
+        # TODO(markblee): Move to where project/zone are defined and use `common_flags`.
         env_id: Optional[str] = None
         # Where to run the remote job.
         zone: Required[str] = REQUIRED
@@ -240,6 +241,12 @@ class BaseBastionManagedJob(FlagConfigurable):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         bundler_flags(required=False, **common_kwargs)
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
+        flags.DEFINE_string(
+            "env_id",
+            None,
+            "The env_id, used along with project to identify `gcp_settings`.",
+            **common_kwargs,
+        )
         flags.DEFINE_string("bastion", None, "Name of bastion VM to use.", **common_kwargs)
         flags.DEFINE_integer(
             "priority",
@@ -272,6 +279,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         super().set_defaults(fv)
         # Don't override `name` if already specified, since the default is non-deterministic.
         fv.set_default("name", fv.name or generate_job_name())
+        fv.set_default("env_id", default_env_id())
 
     @classmethod
     def from_flags(
@@ -365,8 +373,12 @@ class BaseBastionManagedJob(FlagConfigurable):
         if cfg.project_id:
             if not from_vm:
                 logging.warning("Supplying --project_id has no purpose if not running in bastion.")
-            quota_file = (
-                f"gs://{gcp_settings('private_bucket')}/{cfg.bastion_name}/{QUOTA_CONFIG_PATH}"
+            quota_file = os.path.join(
+                "gs://",
+                gcp_settings("private_bucket"),
+                cfg.bastion_name,
+                QUOTA_CONFIG_DIR,
+                QUOTA_CONFIG_FILE,
             )
             user_projects = get_user_projects(quota_file, user_id=cfg.user_id)
             if cfg.project_id.lower() not in user_projects:

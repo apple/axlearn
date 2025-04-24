@@ -29,7 +29,7 @@ from typing import Optional
 from absl import app, flags, logging
 
 from axlearn.cloud.common.bastion import bastion_job_flags
-from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
+from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_resource_limits
 from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, common_flags
@@ -136,7 +136,8 @@ def quota_file(flag_values: flags.FlagValues) -> str:
         "gs://",
         gcp_settings("private_bucket", fv=flag_values),
         flag_values.name,
-        QUOTA_CONFIG_PATH,
+        QUOTA_CONFIG_DIR,
+        QUOTA_CONFIG_FILE,
     )
 
 

@@ -92,7 +92,7 @@ import jax
 from absl import logging
 from jax import numpy as jnp
 
-from axlearn.common import ops, param_init
+from axlearn.common import param_init
 from axlearn.common.attention_bias import (
     NEG_INF,
     BaseAttentionBias,
@@ -1563,10 +1563,7 @@ class ScaleQuery(BaseScaleQK):
         """Scales the projected queries."""
         proj = self.apply_norm(proj)
         proj = self.apply_per_dim_scale(proj)
-        proj = self.apply_scale_factor(proj)
-        # Stop scale constant from being folded with others.
-        # May increase numerical stability.
-        return ops.forward_optimization_barrier(proj)
+        return self.apply_scale_factor(proj)
 
     @staticmethod
     def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
@@ -1605,10 +1602,7 @@ class ScaleKey(BaseScaleQK):
         if cfg.norm is not None:
             proj = self.norm(proj)
         scale = self._scale_factor(cfg.per_head_dim)
-        proj = proj * scale
-        # Stop scale constant from being folded with others.
-        # May increase numerical stability.
-        return ops.forward_optimization_barrier(proj)
+        return proj * scale
 
     @staticmethod
     def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
