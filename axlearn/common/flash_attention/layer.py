@@ -328,7 +328,7 @@ class FlashBlockSizeModifier(ConfigModifier):
         """Configures FlashBlockSizeModifier."""
 
         tpu_block_size: Optional[int] = 512
-        gpu_block_size: Optional[int] = 128
+        gpu_block_size: Optional[int] = None
 
     def __call__(self, cfg: ConfigBase) -> ConfigBase:
         tpu_block_size = self.config.tpu_block_size
