@@ -39,8 +39,9 @@ from axlearn.common.layers import (
     get_activation_fn,
 )
 from axlearn.common.metrics import WeightedScalar
-from axlearn.common.module import Module
+from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import FanAxes, constant_initializer
+from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
@@ -649,7 +650,7 @@ class TopKGating(BaseGating):
         )
 
 
-class TransformerFeedForwardMoE(BaseLayer):
+class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
     """A Transformer feed-forward layer with mixture of experts.
 
     This is a drop-in replacement of the `TransformerFeedForwardLayer` class.
@@ -659,7 +660,7 @@ class TransformerFeedForwardMoE(BaseLayer):
     """
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(DenseGeneralBaseLayer.Config):
         """Configures TransformerFeedForwardMoE."""
 
         input_dim: Required[int] = REQUIRED  # Input feature dim.
@@ -865,7 +866,10 @@ class TransformerFeedForwardMoE(BaseLayer):
         x = self._wi_activation(x)
         if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
             x = self.dropout1(x)
-        x = jnp.einsum("oegch,ehm->oegcm", x, self.parameters["wo_weight"])
+        with child_context("wo_einsum", module=self):
+            x = self.einsum_maybe_quantized(
+                "oegch,ehm->oegcm", activation=x, kernel=self.parameters["wo_weight"]
+            )
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
         x = jnp.einsum("oegcm->ogecm", x)
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecm"])
@@ -879,14 +883,20 @@ class TransformerFeedForwardMoE(BaseLayer):
         if isinstance(cfg.activation, tuple):
             activations = []
             for i, activation in enumerate(cfg.activation):
-                x_i = jnp.einsum("oegcm,emh->oegch", x, self.parameters[f"wi_{i}_weight"])
+                with child_context(f"wi_{i}_einsum", module=self):
+                    x_i = self.einsum_maybe_quantized(
+                        "oegcm,emh->oegch", activation=x, kernel=self.parameters[f"wi_{i}_weight"]
+                    )
                 x_i = with_sharding_constraint(x_i, cfg.dim_to_mesh_axis_map["oegch"])
                 x_i = get_activation_fn(activation)(x_i)
                 activations.append(x_i)
             assert len(activations) == 2, cfg.activation
             return activations[0] * activations[1]
         else:
-            x = jnp.einsum("oegcm,emh->oegch", x, self.parameters["wi_weight"])
+            with child_context("wi_einsum", module=self):
+                x = self.einsum_maybe_quantized(
+                    "oegcm,emh->oegch", activation=x, kernel=self.parameters["wi_weight"]
+                )
             x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegch"])
             return get_activation_fn(cfg.activation)(x)
 
