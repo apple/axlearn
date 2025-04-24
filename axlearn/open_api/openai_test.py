@@ -7,20 +7,19 @@ import json
 import unittest
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
-from axlearn.open_api.mock_utils import mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
+_MODULE_ROOT = "axlearn"
 
-_module_root = "axlearn"
-
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.common import ClientRateLimitError, Generator, ValidationError
-from axlearn.open_api.openai import OpenAIClient
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.common import ClientRateLimitError, Generator, ValidationError
+    from axlearn.open_api.openai import OpenAIClient
 
 # pylint: enable=wrong-import-position
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestOpenAIClient(unittest.IsolatedAsyncioTestCase):
     """Unit tests for class OpenAIClient."""
 
@@ -72,6 +71,7 @@ class TestOpenAIClient(unittest.IsolatedAsyncioTestCase):
         )
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
     """Unit test for async_generate_from_requests."""
 
@@ -87,7 +87,7 @@ class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
         self.open_api._clients = [MagicMock(), MagicMock()]
 
     @patch(
-        f"{_module_root}.open_api.common.Generator._async_generate_from_request",
+        f"{_MODULE_ROOT}.open_api.common.Generator._async_generate_from_request",
         new_callable=AsyncMock,
     )
     async def test_async_generate_from_requests(self, mock_async_generate_from_request):
@@ -121,6 +121,7 @@ class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
         )  # Ensure each request is processed
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestOpenAI(unittest.IsolatedAsyncioTestCase):
     """Unit tests for the OpenAIClient class focusing
     on the async_generate_from_request method."""
