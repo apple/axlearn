@@ -116,7 +116,7 @@ from axlearn.cloud.common.bastion import BastionDirectory
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import new_jobspec, serialize_jobspec
 from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
-from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
+from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import JobSpec, ResourceMap
 from axlearn.cloud.common.utils import (
@@ -373,8 +373,12 @@ class BaseBastionManagedJob(FlagConfigurable):
         if cfg.project_id:
             if not from_vm:
                 logging.warning("Supplying --project_id has no purpose if not running in bastion.")
-            quota_file = (
-                f"gs://{gcp_settings('private_bucket')}/{cfg.bastion_name}/{QUOTA_CONFIG_PATH}"
+            quota_file = os.path.join(
+                "gs://",
+                gcp_settings("private_bucket"),
+                cfg.bastion_name,
+                QUOTA_CONFIG_DIR,
+                QUOTA_CONFIG_FILE,
             )
             user_projects = get_user_projects(quota_file, user_id=cfg.user_id)
             if cfg.project_id.lower() not in user_projects:
