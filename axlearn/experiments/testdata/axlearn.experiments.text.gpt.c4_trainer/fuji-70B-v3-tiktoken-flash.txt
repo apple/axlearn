@@ -234,7 +234,7 @@ mesh_rules[7][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modif
 mesh_rules[7][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: True
 mesh_rules[7][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].fn: 'axlearn.common.utils.save_and_offload_only_these_names_regex'
 mesh_rules[7][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].names_which_can_be_offloaded: None
-mesh_rules[7][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].names_which_can_be_saved: '.*[kqv]_proj|.*linear1_[01]'
+mesh_rules[7][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].names_which_can_be_saved: '.*[kqv]_proj|.*o_proj|.*linear1_[01]'
 mesh_rules[7][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: None
 mesh_rules[7][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_src: None
 mesh_rules[7][1].config_modifiers[2].klass: 'axlearn.common.trainer_config_modifier.ModuleConfigModifier'
