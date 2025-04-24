@@ -19,8 +19,10 @@ from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils_neuron import TestConfig
 from axlearn.common.utils_neuron import get_training_configs
+import os
 
-test_configs = get_training_configs()
+is_unit = os.getenv('IS_UNIT', 'false').lower() == 'true'
+test_configs = get_training_configs(is_unit)
 
 # pylint: disable=no-self-use,protected-access
 class TestImplCorrectnessInteg(TestCase):
@@ -62,43 +64,51 @@ class TestImplCorrectnessInteg(TestCase):
                                   atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
 
     @parameterized.named_parameters(test_configs)
-    def test_bwd_correctness(self, cfg: TestConfig):
-
+    def test_fwd_bwd_correctness(self, cfg: TestConfig):
         cfg.instantiate()
 
-        @partial(jax.jit, static_argnums=0) 
+        @partial(jax.jit, static_argnums=0)
         def test_bwd_call(test_layer, test_state, test_inputs):
             def loss_fn(state):
-                test_output, _ = self._fwd_call(test_layer, state, test_inputs)
-                return cfg.loss_fn(test_output)
-            
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(test_state)
-            return  loss, grads
+                output, aux = self._fwd_call(test_layer, state, test_inputs)
+                return cfg.loss_fn(output), output  # Return both loss and output
+
+            (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(test_state)
+            return loss, grads, output
 
         @partial(jax.jit, static_argnums=0)
         def golden_bwd_call(golden_layer, golden_state, golden_inputs):
             def loss_fn(state):
-                golden_output, _ = self._fwd_call(golden_layer, state, golden_inputs)
-                return cfg.loss_fn(golden_output)
-            
-            loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(golden_state)
-            return loss, grads
+                output, aux = self._fwd_call(golden_layer, state, golden_inputs)
+                return cfg.loss_fn(output), output  # Return both loss and output
+
+            (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(golden_state)
+            return loss, grads, output
 
         with cfg.mesh_test:
-            test_loss, test_grads = test_bwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
+            test_loss, test_grads, test_output = test_bwd_call(cfg.test_layer, cfg.test_state, cfg.test_inputs)
         with cfg.mesh_golden:
-             golden_loss, golden_grads = golden_bwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
+            golden_loss, golden_grads, golden_output = golden_bwd_call(cfg.golden_layer, cfg.golden_state, cfg.golden_inputs)
 
         #Transfer results to CPU before comparison
         test_loss = jax.tree_map(jax.device_get, test_loss)
         golden_loss = jax.tree_map(jax.device_get, golden_loss)
         test_grads = jax.tree_map(jax.device_get, test_grads)
         golden_grads = jax.tree_map(jax.device_get, golden_grads)
+        test_output = jax.tree_map(jax.device_get, test_output)
+        golden_output = jax.tree_map(jax.device_get, golden_output)
         
+        # Compare losses
         self.assertNestedAllClose(test_loss, golden_loss,
-                                  atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
+                                atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
+        
+        # Compare gradients
         self.assertNestedAllClose(test_grads, golden_grads,
-                                  atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
+                                atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
+        
+        # Compare outputs
+        self.assertNestedAllClose(test_output, golden_output,
+                                atol=cfg.test.tol["atol"], rtol=cfg.test.tol["rtol"])
 
 if __name__ == "__main__":
     absltest.main()

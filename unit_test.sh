@@ -58,11 +58,14 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 echo "setup env vars"
+export TEST_SUITE="presubmit" # set to presubmit/12B/50B/150B
 if [ "$1" = "unit" ]; then
     echo "Running Unit Test"
     export JAX_PLATFORMS=cpu
-    pytest axlearn/common/mixture_of_experts_neuron_unit_test.py
+    export IS_UNIT="true"
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_bwd_correctness"
 else
     echo "Running Integ Test"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_bwd_correctness"
+    export IS_UNIT="false"
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_bwd_correctness"
 fi
