@@ -1006,6 +1006,10 @@ class ROCmTransformerEngineFlashAttention(BaseFlashAttention):
         if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         
+        devices = jax.devices()
+        if "AMD" not in devices[0].device_kind:
+            return self._log_unsupported("not on ROCm backend")
+
         try:
             from transformer_engine.jax.flax.transformer import DotProductAttention
         except ImportError:
