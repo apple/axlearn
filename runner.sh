@@ -106,8 +106,6 @@ else
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--remat-rope --verify-hlo'"
 fi
 
-
-
 if [ "$NEURON_FSDP_CC_MULTISTREAM" = "1" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-disable-dge-levels spill_reload"
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-backend-options='--run-shared-allocation-before-post-sched=true' --ccop-pipeline-buffer-size=2000"
@@ -153,6 +151,8 @@ if [ -z "$VENV_NAME" ]; then
 fi
 
 source ../$VENV_NAME/bin/activate
+
+echo 'Artifacts path' $TEST_ARTIFACTS_PATH
 
 if [ $SLURM_PROCID -eq 0 ]; then
 	echo "Listing apt dependencies"
@@ -261,7 +261,6 @@ else
 	# export NUM_LAYERS=$2
 	# envy-Mistral-${AXLEARN_MODEL_NAME}
 	
-	python runners/tagger.py --submit
 	set -ex
 	python -m axlearn.common.launch_trainer_main \
 		--module=text.gpt.c4_trainer --config=$AXLEARN_MODEL_NAME \
