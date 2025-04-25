@@ -133,11 +133,10 @@ from axlearn.cloud.common.utils import (
 from axlearn.cloud.gcp import runners
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
-from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
+from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, infer_bastion_name
 from axlearn.cloud.gcp.jobs.launch_utils import (
     JobsToTableFn,
     Matcher,
-    infer_gcp_api,
     infer_module_qualname,
     jobs_table,
     match_gcp_api,
@@ -300,7 +299,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         """
         cfg: BaseBastionManagedJob.Config = super().from_flags(fv, **kwargs)
         if not cfg.bastion_name:
-            cfg.bastion_name = fv.bastion or shared_bastion_name(fv, gcp_api=infer_gcp_api(fv))
+            cfg.bastion_name = fv.bastion or infer_bastion_name(fv)
         cfg.bastion_dir.root_dir = bastion_root_dir(cfg.bastion_name, fv=fv)
         # Default output_dir depends on the final value of --name.
         if not cfg.output_dir:
