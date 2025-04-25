@@ -552,7 +552,7 @@ class TestFlashAttention(TestCase):
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
             # rows. "custom" is also sliding window, but uses a different function to test support
             # for custom mask fns.
-            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
+            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
 
         if attn_type == "full":
             mask = None

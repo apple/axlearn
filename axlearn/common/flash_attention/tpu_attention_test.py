@@ -139,6 +139,8 @@ class TestFlashAttention(TestCase):
         if jax.default_backend() == "cpu":
             # TODO(dhwang2): this has been broken for a while on CPU.
             pytest.skip(reason="Backward path is broken on CPU")
+        if mask not in (None, causal_mask) and query_length_multiplier > 1:
+            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
         # pylint: disable=protected-access
         fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
         q, k, v, bias = generate_attention_data(
