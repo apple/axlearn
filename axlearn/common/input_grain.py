@@ -405,12 +405,12 @@ class _ShardDataset(slice_dataset.SliceMapDataset):
         super().__init__(*args, **kwargs)
         self._iterated = False
 
-    def set_dispatch_config(self, *, num_shards: int, shard_index: int, **kwargs):
+    def set_dispatch_config(self, *, num_shards: int, shard_index: int, feed_batch_size: int):
         """Sets the shard index and count.
 
         The API follows that of `tfds_read_config`.
         """
-        del kwargs
+        del feed_batch_size
         if self._iterated:
             raise ValueError("Attempting to `set_dispatch_config` after iterating.")
         self._start = shard_index
@@ -697,11 +697,11 @@ def pad_for_evaluation(
 class PerFeedDataset(Protocol):
     """A per-feed dataset supports configuring dispatch configs."""
 
-    def set_dispatch_config(self, **kwargs):
+    def set_dispatch_config(self, *, num_shards: int, shard_index: int, feed_batch_size: int):
         ...
 
 
-def _set_dispatch_config_recursively(source: Dataset, **kwargs) -> bool:
+def _set_dispatch_config_on_ancestors(source: Dataset, **kwargs) -> bool:
     """Sets **kwargs for all parents in `source`."""
     set_any = False
     if isinstance(source, PerFeedDataset):
@@ -710,7 +710,7 @@ def _set_dispatch_config_recursively(source: Dataset, **kwargs) -> bool:
         set_any = True
 
     for parent in source.parents:
-        set_current = _set_dispatch_config_recursively(parent, **kwargs)
+        set_current = _set_dispatch_config_on_ancestors(parent, **kwargs)
         set_any = set_any or set_current
     return set_any
 
@@ -741,7 +741,7 @@ class Input(input_base.Input):
     def dataset(self) -> grain.IterDataset:
         ds = self._source()
         if "input_dispatcher" in self.children:
-            if not _set_dispatch_config_recursively(
+            if not _set_dispatch_config_on_ancestors(
                 ds,
                 **self.input_dispatcher.feed_read_config(),
                 feed_batch_size=self.input_dispatcher.feed_logical_batch_size,
