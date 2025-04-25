@@ -75,8 +75,7 @@ class ConfigTest(TestCase):
             self.assertTrue(
                 tf.reduce_all(
                     tf.logical_or(
-                        ex["source"]["paddings"] == 0,
-                        ex["source"]["paddings"] == 1,
+                        tf.math.logical_not(ex["source"]["paddings"]), ex["source"]["paddings"]
                     )
                 )
             )
