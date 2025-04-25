@@ -293,8 +293,11 @@ def _ref_framer(*, inputs: ArrayLike, paddings: ArrayLike, frame_size: int, fram
     https://github.com/tensorflow/lingvo/blob/4a9097a212622d99d7f8e2379804dbffdc44a97f/lingvo/tasks/asr/frontend.py#L404
     """
     outputs = tf.signal.frame(inputs, frame_size, frame_step, pad_end=True)
-    output_paddings = tf.signal.frame(paddings, frame_size, frame_step, pad_end=True)
-    output_paddings = tf.reduce_max(output_paddings, axis=2)
+    # tf.signal.frame doesn't support bool tensor.
+    output_paddings = tf.signal.frame(
+        tf.cast(paddings, tf.int8), frame_size, frame_step, pad_end=True
+    )
+    output_paddings = tf.cast(tf.reduce_max(output_paddings, axis=2), tf.bool)
     # Note: tf.signal.frame appends more padding than necessary.
     num_frames = frontend_utils.num_frames(
         inputs.shape[1], frame_size=frame_size, hop_size=frame_step

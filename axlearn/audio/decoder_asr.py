@@ -498,7 +498,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         max_decode_len = paddings.shape[-1] + 1
         beam_search_outputs = beam_search_decode(
             inputs=jnp.zeros_like(paddings),
-            time_step=jnp.zeros(paddings.shape[0], dtype=paddings.dtype),
+            time_step=jnp.zeros(paddings.shape[0], dtype=jnp.int32),
             cache={"time_step": jnp.array(0)},
             tokens_to_scores=self._tokens_to_scores(input_batch, num_decodes=num_decodes),
             num_decodes=num_decodes,
@@ -539,7 +539,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         max_decode_len = paddings.shape[-1] + 1
         sample_decode_outputs = sample_decode(
             inputs=jnp.zeros_like(paddings),
-            time_step=jnp.zeros(paddings.shape[0], dtype=paddings.dtype),
+            time_step=jnp.zeros(paddings.shape[0], dtype=jnp.int32),
             cache={"time_step": jnp.array(0)},
             tokens_to_scores=self._tokens_to_scores(
                 input_batch, num_decodes=num_decodes, logits_modifier=logits_modifier

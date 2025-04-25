@@ -400,9 +400,7 @@ class RandomVectorQuantizer(BaseQuantizer):
             quantized_vectors=quantized_vectors,
         )
 
-        onehots = _ids_to_onehots(
-            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
-        )
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
         _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
@@ -548,9 +546,7 @@ class KmeansVectorQuantizer(BaseQuantizer):
             ),
             loss=total_loss,
         )
-        onehots = _ids_to_onehots(
-            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
-        )
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
         _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
@@ -668,9 +664,7 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
                 quantized_vectors=quantized_vectors,
             )
 
-        onehots = _ids_to_onehots(
-            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
-        )
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
         _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         if self.is_training:
             self.add_module_output("probs", y_soft)

@@ -1947,7 +1947,7 @@ class DeviceUsage:
     hbm_memory_bandwidth_utilization: Optional[float] = None
 
 
-def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] = None) -> Tensor:
+def sequence_mask(*, lengths: Tensor, max_len: int, dtype: jnp.dtype = jnp.bool) -> Tensor:
     """Computes a mask over sequence positions for each given length.
 
     Args:
@@ -1958,9 +1958,6 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] =
     Returns:
         Tensor [..., T]. 1 is valid and 0 is padding.
     """
-    if dtype is None:
-        dtype = lengths.dtype
-
     prefix_axis = tuple(range(lengths.ndim))
     # [..., T]
     sequence = jnp.expand_dims(jnp.arange(max_len), axis=prefix_axis)
