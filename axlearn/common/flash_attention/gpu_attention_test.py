@@ -1,3 +1,4 @@
+# pylint: disable=unbalanced-tuple-unpacking
 # Copyright © 2023 Apple Inc.
 #
 # Some of the code in this file is adapted from:
@@ -70,6 +71,7 @@ def _test_forward_and_backward(
     ref_fn = jax.jit(ref_fn)
     test_fn = jax.jit(test_fn)
     prng_key = jax.random.PRNGKey(44)
+    # pylint: disable=not-callable
     jax_out = test_fn(q, k, v, bias, prng_key)
     jax_ref_out = ref_fn(q, k, v, bias, prng_key)
     backend = jax.default_backend()

@@ -224,12 +224,20 @@ class NeuronFlashAttention(BaseFlashAttention):
     """Wraps the Neuron attention kernel."""
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         # TODO(hanzhi-zhou): neuron may error out for unsupported sequence length and head size.
         # Should we add checks for them and fallback to XLA?
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(
+            query=query, key=key, value=value, bias=bias, page_tables=page_tables
+        ):
             return False
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
@@ -244,9 +252,11 @@ class NeuronFlashAttention(BaseFlashAttention):
         value: Tensor,
         bias: BaseAttentionBias,
         prng_key: Optional[Tensor] = None,
+        page_tables: Optional[Tensor] = None,
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
         del prng_key
+        del page_tables
 
         key = repeat_kv_heads(query.shape[2], key)
         value = repeat_kv_heads(query.shape[2], value)

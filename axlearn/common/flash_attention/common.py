@@ -93,12 +93,12 @@ def query_iterator_indices(block_mask_map: np.ndarray, *, padding: int = 0) -> K
     )
 
 
-class BaseFlashAttention(Configurable):
-    """Common interface for FlashAttention for all backends."""
+class BaseAttention(Configurable):
+    """Common interface of Flash/Paged attention for all backends."""
 
     @config_class
     class Config(Configurable.Config):
-        """Configures BaseFlashAttention.
+        """Configures attention implementations.
 
         Attributes:
             is_decoding: Whether we're in decoding/inference mode.
@@ -116,10 +116,9 @@ class BaseFlashAttention(Configurable):
         tpu_block_size: int = 512
         gpu_block_size: int = 128
 
-    def __init__(self, cfg):
+    def __init__(self, cfg: Config):
         super().__init__(cfg)
-        # Keep a typed copy of self.config.
-        self.cfg: BaseFlashAttention.Config = self.config
+        self.cfg: BaseAttention.Config = self.config
 
     def name(self) -> str:
         """Returns the class name."""
@@ -140,6 +139,60 @@ class BaseFlashAttention(Configurable):
         return False
 
     def _check_block_size(self, *, query: Tensor, key: Tensor, block_size: int) -> bool:
+        raise NotImplementedError()
+
+    # Note: Positional arguments are used since some use cases require positional-only args,
+    # such as functional transformations.
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+        page_tables: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Computes attention context.
+
+        Note: This method is called inside jax.shard_map, so query has the per-device shape.
+        Warning: The dtype of key and value may differ from the dtype of query.
+
+        Args:
+            query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
+            key: Key of shape [batch_size, source_length, num_kv_heads, per_head_dim] or
+                    [num_kv_heads, total_num_pages, page_size, per_head_dim] for paged attention.
+            value: Value of shape [batch_size, source_length, num_kv_heads, per_head_dim] or
+                    [num_kv_heads, total_num_pages, page_size, per_head_dim] for paged attention.
+            bias: Attention bias to apply.
+            prng_key: PRNG key for dropout. Only needed when dropout_rate > 0.0.
+            page_tables: Indices for how to retrieve key value from pages.
+                         Only needed for PagedAttention.
+
+        Returns:
+            The context tensor of shape [batch_size, target_length, num_heads, per_head_dim].
+        """
+        raise NotImplementedError()
+
+    def is_supported(
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
+    ) -> bool:
+        """Returns whether the attention kernel supports the given configuration.
+
+        See BaseFlashAttention.is_supported and BasePagedAttention.is_supported.
+        """
+        raise NotImplementedError()
+
+
+class BaseFlashAttention(BaseAttention):
+    """Common interface for FlashAttention for all backends."""
+
+    def _check_block_size(self, *, query: Tensor, key: Tensor, block_size: int) -> bool:
         q_seq_len = query.shape[1]
         k_seq_len = key.shape[1]
         if q_seq_len % block_size != 0 or k_seq_len % block_size != 0:
@@ -148,7 +201,13 @@ class BaseFlashAttention(Configurable):
         return True
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor],
     ) -> bool:
         """Returns whether the attention kernel supports the given configuration.
 
@@ -167,7 +226,9 @@ class BaseFlashAttention(Configurable):
             ValueError: If the given configuration doesn't logically make sense, e.g. if the
                 shapes of q/k/v do not satisfy the requirement of a standard attention.
         """
+
         del bias
+        del page_tables
         if key.shape != value.shape:
             raise ValueError(f"Expects {key.shape=} to be equal to {value.shape=}")
         if query.shape[0] != key.shape[0]:
@@ -187,15 +248,86 @@ class BaseFlashAttention(Configurable):
             )
         return True
 
-    # Note: Positional arguments are used since some use cases require positional-only args,
-    # such as functional transformations.
+
+class BasePagedAttention(BaseAttention):
+    """Base class for paged attention."""
+
+    @classmethod
+    def default_config(cls) -> BaseAttention.Config:
+        cfg: BaseAttention.Config = super().default_config()
+        cfg.is_decoding = True
+        return cfg
+
+    def _check_block_size(self, *, query: Tensor, key: Tensor, block_size: int) -> bool:
+        # block_k = pages_per_compute_block * page_size
+        page_size = key.shape[2]
+        if block_size % page_size != 0:
+            self._log_unsupported(
+                f"block size {block_size} is not divisible by page size {key.shape[2]}"
+            )
+            return False
+        return True
+
+    def is_supported(
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor],
+    ) -> bool:
+        """Returns wheather paged attention kernel supports the given config.
+
+        Args:
+            query: Query of shape [batch_size, 1, num_heads, per_head_dim].
+            key: Key pages of shape [num_kv_heads, total_num_pages, page_size, head_dim].
+            value: Value pages [num_kv_heads, total_num_pages, page_size, head_dim].
+            bias: Attention bias to apply.
+            page_tables: A i32[batch_size, pages_per_sequence] tensor. Each entry
+                should be in the range of [0, total_num_pages), indicating where to locate
+                the page in `key` or `value`.
+
+        Returns:
+            The context tensor of shape [batch_size, 1, num_heads, per_head_dim].
+        """
+        # bias is not part of this check, similar to BaseFlashAttention
+        del bias
+        if page_tables is None:
+            return self._log_unsupported("Page Tables must be specified for paged attention.")
+        if not self.cfg.is_decoding:
+            return self._log_unsupported("is_decoding=False.")
+        if query.shape[1] != 1:
+            return self._log_unsupported(f"{query.shape[1]=} != 1")
+        if self.cfg.dropout_rate != 0.0:
+            return self._log_unsupported("Dropout rate cannot be set for decoding!")
+        if key.shape != value.shape:
+            return self._log_unsupported(
+                f"pages of key of shape {key.shape} is different "
+                f"from shape of value {value.shape}"
+            )
+        if query.shape[-1] != key.shape[-1]:
+            return self._log_unsupported(
+                f"head_dim of Q {query.shape[-1]} must be the same as that of K/V {key.shape[-1]}"
+            )
+        if query.shape[2] % key.shape[0] != 0:
+            return self._log_unsupported(
+                f"Number of Q heads {query.shape[2]} must be divisible "
+                f"by number of kv heads {key.shape[0]}"
+            )
+        if page_tables.shape[0] != query.shape[0]:
+            return self._log_unsupported("`page_tables` and `query` must have the same batch size")
+
+        return True
+
     def __call__(
         self,
         query: Tensor,
         key: Tensor,
         value: Tensor,
         bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        prng_key: Optional[Tensor],
+        page_tables: Optional[Tensor],
     ) -> Tensor:
         """Computes attention context.
 
@@ -203,15 +335,20 @@ class BaseFlashAttention(Configurable):
         Warning: The dtype of key and value may differ from the dtype of query.
 
         Args:
-            query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
-            key: Key of shape [batch_size, source_length, num_kv_heads, per_head_dim].
-            value: Value of shape [batch_size, source_length, num_kv_heads, per_head_dim].
+            query: Query of shape [batch_size, 1, num_heads, per_head_dim].
+            key: Key pages of shape [num_kv_heads, total_num_pages, page_size, head_dim].
+            value: Value pages [num_kv_heads, total_num_pages, page_size, head_dim].
             bias: Attention bias to apply.
-            prng_key: PRNG key for dropout. Only needed when dropout_rate > 0.0.
+            prng_key: PRNGKey for dropout, is always None for paged attention.
+                Keeping it here only to align with BaseFlashAttention's signature.
+            page_tables: A i32[batch_size, pages_per_sequence] tensor. Each entry
+                should be in the range of [0, total_num_pages), indicating where to locate
+                the page in `key` or `value`.
 
         Returns:
-            The context tensor of shape [batch_size, target_length, num_heads, per_head_dim].
+            The context tensor of shape [batch_size, 1, num_heads, per_head_dim].
         """
+        del prng_key
         raise NotImplementedError()
 
 
@@ -225,10 +362,18 @@ class BaseSingleStepDecoding(BaseFlashAttention):
         return cfg
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(
+            query=query, key=key, value=value, bias=bias, page_tables=page_tables
+        ):
             return False
         if not self.cfg.is_decoding:
             return self._log_unsupported("is_decoding=False.")
@@ -269,7 +414,7 @@ def repeat_kv_heads(num_q_heads: int, key_or_value: Tensor) -> Tensor:
     return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
 
 
-class ReferenceMHA(BaseFlashAttention):
+class ReferenceMHA(BaseAttention):
     """The reference implementation of attention in XLA."""
 
     # The additional argument `dropout_mask` is for unit test only.
@@ -282,14 +427,45 @@ class ReferenceMHA(BaseFlashAttention):
         bias: BaseAttentionBias,
         prng_key: Optional[Tensor] = None,
         dropout_mask: Optional[Tensor] = None,
+        page_tables: Optional[Tensor] = None,
     ):
         # We apply the scale factor before the attention biases.
         query *= self.cfg.softmax_scale
+        if page_tables is not None:
+            key = reconstruct_kv(page_tables, key)
+            value = reconstruct_kv(page_tables, value)
         logits = compute_gqa_logits(query, key)
         probs = softmax_with_biases(logits, bias.value())
         if self.cfg.dropout_rate > 0:
             probs = dropout(probs, prng_key=prng_key, rate=self.cfg.dropout_rate, mask=dropout_mask)
         return compute_gqa_context(probs, value)
+
+    def is_supported(
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
+    ) -> bool:
+        if page_tables is None:
+            return BaseFlashAttention.is_supported(
+                self,
+                query=query,
+                key=key,
+                value=value,
+                bias=bias,
+                page_tables=page_tables,
+            )
+        return BasePagedAttention.is_supported(
+            self,
+            query=query,
+            key=key,
+            value=value,
+            bias=bias,
+            page_tables=page_tables,
+        )
 
 
 def get_cpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
@@ -342,3 +518,30 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
     if dtype == jnp.bfloat16:
         return jax.lax.Precision.DEFAULT
     raise ValueError(f"Unsupported dtype {dtype}")
+
+
+def reconstruct_kv(page_tables: Tensor, pages: Tensor) -> Tensor:
+    """Retrieve key/value from page tables given pages.
+
+    Args:
+        page_tables: [batch_size, pages_per_sequence], speicyfing page indices.
+        pages: [num_kv_heads, total_num_pages, page_size, head_dim], k/v pages.
+
+    Returns:
+        Retrieved actual key / value of shape [batch_size, kv_seq_len, n_kv_heads, head_dim]
+    """
+
+    def fn(page_tables: Tensor, pages: Tensor) -> Tensor:
+        # page_tables: (pages_per_sequence)
+        # pages: (n_kv_heads, total_pages, page_size, head_dim)
+        head_dim = pages.shape[-1]
+        out = pages[page_tables]
+        return out.reshape(-1, head_dim)
+
+    with_batch = jax.vmap(fn, (0, None), 0)
+    attn_fn = jax.vmap(with_batch, (None, 0), 1)
+
+    out = attn_fn(page_tables, pages)
+    out = jnp.swapaxes(out, 1, 2)
+
+    return out

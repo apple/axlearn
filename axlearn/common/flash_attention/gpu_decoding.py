@@ -287,9 +287,11 @@ class GPUDecoding(BaseSingleStepDecoding):
         value: Tensor,
         bias: BaseAttentionBias,
         prng_key: Optional[Tensor] = None,
+        page_tables: Optional[Tensor] = None,
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
         del prng_key
+        del page_tables
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:
             raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")

@@ -863,10 +863,18 @@ class TPUFlashAttention(BaseFlashAttention):
     """Wraps the common checks for TPU attention implementations."""
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(
+            query=query, key=key, value=value, bias=bias, page_tables=page_tables
+        ):
             return False
         block_size = self.cfg.tpu_block_size
         if not self._check_block_size(query=query, key=key, block_size=block_size):
@@ -887,7 +895,13 @@ class TPUSplashAttention(TPUFlashAttention):
     """
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(query=query, key=key, value=value, bias=bias):
@@ -913,9 +927,11 @@ class TPUSplashAttention(TPUFlashAttention):
         value: Tensor,
         bias: BaseAttentionBias,
         prng_key: Optional[Tensor] = None,
+        page_tables: Optional[Tensor] = None,
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
         del prng_key
+        del page_tables
         mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
         seg_ids = None
@@ -960,7 +976,13 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
     """Wraps the legacy (deprecated) implementation of TPU attention."""
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(query=query, key=key, value=value, bias=bias):
@@ -976,9 +998,11 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         value: Tensor,
         bias: BaseAttentionBias,
         prng_key: Optional[Tensor] = None,
+        page_tables: Optional[Tensor] = None,
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
         del prng_key
+        del page_tables
         causal_mask, segment_ids, explicit_bias = split(
             bias, CausalAttentionBias, SegmentIdAttentionBias
         )

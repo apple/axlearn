@@ -140,10 +140,18 @@ class TPUDecoding(BaseSingleStepDecoding):
     "Wraps the TPU decoding kernel."
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        *,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        page_tables: Optional[Tensor] = None,
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(
+            query=query, key=key, value=value, bias=bias, page_tables=page_tables
+        ):
             return False
 
         block_size = self.cfg.tpu_block_size
@@ -160,9 +168,11 @@ class TPUDecoding(BaseSingleStepDecoding):
         value: Tensor,
         bias: BaseAttentionBias,
         prng_key: Optional[Tensor] = None,
+        page_tables: Optional[Tensor] = None,
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
         del prng_key
+        del page_tables
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:
             raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
