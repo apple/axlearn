@@ -99,6 +99,44 @@ def common_attn_test_params(func):
     return func
 
 
+@pytest.mark.parametrize("batch_size", [1])
+@pytest.mark.parametrize("seq_len", [512, 2048])
+@pytest.mark.parametrize("sliding_window_size", [256])
+@pytest.mark.parametrize("use_segment_ids", [False])
+@pytest.mark.parametrize("num_heads", [8])
+@pytest.mark.parametrize("per_head_dim", [128])
+@pytest.mark.parametrize("test_cls", [ROCmTransformerEngineFlashAttention])
+def test_sliding_window_mask(
+    batch_size,
+    seq_len,
+    num_heads,
+    per_head_dim,
+    sliding_window_size,
+    use_segment_ids,
+    test_cls,
+):
+    if jax.default_backend() != "gpu" and test_cls is ROCmTransformerEngineFlashAttention:
+        pytest.skip("ROCm requires GPU.")
+    q, k, v, bias = generate_attention_data(
+        batch_size,
+        seq_len,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        sliding_window_sz=sliding_window_size,
+        with_segment_ids=use_segment_ids,
+    )
+
+    cfg = dict(
+        softmax_scale=q.shape[-1] ** -0.5,
+        interpret=jax.default_backend() == "cpu",
+    )
+    test_fn = test_cls.default_config().set(**cfg).instantiate()
+    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
+    ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+    _test_forward_and_backward(q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn)
+
+
 # We test the ROCm TE DotProductAttention against the reference flash_attention.
 # Due to its algorithmic equivalence, the outputs should be close in both fp16 and bfloat16.
 @pytest.mark.parametrize(

@@ -1039,7 +1039,8 @@ class ROCmTransformerEngineFlashAttention(BaseFlashAttention):
         _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
 
         if sliding.has_value():
-            return self._log_unsupported("sliding window attention has not been tested currently.")
+            if self.cfg.dropout_rate != 0.0:
+                return self._log_unsupported("sliding window with dropout has not been tested.)")
         if explicit_bias.has_value() and not self._allow_explicit_bias:
             return self._log_unsupported("we don't allow explicit bias at this stage.")
         
@@ -1066,10 +1067,13 @@ class ROCmTransformerEngineFlashAttention(BaseFlashAttention):
         _, _, num_query_heads, head_dim = query.shape
         _, _, num_kv_heads, _ = key.shape
         
-        causal, _, _ = split(
+        causal, sliding, _ = split(
             bias, CausalAttentionBias, SlidingWindowAttentionBias
         )
-        mask_type = "causal" if causal.has_value() else "no_mask"
+        mask_type = "causal" if (causal.has_value() or sliding.has_value()) else "no_mask"
+        window_size = None
+        if sliding.has_value():
+            window_size = (sliding.sliding_window_size, 0)
 
         rocm_te_dot_product_attention = DotProductAttention(
             head_dim=head_dim,
@@ -1082,6 +1086,7 @@ class ROCmTransformerEngineFlashAttention(BaseFlashAttention):
             qkv_layout="BSHD_BSHD_BSHD",
             transpose_batch_sequence=False,
             scale_factor=self.cfg.softmax_scale,
+            window_size=window_size,
         )
     
         return rocm_te_dot_product_attention.apply({}, rngs={'dropout': prng_key}, **args)
