@@ -77,7 +77,7 @@ dev = [
     "timm==0.6.12",  # DiT Dependency test-only
     "torch>=1.12.1",  # test-only
     "torchvision==0.16.1",  # test-only
-    "transformers==4.44.1",  # test-only
+    "transformers>=4.51.3",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
 ]
@@ -146,7 +146,7 @@ mmau = [
     "plotly==5.22.0",
     "nbconvert==7.16.4",
     "google-cloud-aiplatform==1.50.0",
-    "transformers==4.44.1",
+    "transformers>=4.51.3",
     "huggingface-hub==0.24.6",
 ]
 # Orbax checkpointing.
