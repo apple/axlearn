@@ -260,12 +260,12 @@ class FlaxLayerTest(TestCase):
             )
             layer_params = jit_init_state(jax.random.PRNGKey(1))
 
-            jax.tree_map(
+            jax.tree.map(
                 lambda x: self.assertFalse(x.value.is_fully_replicated),
                 layer_params,
                 is_leaf=lambda x: isinstance(x, nn.Partitioned),
             )
-            jax.tree_map(
+            jax.tree.map(
                 lambda x: jax.debug.visualize_array_sharding(x.value),
                 layer_params,
                 is_leaf=lambda x: isinstance(x, nn.Partitioned),

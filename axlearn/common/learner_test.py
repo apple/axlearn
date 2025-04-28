@@ -1168,7 +1168,7 @@ class CompositeLearnerTest(TestCase):
             result = jax.tree_util.tree_reduce(lambda x, y: x.sum() + y.sum(), model_params)
             return ForwardOutputs(loss=result, aux={}, output_collection=output_collection)
 
-        grads = jax.tree_map(lambda p: jnp.ones_like(p.value), params)
+        grads = jax.tree.map(lambda p: jnp.ones_like(p.value), params)
 
         if method == "update":
             inputs = [
