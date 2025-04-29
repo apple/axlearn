@@ -17,6 +17,7 @@ def default_mock_settings() -> dict[str, str]:
 
     return {
         "project": "settings-project",
+        "env_id": "settings-env-id",
         "zone": "settings-zone",
         "permanent_bucket": "settings-permanent-bucket",
         "private_bucket": "settings-private-bucket",

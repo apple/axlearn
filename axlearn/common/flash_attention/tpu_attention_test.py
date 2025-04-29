@@ -12,8 +12,10 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
+    MaskFnAttentionBias,
     SlidingWindowAttentionBias,
     ZeroAttentionBias,
+    and_masks,
     causal_mask,
     sliding_window_causal_mask,
 )
@@ -29,16 +31,21 @@ def setUpModule():
         pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
 
-def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
+def jax_fn_mask(sliding_window_size: int) -> Tensor:
     """A MaskFn that calls jax.
 
-    The mask is the same as `causal_mask`.
+    The mask is the same as `sliding_window_causal_mask`.
 
     However, this implementation requires specially handling to use with
     SplashAttention since `tpu_flash_attention()` needs to wrap this function
     to return numpy values if the input is numpy. (Otherwise we get tracer errors in jit.)
     """
-    return query_position >= key_position
+
+    def mask(query_position: Tensor, key_position: Tensor):
+        return query_position - key_position <= sliding_window_size
+
+    fun = and_masks(causal_mask, mask)
+    return fun
 
 
 class TestFlashAttention(TestCase):
@@ -89,16 +96,31 @@ class TestFlashAttention(TestCase):
             ),
             splash_attention_mask.LocalMask(shape=(8, 8), window_size=(4, 0), offset=0),
         ],
+        [
+            MaskFnAttentionBias(
+                jax_fn_mask(5),
+                target_positions=jnp.arange(8)[None],
+                source_positions=jnp.arange(8)[None],
+            ),
+            splash_attention_mask.NumpyMask(
+                array=np.array(jax_fn_mask(5)(jnp.arange(8)[:, None], jnp.arange(8)[None, :]))
+            ),
+        ],
     )
     def test_to_splash_mask(self, mask, expected):
-        # pylint: disable-next=protected-access
-        splash_mask = tpu_attention._to_splash_mask(mask, mask_shape=(8, 8))
-        self.assertEqual(splash_mask, expected)
+        # _to_splash_mask must work well during jax tracing as it runs in shard_map.
+        @jax.jit
+        def inside_tracing(mask):
+            # pylint: disable-next=protected-access
+            splash_mask = tpu_attention._to_splash_mask(mask, mask_shape=(8, 8))
+            self.assertEqual(splash_mask, expected)
+
+        inside_tracing(mask)
 
     @parameterized.product(
         _TEST_CONFIGS,
         query_length_multiplier=[0.5, 1, 2],
-        mask=[None, causal_mask, jax_fn_mask],
+        mask=[None, causal_mask, jax_fn_mask(5)],
         attention_bias_type=[None, "2d", "4d"],
         with_segment_ids=[False, True],
         per_head_dim=[32, 64, 128, 256],
@@ -117,6 +139,8 @@ class TestFlashAttention(TestCase):
         if jax.default_backend() == "cpu":
             # TODO(dhwang2): this has been broken for a while on CPU.
             pytest.skip(reason="Backward path is broken on CPU")
+        if mask not in (None, causal_mask) and query_length_multiplier > 1:
+            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
         # pylint: disable=protected-access
         fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
         q, k, v, bias = generate_attention_data(

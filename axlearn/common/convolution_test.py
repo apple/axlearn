@@ -4,14 +4,13 @@
 # pylint: disable=no-self-use
 from typing import Optional, Union
 
-import einops
 import jax.random
 import numpy as np
 import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common import convolution, utils
+from axlearn.common import convolution, einops, utils
 from axlearn.common.convolution import (
     Conv1D,
     Conv1DWithPadding,

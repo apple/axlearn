@@ -87,7 +87,7 @@ class HelpersTest(TestCase):
                 inputs=inputs, codebook=codebook, metric=metric
             )
             # Compute codebook metrics.
-            onehots = _ids_to_onehots(q_outputs.ids, codebook_size=vocab_size, dtype=paddings.dtype)
+            onehots = _ids_to_onehots(q_outputs.ids, codebook_size=vocab_size, dtype=jnp.int32)
             coverage = compute_code_coverage(onehots=onehots, paddings=paddings)
             pplx, entropy = compute_code_pplx(onehots=onehots, paddings=paddings)
 

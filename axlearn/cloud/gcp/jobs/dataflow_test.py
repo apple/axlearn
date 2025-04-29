@@ -10,7 +10,7 @@ from absl import app, flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, BaseDockerBundler, _bundlers
-from axlearn.cloud.common.utils import canonicalize_to_string
+from axlearn.cloud.common.utils import canonicalize_to_string, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, job
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.jobs import cpu_runner, dataflow
@@ -38,9 +38,9 @@ def _mock_gcp_settings():
         yield mock_settings
 
 
-def _mock_flags():
+def _mock_flags(cfg):
     fv = flags.FlagValues()
-    DataflowJob.define_flags(fv)
+    define_flags(cfg, fv)
     fv.mark_as_parsed()
     fv.bundler_spec = ["image=test_image"]
     fv.name = "test_name"
@@ -50,8 +50,9 @@ def _mock_flags():
 class DataflowJobTest(TestWithTemporaryCWD):
     def test_from_flags_bundler(self):
         with _mock_gcp_settings():
-            fv = _mock_flags()
-            cfg = DataflowJob.from_flags(fv)
+            cfg = DataflowJob.default_config()
+            fv = _mock_flags(cfg)
+            from_flags(cfg, fv)
 
             # Ensure worker bundler is constructed properly.
             self.assertEqual(cfg.bundler.klass.TYPE, ArtifactRegistryBundler.TYPE)
@@ -59,10 +60,15 @@ class DataflowJobTest(TestWithTemporaryCWD):
             self.assertEqual("settings-dockerfile", cfg.bundler.dockerfile)
             self.assertEqual("settings-repo", cfg.bundler.repo)
 
+            dataflow_job = cfg.instantiate()
+            # pylint: disable-next=protected-access
+            self.assertIsInstance(dataflow_job._bundler, cfg.bundler.klass)
+
     def test_dataflow_spec_from_flags(self):
         with _mock_gcp_settings() as settings:
-            fv = _mock_flags()
-            cfg = DataflowJob.from_flags(fv)
+            cfg = DataflowJob.default_config()
+            fv = _mock_flags(cfg)
+            from_flags(cfg, fv)
             # pylint: disable-next=protected-access
             dataflow_spec, _ = DataflowJob._dataflow_spec_from_flags(cfg, fv)
 

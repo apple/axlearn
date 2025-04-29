@@ -58,6 +58,7 @@ from axlearn.common.attention_bias import (
 from axlearn.common.flash_attention.common import (
     BaseFlashAttention,
     build_mask,
+    get_gpu_dot_precision,
     get_segment_ids,
     query_iterator_indices,
     repeat_kv_heads,
@@ -166,11 +167,7 @@ def _mha_forward_kernel(
     kv_seq_len = k_ref.shape[0]
     block_d = q_ref.shape[-1]
     start_q = pl.program_id(0)
-    precision = (
-        lax.Precision.HIGHEST
-        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
-        else lax.Precision.DEFAULT
-    )
+    precision = get_gpu_dot_precision(q_ref.dtype)
 
     # o is the buffer where we accumulate the output on sram.
     # m_i and l_i (see FlashAttention paper) are updated during the k,v loop.
@@ -468,11 +465,7 @@ def _mha_backward_kernel_dkdv(
     """
     q_seq_len = q_ref.shape[0]
     block_d = q_ref.shape[-1]
-    precision = (
-        lax.Precision.HIGHEST
-        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
-        else lax.Precision.DEFAULT
-    )
+    precision = get_gpu_dot_precision(q_ref.dtype)
 
     start_k = pl.program_id(2)
     curr_k_slice = pl.dslice(start_k * block_k, block_k)
@@ -566,11 +559,7 @@ def _mha_backward_kernel_dq(
     """
     kv_seq_len = k_ref.shape[0]
     block_d = q_ref.shape[-1]
-    precision = (
-        lax.Precision.HIGHEST
-        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
-        else lax.Precision.DEFAULT
-    )
+    precision = get_gpu_dot_precision(q_ref.dtype)
 
     start_q = pl.program_id(2)
     curr_q_slice = pl.ds(start_q * block_q, block_q)
@@ -974,6 +963,8 @@ class PallasGPUFlashAttention(BaseFlashAttention):
             mask_fn=mask.mask if mask.has_value() else None,
             dropout_rate=self.cfg.dropout_rate,
             interpret=self.cfg.interpret,
+            block_q=self.cfg.gpu_block_size,
+            block_k=self.cfg.gpu_block_size,
         )
 
 

@@ -28,6 +28,9 @@ from jax.sharding import PartitionSpec
 from axlearn.common import learner, optimizers, serialization, struct, utils
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import (
+    REQUIRED,
+    ConfigBase,
+    Required,
     config_class,
     config_for_function,
     maybe_instantiate,
@@ -81,6 +84,7 @@ from axlearn.common.utils import (
     input_partition_spec,
     match_regex_rules,
     non_empty_leaf_merge_fn,
+    own_fields,
     per_param_dtype_by_path,
     prune_empty,
     prune_tree,
@@ -912,15 +916,14 @@ class TreeUtilsTest(TestCase):
         with self.assertRaises(ValueError):
             default_merge(primary, secondary={"a": {"c": {"e": 456}}})
 
-        with self.assertRaises(ValueError):
-            # c is not a VDict.
-            tree_merge(primary, secondary={"a": {"c": {"e": 456}}}, leaf_merge_fn=lambda f, s: s)
+        expected = {"a": {"b": {}, "c": VDict({"e": 456}), "g": {"e": 123}}, "empty": ()}
+        # It's ok to merge VDict with dict.
+        out = tree_merge(primary, secondary={"a": {"c": {"e": 456}}}, leaf_merge_fn=lambda f, s: s)
+        self.assertEqual(out, expected)
         out = tree_merge(
             primary, secondary={"a": {"c": VDict({"e": 456})}}, leaf_merge_fn=lambda f, s: s
         )
-        self.assertEqual(
-            out, {"a": {"b": {}, "c": VDict({"e": 456}), "g": {"e": 123}}, "empty": ()}
-        )
+        self.assertEqual(out, expected)
 
         # Non-empty leaves overrides empty leaves.
         out = default_merge(primary, secondary={"empty": 1})
@@ -930,7 +933,7 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(out, primary)
 
     @parameterized.parameters(
-        dict(lengths=[3, 4], dtype=None, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[3, 4], dtype=jnp.bool, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[3, 4], dtype=jnp.int32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[3, 4], dtype=jnp.float32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[[3], [4]], dtype=jnp.int32, expected=[[[1, 1, 1, 0, 0]], [[1, 1, 1, 1, 0]]]),
@@ -939,7 +942,7 @@ class TreeUtilsTest(TestCase):
     def test_sequence_mask(self, lengths, dtype, expected):
         max_len = 5
         mask = utils.sequence_mask(lengths=jnp.array(lengths), max_len=max_len, dtype=dtype)
-        expected = jnp.array(expected).astype(dtype if dtype else jnp.int32)
+        expected = jnp.array(expected).astype(dtype)
         self.assertNestedAllClose(mask, expected)
 
     def test_prune_empty_state(self):
@@ -2107,6 +2110,22 @@ class TestRematPolicy(TestCase):
         )
         # We have one more recompute of f for remat during backward.
         self.assertEqual(str(remat_backward).count(" dot_general"), 5)
+
+
+class TestOwnFields(TestCase):
+    """Tests the own_fields method."""
+
+    def test_own_fields(self):
+        @config_class
+        class ConfigParent(ConfigBase):
+            parent_field: Required[int] = REQUIRED
+
+        @config_class
+        class ConfigChild(ConfigParent):
+            child_field1: Required[int] = REQUIRED
+            child_field2: Required[int] = REQUIRED
+
+        self.assertSameElements(("child_field1", "child_field2"), own_fields(ConfigChild()))
 
 
 if __name__ == "__main__":

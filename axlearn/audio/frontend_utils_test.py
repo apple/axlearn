@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike
@@ -293,8 +293,11 @@ def _ref_framer(*, inputs: ArrayLike, paddings: ArrayLike, frame_size: int, fram
     https://github.com/tensorflow/lingvo/blob/4a9097a212622d99d7f8e2379804dbffdc44a97f/lingvo/tasks/asr/frontend.py#L404
     """
     outputs = tf.signal.frame(inputs, frame_size, frame_step, pad_end=True)
-    output_paddings = tf.signal.frame(paddings, frame_size, frame_step, pad_end=True)
-    output_paddings = tf.reduce_max(output_paddings, axis=2)
+    # tf.signal.frame doesn't support bool tensor.
+    output_paddings = tf.signal.frame(
+        tf.cast(paddings, tf.int8), frame_size, frame_step, pad_end=True
+    )
+    output_paddings = tf.cast(tf.reduce_max(output_paddings, axis=2), tf.bool)
     # Note: tf.signal.frame appends more padding than necessary.
     num_frames = frontend_utils.num_frames(
         inputs.shape[1], frame_size=frame_size, hop_size=frame_step
@@ -417,3 +420,7 @@ class ShardedFftTest(TestCase):
         # Run the following on gpu.
         jax.debug.inspect_array_sharding(test_ffts, callback=print)
         jax.debug.inspect_array_sharding(ref_ffts, callback=print)
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -171,7 +171,10 @@ class RelativePositionTest(TestCase):
             max_distance=max_distance,
         )
         ref = hf_deberta_v2.build_relative_position(
-            query_len, key_len, num_directional_buckets, max_distance
+            query_layer=torch.arange(query_len)[:, None],
+            key_layer=torch.arange(key_len)[:, None],
+            bucket_size=num_directional_buckets,
+            max_position=max_distance,
         )
         # Our implementation returns values in [0, 2*num_directional_buckets], similar to T5, but
         # Hugging Face returns [-num_directional_buckets, num_directional_buckets].
@@ -291,8 +294,8 @@ class DisentangledSelfAttentionTest(TestCase):
             max_distance=cfg.max_distance,
         )
         rel_pos_hf = hf_deberta_v2.build_relative_position(
-            query_len,
-            key_len,
+            query_layer=torch.arange(query_len)[:, None],
+            key_layer=torch.arange(key_len)[:, None],
             bucket_size=layer.num_directional_buckets(),
             max_position=cfg.max_distance,
         )

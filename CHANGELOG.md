@@ -3,8 +3,10 @@
 ## 0.1.6
 
 * Changes
-  * Upgrade Jax from 0.4.37 to 0.4.38
+  * Upgrade Jax from 0.4.37 to 0.4.38.
   * Removes all QRM (queued resource manager) codepaths from `axlearn.cloud.gcp`.
+  * Introduces `named_runner_configs`. See `axlearn gcp launch --help` for details.
+  * Upgrade Grain from 0.2.3 to 0.2.7. This removes `input_grain.trim_and_pack_dataset`.
 
 ## 0.1.5
 
