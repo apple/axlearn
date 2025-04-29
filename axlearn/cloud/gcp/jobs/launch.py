@@ -116,7 +116,7 @@ from axlearn.cloud.common.bastion import BastionDirectory
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import new_jobspec, serialize_jobspec
 from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
-from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_user_projects
+from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
 from axlearn.cloud.common.types import JobSpec, ResourceMap
 from axlearn.cloud.common.utils import (
@@ -132,12 +132,11 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp import runners
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
-from axlearn.cloud.gcp.config import default_project, default_zone, gcp_settings
-from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, shared_bastion_name
+from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
+from axlearn.cloud.gcp.jobs.bastion_vm import bastion_root_dir, infer_bastion_name
 from axlearn.cloud.gcp.jobs.launch_utils import (
     JobsToTableFn,
     Matcher,
-    infer_gcp_api,
     infer_module_qualname,
     jobs_table,
     match_gcp_api,
@@ -204,6 +203,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         # Command to submit to the bastion.
         command: Optional[str] = None
         # Used along with project to identify `gcp_settings`.
+        # TODO(markblee): Move to where project/zone are defined and use `common_flags`.
         env_id: Optional[str] = None
         # Where to run the remote job.
         zone: Required[str] = REQUIRED
@@ -240,6 +240,12 @@ class BaseBastionManagedJob(FlagConfigurable):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         bundler_flags(required=False, **common_kwargs)
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
+        flags.DEFINE_string(
+            "env_id",
+            None,
+            "The env_id, used along with project to identify `gcp_settings`.",
+            **common_kwargs,
+        )
         flags.DEFINE_string("bastion", None, "Name of bastion VM to use.", **common_kwargs)
         flags.DEFINE_integer(
             "priority",
@@ -272,6 +278,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         super().set_defaults(fv)
         # Don't override `name` if already specified, since the default is non-deterministic.
         fv.set_default("name", fv.name or generate_job_name())
+        fv.set_default("env_id", default_env_id())
 
     @classmethod
     def from_flags(
@@ -292,7 +299,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         """
         cfg: BaseBastionManagedJob.Config = super().from_flags(fv, **kwargs)
         if not cfg.bastion_name:
-            cfg.bastion_name = fv.bastion or shared_bastion_name(fv, gcp_api=infer_gcp_api(fv))
+            cfg.bastion_name = fv.bastion or infer_bastion_name(fv)
         cfg.bastion_dir.root_dir = bastion_root_dir(cfg.bastion_name, fv=fv)
         # Default output_dir depends on the final value of --name.
         if not cfg.output_dir:
@@ -365,8 +372,12 @@ class BaseBastionManagedJob(FlagConfigurable):
         if cfg.project_id:
             if not from_vm:
                 logging.warning("Supplying --project_id has no purpose if not running in bastion.")
-            quota_file = (
-                f"gs://{gcp_settings('private_bucket')}/{cfg.bastion_name}/{QUOTA_CONFIG_PATH}"
+            quota_file = os.path.join(
+                "gs://",
+                gcp_settings("private_bucket"),
+                cfg.bastion_name,
+                QUOTA_CONFIG_DIR,
+                QUOTA_CONFIG_FILE,
             )
             user_projects = get_user_projects(quota_file, user_id=cfg.user_id)
             if cfg.project_id.lower() not in user_projects:
@@ -686,8 +697,14 @@ def _infer_runner_name(fv: flags.FlagValues = FLAGS) -> str:
     elif getattr(fv, "instance_type", None):
         if fv.instance_type.startswith("tpu"):
             runner_name = "gke_tpu_single"
-        elif fv.instance_type.startswith("gpu-a3"):
-            runner_name = "gke_gpu_a3_single"
+        elif fv.instance_type.startswith("gpu-a3-high"):
+            runner_name = "gke_gpu_a3_high_single"
+        elif fv.instance_type.startswith("gpu-a3-mega"):
+            runner_name = "gke_gpu_a3_mega_single"
+        elif fv.instance_type.startswith("gpu-a3-ultra"):
+            runner_name = "gke_gpu_a3_ultra_single"
+        elif fv.instance_type.startswith("gpu-a4-high"):
+            runner_name = "gke_gpu_a4_high_single"
         else:
             raise app.UsageError(
                 f"Unable to infer --runner_name from --instance_type={fv.instance_type}; "

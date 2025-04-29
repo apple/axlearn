@@ -14,7 +14,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
-from axlearn.common.config import REQUIRED, ConfigBase, ConfigModifier, Required, config_class
+from axlearn.common.config import ConfigBase, ConfigModifier, config_class
 from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor, with_sharding_constraint
@@ -50,6 +50,9 @@ class FlashAttention(GroupedQueryAttention):
         # Should be less than the target sequence length and a multiple of 128 on TPU.
         # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.
         tpu_block_size: int = 512
+        # The default GPU block-size of 128 works on most accelerators
+        # NVIDIA Blackwell (B200) requires a smaller block-size
+        gpu_block_size: Optional[int] = None
 
         # SPMD partition specs:
         # B - batch dim,
@@ -195,6 +198,7 @@ class FlashAttention(GroupedQueryAttention):
             is_decoding=is_decoding,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
+            gpu_block_size=cfg.gpu_block_size or 128,
             dropout_rate=cfg.dropout.rate,
         )
         if jit_attn is None:
@@ -317,16 +321,18 @@ def default_output_dim_to_partition_spec(
 
 
 class FlashBlockSizeModifier(ConfigModifier):
-    """Modified the tpu_block_size config of FlashAttention."""
+    """Modifies the tpu_block_size or gpu_block_size config of FlashAttention."""
 
     @config_class
     class Config(ConfigModifier.Config):
         """Configures FlashBlockSizeModifier."""
 
-        tpu_block_size: Required[int] = REQUIRED
+        tpu_block_size: Optional[int] = 512
+        gpu_block_size: Optional[int] = None
 
     def __call__(self, cfg: ConfigBase) -> ConfigBase:
         tpu_block_size = self.config.tpu_block_size
+        gpu_block_size = self.config.gpu_block_size
 
         def is_flash_config(cfg):
             return isinstance(cfg, FlashAttention.Config)
@@ -335,6 +341,7 @@ class FlashBlockSizeModifier(ConfigModifier):
             if is_flash_config(value):
                 value = cast(FlashAttention.Config, value)
                 value.tpu_block_size = tpu_block_size
+                value.gpu_block_size = gpu_block_size
 
         def enter_fn(_, value, default_kv):
             return None if is_flash_config(value) else default_kv

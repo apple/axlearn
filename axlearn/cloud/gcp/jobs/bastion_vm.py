@@ -29,10 +29,10 @@ from typing import Optional
 from absl import app, flags, logging
 
 from axlearn.cloud.common.bastion import bastion_job_flags
-from axlearn.cloud.common.quota import QUOTA_CONFIG_PATH, get_resource_limits
+from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_resource_limits
 from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
-from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, common_flags
+from axlearn.cloud.gcp.utils import catch_auth, common_flags
 from axlearn.common.file_system import exists, glob
 from axlearn.common.file_system import open as fs_open
 from axlearn.common.file_system import readfile
@@ -61,25 +61,15 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
     )
 
 
-def shared_bastion_name(
-    fv: Optional[flags.FlagValues], gcp_api: Optional[str] = None
-) -> Optional[str]:
+def infer_bastion_name(fv: Optional[flags.FlagValues]) -> Optional[str]:
     # The env_id-namespacing is necessary because of quirks with compute API. Specifically, even if
-    # creating VMs within a specific zone, names are global. On the other hand, the list API only
-    # returns VMs within a zone, so there's no easy way to check if a shared bastion already exists
-    # in another zone.
-    # If env_id is not set, fall back to "zone" for backwards compatibility.
-    env_id = gcp_settings("env_id", fv=fv, required=False) or gcp_settings("zone", fv=fv)
-    if gcp_api is not None and gcp_api.lower() == GCPAPI.GKE.lower():
-        default = f"{env_id}-gke-bastion"
-    else:
-        default = f"{env_id}-shared-bastion"
-    bastion_name = gcp_settings(  # pytype: disable=bad-return-type
+    # creating VMs within a specific zone, names are global.
+    env_id = gcp_settings("env_id", fv=fv)
+    return gcp_settings(  # pytype: disable=bad-return-type
         "bastion_name",
-        default=default,
+        default=f"{env_id}-gke-bastion",
         fv=fv,
     )
-    return bastion_name
 
 
 def bastion_root_dir(bastion: str, *, fv: Optional[flags.FlagValues]) -> str:
@@ -136,7 +126,8 @@ def quota_file(flag_values: flags.FlagValues) -> str:
         "gs://",
         gcp_settings("private_bucket", fv=flag_values),
         flag_values.name,
-        QUOTA_CONFIG_PATH,
+        QUOTA_CONFIG_DIR,
+        QUOTA_CONFIG_FILE,
     )
 
 

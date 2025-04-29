@@ -933,7 +933,7 @@ class TreeUtilsTest(TestCase):
         self.assertEqual(out, primary)
 
     @parameterized.parameters(
-        dict(lengths=[3, 4], dtype=None, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[3, 4], dtype=jnp.bool, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[3, 4], dtype=jnp.int32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[3, 4], dtype=jnp.float32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[[3], [4]], dtype=jnp.int32, expected=[[[1, 1, 1, 0, 0]], [[1, 1, 1, 1, 0]]]),
@@ -942,7 +942,7 @@ class TreeUtilsTest(TestCase):
     def test_sequence_mask(self, lengths, dtype, expected):
         max_len = 5
         mask = utils.sequence_mask(lengths=jnp.array(lengths), max_len=max_len, dtype=dtype)
-        expected = jnp.array(expected).astype(dtype if dtype else jnp.int32)
+        expected = jnp.array(expected).astype(dtype)
         self.assertNestedAllClose(mask, expected)
 
     def test_prune_empty_state(self):

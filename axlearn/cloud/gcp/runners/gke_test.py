@@ -70,7 +70,7 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
 
     def _job_config(self, *, command: str, **kwargs) -> GKERunnerJob.Config:
         fv = flags.FlagValues()
-        cfg = named_runner_configs("gke_gpu_a3_single")
+        cfg = named_runner_configs("gke_gpu_a3_high_single")
         define_flags(cfg, fv)
         for key, value in kwargs.items():
             if value is not None:
