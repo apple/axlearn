@@ -90,6 +90,20 @@ def _infer_job_version(jobset_spec: dict) -> Optional[int]:
     return None
 
 
+# TODO(ethanli): Move this to the builder.
+def _infer_job_count(jobset_spec: dict) -> Optional[int]:
+    """Infers job count given a jobset spec."""
+    try:
+        total_job_count = 0
+        for job in jobset_spec["replicatedJobs"]:
+            total_job_count += int(job["replicas"])
+
+        return total_job_count
+    except (TypeError, KeyError) as e:
+        logging.warning("Failed to infer job count: %s.", e)
+    return None
+
+
 class GKERunnerJob(BaseRunnerJob):
     """Launches and monitors a GKE job via k8s JobSet API."""
 
@@ -296,10 +310,11 @@ class GKERunnerJob(BaseRunnerJob):
                 return GKERunnerJob.Status.PENDING
 
             # Return status if all replicas agree.
+            total_job_count = _infer_job_count(resp["spec"])
             for status, count in statuses.items():
                 # TODO(markblee): Fix this by refactoring _get_status to inner.
                 # By doing so, we can also get rid of the other GKERunnerJob subclasses.
-                if count == cfg.inner.builder.accelerator.num_replicas:
+                if count == total_job_count:
                     return GKERunnerJob.Status[status.upper()]
         except k8s.client.exceptions.ApiException as e:
             if e.status == 404:
