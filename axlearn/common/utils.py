@@ -1854,7 +1854,7 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
     return grouped_lines
 
 
-def pytree_children(node: Any) -> List[Tuple[KeyEntry, Any]]:
+def pytree_children(node: Any) -> list[tuple[KeyEntry, Any]]:
     """Generate the (key, value) pairs for the immediate children of a pytree `node`.
 
     The returned children match those returned by
