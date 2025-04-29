@@ -166,6 +166,9 @@ def copy_partition(
             memory_kind=(
                 memory_kind if pattern and re.fullmatch(pattern, path) else spec.memory_kind
             ),
+            memory_kind=(
+                memory_kind if pattern and re.fullmatch(pattern, path) else spec.memory_kind
+            ),
         ),
         tree_paths(specs),
         specs,

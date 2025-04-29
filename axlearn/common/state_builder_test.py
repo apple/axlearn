@@ -702,6 +702,7 @@ class TestConv2DStateBuilders(TestCase):
         return source_weight, converted_weight
 
     # pylint: disable=R0917
+    # pylint: disable=R0917
     def _dummy_model_config(
         self,
         patch_size: tuple[int, ...],
