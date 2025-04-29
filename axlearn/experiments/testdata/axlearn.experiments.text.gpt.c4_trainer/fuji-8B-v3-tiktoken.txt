@@ -141,7 +141,7 @@ mesh_rules[1][1].config_modifiers[0].mesh_shape[3]: 256
 mesh_rules[1][1].config_modifiers[0].mesh_shape[4]: 1
 mesh_rules[1][1].config_modifiers[0].mesh_shape[5]: 1
 mesh_rules[1][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematSpecModifier'
-mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: True
+mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: False
 mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].fn: 'axlearn.common.utils.offload_dots_saveable'
 mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: 'pinned_host'
 mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_src: 'device'
@@ -158,7 +158,7 @@ mesh_rules[2][1].config_modifiers[0].mesh_shape[3]: 256
 mesh_rules[2][1].config_modifiers[0].mesh_shape[4]: 1
 mesh_rules[2][1].config_modifiers[0].mesh_shape[5]: 1
 mesh_rules[2][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematSpecModifier'
-mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: True
+mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: False
 mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].fn: 'axlearn.common.utils.offload_dots_saveable'
 mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: 'pinned_host'
 mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_src: 'device'
@@ -172,7 +172,7 @@ mesh_rules[3][1].config_modifiers[0].mesh_shape[3]: 256
 mesh_rules[3][1].config_modifiers[0].mesh_shape[4]: 1
 mesh_rules[3][1].config_modifiers[0].mesh_shape[5]: 1
 mesh_rules[3][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematSpecModifier'
-mesh_rules[3][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: True
+mesh_rules[3][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: False
 mesh_rules[3][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy']: 'jax._src.ad_checkpoint.dots_saveable'
 mesh_rules[3][1].klass: 'axlearn.common.trainer_config_modifier.ChainConfigModifier'
 mesh_rules[4][0]: 'tpu-v5p-.*'

@@ -404,7 +404,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -423,7 +423,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -442,7 +442,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True, policy=jax_remat_policies.dots_saveable
+                                        prevent_cse=False, policy=jax_remat_policies.dots_saveable
                                     ),
                                 }
                             ),
@@ -459,7 +459,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_attention_proj_policy,
                                     ),
                                 }
@@ -577,7 +577,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -596,7 +596,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -614,7 +614,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True, policy=jax_remat_policies.dots_saveable
+                                        prevent_cse=False, policy=jax_remat_policies.dots_saveable
                                     ),
                                 }
                             ),
@@ -676,7 +676,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -725,7 +725,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_attention_proj_policy,
                                     ),
                                 }
@@ -745,7 +745,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_attention_proj_policy,
                                     ),
                                 }
