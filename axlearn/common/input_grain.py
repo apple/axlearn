@@ -405,13 +405,14 @@ class _ShardDataset(slice_dataset.SliceMapDataset):
         super().__init__(*args, **kwargs)
         self._iterated = False
 
-    def set_read_config(self, *, num_shards: int, shard_index: int):
+    def set_dispatch_config(self, *, num_shards: int, shard_index: int, feed_batch_size: int):
         """Sets the shard index and count.
 
         The API follows that of `tfds_read_config`.
         """
+        del feed_batch_size
         if self._iterated:
-            raise ValueError("Attempting to `set_read_config` after iterating.")
+            raise ValueError("Attempting to `set_dispatch_config` after iterating.")
         self._start = shard_index
         self._step = num_shards
 
@@ -692,17 +693,26 @@ def pad_for_evaluation(
     return ds
 
 
-def _set_read_config_recursively(source: Dataset, **kwargs) -> bool:
-    """Sets **kwargs on all `shard_dataset` in `source`."""
-    if isinstance(source, _ShardDataset):
+@runtime_checkable
+class PerFeedDataset(Protocol):
+    """A per-feed dataset supports configuring dispatch configs."""
+
+    def set_dispatch_config(self, *, num_shards: int, shard_index: int, feed_batch_size: int):
+        ...
+
+
+def _set_dispatch_config_on_ancestors(source: Dataset, **kwargs) -> bool:
+    """Sets **kwargs for all parents in `source`."""
+    set_any = False
+    if isinstance(source, PerFeedDataset):
         logging.info("Setting read config on %s", source)
-        source.set_read_config(**kwargs)
-        return True
+        source.set_dispatch_config(**kwargs)
+        set_any = True
 
     for parent in source.parents:
-        if _set_read_config_recursively(parent, **kwargs):
-            return True
-    return False
+        set_current = _set_dispatch_config_on_ancestors(parent, **kwargs)
+        set_any = set_any or set_current
+    return set_any
 
 
 class Input(input_base.Input):
@@ -731,10 +741,14 @@ class Input(input_base.Input):
     def dataset(self) -> grain.IterDataset:
         ds = self._source()
         if "input_dispatcher" in self.children:
-            if not _set_read_config_recursively(ds, **self.input_dispatcher.feed_read_config()):
+            if not _set_dispatch_config_on_ancestors(
+                ds,
+                **self.input_dispatcher.feed_read_config(),
+                feed_batch_size=self.input_dispatcher.feed_logical_batch_size,
+            ):
                 raise ValueError(
                     f"Failed to set read config on {ds}. "
-                    f"Please make sure to call {shard_dataset.__name__} if using input dispatch."
+                    f"Please make sure to use a {PerFeedDataset.__name__} if using input dispatch."
                 )
         return maybe_to_iter_dataset(ds)
 

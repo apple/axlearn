@@ -21,8 +21,9 @@ from axlearn.common.input_grain import (
     BuildDatasetFn,
     Dataset,
     Input,
+    PerFeedDataset,
     RaggedTensor,
-    _set_read_config_recursively,
+    _set_dispatch_config_on_ancestors,
     maybe_to_iter_dataset,
     pad_for_evaluation,
     prefetch_dataset,
@@ -396,12 +397,16 @@ class UtilsTest(TestCase):
 class InputTest(parameterized.TestCase):
     """Tests Input module."""
 
-    def test_set_read_config_recursively(self):
-        read_config = dict(num_shards=4, shard_index=2)
+    def test_set_dispatch_config_on_ancestors(self):
+        dispatch_config = dict(
+            num_shards=4,
+            shard_index=2,
+            feed_batch_size=1,  # Unused.
+        )
 
         # Should return False if no `shard_dataset`.
         ds = range_dataset(start=0, stop=10, seed=123)
-        self.assertFalse(_set_read_config_recursively(ds, **read_config))
+        self.assertFalse(_set_dispatch_config_on_ancestors(ds, **dispatch_config))
 
         shard_ds = shard_dataset(ds, process_index=0, process_count=2)
         ds = shard_ds.shuffle().repeat(num_epochs=1)
@@ -413,14 +418,45 @@ class InputTest(parameterized.TestCase):
 
         # Should return True if we set successfully.
         # pylint: disable=protected-access
-        self.assertTrue(_set_read_config_recursively(ds, **read_config))
-        self.assertEqual(shard_ds._start, read_config["shard_index"])
-        self.assertEqual(shard_ds._step, read_config["num_shards"])
+        self.assertTrue(_set_dispatch_config_on_ancestors(ds, **dispatch_config))
+        self.assertEqual(shard_ds._start, dispatch_config["shard_index"])
+        self.assertEqual(shard_ds._step, dispatch_config["num_shards"])
 
         # Should fail if we iterate and then attempt to set.
-        self.assertEqual(read_config["shard_index"], shard_ds[0])
+        self.assertEqual(dispatch_config["shard_index"], shard_ds[0])
         with self.assertRaisesRegex(ValueError, "after iterating"):
-            _set_read_config_recursively(ds, **read_config)
+            _set_dispatch_config_on_ancestors(ds, **dispatch_config)
+
+        # Should work for other processors that define `set_dispatch_config`.
+
+        class _DummyProcessor(grain.MapDataset):
+            """A dummy per-feed processor."""
+
+            def __init__(self, parents):
+                super().__init__(parents)
+                self.called_kwargs = None
+
+            def set_dispatch_config(self, **kwargs):
+                self.called_kwargs = kwargs
+
+            def __getitem__(self, index):
+                del index
+                return {}
+
+            def __len__(self):
+                return 1
+
+        self.assertIsInstance(_DummyProcessor, PerFeedDataset)
+
+        ds = range_dataset(start=0, stop=10, seed=123)
+        shard_ds = shard_dataset(ds, process_index=0, process_count=2)
+        dummy_ds = _DummyProcessor(shard_ds)
+        ds = dummy_ds.batch(1)
+
+        self.assertTrue(_set_dispatch_config_on_ancestors(ds, **dispatch_config))
+        self.assertEqual(dummy_ds.called_kwargs, dispatch_config)
+        self.assertEqual(shard_ds._start, dispatch_config["shard_index"])
+        self.assertEqual(shard_ds._step, dispatch_config["num_shards"])
 
     def _input_config(
         self,
