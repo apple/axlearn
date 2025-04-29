@@ -35,6 +35,7 @@ from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
 from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
@@ -64,6 +65,9 @@ from axlearn.experiments.text.gpt.common import (
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
+
+# Import the FP8ConfigModifier below if using FP8 training. See config for A3 / A4 instances below
+# from axlearn.common.trainer_config_modifier import FP8ConfigModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -493,8 +497,40 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
                 # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                # Enable support for FP8 training on H100/200 instance types
+                (
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
+                            # FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=128
+                            # )
+                        ],
+                    ),
+                ),
+                # Ensure the gpu_block_size is updated for Blackwell (B200 / A4)
+                (
+                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            # Modify the GPU block-size for B200 platform (Pallas kernels)
+                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
+                            # FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=128
+                            # ),
+                        ],
+                    ),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
@@ -724,6 +760,36 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                (
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
+                            ),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
+                            # FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=128
+                            # )
+                        ],
+                    ),
+                ),
+                (
+                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
+                            ),
+                            # Modify the GPU block-size for B200 platform (Pallas kernels)
+                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
+                            # Uncomment the FP8ConfigModifier block to use FP8 training.
+                            # FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=128
+                            # )
+                        ],
+                    ),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",

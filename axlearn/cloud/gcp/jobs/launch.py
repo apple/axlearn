@@ -697,8 +697,14 @@ def _infer_runner_name(fv: flags.FlagValues = FLAGS) -> str:
     elif getattr(fv, "instance_type", None):
         if fv.instance_type.startswith("tpu"):
             runner_name = "gke_tpu_single"
-        elif fv.instance_type.startswith("gpu-a3"):
-            runner_name = "gke_gpu_a3_single"
+        elif fv.instance_type.startswith("gpu-a3-high"):
+            runner_name = "gke_gpu_a3_high_single"
+        elif fv.instance_type.startswith("gpu-a3-mega"):
+            runner_name = "gke_gpu_a3_mega_single"
+        elif fv.instance_type.startswith("gpu-a3-ultra"):
+            runner_name = "gke_gpu_a3_ultra_single"
+        elif fv.instance_type.startswith("gpu-a4-high"):
+            runner_name = "gke_gpu_a4_high_single"
         else:
             raise app.UsageError(
                 f"Unable to infer --runner_name from --instance_type={fv.instance_type}; "

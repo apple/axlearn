@@ -501,7 +501,7 @@ class TPUReplicatedJobTest(TestCase):
         self.assertEqual(lb2.port, 443)
 
 
-class A3ReplicatedJobTest(TestCase):
+class A3HighReplicatedJobTest(TestCase):
     @contextlib.contextmanager
     def _job_config(
         self,
@@ -511,11 +511,13 @@ class A3ReplicatedJobTest(TestCase):
     ):
         with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
             fv = flags.FlagValues()
-            jobset_utils.A3ReplicatedJob.define_flags(fv)
+            jobset_utils.A3HighReplicatedJob.define_flags(fv)
             fv.set_default("instance_type", "gpu-a3-highgpu-8g-256")
             fv.set_default("num_replicas", num_replicas)
             fv.mark_as_parsed()
-            cfg: jobset_utils.A3ReplicatedJob.Config = jobset_utils.A3ReplicatedJob.from_flags(fv)
+            cfg: jobset_utils.A3HighReplicatedJob.Config = (
+                jobset_utils.A3HighReplicatedJob.from_flags(fv)
+            )
             cfg.project = jobset_utils.gcp_settings("project", required=True, fv=fv)
             cfg.command = "test-command"
             cfg.env_vars = env_vars if env_vars is not None else {}
@@ -537,16 +539,21 @@ class A3ReplicatedJobTest(TestCase):
             cfg,
             bundler_cfg,
         ):
-            gke_job: jobset_utils.A3ReplicatedJob = cfg.set(name="test").instantiate(
+            gke_job: jobset_utils.A3HighReplicatedJob = cfg.set(name="test").instantiate(
                 bundler=bundler_cfg.instantiate()
             )
             # pylint: disable-next=protected-access
             pod = gke_job._build_pod()
             pod_spec = pod["spec"]
 
-            self.assertEqual(len(pod_spec["containers"]), 2)
+            self.assertEqual(len(pod_spec["containers"]), 1)
+            self.assertEqual(len(pod_spec["initContainers"]), 2)
             containers = {container["name"]: container for container in pod_spec["containers"]}
-            self.assertIn("tcpx-daemon", containers)
+            init_containers = {
+                init_container["name"]: init_container
+                for init_container in pod_spec["initContainers"]
+            }
+            self.assertIn("tcpx-daemon", init_containers)
             main_container = containers["test"]
             main_container_env = main_container["env"]
             main_container_env_vars = {env["name"]: env for env in main_container_env}
