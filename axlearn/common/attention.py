@@ -1499,15 +1499,17 @@ class BaseScaleQK(BaseLayer):
         # The per-head dimension.
         per_head_dim: Required[int] = REQUIRED
 
-    def forward(self, proj: Tensor) -> Tensor:
+    def forward(self, proj: Tensor, *, positions: Optional[Tensor]) -> Tensor:
         """Scales the projected queries or keys.
 
         Args:
             proj: The projected queries/keys.
                 Shape: [batch, seq_length, num_heads, per_head_dim].
+            positions: Optional positions of queries/keys.
+                Shape: [batch, seq_length].
 
         Returns:
-            A tensor with the same shape as the input.
+            A tensor with the same shape as `proj`.
         """
         raise NotImplementedError(type(self))
 
@@ -1559,8 +1561,9 @@ class ScaleQuery(BaseScaleQK):
         scale = self._scale_factor(self.config.per_head_dim)
         return proj * scale
 
-    def forward(self, proj: Tensor) -> Tensor:
+    def forward(self, proj: Tensor, *, positions: Optional[Tensor]) -> Tensor:
         """Scales the projected queries."""
+        del positions
         proj = self.apply_norm(proj)
         proj = self.apply_per_dim_scale(proj)
         return self.apply_scale_factor(proj)
@@ -1596,8 +1599,9 @@ class ScaleKey(BaseScaleQK):
         if cfg.norm is not None:
             self._add_child("norm", cfg.norm.set(input_dim=cfg.per_head_dim))
 
-    def forward(self, proj: Tensor) -> Tensor:
+    def forward(self, proj: Tensor, *, positions: Optional[Tensor]) -> Tensor:
         """Scales the projected keys."""
+        del positions
         cfg = self.config
         if cfg.norm is not None:
             proj = self.norm(proj)
@@ -1838,6 +1842,15 @@ class MultiheadAttention(BaseLayer):
         q_proj = self._remat_name(q_proj, "q_proj")
         k_proj = self._remat_name(k_proj, "k_proj")
         v_proj = self._remat_name(v_proj, "v_proj")
+
+        # Scale query and key.
+        q_proj, k_proj = self._scale_qk(
+            q_proj=q_proj,
+            k_proj=k_proj,
+            query_positions=query_positions,
+            key_positions=key_positions,
+        )
+
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
         self.vlog(3, "atten.v_proj=%s", v_proj.sum())
@@ -1870,6 +1883,18 @@ class MultiheadAttention(BaseLayer):
             kv_state=kv_state if "kv_state" in return_aux else None,
         )
         return new_cached_states, output
+
+    def _scale_qk(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        query_positions: Tensor,
+        key_positions: Tensor,
+    ):
+        q_proj = self.scale_query(q_proj, positions=query_positions)
+        k_proj = self.scale_key(k_proj, positions=key_positions)
+        return q_proj, k_proj
 
     def _compute_attention(
         self,
@@ -1970,8 +1995,6 @@ class MultiheadAttention(BaseLayer):
         Returns:
             logits: [batch, num_heads, target_length, source_length].
         """
-        q_proj = self.scale_query(q_proj)
-        k_proj = self.scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
 
     def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
@@ -2223,7 +2246,7 @@ class GroupedQueryAttention(MultiheadAttention):
         if num_head_group == 1:
             return super()._compute_logits(q_proj=q_proj, k_proj=k_proj)
 
-        return compute_gqa_logits(self.scale_query(q_proj), self.scale_key(k_proj))
+        return compute_gqa_logits(q_proj, k_proj)
 
     def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
         """Compute attention context.
@@ -2495,8 +2518,16 @@ class MultiheadAttentionXL(MultiheadAttention):
             raise ValueError("Both key and value must be None for MultiheadAttentionXL")
         return super().forward(query, **kwargs)
 
-    def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+    def _scale_qk(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        query_positions: Tensor,
+        key_positions: Tensor,
+    ):
         cfg = self.config
+        del query_positions
         with child_context("apply_query_norm", module=self):
             # We apply the query norm (if configured) to the projection (not the logits).
             q_proj = self.scale_query.apply_norm(q_proj)
@@ -2508,6 +2539,13 @@ class MultiheadAttentionXL(MultiheadAttention):
             with child_context("apply_scale_factor_queries", module=self):
                 q_proj = self.scale_query.apply_scale_factor(q_proj)
 
+        # Apply key scaling.
+        k_proj = self.scale_key(k_proj, positions=key_positions)
+        return q_proj, k_proj
+
+    def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+        cfg = self.config
+
         seq_len = q_proj.shape[1]
         # [2*seq_len - 1, pos_emb_dim].
         #
@@ -2518,9 +2556,6 @@ class MultiheadAttentionXL(MultiheadAttention):
         pos_emb = self.relative_pos_emb(jnp.arange(seq_len - 1, -seq_len, -1, dtype=jnp.int32))
         # [2*seq_len - 1, num_heads, per_head_dim].
         r_proj = self.r_proj(pos_emb)
-
-        # Apply key scaling.
-        k_proj = self.scale_key(k_proj)
 
         logits = xl_attention_logits(
             q_proj=q_proj,

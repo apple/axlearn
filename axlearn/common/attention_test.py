@@ -1745,7 +1745,7 @@ class ScaleQueryTest(TestCase):
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
-            inputs=dict(proj=q_proj),
+            inputs=dict(proj=q_proj, positions=jnp.arange(tgt_len)[None, :]),
         )
         return kwargs
 
@@ -1819,7 +1819,7 @@ class ScaleKeyTest(TestCase):
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
-            inputs=dict(proj=k_proj),
+            inputs=dict(proj=k_proj, positions=jnp.arange(tgt_len)[None, :]),
         )
         return kwargs
 
@@ -3079,19 +3079,34 @@ class ScaleFunctionsTest(TestCase):
         state = sigmoid_attention.initialize_parameters_recursively(prng_key=init_key)
 
         qkv_shape = [batch_size, seq_len, num_heads, num_heads]
+
+        # Get outputs.
+        forward_key = jax.random.PRNGKey(456)
+
+        q_proj = jnp.full(qkv_shape, fill_value=qkv_value, dtype=jnp.float32)
+        k_proj = jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype)
+        v_proj = jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype)
+        pos = jnp.arange(seq_len)[None, :]
+
+        (q_proj, k_proj), _ = F(
+            sigmoid_attention,
+            method="_scale_qk",
+            state=state,
+            is_training=False,
+            prng_key=forward_key,
+            inputs=dict(q_proj=q_proj, k_proj=k_proj, query_positions=pos, key_positions=pos),
+        )
+
         inputs = dict(
             mode=mode,
-            q_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=jnp.float32),
-            k_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype),
-            v_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype),
+            q_proj=q_proj,
+            k_proj=k_proj,
+            v_proj=v_proj,
             attention_logit_biases=attention_bias.CausalAttentionBias(
                 target_positions=jnp.arange(seq_len)[None],
                 source_positions=jnp.arange(seq_len)[None],
             ),
         )
-
-        # Get outputs.
-        forward_key = jax.random.PRNGKey(456)
 
         (context, probs), _ = F(
             sigmoid_attention,

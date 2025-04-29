@@ -219,10 +219,6 @@ class FlashAttention(GroupedQueryAttention):
             attention_logit_biases, attention_logit_biases_spec
         )
 
-        # Scale query and key.
-        q_proj = self.scale_query(q_proj)
-        k_proj = self.scale_key(k_proj)
-
         # Constrain input to conform to partitioned MHA expectations.
         q_proj = with_sharding_constraint(q_proj, cfg.mha_dim_to_partition_spec["btnh"])
         k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec["bsnh"])
