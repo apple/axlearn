@@ -1883,8 +1883,11 @@ class BastionDirectoryTest(parameterized.TestCase):
             else:
                 mock_tfio["copy"].assert_not_called()
 
-    @parameterized.parameters(True, False)
-    def test_delete(self, spec_exists):
+    @parameterized.product(
+        spec_exists=[True, False],
+        wait_for_stop=[True, False],
+    )
+    def test_delete(self, spec_exists, wait_for_stop):
         job_name = "test-job"
         bastion_dir = (
             bastion.BastionDirectory.default_config().set(root_dir="test-dir").instantiate()
@@ -1898,8 +1901,12 @@ class BastionDirectoryTest(parameterized.TestCase):
             bastion.__name__,
             _upload_job_state=mock.DEFAULT,
         )
-        with patch_tfio, patch_fns as mock_fns:
-            bastion_dir.cancel_job(job_name)
+        patch_wait_fns = mock.patch.multiple(
+            bastion.BastionDirectory,
+            _wait_for_stop=mock.DEFAULT,
+        )
+        with patch_tfio, patch_fns as mock_fns, patch_wait_fns as mock_wait_fns:
+            bastion_dir.cancel_job(job_name, wait_for_stop=wait_for_stop)
             if not spec_exists:
                 mock_fns["_upload_job_state"].assert_not_called()
             else:
@@ -1908,6 +1915,12 @@ class BastionDirectoryTest(parameterized.TestCase):
                     JobState(status=JobStatus.CANCELLING),
                     remote_dir=bastion_dir.user_states_dir,
                 )
+                if not wait_for_stop:
+                    mock_wait_fns["_wait_for_stop"].assert_not_called()
+                else:
+                    mock_wait_fns["_wait_for_stop"].assert_called_with(
+                        jobspec=os.path.join(bastion_dir.active_job_dir, job_name)
+                    )
 
     @parameterized.parameters(True, False)
     def test_get(self, spec_exists):
