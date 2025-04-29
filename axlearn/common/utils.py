@@ -31,12 +31,10 @@ from functools import cache
 from typing import (
     Any,
     Callable,
-    List,
     Literal,
     NamedTuple,
     Optional,
     Protocol,
-    Tuple,
     TypeVar,
     Union,
     runtime_checkable,
@@ -1868,7 +1866,6 @@ def pytree_children(node: Any) -> list[tuple[KeyEntry, Any]]:
         ```
     """
     try:
-        # pylint: disable-next=protected-access
         key_child_pairs, _ = flatten_one_level_with_keys(node)
         return list(key_child_pairs)
     except ValueError:
