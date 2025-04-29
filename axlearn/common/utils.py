@@ -1858,8 +1858,6 @@ def pytree_children(node: Any) -> list[tuple[KeyEntry, Any]]:
     The returned children match those returned by
     `jax.tree_util.default_registry.flatten_one_level()`.
 
-    Reference: jax._src.tree_util.generate_key_paths()
-
     Example:
         ```
         assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
