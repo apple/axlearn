@@ -1354,7 +1354,15 @@ class BastionDirectory(Configurable):
             jobs: dict[str, Job] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
             return jobs
 
-    def cancel_job(self, job_name: str):
+    @staticmethod
+    def _wait_for_stop(jobspec: str) -> None:
+        # Poll for jobspec to be removed.
+        while exists(jobspec):
+            logging.info("Waiting for job to stop (which usually takes a few minutes)...")
+            time.sleep(10)
+        logging.info("Job is stopped.")
+
+    def cancel_job(self, job_name: str, *, wait_for_stop: bool = True):
         try:
             jobspec = os.path.join(self.active_job_dir, job_name)
             if not exists(jobspec):
@@ -1365,11 +1373,8 @@ class BastionDirectory(Configurable):
                 remote_dir=self.user_states_dir,
             )
             logging.info("Job %s is cancelling.", job_name)
-            # Poll for jobspec to be removed.
-            while exists(jobspec):
-                logging.info("Waiting for job to stop (which usually takes a few minutes)...")
-                time.sleep(10)
-            logging.info("Job is stopped.")
+            if wait_for_stop:
+                self._wait_for_stop(jobspec=jobspec)
         except ValueError as e:
             logging.info("Failed with error: %s -- Has the job been cancelled already?", e)
 
