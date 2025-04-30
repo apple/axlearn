@@ -48,11 +48,12 @@ from jax import numpy as jnp
 from jax._src.ad_checkpoint import name_p
 from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
-from jax._src.tree_util import KeyEntry, KeyPath, flatten_one_level_with_keys
+from jax._src.tree_util import KeyEntry, KeyPath
 from jax.ad_checkpoint import Offloadable, Recompute, Saveable
 from jax.experimental import mesh_utils, multihost_utils
 from jax.extend.core import Primitive
 from jax.sharding import PartitionSpec
+from jax.tree_util import default_registry
 
 from axlearn.common import serialization
 from axlearn.common.config import (
@@ -1864,7 +1865,7 @@ def pytree_children(node: Any) -> list[tuple[KeyEntry, Any]]:
         ```
     """
     try:
-        key_child_pairs, _ = flatten_one_level_with_keys(node)
+        key_child_pairs, _ = default_registry.flatten_one_level_with_keys(node)
         return list(key_child_pairs)
     except ValueError:
         return []
