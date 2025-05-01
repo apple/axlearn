@@ -86,7 +86,12 @@ expected_flink_deployment_json = """
       "taskmanager.numberOfTaskSlots": "4",
       "taskmanager.memory.task.off-heap.size": "16g",
       "taskmanager.network.bind-host": "0.0.0.0",
-      "rest.address": "0.0.0.0"
+      "rest.address": "0.0.0.0",
+      "execution.checkpointing.interval": "10m",
+      "execution.checkpointing.mode": "EXACTLY_ONCE",
+      "restart-strategy.type": "fixed-delay",
+      "restart-strategy.fixed-delay.attempts": "3",
+      "restart-strategy.fixed-delay.delay": "10m"
     },
     "jobManager": {
       "resource": {
