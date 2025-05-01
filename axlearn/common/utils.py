@@ -1864,11 +1864,9 @@ def pytree_children(node: Any) -> list[tuple[KeyEntry, Any]]:
         assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
         ```
     """
-    try:
-        key_child_pairs, _ = default_registry.flatten_one_level_with_keys(node)
-        return list(key_child_pairs)
-    except ValueError:
-        return []
+    key_child_pairs, _ = default_registry.flatten_one_level_with_keys(node)
+    # if node is None key_child_pairs = (), so we're returning an empty list
+    return list(key_child_pairs)
 
 
 def find_cycles(tree: Nested) -> dict[str, KeyPath]:
