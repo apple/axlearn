@@ -1146,6 +1146,7 @@ class SpmdTrainer(Module):
             ),
             donate_argnums=(0,),  # donate the state
         )
+        # )
     
 
     def compile_train_step(

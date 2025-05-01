@@ -1,9 +1,7 @@
 from functools import partial
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
-from jax_neuronx.experimental import debug_callback
 # TODO(apoorvtintin): remove pytype disable when dependencies are public.
 # pytype: disable=import-error
 # Import needed to enable JAX cache on Neuron.
@@ -11,17 +9,18 @@ import jax_neuronx  # pylint: disable=unused-import
 import neuronxcc.nki.language as nl
 from jax import custom_vjp
 
-# from neuronxcc.nki._private_kernels.blockwise_mm import (
-from axlearn.common.blockwise_mm import (
+from neuronxcc.nki._private_kernels.blockwise_mm import (
+# from axlearn.common.blockwise_mm import (
         # blockwise_mm as blockwise_mm_nki,
         blockwise_mm_selective_cp as blockwise_mm_nki,
         # blockwise_mm_baseline_shard_hidden as blockwise_mm_nki,
-        check_blockwise_mm_kernel_compatibility,
+        #check_blockwise_mm_kernel_compatibility,
     )
 from neuronxcc.nki._private_kernels.blockwise_mm_bwd import (
+#from axlearn.common.blockwise_mm_bwd import (
     # blockwise_mm_bwd as blockwise_mm_bwd_nki,
     blockwise_mm_bwd_selective_cp as blockwise_mm_bwd_nki,
-    check_blockwise_mm_bwd_kernel_compatibility,
+    #check_blockwise_mm_bwd_kernel_compatibility,
 )
 from neuronxcc.nki.compiler.backends.neuron.dimensions import VNC
 import neuronxcc.nki as nki
@@ -46,7 +45,7 @@ def can_use_blockwise_matmul_nki(
     if blockwise_mm_nki is None:
         print("Failed to load Blockwise NKI kernel.")
         return False
-
+    '''
     try:
         check_blockwise_mm_kernel_compatibility(
             hidden_size=hidden_size,
@@ -56,7 +55,7 @@ def can_use_blockwise_matmul_nki(
     except AssertionError as e:
         print(f"Blockwise kernel not compatible with model config. Reason: {str(e)}")
         return False
-
+    '''
     return True
 
 @partial(custom_vjp, nondiff_argnums=(5,))
@@ -84,7 +83,6 @@ def _blockwise_mm_fwd(
     token_position_to_id: Tensor,
     block_to_expert: Tensor,
 ):
-    
     # TODO handle O>1, G>1
     # Remove O, G dimensions
     with jax.named_scope("take_out_OG"):
@@ -92,9 +90,6 @@ def _blockwise_mm_fwd(
         expert_affinities_masked = jnp.squeeze(expert_affinities_masked, axis=(0,1,))
         token_position_to_id = jnp.squeeze(token_position_to_id, axis=(0,1,))
         block_to_expert = jnp.squeeze(block_to_expert, axis=(0,1,))
-    
-    # (N, 1)
-    block_to_expert = jnp.expand_dims(block_to_expert, axis=1)
 
     # # add +1 for padding
     with jax.named_scope("add padding"):
@@ -110,16 +105,6 @@ def _blockwise_mm_fwd(
             axis=2
         )
 
-    # hidden_states = jnp.zeros_like(hidden_states)
-    # expert_affinities_masked = jnp.zeros_like(expert_affinities_masked)
-    # gate_up_weight = jnp.zeros_like(gate_up_weight)
-    # down_proj_weight = jnp.zeros_like(down_proj_weight)
-    # block_size = block_size  # If it's an integer, just use the same value
-    # token_position_to_id = jnp.zeros_like(token_position_to_id)
-    # block_to_expert = jnp.zeros_like(block_to_expert)
-
-    # out: (S+1, H)
-    # out = blockwise_mm_nki[VNC(2)](
     print(
         hidden_states,
         expert_affinities_masked,
@@ -139,10 +124,6 @@ def _blockwise_mm_fwd(
             block_to_expert,
             block_size=block_size,
         )
-
-    # return out[:-1, :], (hidden_states, expert_affinities_masked, gate_up_weight, 
-    #             down_proj_weight, down_activations, gate_up_activations_T, 
-    #             token_position_to_id, block_to_expert)
 
     return out[None, None, None, :-1, :], (hidden_states, expert_affinities_masked, gate_up_weight, 
                 down_proj_weight, down_activations, gate_up_activations_T, 
@@ -166,7 +147,7 @@ def _blockwise_mm_bwd(
     
     # jax.debug.print("grad_output: {x}", x=grad_output)
     # jax.debug.print("hidden_states: {x}", x=hidden_states)
-
+    # breakpoint()
     # Compute gradients
     hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = _blockwise_mm_bwd_nki_call[VNC(2)](
         hidden_states,

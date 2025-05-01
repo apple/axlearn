@@ -27,7 +27,6 @@ from jax._src.mesh import thread_resources
 import numpy as np
 from absl import logging
 from jax.experimental.pjit import pjit
-import jax.lax as lax
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -1553,7 +1552,6 @@ class TransformerFeedForwardMoE(BaseLayer):
                                         block_size,
                                         token_position_to_id,
                                         block_to_expert):
-                
                 return blockwise_mm(hidden_states,
                                     expert_affinities_masked,
                                     gate_weights,
@@ -1576,7 +1574,9 @@ class TransformerFeedForwardMoE(BaseLayer):
                     PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # token_position_to_id
                     PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # block_to_expert
                 ),
-                out_specs=PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None),
+                out_specs=(
+                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None)
+                ),
                 check_rep=False
             )
 
@@ -1595,7 +1595,6 @@ class TransformerFeedForwardMoE(BaseLayer):
                     token_position_to_id,
                     block_to_expert
                 )
-
             with jax.named_scope("all_reduce"):
                 outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
             # jax.debug.print("outputs: {x}", x=outputs)
