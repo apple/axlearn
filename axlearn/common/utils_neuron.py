@@ -540,7 +540,7 @@ def get_training_configs(is_unit: bool = False):
 
     test_configs = []
     for (batch, seq, input_dim,  hidden_dim, n_experts, top_k, n_groups,
-         out_batch, capacity_factor, mesh_spec, dtype) in grid_space[:1]:
+         out_batch, capacity_factor, mesh_spec, dtype) in grid_space:
         
         
         config = builder.reset()
