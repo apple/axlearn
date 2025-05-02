@@ -334,6 +334,25 @@ class TreeUtilsTest(TestCase):
             [(jax.tree_util.FlattenedIndexKey(k), v) for k, v in enumerate(original_tree.values())],
         )
 
+        # eg OutputCollection(summaries={}, state_updates={}, module_outputs={}))
+        class CustomWithFields:
+            _fields = ("a", "b", "c")
+
+            def __init__(self, a, b, c):
+                self.a = a
+                self.b = b
+                self.c = c
+
+        tree = CustomWithFields(**original_tree)
+        self.assertSequenceEqual(
+            pytree_children(tree),
+            [(jax.tree_util.GetAttrKey(k), getattr(tree, k)) for k in CustomWithFields._fields],
+        )
+
+        # Test object()
+        obj = object()
+        self.assertSequenceEqual(pytree_children(obj), [])
+
         # No children
         self.assertSequenceEqual(pytree_children([]), [])
 

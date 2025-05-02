@@ -1864,9 +1864,27 @@ def pytree_children(node: Any) -> list[tuple[KeyEntry, Any]]:
         assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
         ```
     """
-    key_child_pairs, _ = default_registry.flatten_one_level_with_keys(node)
-    # if node is None key_child_pairs = (), so we're returning an empty list
-    return list(key_child_pairs)
+    # If node is a NamedTuple
+    if isinstance(node, tuple) and hasattr(node, "_fields"):
+        return [(jax.tree_util.GetAttrKey(name), getattr(node, name)) for name in node._fields]
+
+    # If node is not a NT but exposes a public `_fields` attribute
+    if hasattr(node, "_fields") and not isinstance(node, tuple):
+        return [(jax.tree_util.GetAttrKey(name), getattr(node, name)) for name in node._fields]
+    # Standard JAX
+    try:
+        key_child_pairs, _ = default_registry.flatten_one_level_with_keys(node)
+        if key_child_pairs:
+            return list(key_child_pairs)
+    except (ValueError, TypeError):
+        pass
+
+    # Node is Sequence
+    flat = jax.tree_util.default_registry.flatten_one_level(node)
+    if flat is None:
+        return []
+
+    return [(jax.tree_util.FlattenedIndexKey(i), child) for i, child in enumerate(flat[0])]
 
 
 def find_cycles(tree: Nested) -> dict[str, KeyPath]:
