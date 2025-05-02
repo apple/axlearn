@@ -665,10 +665,12 @@ class MainTest(parameterized.TestCase):
         # Test that runner name is optional if not using runner action.
         dict(action="list", expected=None),
         dict(action="stop", expected=None),
+        dict(action="stop", wait_for_stop=None, expected=None),
+        dict(action="stop", nowait_for_stop=None, expected=None),
     )
     def test_main_infer_runner_name(self, action: str, expected: Union[Exception, type], **kwargs):
         argv = ["cli", action]
-        argv.extend([f"--{key}={value}" for key, value in kwargs.items()])
+        argv.extend([f"--{key}={value}" if value else f"--{key}" for key, value in kwargs.items()])
         argv.append("--dry_run")  # Don't run anything.
         argv.extend(["--bundler_type=cloudbuild", "--bundler_spec=image=tpu"])
 

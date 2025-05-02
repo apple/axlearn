@@ -18,20 +18,35 @@ from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplica
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.runners import gke as runner_gke
 from axlearn.cloud.gcp.runners import named_runner_configs
-from axlearn.cloud.gcp.runners.gke import GKERunnerJob, _infer_job_version, _infer_reservation
+from axlearn.cloud.gcp.runners.gke import (
+    GKERunnerJob,
+    _infer_job_count,
+    _infer_job_version,
+    _infer_reservation,
+)
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
 
 
-def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Optional[int] = None):
+def _mock_replicated_jobs(
+    reservations: Sequence[str],
+    bastion_job_version: Optional[int] = None,
+    num_replicas: Optional[int] = None,
+):
     job_version_label = (
         {"metadata": {"labels": {BASTION_JOB_VERSION_LABEL: str(bastion_job_version)}}}
         if bastion_job_version
         else {}
     )
+    if num_replicas:
+        replicas_field = {"replicas": num_replicas}
+    else:
+        replicas_field = {}
 
     return [
         {
+            "name": "test-job",
+            **replicas_field,
             "template": {
                 "spec": {
                     "template": {
@@ -44,8 +59,8 @@ def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Opti
                         },
                         **job_version_label,
                     },
-                }
-            }
+                },
+            },
         }
         for reservation in reservations
     ]
@@ -312,6 +327,23 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
 
     @parameterized.parameters(
         dict(
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"])),
+            expected=None,
+        ),
+        dict(
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], num_replicas=1)),
+            expected=1,
+        ),
+        dict(
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], num_replicas=2)),
+            expected=2,
+        ),
+    )
+    def test_infer_job_count(self, spec: dict, expected: Optional[str] = None):
+        self.assertEqual(expected, _infer_job_count(spec))
+
+    @parameterized.parameters(
+        dict(
             status=dict(
                 replicatedJobs=_mock_replicated_jobs(["test-reservation"], bastion_job_version=None)
             ),
@@ -369,7 +401,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=1, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -384,7 +416,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=1, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -437,7 +469,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=0, succeeded=2),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=2)),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.SUCCEEDED,
             ),
@@ -450,7 +482,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -517,7 +549,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=2, ready=2),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=2)),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -530,7 +562,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=2, ready=2),
                     ],
                 ),
-                spec=dict(replicatedJobs=[{"template": {}}]),
+                spec=dict(replicatedJobs=[{"replicas": 2, "template": {}}]),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -543,7 +575,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.UPDATING,
             ),
@@ -556,7 +588,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 3)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 3, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.UPDATING,
             ),
@@ -569,7 +601,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -582,7 +614,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),

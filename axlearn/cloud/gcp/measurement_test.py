@@ -50,12 +50,17 @@ class GoodputRecorderTest(parameterized.TestCase):
         recorder.record(measurement.Event.START_JOB)
         self.assertTrue(recorder._recorder.record_job_start_time.called)
 
-    def test_start_monitoring(self):
+    def test_start_goodput_monitoring(self):
         fv = flags.FlagValues()
         measurement.define_flags(flag_values=fv)
         fv.set_default(
             "recorder_spec",
-            ["name=test-name", "upload_dir=/test/path/to/upload", "upload_interval=15"],
+            [
+                "name=test-name",
+                "upload_dir=/test/path/to/upload",
+                "upload_interval=15",
+                "step_deviation_interval_seconds=-1",
+            ],
         )
         fv.mark_as_parsed()
 
@@ -63,22 +68,77 @@ class GoodputRecorderTest(parameterized.TestCase):
         self.assertIsNone(recorder._monitor)  # Ensure _monitor is initially None
 
         with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_goodput_monitor:
-            mock_monitor_instance = mock_goodput_monitor.return_value
-            recorder.start_monitoring()
+            with mock.patch("ml_goodput_measurement.monitoring.GCPOptions") as mock_gcp_options:
+                mock_monitor_instance = mock_goodput_monitor.return_value
+                recorder.start_monitoring()
+                mock_gcp_options.assert_called_once_with(
+                    enable_gcp_goodput_metrics=True,
+                    enable_gcp_step_deviation_metrics=False,
+                )
+                mock_gcp_options_instance = mock_gcp_options.return_value
 
-            # Check that GoodputMonitor was instantiated
-            mock_goodput_monitor.assert_called_once_with(
-                job_name="test-name",
-                logger_name="goodput_logger_test-name",
-                tensorboard_dir="/test/path/to/upload",
-                upload_interval=15,
-                monitoring_enabled=True,
-                include_badput_breakdown=True,
-            )
+                # Check that GoodputMonitor was instantiated
+                mock_goodput_monitor.assert_called_once_with(
+                    job_name="test-name",
+                    logger_name="goodput_logger_test-name",
+                    tensorboard_dir="/test/path/to/upload",
+                    upload_interval=15,
+                    monitoring_enabled=True,
+                    include_badput_breakdown=True,
+                    include_step_deviation=False,
+                    step_deviation_interval_seconds=-1,
+                    gcp_options=mock_gcp_options_instance,
+                )
 
-            # Ensure that start_goodput_uploader is called on the monitor instance
-            mock_monitor_instance.start_goodput_uploader.assert_called_once()
-            self.assertIsNotNone(recorder._monitor)
+                # Ensure that start_goodput_uploader is called on the monitor instance
+                mock_monitor_instance.start_goodput_uploader.assert_called_once()
+                self.assertIsNotNone(recorder._monitor)
+
+    def test_start_goodput_and_step_deviation_monitoring(self):
+        fv = flags.FlagValues()
+        measurement.define_flags(flag_values=fv)
+        fv.set_default(
+            "recorder_spec",
+            [
+                "name=test-name",
+                "upload_dir=/test/path/to/upload",
+                "upload_interval=15",
+                "step_deviation_interval_seconds=30",
+            ],
+        )
+        fv.mark_as_parsed()
+
+        recorder = GoodputRecorder.from_flags(fv)
+        self.assertIsNone(recorder._monitor)  # Ensure _monitor is initially None
+
+        with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_goodput_monitor:
+            with mock.patch("ml_goodput_measurement.monitoring.GCPOptions") as mock_gcp_options:
+                mock_monitor_instance = mock_goodput_monitor.return_value
+                recorder.start_monitoring()
+                mock_gcp_options.assert_called_once_with(
+                    enable_gcp_goodput_metrics=True,
+                    enable_gcp_step_deviation_metrics=True,
+                )
+                mock_gcp_options_instance = mock_gcp_options.return_value
+
+                # Check that GoodputMonitor was instantiated
+                mock_goodput_monitor.assert_called_once_with(
+                    job_name="test-name",
+                    logger_name="goodput_logger_test-name",
+                    tensorboard_dir="/test/path/to/upload",
+                    upload_interval=15,
+                    monitoring_enabled=True,
+                    include_badput_breakdown=True,
+                    include_step_deviation=True,
+                    step_deviation_interval_seconds=30,
+                    gcp_options=mock_gcp_options_instance,
+                )
+
+                # Ensure that start_goodput_uploader and start_step_deviation_uploader is called on
+                # the monitor instance
+                mock_monitor_instance.start_goodput_uploader.assert_called_once()
+                mock_monitor_instance.start_step_deviation_uploader.assert_called_once()
+                self.assertIsNotNone(recorder._monitor)
 
     def test_missing_required_flags(self):
         fv = flags.FlagValues()

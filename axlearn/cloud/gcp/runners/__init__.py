@@ -6,6 +6,7 @@ from typing import Optional, Union
 
 from axlearn.cloud.gcp.job import GKEJob, exclusive_topology_annotations
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
+from axlearn.cloud.gcp.job_pathways import GKEPathwaysJobSet
 from axlearn.cloud.gcp.jobset_utils import (
     A3HighReplicatedJob,
     A3MegaReplicatedJob,
@@ -14,6 +15,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     TPUReplicatedJob,
 )
 from axlearn.cloud.gcp.node_pool_provisioner import TPUNodePoolProvisioner
+from axlearn.cloud.gcp.pathways_utils import PathwaysMultiheadReplicatedJob, PathwaysReplicatedJob
 from axlearn.cloud.gcp.runners.base import BaseRunnerJob
 from axlearn.cloud.gcp.runners.gke import FlinkGKERunnerJob, GKERunnerJob
 from axlearn.common.config import config_for_function
@@ -37,6 +39,16 @@ def named_runner_configs(
                 builder=TPUReplicatedJob.default_config(),
             ),
             pre_provisioner=TPUNodePoolProvisioner.default_config(),
+        ),
+        "gke_tpu_pathways": GKERunnerJob.default_config().set(
+            inner=GKEPathwaysJobSet.default_config().set(
+                builder=PathwaysReplicatedJob.default_config()
+            ),
+        ),
+        "gke_tpu_pathways_multihead": GKERunnerJob.default_config().set(
+            inner=GKEPathwaysJobSet.default_config().set(
+                builder=PathwaysMultiheadReplicatedJob.default_config()
+            ),
         ),
     }
 

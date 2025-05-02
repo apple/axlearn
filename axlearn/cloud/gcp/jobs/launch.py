@@ -232,6 +232,9 @@ class BaseBastionManagedJob(FlagConfigurable):
         ]
         # Resources used by the job.
         resources: Callable[[ConfigBase], ResourceMap[int]] = infer_resources
+        # If True, wait for a job to stop when cancelling.
+        # Default to None for backwards compatibility.
+        wait_for_stop: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -270,6 +273,12 @@ class BaseBastionManagedJob(FlagConfigurable):
             "output_dir",
             None,
             "If specified, the directory to store outputs (such as logs).",
+            **common_kwargs,
+        )
+        flags.DEFINE_bool(
+            "wait_for_stop",
+            None,
+            "If True, wait for a job to stop when cancelling.",
             **common_kwargs,
         )
 
@@ -338,7 +347,9 @@ class BaseBastionManagedJob(FlagConfigurable):
 
     def cancel(self):
         """Submits a cancel request to bastion."""
-        self._bastion_dir.cancel_job(self.config.name)
+        cfg = self.config
+        # Default wait_for_stop to True, unless explicitly set to False.
+        self._bastion_dir.cancel_job(cfg.name, wait_for_stop=cfg.wait_for_stop is not False)
 
     def list(self, output_file: Optional[TextIO] = None) -> dict[str, BastionJob]:
         """Lists running jobs and optionally prints them in tabular format.
