@@ -31,7 +31,6 @@ from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 def setUpModule():
     # Uncomment for local debugging.
     # import chex
-
     # chex.set_n_cpu_devices(8)
     if jax.default_backend() in ("gpu", "tpu"):
         pytest.skip(reason="This is a CPU only test.", allow_module_level=True)
@@ -181,8 +180,15 @@ class TestFlashAttention(TestCase):
             )
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
                 prng_key = jax.random.PRNGKey(0)
-                ref_out = ref_fn(query, key, value, bias, prng_key)
-                test_out = test_fn(query, key, value, bias, prng_key)
+                input_batch = dict(
+                    query=query,
+                    key=key,
+                    value=value,
+                    prng_key=prng_key,
+                    bias=bias,
+                )
+                ref_out = ref_fn(input_batch)
+                test_out = test_fn(input_batch)
                 self.assertNestedAllClose(ref_out, test_out, atol=0.015)
         jax.clear_caches()
 
@@ -276,7 +282,14 @@ class TestFlashAttention(TestCase):
             )
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
                 prng_key = jax.random.PRNGKey(0)
-                fwd_out = fwd_fn(query, key_for_forward, value_for_forward, bias, prng_key)
+                forward_batch = dict(
+                    query=query,
+                    key=key_for_forward,
+                    value=value_for_forward,
+                    prng_key=prng_key,
+                    bias=bias,
+                )
+                fwd_out = fwd_fn(forward_batch)
                 # Limit generation length to 16 to save test time.
                 query_len = 16
                 query = query[:, :query_len]
@@ -299,13 +312,16 @@ class TestFlashAttention(TestCase):
                         )
 
                     query_step = query[:, t : t + step_len]
-                    decoding_out = decode_fn(
-                        query_step,
-                        key,
-                        value,
-                        bias_step,
-                        prng_key,
+                    decode_batch = dict(
+                        query=query_step,
+                        key=key,
+                        value=value,
+                        prng_key=prng_key,
                         page_tables=page_tables,
+                        bias=bias_step,
+                    )
+                    decoding_out = decode_fn(
+                        input_batch=decode_batch,
                     )
                     decoding_output.append(decoding_out)
                 decoding_output = jnp.concatenate(decoding_output, axis=1)

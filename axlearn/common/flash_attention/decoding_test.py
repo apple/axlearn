@@ -9,7 +9,7 @@ import pytest
 from absl.testing import parameterized
 
 from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
-from axlearn.common.flash_attention.common import BaseAttention, ReferenceMHA
+from axlearn.common.flash_attention.common import BaseFlashAttention, ReferenceMHA
 from axlearn.common.flash_attention.gpu_attention import CuDNNGPUFlashAttentionWithExplicitBias
 from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
 from axlearn.common.flash_attention.gpu_paged_attention import GPUPagedAttention
@@ -101,11 +101,11 @@ class DecodingTest(TestCase):
             is_decoding=True,
         )
         q, k, v, page_tables, bias = generate_paged_attention_data(
-            batch_size,
-            1,
-            seq_len,
-            num_heads,
-            per_head_dim,
+            batch_size=batch_size,
+            query_len=1,
+            kv_len=seq_len,
+            num_heads=num_heads,
+            per_head_dim=per_head_dim,
             num_kv_heads=num_heads // kv_head_factor,
             mask_fn=mask_fn,
             attention_bias_type=attention_bias_type,
@@ -113,21 +113,24 @@ class DecodingTest(TestCase):
             query_offset=seq_len - padding - 1,
             page_size=page_size,
         )
+        input_batch = dict(
+            query=q,
+            key=k,
+            value=v,
+            page_tables=page_tables,
+            bias=bias,
+        )
 
         fn = decoding_fn.default_config().set(**cfg).instantiate()
-        is_supported = fn.is_supported(query=q, key=k, value=v, bias=bias, page_tables=page_tables)
+        is_supported = fn.is_supported(input_batch=input_batch)
         self.assertTrue(is_supported)
 
-        o = fn(q, k, v, bias, None, page_tables)
+        o = fn(input_batch=input_batch)
 
         with (
             jax.default_matmul_precision("highest") if input_dtype is jnp.float32 else nullcontext()
         ):
-            o_ref = (
-                ReferenceMHA.default_config()
-                .set(**cfg)
-                .instantiate()(q, k, v, bias, page_tables=page_tables)
-            )
+            o_ref = ReferenceMHA.default_config().set(**cfg).instantiate()(input_batch=input_batch)
 
         if input_dtype not in (jnp.float16, jnp.bfloat16, jnp.float32):
             raise ValueError(f"Unsupported dtype {input_dtype}")
@@ -168,7 +171,7 @@ class DecodingTest(TestCase):
         padding: int,
         kv_head_factor: int,
         window_len: int,
-        decoding_fn: BaseAttention,
+        decoding_fn: BaseFlashAttention,
     ):
         if seq_len >= 1024 and jax.default_backend() == "cpu":
             self.skipTest("Too slow on CPU.")
@@ -195,9 +198,14 @@ class DecodingTest(TestCase):
             dtype=input_dtype,
             query_offset=seq_len - padding - 1,
         )
-
+        input_batch = dict(
+            query=q,
+            key=k,
+            value=v,
+            bias=bias,
+        )
         fn = decoding_fn.default_config().set(**cfg).instantiate()
-        is_supported = fn.is_supported(query=q, key=k, value=v, bias=bias)
+        is_supported = fn.is_supported(input_batch=input_batch)
         if seq_len % 512 != 0 and decoding_fn is TPUDecoding:
             self.assertFalse(is_supported)
             return
@@ -210,11 +218,11 @@ class DecodingTest(TestCase):
             return
         self.assertTrue(is_supported)
 
-        o = fn(q, k, v, bias)
+        o = fn(input_batch)
         with jax.default_matmul_precision(
             "highest"
         ) if input_dtype is jnp.float32 else nullcontext():
-            o_ref = ReferenceMHA.default_config().set(**cfg).instantiate()(q, k, v, bias)
+            o_ref = ReferenceMHA.default_config().set(**cfg).instantiate()(input_batch)
 
         if input_dtype not in (jnp.float16, jnp.bfloat16, jnp.float32):
             raise ValueError(f"Unsupported dtype {input_dtype}")

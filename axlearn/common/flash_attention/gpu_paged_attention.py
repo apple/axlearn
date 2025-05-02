@@ -1,9 +1,8 @@
 # Copyright © 2025 Apple Inc.
 #
 # Some of the code in this file is adapted from:
-#
-# jax-ml/jax-triton:
-# Copyright 2023 The jax_triton Authors.
+# jax-ml/jax:
+# Copyright 2023 The JAX Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Implements PagedAttention for GPU in JAX with logit bias support.
@@ -31,7 +30,7 @@ from axlearn.common.attention_bias import (
 from axlearn.common.flash_attention.common import BasePagedAttention, get_gpu_dot_precision
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
 from axlearn.common.flash_attention.gpu_decoding import _get_sm_count as get_sm_count
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 
 def _paged_attention_kernel(
@@ -50,7 +49,11 @@ def _paged_attention_kernel(
     softmax_scale: float,
     mask_fn: Optional[MaskFn],
 ) -> None:
-    """Computes attention outputs for the given block."""
+    """Computes attention outputs for the given block.
+
+    Compared to jax-ml implementation, we add supports for bias and mask.
+    """
+
     partition_idx = pl.program_id(2)
     block_h, head_dim = q_ref.shape
     precision = get_gpu_dot_precision(q_ref.dtype)
@@ -183,6 +186,11 @@ def _paged_attention_unbatched(
     batch_size: int,
     mask_fn: Optional[MaskFn],
 ):
+    """Partition unbatched input and feed into the compute kernel.
+
+    Compared to jax-ml implementation, we support bias and mask with proper block partition.
+    """
+
     num_q_heads, head_dim = q.shape
     num_kv_heads, total_num_pages, page_size, _ = key.shape
     pages_per_sequence = page_tables.shape[0]
@@ -300,19 +308,13 @@ class GPUPagedAttention(BasePagedAttention):
 
     def is_supported(
         self,
-        *,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        page_tables: Optional[Tensor],
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BasePagedAttention.is_supported`."""
-        if not super().is_supported(
-            query=query, key=key, value=value, bias=bias, page_tables=page_tables
-        ):
+        if not super().is_supported(input_batch):
             return False
-        if not self._check_block_size(query=query, key=key, block_size=self.cfg.gpu_block_size):
+        key: Tensor = input_batch["key"]
+        if not self._check_block_size(input_batch, block_size=self.cfg.gpu_block_size):
             return False
         if self.cfg.gpu_block_size / key.shape[2] >= 16:
             self._log_unsupported(
@@ -326,15 +328,14 @@ class GPUPagedAttention(BasePagedAttention):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor],
-        page_tables: Tensor,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BasePagedAttention.__call__`."""
-        del prng_key
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
+        page_tables: Tensor = input_batch["page_tables"]
+        bias: BaseAttentionBias = input_batch["bias"]
         query = query.squeeze(1)
         batch_size, q_heads, head_dim = query.shape
         q_heads_per_kv_head = q_heads // key.shape[0]

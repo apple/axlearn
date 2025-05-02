@@ -57,11 +57,19 @@ def flash_attention_implementation(
 
     Args:
         backend: A valid XLA backend name. 'cpu' intended for testing only.
-        query: Query of shape [batch_size, target_length, num_heads, per_head_dim].
-        key: Key of shape [batch_size, source_length, num_kv_heads, per_head_dim] or
-            [num_kv_heads, total_num_pages, page_size, per_head_dim] for paged attention.
-        value: Value of shape [batch_size, source_length, num_kv_heads, per_head_dim] or
-            [num_kv_heads, total_num_pages, page_size, per_head_dim] for paged attention.
+        query: A Tensor of shape [batch_size, target_length, num_heads, per_head_dim].
+        key: A Tensor
+            * of shape [batch_size, source_length, num_kv_heads, per_head_dim]
+            for standard flash attention with normal contiguous sequence layout;
+            * of shape [num_kv_heads, total_num_pages, page_size, per_head_dim]
+            for paged attention; a physical-page layout where each key page
+            has exactly `page_size` tokens.
+        value: A Tensor
+            * of shape [batch_size, source_length, num_kv_heads, per_head_dim]
+            for standard flash attention with normal contiguous sequence layout;
+            * of shape [num_kv_heads, total_num_pages, page_size, per_head_dim]
+            for paged attention; a physical-page layout where each value page
+            has exactly `page_size` tokens.
         bias: Attention bias to apply.
         softmax_scale: A scalar value applied to the logits before softmax.
         is_decoding: Whether it is in decoding.
@@ -71,8 +79,13 @@ def flash_attention_implementation(
         gpu_block_size: Block size for GPU Pallas kernels. The default value of 128 should be the
             best value for almost all cases.
         dropout_rate: The optional dropout rate.
-        page_tables: [batch_size, pages_per_sequence], optional page tables for paged attention.
-
+        page_tables: An optional int Tensor of shape [batch_size, pages_per_sequence]
+            as logical to physical page lookup table;
+            each entry of the table is in the range of
+            [0, batch_size * pages_per_sequence).
+            check BasePagedAttention.__call__ for more details.
+            Only needed for PagedAttention, and passing `None`
+            when running standard flash attention.
 
     Returns:
         A jitted function implementing multi-head attention for the given backend.
@@ -80,6 +93,7 @@ def flash_attention_implementation(
         make sense, e.g. if the shapes of q/k/v do not satisfy the requirement of a standard
         attention.
     """
+    # TODO(senyut): refactor so that we take input_batch here.
     if dropout_rate is None:
         dropout_rate = 0.0
 
@@ -94,7 +108,7 @@ def flash_attention_implementation(
     if page_tables is not None and is_decoding:
         # TODO(senyut): add TPU backend integration and integrate backend properly
         if backend not in ("gpu", "cpu"):
-            raise NotImplementedError("Paged Attention currently only supports GPU.")
+            raise NotImplementedError("Paged Attention currently only supports CPU and GPU.")
         # Override backend as GPUPagedAttention
         if backend == "gpu":
             attn_configs = [GPUPagedAttention]
@@ -107,10 +121,17 @@ def flash_attention_implementation(
         tpu_block_size=tpu_block_size,
         gpu_block_size=gpu_block_size,
     )
+    input_batch = dict(
+        query=query,
+        key=key,
+        value=value,
+        page_tables=page_tables,
+        bias=bias,
+    )
     for cfg in attn_configs:
         attn_fn = cfg.default_config().set(**common_cfg).instantiate()
         is_supported = attn_fn.is_supported(
-            query=query, key=key, value=value, bias=bias, page_tables=page_tables
+            input_batch=input_batch,
         )
         if is_supported:
             return attn_fn

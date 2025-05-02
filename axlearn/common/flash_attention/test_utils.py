@@ -22,6 +22,7 @@ from axlearn.common.utils import Tensor
 
 
 def generate_paged_attention_data(
+    *,
     batch_size: int,
     query_len: int,
     kv_len: int,

@@ -65,7 +65,7 @@ from axlearn.common.flash_attention.common import (
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 
 class NoPopDict(dict):
@@ -802,18 +802,16 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
 
     def is_supported(
         self,
-        *,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        page_tables: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(
-            query=query, key=key, value=value, bias=bias, page_tables=page_tables
+            input_batch=input_batch,
         ):
             return False
+
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
         if self.cfg.is_decoding:
             if query.shape[1] > 1:
                 return self._log_unsupported("multi-step decoding is not supported.")
@@ -822,7 +820,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         else:
             # cuDNN has no concept of block size. It only requires the length of query and
             # key/value to be even.
-            if not self._check_block_size(query=query, key=key, block_size=2):
+            if not self._check_block_size(input_batch, block_size=2):
                 return False
         if query.dtype not in (jnp.float16, jnp.bfloat16):
             return self._log_unsupported(
@@ -836,6 +834,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             return self._log_unsupported(f"{head_dim=} is not divisible by 8.")
         if head_dim > 128:
             return self._log_unsupported(f"{head_dim=} > 128")
+        bias: BaseAttentionBias = input_batch["bias"]
         _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
         if sliding.has_value() and not self._allow_explicit_bias:
             if self.cfg.is_decoding:
@@ -862,17 +861,13 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
-        page_tables: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
-        del page_tables
-
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
+        bias: BaseAttentionBias = input_batch["bias"]
         args = dict(
             query=query,
             key=repeat_kv_heads(query.shape[2], key),
@@ -932,21 +927,17 @@ class PallasGPUFlashAttention(BaseFlashAttention):
 
     def is_supported(
         self,
-        *,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        page_tables: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(
-            query=query, key=key, value=value, bias=bias, page_tables=page_tables
+            input_batch=input_batch,
         ):
             return False
         block_size = self.cfg.gpu_block_size
+        query: Tensor = input_batch["query"]
         head_dim = query.shape[-1]
-        if not self._check_block_size(query=query, key=key, block_size=block_size):
+        if not self._check_block_size(input_batch=input_batch, block_size=block_size):
             return False
         # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
         # it by reducing the block size along sequence dim. Support it when needed.
@@ -958,15 +949,14 @@ class PallasGPUFlashAttention(BaseFlashAttention):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
-        page_tables: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del page_tables
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
+        bias: BaseAttentionBias = input_batch["bias"]
+        prng_key = input_batch.get("prng_key", None)
         mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         key = repeat_kv_heads(query.shape[2], key)
         value = repeat_kv_heads(query.shape[2], value)
@@ -983,6 +973,8 @@ class PallasGPUFlashAttention(BaseFlashAttention):
             mask_fn=mask.mask if mask.has_value() else None,
             dropout_rate=self.cfg.dropout_rate,
             interpret=self.cfg.interpret,
+            block_q=self.cfg.gpu_block_size,
+            block_k=self.cfg.gpu_block_size,
         )
 
 
