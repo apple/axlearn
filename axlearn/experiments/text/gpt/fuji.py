@@ -1011,7 +1011,6 @@ def trainer_configs(
                 return cfg
 
             # Make single-host config
-            make_single_host_config_func = functools.partial(make_single_host_config, config_name)
-            config_map[f"{config_name}-single-host"] = make_single_host_config_func
+            config_map[f"{config_name}-single-host"] = lambda: make_single_host_config(config_name)
 
     return config_map
