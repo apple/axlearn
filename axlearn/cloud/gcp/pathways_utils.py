@@ -20,6 +20,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     TPUReplicatedJob,
     _LoadBalancer,
 )
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
@@ -713,3 +714,268 @@ class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
             )
 
         return replicated_jobs
+
+
+class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
+    """Builds a LeaderWorkerTemplate spec for TPUs"""
+
+    @config_class
+    class Config(BaseLeaderWorkerTemplate.Config):
+        """Configures PathwaysLeaderWorkerTemplate
+        Attributes:
+            inner: The wrapped TPUReplicatedJob configuration.
+            pathways_head_cpu: CPU request for pathways-head container.
+            pathways_head_mem: Memory request for pathways-head container.
+        """
+
+        inner: Required[TPULeaderWorkerTemplate.Config] = REQUIRED
+        pathways_xla_flags: list[str] = []
+        pathways_head_cpu: Optional[str] = None
+        pathways_head_mem: Optional[str] = None
+
+    @classmethod
+    def define_flags(cls, fv):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        # XLA flags and megascale flags have to be passed at jobset creation time.
+        # The XLA flags automatically get passed to the pathways proxy and the
+        # Megascale flags get passed to pathways workers. A single flag is used since
+        # the implementation details could change later.
+        flags.DEFINE_list(
+            "pathways_xla_flags",
+            [],
+            "Set XLA and Megascale flags. Defaults are set by compiler_options.py. "
+            "Example: 'xla_tpu_x=24,megascale_y=true'",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "pathways_head_cpu",
+            None,
+            "CPU request for pathways-head container in cores. Default is 1 core.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "pathways_head_mem",
+            None,
+            "Memory request for pathways-head container in GiB. Default is 16GiB",
+            **common_kwargs,
+        )
+
+    @classmethod
+    def set_defaults(cls, fv):
+        super().set_defaults(fv)
+        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
+        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config()
+        return cfg.set(inner=TPULeaderWorkerTemplate.default_config())
+
+    def __init__(self, cfg, *, bundler):
+        super().__init__(cfg, bundler=bundler)
+        self._bundler = bundler
+        self._inner: TPULeaderWorkerTemplate = cfg.inner.instantiate(bundler=self._bundler)
+        self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
+        if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
+            raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
+
+    def _build_pathways_worker_container(self) -> dict:
+        cfg: TPULeaderWorkerTemplate.Config = self.config
+        # pylint: disable-next=protected-access
+        container = self._inner._build_container()
+
+        worker_container = copy.deepcopy(container)
+        args = [
+            f"--server_port={_PATHWAYS_WORKER_PORT}",
+            "--resource_manager_address=$(LWS_LEADER_ADDRESS):"
+            + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+        ]
+        worker_container["args"] = args
+        ports = worker_container.get("ports", [])
+        ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
+        worker_container["ports"] = ports
+        worker_container["image"] = _PATHWAYS_SERVER_IMAGE
+
+        worker_container.pop("command")
+        return worker_container
+
+    def build_worker_pod(self) -> dict:
+        # pylint: disable-next=protected-access
+        cfg: TPULeaderWorkerTemplate.Config = self._inner.config
+        # pylint: disable-next=protected-access
+        pod = self._inner._build_pod()
+        worker_pod = copy.deepcopy(pod)
+
+        pod_spec = worker_pod.get("spec", {})
+        pod_spec.pop("restartPolicy")
+        pod_spec["HostNetwork"] = True
+        pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+        pod_spec["containers"] = [self._build_pathways_worker_container()]
+        worker_pod["spec"] = pod_spec
+
+        # Service account for nodes.
+        if cfg.service_account:
+            metadata = worker_pod.get("metadata", {})
+            annotations = metadata.get("annotations", {})
+            node_service_account = f"{cfg.service_account}@{cfg.project}.iam.gserviceaccount.com"
+            annotations.update(
+                {
+                    _ANNOTATION_NODE_SERVICE_ACCOUNT: node_service_account,
+                }
+            )
+            worker_pod["metadata"]["annotations"] = annotations
+
+        return worker_pod
+
+    def _build_pathways_proxy_container(self) -> dict:
+        cfg: TPULeaderWorkerTemplate.Config = self._inner.config
+        staging_location = f"{cfg.output_dir}/pathways-staging"
+
+        return dict(
+            name=_PATHWAYS_PROXY_CONTAINER_NAME,
+            image=_PATHWAYS_PROXY_IMAGE,
+            args=[
+                f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+                f"--server_port={_PATHWAYS_PROXY_PORT}",
+                f"--gcs_scratch_location={staging_location}",
+            ],
+            env=[{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}],
+            ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
+        )
+
+    def _build_pathways_rm_container(self) -> dict:
+        cfg: TPULeaderWorkerTemplate.Config = self._inner.config
+        staging_location = f"{cfg.output_dir}/pathways-staging"
+
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
+
+        return dict(
+            name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
+            image=_PATHWAYS_SERVER_IMAGE,
+            env=[
+                {
+                    "name": "TPU_SKIP_MDS_QUERY",
+                    "value": "true",
+                },
+                {
+                    "name": "HOST_ADDRESS",
+                    "value": "$(LWS_LEADER_ADDRESS)",
+                },
+            ],
+            args=[
+                f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
+                "--node_type=resource_manager",
+                "--instance_count=1",
+                f"--instance_type={pathways_tpu_version}:{system.topology}",
+                f"--gcs_scratch_location={staging_location}",
+            ],
+            ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
+        )
+
+    def _build_head_container(self) -> dict:
+        cfg: TPULeaderWorkerTemplate.Config = self._inner.config
+        cpu_req = f"{float(self.config.pathways_head_cpu) * 1000}m"
+        mem_req = f"{self.config.pathways_head_mem}Gi"
+        resources = {
+            "requests": {"cpu": cpu_req, "memory": mem_req},
+            "limits": {"cpu": cpu_req, "memory": mem_req},
+        }
+        return dict(
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            command=["bash", "-c", cfg.command],
+            env=[
+                {
+                    "name": "XCLOUD_ENVIRONMENT",
+                    "value": "GCP",
+                },
+                {
+                    "name": "JAX_PLATFORMS",
+                    "value": "proxy",
+                },
+                {
+                    "name": "JAX_BACKEND_TARGET",
+                    "value": f"grpc://$(LWS_LEADER_ADDRESS):{_PATHWAYS_PROXY_PORT}",
+                },
+                {
+                    "name": "TEST_UNDECLARED_OUTPUTS_DIR",
+                    "value": "true",
+                },
+            ],
+            imagePullPolicy="Always",
+            resources=resources,
+        )
+
+    def build_leader_pod(self) -> Nested[Any]:
+        # pylint: disable-next=protected-access
+        cfg: TPUReplicatedJob.Config = self._inner.config
+
+        annotations, labels, volumes, tolerations = {}, {}, [], []
+
+        if os.environ.get(BASTION_JOB_VERSION_ENV_VAR):
+            labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
+
+        volumes.append(dict(name="shared-output", emptyDir={}))
+
+        if cfg.gcsfuse_mount:
+            annotations.update(
+                {
+                    "gke-gcsfuse/volumes": "true",
+                    "gke-gcsfuse/cpu-limit": cfg.gcsfuse_mount.cpu,
+                    "gke-gcsfuse/memory-limit": cfg.gcsfuse_mount.memory,
+                    "gke-gcsfuse/ephemeral-storage-limit": cfg.gcsfuse_mount.ephemeral_gb,
+                }
+            )
+
+        node_selector = {
+            _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+        }
+
+        containers = [
+            self._build_head_container(),
+            self._build_pathways_proxy_container(),
+            self._build_pathways_rm_container(),
+        ]
+
+        metadata_host_alias = dict(
+            ip=_METADATA_GOOGLE_INTERNAL_IP,
+            hostnames=["metadata", "metadata.google.internal"],
+        )
+
+        leader_pod_spec = {
+            "terminationGracePeriodSeconds": 60,
+            "hostAliases": [metadata_host_alias],
+            "nodeSelector": node_selector,
+            "tolerations": tolerations,
+            "containers": containers,
+            "volumes": volumes,
+            "serviceAccountName": cfg.service_account,
+            "hostNetwork": True,
+            "dnsPolicy": "ClusterFirstWithHostNet",
+        }
+
+        if cfg.priority_class:
+            leader_pod_spec["priorityClassName"] = cfg.priority_class
+
+        return {
+            "metadata": {
+                "annotations": annotations,
+                "labels": labels,
+            },
+            "spec": leader_pod_spec,
+        }
+
+    def __call__(self) -> Nested[Any]:
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        return dict(
+            subGroupPolicy=dict(
+                subGroupSize=system.vms_per_slice,
+                subGroupPolicyType="LeaderExcluded",
+            ),
+            size=system.vms_per_slice + 1,
+            leaderTemplate=self.build_leader_pod(),
+            workerTemplate=self.build_worker_pod(),
+        )

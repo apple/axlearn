@@ -19,7 +19,13 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
 from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
-from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
+from axlearn.cloud.gcp.utils import (
+    custom_jobset_kwargs,
+    custom_leaderworkerset_kwargs,
+    delete_k8s_jobset,
+    delete_k8s_leaderworkerset,
+)
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
 
@@ -267,3 +273,103 @@ def docker_command(
     )
     logging.debug("Docker run command: %s", cmd)
     return cmd
+
+
+class GKELeaderWorkerSet(GCPJob):
+    """Base GKE LeaderWorkerSet interface"""
+
+    @config_class
+    class Config(GCPJob.Config):
+        """Configures GKELeaderWorkerSet.
+        Attributes:
+            builder: A builder that returns one or more statefulset specs.
+            namespace: The namespace to use within the k8s cluster.
+            annotations: LeaderWorkerSet annotations.
+            num_replicas: number of LWS replicas.
+        """
+
+        builder: Required[BaseLeaderWorkerTemplate.Config] = REQUIRED
+        namespace: str = "default"
+        annotations: Optional[ConfigOr[dict]] = None
+        num_replicas: int = 1
+
+    @classmethod
+    def set_defaults(cls, fv):
+        super().set_defaults(fv)
+        fv.set_default("max_tries", fv.max_tries or 10)
+        fv.set_default("retry_interval", fv.retry_interval or 60)
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("name", None, "Name of the LeaderWorkerSet.", **common_kwargs)
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        cfg: GKELeaderWorkerSet.Config = super().from_flags(fv, **kwargs)
+        cfg.num_replicas = fv.num_replicas
+        return cfg
+
+    def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
+        super().__init__(cfg)
+        cfg: GKELeaderWorkerSet.Config = self.config
+        self._bundler = bundler
+        # This instantiatees a builder for constructing replicated job specs, which will be managed
+        # together under the leaderworkerset represented by this class.
+        # Note the distinction from bundlers, which are responsible for bundling any code assets
+        # required to run the job.
+        self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)
+
+    def _delete(self):
+        cfg: GKELeaderWorkerSet.Config = self.config
+        # Issues a delete request for the LeaderWorkerSet and proactively delete its descendants.
+        # This is not fully blocking; after the call returns there can be a delay before
+        # everything is deleted.
+        delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
+
+    def _build_leaderworkerset(self) -> Nested[Any]:
+        """
+        Builds a config for a LeaderWorkerSet, which is a set for multi-host inference
+
+        Returns:
+            A nested dict corresponding to a k8s LWS config
+        """
+        cfg: GKELeaderWorkerSet.Config = self.config
+        annotations = maybe_instantiate(cfg.annotations or {})
+
+        return dict(
+            metadata=dict(name=cfg.name, annotations=annotations),
+            spec=dict(
+                replicas=cfg.num_replicas,
+                leaderWorkerTemplate=self._builder(),
+            ),
+        )
+
+    def _execute(self):
+        cfg: GKELeaderWorkerSet.Config = self.config
+
+        api_kwargs = custom_leaderworkerset_kwargs()
+        custom_object = dict(
+            apiVersion=f"{api_kwargs['group']}/{api_kwargs['version']}",
+            kind="LeaderWorkerSet",
+            **self._build_leaderworkerset(),
+        )
+        logging.info("submitting LeaderWorkerSet: %s", custom_object)
+        return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
+            namespace=cfg.namespace,
+            body=custom_object,
+            **api_kwargs,
+        )
+
+
+def exclusive_topology_annotations_leaderworkerset() -> dict:
+    """Used for TPU GKELeaderWorkerSet.
+
+    The exclusive topology annotation will ensure that all Pods will have affinity
+    rules added that will ensure that they are fully scheduled on the same pod-slice
+    node-pools.
+    """
+    return {
+        "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology": "cloud.google.com/gke-nodepool"
+    }
