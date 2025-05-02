@@ -342,38 +342,28 @@ class BasePagedAttention(BaseSingleStepDecoding):
 
         Args:
             input_batch: A dict with the following entries:
-
-                query: A Tensor of shape batch_size, 1, num_heads, per_head_dim].
-
-                key: A Tensor of shape
-                    num_kv_heads, total_num_pages, page_size, per_head_dim]
-                    a *physical-page* layout in which every key page stores exactly
-                    `page_size` tokens.
-
+                query: A Tensor of shape [batch_size, 1, num_heads, per_head_dim].
+                key: A Tensor of shape [num_kv_heads, total_num_pages, page_size, per_head_dim]
+                    a *physical-page* layout in which every key page
+                    stores exactly `page_size` tokens.
                 value: A Tensor of the same shape as `key`, holding value pages.
-
-                page_tables: An int Tensor with [batch_size, pages_per_sequence] as
-                    the logical to phsyical lookup table mapping
-                    `(sequence_idx, page_idx)` logical page to a
-                    physical page index in `key`/`value`.
-                    each entry of the table is in the range of
-                    [0, batch_size * pages_per_sequence).
-
+                page_tables: An int Tensor with [batch_size, pages_per_sequence]
+                    as the logical to phsyical lookup table mapping `(sequence_idx, page_idx)`
+                    logical page to a physical page index in `key`/`value`.
+                    Each entry of the table is in the range of [0, batch_size * pages_per_sequence).
                     ```
                     physical_idx = page_tables[b, j]
                     k_page = key[:, physical_idx, :, :]
                     # [num_kv_heads, page_size, per_head_dim]
                     v_page = value[:, physical_idx, :, :]
                     ```
-
                     Inside the kernel we
                     1. fetch a contiguous slice of this logical table, then
                     2. gather the corresponding physical pages.
-
                 prng_key: An optional tensor used only when `dropout_rate > 0.0`.
-                       For paged-attention kernels pass `None`.
+                    For paged-attention kernels pass `None`.
+                bias: Attention bias to apply.
 
-            bias: Attention bias to apply.
 
         Returns:
             The context tensor of shape [batch_size, 1, num_heads, per_head_dim].
