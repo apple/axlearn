@@ -195,7 +195,7 @@ def with_minibatch_steps(
                 x = x.reshape(minibatch_size, -1, *x.shape[1:])
                 return jnp.swapaxes(x, 0, 1)
 
-            inputs["input_batch"] = jax.tree_map(reshape_for_scan, inputs["input_batch"])
+            inputs["input_batch"] = jax.tree.map(reshape_for_scan, inputs["input_batch"])
 
             # Create a sample minibatch for the carry buffer creation below
             (
@@ -323,7 +323,7 @@ def with_minibatch_steps(
             """Defines backward pass for the custom vjp based gradient computation."""
             grad_from_earlier, num_args = saved_fwd_state
             # Compute the backward pass gradient value.
-            grad = jax.tree_map(lambda x: x * grad_from_later_in_network.loss, grad_from_earlier)
+            grad = jax.tree.map(lambda x: x * grad_from_later_in_network.loss, grad_from_earlier)
             # Return gradient along with None so the output length equals to that of primal input.
             return (grad,) + (None,) * (num_args - 1)
 

@@ -1138,8 +1138,8 @@ def ragged_to_tensor(feature_shapes: dict[str, Any], default_value: int = 0) -> 
     return seqio.map_over_dataset(fn)
 
 
-def set_read_config_recursively(source_config: ConfigBase, **kwargs):
-    """Sets **kwargs on all tfds_read_config in `source_config`."""
+def set_dispatch_config_recursively(cfg: ConfigBase, **kwargs):
+    """Sets **kwargs on all tfds_read_config in `cfg`."""
 
     def enter_fn(_, value, default_kv):
         if (
@@ -1147,12 +1147,11 @@ def set_read_config_recursively(source_config: ConfigBase, **kwargs):
             and value.fn is tfds_dataset
             and value.read_config is None
         ):
-            value.read_config = config_for_function(tfds_read_config).set(**kwargs)
-        if isinstance(value, FunctionConfigBase) and value.fn is tfds_read_config:
-            value.set(**kwargs)
+            value.read_config = maybe_set_config(config_for_function(tfds_read_config), **kwargs)
+        maybe_set_config(value, **kwargs)
         return default_kv
 
-    source_config.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
+    cfg.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
 
 
 class Input(input_base.Input):
@@ -1195,11 +1194,11 @@ class Input(input_base.Input):
         if "input_dispatcher" in self.children:
             # Let input_dispatcher determine num_shards and shard_index for tfds_read_config.
             feed_read_config = self.input_dispatcher.feed_read_config()
-            set_read_config_recursively(cfg.source, **feed_read_config)
-            if cfg.batcher.fn is per_feed_batch:
-                # If using `per_feed_batch`, set feed_batch_size according to `input_dispatcher`.
-                # If not, we rely on user to set up batcher correctly.
-                cfg.batcher.feed_batch_size = self.input_dispatcher.feed_logical_batch_size
+            set_dispatch_config_recursively(
+                cfg,
+                **feed_read_config,
+                feed_batch_size=self.input_dispatcher.feed_logical_batch_size,
+            )
             logging.info("feed_read_config=%s", feed_read_config)
             logging.info("Modified Input.config according to input_batcher:\n%s", cfg)
         self._source = maybe_set_config(cfg.source, is_training=cfg.is_training).instantiate()

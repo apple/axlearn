@@ -132,7 +132,9 @@ class GPUGKEJobTest(TestCase):
         self, *, command: str, bundler_cls: type[Bundler], **kwargs
     ) -> tuple[job.GKEJob.Config, Bundler.Config]:
         fv = flags.FlagValues()
-        cfg = job.GKEJob.default_config().set(builder=jobset_utils.A3ReplicatedJob.default_config())
+        cfg = job.GKEJob.default_config().set(
+            builder=jobset_utils.A3HighReplicatedJob.default_config()
+        )
         define_flags(cfg, fv)
         for key, value in kwargs.items():
             if value is not None:

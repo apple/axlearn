@@ -77,7 +77,7 @@ class TestMinibatchSharding(test_utils.TestCase):
                         value, callback=lambda sharding: callback(path, sharding)
                     )
 
-                jax.tree_map(check_sharding, tree_paths(input_batch), input_batch)
+                jax.tree.map(check_sharding, tree_paths(input_batch), input_batch)
                 return input_batch
 
             callback = lambda path, sharding: self.assertEqual(expected[path], sharding.spec)
