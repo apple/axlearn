@@ -97,6 +97,10 @@ class GoodputRecorder(measurement.Recorder):
             self._recorder.record_data_loading_start_time(*args, **kwargs)
         elif event == measurement.Event.END_DATA_LOADING:
             self._recorder.record_data_loading_end_time(*args, **kwargs)
+        elif event == measurement.Event.START_CUSTOM_BADPUT_EVENT:
+            self._recorder.record_custom_badput_event_start_time(*args, **kwargs)
+        elif event == measurement.Event.END_CUSTOM_BADPUT_EVENT:
+            self._recorder.record_custom_badput_event_end_time(*args, **kwargs)
         else:
             logging.log_first_n(
                 logging.WARNING,
