@@ -23,9 +23,10 @@ Example:
 import enum
 import os
 import time
-from typing import Optional
+from typing import Optional, cast
 
 import kubernetes as k8s
+import requests
 from absl import flags, logging
 
 from axlearn.cloud.common.bastion import (
@@ -39,7 +40,7 @@ from axlearn.cloud.common.utils import generate_job_name
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GKEJob
-from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
+from axlearn.cloud.gcp.job_flink import FlinkJobStatus, FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
@@ -492,6 +493,50 @@ class FlinkGKERunnerJob(GKERunnerJob):
         cfg.vertexai_tb_uploader = None
         return cfg
 
+    def _get_flink_job_status(self, timeout: int = 5) -> GKERunnerJob.Status:
+        """Fetches the Flink job status from the JobManager REST API.
+
+        Args:
+            timeout: Timeout in seconds for the HTTP request.
+
+        Returns:
+            The translated Flink job status as a `GKERunnerJob.Status`.
+
+        Raises:
+            RuntimeError: If the request fails or an error occurs.
+        """
+        flink_jobmanager_ip = cast(FlinkTPUGKEJob, self._inner).job_manager_ip
+        # TODO(jinglu1): Move more of the logic to FlinkTPUGKEJob by exposing a get_job_status
+        api_url = f"http://{flink_jobmanager_ip}:8081/jobs/overview"
+        try:
+            response = requests.get(api_url, timeout=timeout)
+            response.raise_for_status()  # Raise error for bad responses (4xx or 5xx)
+            # Response structure:
+            # https://nightlies.apache.org/flink/flink-docs-master/docs/ops/rest_api/#jobs-overview
+            data = response.json()
+            jobs = data.get("jobs", [])
+            if len(jobs) == 0:
+                # This method is only called after job submission, so no jobs likely means failure.
+                return GKERunnerJob.Status.FAILED
+            state = jobs[-1].get("state")
+            if not state:
+                return GKERunnerJob.Status.FAILED
+            if state == FlinkJobStatus.FINISHED.value:
+                return GKERunnerJob.Status.SUCCEEDED
+            if state in (FlinkJobStatus.FAILED.value, FlinkJobStatus.FAILING.value):
+                return GKERunnerJob.Status.FAILED
+            return GKERunnerJob.Status.READY
+        except requests.Timeout as e:
+            raise RuntimeError("Request to Flink JobManager timed out.") from e
+        except requests.ConnectionError as e:
+            raise RuntimeError("Failed to connect to Flink JobManager.") from e
+        except requests.HTTPError as e:
+            raise RuntimeError(
+                f"Flink JobManager returned error status: {e.response.status_code}"
+            ) from e
+        except requests.RequestException as e:
+            raise RuntimeError(f"Unexpected error while getting Flink job status: {e}") from e
+
     def _get_status(self) -> GKERunnerJob.Status:
         """Retrieves the current status of the job.
 
@@ -521,11 +566,9 @@ class FlinkGKERunnerJob(GKERunnerJob):
 
             # If a job complete or failed, it is shown in the last condition of its status.
             if condition.get("type") == "Complete" and condition.get("status") == "True":
-                return GKERunnerJob.Status.SUCCEEDED
+                return self._get_flink_job_status()
             elif condition.get("type") == "Failed" and condition.get("status") == "True":
-                raise RuntimeError(
-                    "Beam execution failed, it's up to the GKE runner to decide whether to retry."
-                )
+                return GKERunnerJob.Status.FAILED
 
             # Otherwise, we rely on the active/succeeded/failed to derive its status.
             # Note that we currently set restartPolicy="Never" for this job and rely on GKERunner
