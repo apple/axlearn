@@ -460,3 +460,118 @@ class FlagConfigurableTest(parameterized.TestCase):
         fv.inner_enabled = False
         cfg_no_inner = utils.from_flags(cfg.clone(), fv)
         self.assertIsNone(cfg_no_inner.inner)
+
+    def test_namespaced(self):
+        # pylint: disable=missing-class-docstring
+        fv = flags.FlagValues()
+
+        class GrandChild(utils.FlagConfigurable):
+            @config_class
+            class Config(utils.FlagConfigurable.Config):
+                grandchild: Optional[str] = None
+                child_default: Optional[str] = None
+                parent_default: Optional[str] = None
+
+            @classmethod
+            def define_flags(cls, fv: flags.FlagValues):
+                flags.DEFINE_string("grandchild", None, "", flag_values=fv, allow_override=True)
+                flags.DEFINE_string("child_default", None, "", flag_values=fv, allow_override=True)
+                flags.DEFINE_string("parent_default", None, "", flag_values=fv, allow_override=True)
+
+        @utils.namespaced("inner")
+        class Child(utils.FlagConfigurable):
+            @config_class
+            class Config(utils.FlagConfigurable.Config):
+                inner: Required[dict[str, ConfigBase]] = REQUIRED
+                child: Optional[str] = None
+                child_default: Optional[str] = None
+                parent_default: Optional[str] = None
+
+            @classmethod
+            def default_config(cls) -> Config:
+                return super().default_config().set(inner={"c": GrandChild.default_config()})
+
+            @classmethod
+            def define_flags(cls, fv: flags.FlagValues):
+                flags.DEFINE_string("child", None, "", flag_values=fv, allow_override=True)
+                flags.DEFINE_string(
+                    "child_default", "from_child", "", flag_values=fv, allow_override=True
+                )
+
+        @utils.namespaced("inner")
+        class Parent(utils.FlagConfigurable):
+            @config_class
+            class Config(utils.FlagConfigurable.Config):
+                inner: Required[dict[str, ConfigBase]] = REQUIRED
+                parent: Optional[str] = None
+                parent_default: Optional[str] = None
+
+            @classmethod
+            def default_config(cls) -> Config:
+                cfg = super().default_config()
+                return cfg.set(inner={"a": Child.default_config(), "b": Child.default_config()})
+
+            @classmethod
+            def define_flags(cls, fv: flags.FlagValues):
+                flags.DEFINE_string("parent", None, "", flag_values=fv, allow_override=True)
+                flags.DEFINE_string(
+                    "parent_default", "from_parent", "", flag_values=fv, allow_override=True
+                )
+
+        # Test defining flags.
+        cfg = Parent.default_config()
+        utils.define_flags(cfg, fv)
+
+        # 1. Inner flags should be namespaced.
+        # 2. Defaults should be defined.
+        self.assertSameElements(
+            {
+                # Parent flags.
+                "parent": None,
+                "parent_default": "from_parent",
+                # Child 'a' flags.
+                "a.child": None,
+                "a.child_default": "from_inner",
+                # GrandChild 'a.c' flags.
+                "a.c.grandchild": None,
+                "a.c.child_default": None,
+                "a.c.parent_default": None,
+                # Child 'b' flags.
+                "b.child": None,
+                "b.child_default": "from_inner",
+                # GrandChild 'b.c' flags.
+                "b.c.grandchild": None,
+                "b.c.child_default": None,
+                "b.c.parent_default": None,
+            },
+            fv.flag_values_dict(),
+        )
+
+        # Set some flags.
+        setattr(fv, "parent", "set_parent")
+        setattr(fv, "a.child", "set_a_child")
+        setattr(fv, "b.child_default", "set_b_default")
+        setattr(fv, "a.c.child_default", "set_a_c_default")
+        setattr(fv, "b.c.grandchild", "set_b_c_grandchild")
+
+        utils.from_flags(cfg, fv)
+
+        # 1. Parent flags.
+        self.assertEqual(cfg.parent, "set_parent")
+        self.assertEqual(cfg.parent_default, "from_parent")
+        # 2. Child 'a' flags.
+        self.assertEqual(cfg.inner["a"].child, "set_a_child")  # set.
+        self.assertEqual(cfg.inner["a"].child_default, "from_child")  # default.
+        self.assertEqual(cfg.inner["a"].parent_default, "from_parent")  # inherited.
+        # 3. Child 'b' flags.
+        self.assertEqual(cfg.inner["b"].child, None)  # not set.
+        self.assertEqual(cfg.inner["b"].child_default, "set_b_default")  # overridden.
+        self.assertEqual(cfg.inner["b"].parent_default, "from_parent")  # inherited.
+        # 4. GrandChild 'a.c' flags.
+        self.assertEqual(cfg.inner["a"].inner["c"].grandchild, None)  # not set.
+        self.assertEqual(cfg.inner["a"].inner["c"].child_default, "set_a_c_default")  # overridden.
+        self.assertEqual(cfg.inner["a"].inner["c"].parent_default, "from_parent")  # inherited.
+        # 5. GrandChild 'b.c' flags.
+        self.assertEqual(cfg.inner["b"].inner["c"].grandchild, "set_b_c_grandchild")  # set.
+        self.assertEqual(cfg.inner["b"].inner["c"].child_default, "set_b_default")  # inherited.
+        self.assertEqual(cfg.inner["b"].inner["c"].parent_default, "from_parent")  # inherited.
