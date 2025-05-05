@@ -471,7 +471,14 @@ class TensorStoreStateStorage(StateStorage):
                     spec.gda_values.append(value)
                     spec.shardings.append(value.sharding)
                 else:
-                    spec.shardings.append(jax.sharding.NamedSharding(mesh, value.mesh_axes))
+                    spec.shardings.append(
+                        jax.sharding.NamedSharding(
+                            mesh,
+                            jax.sharding.PartitionSpec()
+                            if value.mesh_axes is None
+                            else value.mesh_axes,
+                        )
+                    )
             elif isinstance(value, tf.data.Iterator):
                 logging.vlog(3, "Adding value (%s) to tf_ckpt_map", value)
                 spec.index.append((path, str(type(value))))
