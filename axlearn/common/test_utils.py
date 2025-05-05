@@ -11,7 +11,7 @@ import re
 import tempfile
 from collections import OrderedDict, defaultdict
 from collections.abc import Iterator, Sequence
-from functools import partial
+from functools import partial, wraps
 from tempfile import mkdtemp
 from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
 from unittest.mock import patch
@@ -945,3 +945,17 @@ def initialize_parameters_with_prebuilt(
         prebuilt,
         initialized,
     )
+
+
+def set_threefry_partitionable(on: bool = False):
+    """Helper decorator to enable/disable threefry_partitionable."""
+
+    def decorator_set(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            with jax.threefry_partitionable(on):
+                return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator_set
