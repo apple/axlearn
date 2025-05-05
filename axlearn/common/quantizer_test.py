@@ -34,7 +34,12 @@ from axlearn.common.quantizer import (
     compute_code_pplx,
     quantize_by_nearest_neighbor,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose, prng_impl
+from axlearn.common.test_utils import (
+    TestCase,
+    assert_allclose,
+    prng_impl,
+    set_threefry_partitionable,
+)
 from axlearn.common.utils import Tensor, shapes
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
@@ -183,6 +188,7 @@ class RandomVectorQuantizerTest(TestCase):
         (4, 7, 16, 256, 20, 8, True, False),
         (4, 7, 16, 256, 20, 8, False, False),
     )
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_forward(
         self,
         batch_size,

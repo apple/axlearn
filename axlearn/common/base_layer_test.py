@@ -41,7 +41,7 @@ from axlearn.common.param_init import (
     FanAxes,
     WeightInitializer,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 
 
 class TestLayer(BaseLayer):
@@ -374,6 +374,7 @@ class BaseLayerTest(TestCase):
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
 
     @parameterized.parameters(False, True)
+    @set_threefry_partitionable(False)  # TODO(ruoming): update for threefry_partitionable True
     def test_tensor_stats(self, inline_child_summaries: bool):
         test_layer: TestLayer = (
             TestLayer.default_config()

@@ -82,7 +82,7 @@ from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, WeightInitializer
 from axlearn.common.poolings import AttentionPooling as AxlearnAttentionPooling
 from axlearn.common.poolings import AveragePooling as AxlearnAveragePooling
 from axlearn.common.poolings import FirstNTokenPooling as AxlearnFirstNTokenPooling
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, set_threefry_partitionable
 from axlearn.common.utils import flatten_items
 from axlearn.common.vision_transformer import named_model_configs as axlearn_vit_configs
 from axlearn.vision.coca import set_coca_vision_encoder_config
@@ -913,6 +913,7 @@ class TransformerEmbeddingsTest(TestCase):
 
 
 class DecoderTest(TestCase):
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_decoder_inference(self):
         vocab_size = 13
         emb_dim = 8

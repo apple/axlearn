@@ -121,7 +121,12 @@ from axlearn.common.quantized_dot_general.layers import (
     QuantizedDotGeneral,
     set_quantized_dot_general_recursively,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose, dummy_segments_positions
+from axlearn.common.test_utils import (
+    TestCase,
+    assert_allclose,
+    dummy_segments_positions,
+    set_threefry_partitionable,
+)
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import (
     Nested,
@@ -3208,6 +3213,7 @@ class TransformerXLTest(TestCase):
             MultiheadAttentionXL.ScalePosition.QUERY,
         ),
     )
+    @set_threefry_partitionable(False)  # TODO(tgunter): update for threefry_partitionable True
     def test_per_dim_scale(self, per_dim_scale, scale_position):
         model_dim = 6
         num_heads = 2
@@ -3439,6 +3445,7 @@ class TransformerFeedForwardLayerTest(TestCase):
         dict(rms_norm_summary=["linear2_outputs"]),
         dict(rms_norm_summary=["final_outputs"], expected_raise_regex="add_value_rms_norm_summary"),
     )
+    @set_threefry_partitionable(False)  # TODO(ruoming): update for threefry_partitionable True
     def test_add_value_rms_norm_summary(
         self, rms_norm_summary: list[str], *, expected_raise_regex=None
     ):
@@ -3895,6 +3902,7 @@ class TransformerTest(BaseTransformerTest):
 class ParallelTransformerTest(TestCase):
     """Tests ParallelTransformerLayer."""
 
+    @set_threefry_partitionable(False)  # TODO(ruoming): update for threefry_partitionable True
     def test_with_golden_value(self):
         """A test of ParallelTransformerLayer by comparing results to a golden value."""
         model_dim = 16
@@ -5059,6 +5067,7 @@ class StackedTransformerTest(BaseTransformerTest):
         [("data",), True],
         [("data", "self_attention_kv_state"), True],
     )
+    @set_threefry_partitionable(False)  # TODO(ruoming): update for threefry_partitionable True
     def test_repeated_layer_with_custom_carry(self, repeat_carry, precomputed_kv_state):
         """Tests RepeatedTransformerLayer with customized `carry`."""
         batch_size = 1
