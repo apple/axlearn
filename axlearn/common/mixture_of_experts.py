@@ -69,8 +69,8 @@ _USING_SHARDMAP_FFN=int(os.getenv('USE_SHARDMAP_FFN', 1))
 def down_proj(x, wo_weight):
     return jnp.einsum("oegch,ehm->oegcm", x, wo_weight)
 
-@partial(jax.jit, static_argnums=(0,))
-def combine_outputs(tok, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
+@jax.jit
+def combine_outputs(permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, dest_output):
     # Expected shapes:
     # permuted_output: (O, G, E*C, M)
     # token_permutation_idx: (O, G, S, K)
@@ -933,28 +933,6 @@ class TopKGatingGather(TopKGating):
         k = cfg.top_k
         S = sk // k
 
-        with jax.named_scope("expert_index"):
-            # Compute expert indices based on affinities
-            # top_k happens on last axis of operand, so the expert axis
-            k = min(int(cfg.top_k), int(cfg.num_experts))
-            _, expert_index = jax.lax.top_k(raw_gates, k)
-            # expert_index: (O, G, S, top_k)
-            expert_index = expert_index.astype(jnp.int32)
-
-            # expert_index: (O, G, top_k, S)
-            expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
-            # expert_index: (O, G, S * top_k)
-            expert_index = expert_index.reshape(O, G, S*k)
-
-        with jax.named_scope("expert_mask"):
-            # Use expert indices to compute mask
-            # expert_mask: [O, G, S*topk, E]
-            expert_mask = self.compute_expert_mask(cfg, expert_index, cfg.num_experts)
-
-        # Only use top 1 tokens for calculationg aux loss.
-        with jax.named_scope("aux_loss"):
-            aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
-
         with jax.named_scope("position_in_expert"):
             # Compute cumulative sums of assignment
             # indicators for each expert, i.e. index e \in 0..E-1 independently.
@@ -1019,18 +997,30 @@ class TopKGatingGather(TopKGating):
         
         raw_gates = self.router(cfg, logits)
         expert_capacity = self.compute_expert_capacity(cfg, logits)
-        # expert_index: (O, G, S, top_k)
-        expert_index = self.compute_expert_index(cfg, raw_gates)
-        # expert_mask: (O, G, S*topk, E)
-        expert_mask = self.compute_expert_mask(cfg, expert_index, cfg.num_experts)
+        with jax.named_scope("expert_index"):
+            # expert_index: (O, G, S*top_k)    
+            expert_index = self.compute_expert_index(cfg, raw_gates)
+        
+        with jax.named_scope("expert_mask"):
+            # expert_mask: (O, G, S*topk, E)
+            expert_mask = self.compute_expert_mask(cfg, expert_index, cfg.num_experts)
+        
         # Only use top 1 tokens for calculationg aux loss.
-        aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
-
+        with jax.named_scope("aux_loss"):
+            aux_loss = self.compute_aux_loss(self.config, expert_mask[:, :, :S, :], raw_gates)
+        
+        # position_in_expert_with_offset: (O, G, k , S, E)
+        # expert_mask_after_dropping: (O, G, S*topk, E)
+        # expert_affinities_masked: (O, G, S, E)
         position_in_expert_with_offset, expert_mask_after_dropping, expert_affinities_masked = self.compute_positions_and_drop(
             expert_mask, raw_gates, expert_capacity, cfg
         )
-        with jax.named_scope("token_permutation_idx"):
 
+        # Reshape expert_index back to O, G, S, topk
+        expert_index = expert_index.reshape(O, G, cfg.top_k, S)
+        expert_index = jnp.transpose(expert_index, (0, 1, 3, 2))
+
+        with jax.named_scope("token_permutation_idx"):
             batch_idx = jnp.arange(position_in_expert_with_offset.shape[0])[:, None, None, None]
             group_idx = jnp.arange(position_in_expert_with_offset.shape[1])[None, :, None, None]
             seq_idx = jnp.arange(position_in_expert_with_offset.shape[2])[None, None, :, None]
@@ -1078,10 +1068,10 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
     
-    def compute_num_blocks(self, num_tokens, expert_capacity):
+    def compute_num_blocks(self, expert_capacity):
         #TODO make block size == expert cap
         num_blocks = math.ceil(expert_capacity / self.config.block_size) * self.config.num_experts
-        num_blocks = min(num_blocks, num_tokens * self.config.top_k)
+        # num_blocks = min(num_blocks, num_tokens * self.config.top_k)
         logging.info("Setting number of blocks as %d", num_blocks)
         return num_blocks
 
@@ -1155,7 +1145,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         O, G, S, E = logits.shape
         raw_gates = self.router(cfg, logits)
         expert_capacity = self.compute_expert_capacity(cfg, logits)
-        # expert_index: (O, G, S, top_k)
+        # expert_index: (O, G, S*top_k)
         expert_index = self.compute_expert_index(cfg, raw_gates)
         # expert_mask: (O, G, S*topk, E)
         expert_mask = self.compute_expert_mask(cfg, expert_index, cfg.num_experts)
@@ -1170,10 +1160,10 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         num_dropped = jnp.sum(expert_mask, axis=(0,1,2))- jnp.sum(expert_mask_after_dropping, axis=(0,1,2))
         print('num_dropped', num_dropped)
         print('total num dropped', jnp.sum(num_dropped))
-        num_tokens = S * cfg.top_k
-        num_blocks = self.compute_num_blocks(num_tokens, expert_capacity)
+        # num_tokens = S * cfg.top_k
+        num_blocks = self.compute_num_blocks(expert_capacity)
         
-        print('tokens', num_tokens)
+        # print('tokens', num_tokens)
         print('blocks', num_blocks)
         # tokens_per_expert: (O, G, E)
         tokens_per_expert = jnp.sum(expert_mask_after_dropping, axis=2)
@@ -1181,19 +1171,19 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # blocks_per_expert: (O, G, E)
         blocks_per_expert = jnp.ceil(tokens_per_expert / self.config.block_size).astype(jnp.int32)
         blocks_ids = jnp.arange(num_blocks, dtype=jnp.int32)
-        
+
         # num_blocks_idx_expanded: (1, 1, num_blocks, 1)
         num_blocks_idx_expanded = jnp.expand_dims(blocks_ids, (0, 1, 3))
         # num_blocks_idx_expanded: (O, G, num_blocks, E)
         num_blocks_idx_expanded = jnp.broadcast_to(num_blocks_idx_expanded, (O, G, num_blocks, 1))
-        
+
         print('num blocks', num_blocks_idx_expanded)
-        
+
         # cumulative_blocks_per_expert: (O, G, E)
         cumulative_blocks_per_expert = jnp.cumsum(blocks_per_expert, axis=2, dtype=jnp.int32)
-        print('cum blocks per expert', cumulative_blocks_per_expert)
+        jax.debug.print("cumulative_blocks_per_expert: {x}", x=cumulative_blocks_per_expert)
 
-        print('expert mask', expert_mask_after_dropping)
+        jax.debug.print("expert_mask_after_dropping: {x}", x=expert_mask_after_dropping)
 
         # block_to_expert: (O, G, N)
         #   N is num blocks
@@ -1208,10 +1198,12 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # the position in blocks if all tokens in blocks were laid out in a linear array
         # b0t0, b0t1,..., b1t0, b1t1,...
         block_position_indices = _cum_sum(expert_mask_after_dropping.astype(jnp.int32), axis=-2).astype(jnp.int32)
+        jax.debug.print("block_position_indices: {x}", x=block_position_indices)
         # O G 1 E
         expert_block_offsets = jnp.expand_dims(cumulative_blocks_per_expert * cfg.block_size, 2)
         block_position_indices = block_position_indices.at[:,:,:,1:].set(block_position_indices[:,:,:,1:] + expert_block_offsets[:,:,:,:-1])
         block_position_indices = jnp.where(expert_mask_after_dropping==0, 0, block_position_indices)
+        jax.debug.print("block_position_indices after dropping and adding expertblockoffsets: {x}", x=block_position_indices)
 
         # token_position_to_id: (O, G, N*B)
         # for every position in the block, gets the token id in sequence
@@ -1453,6 +1445,9 @@ class TransformerFeedForwardMoE(BaseLayer):
             # (O, G, S, top_k), (O, G, S, top_k), (O, G, S, E)
             token_permutation_idx, expert_index, expert_affinities_masked = gating.combine_tensor
             token_permutation_idx, expert_index, expert_affinities_masked = token_permutation_idx.astype(jnp.int32), expert_index.astype(jnp.int32), expert_affinities_masked.astype(input_dtype)
+            print('expert index shape', expert_index.shape)
+            print('expert_affinities_masked shape', expert_affinities_masked.shape)
+            print('token_permutation_idx shape', token_permutation_idx.shape)
             token_permutation_idx = with_sharding_constraint(token_permutation_idx, cfg.dim_to_mesh_axis_map["ogse"])
             expert_affinities_masked = with_sharding_constraint(expert_affinities_masked, cfg.dim_to_mesh_axis_map["ogse"])
 
@@ -1468,7 +1463,6 @@ class TransformerFeedForwardMoE(BaseLayer):
                     combine_outputs, 
                     mesh=thread_resources.env.physical_mesh,
                     in_specs=(
-                        None,
                         cfg.dim_to_mesh_axis_map["ogsM"],
                         cfg.dim_to_mesh_axis_map["ogse"],
                         cfg.dim_to_mesh_axis_map["ogse"],
@@ -1479,7 +1473,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                     check_rep=False
                 )
                 output = combine_outputs_sm(
-                    min_k, permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, output
+                    permuted_output, token_permutation_idx, expert_index, expert_affinities_masked, output
                 )
                 output = jnp.sum(output, axis=0, dtype=permuted_output.dtype)
             else:
@@ -1580,10 +1574,10 @@ class TransformerFeedForwardMoE(BaseLayer):
                 check_rep=False
             )
 
-            # jax.debug.print("hidden_states: {x}", x=hidden_states)
-            # jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
-            # jax.debug.print("token_position_to_id: {x}", x=token_position_to_id)
-            # jax.debug.print("block_to_expert: {x}", x=block_to_expert)
+            jax.debug.print("hidden_states: {x}", x=hidden_states)
+            jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
+            jax.debug.print("token_position_to_id: {x}", x=token_position_to_id)
+            jax.debug.print("block_to_expert: {x}", x=block_to_expert)
 
             outputs = partitioned_blockwise_mm(
                     hidden_states,
@@ -1597,7 +1591,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                 )
             with jax.named_scope("all_reduce"):
                 outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
-            # jax.debug.print("outputs: {x}", x=outputs)
+            jax.debug.print("outputs: {x}", x=outputs)
             return outputs
         else:
             raise NotImplementedError

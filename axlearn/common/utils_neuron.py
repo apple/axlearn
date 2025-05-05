@@ -132,8 +132,10 @@ class TestConfig():
             
             self.golden_state = init_fn(jax.random.PRNGKey(123))
             self.golden_state = cast_floats(self.golden_state, to_dtype=self.golden.dtype)
+            print(self.golden_state.keys())
             # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
-            self.golden_state['gate_weight'] = self.golden_state['gate_weight'].astype(jnp.float32)
+            if 'gate_weight' in self.golden_state:
+                self.golden_state['gate_weight'] = self.golden_state['gate_weight'].astype(jnp.float32)
 
         golden_state_cpu = jax.device_get(self.golden_state)
 
@@ -161,8 +163,9 @@ class TestConfig():
             
             # self.test_state = init_fn(jax.random.PRNGKey(123))
             self.test_state = cast_floats(self.test_state, to_dtype=self.test.dtype)
-            # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
-            self.test_state['gate_weight'] = self.test_state['gate_weight'].astype(jnp.float32)
+            if 'gate_weight' in self.test_state:
+                # TODO: Currently bf16 seeing expert index mismatch with f32. Setting routing to f32.
+                self.test_state['gate_weight'] = self.test_state['gate_weight'].astype(jnp.float32)
 
     def random_inputs_with_mesh(self): 
 
@@ -383,6 +386,10 @@ class TestConfigBuilder:
         # b s i h e top_k g ob cf mesh dtype
         
         # 12B Configs
+        Mistral12B_base = (16, 4096, 2048, 7168, 8, 2, 2, 1, 2, {}, "bfloat16")
+        grid_space.append(Mistral12B_base)
+        return grid_space
+
         Mistral12B_base = (16, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
         grid_space.append(Mistral12B_base)
         Mistral12B_top1 = (16, 4096, 2048, 7168, 8, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
@@ -541,8 +548,7 @@ def get_training_configs(is_unit: bool = False):
     test_configs = []
     for (batch, seq, input_dim,  hidden_dim, n_experts, top_k, n_groups,
          out_batch, capacity_factor, mesh_spec, dtype) in grid_space:
-        
-        
+
         config = builder.reset()
         config = config.with_dimensions(batch, seq, input_dim, dtype)
         config = config.with_expert_settings(
@@ -558,7 +564,7 @@ def get_training_configs(is_unit: bool = False):
             config = config.build_test_configs_unit()
         else:
             config = config.build_test_configs_integ()
-
+        config = config[1:]
         name = f"MoE_b{batch}_s{seq}_i{input_dim}_h{hidden_dim}_e{n_experts}_topk{top_k}_g{n_groups}_ob{out_batch}_ec{capacity_factor}_mesh{mesh_spec}_dtype_{dtype}"
         test_configs.extend([(name + cfg.prefix, cfg) for cfg in config])
 

@@ -137,8 +137,8 @@ fi
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 
 # use to add debug logging at module level in xla
-# export TF_CPP_MIN_LOG_LEVEL=0
-# export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=4"
+export TF_CPP_MIN_LOG_LEVEL=0
+export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=4"
 
 # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="cache/"
@@ -216,6 +216,7 @@ profile() {
 	export NEURON_RT_PROFILE_BUF_DMA_MB=256
 	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
 	export NEURON_RT_VIRTUAL_CORE_SIZE=2
+	export NEURON_RT_INSPECT_ON_FAIL=1
 	# export NEURON_RT_PROFILE_BUF_INFER_STATUS_MB=4
 	neuron-profile capture -r 64 --num-exec 3 \
 		--collectives-worker-count $((64* $SLURM_JOB_NUM_NODES)) \
