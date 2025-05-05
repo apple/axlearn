@@ -755,6 +755,7 @@ class LWSRunnerJob(BaseRunnerJob):
         UNKNOWN = "UNKNOWN"
         FAILED = "FAILED"
         UPDATING = "UPDATING"
+        PROGRESSING = "PROGRESSING"
         RUNNING = "RUNNING"
         NOT_STARTED = "NOT_STARTED"
     
@@ -784,19 +785,38 @@ class LWSRunnerJob(BaseRunnerJob):
             
             status = resp.get("status", {})
             conditions = status.get("conditions", [])
-            condition_available = conditions[1] if conditions else {}
-            condition_progressive = conditions[0] if conditions else {}
 
+            condition_available = None 
+            condition_progressive = None 
+            condition_update_in_progress = None
 
-            # If LeaderWorkerSet is running fine , condition is Progressing=False and Available=True
-            if condition_available.get("status") == "True" and condition_progressive.get("status") == "False":
+            logging.info(conditions)
+
+            for condition in conditions:
+                if condition.get("type") == "Progressing":
+                    condition_progressive = condition.get("status")
+                if condition.get("type") == "Available":
+                    condition_available = condition.get("status")
+                if condition.get("type") == "UpdateInProgress":
+                    condition_update_in_progress = condition.get("status")
+
+            logging.info(condition_available)
+            logging.info(condition_progressive)
+            logging.info(condition_update_in_progress)
+            
+            if condition_update_in_progress:
+                return LWSRunnerJob.Status.UPDATING
+
+            # If LeaderWorkerSet is running fine , condition is Available=True
+            if condition_available:
                 return LWSRunnerJob.Status.RUNNING
 
-            # If LeaderWorkerSet is deploying/updating, condition is Progressing=True and Available=False
-            if condition_available.get("status") == "False" and condition_progressive.get("status") == "True":
+            # If LeaderWorkerSet is deploying/updating, condition is Progressing=True 
+            if condition_progressive:
                 return LWSRunnerJob.Status.UPDATING
+
             # If LeaderWorkerSet is failed , condition is Progressing=False and Available=False
-            if condition_available.get("status") == "False" and condition_progressive.get("status") == "False":
+            if not condition_available and not condition_progressive:
                 return LWSRunnerJob.Status.FAILED
 
             # If we can't determine the status, return UNKNOWN
@@ -838,7 +858,7 @@ class LWSRunnerJob(BaseRunnerJob):
                 return
             
             elif status == LWSRunnerJob.Status.UPDATING:
-                logging.info("Newer job version is available. Relaunching the jobset...")
+                logging.info("Newer job version is available. Relaunching the LWS...")
                 self._inner._delete()  # pylint: disable=protected-access
 
             elif status == LWSRunnerJob.Status.NOT_STARTED:
