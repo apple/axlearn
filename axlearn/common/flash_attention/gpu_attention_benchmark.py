@@ -252,11 +252,14 @@ def bench_flash_attention(
     else:
         base_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    assert base_fn.is_supported(query=q, key=k, value=v, bias=bias)
+    assert base_fn.is_supported(dict(query=q, key=k, value=v, bias=bias))
     if use_bwd:
-        fn = jax.grad(lambda *args: base_fn(*args).mean(), argnums=(0, 1, 2))
+        fn = jax.grad(
+            lambda q, k, v, b: base_fn(dict(query=q, key=k, value=v, bias=b)).mean(),
+            argnums=(0, 1, 2),
+        )
     else:
-        fn = base_fn
+        fn = lambda q, k, v, b: base_fn(dict(query=q, key=k, value=v, bias=b))
     return measure(fn, q, k, v, bias)
 
 

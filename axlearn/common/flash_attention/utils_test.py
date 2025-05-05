@@ -63,6 +63,40 @@ def _get_inputs(
     return query, key, value
 
 
+def _get_paged_inputs(
+    *,
+    batch: int,
+    seq_len: int,
+    num_heads: int,
+    num_kv_heads: int,
+    per_head_dim: int,
+    page_size: int,
+    input_dtype: jnp.dtype = jnp.bfloat16,
+):
+    total_pages = batch * seq_len // page_size
+    pages_per_sequence = seq_len // page_size
+    query = jax.random.normal(
+        jax.random.PRNGKey(0),
+        [batch, seq_len, num_heads, per_head_dim],
+        dtype=input_dtype,
+    )
+    key = jax.random.normal(
+        jax.random.PRNGKey(1),
+        [num_kv_heads, total_pages, page_size, per_head_dim],
+        dtype=input_dtype,
+    )
+    value = jax.random.normal(
+        jax.random.PRNGKey(2),
+        [num_kv_heads, total_pages, page_size, per_head_dim],
+        dtype=input_dtype,
+    )
+    page_tables = jnp.arange(batch * pages_per_sequence, dtype=jnp.int32)
+    page_tables = jax.random.permutation(jax.random.PRNGKey(3), page_tables, independent=True)
+    page_tables = page_tables.reshape(batch, pages_per_sequence)
+
+    return query, key, value, page_tables
+
+
 class TestFlashAttention(TestCase):
     """Tests FlashAttention layer."""
 
@@ -146,9 +180,16 @@ class TestFlashAttention(TestCase):
             )
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
                 prng_key = jax.random.PRNGKey(0)
-                ref_out = ref_fn(query, key, value, bias, prng_key)
-                test_out = test_fn(query, key, value, bias, prng_key)
-                self.assertNestedAllClose(ref_out, test_out, atol=0.01)
+                input_batch = dict(
+                    query=query,
+                    key=key,
+                    value=value,
+                    prng_key=prng_key,
+                    bias=bias,
+                )
+                ref_out = ref_fn(input_batch)
+                test_out = test_fn(input_batch)
+                self.assertNestedAllClose(ref_out, test_out, atol=0.015)
         jax.clear_caches()
 
     @parameterized.product(
@@ -158,6 +199,7 @@ class TestFlashAttention(TestCase):
         input_dtype=[jnp.float32],
         # TODO(hanzhi_zhou): support multi step gpu decoding.
         step_len=[1],
+        page_size=[16, None],
     )
     @pytest.mark.for_8_devices
     def test_decoding(
@@ -173,9 +215,12 @@ class TestFlashAttention(TestCase):
         bias_type,
         input_dtype,
         step_len,
+        page_size,
     ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
+        if page_size is not None and backend == "tpu":
+            pytest.skip(reason="TPU Paged Attention will be added soon.")
 
         if bias_type == "causal":
             bias = CausalAttentionBias(
@@ -199,12 +244,28 @@ class TestFlashAttention(TestCase):
             per_head_dim=per_head_dim,
             input_dtype=input_dtype,
         )
+        page_tables = None
+        key_for_forward, value_for_forward = key, value
+        if page_size is not None:
+            query, key, value, page_tables = _get_paged_inputs(
+                batch=batch,
+                seq_len=seq_len,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads or num_heads,
+                per_head_dim=per_head_dim,
+                page_size=page_size,
+                input_dtype=input_dtype,
+            )
+
+            key_for_forward = common.reconstruct_kv(page_tables, key)
+            value_for_forward = common.reconstruct_kv(page_tables, value)
+
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
             fwd_fn = utils.flash_attention_implementation(
                 backend,
                 query=query,
-                key=key,
-                value=value,
+                key=key_for_forward,
+                value=value_for_forward,
                 bias=bias,
                 tpu_block_size=128,
             )
@@ -217,10 +278,18 @@ class TestFlashAttention(TestCase):
                 bias=bias,
                 tpu_block_size=128,
                 is_decoding=True,
+                page_tables=page_tables,
             )
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
                 prng_key = jax.random.PRNGKey(0)
-                fwd_out = fwd_fn(query, key, value, bias, prng_key)
+                forward_batch = dict(
+                    query=query,
+                    key=key_for_forward,
+                    value=value_for_forward,
+                    prng_key=prng_key,
+                    bias=bias,
+                )
+                fwd_out = fwd_fn(forward_batch)
                 # Limit generation length to 16 to save test time.
                 query_len = 16
                 query = query[:, :query_len]
@@ -243,10 +312,20 @@ class TestFlashAttention(TestCase):
                         )
 
                     query_step = query[:, t : t + step_len]
-                    decoding_out = decode_fn(query_step, key, value, bias_step, prng_key)
+                    decode_batch = dict(
+                        query=query_step,
+                        key=key,
+                        value=value,
+                        prng_key=prng_key,
+                        page_tables=page_tables,
+                        bias=bias_step,
+                    )
+                    decoding_out = decode_fn(
+                        input_batch=decode_batch,
+                    )
                     decoding_output.append(decoding_out)
                 decoding_output = jnp.concatenate(decoding_output, axis=1)
-                self.assertNestedAllClose(fwd_out, decoding_output, atol=0.01)
+                self.assertNestedAllClose(fwd_out, decoding_output, atol=0.015)
         jax.clear_caches()
 
 

@@ -62,9 +62,9 @@ def test_fwd_against_ref(
     # Compare outputs.
     test_fn = NeuronFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-
-    o = test_fn(q, k, v, bias)
-    o_ref = ref_fn(q, k, v, bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    o = test_fn(input_batch)
+    o_ref = ref_fn(input_batch)
     if input_dtype == jnp.float16:
         chex.assert_trees_all_close(o, o_ref, atol=0.07)
     elif input_dtype == jnp.float32:
@@ -116,6 +116,10 @@ def test_bwd_against_ref(
     test_fn = NeuronFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    jax_grads = jax.grad(lambda *args: test_fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
-    jax_ref_grads = jax.grad(lambda *args: ref_fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
+    jax_ref_grads = jax.grad(
+        lambda q, k, v, b: ref_fn(dict(query=q, key=k, value=v, bias=b).mean(), argnums=(0, 1, 2))
+    )(q, k, v, bias)
+    jax_grads = jax.grad(
+        lambda q, k, v, b: test_fn(dict(query=q, key=k, value=v, bias=b).mean(), argnums=(0, 1, 2))
+    )(q, k, v, bias)
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, atol=0.07)

@@ -59,7 +59,7 @@ from axlearn.common.attention_bias import (
 )
 from axlearn.common.flash_attention.common import BaseSingleStepDecoding, get_gpu_dot_precision
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 
 # Note: split_k_seq_len must be a multiple of block_k.
@@ -282,14 +282,10 @@ class GPUDecoding(BaseSingleStepDecoding):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
+        bias: BaseAttentionBias = input_batch["bias"]
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:
             raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
@@ -297,6 +293,9 @@ class GPUDecoding(BaseSingleStepDecoding):
         kv_seq_len = mask.target_positions[:, -1] + 1
         logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
 
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
         query = query.squeeze(1)
         batch_size, q_heads, head_dim = query.shape
         padded_kv_seq_len, kv_heads = key.shape[1], key.shape[2]
