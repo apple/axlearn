@@ -52,6 +52,11 @@ is_decode=False, use_bwd=False, num_heads=32, num_kv_heads=None, seq_len=4096, p
 bs=2                                              6.151616      0.903744      0.453472
 bs=4                                              11.448928     1.728224      0.868096
 bs=8                                              23.125055     3.385728      1.692704
+is_decode=False, use_bwd=False, num_heads=32, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
+                                                  jax           axlearn
+bs=2,dtype=<class 'jax.numpy.float32'>            9.706688      3.208640
+bs=4,dtype=<class 'jax.numpy.float32'>            19.720287     6.164672
+bs=8,dtype=<class 'jax.numpy.float32'>            39.786495     12.005504
 is_decode=False, use_bwd=False, bs=2, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
                                                   jax           axlearn       jax-cudnn
 num_heads=12                                      2.344864      0.388864      0.200256
@@ -86,6 +91,11 @@ is_decode=False, use_bwd=True, num_heads=32, num_kv_heads=None, seq_len=4096, pe
 bs=2                                              6.134624      0.940480      0.488192
 bs=4                                              11.365568     1.791296      0.922528
 bs=8                                              22.983904     3.470272      1.795264
+is_decode=False, use_bwd=True, num_heads=32, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
+                                                  jax           axlearn
+bs=2,dtype=<class 'jax.numpy.float32'>            9.692192      3.243680
+bs=4,dtype=<class 'jax.numpy.float32'>            19.611168     6.216032
+bs=8,dtype=<class 'jax.numpy.float32'>            39.664703     12.213696
 is_decode=False, use_bwd=True, bs=2, num_kv_heads=None, seq_len=4096, per_head_dim=128, sw_sz=-1
                                                   jax           axlearn       jax-cudnn
 num_heads=12                                      2.335136      0.406336      0.215584
@@ -202,6 +212,7 @@ def bench_flash_attention(
     is_decode: bool,
     use_bwd: bool,
     sw_sz: int = -1,
+    dtype=jnp.float16,
 ):
     if use_bwd and is_decode:
         raise ValueError("use_bwd and is_decode cannot both be true.")
@@ -228,7 +239,7 @@ def bench_flash_attention(
         num_kv_heads=num_kv_heads,
         mask_fn=mask_fn,
         sliding_window_sz=sw_sz,
-        dtype=jnp.float16,
+        dtype=dtype,
         query_offset=seq_len - 1 if is_decode else 0,
     )
 
@@ -241,11 +252,14 @@ def bench_flash_attention(
     else:
         base_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
-    assert base_fn.is_supported(query=q, key=k, value=v, bias=bias)
+    assert base_fn.is_supported(dict(query=q, key=k, value=v, bias=bias))
     if use_bwd:
-        fn = lambda *args: base_fn(*args).mean()
+        fn = jax.grad(
+            lambda q, k, v, b: base_fn(dict(query=q, key=k, value=v, bias=b)).mean(),
+            argnums=(0, 1, 2),
+        )
     else:
-        fn = base_fn
+        fn = lambda q, k, v, b: base_fn(dict(query=q, key=k, value=v, bias=b))
     return measure(fn, q, k, v, bias)
 
 
@@ -283,7 +297,7 @@ def _sweep(
             result, t = fn(library=library, **bench_kwargs, **common_kwargs)
             if i == 0:
                 ref_result = result
-            elif i > 0 and library != "jax-pallas":
+            elif i > 0:
                 jax.tree.map(check_fn, result, ref_result)
             lib_results.append(t)
         results.append(lib_results)
@@ -335,6 +349,8 @@ def bench_flash_attention_fwd_bwd(use_bwd: bool):
     )
     libraries = ["jax", "axlearn", "jax-cudnn"]
     benchmark_sweep(libraries, common_kwargs, bs=[2, 4, 8])
+    # cuDNN doesn't support fp32.
+    benchmark_sweep(["jax", "axlearn"], common_kwargs, bs=[2, 4, 8], dtype=[jnp.float32])
     benchmark_sweep(libraries, common_kwargs, num_heads=[12, 16, 32, 48, 72])
     # 256 to 8192.
     benchmark_sweep(libraries, common_kwargs, seq_len=[int(2**i) for i in range(8, 14)])

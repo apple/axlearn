@@ -21,7 +21,9 @@ from axlearn.common.input_grain import (
     BuildDatasetFn,
     Dataset,
     Input,
-    _set_read_config_recursively,
+    PerFeedDataset,
+    RaggedTensor,
+    _set_dispatch_config_on_ancestors,
     maybe_to_iter_dataset,
     pad_for_evaluation,
     prefetch_dataset,
@@ -29,7 +31,6 @@ from axlearn.common.input_grain import (
     sample_from_datasets,
     shard_dataset,
     shard_dataset_with_proportion,
-    trim_and_pack_dataset,
     unbatch,
 )
 from axlearn.common.test_utils import TestCase
@@ -46,8 +47,8 @@ def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
 
 
 class _PlusOne(grain.MapTransform):
-    def map(self, x: int) -> int:
-        return x + 1
+    def map(self, element: int) -> int:
+        return element + 1
 
 
 class UtilsTest(TestCase):
@@ -307,58 +308,26 @@ class UtilsTest(TestCase):
             ds = unbatch(maybe_to_iter_dataset(ds))
             list(ds)
 
-    @parameterized.parameters(
-        dict(
-            feature_lens={"input_ids": 5},
-            expected=[
+    def test_unbatch_ragged(self):
+        # Test unbatching with ragged tensors.
+        ds = fake_grain_source(
+            [
                 {
-                    "input_ids": np.array([1, 2, 3, 4, 5]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0]),
+                    "x": np.array([1, 2, 3]),
+                    "y": np.array([1, 2, 3]),
+                    "z": RaggedTensor(
+                        [
+                            np.array([1, 2, 3, 4]),
+                            np.array([5, 6, 7, 8]),
+                            np.array([9, 10, 11, 12]),
+                        ]
+                    ),
                 },
-                {
-                    "input_ids": np.array([11, 12, 13, 14, 7]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0]),
-                },
-                {
-                    "input_ids": np.array([8, 0, 0, 0, 0]),
-                    "input_ids_segment_ids": np.array([1, 0, 0, 0, 0]),
-                    "input_ids_positions": np.array([0, 0, 0, 0, 0]),
-                },
-            ],
-        ),
-        dict(
-            feature_lens={"input_ids": 6},
-            expected=[
-                {
-                    "input_ids": np.array([1, 2, 3, 4, 5, 6]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0, 1]),
-                },
-                {
-                    "input_ids": np.array([11, 12, 13, 14, 7, 8]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2, 3]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0, 0]),
-                },
-            ],
-        ),
-    )
-    def test_packing(self, feature_lens: dict, expected: list):
-        examples = [
-            {"input_ids": np.array([1, 2, 3, 4])},
-            {"input_ids": np.array([5, 6])},
-            {"input_ids": np.array([11, 12, 13, 14])},
-            {"input_ids": np.array([7])},
-            {"input_ids": np.array([8])},
-        ]
-
-        def cast_ints(example):
-            return jax.tree.map(lambda x: x.astype(np.int32), example)
-
-        ds = fake_grain_source(examples)
-        ds = trim_and_pack_dataset(maybe_to_iter_dataset(ds), feature_lengths=feature_lens)
-        self.assertNestedEqual(cast_ints(expected), cast_ints(list(iter(ds))))
+            ]
+        )
+        ds = unbatch(maybe_to_iter_dataset(ds))
+        ds = iter(ds)
+        self.assertNestedEqual({"x": 1, "y": 1, "z": np.array([1, 2, 3, 4])}, next(ds))
 
     def test_rekey(self):
         # Test rekey with repeat, dropping original inputs.
@@ -428,12 +397,16 @@ class UtilsTest(TestCase):
 class InputTest(parameterized.TestCase):
     """Tests Input module."""
 
-    def test_set_read_config_recursively(self):
-        read_config = dict(num_shards=4, shard_index=2)
+    def test_set_dispatch_config_on_ancestors(self):
+        dispatch_config = dict(
+            num_shards=4,
+            shard_index=2,
+            feed_batch_size=1,  # Unused.
+        )
 
         # Should return False if no `shard_dataset`.
         ds = range_dataset(start=0, stop=10, seed=123)
-        self.assertFalse(_set_read_config_recursively(ds, **read_config))
+        self.assertFalse(_set_dispatch_config_on_ancestors(ds, **dispatch_config))
 
         shard_ds = shard_dataset(ds, process_index=0, process_count=2)
         ds = shard_ds.shuffle().repeat(num_epochs=1)
@@ -445,14 +418,45 @@ class InputTest(parameterized.TestCase):
 
         # Should return True if we set successfully.
         # pylint: disable=protected-access
-        self.assertTrue(_set_read_config_recursively(ds, **read_config))
-        self.assertEqual(shard_ds._start, read_config["shard_index"])
-        self.assertEqual(shard_ds._step, read_config["num_shards"])
+        self.assertTrue(_set_dispatch_config_on_ancestors(ds, **dispatch_config))
+        self.assertEqual(shard_ds._start, dispatch_config["shard_index"])
+        self.assertEqual(shard_ds._step, dispatch_config["num_shards"])
 
         # Should fail if we iterate and then attempt to set.
-        self.assertEqual(read_config["shard_index"], shard_ds[0])
+        self.assertEqual(dispatch_config["shard_index"], shard_ds[0])
         with self.assertRaisesRegex(ValueError, "after iterating"):
-            _set_read_config_recursively(ds, **read_config)
+            _set_dispatch_config_on_ancestors(ds, **dispatch_config)
+
+        # Should work for other processors that define `set_dispatch_config`.
+
+        class _DummyProcessor(grain.MapDataset):
+            """A dummy per-feed processor."""
+
+            def __init__(self, parents):
+                super().__init__(parents)
+                self.called_kwargs = None
+
+            def set_dispatch_config(self, **kwargs):
+                self.called_kwargs = kwargs
+
+            def __getitem__(self, index):
+                del index
+                return {}
+
+            def __len__(self):
+                return 1
+
+        self.assertIsInstance(_DummyProcessor, PerFeedDataset)
+
+        ds = range_dataset(start=0, stop=10, seed=123)
+        shard_ds = shard_dataset(ds, process_index=0, process_count=2)
+        dummy_ds = _DummyProcessor(shard_ds)
+        ds = dummy_ds.batch(1)
+
+        self.assertTrue(_set_dispatch_config_on_ancestors(ds, **dispatch_config))
+        self.assertEqual(dummy_ds.called_kwargs, dispatch_config)
+        self.assertEqual(shard_ds._start, dispatch_config["shard_index"])
+        self.assertEqual(shard_ds._step, dispatch_config["num_shards"])
 
     def _input_config(
         self,

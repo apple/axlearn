@@ -57,9 +57,9 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     split,
 )
-from axlearn.common.flash_attention.common import BaseSingleStepDecoding
+from axlearn.common.flash_attention.common import BaseSingleStepDecoding, get_gpu_dot_precision
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 
 # Note: split_k_seq_len must be a multiple of block_k.
@@ -83,11 +83,7 @@ def _attn_forward_kernel(
 ):
     _, head_dim = q_ref.shape
     split_k_seq_len, _ = k_ref.shape
-    precision = (
-        lax.Precision.HIGHEST
-        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
-        else lax.Precision.DEFAULT
-    )
+    precision = get_gpu_dot_precision(q_ref.dtype)
     prog_i, prog_j = pl.program_id(1), pl.program_id(2)
     q_mask = (block_h * prog_i + jnp.arange(block_h) < qhead_per_kvhead)[:, None]
 
@@ -111,6 +107,7 @@ def _attn_forward_kernel(
             def compute():
                 curr_k_slice = pl.ds(start_k * block_k, block_k)
                 k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
+                k = k.astype(q.dtype)
                 qk = pl.dot(q, k.T, precision=precision)  # [block_h, block_k]
                 if bias_ref is not None:
                     qk += pl.load(
@@ -128,6 +125,7 @@ def _attn_forward_kernel(
                 l_curr = s_curr.sum(axis=-1)
                 l_next = l_prev_corr + l_curr
                 v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=mask[:, None], other=0.0)
+                v = v.astype(q.dtype)
                 o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
 
                 # Flash2 unscaled_o.
@@ -284,14 +282,10 @@ class GPUDecoding(BaseSingleStepDecoding):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
+        bias: BaseAttentionBias = input_batch["bias"]
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:
             raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
@@ -299,6 +293,9 @@ class GPUDecoding(BaseSingleStepDecoding):
         kv_seq_len = mask.target_positions[:, -1] + 1
         logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
 
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
         query = query.squeeze(1)
         batch_size, q_heads, head_dim = query.shape
         padded_kv_seq_len, kv_heads = key.shape[1], key.shape[2]

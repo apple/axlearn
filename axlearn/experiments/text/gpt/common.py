@@ -257,9 +257,9 @@ def model_config(
         z_loss_scale: The scalar weight for the z-loss to encourages the cross-entropy loss
             normalizer to be well-behaved.
         ffn_structure: The inner structure of the feedforward layer.
-            Options: [prenorm, postnorm, hybridnorm].
+            Options: See `SupportedNormStructure`.
         atten_structure: The inner structure of the attention layer.
-            Options: [prenorm, postnorm, hybridnorm].
+            Options: See `SupportedNormStructure`.
         atten_logit_cap: Cap the absolute values of logits by tanh.
             Enabled by setting a positive value.
         remat_offload_dst: Destination of remat checkptoing offloading.

@@ -42,7 +42,9 @@ from axlearn.common.attention_bias import (
     SegmentIdAttentionBias,
     SlidingWindowAttentionBias,
     TensorAttentionBias,
+    and_masks,
     bool_to_bias,
+    causal_mask,
 )
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
@@ -155,8 +157,12 @@ def _prepare_layers(
     return test_layer, ref_layer, params, hidden_dim
 
 
-def jax_fn_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
-    return query_position >= key_position
+def jax_fn_mask(sliding_window_size: int) -> Tensor:
+    def mask(query_position: Tensor, key_position: Tensor):
+        return query_position - key_position <= sliding_window_size
+
+    fun = and_masks(causal_mask, mask)
+    return fun
 
 
 class DummyModel(BaseLayer):
@@ -542,10 +548,11 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
             pytest.skip("Dropout is implemented for GPU only.")
-        if attn_type == "sliding_window" and query_len_multiplier > 1:
+        if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
-            # rows.
-            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
+            # rows. "custom" is also sliding window, but uses a different function to test support
+            # for custom mask fns.
+            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
 
         if attn_type == "full":
             mask = None
@@ -554,7 +561,7 @@ class TestFlashAttention(TestCase):
         elif attn_type == "sliding_window":
             mask = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
         elif attn_type == "custom":
-            mask = MaskFnAttentionBias.default_config(mask=jax_fn_mask)
+            mask = MaskFnAttentionBias.default_config(mask=jax_fn_mask(5))
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -632,9 +639,10 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
         if use_segment_ids and query_len_multiplier != 1:
             pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
-        if attn_type == "sliding_window" and query_len_multiplier > 1:
+        if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
-            # rows.
+            # rows. "custom" is also sliding window, but uses a different function to test support
+            # for custom mask fns.
             pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
             pytest.skip("Dropout is implemented for GPU only.")
@@ -661,7 +669,7 @@ class TestFlashAttention(TestCase):
             elif attn_type == "sliding_window":
                 kwargs["mask"] = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
             elif attn_type == "custom":
-                kwargs["mask"] = MaskFnAttentionBias.default_config(mask=jax_fn_mask)
+                kwargs["mask"] = MaskFnAttentionBias.default_config(mask=jax_fn_mask(5))
 
             ref_layer_cfg = GroupedQueryAttention.default_config().set(**kwargs)
             test_layer_cfg = FlashAttention.default_config().set(

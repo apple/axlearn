@@ -11,7 +11,6 @@ from collections.abc import Sequence
 from functools import partial
 from typing import Callable, Optional, Protocol
 
-import einops
 import jax.numpy as jnp
 
 from axlearn.audio.frontend_utils import (
@@ -27,6 +26,7 @@ from axlearn.audio.frontend_utils import (
     pre_emphasis,
     windowing,
 )
+from axlearn.common import einops
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (
     REQUIRED,
@@ -86,9 +86,22 @@ class BaseFrontend(BaseLayer):
 
 
 def _log_mel_spectrogram(
-    *, num_filters: int, sample_rate: int, fft_size: int, mel_floor: float
+    *,
+    num_filters: int,
+    sample_rate: int,
+    fft_size: int,
+    mel_floor: float,
+    lower_edge_hertz: float = 125.0,
+    upper_edge_hertz: Optional[float] = None,
 ) -> StageFn:
     """Returns a StageFn that computes Log Mel spectrogram."""
+    if upper_edge_hertz is None:
+        # When sample_rate=16k, upper_edge_hertz=7600 like Lingvo.
+        # If your filterbank has bins or filters close to Nyquist (e.g., a triangle filter peaking
+        # at 7900–8100 Hz), any response beyond 8000 Hz will wrap around and alias back into
+        # the signal.
+        # Reducing the upper edge to ~95% of Nyquist (e.g., 7600 Hz) creates a safety margin.
+        upper_edge_hertz = 0.95 * (sample_rate // 2)
 
     # Mel filterbank, used to convert magnitude spectrogram to mel spectrogram. Only needs to be
     # constructed once.
@@ -96,8 +109,8 @@ def _log_mel_spectrogram(
         num_filters=num_filters,
         num_spectrogram_bins=fft_size // 2 + 1,
         sample_rate=sample_rate,
-        lower_edge_hertz=125.0,
-        upper_edge_hertz=7600.0,
+        lower_edge_hertz=lower_edge_hertz,
+        upper_edge_hertz=upper_edge_hertz,
     )
 
     def fn(fft: Tensor, *, dtype: jnp.dtype) -> Tensor:

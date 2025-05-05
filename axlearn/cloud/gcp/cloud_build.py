@@ -143,6 +143,9 @@ def _get_latest_build_status_in_region(
         The CloudBuildStatus of the latest build, or None if no build is found.
     """
     try:
+        # pylint: disable-next=import-outside-toplevel
+        from google.protobuf import timestamp_pb2  # type: ignore
+
         builds = _list_builds_in_region(
             project_id=project_id, image_name=image_name, tags=tags, region=region
         )
@@ -150,11 +153,22 @@ def _get_latest_build_status_in_region(
             logging.info("No builds found in region '%s' for image '%s'.", region, image_name)
             return None
 
+        def sort_key(build: Build):
+            if isinstance(build.create_time, timestamp_pb2.Timestamp):
+                return build.create_time.ToDatetime()
+            return build.create_time
+
         # Sort builds by creation time and pick the latest.
-        builds.sort(key=lambda build: build.create_time)
+        builds.sort(key=sort_key)
         latest_build = builds[-1]
-        logging.info(
-            "Latest build found in region '%s' for image '%s': %s", region, image_name, latest_build
+        # Logging latest_build can lead to very verbose logs, so we only log once.
+        logging.log_first_n(
+            logging.INFO,
+            "Latest build found in region '%s' for image '%s': %s",
+            1,
+            region,
+            image_name,
+            latest_build,
         )
         return CloudBuildStatus.from_build_status(latest_build.status)
 

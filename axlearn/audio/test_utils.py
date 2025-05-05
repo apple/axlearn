@@ -26,5 +26,5 @@ def fake_audio(
         dtype=jnp.float32,
     ).astype(dtype)
     lengths = jax.random.randint(length_key, shape=[batch_size, 1], minval=0, maxval=seq_len)
-    paddings = (jnp.arange(seq_len)[None, :] >= lengths).astype(jnp.int32)
+    paddings = (jnp.arange(seq_len)[None, :] >= lengths).astype(jnp.bool)
     return inputs, paddings

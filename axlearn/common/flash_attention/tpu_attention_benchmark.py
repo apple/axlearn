@@ -124,18 +124,26 @@ def _benchmark(
         is_decoding=is_decoding,
     )
 
-    ref_fwd_time = _time_call(lambda: ref_mha_impl(q, k, v, bias))
-    flash_fwd_time = _time_call(lambda: mha_impl(q, k, v, bias))
+    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    ref_fwd_time = _time_call(lambda: ref_mha_impl(input_batch))
+    flash_fwd_time = _time_call(lambda: mha_impl(input_batch))
 
     if not is_decoding:
-        flash_grad_fn = jax.jit(
-            jax.grad(lambda q, k, v, b: ref_mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
-        )
-        ref_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
-        flash_grad_fn = jax.jit(
-            jax.grad(lambda q, k, v, b: mha_impl(q, k, v, b).mean(), argnums=(0, 1, 2))
-        )
-        flash_bwd_time = _time_call(lambda: flash_grad_fn(q, k, v, bias)[0])
+
+        def grad_ref(float_inputs, aux_inputs):
+            full_batch = {**float_inputs, **aux_inputs}
+            return ref_mha_impl(full_batch).mean()
+
+        def grad_test(float_inputs, aux_inputs):
+            full_batch = {**float_inputs, **aux_inputs}
+            return mha_impl(full_batch).mean()
+
+        float_inputs = dict(query=q, key=k, value=v)
+        aux_inputs = dict(bias=bias)
+        ref_grad_fn = jax.jit(jax.grad(grad_ref, argnums=0))
+        ref_bwd_time = _time_call(lambda: ref_grad_fn(float_inputs, aux_inputs)["query"])
+        flash_grad_fn = jax.jit(jax.grad(grad_test, argnums=0))
+        flash_bwd_time = _time_call(lambda: flash_grad_fn(float_inputs, aux_inputs)["query"])
 
     print(f"ref_fwd:{ref_fwd_time:.4f}s, flash_fwd:{flash_fwd_time:.4f}s")
     if not is_decoding:

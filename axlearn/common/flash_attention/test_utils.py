@@ -21,6 +21,53 @@ from axlearn.common.attention_bias import (
 from axlearn.common.utils import Tensor
 
 
+def generate_paged_attention_data(
+    *,
+    batch_size: int,
+    query_len: int,
+    kv_len: int,
+    num_heads: int,
+    per_head_dim: int,
+    num_kv_heads: int,
+    page_size: int,
+    mask_fn: Optional[MaskFn] = None,
+    sliding_window_sz: Optional[int] = None,
+    attention_bias_type: Literal[None, "2d", "4d"] = None,
+    with_segment_ids: bool = False,
+    dtype=jnp.bfloat16,
+    query_offset: int = 0,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, CompositeAttentionBias]:
+    """Generates query, key value pages, and page tables for paged attention testing."""
+    bias = generate_attention_data(
+        batch_size,
+        query_len,
+        kv_len,
+        num_heads,
+        per_head_dim,
+        num_kv_heads,
+        mask_fn,
+        sliding_window_sz,
+        attention_bias_type,
+        with_segment_ids,
+        dtype,
+        query_offset,
+    )[3]
+    assert kv_len % page_size == 0
+    k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
+
+    pages_per_sequence = kv_len // page_size
+    total_pages = batch_size * pages_per_sequence
+    q = jax.random.normal(k1, (batch_size, 1, num_heads, per_head_dim), dtype=dtype)
+    key = jax.random.normal(k2, (num_kv_heads, total_pages, page_size, per_head_dim), dtype=dtype)
+    value = jax.random.normal(k3, (num_kv_heads, total_pages, page_size, per_head_dim), dtype=dtype)
+
+    page_tables = jnp.arange(batch_size * pages_per_sequence, dtype=jnp.int32)
+    page_tables = jax.random.permutation(k4, page_tables, independent=True)
+    page_tables = page_tables.reshape(batch_size, pages_per_sequence)
+
+    return q, key, value, page_tables, bias
+
+
 def generate_attention_data(
     batch_size: int,
     query_len: int,
@@ -39,12 +86,13 @@ def generate_attention_data(
     if sliding_window_sz is not None and sliding_window_sz != -1:
         # Sliding window size conflicts with the following mask fns.
         assert mask_fn is not causal_mask and mask_fn is not sliding_window_causal_mask
+
     k1, k2, k3, k4, k5 = jax.random.split(jax.random.PRNGKey(0), 5)
-    q = jax.random.normal(k1, (batch_size, query_len, num_heads, per_head_dim), dtype=dtype)
     num_kv_heads = num_kv_heads or num_heads
     kv_len = kv_len or query_len
     if kv_len != query_len and with_segment_ids:
         pytest.skip(reason="segment ids require kv_seq_len == q_seq_len")
+    q = jax.random.normal(k1, (batch_size, query_len, num_heads, per_head_dim), dtype=dtype)
     k = jax.random.normal(k2, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=dtype)
     v = jax.random.normal(k3, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=dtype)
     attention_bias = None

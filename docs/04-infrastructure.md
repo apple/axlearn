@@ -138,6 +138,18 @@ For more details on the launch command, run `axlearn gcp launch --help`.
 
 <br>
 
+### Bastion Runners
+
+The bastion supports running arbitrary bash workloads. However, the common case is for the bastion to submit resources to some cloud environment (such as a kubernetes cluster) and monitor those resources until completion.
+
+To facilitate the common case, the launch command exposes a concept of a bastion "runner", which is a configurable object that implements the logic for actually executing commands submitted to the bastion. As an example, the `GKERunnerJob` executes a bastion command by first creating a [jobset](https://github.com/kubernetes-sigs/jobset) in a Google Kubernetes Engine (GKE) cluster, and monitors the jobset until completion, restarting it as necessary. A collection of sample runner implementations can be found in `axlearn/cloud/gcp/runners`.
+
+To target a specific runner, users can provide `--runner_module` and `--runner_name` flags to the launch command, which respectively specifies a Python module (e.g. `axlearn.cloud.gcp.runners`), as well as the name of the runner (e.g. `gke_tpu_single`). The runner module should expose a function `named_runner_configs`, which takes the name of a runner and returns the runner config. By specifying these two flags, the launch command can automatically infer any available flags from the runner config, which are exposed to the user in the launch command.
+
+For backwards compatibility, users can also provide `--instance_type` to the launch command instead of `--runner_module` and `--runner_name`, in which case the launch command will make a best-effort attempt to infer the appropriate runner for the instance type.
+
+For details, please see `axlearn gcp launch --help`.
+
 ### Control Flow of Job Submission
 ```mermaid
 %% elk seems to be more maintained, see: https://github.com/mermaid-js/mermaid/issues/1969
@@ -207,3 +219,7 @@ flowchart TB
     classDef fileCSS stroke:#111,fill:#333
     classDef storeCSS fill:#37d
 ```
+
+### Goodput Monitoring
+
+Please refer to [Goodput Monitoring](docs/05-Goodput-Monitoring.md) for monitoring.

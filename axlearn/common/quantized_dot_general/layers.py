@@ -245,12 +245,7 @@ class QuantizedDotGeneral(BaseLayer):
                 preferred_element_type=preferred_element_type,
             )
         elif cfg.quantization_type == DotGeneralQuantizationType.FP_8:
-            fn = (
-                self._fp8_dot_delayed_scaling
-                if cfg.fp8_amax_history_length
-                else self._fp8_dot_in_batch_scaling
-            )
-            return fn(
+            return self._fp8_dot(
                 lhs,
                 rhs,
                 dimension_numbers=dimension_numbers,
@@ -263,40 +258,47 @@ class QuantizedDotGeneral(BaseLayer):
                 f"Available types {list(DotGeneralQuantizationType)}"
             )
 
-    # pylint: disable=unused-argument
-    def _fp8_dot_in_batch_scaling(
-        self, lhs, rhs, dimension_numbers, precision, preferred_element_type
-    ):
+    def _fp8_dot(self, lhs, rhs, dimension_numbers, precision, preferred_element_type):
         # Use delayed import to avoid global dependency on flax.linen.
         # pylint: disable-next=import-outside-toplevel
         from axlearn.common.quantized_dot_general import fp8_ops
 
-        logging.log_first_n(logging.INFO, "Using fp8 in-batch scaling.", n=1)
-        return fp8_ops.q_dot_dq_in_batch(
-            lhs,
-            rhs,
-            *(self.parameters[x.value] for x in FP8ScaleParams),
-            dimension_numbers,
-            preferred_element_type=preferred_element_type,
+        is_delayed = self.config.fp8_amax_history_length > 0
+        logging.log_first_n(
+            logging.INFO, "Using fp8 %s scaling.", 1, "delayed" if is_delayed else "in batch"
         )
-
-    def _fp8_dot_delayed_scaling(
-        self, lhs, rhs, dimension_numbers, precision, preferred_element_type
-    ):
-        # Use delayed import to avoid global dependency on flax.linen.
-        # pylint: disable-next=import-outside-toplevel
-        from axlearn.common.quantized_dot_general import fp8_ops
-
-        logging.log_first_n(logging.INFO, "Using fp8 delayed scaling.", n=1)
-        return fp8_ops.q_dot_dq_delayed(
+        scale_params = [self.parameters[x.value] for x in FP8ScaleParams]
+        history_params = (
+            [self.parameters[x.value] for x in FP8AmaxHistoryParams] if is_delayed else [None] * 3
+        )
+        fn = fp8_ops.q_dot_q
+        if (
+            len(scale_params[0].shape) > 0
+            and lhs.shape[0] == rhs.shape[0]
+            and lhs.shape[0] == scale_params[0].shape[0]
+        ):
+            # For batched matmul of the form (B, M, K) @ (B, K, N), use vmap so that each
+            # batch of the lhs/rhs can have different scaling factors.
+            temp = [None] * 4
+            ((temp[0], temp[1]), (temp[2], temp[3])) = dimension_numbers
+            # Filter out dim 0 from lhs/rhs batch dimensions.
+            for i in range(2, 4):
+                temp[i] = tuple(filter(lambda x: x != 0, temp[i]))
+            # Reduce all dim numbers by 1, since vmap removes the outer dimension.
+            for i in range(4):
+                temp[i] = tuple(map(lambda x: x - 1, temp[i]))
+            dimension_numbers = ((temp[0], temp[1]), (temp[2], temp[3]))
+            fn = jax.vmap(
+                fn, in_axes=[0] * 5 + ([0] * 3 if is_delayed else [None] * 3) + [None] * 3
+            )
+        return fn(
             lhs,
             rhs,
-            *(self.parameters[x.value] for x in FP8ScaleParams),
-            *(self.parameters[x.value] for x in FP8AmaxHistoryParams),
-            preferred_element_type,
+            *scale_params,
+            *history_params,
             dimension_numbers,
             precision,
-            preferred_element_type=preferred_element_type,
+            preferred_element_type,
         )
 
     def einsum_maybe_quantized(self, subscripts, *, activation: Tensor, kernel: Tensor) -> Tensor:
@@ -360,7 +362,7 @@ class DenseGeneralBaseLayer(BaseLayer):
     follow these steps:
 
     1. Inherent from `DenseGeneralBaseLayer`.
-    2. Call `self. einsum_maybe_quantized` instead of `jax.numpy.einsum`.
+    2. Call `self.einsum_maybe_quantized` instead of `jax.numpy.einsum`.
     3. Recursively populate `quantized_dot_general` configs with
         `axlearn.common.layers.set_quantized_dot_general_recursively`.
     """

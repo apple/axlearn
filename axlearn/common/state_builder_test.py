@@ -974,7 +974,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             ref_repeat = torch.nn.Linear(in_features=2, out_features=3, bias=True)
             ref_repeat_params = torch_to_axlearn(ref_repeat)
             # Tile the params across repeat dim.
-            ref_repeat_params = jax.tree_map(
+            ref_repeat_params = jax.tree.map(
                 lambda x: jnp.tile(x, [repeat_cfg.num_layers] + [1] * x.ndim), ref_repeat_params
             )
 

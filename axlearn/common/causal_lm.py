@@ -225,6 +225,21 @@ def _update(x: dict, updates: dict):
     x.update(updates)
 
 
+class CompositeLossWeights(Module):
+    """Computes loss weights."""
+
+    def forward(self, child_metrics: dict[str, tuple[Tensor, Nested[Tensor]]]) -> dict[str, Tensor]:
+        """Computes per-child loss weights from child metrics.
+
+        Args:
+            child_metrics: A mapping from child name to (child_loss, child_metrics).
+
+        Returns:
+            A mapping from child name to loss weight.
+        """
+        raise NotImplementedError(type(self))
+
+
 class CompositeLossMetrics(BaseLossMetrics):
     """Computes a composite loss from multiple child metrics."""
 
@@ -234,14 +249,14 @@ class CompositeLossMetrics(BaseLossMetrics):
 
         Attributes:
             metrics: A mapping from child name to metrics config.
-            loss_weights: An optional mapping from child name to loss weight.
+            loss_weights: A `CompositeLossWeights` implementation.
                 If None, all weights are considered 1.
             flatten_metrics: Whether to flatten summaries and metrics from each child. If None,
                 defaults to True.
         """
 
         metrics: Required[dict[str, BaseLossMetrics.Config]] = REQUIRED
-        loss_weights: Optional[dict[str, float]] = None
+        loss_weights: Optional[CompositeLossWeights.Config] = None
         flatten_metrics: Optional[bool] = None
 
     def __init__(self, cfg, *, parent):
@@ -250,8 +265,10 @@ class CompositeLossMetrics(BaseLossMetrics):
         self._metrics: dict[str, BaseLossMetrics] = {}
         for name, child in cfg.metrics.items():
             self._metrics[name] = self._add_child(name, child)
-        if cfg.loss_weights is not None and cfg.metrics.keys() != cfg.loss_weights.keys():
-            raise ValueError(f"Expected {cfg.loss_weights.keys()=} to match {cfg.metrics.keys()}.")
+        if cfg.loss_weights is not None:
+            self.loss_weights: CompositeLossMetrics = self._add_child(
+                "loss_weights", cfg.loss_weights
+            )
 
     def forward(
         self,
@@ -266,17 +283,25 @@ class CompositeLossMetrics(BaseLossMetrics):
         conflict.
         """
         cfg: CompositeLossMetrics.Config = self.config
-        loss = 0
-        metrics = {}
+        all_child_metrics = {}
 
         for name, child in self._metrics.items():
-            child_loss, child_metrics = child.forward(
+            all_child_metrics[name] = child.forward(
                 input_batch=input_batch,
                 predict_outputs=predict_outputs,
                 module_outputs=module_outputs,
             )
-            if cfg.loss_weights is not None:
-                child_loss *= cfg.loss_weights[name]
+
+        if "loss_weights" in self.children:
+            loss_weights: dict[str, Tensor] = self.loss_weights(all_child_metrics)
+        else:
+            loss_weights = None
+
+        loss = 0
+        metrics = {}
+        for name, (child_loss, child_metrics) in all_child_metrics.items():
+            if loss_weights is not None and loss_weights.get(name, None) is not None:
+                child_loss *= loss_weights[name]
             loss = loss + child_loss
 
             ctx = self.get_invocation_context()

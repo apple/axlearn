@@ -39,6 +39,7 @@ Example (docker):
     axlearn cloud bundle ... --bundler_spec=external=/path/to/external_dir/
 
 """
+
 import os
 import pathlib
 import shutil
@@ -107,9 +108,11 @@ class Bundler(Configurable):
         # The `exclude` rules also apply to these directories.
         external: Optional[Union[str, Sequence[str]]] = None
 
-    def _local_dir_context(self) -> tempfile.TemporaryDirectory:
-        """Copies contents of local directory to `target_dir`, excluding `exclude` paths,
-        and returns the directory.
+    def _local_dir_context(
+        self, temp_dir: Optional[tempfile.TemporaryDirectory] = None
+    ) -> tempfile.TemporaryDirectory:
+        """Copies contents of local directory to `temp_dir`, excluding `exclude` paths, and returns
+        the directory.
 
         Caller is expected to use as a context manager to ensure proper cleanup.
 
@@ -118,7 +121,8 @@ class Bundler(Configurable):
         """
         cfg: Bundler.Config = self.config
         config_file, configs = config.load_configs(required=True)
-        temp_dir = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
+        if temp_dir is None:
+            temp_dir = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
         exclude_paths = set(canonicalize_to_list(cfg.exclude))
 
         def copytree(src: pathlib.Path, dst: pathlib.Path, exclude: Iterable[str], root=None):
@@ -145,7 +149,7 @@ class Bundler(Configurable):
                 if s.name in exclude or any(relative_s.is_relative_to(e) for e in exclude):
                     continue
                 if s.is_dir():
-                    d.mkdir()
+                    d.mkdir(exist_ok=True)
                     copytree(s, d, exclude, root)
                 else:
                     shutil.copy2(s, d, follow_symlinks=True)
@@ -153,7 +157,7 @@ class Bundler(Configurable):
         # Copy local dir except exclude list to temporary directory.
         package_dir = pathlib.Path.cwd()
         temp_root = pathlib.Path(temp_dir.name) / "axlearn"
-        temp_root.mkdir()
+        temp_root.mkdir(exist_ok=True)
 
         logging.info("Packaging %s.", package_dir)
         copytree(package_dir, temp_root, exclude_paths)
@@ -180,7 +184,7 @@ class Bundler(Configurable):
                 dep_dst = temp_root
                 if not dep.endswith("/"):
                     dep_dst = dep_dst / dep_src.name
-                    dep_dst.mkdir()
+                    dep_dst.mkdir(exist_ok=True)
                 copytree(dep_src, dep_dst, exclude_paths)
 
         # Copy the configs to the bundle directory, since the config file(s) may not be in cwd.
@@ -207,7 +211,11 @@ class Bundler(Configurable):
     @classmethod
     def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> Config:
         """Converts a spec to a bundler."""
-        raise NotImplementedError(cls)
+        del spec
+        cfg: Bundler.Config = cls.default_config()
+        if exclude := getattr(fv, "bundler_exclude", None):
+            cfg.exclude = exclude
+        return cfg
 
     def id(self, name: str) -> str:
         """Returns a unique identifier for the bundle."""
@@ -330,8 +338,7 @@ class BaseDockerBundler(Bundler):
 
         All other specs are treated as build args.
         """
-        del fv  # Not used.
-        cfg: BaseDockerBundler.Config = cls.default_config()
+        cfg: BaseDockerBundler.Config = super().from_spec(spec, fv=fv)
         kwargs = parse_kv_flags(spec, delimiter="=")
         cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
         # Non-config specs are treated as build args.
@@ -505,8 +512,8 @@ class BaseTarBundler(Bundler):
         Possible options:
         - remote_dir: The remote directory to copy the bundle to. Must be compatible with tf_io.
         """
-        del fv  # Not used.
-        return cls.default_config().set(**parse_kv_flags(spec, delimiter="="))
+        cfg: BaseTarBundler.Config = super().from_spec(spec, fv=fv)
+        return cfg.set(**parse_kv_flags(spec, delimiter="="))
 
     def id(self, name: str) -> str:
         """Returns the full image identifier from the tag."""
@@ -676,9 +683,7 @@ def main_flags():
 
 
 def main(_):
-    cfg = get_bundler_config(
-        bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec, fv=FLAGS
-    ).set(exclude=FLAGS.bundler_exclude)
+    cfg = get_bundler_config(bundler_type=FLAGS.bundler_type, spec=FLAGS.bundler_spec, fv=FLAGS)
     bundler = cfg.instantiate()
     bundler.bundle(FLAGS.name)
 

@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import torch.nn.functional as torchF
 from absl.testing import absltest, parameterized
-from einops import rearrange
 
 from axlearn.common import utils
 from axlearn.common.attention import (
@@ -23,6 +22,7 @@ from axlearn.common.attention import (
     QLinear,
 )
 from axlearn.common.attention_bias import CausalAttentionBias
+from axlearn.common.einops import rearrange
 from axlearn.common.layers import Linear
 from axlearn.common.lora import (
     LoraFusedQKVAdapter,
