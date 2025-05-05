@@ -374,7 +374,7 @@ class BaseLayerTest(TestCase):
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
 
     @parameterized.parameters(False, True)
-    @set_threefry_partitionable(False)  # TODO(ruoming): update for threefry_partitionable True
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove during jax 0.5.0+ upgrade
     def test_tensor_stats(self, inline_child_summaries: bool):
         test_layer: TestLayer = (
             TestLayer.default_config()
@@ -404,16 +404,16 @@ class BaseLayerTest(TestCase):
         if inline_child_summaries:
             self.assertNestedAllClose(
                 {
-                    "x": {"rms_norm": 9.327524, "max_abs": 26.052944},
-                    "y": {"rms_norm": 9.231870, "max_abs": 26.109497},
+                    "x": {"rms_norm": 9.478282, "max_abs": 26.26252},
+                    "y": {"rms_norm": 9.583241, "max_abs": 25.26252},
                 },
                 output_collections.summaries["tensor_stats"],
             )
         else:
             self.assertNestedAllClose(
                 {
-                    "x": {"norm": {"rms_norm": 9.327524}, "max": {"max_abs": 26.052944}},
-                    "y": {"norm": {"rms_norm": 9.231870}, "max": {"max_abs": 26.109497}},
+                    "x": {"norm": {"rms_norm": 9.478282}, "max": {"max_abs": 26.26252}},
+                    "y": {"norm": {"rms_norm": 9.583241}, "max": {"max_abs": 25.26252}},
                 },
                 output_collections.summaries["tensor_stats"],
             )
