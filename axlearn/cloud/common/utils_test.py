@@ -507,9 +507,12 @@ class FlagConfigurableTest(parameterized.TestCase):
                 parent_default: Optional[str] = None
 
             @classmethod
-            def default_config(cls) -> Config:
-                cfg = super().default_config()
-                return cfg.set(inner={"a": Child.default_config(), "b": Child.default_config()})
+            def default_config(cls):
+                return (
+                    super()
+                    .default_config()
+                    .set(inner={"a": Child.default_config(), "b": Child.default_config()})
+                )
 
             @classmethod
             def define_flags(cls, fv: flags.FlagValues):
@@ -575,3 +578,26 @@ class FlagConfigurableTest(parameterized.TestCase):
         self.assertEqual(cfg.inner["b"].inner["c"].grandchild, "set_b_c_grandchild")  # set.
         self.assertEqual(cfg.inner["b"].inner["c"].child_default, "set_b_default")  # inherited.
         self.assertEqual(cfg.inner["b"].inner["c"].parent_default, "from_parent")  # inherited.
+
+    def test_invalid_namespace(self):
+        # pylint: disable=missing-class-docstring
+        fv = flags.FlagValues()
+
+        @utils.namespaced("nonexistent")
+        class NonExistent(utils.FlagConfigurable):
+            pass
+
+        cfg = NonExistent.default_config()
+        with self.assertRaisesRegex(ValueError, "mapping at nonexistent"):
+            utils.define_flags(cfg, fv)
+
+        @utils.namespaced("inner")
+        class NotMapping(utils.FlagConfigurable):
+            @config_class
+            class Config(utils.FlagConfigurable.Config):
+                inner: Required[str] = REQUIRED
+
+        # Test when inner is not a mapping.
+        cfg = NotMapping.default_config()
+        with self.assertRaisesRegex(ValueError, "mapping at inner"):
+            utils.define_flags(cfg, fv)
