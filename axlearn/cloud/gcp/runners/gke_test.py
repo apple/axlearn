@@ -8,30 +8,47 @@ from typing import Optional
 from unittest import mock
 
 import kubernetes as k8s
+import requests
 from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.common.utils import FlagConfigurable, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
+from axlearn.cloud.gcp.job_flink import FlinkJobStatus
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.runners import gke as runner_gke
 from axlearn.cloud.gcp.runners import named_runner_configs
-from axlearn.cloud.gcp.runners.gke import GKERunnerJob, _infer_job_version, _infer_reservation
+from axlearn.cloud.gcp.runners.gke import (
+    GKERunnerJob,
+    _infer_job_count,
+    _infer_job_version,
+    _infer_reservation,
+)
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
 
 
-def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Optional[int] = None):
+def _mock_replicated_jobs(
+    reservations: Sequence[str],
+    bastion_job_version: Optional[int] = None,
+    num_replicas: Optional[int] = None,
+):
     job_version_label = (
         {"metadata": {"labels": {BASTION_JOB_VERSION_LABEL: str(bastion_job_version)}}}
         if bastion_job_version
         else {}
     )
+    if num_replicas:
+        replicas_field = {"replicas": num_replicas}
+    else:
+        replicas_field = {}
 
     return [
         {
+            "name": "test-job",
+            **replicas_field,
             "template": {
                 "spec": {
                     "template": {
@@ -44,8 +61,8 @@ def _mock_replicated_jobs(reservations: Sequence[str], bastion_job_version: Opti
                         },
                         **job_version_label,
                     },
-                }
-            }
+                },
+            },
         }
         for reservation in reservations
     ]
@@ -312,6 +329,23 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
 
     @parameterized.parameters(
         dict(
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"])),
+            expected=None,
+        ),
+        dict(
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], num_replicas=1)),
+            expected=1,
+        ),
+        dict(
+            spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], num_replicas=2)),
+            expected=2,
+        ),
+    )
+    def test_infer_job_count(self, spec: dict, expected: Optional[str] = None):
+        self.assertEqual(expected, _infer_job_count(spec))
+
+    @parameterized.parameters(
+        dict(
             status=dict(
                 replicatedJobs=_mock_replicated_jobs(["test-reservation"], bastion_job_version=None)
             ),
@@ -369,7 +403,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=1, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -384,7 +418,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=1, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -437,7 +471,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=0, succeeded=2),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=2)),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.SUCCEEDED,
             ),
@@ -450,7 +484,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -517,7 +551,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=2, ready=2),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=2)),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -530,7 +564,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=2, ready=2),
                     ],
                 ),
-                spec=dict(replicatedJobs=[{"template": {}}]),
+                spec=dict(replicatedJobs=[{"replicas": 2, "template": {}}]),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -543,7 +577,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.UPDATING,
             ),
@@ -556,7 +590,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 3)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 3, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.UPDATING,
             ),
@@ -569,7 +603,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -582,7 +616,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(active=1, ready=1),
                     ],
                 ),
-                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2)),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2, 1)),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
@@ -976,6 +1010,75 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
         fv.mark_as_parsed()
         return from_flags(cfg, fv, command=command)
 
+    @parameterized.parameters(
+        dict(
+            flink_response={"jobs": [{"state": FlinkJobStatus.FINISHED.value}]},
+            expected=runner_gke.GKERunnerJob.Status.SUCCEEDED,
+        ),
+        dict(
+            flink_response={"jobs": [{"state": FlinkJobStatus.FAILED.value}]},
+            expected=runner_gke.GKERunnerJob.Status.FAILED,
+        ),
+        dict(
+            flink_response={"jobs": [{"state": FlinkJobStatus.FAILING.value}]},
+            expected=runner_gke.GKERunnerJob.Status.FAILED,
+        ),
+        dict(
+            flink_response={"jobs": [{"state": "RUNNING"}]},
+            expected=runner_gke.GKERunnerJob.Status.READY,
+        ),
+        dict(
+            flink_response={"jobs": [{"no_state_key": "???"}]},
+            expected=runner_gke.GKERunnerJob.Status.FAILED,
+        ),
+        dict(
+            flink_response={"jobs": []},
+            expected=runner_gke.GKERunnerJob.Status.FAILED,
+        ),
+    )
+    @mock.patch("axlearn.cloud.gcp.runners.gke.requests.get")
+    def test_get_flink_job_status(self, mock_get, flink_response, expected):
+        cfg = self._job_config(
+            command="test-command",
+            name="test-name",
+            cluster="test-cluster",
+            instance_type="v5p-8",
+        )
+        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.Mock())
+        job._inner.job_manager_ip = "127.0.0.1"
+
+        mock_resp = mock.Mock()
+        mock_resp.raise_for_status = mock.Mock()
+        mock_resp.json.return_value = flink_response
+        mock_get.return_value = mock_resp
+
+        result = job._get_flink_job_status()
+        self.assertEqual(result, expected)
+
+    @mock.patch("axlearn.cloud.gcp.runners.gke.requests.get")
+    def test_get_flink_job_status_raises_on_request_error(self, mock_get):
+        cfg = self._job_config(
+            command="test-command",
+            name="test-name",
+            cluster="test-cluster",
+            instance_type="v5p-8",
+        )
+        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.Mock())
+        job._inner.job_manager_ip = "127.0.0.1"  # Assuming this is now a private runtime attribute
+
+        mock_get.side_effect = requests.RequestException("network issue")
+
+        with self.assertRaises(RuntimeError) as context:
+            job._get_flink_job_status()
+
+        # Updated expected error string
+        self.assertIn("Unexpected error while getting Flink job status", str(context.exception))
+
+        # Optional: confirm cause was preserved
+        self.assertIsInstance(context.exception.__cause__, requests.RequestException)
+
     @parameterized.product(
         (
             # SUCCEEDED
@@ -990,9 +1093,10 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
                         ],
                     }
                 },
+                flink_status=runner_gke.GKERunnerJob.Status.SUCCEEDED,
                 expected=runner_gke.GKERunnerJob.Status.SUCCEEDED,
             ),
-            # FAILED, an exception will be raised and GKE runner will retry
+            # FAILED
             dict(
                 status={
                     "status": {
@@ -1004,33 +1108,37 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
                         ],
                     }
                 },
-                expected=RuntimeError(
-                    "Beam execution failed, it's up to the GKE runner to decide whether to retry."
-                ),
+                flink_status=None,
+                expected=runner_gke.GKERunnerJob.Status.FAILED,
             ),
             # PENDING
             dict(
                 status={"status": {"active": 0, "succeeded": 0, "failed": 0}},
+                flink_status=None,
                 expected=runner_gke.GKERunnerJob.Status.PENDING,
             ),
             # READY
             dict(
                 status={"status": {"active": 1, "succeeded": 0, "failed": 0}},
+                flink_status=None,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
-            # Both succeeded and failed, UNKNOWN
+            # UNKNOWN
             dict(
                 status={"status": {"active": 0, "succeeded": 1, "failed": 1}},
+                flink_status=None,
                 expected=runner_gke.GKERunnerJob.Status.UNKNOWN,
             ),
             # NOT_STARTED
             dict(
                 status=k8s.client.exceptions.ApiException(status=404),
+                flink_status=None,
                 expected=runner_gke.GKERunnerJob.Status.NOT_STARTED,
             ),
             # Permission error
             dict(
                 status=k8s.client.exceptions.ApiException(status=403),
+                flink_status=None,
                 expected=k8s.client.exceptions.ApiException(status=403),
             ),
         )
@@ -1038,7 +1146,8 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
     def test_get_status(
         self,
         status: dict,
-        expected: runner_gke.GKERunnerJob.Status,
+        flink_status,
+        expected,
     ):
         cfg = self._job_config(
             command="test-command",
@@ -1047,21 +1156,27 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
             instance_type="v5p-8",
         )
         job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.Mock())
+        job._inner.job_manager_ip = "127.0.0.1"
 
         if isinstance(status, Exception):
             mock_get_status = mock.Mock(side_effect=status)
         else:
             mock_get_status = mock.Mock(return_value=status)
 
-        with (
-            mock.patch(
-                "kubernetes.client.CustomObjectsApi",
-                return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
-            ),
+        with mock.patch(
+            "kubernetes.client.CustomObjectsApi",
+            return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
         ):
             if isinstance(expected, Exception):
+                # Expecting Exception (like permission error)
                 with self.assertRaises(Exception) as context:
                     job._get_status()
                 self.assertEqual(str(expected), str(context.exception))
             else:
-                self.assertEqual(expected, job._get_status())
+                if flink_status is not None:
+                    # Patch _get_flink_job_status() only when needed
+                    with mock.patch.object(job, "_get_flink_job_status", return_value=flink_status):
+                        self.assertEqual(expected, job._get_status())
+                else:
+                    self.assertEqual(expected, job._get_status())

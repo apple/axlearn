@@ -219,3 +219,7 @@ flowchart TB
     classDef fileCSS stroke:#111,fill:#333
     classDef storeCSS fill:#37d
 ```
+
+### Goodput Monitoring
+
+Please refer to [Goodput Monitoring](docs/05-Goodput-Monitoring.md) for monitoring.
