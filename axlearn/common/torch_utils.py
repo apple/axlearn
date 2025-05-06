@@ -94,6 +94,7 @@ if _FAIRSEQ_INSTALLED:
             relative_pos_emb={},
             scale_query={},
             scale_key={},
+            kv_cache={},
         )
 
 

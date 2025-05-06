@@ -229,7 +229,12 @@ class SummaryWriter(BaseWriter):
                     tf_summary.image(path, raw_value, step=step, max_outputs=32)
                 elif isinstance(value, AudioSummary):
                     tf_summary.audio(
-                        path, raw_value, value.sample_rate, step=step, max_outputs=1, encoding="wav"
+                        path,
+                        raw_value[None],
+                        value.sample_rate,
+                        step=step,
+                        max_outputs=1,
+                        encoding="wav",
                     )
                 elif isinstance(raw_value, str):
                     tf_summary.text(path, raw_value, step=step)
@@ -414,10 +419,10 @@ class WandBWriter(BaseWriter):
             elif isinstance(value, AudioSummary):
                 # W&B calls soundfile.write and saves a wav file with int16 dtype.
                 sample_rate = value.sample_rate
-                assert raw_value.ndim == 3, raw_value.shape
+                assert raw_value.ndim == 2, raw_value.shape
                 assert np.issubdtype(raw_value.dtype, np.floating), raw_value.dtype
                 raw_value = (raw_value * 32768).clip(-32768, 32767).astype(np.int16)
-                return [wandb.Audio(el, sample_rate=sample_rate) for el in raw_value]
+                return wandb.Audio(raw_value, sample_rate=sample_rate)
             return raw_value
 
         def is_leaf(x):

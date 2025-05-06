@@ -48,7 +48,7 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
 
@@ -863,13 +863,16 @@ class TPUFlashAttention(BaseFlashAttention):
     """Wraps the common checks for TPU attention implementations."""
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(
+            input_batch=input_batch,
+        ):
             return False
         block_size = self.cfg.tpu_block_size
-        if not self._check_block_size(query=query, key=key, block_size=block_size):
+        if not self._check_block_size(input_batch=input_batch, block_size=block_size):
             return False
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
@@ -887,12 +890,15 @@ class TPUSplashAttention(TPUFlashAttention):
     """
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(input_batch):
             return False
+        bias: BaseAttentionBias = input_batch["bias"]
         _, _, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        query: Tensor = input_batch["query"]
         head_dim = query.shape[-1]
 
         if explicit_bias.has_value():
@@ -908,15 +914,14 @@ class TPUSplashAttention(TPUFlashAttention):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
+        bias: BaseAttentionBias = input_batch["bias"]
         mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
         segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
         seg_ids = None
         if segment_id_tensor is not None:
@@ -960,10 +965,11 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
     """Wraps the legacy (deprecated) implementation of TPU attention."""
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(input_batch):
             return False
         logging.info("Using %s.", self.name())
         return True
@@ -971,17 +977,16 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
+        bias: BaseAttentionBias = input_batch["bias"]
         causal_mask, segment_ids, explicit_bias = split(
             bias, CausalAttentionBias, SegmentIdAttentionBias
         )
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
         segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
         seg_ids = None
         if segment_id_tensor is not None:
