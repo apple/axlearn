@@ -40,7 +40,7 @@ from axlearn.common.deberta_test import (
 )
 from axlearn.common.deberta_test import build_cfg as deberta_build_cfg
 from axlearn.common.deberta_test import build_model_config as deberta_build_model_config
-from axlearn.common.einops import rearrange
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import (
     BaseClassificationHead,
     Conv3D,
