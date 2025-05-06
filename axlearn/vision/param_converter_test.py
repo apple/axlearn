@@ -295,3 +295,10 @@ class HFClipTest(BaseParamConverterTest):
             ),
         )
         self.assertNestedAllClose(expected, actual)
+
+    def test_clip_layer_kv_cache_exists(self):
+        hf_layer = hf_clip.CLIPEncoderLayer(self.clip_cfg.vision_config)
+        params = parameters_from_torch_layer(hf_layer)
+        self.assertIn("self_attention", params)
+        self.assertIn("attention", params["self_attention"])
+        self.assertIn("kv_cache", params["self_attention"]["attention"])
