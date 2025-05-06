@@ -701,7 +701,6 @@ class TestConv2DStateBuilders(TestCase):
         converted_weight = replicate_to_local_data(converted_weight)
         return source_weight, converted_weight
 
-    # pylint: disable=R0917
     def _dummy_model_config(
         self,
         patch_size: tuple[int, ...],
@@ -722,7 +721,6 @@ class TestConv2DStateBuilders(TestCase):
             dtype=jnp.float32,
         )
 
-    # pylint: disable=R0917
     def _mock_image_config(
         self,
         patch_size: tuple[int, ...],
