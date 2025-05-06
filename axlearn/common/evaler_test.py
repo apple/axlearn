@@ -240,6 +240,9 @@ class EvalerTest(TestCase):
                     )
                 )
                 # Run the evaler.
+                # Jax 0.5.0 added support for retracing based on input's sharding specs,
+                # without explicit sharding on prng_key it may cause retracing and thus yield
+                # wrong execution counts.
                 prng_key = jax.device_put(jax.random.PRNGKey(789), jax.NamedSharding(mesh, P()))
                 evaler.eval_step(1, prng_key=prng_key, model_params=model_state)
                 # Check that we honored the step type.
