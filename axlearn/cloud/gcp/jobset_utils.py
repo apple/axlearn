@@ -79,6 +79,9 @@ class GCSFuseMount(VolumeMount):
         ephemeral_gb: Defaults to 5Gi. Used for staging temp files before uploading to GCS.
         shared_memory: Default to 1Gi. Used for e.g. Grain-related jobs which store prefetch
             elements in shared_memory. Setting it to 0 means unlimited shared_memory.
+        http_client_timeout: Defaults to 0s. Specifies how long the Cloud Storage FUSE HTTP client
+            can wait to get a response from the server before timing out. Setting it to 0s means no
+            limit.
         read_only: Whether the mount should be read-only.
     """
 
@@ -89,6 +92,7 @@ class GCSFuseMount(VolumeMount):
     memory: str = "256Mi"
     ephemeral_gb: str = "5Gi"
     shared_memory: str = "1Gi"
+    http_client_timeout: str = "0s"
 
 
 @dataclass(kw_only=True)
@@ -546,7 +550,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
                         volumeAttributes=dict(
                             bucketName=parsed.netloc,
                             # pylint: disable=line-too-long
-                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1",
+                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
                             gcsfuseMetadataPrefetchOnMount="true",  # Improves first-time read.
                         ),
                     ),
