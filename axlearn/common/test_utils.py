@@ -947,6 +947,12 @@ def initialize_parameters_with_prebuilt(
     )
 
 
+# Starting from Jax 0.5.0, jax_threefry_partitionable is enabled by default. 
+# https://docs.jax.dev/en/latest/changelog.html#jax-0-5-0-jan-17-2025
+# This is a breaking change and some unit tests which expect specific values
+# need to either change the expected numerical values, or toggle off this feature.
+# We add a knob to turn off this for easy backward compatibility,
+# and expect to update the unit tests by owners soon.
 def set_threefry_partitionable(on: bool = False):
     """Helper decorator to enable/disable threefry_partitionable."""
 
