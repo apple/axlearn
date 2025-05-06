@@ -338,7 +338,7 @@ class BaseLayer(Module):
             # pylint: disable-next=protected-access
             module._remat_methods.append(method_fn.__name__)
             # Pass both outputs and output_collection through remat(...) to avoid leaking tracers.
-            outputs, output_collection = jax.ad_checkpoint.remat(
+            outputs, output_collection = jax.checkpoint(
                 fn,
                 **{k: maybe_instantiate(v) for k, v in dataclasses.asdict(cfg.remat_spec).items()},
             )(*args, **tracer_kwargs)
