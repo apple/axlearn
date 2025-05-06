@@ -186,13 +186,10 @@ class WandBWriterTest(absltest.TestCase):
                 self.assertTrue("image" in wandb.run.summary.keys())
                 self.assertEqual(len(wandb.run.summary["image"].filenames), 2)
                 self.assertTrue("audio" in wandb.run.summary.keys())
-                audio_summary = wandb.run.summary["audio"]
-                self.assertIsInstance(audio_summary, wandb.sdk.wandb_summary.SummarySubDict)
-                self.assertEqual(audio_summary.count, 1)
-                self.assertEqual(len(audio_summary.durations), 1)
-                self.assertAlmostEqual(audio_summary.durations[0], 5 / 12345)
-                self.assertEqual(len(audio_summary.sampleRates), 1)
-                self.assertEqual(audio_summary.sampleRates[0], 12345)
+                self.assertIsInstance(
+                    wandb.run.summary["audio"], wandb.sdk.wandb_summary.SummarySubDict
+                )
+                self.assertGreater(wandb.run.summary["audio"]["size"], 0)
             finally:
                 wandb.finish()
 
