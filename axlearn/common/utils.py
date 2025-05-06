@@ -1856,9 +1856,6 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
 def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     """Generate the (key, value) pairs for the immediate children of a pytree `node`.
 
-    The returned children match those returned by
-    `jax.tree_util.default_registry.flatten_one_level()`.
-
     Reference: jax._src.tree_util.generate_key_paths()
 
     Example:
@@ -1866,14 +1863,6 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
         assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
         ```
     """
-    # pylint: disable-next=protected-access
-    registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
-
-    key_handler = registry_with_keypaths.get(type(node))
-    if key_handler:
-        key_children, _ = key_handler.flatten_with_keys(node)
-        return key_children
-
     flat = jax.tree_util.default_registry.flatten_one_level(node)
     if flat is None:
         return []
@@ -1881,6 +1870,11 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
         # Handle namedtuple as a special case, based on heuristic.
         return [(jax.tree_util.GetAttrKey(s), getattr(node, s)) for s in node._fields]
+
+    key_children, _ = jax.tree_util.default_registry.flatten_one_level_with_keys(node)
+    if key_children:
+        return key_children
+
     return [(jax.tree_util.FlattenedIndexKey(i), c) for i, c in enumerate(flat[0])]
 
 
