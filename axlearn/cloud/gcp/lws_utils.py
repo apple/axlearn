@@ -168,7 +168,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             imagePullPolicy="Always",
         )
     
-    def _build_pod(self) -> dict:
+    def _build_worker_pod(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, tolerations = {}, {}, {}, {}
@@ -193,13 +193,163 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             metadata=dict(annotations=annotations, labels=labels),
             spec=spec
         )
+
+    def _build_pathways_jetstream_container(self) -> dict:
+        cfg: TPULeaderWorkerTemplate.Config = self.config
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        staging_location = f"{cfg.output_dir}/pathways-staging"
+        checkpoint_location = f"gs://lkolluru-axlearn-pathways/maxtext/llama-3-405b/final/bf16/scanned/0/items"  #### Need to change ###
+
+        return [
+            dict(
+                name="pathways-proxy",
+                image="us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:latest",
+                #restartPolicy="Always",
+                imagePullPolicy="Always",
+                args=[
+                    f"--resource_manager_address=localhost:38677",
+                    f"--server_port=38681",
+                    f"--gcs_scratch_location={staging_location}",
+                ],
+                ports=[dict(containerPort="38681")],
+            ),
+            dict(
+                name="pathways-rm",
+                image="us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest",
+                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
+                # SideCar container is an init container with restartPolicy as "Always".
+                # restartPolicy="Always",
+                imagePullPolicy="Always",
+                env=[
+                    {
+                        "name": "TPU_SKIP_MDS_QUERY",
+                        "value": "true",
+                    },
+                    #### Not sure on this one #####
+                    {
+                        "name": "HOST_ADDRESS",
+                        "value": "localhost",
+                    },
+                ],
+                args=[
+                    f"--server_port=38677",
+                    "--node_type=resource_manager",
+                    f"--instance_count={cfg.accelerator.num_replicas}",
+                    f"--instance_type={pathways_tpu_version}:{system.topology}",
+                    f"--gcs_scratch_location={staging_location}",
+                ],
+            ),
+            dict(
+                name="jax-tpu",
+                image="us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-pathways:v0.2.0",
+                # restartPolicy="Always",
+                imagePullPolicy="Always",
+                env=[
+                    {
+                        "name": "LOG_LEVEL",
+                        "value": "INFO",
+                    },
+                ],
+                args=[
+                    f"MaxText/configs/v5e/inference/llama3_405b_v5e-64.yml",
+                    f"model_name=llama3.1-405b",
+                    f"load_parameters_path=",
+                    f"max_prefill_predict_length=1024",
+                    f"max_target_length=2048",
+                    f"async_checkpointing=false",
+                    f"steps=1",
+                    f"ici_fsdp_parallelism=1",
+                    f"ici_autoregressive_parallelism=2",
+                    f"ici_tensor_parallelism=8",
+                    f"scan_layers=false",
+                    f"weight_dtype=bfloat16",
+                    f"per_device_batch_size=10",
+                    f"enable_single_controller=true",
+                    f"quantization=int8",
+                    f"quantize_kvcache=true",
+                    f"checkpoint_is_quantized=true",
+                    f"enable_model_warmup=true",
+                ],
+                ports=[dict(containerPort="9000")],
+                startupProbe=dict(
+                    httpGet=dict(
+                        path= "/healthcheck",
+                        port= "8000",
+                        scheme = "HTTP",
+                    ),
+                    periodSeconds="1",
+                    initialDelaySeconds="600",
+                    failureThreshold="10000",
+                ),
+                livenessProbe=dict(
+                    httpGet=dict(
+                        path= "/healthcheck",
+                        port= "8000",
+                        scheme = "HTTP",
+                    ),
+                    periodSeconds="60",
+                    failureThreshold="10",
+                ),
+                readinessProbe=dict(
+                    httpGet=dict(
+                        path= "/healthcheck",
+                        port= "8000",
+                        scheme = "HTTP",
+                    ),
+                    periodSeconds="60",
+                    failureThreshold="10",
+                ),
+
+            ),
+            dict(
+                name="jetstream-http",
+                image="us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-http:v0.2.3",
+                #restartPolicy="Always",
+                imagePullPolicy="Always",
+                ports=[dict(containerPort="8000")],
+            ),
+        ]
+
+        
+
+    def _build_leader_pod(self) -> dict:
+        cfg: TPULeaderWorkerTemplate.Config = self.config
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        annotations, labels, selector, tolerations = {}, {}, {}, {}
+
+        if cfg.reservation is not None:
+            logging.info("Using reservation=%s", cfg.reservation)
+            selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+        if cfg.reservation_project is not None:
+            selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
+            labels.update({"bastion-tier": "reserved"})
+        
+        ### Labels Update #####
+        labels.update({"app": "jetstream-pathways"})
+        
+        spec = dict(
+            nodeSelector={
+                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                "cloud.google.com/gke-tpu-topology": system.topology,
+                **selector,
+            },
+            containers=[self._build_pathways_jetstream_container()], 
+            serviceAccountName=cfg.service_account,
+        )
+
+        return dict(
+            metadata=dict(annotations=annotations, labels=labels),
+            spec=spec
+        )
+
     
     def __call__(self) -> Nested[Any]:
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
-            size=system.vms_per_slice,
-            workerTemplate =self._build_pod(),
+            size=system.vms_per_slice+1,
+            leaderTemplate =self._build_leader_pod(),
+            workerTemplate =self._build_worker_pod(),
         )
 
 
