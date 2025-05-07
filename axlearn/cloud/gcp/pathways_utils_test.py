@@ -13,9 +13,11 @@ from axlearn.cloud.gcp.bundler import CloudBuildBundler
 from axlearn.cloud.gcp.pathways_utils import (
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY,
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+    _PATHWAYS_PROXY_CONTAINER_NAME,
     _PATHWAYS_SERVER_IMAGE,
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+from axlearn.common.compiler_options import xla_flags_from_options
 from axlearn.common.test_utils import TestCase
 
 
@@ -68,6 +70,20 @@ class PathwaysReplicatedJobTest(TestCase):
                 node_selector.get(_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY),
             )
 
+            # Check pathways-proxy container args for XLA flags.
+            proxy_container = None
+            for container in pod_spec["initContainers"]:
+                if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
+                    proxy_container = container
+                    break
+            self.assertIsNotNone(proxy_container, "Pathways proxy container not found.")
+
+            # pylint: disable-next=protected-access
+            xla_arg_flags = xla_flags_from_options(builder._xla_options).split()
+            self.assertTrue(xla_arg_flags, "XLA flags should be present")
+            for flag in xla_arg_flags:
+                self.assertIn(flag, proxy_container["args"])
+
     def test_build_pathways_worker_pod(self):
         with (
             self._job_config(
@@ -91,13 +107,20 @@ class PathwaysReplicatedJobTest(TestCase):
             self.assertEqual(1, len(host_alias))
             self.assertEqual(pod_spec.get("hostNetwork"), True)
             self.assertEqual(pod_spec.get("dnsPolicy"), "ClusterFirstWithHostNet")
-            container = pod_spec.get("containers")[0]
-            self.assertEqual(container["image"], _PATHWAYS_SERVER_IMAGE)
+            worker_container = pod_spec.get("containers")[0]
+            self.assertEqual(worker_container["image"], _PATHWAYS_SERVER_IMAGE)
             annotations = pod["metadata"]["annotations"]
             self.assertEqual(
                 "test-service-account@test-project.iam.gserviceaccount.com",
                 annotations.get("tpu-provisioner.cloud.google.com/node-service-account", None),
             )
+
+            # Check worker container args for Megascale (MXLA) flags.
+            # pylint: disable-next=protected-access
+            mxla_arg_flags = xla_flags_from_options(builder._mxla_options).split()
+            # MXLA flags are generally only present in multi-slice jobs.
+            for flag in mxla_arg_flags:
+                self.assertIn(flag, worker_container["args"])
 
     def test_replicated_job(self):
         with (
