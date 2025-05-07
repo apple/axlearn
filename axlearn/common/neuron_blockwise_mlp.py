@@ -98,22 +98,12 @@ def _blockwise_mm_fwd(
         # # (S+1, H)
         hidden_states = jnp.concat([hidden_states, padding_h], axis=0)
         expert_affinities_masked = jnp.concat([expert_affinities_masked, padding_e], axis=0)
-        expert_affinities_masked = jnp.reshape(expert_affinities_masked, (-1, 1))
+        # expert_affinities_masked = jnp.reshape(expert_affinities_masked, (-1, E))
 
     with jax.named_scope("setupweight"):
         gate_up_weight = jnp.stack([gate_weight, up_proj_weight], 
             axis=2
         )
-
-    print(
-        hidden_states,
-        expert_affinities_masked,
-        gate_up_weight,
-        down_proj_weight,
-        token_position_to_id,
-        block_to_expert,
-        block_size
-    )
     with jax.named_scope("make NKI call"):
         out, gate_up_activations_T, down_activations = _blockwise_mm_nki_call[VNC(2)](
             hidden_states,
@@ -144,10 +134,6 @@ def _blockwise_mm_bwd(
     grad_output =  jnp.squeeze(grad_output, axis=(0,1,2))
     padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
     grad_output = jnp.concat([grad_output, padding_h], axis=0)
-    
-    # jax.debug.print("grad_output: {x}", x=grad_output)
-    # jax.debug.print("hidden_states: {x}", x=hidden_states)
-    # breakpoint()
     # Compute gradients
     hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = _blockwise_mm_bwd_nki_call[VNC(2)](
         hidden_states,

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source ../jaxmoe/bin/activate
+
 export USE_SHARDMAP_FFN=1
 
 TEST_ARTIFACTS_PATH="test_artifacts"
@@ -16,8 +18,9 @@ export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
 export NEURON_ENABLE_INT_MATMUL_DOWNCAST=1
 export NEURON_FSDP=0
 export NEURON_FSDP_NUM_LAYER_COALESCE=-1
-export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=0
+export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1 # changed from 0
 export NEURON_DISABLE_BOUNDARY_MARKER=1
+#export NEURON_FORCE_PJRT_PLUGIN_REGISTRATION=1
 
 # Neuron runtime flags
 export NEURON_RT_DBG_CC_DMA_PACKET_SIZE=4096 && export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
@@ -63,9 +66,11 @@ if [ "$1" = "unit" ]; then
     echo "Running Unit Test"
     export JAX_PLATFORMS=cpu
     export IS_UNIT="true"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_bwd_correctness"
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_correctness"
+elif [ "$1" = "blockwise" ]; then
+    pytest axlearn/common/mixture_of_experts_neuron_test.py
 else
     echo "Running Integ Test"
     export IS_UNIT="false"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_bwd_correctness"
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_correctness"
 fi

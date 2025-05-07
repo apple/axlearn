@@ -3,7 +3,7 @@
 #SBATCH --output logs/%j_%x.out
 #SBATCH --time 1:00:00
 
-export AXLEARN_NUM_LAYERS=$((1 * SLURM_NNODES))
+export AXLEARN_NUM_LAYERS=$((4 * SLURM_NNODES))
 export AXLEARN_REMAT_LAYER=true
 export AXLEARN_MODEL_NAME="envy-Mistral-toy"
 export AXLEARN_TP_DEGREE=16
