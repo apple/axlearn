@@ -163,6 +163,18 @@ def default_xla_options(
     return options
 
 
+def get_megascale_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    return {k: v for k, v in xla_options.items() if k.startswith("megascale")}
+
+
+def get_xla_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    return {k: v for k, v in xla_options.items() if not k.startswith("megascale")}
+
+
 def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:
     """Convert an XLA options dict suitable for
     `jitted_fn.lower(...).compile(compiler_options=xla_options)`
