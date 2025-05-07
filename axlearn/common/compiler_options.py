@@ -171,7 +171,7 @@ def get_megascale_options(
 def get_xla_options(
     xla_options: dict[str, Union[str, bool, int]]
 ) -> dict[str, Union[str, bool, int]]:
-    return {k: v for k, v in xla_options.items() if not k.startswith("xla")}
+    return {k: v for k, v in xla_options.items() if k.startswith("xla")}
 
 
 def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:
