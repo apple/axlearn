@@ -123,7 +123,6 @@ def default_xla_options(
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
-            tpu_use_continuations="true",
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )
@@ -172,7 +171,7 @@ def get_megascale_options(
 def get_xla_options(
     xla_options: dict[str, Union[str, bool, int]]
 ) -> dict[str, Union[str, bool, int]]:
-    return {k: v for k, v in xla_options.items() if not k.startswith("megascale")}
+    return {k: v for k, v in xla_options.items() if not k.startswith("xla")}
 
 
 def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:
