@@ -529,10 +529,8 @@ def get_training_configs(is_unit: bool = False):
     test_suite = os.environ.get("TEST_SUITE", 'presubmit').lower()
     if test_suite == 'presubmit':
         grid_space = builder.build_grid_space()
-    elif test_suite == '12b':
-        grid_space = builder.build_grid_space_12B()
-    elif test_suite == '50b':
-        grid_space = builder.build_grid_space_50B()
+    elif test_suite == 'small_models':
+        grid_space = builder.build_grid_space_12B() + builder.build_grid_space_50B()
     elif test_suite == '150b':
         grid_space = builder.build_grid_space_150B()
     else:
