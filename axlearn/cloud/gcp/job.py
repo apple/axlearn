@@ -281,6 +281,7 @@ class GKELeaderWorkerSet(GCPJob):
         builder: Required[BaseLeaderWorkerTemplate.Config] = REQUIRED
         namespace: str = "default"
         annotations: Optional[ConfigOr[dict]] = None
+        num_replicas: int = 1
     
     @classmethod
     def set_defaults(cls, fv):
@@ -293,6 +294,13 @@ class GKELeaderWorkerSet(GCPJob):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("name", None, "Name of the lws.", **common_kwargs)
+    
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        cfg: GKELeaderWorkerSet.Config = super().from_flags(fv,**kwargs)
+        cfg.num_replicas = fv.num_replicas
+        return cfg
+
     
     def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
         super().__init__(cfg)
@@ -323,7 +331,7 @@ class GKELeaderWorkerSet(GCPJob):
         return dict(
             metadata=dict(name=cfg.name, annotations=annotations),
             spec=dict(
-                replicas=1,
+                replicas=cfg.num_replicas,
                 leaderWorkerTemplate=self._builder(),
             ),
         )
