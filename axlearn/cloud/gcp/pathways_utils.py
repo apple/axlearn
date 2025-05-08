@@ -779,7 +779,7 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         worker_container.pop("command")
         return worker_container
 
-    def _build_worker_pod(self) -> dict:
+    def build_worker_pod(self) -> dict:
         pod = self._inner.build_pod()
         worker_pod = copy.deepcopy(pod)
 
@@ -881,7 +881,7 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ports=[dict(containerPort=_JETSTREAM_HTTP_CONTAINER_PORT)],
         )
 
-    def _build_leader_pod(self) -> Nested[Any]:
+    def build_leader_pod(self) -> Nested[Any]:
         pod = self._inner.build_pod()
         leader_pod = copy.deepcopy(pod)
 
@@ -901,6 +901,6 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
             size=system.vms_per_slice + 1,
-            leaderTemplate=self._build_leader_pod(),
-            workerTemplate=self._build_worker_pod(),
+            leaderTemplate=self.build_leader_pod(),
+            workerTemplate=self.build_worker_pod(),
         )
