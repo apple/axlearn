@@ -26,7 +26,6 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
-from axlearn.cloud.gcp.pathways_utils import  get_pathways_tpu_version
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
@@ -35,51 +34,6 @@ from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
 from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
-
-# The port used by pathways proxy server.
-# The specific value is not important, as long as clients and servers use the same port.
-_PATHWAYS_PROXY_PORT = 38681
-# The port used by pathways resource manager server.
-# The specific value is not important, as long as clients and servers use the same port.
-_PATHWAYS_RESOURCE_MANAGER_PORT = 38677
-# The port used by pathways worker server.
-# The specific value is not important, as long as clients and servers use the same port.
-_PATHWAYS_WORKER_PORT = 38679
-# Pin to specific pathways image version for stable release.
-# Oldest available is jax-0.5.1, although axlearn is using jax-0.4.38.
-# Verified the backwards compatibility works.
-_PATHWAYS_IMAGE_TAG = "latest"
-# The docker image used by pathways proxy container.
-_PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
-)
-# The docker image used by pathways resource manager container and worker container.
-_PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
-)
-# The container name of pathways resourcemanager.
-_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
-# The container name of pathways proxy.
-_PATHWAYS_PROXY_CONTAINER_NAME = "pathways-proxy"
-
-
-# 
-_JAX_TPU_CONTAINER_NAME = "jax-tpu"
-_JETSTREAM_IMAGE_TAG = "v0.2.0"
-_JAX_TPU_CONTAINER_IMAGE = f"us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-pathways:{_JETSTREAM_IMAGE_TAG}"
-_JAX_TPU_CONTAINER_PORT = "9000"
-
-
-#
-_JETSTREAM_HTTP_CONTAINER_NAME = "jetstream-http"
-_JETSTREAM_HTTP_IMAGE_TAG = "v0.2.3"
-_JETSTREAM_HTTP_CONTAINER_IMAGE = f"us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-http:{_JETSTREAM_HTTP_IMAGE_TAG}"
-_JETSTREAM_HTTP_CONTAINER_PORT = "8000"
-
-_CHECKPOINTER_PATH=f"gs://vivianrwu-jetstream-ckpts/maxtext/llama-3.1-405b-final/int8"
-
-
-
 
 
 
@@ -94,6 +48,7 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         accelerator: Accelerator configuration.    
         env_vars: Optional env vars to set.
         service_account: Optional service account to execute the job as.
+        output_dir: An optional GCS path to upload LWS outputs to.
         """
         name: Required[str] = REQUIRED
         # TODO: Change this to be a list of str[], to support different commands
@@ -102,6 +57,7 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         accelerator: AcceleratorConfig = AcceleratorConfig()
         env_vars: dict[str, str] = {}
         service_account: Optional[str] = None
+        output_dir: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -116,6 +72,12 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
             "service_account",
             None,
             "If specified, will run job as the service account.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "output_dir",
+            None,
+            "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
         )
     
@@ -214,7 +176,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             imagePullPolicy="Always",
         )
     
-    def _build_worker_pod(self) -> dict:
+    def _build_pod(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, tolerations = {}, {}, {}, {}
@@ -239,184 +201,14 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             metadata=dict(annotations=annotations, labels=labels),
             spec=spec
         )
-
-    def _build_pathways_proxy_container(self,cfg) -> dict:
-        staging_location = f"{cfg.output_dir}/pathways-staging"
-        return dict(
-                name=_PATHWAYS_PROXY_CONTAINER_NAME,
-                image=_PATHWAYS_PROXY_IMAGE,
-                #restartPolicy="Always",
-                imagePullPolicy="Always",
-                args=[
-                    f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-                    f"--server_port={_PATHWAYS_PROXY_PORT}",
-                    f"--gcs_scratch_location={staging_location}",
-                ],
-                ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
-            )
-    
-    def _build_pathways_rm_container(self,cfg) -> dict:
-        staging_location = f"{cfg.output_dir}/pathways-staging"
-        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
-        dict(
-                name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
-                image=_PATHWAYS_SERVER_IMAGE,
-                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
-                # SideCar container is an init container with restartPolicy as "Always".
-                # restartPolicy="Always",
-                imagePullPolicy="Always",
-                env=[
-                    {
-                        "name": "TPU_SKIP_MDS_QUERY",
-                        "value": "true",
-                    },
-                    #### Not sure on this one #####
-                    {
-                        "name": "HOST_ADDRESS",
-                        "value": "localhost"
-                    },
-                ],
-                args=[
-                    f"--server_port={__PATHWAYS_RESOURCE_MANAGER_PORT}",
-                    "--node_type=resource_manager",
-                    f"--instance_count={cfg.accelerator.num_replicas}",
-                    f"--instance_type={pathways_tpu_version}:{system.topology}",
-                    f"--gcs_scratch_location={staging_location}",
-                ],
-                ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
-            )
-
-    def _build_jax_tpu_container(self,cfg) -> dict:
-        return dict(
-                name=_JAX_TPU_CONTAINER_NAME,
-                image=_JAX_TPU_CONTAINER_IMAGE,
-                # restartPolicy="Always",
-                imagePullPolicy="Always",
-                env=[
-                    {
-                        "name": "LOG_LEVEL",
-                        "value": "INFO",
-                    },
-                ],
-                args=[
-                    f"MaxText/configs/v5e/inference/llama3_405b_v5e-64.yml",
-                    f"model_name=llama3.1-405b",
-                    f"load_parameters_path={_CHECKPOINTER_PATH}",
-                    f"max_prefill_predict_length=1024",
-                    f"max_target_length=2048",
-                    f"async_checkpointing=false",
-                    f"steps=1",
-                    f"ici_fsdp_parallelism=1",
-                    f"ici_autoregressive_parallelism=2",
-                    f"ici_tensor_parallelism=8",
-                    f"scan_layers=false",
-                    f"weight_dtype=bfloat16",
-                    f"per_device_batch_size=10",
-                    f"enable_single_controller=true",
-                    f"quantization=int8",
-                    f"quantize_kvcache=true",
-                    f"checkpoint_is_quantized=true",
-                    f"enable_model_warmup=true",
-                ],
-                ports=[dict(containerPort=_JAX_TPU_CONTAINER_PORT)],
-                startupProbe=dict(
-                    httpGet=dict(
-                        path= "/healthcheck",
-                        port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                        scheme = "HTTP",
-                    ),
-                    periodSeconds="1",
-                    initialDelaySeconds="600",
-                    failureThreshold="10000",
-                ),
-                livenessProbe=dict(
-                    httpGet=dict(
-                        path= "/healthcheck",
-                        port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                        scheme = "HTTP",
-                    ),
-                    periodSeconds="60",
-                    failureThreshold="10",
-                ),
-                readinessProbe=dict(
-                    httpGet=dict(
-                        path= "/healthcheck",
-                        port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                        scheme = "HTTP",
-                    ),
-                    periodSeconds="60",
-                    failureThreshold="10",
-                ),
-
-            )
-
-    def _build_jetstream_http_container(self) -> dict:
-        return dict(
-                name=_JETSTREAM_HTTP_CONTAINER_NAME,
-                image=_JETSTREAM_HTTP_CONTAINER_IMAGE,
-                #restartPolicy="Always",
-                imagePullPolicy="Always",
-                ports=[dict(containerPort=_JETSTREAM_HTTP_CONTAINER_PORT)],
-            )
-
-    def _build_pathways_jetstream_container(self) ->  list[Nested[Any]]:
-        cfg: TPULeaderWorkerTemplate.Config = self.config
-        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        staging_location = f"{cfg.output_dir}/pathways-staging"
-        pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
-         # If multi-head, every pathways-head will only
-        # be connected to one pathways instance (a pathways-worker replicated job).
-        pathways_instance_count = cfg.accelerator.num_replicas if self._is_single_head else 1
-
-        container_list = []
-        container_list.append(_build_pathways_proxy_container(cfg))
-        container_list.append(_build_pathways_rm_container(cfg))
-        container_list.append(_build_jax_tpu_container(cfg))
-        container_list.append(_build_jetstream_http_container())
-        return container_list
-            
-
-    def _build_leader_pod(self) -> dict:
-        cfg: TPULeaderWorkerTemplate.Config = self.config
-        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        annotations, labels, selector, tolerations = {}, {}, {}, {}
-
-        if cfg.reservation is not None:
-            logging.info("Using reservation=%s", cfg.reservation)
-            selector.update({"cloud.google.com/reservation-name": cfg.reservation})
-        if cfg.reservation_project is not None:
-            selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
-            labels.update({"bastion-tier": "reserved"})
-        
-        ### Labels Update #####
-        labels.update({"app": "jetstream-pathways"})
-        
-        spec = dict(
-            nodeSelector={
-                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                "cloud.google.com/gke-tpu-topology": system.topology,
-                **selector,
-            },
-            containers=[self._build_pathways_jetstream_container()], 
-            serviceAccountName=cfg.service_account,
-        )
-
-        return dict(
-            metadata=dict(annotations=annotations, labels=labels),
-            spec=spec
-        )
-
     
     def __call__(self) -> Nested[Any]:
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
-            size=system.vms_per_slice+1,
-            leaderTemplate =self._build_leader_pod(),
-            workerTemplate =self._build_worker_pod(),
+            size=system.vms_per_slice,
+            workerTemplate =self._build_pod(),
         )
-
 
 
 
