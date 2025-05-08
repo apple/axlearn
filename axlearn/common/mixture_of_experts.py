@@ -142,6 +142,7 @@ def blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_
     dtype = hidden_states.dtype
     token_position_to_id = token_position_to_id.reshape(-1, B)
     N = token_position_to_id.shape[0]
+    # jax.debug.print('num blocks {x}, num experts {y}', x=N, y=E)
     I_TP = gate_proj_weight.shape[-1]
     # _, _, _, I_TP = gate_and_up_proj_weights.shape
     output_shape = [T+1, H]
@@ -1320,7 +1321,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         in_range = jnp.where(((token_position_to_id >=0) & (token_position_to_id<=S)), True, False)
         all_in_range = jnp.all(in_range)
         # jax.debug.print("in range: {x}", x=in_range)
-        jax.debug.print("all in range: {x}", x=all_in_range)
+        # jax.debug.print("all in range: {x}", x=all_in_range)
         return self.Output(
             dispatch_tensor=block_to_expert,
             combine_tensor=(token_position_to_id, expert_affinities_masked),
@@ -1787,10 +1788,10 @@ class TransformerFeedForwardMoE(BaseLayer):
         self.add_module_output("aux_loss", aux_loss)
         if isinstance(self.gating, TopKGatingGatherBlockwise):
             x = self._dispatch_and_combine_with_gather_blockwise_gating(cfg, gating, x)
-            # jax.debug.print('blockwisegather output {y}, {x}', y=x.shape, x=x)
+            jax.debug.print('blockwisegather output {y}, {x}', y=x.shape, x=x)
         elif isinstance(self.gating, TopKGatingGather):
             x = self._dispatch_and_combine_with_gather_gating(cfg, group_len, gating, x)
-            # jax.debug.print('gather output shape{y}, {x}', y=x.shape, x=x)
+            jax.debug.print('gather output shape{y}, {x}', y=x.shape, x=x)
         else:
             combine_tensor = gating.combine_tensor.astype(input_dtype)
             dispatch_tensor = gating.dispatch_tensor.astype(input_dtype)
@@ -1814,7 +1815,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         
         # print("Final shape ::::", (token_shape + (cfg.input_dim,)))
         out = x.reshape(token_shape + (cfg.input_dim,))
-        return x
+        return out
 
     def _wi_activation(self, x: Tensor) -> Tensor:
         cfg = self.config
