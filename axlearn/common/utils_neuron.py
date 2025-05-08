@@ -52,7 +52,7 @@ def get_mesh_dims_from_spec(mesh_spec):
 
 def build_name(cfg, invoker_cfg):
     if invoker_cfg['mesh_spec']:
-        mesh_str = f"fsdp{invoker_cfg['mesh_spec']['fsdp']},tp{invoker_cfg['mesh_spec']['model']}"
+        mesh_str = f"fsdp{invoker_cfg['mesh_spec']['fsdp']}tp{invoker_cfg['mesh_spec']['model']}"
     else:
         mesh_str = '""'
 
@@ -64,7 +64,7 @@ def build_name(cfg, invoker_cfg):
         dtype_str = f"{invoker_cfg['dtype']}"
     
     if hasattr(cfg.gating, 'block_size'):
-        block_size_str = f'_{cfg.gating.block_size}'
+        block_size_str = f'_blocksize{cfg.gating.block_size}'
     else:
         block_size_str = ''
     return f"MoE_b{invoker_cfg['batch_size']}_s{invoker_cfg['seq_len']}_i{cfg.input_dim}_h{cfg.hidden_dim}_e{cfg.num_experts}_topk{cfg.gating.top_k}_g{cfg.num_groups}_ec{cfg.gating.train_capacity_factor}{block_size_str}_mesh{mesh_str}_{dtype_str}"
@@ -131,9 +131,9 @@ class ModuleConfig():
 
     def print_summary(self):
         print(f"> {build_name(self.cfg, self.invoker_cfg)}")
-        print(f"> Class: {self.cfg.__class__}")
+        print(f"> Layer: {self.cfg.__class__}")
         if self.layer_type == "MoE":
-            print(f"> GatingClass: {self.cfg.gating.__class__}")
+            print(f"> Gating: {self.cfg.gating.__class__}")
         print(f"> Device: {self.device}")
 
 class TestCaseConfig():
@@ -334,7 +334,6 @@ class GridSpaceBuilder:
             'test_device': self.test_device,
             'golden_device': self.golden_device,
             'dtype': jnp.bfloat16,
-            'batch': 16,
             'input_dim': 2048,
             'hidden_dim': 7168,
         }
@@ -344,50 +343,30 @@ class GridSpaceBuilder:
         # Custom Configs
         # b s i h e top_k g ob cf mesh dtype
         grid_space.extend([
-            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, n_experts=8, top_k=1, n_groups=1, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, n_experts=8, top_k=4, n_groups=1, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, seq=8192),
-            create_test_config(**kwargs, n_experts=1, top_k=1, n_groups=1, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, n_experts=8, top_k=1, n_groups=2, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, n_experts=8, top_k=4, n_groups=2, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, n_experts=1, top_k=1, n_groups=1, capacity_factor=2, seq=4096),
+            # topk changes
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=1, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # seqlen changes
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=256, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=2048, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=8192, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=16*1024, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=32*1024, mesh_spec={"fsdp":-1, "model":4}),
+
+            # tp8
+            # create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=8, seq=4096, mesh_spec={"fsdp":-1, "model":8}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=4, seq=4096, mesh_spec={"fsdp":-1, "model":16}),
+            # create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=2, seq=4096, mesh_spec={"fsdp":-1, "model":32}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=1, seq=4096, mesh_spec={"fsdp":-1, "model":64}),
+
+            # num experts
+            create_test_config(**kwargs, n_experts=1, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=7, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # num groups
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=4, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
         ])
-
-        # 12B Configs
-        Mistral12B_base = (16, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_base)
-        Mistral12B_top1 = (16, 4096, 2048, 7168, 8, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_top1)
-        Mistral12B_top4 = (16, 4096, 2048, 7168, 8, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_top4)
-        Mistral12B_seq256 = (16, 256, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_seq256)
-        Mistral12B_seq2k = (16, 2048, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_seq2k)
-        Mistral12B_seq8k = (16, 8192, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_seq8k)
-        Mistral12B_seq16k = (16, 16384, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_seq16k)
-        Mistral12B_seq32k = (16, 32768, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_seq32k)
-        # Mistral12B_tp8 = (8, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":8}, "bfloat16")
-        # grid_space.append(Mistral12B_tp8)
-        Mistral12B_tp16 = (4, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":16}, "bfloat16")
-        grid_space.append(Mistral12B_tp16)
-        # Mistral12B_tp32 = (2, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":32}, "bfloat16")
-        # grid_space.append(Mistral12B_tp32)
-        Mistal8B_tp64 = (1, 4096, 2048, 7168, 8, 2, 2, 1, 2, {"fsdp":-1, "model":64}, "bfloat16")
-        grid_space.append(Mistal8B_tp64)
-        Mistral12B_expert1 = (16, 4096, 2048, 7168, 1, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_expert1)
-        Mistral12B_expert7 = (16, 4096, 2048, 7168, 7, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_expert7)
-        Mistral12B_group1 = (16, 4096, 2048, 7168, 8, 2, 1, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral12B_group1)
-        Mistal8B_group4 = (16, 4096, 2048, 7168, 8, 2, 4, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistal8B_group4)
-
         return grid_space
 
     def build_grid_space_50B(self):
@@ -528,7 +507,7 @@ def get_training_configs(test=TopKGatingGather, golden=TopKGating, test_device="
     elif test_suite == 'presubmit':
         return builder.build_presubmit_grid_space()
     elif test_suite == '12b':
-        grid_space = builder.build_grid_space_12B()
+        return builder.build_grid_space_12B()
     elif test_suite == '50b':
         grid_space = builder.build_grid_space_50B()
     elif test_suite == '150b':
