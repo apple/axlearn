@@ -439,7 +439,6 @@ class GridSpaceBuilder:
         grid_space.append(Mistral150B_tp64)
         Mistral8x20B_base = (16, 4096, 6144, 16384, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
         grid_space.append(Mistral8x20B_base)
-
         return grid_space
 
 
@@ -477,6 +476,15 @@ def get_training_configs(test=TopKGatingGather, golden=TopKGating, test_device="
         # fails
         create_test_config(
             test, golden, test_device, golden_device, 
+            input_dim=256, hidden_dim=512,
+            n_experts=16, top_k=2, n_groups=1, capacity_factor=2,
+            mesh_spec={}, 
+            batch=1, seq=2048, dtype=jnp.float32, 
+            block_size=256
+        ),
+        # fails
+        create_test_config(
+            test, golden, test_device, golden_device, 
             input_dim=3, hidden_dim=6, n_experts=4, 
             top_k=1, n_groups=1, capacity_factor=2, 
             mesh_spec={}, 
@@ -492,7 +500,7 @@ def get_training_configs(test=TopKGatingGather, golden=TopKGating, test_device="
             batch=4, seq=8, dtype=jnp.float32, 
             block_size=4
         ),
-        # can be seen as tolerance issue maybe
+        # fails
         create_test_config(
             test, golden, test_device, golden_device, 
             input_dim=3, hidden_dim=6, n_experts=4, 
