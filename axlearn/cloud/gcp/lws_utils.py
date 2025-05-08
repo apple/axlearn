@@ -2,21 +2,11 @@
 
 """Utilities for building LeaderWorkerSet specs"""
 
-import io
 import logging
-import math
-import os
-from dataclasses import dataclass
 from typing import Any, Optional, Sequence
-from urllib.parse import urlparse
 
 from absl import flags
 
-from axlearn.cloud.common.bastion import (
-    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
-    BASTION_JOB_VERSION_ENV_VAR,
-    deserialize_jobspec,
-)
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import (
     AcceleratorConfig,
@@ -25,19 +15,18 @@ from axlearn.cloud.common.utils import (
     parse_kv_flags,
 )
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
-from axlearn.cloud.gcp.system_characteristics import (
-    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
-    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
-)
-from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
+from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.tpu import get_default_env
 from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
 
-
 class BaseLeaderWorkerTemplate(FlagConfigurable):
+    """
+    Common base class for LeaderWorker Templates
+    """
+
     @config_class
     class Config(FlagConfigurable.Config):
         """
@@ -45,11 +34,12 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         Attributes:
         name: Name of the LeaderWorkerSet
         command: Command to be executed.
-        accelerator: Accelerator configuration.    
+        accelerator: Accelerator configuration.
         env_vars: Optional env vars to set.
         service_account: Optional service account to execute the job as.
         output_dir: An optional GCS path to upload LWS outputs to.
         """
+
         name: Required[str] = REQUIRED
         # TODO: Change this to be a list of str[], to support different commands
         # between leader and workers
@@ -80,7 +70,7 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
             "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
         )
-    
+
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg: BaseLeaderWorkerTemplate.Config = super().from_flags(fv, **kwargs)
@@ -101,11 +91,11 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         A nested dict corresponding to a LeaderWorkerTemplate config.
         """
         raise NotImplementedError(type(self))
-    
+
 
 class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
     """Builds a LeaderWorkerTemplate spec for TPUs"""
-    
+
     @config_class
     class Config(BaseLeaderWorkerTemplate.Config):
         """Configures TPULeaderWorkerTemplate
@@ -119,9 +109,10 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 "projects/<reservation_project>/reservations/<reservation>"
                 https://github.com/GoogleCloudPlatform/ai-on-gke/blob/889ec98f9b9a7aec05eb0f9890ada1f4c59b6159/tpu-provisioner/internal/cloud/gke.go#L328-L334
         """
+
         reservation: Optional[str] = None
         reservation_project: Optional[str] = None
-    
+
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
@@ -130,7 +121,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         flags.DEFINE_string(
             "reservation_project", None, "TPU reservation project.", **common_kwargs
         )
-    
+
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         cfg: TPULeaderWorkerTemplate.Config = super().from_flags(fv, **kwargs)
@@ -146,7 +137,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "gke_reservation_project", required=False, fv=fv
         )
         return cfg
-    
+
     def __init__(self, cfg, *, bundler):
         super().__init__(cfg, bundler=bundler)
         cfg: TPULeaderWorkerTemplate.Config = self.config
@@ -154,10 +145,9 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
 
-
-    def _build_container(self) -> dict:
+    def build_container(self) -> dict:
         """Build the container to be used in the leader template
-        
+
         Returns:
             A nested dict correspoding to a k8s Container config.
         """
@@ -175,40 +165,33 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             env=k8s_env_vars,
             imagePullPolicy="Always",
         )
-    
-    def _build_pod(self) -> dict:
+
+    def build_pod(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        annotations, labels, selector, tolerations = {}, {}, {}, {}
+        annotations, labels, selector = {}, {}, {}
         if cfg.reservation is not None:
             logging.info("Using reservation=%s", cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         if cfg.reservation_project is not None:
             selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
             labels.update({"bastion-tier": "reserved"})
-        
+
         spec = dict(
             nodeSelector={
                 "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
                 "cloud.google.com/gke-tpu-topology": system.topology,
                 **selector,
             },
-            containers=[self._build_container()], 
+            containers=[self.build_container()],
             serviceAccountName=cfg.service_account,
         )
 
-        return dict(
-            metadata=dict(annotations=annotations, labels=labels),
-            spec=spec
-        )
-    
+        return dict(metadata=dict(annotations=annotations, labels=labels), spec=spec)
+
     def __call__(self) -> Nested[Any]:
-        cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
             size=system.vms_per_slice,
-            workerTemplate =self._build_pod(),
+            workerTemplate=self.build_pod(),
         )
-
-
-
