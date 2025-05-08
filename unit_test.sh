@@ -64,7 +64,7 @@ echo "setup env vars"
 export TEST_SUITE="presubmit" # set to presubmit/12B/50B/150B
 if [ "$1" = "unit" ]; then
     echo "Running Unit Test"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py TestImplOnCpu
+    pytest axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu
 else
-    pytest -v axlearn/common/mixture_of_experts_neuron_test.py TestImplOnTrn
+    pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnTrn
 fi
