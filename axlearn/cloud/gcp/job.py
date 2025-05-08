@@ -20,9 +20,15 @@ from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
 from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
-from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset, custom_leaderworkerset_kwargs, delete_k8s_leaderworkerset
+from axlearn.cloud.gcp.utils import (
+    custom_jobset_kwargs,
+    custom_leaderworkerset_kwargs,
+    delete_k8s_jobset,
+    delete_k8s_leaderworkerset,
+)
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
+
 
 class GCPJob(Job):
     """Base GCP Job definition."""
@@ -216,6 +222,7 @@ class CPUJob(GCPJob):
         cfg: CPUJob.Config = self.config
         self._execute_remote_cmd(cfg.command)
 
+
 def _prepare_subprocess_kwargs(kwargs: dict) -> dict:
     """Enable check=True and capture all outputs by default."""
     kwargs.setdefault("text", True)
@@ -267,6 +274,7 @@ def docker_command(
     logging.debug("Docker run command: %s", cmd)
     return cmd
 
+
 class GKELeaderWorkerSet(GCPJob):
     """base GKE LeaderWorkerSet interface"""
 
@@ -276,13 +284,14 @@ class GKELeaderWorkerSet(GCPJob):
         Attributes:
             builder: A builder that returns one or more statefulset specs.
             namespace: The namespace to use within the k8s cluster.
-            annotations: LeaderWorkerSet annotations     
+            annotations: LeaderWorkerSet annotations
         """
+
         builder: Required[BaseLeaderWorkerTemplate.Config] = REQUIRED
         namespace: str = "default"
         annotations: Optional[ConfigOr[dict]] = None
         num_replicas: int = 1
-    
+
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
@@ -294,14 +303,13 @@ class GKELeaderWorkerSet(GCPJob):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("name", None, "Name of the lws.", **common_kwargs)
-    
+
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
-        cfg: GKELeaderWorkerSet.Config = super().from_flags(fv,**kwargs)
+        cfg: GKELeaderWorkerSet.Config = super().from_flags(fv, **kwargs)
         cfg.num_replicas = fv.num_replicas
         return cfg
 
-    
     def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
         super().__init__(cfg)
         cfg: GKELeaderWorkerSet.Config = self.config
@@ -311,13 +319,14 @@ class GKELeaderWorkerSet(GCPJob):
         # Note the distinction from bundlers, which are responsible for bundling any code assets
         # required to run the job.
         self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)
-    
+
     def _delete(self):
         cfg: GKELeaderWorkerSet.Config = self.config
-        # Issues a delete request for the LeaderWorkerSet and proactively delete its descendants. This is not
-        # fully blocking; after the call returns there can be a delay before everything is deleted.
+        # Issues a delete request for the LeaderWorkerSet and proactively delete its descendants.
+        # This is not fully blocking; after the call returns there can be a delay before
+        # everything is deleted.
         delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
-    
+
     def _build_leaderworkerset(self) -> Nested[Any]:
         """
         Builds a config for a LeaderWorkerSet, which is a set for multi-host inference
@@ -351,10 +360,12 @@ class GKELeaderWorkerSet(GCPJob):
             **api_kwargs,
         )
 
+
 def exclusive_topology_annotations_leaderworkerset() -> dict:
     """Used for TPU GKELeaderWorkerSet.
 
-    The exclusive topology annotation will ensure that all Pods will have affinity rules added that
-    will ensure that they are fully scheduled on the same pod-slice node-pools.
+    The exclusive topology annotation will ensure that all Pods will have affinity
+    rules added that will ensure that they are fully scheduled on the same pod-slice
+    node-pools.
     """
     return {"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}

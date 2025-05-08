@@ -39,9 +39,8 @@ from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import generate_job_name
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import GKEJob
 from axlearn.cloud.gcp.job_flink import FlinkJobStatus, FlinkTPUGKEJob
-from axlearn.cloud.gcp.job import GKELeaderWorkerSet
+from axlearn.cloud.gcp.job import GKEJob, GKELeaderWorkerSet
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
@@ -702,7 +701,7 @@ class LWSRunnerJob(BaseRunnerJob):
         fv.set_default(
             "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
         )
-    
+
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg: LWSRunnerJob.Config = super().from_flags(fv, **kwargs)
@@ -737,7 +736,7 @@ class LWSRunnerJob(BaseRunnerJob):
             ).instantiate()
 
         self._event_publisher: BaseQueueClient = maybe_instantiate(cfg.event_publisher)
-    
+
     class Status(enum.Enum):
         """GKE LeaderWorkerSet status.
 
@@ -758,7 +757,7 @@ class LWSRunnerJob(BaseRunnerJob):
         PROGRESSING = "PROGRESSING"
         RUNNING = "RUNNING"
         NOT_STARTED = "NOT_STARTED"
-    
+
     def _get_status(self) -> Status:
         """Retrieves the current status of the job.
 
@@ -782,12 +781,12 @@ class LWSRunnerJob(BaseRunnerJob):
                 version="v1",
                 plural="leaderworkersets",
             )
-            
+
             status = resp.get("status", {})
             conditions = status.get("conditions", [])
 
-            condition_available = None 
-            condition_progressive = None 
+            condition_available = None
+            condition_progressive = None
             condition_update_in_progress = None
 
             logging.info(conditions)
@@ -803,7 +802,7 @@ class LWSRunnerJob(BaseRunnerJob):
             logging.info(condition_available)
             logging.info(condition_progressive)
             logging.info(condition_update_in_progress)
-            
+
             if condition_update_in_progress:
                 return LWSRunnerJob.Status.UPDATING
 
@@ -811,7 +810,7 @@ class LWSRunnerJob(BaseRunnerJob):
             if condition_available:
                 return LWSRunnerJob.Status.RUNNING
 
-            # If LeaderWorkerSet is deploying/updating, condition is Progressing=True 
+            # If LeaderWorkerSet is deploying/updating, condition is Progressing=True
             if condition_progressive:
                 return LWSRunnerJob.Status.UPDATING
 
@@ -836,7 +835,7 @@ class LWSRunnerJob(BaseRunnerJob):
         self._inner._delete()  # pylint: disable=protected-access
         if self._pre_provisioner is not None:
             self._pre_provisioner.delete_for(self._inner)
-    
+
     def _execute(self):
         cfg: LWSRunnerJob.Config = self.config
 
@@ -852,11 +851,13 @@ class LWSRunnerJob(BaseRunnerJob):
             # Note that LeaderWorkerSet remains ACTIVE until all retries are exhausted.
             if status == LWSRunnerJob.Status.FAILED:
                 self._maybe_publish(
-                    cfg.name, msg="LeaderWorkerSet failed with error", state=JobLifecycleState.FAILED
+                    cfg.name,
+                    msg="LeaderWorkerSet failed with error",
+                    state=JobLifecycleState.FAILED,
                 )
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
-            
+
             elif status == LWSRunnerJob.Status.UPDATING:
                 logging.info("Newer job version is available. Relaunching the LWS...")
                 self._inner._delete()  # pylint: disable=protected-access
@@ -894,7 +895,3 @@ class LWSRunnerJob(BaseRunnerJob):
         if not self._event_publisher:
             return
         self._event_publisher.publish(JobLifecycleEvent(job_name, state, msg))
-    
-
-
-    

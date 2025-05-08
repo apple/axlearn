@@ -4,7 +4,12 @@
 
 from typing import Optional, Union
 
-from axlearn.cloud.gcp.job import GKEJob, GKELeaderWorkerSet, exclusive_topology_annotations, exclusive_topology_annotations_leaderworkerset
+from axlearn.cloud.gcp.job import (
+    GKEJob,
+    GKELeaderWorkerSet,
+    exclusive_topology_annotations,
+    exclusive_topology_annotations_leaderworkerset,
+)
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.job_pathways import GKEPathwaysJobSet
 from axlearn.cloud.gcp.jobset_utils import (
@@ -59,12 +64,10 @@ def named_runner_configs(
         ),
         "gke_tpu_jetstream": LWSRunnerJob.default_config().set(
             inner=GKELeaderWorkerSet.default_config().set(
-                builder=JetstreamPathwaysLeaderWorkerTemplate.default_config(
-                    
-                ),
+                builder=JetstreamPathwaysLeaderWorkerTemplate.default_config(),
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
             )
-        )
+        ),
     }
 
     # Get the GPU runners from the helper function

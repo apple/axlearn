@@ -400,5 +400,6 @@ def delete_k8s_leaderworkerset(name: str, *, namespace: str):
             return
         raise
 
+
 def custom_leaderworkerset_kwargs() -> dict[str, str]:
     return dict(group="leaderworkerset.x-k8s.io", version="v1", plural="leaderworkersets")

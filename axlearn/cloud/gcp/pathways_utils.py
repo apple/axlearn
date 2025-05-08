@@ -20,7 +20,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     TPUReplicatedJob,
     _LoadBalancer,
 )
-from axlearn.cloud.gcp.lws_utils import TPULeaderWorkerTemplate, BaseLeaderWorkerTemplate
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
@@ -74,7 +74,9 @@ _JETSTREAM_CONTAINER_PORT = 9000
 
 _JETSTREAM_HTTP_CONTAINER_NAME = "jetstream-http"
 _JETSTREAM_HTTP_IMAGE_TAG = "v0.2.3"
-_JETSTREAM_HTTP_CONTAINER_IMAGE = f"us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-http:{_JETSTREAM_HTTP_IMAGE_TAG}"
+_JETSTREAM_HTTP_CONTAINER_IMAGE = (
+    f"us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-http:{_JETSTREAM_HTTP_IMAGE_TAG}"
+)
 _JETSTREAM_HTTP_CONTAINER_PORT = 8000
 
 
@@ -731,16 +733,16 @@ class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
         return replicated_jobs
 class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
     """Builds a LeaderWorkerTemplate spec for TPUs"""
-    
+
     @config_class
     class Config(BaseLeaderWorkerTemplate.Config):
         """Configures JetStreamPathwaysLeaderWorkerTemplate
         Attributes:
             inner: The wrapped TPULeaderWorkerTemplate configuration
         """
+
         inner: Required[TPULeaderWorkerTemplate.Config] = REQUIRED
-    
-    
+
     def __init__(self, cfg, *, bundler):
         super().__init__(cfg, bundler=bundler)
         self._bundler = bundler
@@ -748,20 +750,20 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
-    
+
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
         return cfg.set(inner=TPULeaderWorkerTemplate.default_config())
-        
+
     def _build_pathways_worker_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate = self._inner.config
-        container = self._inner._build_container()
+        container = self._inner.build_container()
         worker_container = copy.deepcopy(container)
 
         worker_container["args"] = [
             f"--server_port={_PATHWAYS_WORKER_PORT}",
-            f"--resource_manager_address=$(LWS_LEADER_ADDRESS):"
+            "--resource_manager_address=$(LWS_LEADER_ADDRESS):"
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
         ]
@@ -776,16 +778,14 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         # So workers doesn't need to execute the command by themselves.
         worker_container.pop("command")
         return worker_container
-        
+
     def _build_worker_pod(self) -> dict:
-        pod = self._inner._build_pod()
+        pod = self._inner.build_pod()
         worker_pod = copy.deepcopy(pod)
 
         pod_spec = worker_pod.get("spec", {})
 
-        pod_spec["containers"] = [
-            self._build_pathways_worker_container()
-        ]
+        pod_spec["containers"] = [self._build_pathways_worker_container()]
 
         worker_pod["spec"] = pod_spec
 
@@ -796,17 +796,16 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         staging_location = f"{cfg.output_dir}/pathways-staging"
 
         return dict(
-                name=_PATHWAYS_PROXY_CONTAINER_NAME,
-                image=_PATHWAYS_PROXY_IMAGE,
-                args=[
-                    f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-                    f"--server_port={_PATHWAYS_PROXY_PORT}",
-                    f"--gcs_scratch_location={staging_location}",
-                ],
-                ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
-            )
-        
-    
+            name=_PATHWAYS_PROXY_CONTAINER_NAME,
+            image=_PATHWAYS_PROXY_IMAGE,
+            args=[
+                f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+                f"--server_port={_PATHWAYS_PROXY_PORT}",
+                f"--gcs_scratch_location={staging_location}",
+            ],
+            ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
+        )
+
     def _build_pathways_rm_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate = self._inner.config
         staging_location = f"{cfg.output_dir}/pathways-staging"
@@ -815,80 +814,75 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
 
         return dict(
-                name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
-                image=_PATHWAYS_SERVER_IMAGE,
-                env=[
-                    {
-                        "name": "TPU_SKIP_MDS_QUERY",
-                        "value": "true",
-                    },
-                    {
-                        "name" : "HOST_ADDRESS", 
-                        "value": "$(LWS_LEADER_ADDRESS)",
-                    },
-                ],
-                args=[
-                    f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
-                    "--node_type=resource_manager",
-                    f"--instance_count=1",
-                    f"--instance_type={pathways_tpu_version}:{system.topology}",
-                    f"--gcs_scratch_location={staging_location}",
-                ],
-            )
+            name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
+            image=_PATHWAYS_SERVER_IMAGE,
+            env=[
+                {
+                    "name": "TPU_SKIP_MDS_QUERY",
+                    "value": "true",
+                },
+                {
+                    "name": "HOST_ADDRESS",
+                    "value": "$(LWS_LEADER_ADDRESS)",
+                },
+            ],
+            args=[
+                f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
+                "--node_type=resource_manager",
+                "--instance_count=1",
+                f"--instance_type={pathways_tpu_version}:{system.topology}",
+                f"--gcs_scratch_location={staging_location}",
+            ],
+        )
 
     def _build_jetstream_pathways_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
 
         return dict(
-            name=cfg.name, 
+            name=cfg.name,
             image=self._bundler.id(cfg.name),
             command=["bash", "-c", cfg.command],
             imagePullPolicy="Always",
-            ports=[
-                {"containerPort" : _JETSTREAM_CONTAINER_PORT}
-            ],
+            ports=[{"containerPort": _JETSTREAM_CONTAINER_PORT}],
             readinessProbe=dict(
                 httpGet=dict(
-                    path= "/healthcheck",
-                    port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                    scheme = "HTTP",
+                    path="/healthcheck",
+                    port=_JETSTREAM_HTTP_CONTAINER_PORT,
+                    scheme="HTTP",
                 ),
                 periodSeconds=60,
                 failureThreshold=10,
             ),
             livenessProbe=dict(
                 httpGet=dict(
-                    path= "/healthcheck",
-                    port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                    scheme = "HTTP",
+                    path="/healthcheck",
+                    port=_JETSTREAM_HTTP_CONTAINER_PORT,
+                    scheme="HTTP",
                 ),
                 periodSeconds=60,
                 failureThreshold=10,
             ),
             startupProbe=dict(
                 httpGet=dict(
-                    path= "/healthcheck",
-                    port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                    scheme = "HTTP",
+                    path="/healthcheck",
+                    port=_JETSTREAM_HTTP_CONTAINER_PORT,
+                    scheme="HTTP",
                 ),
                 periodSeconds=1,
                 initialDelaySeconds=600,
                 failureThreshold=10000,
-            )
+            ),
         )
 
-
     def _build_jetstream_http_container(self) -> dict:
-        
-        return dict (
+        return dict(
             name=_JETSTREAM_HTTP_CONTAINER_NAME,
             image=_JETSTREAM_HTTP_CONTAINER_IMAGE,
             ports=[dict(containerPort=_JETSTREAM_HTTP_CONTAINER_PORT)],
         )
 
-
-    def _build_leader_pod(self) ->  Nested[Any]:
-        pod = self._inner._build_pod()
+    def _build_leader_pod(self) -> Nested[Any]:
+        pod = self._inner.build_pod()
         leader_pod = copy.deepcopy(pod)
 
         pod_spec = leader_pod.get("spec", {})
@@ -902,11 +896,11 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         leader_pod["spec"] = pod_spec
         return leader_pod
-    
+
     def __call__(self) -> Nested[Any]:
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
-            size=system.vms_per_slice+1,
+            size=system.vms_per_slice + 1,
             leaderTemplate=self._build_leader_pod(),
             workerTemplate=self._build_worker_pod(),
         )
