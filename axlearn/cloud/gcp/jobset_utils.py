@@ -22,6 +22,7 @@ from axlearn.cloud.common.utils import (
     AcceleratorConfig,
     FlagConfigurable,
     accelerator_flags,
+    namespaced,
     parse_kv_flags,
 )
 from axlearn.cloud.gcp.config import gcp_settings
@@ -192,6 +193,33 @@ class BaseReplicatedJob(FlagConfigurable):
             The "template" should correspond to a k8s Job config.
         """
         raise NotImplementedError(type(self))
+
+
+@namespaced(mapping="inner")
+class CompositeReplicatedJob(BaseReplicatedJob):
+    """Builds a composite replicated job spec."""
+
+    @config_class
+    class Config(BaseReplicatedJob.Config):
+        """Configures SingleReplicatedJob.
+
+        Attributes:
+            inner: A mapping from job_name to child replicated job.
+        """
+
+        inner: Required[dict[str, BaseReplicatedJob.Config]] = REQUIRED
+
+    def __init__(self, cfg: Config, **kwargs):
+        super().__init__(cfg, **kwargs)
+        self._inner = {
+            namespace: child.instantiate(**kwargs) for namespace, child in cfg.inner.items()
+        }
+
+    def __call__(self) -> Sequence[Nested[Any]]:
+        composite = []
+        for child in self._inner.values():
+            composite.extend(child())
+        return composite
 
 
 class SingleReplicatedJob(BaseReplicatedJob):
