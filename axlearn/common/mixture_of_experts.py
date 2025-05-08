@@ -139,7 +139,7 @@ def blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_
     _, E = expert_affinities.shape
     T = T1-1
     B = block_size
-    dtype = jnp.bfloat16
+    dtype = hidden_states.dtype
     token_position_to_id = token_position_to_id.reshape(-1, B)
     N = token_position_to_id.shape[0]
     I_TP = gate_proj_weight.shape[-1]
@@ -151,13 +151,11 @@ def blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_
     if checkpoint_activation:
         gate_up_activations_T = jnp.zeros([N, 2, I_TP, B], dtype=dtype)
         down_activations = jnp.zeros([N, B, H], dtype=dtype)
-    jax.debug.print('token_position_to_id: {i}', i=token_position_to_id)
-    jax.debug.print('expert affinities: {i}', i=expert_affinities)
+    # jax.debug.print('token_position_to_id: {i}', i=token_position_to_id)
+    # jax.debug.print('expert affinities: {i}', i=expert_affinities)
     def body_fun(b, carry):
-        
         output_jax, gate_up_activations_T, down_activations = carry
         local_token_position_to_id = token_position_to_id[b, :]
-        # jax.debug.print('local_token_position_to_id: {i}', i=local_token_position_to_id)
         hidden_states_padded = hidden_states
         expert_affinities_padded = expert_affinities
         # jax.debug.print("expert_affinities_padded {x}", x=expert_affinities_padded)
@@ -165,32 +163,27 @@ def blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_
         # jax.debug.print("local hs {x}", x=local_hidden_states)
         expert_idx = block_to_expert[b]
         # jax.debug.print('block: {i}, expert idx {x}, local_token_position_to_id: {l}', i=b, x=expert_idx, l=local_token_position_to_id)
-        # jax.debug.print("expert aff temp, {x}", x=expert_affinities_padded[local_token_position_to_id])
         local_expert_affinities = expert_affinities_padded[local_token_position_to_id, expert_idx]
-        # jax.debug.print("local_expert_affinities {x}", x=local_expert_affinities)
         local_expert_affinities = jnp.reshape(local_expert_affinities, (-1, 1))
         # jax.debug.print("local_expert_affinities post reshape {x}", x=local_expert_affinities)
-        gate_up_weights = jnp.concat([gate_proj_weight[expert_idx], up_proj_weight[expert_idx]], axis=1)
-        # gate_up_weights = gate_and_up_proj_weights[expert_idx].reshape(H, 2*I_TP).astype(jnp.float32)
-        # jax.debug.print("gateupweights for expert {x}", x=gate_up_weights)
-        gate_up_activation = jnp.matmul(local_hidden_states, gate_up_weights).reshape(B, 2, I_TP)
+
+        x_0 = jnp.einsum("cm,mh->ch", local_hidden_states, gate_proj_weight[expert_idx])
+        x_0 = get_activation_fn("nn.silu")(x_0)
+        x_1 = jnp.einsum("cm,mh->ch", local_hidden_states, up_proj_weight[expert_idx])
+        x_1 = get_activation_fn("linear")(x_1)
+        gate_up_activation = x_0 * x_1
         
         if checkpoint_activation:
             gate_up_activations_T = gate_up_activations_T.at[b].set(
                 gate_up_activation.transpose(1, 2, 0))
 
-        act_silu = jax.nn.silu(gate_up_activation[:, 0, :])
-
-        multiply_1 = act_silu * gate_up_activation[:, 1, :]
-
-        down_weights = down_proj_weights[expert_idx].astype(jnp.float32)
-
-        down_activation = jnp.matmul(multiply_1, down_weights)
+        down_activation = jnp.einsum("ch,hm->cm", gate_up_activation, down_proj_weights[expert_idx])
+        
         # jax.debug.print("down_activation {x}", x=down_activation)
+        
         if checkpoint_activation:
             down_activations = down_activations.at[b].set(down_activation)
 
-        # scale = down_activation
         scale = down_activation * local_expert_affinities
         # jax.debug.print("block output {x}", x=scale)
         output_jax = output_jax.at[local_token_position_to_id].add(scale.astype(output_jax.dtype))
@@ -202,7 +195,7 @@ def blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_
                  down_activations if checkpoint_activation else None)
     
     output_jax, gate_up_activations_T, down_activations = lax.fori_loop(
-        0, E, body_fun, init_carry)
+        0, N, body_fun, init_carry)
     # jax.debug.print('final output: {o}', o=output_jax)
     if checkpoint_activation:
         return output_jax, gate_up_activations_T, down_activations
@@ -1287,8 +1280,8 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # jax.debug.print("cumulative_blocks_per_expert: {x}", x=cumulative_blocks_per_expert)
 
         # print('expert mask shape', expert_mask_after_dropping.shape)
-        jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
-        jax.debug.print("expert_mask_after_dropping: {x}", x=expert_mask_after_dropping)
+        # jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
+        # jax.debug.print("expert_mask_after_dropping: {x}", x=expert_mask_after_dropping)
 
         # block_to_expert: (O, G, N)
         #   N is num blocks
@@ -1305,18 +1298,18 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # b0t0, b0t1,..., b1t0, b1t1,...
         block_position_indices = _cum_sum(expert_mask_after_dropping.astype(jnp.int32), axis=-2).astype(jnp.int32)
 
-        print("block_position_indices shape", block_position_indices.shape)
-        jax.debug.print("block_position_indices after cumsum:{x}", x=block_position_indices)
+        # print("block_position_indices shape", block_position_indices.shape)
+        # jax.debug.print("block_position_indices after cumsum:{x}", x=block_position_indices)
         # O G 1 E
         expert_block_offsets = jnp.expand_dims(cumulative_blocks_per_expert * cfg.block_size, 2)
         # print('expert_block_offsets shape', expert_block_offsets.shape)
         
         block_position_indices = block_position_indices.at[:,:,:,1:].set(block_position_indices[:,:,:,1:] + expert_block_offsets[:,:,:,:-1])
-        jax.debug.print("expert_block_offsets :{x}", x=expert_block_offsets)
-        print("block_position_indices shape", block_position_indices.shape)
+        # jax.debug.print("expert_block_offsets :{x}", x=expert_block_offsets)
+        # print("block_position_indices shape", block_position_indices.shape)
         block_position_indices = jnp.where(expert_mask_after_dropping==0, 0, block_position_indices)
         # print("block_position_indices after dropping and adding expert block offsets: shape", block_position_indices.shape)
-        jax.debug.print("block_position_indices after dropping and adding expert block offsets: {x}", x=block_position_indices)
+        # jax.debug.print("block_position_indices after dropping and adding expert block offsets: {x}", x=block_position_indices)
 
         # token_position_to_id: (O, G, N*B)
         # for every position in the block, gets the token id in sequence
@@ -1746,7 +1739,9 @@ class TransformerFeedForwardMoE(BaseLayer):
                 cfg.gating.block_size
             )
             with jax.named_scope("all_reduce"):
+                print('pre ar shape output', outputs.shape)
                 outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
+                print('post ar shape output', outputs.shape)
             return outputs
 
     # pylint: disable-next=too-many-statements
@@ -1792,10 +1787,10 @@ class TransformerFeedForwardMoE(BaseLayer):
         self.add_module_output("aux_loss", aux_loss)
         if isinstance(self.gating, TopKGatingGatherBlockwise):
             x = self._dispatch_and_combine_with_gather_blockwise_gating(cfg, gating, x)
-            # jax.debug.print('blockwisegather output {x}', x=x)
+            # jax.debug.print('blockwisegather output {y}, {x}', y=x.shape, x=x)
         elif isinstance(self.gating, TopKGatingGather):
             x = self._dispatch_and_combine_with_gather_gating(cfg, group_len, gating, x)
-            # jax.debug.print('gather output {x}', x=x)
+            # jax.debug.print('gather output shape{y}, {x}', y=x.shape, x=x)
         else:
             combine_tensor = gating.combine_tensor.astype(input_dtype)
             dispatch_tensor = gating.dispatch_tensor.astype(input_dtype)
@@ -1819,7 +1814,7 @@ class TransformerFeedForwardMoE(BaseLayer):
         
         # print("Final shape ::::", (token_shape + (cfg.input_dim,)))
         out = x.reshape(token_shape + (cfg.input_dim,))
-        return out
+        return x
 
     def _wi_activation(self, x: Tensor) -> Tensor:
         cfg = self.config

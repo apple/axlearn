@@ -199,6 +199,12 @@ class TestCaseConfig():
         self.golden.inputs[input_key] = jax.device_put(inputs, in_shard_golden)
 
 class GridSpaceBuilder:
+    def __init__(self, test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"):
+        self.test = test
+        self.golden = golden
+        self.test_device = test_device
+        self.golden_device = golden_device
+    
     # def build_test_configs_integ(self):
 
     #     seq_len = (self.params["batch_size"]*self.params["seq_len"])//(self.params["outer_batch"] * self.params["num_groups"])
@@ -278,32 +284,27 @@ class GridSpaceBuilder:
 
         grid_space = []
         # "fsdp":-1, "model":4
-        Mistral12B_base = (16, 64, 8, 32, 8, 2, 1, 1, 2, {}, "bfloat16")
-        grid_space.append(Mistral12B_base)
-
-        '''
         kwargs={
-            'test': test,
-            'golden': golden,
-            'test_device': test_device,
-            'golden_device': golden_device,
+            'test': self.test,
+            'golden': self.golden,
+            'test_device': self.test_device,
+            'golden_device': self.golden_device,
             'dtype': jnp.bfloat16,
             'batch': 16,
         }
         # 12B Configs
-        grid_space = []
-        12b_kwargs = {
+        kwargs_12b = {
             'input_dim': 2048,
             'hidden_dim': 7168,
             'mesh_spec': {"fsdp":-1, "model":4},
         }
         grid_space.extend([
-            create_test_config(**kwargs, **12b_kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, **12b_kwargs, n_experts=8, top_k=1, n_groups=2, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, **12b_kwargs, n_experts=8, top_k=4, n_groups=2, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, **12b_kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, seq=8192),
-            create_test_config(**kwargs, **12b_kwargs, n_experts=1, top_k=1, n_groups=2, capacity_factor=2, seq=4096),
-            create_test_config(**kwargs, **12b_kwargs, n_experts=1, top_k=1, n_groups=1, capacity_factor=2, seq=4096),
+            create_test_config(**kwargs, **kwargs_12b, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, seq=4096),
+            create_test_config(**kwargs, **kwargs_12b, n_experts=8, top_k=1, n_groups=2, capacity_factor=2, seq=4096),
+            create_test_config(**kwargs, **kwargs_12b, n_experts=8, top_k=4, n_groups=2, capacity_factor=2, seq=4096),
+            create_test_config(**kwargs, **kwargs_12b, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, seq=8192),
+            create_test_config(**kwargs, **kwargs_12b, n_experts=1, top_k=1, n_groups=2, capacity_factor=2, seq=4096),
+            create_test_config(**kwargs, **kwargs_12b, n_experts=1, top_k=1, n_groups=1, capacity_factor=2, seq=4096),
         ])
         # 50B Config
         grid_space.append(
@@ -327,7 +328,6 @@ class GridSpaceBuilder:
                 n_experts=8, top_k=2, n_groups=2, capacity_factor=2, seq=4096
             )
         )
-        '''
         return grid_space
 
     def build_grid_space_12B(self):
@@ -447,74 +447,68 @@ def get_gating_config(gating_cls, top_k, train_capacity_factor, expert_capacity,
     cfg.top_k = top_k
     cfg.train_capacity_factor = train_capacity_factor
     cfg.expert_capacity = expert_capacity
-    if block_size is not None:
+    if block_size is not None and isinstance(cfg, TopKGatingGatherBlockwise):
         cfg.block_size = block_size
     return cfg
 
 @cache
 def get_training_configs(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"):
 
-    return [
-        # works
-        create_test_config(
-            test, golden, test_device, golden_device, 
-            input_dim=3, hidden_dim=6, 
-            n_experts=4, top_k=1, n_groups=1, capacity_factor=2, 
-            mesh_spec={}, 
-            batch=1, seq=8, dtype=jnp.float32, 
-            block_size=4
-        ),
-        # works
-        create_test_config(
-            test, golden, test_device, golden_device, 
-            input_dim=3, hidden_dim=6, 
-            n_experts=4, top_k=2, n_groups=1, capacity_factor=2,
-            mesh_spec={}, 
-            batch=1, seq=8, dtype=jnp.float32, 
-            block_size=4
-        ),
-        # fails
-        create_test_config(
-            test, golden, test_device, golden_device, 
-            input_dim=256, hidden_dim=512,
-            n_experts=16, top_k=2, n_groups=1, capacity_factor=2,
-            mesh_spec={}, 
-            batch=1, seq=2048, dtype=jnp.float32, 
-            block_size=256
-        ),
-        # fails
-        create_test_config(
-            test, golden, test_device, golden_device, 
-            input_dim=3, hidden_dim=6, n_experts=4, 
-            top_k=1, n_groups=1, capacity_factor=2, 
-            mesh_spec={}, 
-            batch=4, seq=8, dtype=jnp.float32, 
-            block_size=4
-        ),
-        # fails
-        create_test_config(
-            test, golden, test_device, golden_device, 
-            input_dim=3, hidden_dim=6, n_experts=4, 
-            top_k=2, n_groups=1, capacity_factor=2, 
-            mesh_spec={}, 
-            batch=4, seq=8, dtype=jnp.float32, 
-            block_size=4
-        ),
-        # fails
-        create_test_config(
-            test, golden, test_device, golden_device, 
-            input_dim=3, hidden_dim=6, n_experts=4, 
-            top_k=1, n_groups=1, capacity_factor=2, 
-            mesh_spec={}, 
-            batch=4, seq=8, dtype=jnp.bfloat16, 
-            block_size=4
-        ),
-    ][2]
+    # return [
+    #     create_test_config(
+    #         test, golden, test_device, golden_device, 
+    #         input_dim=3, hidden_dim=6, 
+    #         n_experts=4, top_k=1, n_groups=1, capacity_factor=2, 
+    #         mesh_spec={}, 
+    #         batch=1, seq=8, dtype=jnp.float32, 
+    #         block_size=4
+    #     ),
+    #     create_test_config(
+    #         test, golden, test_device, golden_device, 
+    #         input_dim=3, hidden_dim=6, 
+    #         n_experts=4, top_k=2, n_groups=1, capacity_factor=2,
+    #         mesh_spec={}, 
+    #         batch=1, seq=8, dtype=jnp.float32, 
+    #         block_size=4
+    #     ),
+    #     create_test_config(
+    #         test, golden, test_device, golden_device, 
+    #         input_dim=256, hidden_dim=512,
+    #         n_experts=16, top_k=2, n_groups=1, capacity_factor=2,
+    #         mesh_spec={}, 
+    #         batch=1, seq=2048, dtype=jnp.float32, 
+    #         block_size=256
+    #     ),
+    #     create_test_config(
+    #         test, golden, test_device, golden_device, 
+    #         input_dim=3, hidden_dim=6, n_experts=4, 
+    #         top_k=1, n_groups=1, capacity_factor=2, 
+    #         mesh_spec={}, 
+    #         batch=4, seq=8, dtype=jnp.float32, 
+    #         block_size=4
+    #     ),
+    #     create_test_config(
+    #         test, golden, test_device, golden_device, 
+    #         input_dim=3, hidden_dim=6, n_experts=4, 
+    #         top_k=2, n_groups=1, capacity_factor=2, 
+    #         mesh_spec={}, 
+    #         batch=4, seq=8, dtype=jnp.float32, 
+    #         block_size=4
+    #     ),
+    #     create_test_config(
+    #         test, golden, test_device, golden_device, 
+    #         input_dim=3, hidden_dim=6, n_experts=4, 
+    #         top_k=1, n_groups=1, capacity_factor=2, 
+    #         mesh_spec={}, 
+    #         batch=4, seq=8, dtype=jnp.bfloat16, 
+    #         block_size=4
+    #     ),
+    # ]
     
-    builder = GridSpaceBuilder()
+    builder = GridSpaceBuilder(test=test, golden=golden, test_device=test_device, golden_device=golden_device)
     test_suite = os.environ.get("TEST_SUITE", 'presubmit').lower()
     if test_suite == 'presubmit':
-        grid_space = builder.build_grid_space()
+        return builder.build_grid_space()
     elif test_suite == '12b':
         grid_space = builder.build_grid_space_12B()
     elif test_suite == '50b':

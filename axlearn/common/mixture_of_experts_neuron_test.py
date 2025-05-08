@@ -121,15 +121,6 @@ class TestImplOnTrn(TestImplOnCpu):
     @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
     def test_fwd_blockwisegather_vs_einsum(self, cfg):
         self.helper_fwd(cfg)
-    
-    def _fwd_call(self, layer, state, inputs):
-        return F(
-                layer,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(123),
-                state=state,
-                inputs=inputs,
-        )
 
 if __name__ == "__main__":
     absltest.main()
