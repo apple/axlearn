@@ -70,11 +70,12 @@ _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 # While workers will share #workers * _PATHWAYS_BACK_OFF_LIMIT total times.
 _PATHWAYS_BACK_OFF_LIMIT = 32
 _JETSTREAM_CONTAINER_PORT = "9000"
+_JETSTREAM_CONTAINER_PORT = 9000
 
 _JETSTREAM_HTTP_CONTAINER_NAME = "jetstream-http"
 _JETSTREAM_HTTP_IMAGE_TAG = "v0.2.3"
 _JETSTREAM_HTTP_CONTAINER_IMAGE = f"us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-http:{_JETSTREAM_HTTP_IMAGE_TAG}"
-_JETSTREAM_HTTP_CONTAINER_PORT = "8000"
+_JETSTREAM_HTTP_CONTAINER_PORT = 8000
 
 
 def get_pathways_head_address(job_name: str) -> str:
@@ -747,8 +748,14 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
+    
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config()
+        return cfg.set(inner=TPULeaderWorkerTemplate.default_config())
         
-    def _build_worker_container(self) -> dict:
+    def _build_pathways_worker_container(self) -> dict:
+        cfg: TPULeaderWorkerTemplate = self._inner.config
         container = self._inner._build_container()
         worker_container = copy.deepcopy(container)
 
@@ -768,6 +775,7 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         # distribute works to workers.
         # So workers doesn't need to execute the command by themselves.
         worker_container.pop("command")
+        return worker_container
         
     def _build_worker_pod(self) -> dict:
         pod = self._inner._build_pod()
@@ -790,14 +798,13 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         return dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
                 image=_PATHWAYS_PROXY_IMAGE,
-                restartPolicy="Always",
                 args=[
                     f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
                     f"--server_port={_PATHWAYS_PROXY_PORT}",
                     f"--gcs_scratch_location={staging_location}",
                 ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
-            ),
+            )
         
     
     def _build_pathways_rm_container(self) -> dict:
@@ -827,45 +834,47 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                     f"--instance_type={pathways_tpu_version}:{system.topology}",
                     f"--gcs_scratch_location={staging_location}",
                 ],
-            ),
+            )
 
     def _build_jetstream_pathways_container(self) -> dict:
-        container = self._inner._build_container()
-        jetstream_pathways_container = copy.deepcopy(container)
+        cfg: TPULeaderWorkerTemplate.Config = self.config
 
-        ports = jetstream_pathways_container.get("ports", [])
-        ports.append({"containerPort" : _JETSTREAM_CONTAINER_PORT})
-        jetstream_pathways_container["ports"] = ports
-
-        jetstream_pathways_container["startupProbe"] = dict(
-            httpGet=dict(
-            path= "/healthcheck",
-            port= _JETSTREAM_HTTP_CONTAINER_PORT,
-            scheme = "HTTP",
+        return dict(
+            name=cfg.name, 
+            image=self._bundler.id(cfg.name),
+            command=["bash", "-c", cfg.command],
+            imagePullPolicy="Always",
+            ports=[
+                {"containerPort" : _JETSTREAM_CONTAINER_PORT}
+            ],
+            readinessProbe=dict(
+                httpGet=dict(
+                    path= "/healthcheck",
+                    port= _JETSTREAM_HTTP_CONTAINER_PORT,
+                    scheme = "HTTP",
+                ),
+                periodSeconds=60,
+                failureThreshold=10,
             ),
-            periodSeconds="1",
-            initialDelaySeconds="600",
-            failureThreshold="10000",
-        )
-
-        jetstream_pathways_container["livenessProbe"] = dict(
-            httpGet=dict(
-                path= "/healthcheck",
-                port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                scheme = "HTTP",
+            livenessProbe=dict(
+                httpGet=dict(
+                    path= "/healthcheck",
+                    port= _JETSTREAM_HTTP_CONTAINER_PORT,
+                    scheme = "HTTP",
+                ),
+                periodSeconds=60,
+                failureThreshold=10,
             ),
-            periodSeconds="60",
-            failureThreshold="10",
-        )
-
-        jetstream_pathways_container["readinessProbe"] = dict(
-            httpGet=dict(
-                path= "/healthcheck",
-                port= _JETSTREAM_HTTP_CONTAINER_PORT,
-                scheme = "HTTP",
-            ),
-            periodSeconds="60",
-            failureThreshold="10",
+            startupProbe=dict(
+                httpGet=dict(
+                    path= "/healthcheck",
+                    port= _JETSTREAM_HTTP_CONTAINER_PORT,
+                    scheme = "HTTP",
+                ),
+                periodSeconds=1,
+                initialDelaySeconds=600,
+                failureThreshold=10000,
+            )
         )
 
 
