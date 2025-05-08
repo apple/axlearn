@@ -455,16 +455,54 @@ def get_gating_config(gating_cls, top_k, train_capacity_factor, expert_capacity,
 @cache
 def get_training_configs(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"):
 
-    # return [
-    #     create_test_config(
-    #         test, golden, test_device, golden_device, 
-    #         input_dim=3, hidden_dim=6, n_experts=4, top_k=1, n_groups=1, capacity_factor=2, 
-    #         mesh_spec={}, 
-    #         batch=1, seq=8, dtype=jnp.float32, 
-    #         block_size=4
-    #     )
-    # ]
-
+    return [
+        # works
+        create_test_config(
+            test, golden, test_device, golden_device, 
+            input_dim=3, hidden_dim=6, 
+            n_experts=4, top_k=1, n_groups=1, capacity_factor=2, 
+            mesh_spec={}, 
+            batch=1, seq=8, dtype=jnp.float32, 
+            block_size=4
+        ),
+        # works
+        create_test_config(
+            test, golden, test_device, golden_device, 
+            input_dim=3, hidden_dim=6, 
+            n_experts=4, top_k=2, n_groups=1, capacity_factor=2,
+            mesh_spec={}, 
+            batch=1, seq=8, dtype=jnp.float32, 
+            block_size=4
+        ),
+        # fails
+        create_test_config(
+            test, golden, test_device, golden_device, 
+            input_dim=3, hidden_dim=6, n_experts=4, 
+            top_k=1, n_groups=1, capacity_factor=2, 
+            mesh_spec={}, 
+            batch=4, seq=8, dtype=jnp.float32, 
+            block_size=4
+        ),
+        # fails
+        create_test_config(
+            test, golden, test_device, golden_device, 
+            input_dim=3, hidden_dim=6, n_experts=4, 
+            top_k=2, n_groups=1, capacity_factor=2, 
+            mesh_spec={}, 
+            batch=4, seq=8, dtype=jnp.float32, 
+            block_size=4
+        ),
+        # can be seen as tolerance issue maybe
+        create_test_config(
+            test, golden, test_device, golden_device, 
+            input_dim=3, hidden_dim=6, n_experts=4, 
+            top_k=1, n_groups=1, capacity_factor=2, 
+            mesh_spec={}, 
+            batch=4, seq=8, dtype=jnp.bfloat16, 
+            block_size=4
+        ),
+    ][2]
+    
     builder = GridSpaceBuilder()
     test_suite = os.environ.get("TEST_SUITE", 'presubmit').lower()
     if test_suite == 'presubmit':

@@ -616,11 +616,6 @@ class SpmdTrainer(Module):
                                 force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
                             ),
                         )
-                        break
-                        max_step_ = os.getenv("AXLEARN_MAX_STEP", None)
-                        if max_step_ is not None and max_step_  == num_steps:
-                            logging.info(f"Done running {num_steps}, exiting")
-                            import sys; sys.exit(0)
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
                     if num_steps % 100 == 0:

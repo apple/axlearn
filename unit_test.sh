@@ -68,7 +68,7 @@ if [ "$1" = "unit" ]; then
     export IS_UNIT="true"
     pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_correctness"
 elif [ "$1" = "blockwise" ]; then
-    pytest axlearn/common/mixture_of_experts_neuron_test.py
+    pytest -v axlearn/common/mixture_of_experts_neuron_test.py
 else
     echo "Running Integ Test"
     export IS_UNIT="false"
