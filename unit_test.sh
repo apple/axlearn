@@ -64,13 +64,7 @@ echo "setup env vars"
 export TEST_SUITE="presubmit" # set to presubmit/12B/50B/150B
 if [ "$1" = "unit" ]; then
     echo "Running Unit Test"
-    export JAX_PLATFORMS=cpu
-    export IS_UNIT="true"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_correctness"
-elif [ "$1" = "blockwise" ]; then
-    pytest -v axlearn/common/mixture_of_experts_neuron_test.py
+    pytest axlearn/common/mixture_of_experts_neuron_test.py TestImplOnCpu
 else
-    echo "Running Integ Test"
-    export IS_UNIT="false"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_correctness"
+    pytest -v axlearn/common/mixture_of_experts_neuron_test.py TestImplOnTrn
 fi
