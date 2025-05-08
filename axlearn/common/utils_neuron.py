@@ -343,8 +343,9 @@ class GridSpaceBuilder:
         # Custom Configs
         # b s i h e top_k g ob cf mesh dtype
         grid_space.extend([
-            # topk changes
+            # base
             create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # topk changes
             create_test_config(**kwargs, n_experts=8, top_k=1, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
             create_test_config(**kwargs, n_experts=8, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
             # seqlen changes
@@ -370,70 +371,87 @@ class GridSpaceBuilder:
         return grid_space
 
     def build_grid_space_50B(self):
-        # Grid space for testing
-
+                # Grid space for testing
         grid_space = []
+        kwargs={
+            'test': self.test,
+            'golden': self.golden,
+            'test_device': self.test_device,
+            'golden_device': self.golden_device,
+            'dtype': jnp.bfloat16,
+            'input_dim': 4096,
+            'hidden_dim': 14336,
+        }
 
-        # Custom Configs
-        # b s i h e top_k g ob cf mesh dtype
+        grid_space.extend([
+            # base
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # topk changes
+            create_test_config(**kwargs, n_experts=8, top_k=1, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # seqlen changes
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=256, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=2048, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=8192, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=16*1024, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=32*1024, mesh_spec={"fsdp":-1, "model":4}),
 
-        # 50B Configs
-        Mistral50B_base = (16, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_base)
-        Mistral50B_top1 = (16, 4096, 4096, 14336, 8, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_top1)
-        Mistral50B_top4 = (16, 4096, 4096, 14336, 8, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_top4)
-        Mistral50B_seq256 = (16, 256, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_seq256)
-        Mistral50B_seq2k = (16, 2048, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_seq2k)
-        Mistral50B_seq8k = (16, 8192, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_seq8k)
-        Mistral50B_seq16k = (16, 16384, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_seq16k)
-        Mistral50B_seq32k = (16, 32768, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral50B_seq32k)
-        # Mistral50B_tp8 = (8, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":8}, "bfloat16")
-        # grid_space.append(Mistral50B_tp8)
-        Mistral50B_tp16 = (4, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":16}, "bfloat16")
-        grid_space.append(Mistral50B_tp16)
-        # Mistral50B_tp32 = (2, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":32}, "bfloat16")
-        # grid_space.append(Mistral50B_tp32)
-        Mistal50B_tp64 = (1, 4096, 4096, 14336, 8, 2, 2, 1, 2, {"fsdp":-1, "model":64}, "bfloat16")
-        grid_space.append(Mistal50B_tp64)
+            # tp8
+            # create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=8, seq=4096, mesh_spec={"fsdp":-1, "model":8}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=4, seq=4096, mesh_spec={"fsdp":-1, "model":16}),
+            # create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=2, seq=4096, mesh_spec={"fsdp":-1, "model":32}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=1, seq=4096, mesh_spec={"fsdp":-1, "model":64}),
 
-
+            # num experts
+            create_test_config(**kwargs, n_experts=1, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=7, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # num groups
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=4, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+        ])
         return grid_space
 
     def build_grid_space_150B(self):
-
+        # Grid space for testing
         grid_space = []
-        # Custom Configs
-        # b s i h e top_k g ob cf mesh dtype
+        kwargs={
+            'test': self.test,
+            'golden': self.golden,
+            'test_device': self.test_device,
+            'golden_device': self.golden_device,
+            'dtype': jnp.bfloat16,
+            'input_dim': 6144,
+            'hidden_dim': 15360,
+        }
 
-        Mistral150B_base = (16, 4096, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral150B_base)
-        Mistral150B_top1 = (16, 4096, 6144, 15360, 16, 1, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral150B_top1)
-        Mistral150B_top2 = (16, 4096, 6144, 15360, 16, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16") # 2 experts
-        grid_space.append(Mistral150B_top2)
-        Mistral150B_seq256 = (16, 256, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral150B_seq256)
-        Mistral150B_seq2k = (16, 2048, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral150B_seq2k)
-        # Mistral150B_seq8k = (16, 8192, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16") 
-        # grid_space.append(Mistral150B_seq8k)
-        # Mistral150B_seq16k = (16, 16384, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        # grid_space.append(Mistral150B_seq16k)
-        # Mistral150B_seq32k = (16, 32768, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        # grid_space.append(Mistral150B_seq32k)
-        Mistral150B_tp16 = (4, 4096, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":16}, "bfloat16")
-        grid_space.append(Mistral150B_tp16)
-        Mistral150B_tp64 = (1, 4096, 6144, 15360, 16, 4, 2, 1, 2, {"fsdp":-1, "model":64}, "bfloat16")
-        grid_space.append(Mistral150B_tp64)
-        Mistral8x20B_base = (16, 4096, 6144, 16384, 8, 2, 2, 1, 2, {"fsdp":-1, "model":4}, "bfloat16")
-        grid_space.append(Mistral8x20B_base)
+        grid_space.extend([
+            # base
+            create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # topk changes
+            create_test_config(**kwargs, n_experts=16, top_k=1, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=16, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=16, top_k=8, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # capf change
+            create_test_config(**kwargs, n_experts=16, top_k=8, n_groups=1, capacity_factor=4, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+            # seqlen changes
+            create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=1, capacity_factor=2, batch=16, seq=256, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=1, capacity_factor=2, batch=16, seq=2048, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=8192, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=16*1024, mesh_spec={"fsdp":-1, "model":4}),
+            create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=32*1024, mesh_spec={"fsdp":-1, "model":4}),
+
+            # tp8
+            # create_test_config(**kwargs, n_experts=16, top_k=2, n_groups=2, capacity_factor=2, batch=8, seq=4096, mesh_spec={"fsdp":-1, "model":8}),
+            create_test_config(**kwargs, n_experts=16, top_k=2, n_groups=2, capacity_factor=2, batch=4, seq=4096, mesh_spec={"fsdp":-1, "model":16}),
+            # create_test_config(**kwargs, n_experts=16, top_k=2, n_groups=2, capacity_factor=2, batch=2, seq=4096, mesh_spec={"fsdp":-1, "model":32}),
+            create_test_config(**kwargs, n_experts=16, top_k=2, n_groups=2, capacity_factor=2, batch=1, seq=4096, mesh_spec={"fsdp":-1, "model":64}),
+            
+            # num groups
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=4, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+
+            # num experts
+            create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+        ])
         return grid_space
 
 
@@ -509,11 +527,13 @@ def get_training_configs(test=TopKGatingGather, golden=TopKGating, test_device="
     elif test_suite == '12b':
         return builder.build_grid_space_12B()
     elif test_suite == '50b':
-        grid_space = builder.build_grid_space_50B()
+        return builder.build_grid_space_50B()
     elif test_suite == '150b':
-        grid_space = builder.build_grid_space_150B()
+        return builder.build_grid_space_150B()
     else:
         raise ValueError(f"Unknown test suite: {test_suite}")
+
+    # leaving it here for any custom local testing
     test_configs = []
     for (batch, seq, input_dim,  hidden_dim, n_experts, top_k, n_groups,
          out_batch, capacity_factor, mesh_spec, dtype) in grid_space:
