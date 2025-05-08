@@ -66,52 +66,55 @@ class TestImplOnCpu(TestCase):
                                   atol=cfg.test.atol, rtol=cfg.test.rtol)
 
     @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
-    def test_fwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
+    def test_fwd_blockwisegather_vs_gather(self, cfg: TestCaseConfig):
         self.helper_fwd(cfg)
+    
+    def helper_bwd(self, cfg: TestCaseConfig):
+        cfg.instantiate()
+        cfg.print_summary()
+        @partial(jax.jit, static_argnums=0)
+        def test_bwd_call(test_layer, test_state, test_inputs):
+            def loss_fn(state):
+                output, aux = self._fwd_call(test_layer, state, test_inputs)
+                return cfg.loss_fn(output), output  # Return both loss and output
 
-    # @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
-    # def test_fwd_bwd_correctness(self, cfg: TestCaseConfig):
-    #     cfg.instantiate()
-    #     cfg.print_summary()
-    #     @partial(jax.jit, static_argnums=0)
-    #     def test_bwd_call(test_layer, test_state, test_inputs):
-    #         def loss_fn(state):
-    #             output, aux = self._fwd_call(test_layer, state, test_inputs)
-    #             return cfg.loss_fn(output), output  # Return both loss and output
+            (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(test_state)
+            return loss, grads, output
 
-    #         (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(test_state)
-    #         return loss, grads, output
+        @partial(jax.jit, static_argnums=0)
+        def golden_bwd_call(golden_layer, golden_state, golden_inputs):
+            def loss_fn(state):
+                output, aux = self._fwd_call(golden_layer, state, golden_inputs)
+                return cfg.loss_fn(output), output  # Return both loss and output
 
-    #     @partial(jax.jit, static_argnums=0)
-    #     def golden_bwd_call(golden_layer, golden_state, golden_inputs):
-    #         def loss_fn(state):
-    #             output, aux = self._fwd_call(golden_layer, state, golden_inputs)
-    #             return cfg.loss_fn(output), output  # Return both loss and output
+            (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(golden_state)
+            return loss, grads, output
 
-    #         (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(golden_state)
-    #         return loss, grads, output
+        with cfg.test.mesh:
+            test_loss, test_grads, test_output = test_bwd_call(cfg.test.layer, cfg.test.state, cfg.test.inputs)
+        with cfg.golden.mesh:
+            golden_loss, golden_grads, golden_output = golden_bwd_call(cfg.golden.layer, cfg.golden.state, cfg.golden.inputs)
 
-    #     with cfg.test.mesh:
-    #         test_loss, test_grads, test_output = test_bwd_call(cfg.test.layer, cfg.test.state, cfg.test.inputs)
-    #     with cfg.golden.mesh:
-    #         golden_loss, golden_grads, golden_output = golden_bwd_call(cfg.golden.layer, cfg.golden.state, cfg.golden.inputs)
-
-    #     #Transfer results to CPU before comparison
-    #     test_loss = jax.tree_map(jax.device_get, test_loss)
-    #     golden_loss = jax.tree_map(jax.device_get, golden_loss)
-    #     test_grads = jax.tree_map(jax.device_get, test_grads)
-    #     golden_grads = jax.tree_map(jax.device_get, golden_grads)
-    #     test_output = jax.tree_map(jax.device_get, test_output)
-    #     golden_output = jax.tree_map(jax.device_get, golden_output)
+        #Transfer results to CPU before comparison
+        test_loss = jax.tree_map(jax.device_get, test_loss)
+        golden_loss = jax.tree_map(jax.device_get, golden_loss)
+        test_grads = jax.tree_map(jax.device_get, test_grads)
+        golden_grads = jax.tree_map(jax.device_get, golden_grads)
+        test_output = jax.tree_map(jax.device_get, test_output)
+        golden_output = jax.tree_map(jax.device_get, golden_output)
         
-    #     # Compare losses
-    #     self.assertNestedAllClose(test_loss, golden_loss, atol=cfg.test.atol, rtol=cfg.test.rtol)
+        # Compare losses
+        self.assertNestedAllClose(test_loss, golden_loss, atol=cfg.test.atol, rtol=cfg.test.rtol)
         
-    #     # Compare gradients
-    #     self.assertNestedAllClose(test_grads, golden_grads, atol=cfg.test.atol, rtol=cfg.test.rtol)
+        # Compare gradients
+        self.assertNestedAllClose(test_grads, golden_grads, atol=cfg.test.atol, rtol=cfg.test.rtol)
         
-    #     # Compare outputs
-    #     self.assertNestedAllClose(test_output, golden_output, atol=cfg.test.atol, rtol=cfg.test.rtol)
+        # Compare outputs
+        self.assertNestedAllClose(test_output, golden_output, atol=cfg.test.atol, rtol=cfg.test.rtol)
+
+    # @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
+    # def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
+        # self.helper_bwd(cfg)
 
 class TestImplOnTrn(TestImplOnCpu):
     def __init__(self, *args, **kwargs):
@@ -119,8 +122,13 @@ class TestImplOnTrn(TestImplOnCpu):
         jax.config.update('jax_platform_name', 'neuron')
     
     @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
-    def test_fwd_blockwisegather_vs_einsum(self, cfg):
+    def test_fwd_blockwisegather_vs_gather(self, cfg):
         self.helper_fwd(cfg)
+    
+    # @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
+    # def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
+        # self.helper_bwd(cfg)
+
 
 if __name__ == "__main__":
     absltest.main()
