@@ -758,7 +758,8 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
     def _build_pathways_worker_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate = self._inner.config
-        container = self._inner.build_container()
+        # pylint: disable-next=protected-access
+        container = self._inner._build_container()
         worker_container = copy.deepcopy(container)
 
         worker_container["args"] = [
@@ -780,7 +781,8 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         return worker_container
 
     def build_worker_pod(self) -> dict:
-        pod = self._inner.build_pod()
+        # pylint: disable-next=protected-access
+        pod = self._inner._build_pod()
         worker_pod = copy.deepcopy(pod)
 
         pod_spec = worker_pod.get("spec", {})
@@ -882,7 +884,8 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         )
 
     def build_leader_pod(self) -> Nested[Any]:
-        pod = self._inner.build_pod()
+        # pylint: disable-next=protected-access
+        pod = self._inner._build_pod()
         leader_pod = copy.deepcopy(pod)
 
         pod_spec = leader_pod.get("spec", {})
