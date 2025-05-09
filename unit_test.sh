@@ -64,11 +64,11 @@ TEST_SUITE=${TEST_SUITE:-"presubmit"}
 
 if [ "$1" = "unit" ]; then
     echo "Running Unit Tests with suite" $TEST_SUITE
-    pytest -r axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu
+    pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu
 elif  [ "$1" = "150b_blockwise_cpu" ]; then
-    pytest -rv axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu::test_fwd_blockwisegather_vs_gather_150b
+    pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu::test_fwd_blockwisegather_vs_gather_150b
 elif  [ "$1" = "150b_blockwise_nki" ]; then
-    pytest -rv axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnTrn::test_fwd_blockwisegather_vs_gather_150b
+    pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnTrn::test_fwd_blockwisegather_vs_gather_150b
 else
     echo "Running Integration Tests with suite" $TEST_SUITE
     pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnTrn

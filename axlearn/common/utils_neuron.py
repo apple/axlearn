@@ -224,7 +224,6 @@ class GridSpaceBuilder:
         self.golden_device = golden_device
     
     def build_toy_grid_space(self):
-        print('toy')
         return [
         create_test_config(
             self.test, self.golden, self.test_device, self.golden_device, 
