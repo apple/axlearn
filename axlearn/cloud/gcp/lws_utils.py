@@ -145,7 +145,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
 
-    def build_container(self) -> dict:
+    def _build_container(self) -> dict:
         """Build the container to be used in the leader template
 
         Returns:
@@ -166,7 +166,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             imagePullPolicy="Always",
         )
 
-    def build_pod(self) -> dict:
+    def _build_pod(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector = {}, {}, {}
@@ -175,7 +175,6 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         if cfg.reservation_project is not None:
             selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
-            labels.update({"bastion-tier": "reserved"})
 
         spec = dict(
             nodeSelector={
