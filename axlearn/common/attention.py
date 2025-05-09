@@ -91,6 +91,8 @@ import chex
 import jax
 from absl import logging
 from jax import numpy as jnp
+from jax._src.mesh import thread_resources
+from jax.sharding import NamedSharding
 
 from axlearn.common import param_init
 from axlearn.common.attention_bias import (
@@ -1812,6 +1814,18 @@ class MultiheadAttention(BaseLayer):
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
 
+        q_proj = self._remat_name(q_proj, "q_proj")
+        k_proj = self._remat_name(k_proj, "k_proj")
+        v_proj = self._remat_name(v_proj, "v_proj")
+
+        # Scale query and key.
+        q_proj, k_proj = self._scale_qk(
+            q_proj=q_proj,
+            k_proj=k_proj,
+            query_positions=query_positions,
+            key_positions=None,  # ScaleKey doesn't use positions.
+        )
+
         if mode == ForwardMode.FORWARD:
             new_cached_states = dict()
             key_positions = jnp.arange(k_proj.shape[1])[None]
@@ -1838,18 +1852,6 @@ class MultiheadAttention(BaseLayer):
                 kv_state = KVState(*kv_state)
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
-
-        q_proj = self._remat_name(q_proj, "q_proj")
-        k_proj = self._remat_name(k_proj, "k_proj")
-        v_proj = self._remat_name(v_proj, "v_proj")
-
-        # Scale query and key.
-        q_proj, k_proj = self._scale_qk(
-            q_proj=q_proj,
-            k_proj=k_proj,
-            query_positions=query_positions,
-            key_positions=key_positions,
-        )
 
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
@@ -2741,6 +2743,10 @@ class TransformerAttentionLayer(BaseLayer):
                 return dict(attention=atten_state), atten_output
 
         if cfg.structure == "prenorm":
+            target = jax.lax.with_sharding_constraint(
+                target,
+                NamedSharding(thread_resources.env.physical_mesh, PartitionSpec(None, None, None)),
+            )
             skip_input = target  # pre-norm: where normalization happens within the residual part.
             norm_target = self.norm(target)
             atten_state, atten_output = attention_thunk(norm_target)
