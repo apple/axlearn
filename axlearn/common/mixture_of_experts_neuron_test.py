@@ -12,6 +12,7 @@
 """Integration Test for mixture_of_experts.py"""
 from functools import partial
 import unittest
+import pytest
 import jax
 from absl.testing import absltest, parameterized
 from axlearn.common.mixture_of_experts import TopKGatingGather, TopKGating, TopKGatingGatherBlockwise
@@ -27,12 +28,7 @@ import os
 
 TEST_SUITE = os.environ.get("TEST_SUITE", 'presubmit').lower()
 
-# pylint: disable=no-self-use,protected-access
-class TestImplOnCpu(TestCase):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        jax.config.update('jax_platform_name', 'cpu')
-    
+class BaseTestCase(TestCase):
     def _fwd_call(self, layer, state, inputs):
         return F(
                 layer,
@@ -67,15 +63,6 @@ class TestImplOnCpu(TestCase):
         self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output),
                                   atol=cfg.test.atol, rtol=cfg.test.rtol)
 
-    @parameterized.named_parameters(get_training_configs(test_suite="presubmit", test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu")[-2])
-    def test_fwd_blockwisegather_vs_gather_150b(self, cfg):
-        self.helper_fwd(cfg)
-
-    @unittest.skip("covered in fwd,bwd test")
-    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
-    def test_fwd_blockwisegather_vs_gather(self, cfg: TestCaseConfig):
-        self.helper_fwd(cfg)
-    
     def helper_bwd(self, cfg: TestCaseConfig):
         cfg.instantiate()
         cfg.print_summary()
@@ -119,6 +106,17 @@ class TestImplOnCpu(TestCase):
         # Compare outputs
         self.assertNestedAllClose(test_output, golden_output, atol=cfg.test.atol, rtol=cfg.test.rtol)
 
+# pylint: disable=no-self-use,protected-access
+class TestImplOnCpu(BaseTestCase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        jax.config.update('jax_platform_name', 'cpu')
+
+    @unittest.skip("covered in fwd,bwd test")
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
+    def test_fwd_blockwisegather_vs_gather(self, cfg: TestCaseConfig):
+        self.helper_fwd(cfg)
+    
     @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     def test_fwdbwd_gather_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
@@ -132,10 +130,6 @@ class TestImplOnTrn(TestImplOnCpu):
         super().__init__(*args, **kwargs)
         jax.config.update('jax_platform_name', 'neuron')
     
-    @parameterized.named_parameters(get_training_configs(test_suite="presubmit", test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu")[-2])
-    def test_fwd_blockwisegather_vs_gather_150b(self, cfg):
-        self.helper_fwd(cfg)
-
     @unittest.skip("covered in fwd,bwd test")
     @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
     def test_fwd_blockwisegather_vs_gather(self, cfg):
@@ -149,6 +143,16 @@ class TestImplOnTrn(TestImplOnCpu):
     def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
 
+class TestDev150b(BaseTestCase):
+    @parameterized.named_parameters(get_training_configs(test_suite="presubmit", test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu")[-2])
+    def test_fwd_blockwisegather_vs_gather_150b_unit(self, cfg):
+        jax.config.update('jax_platform_name', 'cpu')
+        self.helper_fwd(cfg)
+    
+    @parameterized.named_parameters(get_training_configs(test_suite="presubmit", test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu")[-2])
+    def test_fwd_blockwisegather_vs_gather_150b_integ(self, cfg):
+        jax.config.update('jax_platform_name', 'neuron')
+        self.helper_fwd(cfg)
 
 if __name__ == "__main__":
     absltest.main()

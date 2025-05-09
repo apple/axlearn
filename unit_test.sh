@@ -60,16 +60,16 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 # default set to presubmit/12B/50B/150B
-TEST_SUITE=${TEST_SUITE:-"presubmit"}
+TEST_SUITE=${2:-"presubmit"}
 
 if [ "$1" = "unit" ]; then
     echo "Running Unit Tests with suite" $TEST_SUITE
     pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu
-elif  [ "$1" = "150b_blockwise_cpu" ]; then
-    pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu::test_fwd_blockwisegather_vs_gather_150b
-elif  [ "$1" = "150b_blockwise_nki" ]; then
-    pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnTrn::test_fwd_blockwisegather_vs_gather_150b
-else
+elif [ "$1" = "150b_blockwise_cpu" ]; then
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k test_fwd_blockwisegather_vs_gather_150b_unit
+elif [ "$1" = "150b_blockwise_nki" ]; then
+    pytest axlearn/common/mixture_of_experts_neuron_test.py -k test_fwd_blockwisegather_vs_gather_150b_integ
+elif [ "$1" = "integ" ]; then
     echo "Running Integration Tests with suite" $TEST_SUITE
     pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnTrn
 fi
