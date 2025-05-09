@@ -9,7 +9,7 @@ FROM ${BASE_IMAGE} AS base
 # Any RUN apt-get install step needs to have apt-get update otherwise stale package
 # list may occur when previous apt-get update step is cached. See here for more info:
 # https://docs.docker.com/build/building/best-practices/#apt-get
-RUN apt-get update && apt-get upgrade -y && apt-get install -y curl gnupg && apt clean -y 
+RUN apt-get update && apt-get upgrade -y && apt-get install -y curl gnupg && apt clean -y
 
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
