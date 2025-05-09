@@ -4,6 +4,10 @@
 
 Some optimizations are ported from the not-yet open sourced inference engine so the forward pass
 performance is comparable to what we have internally.
+
+Some known issues:
+1. KVCache update isn't efficient and potentially requires copying the whole KV cache. This could
+be solved by either changing the KV cache update method or using PagedKVCache.
 """
 
 import functools
@@ -88,7 +92,9 @@ class DummyBuilder(TensorStoreStateStorageBuilder):
         @functools.partial(jax.jit, out_shardings=out_shardings)
         def jit_init():
             return jax.tree.map(
-                lambda spec: jax.random.normal(key=key, shape=spec.shape, dtype=spec.dtype),
+                lambda spec: jax.random.normal(key=key, shape=spec.shape, dtype=spec.dtype)
+                if spec.dtype in [jnp.bfloat16, jnp.float32]
+                else jnp.zeros(shape=spec.shape, dtype=spec.dtype),
                 state.trainer_state,
             )
 
