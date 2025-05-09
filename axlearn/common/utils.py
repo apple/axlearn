@@ -42,7 +42,6 @@ from typing import (
 
 import attr
 import jax
-import jax.flatten_util
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
@@ -1968,6 +1967,20 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: jnp.dtype = jnp.bool)
     # [..., 1]
     lengths = lengths[..., jnp.newaxis]
     return (sequence < lengths).astype(dtype)
+
+
+def safe_not(mask: Tensor) -> Tensor:
+    """Inverts a boolean mask.
+
+    Commonly used to switch between paddings and mask.
+
+    Args:
+        mask: A boolean tensor.
+
+    Returns:
+        A boolean tensor of the same shape.
+    """
+    return ~(mask.astype(jnp.bool))
 
 
 def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):

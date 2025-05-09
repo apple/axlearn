@@ -26,7 +26,7 @@ from axlearn.common.config import (
 from axlearn.common.convolution import Conv2D
 from axlearn.common.layers import BatchNorm, get_activation_fn
 from axlearn.common.loss import ReductionMethod, focal_loss, huber_loss
-from axlearn.common.module import Module, NestedTensor, Tensor, child_context
+from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import (
     PARAM_REGEXP_BIAS,
     PARAM_REGEXP_WEIGHT,
@@ -34,6 +34,7 @@ from axlearn.common.param_init import (
     DefaultInitializer,
     WeightInitializer,
 )
+from axlearn.common.utils import NestedTensor, Tensor, safe_not
 from axlearn.vision.anchor import AnchorGenerator, AnchorLabeler
 from axlearn.vision.box_coder import BoxCoder
 from axlearn.vision.detection_generator import MultilevelDetectionGenerator
@@ -498,8 +499,8 @@ class RetinaNetModel(BaseLayer):
                 ),
                 "box_targets": anchor_labels.groundtruth_boxes,
                 "class_targets": anchor_labels.groundtruth_classes,
-                "box_weights": ~anchor_labels.box_paddings,
-                "class_weights": ~anchor_labels.class_paddings,
+                "box_weights": safe_not(anchor_labels.box_paddings),
+                "class_weights": safe_not(anchor_labels.class_paddings),
                 # TODO(pdufter) move self._generate_anchors to anchor_labeler and only pass
                 # anchor_labels to metrics
                 "anchor_boxes_tiled": self._generate_anchors(
