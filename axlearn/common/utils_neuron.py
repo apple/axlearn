@@ -310,6 +310,7 @@ class GridSpaceBuilder:
         )
         # 150B Config
         # 16x10
+        # OOB on neuron, pass on cpu
         grid_space.append(
             create_test_config(
                 **kwargs, input_dim=6144, hidden_dim=15360, mesh_spec={"fsdp":-1, "model":16},
@@ -337,11 +338,6 @@ class GridSpaceBuilder:
             'input_dim': 2048,
             'hidden_dim': 7168,
         }
-
-        # 'mesh_spec': {"fsdp":-1, "model":4},
-
-        # Custom Configs
-        # b s i h e top_k g ob cf mesh dtype
         grid_space.extend([
             # base
             create_test_config(**kwargs, n_experts=8, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
@@ -522,9 +518,8 @@ def create_test_config(test, golden, test_device, golden_device, input_dim, hidd
     return (build_name(test_cfg, test_invoker_cfg) + config.prefix, config)
 
 @cache
-def get_training_configs(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"):
+def get_training_configs(test_suite="presubmit", test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"):
     builder = GridSpaceBuilder(test=test, golden=golden, test_device=test_device, golden_device=golden_device)
-    test_suite = os.environ.get("TEST_SUITE", 'presubmit').lower()
     if test_suite == "toy":
         return builder.build_toy_grid_space()
     elif test_suite == 'presubmit':

@@ -8,19 +8,19 @@ import jax.numpy as jnp
 import jax_neuronx  # pylint: disable=unused-import
 import neuronxcc.nki.language as nl
 from jax import custom_vjp
-
+from jax._src.mesh import thread_resources
 from neuronxcc.nki._private_kernels.blockwise_mm import (
 # from axlearn.common.blockwise_mm import (
         # blockwise_mm as blockwise_mm_nki,
         blockwise_mm_selective_cp as blockwise_mm_nki,
         # blockwise_mm_baseline_shard_hidden as blockwise_mm_nki,
-        #check_blockwise_mm_kernel_compatibility,
+        check_blockwise_mm_kernel_compatibility,
     )
 from neuronxcc.nki._private_kernels.blockwise_mm_bwd import (
 #from axlearn.common.blockwise_mm_bwd import (
     # blockwise_mm_bwd as blockwise_mm_bwd_nki,
     blockwise_mm_bwd_selective_cp as blockwise_mm_bwd_nki,
-    #check_blockwise_mm_bwd_kernel_compatibility,
+    # check_blockwise_mm_bwd_kernel_compatibility,
 )
 from neuronxcc.nki.compiler.backends.neuron.dimensions import VNC
 import neuronxcc.nki as nki
@@ -32,12 +32,25 @@ _blockwise_mm_bwd_nki_call = nki.jit(show_compiler_tb=True)(blockwise_mm_bwd_nki
 Tensor = jax.Array
 lnc = 2 if jax.devices()[0].device_kind == "NC_v3d" else 1
 
+def _backend():
+    # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
+    global_mesh = thread_resources.env.physical_mesh
+    if len(global_mesh.devices):
+        backend = global_mesh.devices.flat[0].platform
+    else:
+        # Fall back to jax.default_backend() if no device is found in physical_mesh.
+        backend = jax.default_backend()
+    return backend
+
 def can_use_blockwise_matmul_nki(
     hidden_size,
     intermediate_size_tp,
     block_size,
     glu_mlp,
 ):
+    if _backend() != "neuron":
+        return False
+
     if not glu_mlp:
         print("Blockwise NKI kernel incompatible with glu_mlp=False")
         return False
@@ -45,7 +58,6 @@ def can_use_blockwise_matmul_nki(
     if blockwise_mm_nki is None:
         print("Failed to load Blockwise NKI kernel.")
         return False
-    '''
     try:
         check_blockwise_mm_kernel_compatibility(
             hidden_size=hidden_size,
@@ -55,19 +67,19 @@ def can_use_blockwise_matmul_nki(
     except AssertionError as e:
         print(f"Blockwise kernel not compatible with model config. Reason: {str(e)}")
         return False
-    '''
     return True
 
-@partial(custom_vjp, nondiff_argnums=(5,))
+
+@partial(custom_vjp, nondiff_argnums=(7,))
 def blockwise_mm(
     hidden_states: Tensor,
     expert_affinities_masked: Tensor,
     gate_weight: Tensor,
     up_proj_weight: Tensor,
     down_proj_weight: Tensor,
-    block_size: int,
     token_position_to_id: Tensor,
     block_to_expert: Tensor,
+    block_size: int,
 ):    
     out, _ = _blockwise_mm_fwd(hidden_states, expert_affinities_masked, gate_weight, up_proj_weight,
                             down_proj_weight, block_size, token_position_to_id, block_to_expert)

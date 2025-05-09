@@ -11,7 +11,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Integration Test for mixture_of_experts.py"""
 from functools import partial
-
+import unittest
 import jax
 from absl.testing import absltest, parameterized
 from axlearn.common.mixture_of_experts import TopKGatingGather, TopKGating, TopKGatingGatherBlockwise
@@ -24,6 +24,8 @@ import os
 # is_unit = os.getenv('IS_UNIT', 'false').lower() == 'true'
 # is_blockwise = os.getenv('IS_BLOCKWISE', 'false').lower() == 'true'
 # test_configs = get_training_configs(is_unit, is_blockwise)
+
+TEST_SUITE = os.environ.get("TEST_SUITE", 'presubmit').lower()
 
 # pylint: disable=no-self-use,protected-access
 class TestImplOnCpu(TestCase):
@@ -65,7 +67,12 @@ class TestImplOnCpu(TestCase):
         self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output),
                                   atol=cfg.test.atol, rtol=cfg.test.rtol)
 
-    @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
+    @parameterized.named_parameters(get_training_configs(test_suite="presubmit", test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu")[-2])
+    def test_fwd_blockwisegather_vs_gather_150b(self, cfg):
+        self.helper_fwd(cfg)
+
+    @unittest.skip("covered in fwd,bwd test")
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
     def test_fwd_blockwisegather_vs_gather(self, cfg: TestCaseConfig):
         self.helper_fwd(cfg)
     
@@ -112,22 +119,35 @@ class TestImplOnCpu(TestCase):
         # Compare outputs
         self.assertNestedAllClose(test_output, golden_output, atol=cfg.test.atol, rtol=cfg.test.rtol)
 
-    # @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
-    # def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
-        # self.helper_bwd(cfg)
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
+    def test_fwdbwd_gather_vs_einsum(self, cfg: TestCaseConfig):
+        self.helper_bwd(cfg)
+
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
+    def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
+        self.helper_bwd(cfg)
 
 class TestImplOnTrn(TestImplOnCpu):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         jax.config.update('jax_platform_name', 'neuron')
     
-    @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
+    @parameterized.named_parameters(get_training_configs(test_suite="presubmit", test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu")[-2])
+    def test_fwd_blockwisegather_vs_gather_150b(self, cfg):
+        self.helper_fwd(cfg)
+
+    @unittest.skip("covered in fwd,bwd test")
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
     def test_fwd_blockwisegather_vs_gather(self, cfg):
         self.helper_fwd(cfg)
     
-    # @parameterized.named_parameters(get_training_configs(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
-    # def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
-        # self.helper_bwd(cfg)
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))
+    def test_fwdbwd_gather_vs_einsum(self, cfg: TestCaseConfig):
+        self.helper_bwd(cfg)
+
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
+    def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
+        self.helper_bwd(cfg)
 
 
 if __name__ == "__main__":

@@ -47,6 +47,7 @@ from axlearn.common.layers import (
     StochasticDepth,
     get_activation_fn,
 )
+from axlearn.common.neuron_blockwise_mlp import can_use_blockwise_matmul_nki, blockwise_mm
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes, constant_initializer
@@ -112,27 +113,62 @@ def combine_outputs(permuted_output, token_permutation_idx, expert_index, expert
 import jax.numpy as jnp
 from jax import lax
 
-@partial(jax.jit, static_argnums=(7,))
-def blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, checkpoint_activation=False):
+@partial(jax.jit, static_argnums=(7, 8, 9,))
+def blockwise_mlp(
+    hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, 
+    block_size, activation_fns, checkpoint_activation=False, ):
     O = hidden_states.shape[0]
     G = hidden_states.shape[1]
-    hidden_states = hidden_states.reshape((O*G, 1, 1) + hidden_states.shape[2:])
-    expert_affinities_masked = expert_affinities_masked.reshape((O*G, 1, 1) + expert_affinities_masked.shape[2:])
-    token_position_to_id = token_position_to_id.reshape((O*G, 1, 1) + token_position_to_id.shape[2:])
-    block_to_expert = block_to_expert.reshape((O*G, 1, 1) + block_to_expert.shape[2:])
-    batched_blockwise_mlp = jax.vmap(blockwise_mlp_per_group, in_axes=(0,0, None, None, None, 0, 0, None, None))
-    if checkpoint_activation:
-        # these tensors will be of shape O*G, 1, 1, S, x
-        output, gate_up_activations_T, down_activations = batched_blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, True)
-        output = output.reshape((O, G) + output.shape[3:])
-        gate_up_activations_T = gate_up_activations_T.reshape((O, G) + gate_up_activations_T.shape[3:])
-        down_activations = down_activations.reshape((O, G) + down_activations.shape[3:])
-        return output, gate_up_activations_T, down_activations
-    else:
-        output = batched_blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, False)
-        return output
+    # nki doesn't support batching 'E   NotImplementedError: Batching rule for 'nki_call' not implemented'
+    use_vmap = False
+    if use_vmap:
+        hidden_states = hidden_states.reshape((O*G, 1, 1) + hidden_states.shape[2:])
+        expert_affinities_masked = expert_affinities_masked.reshape((O*G, 1, 1) + expert_affinities_masked.shape[2:])
+        token_position_to_id = token_position_to_id.reshape((O*G, 1, 1) + token_position_to_id.shape[2:])
+        block_to_expert = block_to_expert.reshape((O*G, 1, 1) + block_to_expert.shape[2:])
 
-def blockwise_mlp_per_group(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, checkpoint_activation=False):
+    if can_use_blockwise_matmul_nki(
+        hidden_size=gate_proj_weight.shape[1],
+        intermediate_size_tp=gate_proj_weight.shape[-1],
+        block_size=block_size,
+        glu_mlp=len(activation_fns) == 2,
+    ):
+        blockwise_mlp_per_group = blockwise_mm
+    else:
+        blockwise_mlp_per_group = blockwise_mm_per_group_native
+
+    if use_vmap:
+        if checkpoint_activation:
+            # these tensors will be of shape O*G, 1, 1, S, x
+            batched_blockwise_mlp = jax.vmap(blockwise_mlp_per_group, in_axes=(0,0, None, None, None, 0, 0, None, None))
+            output, gate_up_activations_T, down_activations = batched_blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, True)
+            output = output.reshape((O, G) + output.shape[3:])
+            gate_up_activations_T = gate_up_activations_T.reshape((O, G) + gate_up_activations_T.shape[3:])
+            down_activations = down_activations.reshape((O, G) + down_activations.shape[3:])
+            return output, gate_up_activations_T, down_activations
+        else:
+            batched_blockwise_mlp = jax.vmap(blockwise_mlp_per_group, in_axes=(0,0, None, None, None, 0, 0, None))
+            output = batched_blockwise_mlp(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size)
+            return output
+    else:
+        if checkpoint_activation:
+            raise NotImplementedError
+        else:
+            outputs = []
+            for o in range(O):
+                g_outputs = []
+                for g in range(G):
+                    hidden_states_og = hidden_states[o:o+1, g:g+1]
+                    expert_affinities_masked_og = expert_affinities_masked[o:o+1, g:g+1]
+                    token_position_to_id_og = token_position_to_id[o:o+1, g:g+1]
+                    block_to_expert_og = block_to_expert[o:o+1, g:g+1]
+                    output = blockwise_mlp_per_group(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size)
+                    g_outputs.append(output)
+                outputs.append(jnp.concatenate(g_outputs, axis=1))
+            return jnp.concatenate(outputs, axis=0)
+
+
+def blockwise_mm_per_group_native(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, checkpoint_activation=False):
     with jax.named_scope("take_out_OG"):
         hidden_states = jnp.squeeze(hidden_states, axis=(0,1,))
         expert_affinities_masked = jnp.squeeze(expert_affinities_masked, axis=(0,1,))
@@ -147,14 +183,9 @@ def blockwise_mlp_per_group(hidden_states, expert_affinities_masked, gate_proj_w
         hidden_states = jnp.concat([hidden_states, padding_h], axis=0)
         expert_affinities = jnp.concat([expert_affinities_masked, padding_e], axis=0)
 
-    # with jax.named_scope("setupweight"):
-    #     gate_and_up_proj_weights = jnp.stack([gate_proj_weight, up_proj_weight], 
-    #         axis=2
-    #     )
-    # print('gate_and_up_proj_weights.shape', gate_and_up_proj_weights.shape)
-    T1, H = hidden_states.shape
+    Tplus1, H = hidden_states.shape
     _, E = expert_affinities.shape
-    T = T1-1
+    T = Tplus1-1
     B = block_size
     dtype = hidden_states.dtype
     token_position_to_id = token_position_to_id.reshape(-1, B)
@@ -1626,17 +1657,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                     output += output_k * expert_affinities_k
             # jax.debug.print('output {xl}', xl=output)
             return output
-    
-    def _backend(self):
-        # For compatibility with AOT compilation, we obtain the backend type from physical_mesh.
-        global_mesh = thread_resources.env.physical_mesh
-        if len(global_mesh.devices):
-            backend = global_mesh.devices.flat[0].platform
-        else:
-            # Fall back to jax.default_backend() if no device is found in physical_mesh.
-            backend = jax.default_backend()
-        return backend
-    
+
     def _dispatch_and_combine_with_gather_blockwise_gating(self, cfg, gating, hidden_states):
         """
         Args
@@ -1650,8 +1671,6 @@ class TransformerFeedForwardMoE(BaseLayer):
         - hidden_states: (O, G, S, M)
         """
         mesh = thread_resources.env.physical_mesh
-        backend = self._backend()
-        from .neuron_blockwise_mlp import can_use_blockwise_matmul_nki, blockwise_mm
         if isinstance(cfg.hidden_dim, int):
             hidden_dim = cfg.hidden_dim
         else:
@@ -1662,99 +1681,42 @@ class TransformerFeedForwardMoE(BaseLayer):
         token_position_to_id = gating.combine_tensor[0]
         block_to_expert = gating.dispatch_tensor
         
-        if backend == "neuron" and can_use_blockwise_matmul_nki(
-            hidden_size=cfg.input_dim,
-            intermediate_size_tp=hidden_dim/mesh.shape["model"],
-            block_size=cfg.gating.block_size,
-            glu_mlp=len(cfg.activation) == 2,
-        ):
-            @jax.jit
-            def get_jitted_blockwise_mm(hidden_states,
-                                        expert_affinities_masked,
-                                        gate_weights,
-                                        up_weights,
-                                        down_weights,
-                                        block_size,
-                                        token_position_to_id,
-                                        block_to_expert):
-                return blockwise_mm(hidden_states,
-                                    expert_affinities_masked,
-                                    gate_weights,
-                                    up_weights,
-                                    down_weights,
-                                    cfg.gating.block_size,
-                                    token_position_to_id,
-                                    block_to_expert)
-
-            partitioned_blockwise_mm = shard_map(
-                get_jitted_blockwise_mm,
-                mesh=thread_resources.env.physical_mesh,
-                in_specs=(
-                    cfg.dim_to_mesh_axis_map["ogsM"], # hidden_states
-                    cfg.dim_to_mesh_axis_map["ogse"], # expert_affinities_masked
-                    PartitionSpec("expert", None, "model"), # gate weight
-                    PartitionSpec("expert", None, "model"), # up proj weight
-                    PartitionSpec("expert", "model", None), # down proj weight
-                    None, # block size
-                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # token_position_to_id
-                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # block_to_expert
-                ),
-                out_specs=(
-                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None)
-                ),
-                check_rep=False
-            )
-
-            # jax.debug.print("hidden_states: {x}", x=hidden_states)
-            # jax.debug.print("expert_affinities_masked: {x}", x=expert_affinities_masked)
-            # jax.debug.print("token_position_to_id: {x}", x=token_position_to_id)
-            # jax.debug.print("block_to_expert: {x}", x=block_to_expert)
-
-            outputs = partitioned_blockwise_mm(
-                    hidden_states,
-                    expert_affinities_masked,
-                    self.parameters["wi_0_weight"],
-                    self.parameters["wi_1_weight"],
-                    self.parameters["wo_weight"],
-                    cfg.gating.block_size,
-                    token_position_to_id,
-                    block_to_expert
-                )
-            with jax.named_scope("all_reduce"):
-                outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
-            return outputs
-        else:
-            partitioned_blockwise_mm = shard_map(
-                blockwise_mlp,
-                mesh=thread_resources.env.physical_mesh,
-                in_specs=(
-                    cfg.dim_to_mesh_axis_map["ogsM"], # hidden_states
-                    cfg.dim_to_mesh_axis_map["ogse"], # expert_affinities_masked
-                    PartitionSpec("expert", None, "model"), # gate_and_up_proj_weights weight
-                    PartitionSpec("expert", None, "model"), # gate_and_up_proj_weights weight
-                    PartitionSpec("expert", "model", None), # down proj weight
-                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # token_position_to_id
-                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # block_to_expert
-                    None, # block size
-                ),
-                out_specs=(
-                    PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None)
-                ),
-                check_rep=False
-            )
-            outputs = partitioned_blockwise_mm(
-                hidden_states,
-                expert_affinities_masked,
-                self.parameters["wi_0_weight"],
-                self.parameters["wi_1_weight"],
-                self.parameters["wo_weight"], 
-                token_position_to_id, 
-                block_to_expert, 
-                cfg.gating.block_size
-            )
-            with jax.named_scope("all_reduce"):
-                outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
-            return outputs
+        # TODO: fix checkpointing as it has needs different out_specs
+        partitioned_blockwise_mm = shard_map(
+            blockwise_mlp,
+            mesh=mesh,
+            in_specs=(
+                cfg.dim_to_mesh_axis_map["ogsM"], # hidden_states
+                cfg.dim_to_mesh_axis_map["ogse"], # expert_affinities_masked
+                PartitionSpec("expert", None, "model"), # gate weight
+                PartitionSpec("expert", None, "model"), # up_proj weight
+                PartitionSpec("expert", "model", None), # down_proj weight
+                PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # token_position_to_id
+                PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # block_to_expert
+                None, # block size
+                None, # activation_fns
+                None, # checkpoint_activation
+            ),
+            out_specs=(
+                PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None)
+            ),
+            check_rep=False
+        )
+        outputs = partitioned_blockwise_mm(
+            hidden_states,
+            expert_affinities_masked,
+            self.parameters["wi_0_weight"],
+            self.parameters["wi_1_weight"],
+            self.parameters["wo_weight"], 
+            token_position_to_id, 
+            block_to_expert, 
+            cfg.gating.block_size,
+            cfg.activation, 
+            False # checkpoint_activation
+        )
+        with jax.named_scope("all_reduce"):
+            outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
+        return outputs
 
     # pylint: disable-next=too-many-statements
     def _dispatch_and_combine(self, x: Tensor) -> Tensor:
