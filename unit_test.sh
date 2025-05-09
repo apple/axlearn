@@ -20,7 +20,6 @@ export NEURON_FSDP=0
 export NEURON_FSDP_NUM_LAYER_COALESCE=-1
 export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1 # changed from 0
 export NEURON_DISABLE_BOUNDARY_MARKER=1
-#export NEURON_FORCE_PJRT_PLUGIN_REGISTRATION=1
 
 # Neuron runtime flags
 export NEURON_RT_DBG_CC_DMA_PACKET_SIZE=4096 && export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
@@ -60,13 +59,13 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 # export JAX_COMPILATION_CACHE_DIR="/shared/aahila/compiler/cache/"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
-echo "setup env vars"
-# export TEST_SUITE="presubmit" # set to presubmit/12B/50B/150B
-if [ "$1" = "unit" ]; then
-    echo "Running Unit Test"
+# default set to presubmit/12B/50B/150B
+TEST_SUITE=${TEST_SUITE:-"presubmit"}
 
-    # export TEST_SUITE=toy
+if [ "$1" = "unit" ]; then
+    echo "Running Unit Tests with suite" $TEST_SUITE
     pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnCpu
 else
+    echo "Running Integration Tests with suite" $TEST_SUITE
     pytest -v axlearn/common/mixture_of_experts_neuron_test.py::TestImplOnTrn
 fi

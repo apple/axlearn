@@ -376,7 +376,7 @@ class GridSpaceBuilder:
         return grid_space
 
     def build_grid_space_50B(self):
-                # Grid space for testing
+        # Grid space for testing
         grid_space = []
         kwargs={
             'test': self.test,
