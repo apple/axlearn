@@ -57,6 +57,7 @@ apple-silicon = [
 dev = [
     "axlearn[core]",  # core
     "axlearn[audio]",  # audio tests
+    "axlearn[open_api]",  # open_api tests
     "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
     "einops==0.8.0",  # for unittests only. Do not use it in core impl because it's not thread-safe.
