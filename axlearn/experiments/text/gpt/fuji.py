@@ -243,6 +243,7 @@ def get_trainer_kwargs(
     vocab_size: int,
     version: Version,
     flash_attention: bool = False,
+    use_stacked: bool = False,
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = TOKENS_PER_BATCH[version]
@@ -816,7 +817,10 @@ def get_trainer_kwargs(
     if version == Version.V3_TIKTOKEN:  # tiktoken tokenizer
         model_kwargs["pad_token_id"] = 128004
         model_kwargs["eos_token_id"] = 128001
-    trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
+    trainer_kwargs["model_cfg"] = model_config(
+        **model_kwargs,
+        stack_cfg=None if not use_stacked else StackedTransformerLayer.default_config(),
+    )
     trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
         max_step=trainer_kwargs["max_step"],
         **trainer_kwargs.pop("learner_kwargs"),
