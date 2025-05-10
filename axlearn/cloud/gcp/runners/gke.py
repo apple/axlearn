@@ -39,9 +39,8 @@ from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import generate_job_name
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job_flink import FlinkJobStatus, FlinkTPUGKEJob
 from axlearn.cloud.gcp.job import GKEJob, GKELeaderWorkerSet
-from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
+from axlearn.cloud.gcp.job_flink import FlinkJobStatus, FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
@@ -747,7 +746,8 @@ class LWSRunnerJob(BaseRunnerJob):
         Attributes:
             UNKNOWN: Unknown status.
             FAILED: lws has failed.
-            UPDATING: lws is deploying or updating
+            UPDATING: lws is updating
+            PROGRESSING: lws replicas are being created
             RUNNING: lws is running with all workers and healthy leader and worker sets
         """
 
@@ -812,7 +812,7 @@ class LWSRunnerJob(BaseRunnerJob):
 
             # If LeaderWorkerSet is deploying/updating, condition is Progressing=True
             if condition_progressive:
-                return LWSRunnerJob.Status.UPDATING
+                return LWSRunnerJob.Status.PROGRESSING
 
             # If LeaderWorkerSet is failed , condition is Progressing=False and Available=False
             if not condition_available and not condition_progressive:
@@ -857,10 +857,6 @@ class LWSRunnerJob(BaseRunnerJob):
                 )
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
-
-            elif status == LWSRunnerJob.Status.UPDATING:
-                logging.info("Newer job version is available. Relaunching the LWS...")
-                self._inner._delete()  # pylint: disable=protected-access
 
             elif status == LWSRunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
