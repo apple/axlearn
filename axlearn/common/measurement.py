@@ -24,6 +24,8 @@ class Event(enum.Enum):
         END_TRAINING_PREPARATION: End of training preparation.
         START_DATA_LOADING: Start of data loading.
         END_DATA_LOADING: End of data loading.
+        START_CUSTOM_BADPUT_EVENT: Start of custom badput event.
+        END_CUSTOM_BADPUT_EVENT: End of custom badput event.
     """
 
     START_JOB = "START_JOB"
@@ -35,6 +37,8 @@ class Event(enum.Enum):
     END_TRAINING_PREPARATION = "END_TRAINING_PREPARATION"
     START_DATA_LOADING = "START_DATA_LOADING"
     END_DATA_LOADING = "END_DATA_LOADING"
+    START_CUSTOM_BADPUT_EVENT = "START_CUSTOM_BADPUT_EVENT"
+    END_CUSTOM_BADPUT_EVENT = "END_CUSTOM_BADPUT_EVENT"
 
 
 class Recorder(Configurable):
