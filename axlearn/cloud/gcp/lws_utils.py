@@ -182,7 +182,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 "cloud.google.com/gke-tpu-topology": system.topology,
                 **selector,
             },
-            containers=[self.build_container()],
+            containers=[self._build_container()],
             serviceAccountName=cfg.service_account,
         )
 
@@ -192,5 +192,5 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
             size=system.vms_per_slice,
-            workerTemplate=self.build_pod(),
+            workerTemplate=self._build_pod(),
         )

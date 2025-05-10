@@ -65,14 +65,6 @@ _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
-_JETSTREAM_CONTAINER_PORT = 9000
-
-_JETSTREAM_HTTP_CONTAINER_NAME = "jetstream-http"
-_JETSTREAM_HTTP_IMAGE_TAG = "v0.2.3"
-_JETSTREAM_HTTP_CONTAINER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-http:{_JETSTREAM_HTTP_IMAGE_TAG}"
-)
-_JETSTREAM_HTTP_CONTAINER_PORT = 8000
 
 
 def get_pathways_head_address(job_name: str) -> str:
@@ -726,12 +718,14 @@ class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
             )
 
         return replicated_jobs
-class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
+
+
+class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
     """Builds a LeaderWorkerTemplate spec for TPUs"""
 
     @config_class
     class Config(BaseLeaderWorkerTemplate.Config):
-        """Configures JetStreamPathwaysLeaderWorkerTemplate
+        """Configures PathwaysLeaderWorkerTemplate
         Attributes:
             inner: The wrapped TPULeaderWorkerTemplate configuration
         """
@@ -832,7 +826,7 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
         )
 
-    def _build_jetstream_pathways_container(self) -> dict:
+    def _build_head_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
 
         return dict(
@@ -840,42 +834,6 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             image=self._bundler.id(cfg.name),
             command=["bash", "-c", cfg.command],
             imagePullPolicy="Always",
-            ports=[{"containerPort": _JETSTREAM_CONTAINER_PORT}],
-            readinessProbe=dict(
-                httpGet=dict(
-                    path="/healthcheck",
-                    port=_JETSTREAM_HTTP_CONTAINER_PORT,
-                    scheme="HTTP",
-                ),
-                periodSeconds=60,
-                failureThreshold=10,
-            ),
-            livenessProbe=dict(
-                httpGet=dict(
-                    path="/healthcheck",
-                    port=_JETSTREAM_HTTP_CONTAINER_PORT,
-                    scheme="HTTP",
-                ),
-                periodSeconds=60,
-                failureThreshold=10,
-            ),
-            startupProbe=dict(
-                httpGet=dict(
-                    path="/healthcheck",
-                    port=_JETSTREAM_HTTP_CONTAINER_PORT,
-                    scheme="HTTP",
-                ),
-                periodSeconds=1,
-                initialDelaySeconds=600,
-                failureThreshold=10000,
-            ),
-        )
-
-    def _build_jetstream_http_container(self) -> dict:
-        return dict(
-            name=_JETSTREAM_HTTP_CONTAINER_NAME,
-            image=_JETSTREAM_HTTP_CONTAINER_IMAGE,
-            ports=[dict(containerPort=_JETSTREAM_HTTP_CONTAINER_PORT)],
         )
 
     def build_leader_pod(self) -> Nested[Any]:
@@ -886,8 +844,7 @@ class JetstreamPathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pod_spec = leader_pod.get("spec", {})
 
         pod_spec["containers"] = [
-            self._build_jetstream_http_container(),
-            self._build_jetstream_pathways_container(),
+            self._build_head_container(),
             self._build_pathways_proxy_container(),
             self._build_pathways_rm_container(),
         ]
