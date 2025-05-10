@@ -369,7 +369,7 @@ class WandBWriter(BaseWriter):
         """Helper function to format config for wandb logging."""
         if isinstance(val, RequiredFieldValue):
             return "REQUIRED"
-        if isinstance(val, enum.Enum):
+        elif isinstance(val, enum.Enum):
             return str(val)
         elif isinstance(val, dict):
             return type(val)({k: WandBWriter.format_config(v) for k, v in val.items()})
