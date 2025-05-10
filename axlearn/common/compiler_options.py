@@ -123,7 +123,6 @@ def default_xla_options(
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
-            tpu_use_continuations="true",
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )
@@ -161,6 +160,35 @@ def default_xla_options(
             assert v in [True, False, "true", "false", "megachip_tccontrol", "10m"], (k, v)
 
     return options
+
+
+def get_megascale_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    """Filters XLA options for those pertaining to Megascale.
+
+    Args:
+        xla_options: A dictionary of XLA options.
+
+    Returns:
+        A dictionary containing only Megascale-related XLA options
+        (those starting with 'megascale').
+    """
+    return {k: v for k, v in xla_options.items() if k.startswith("megascale")}
+
+
+def get_xla_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    """Filters XLA options for those starting with 'xla_'.
+
+    Args:
+        xla_options: A dictionary of XLA options.
+
+    Returns:
+        A dictionary containing only XLA-specific options (those starting with 'xla').
+    """
+    return {k: v for k, v in xla_options.items() if k.startswith("xla")}
 
 
 def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:

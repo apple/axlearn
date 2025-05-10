@@ -20,7 +20,13 @@ from axlearn.cloud.gcp.jobset_utils import (
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
-from axlearn.common.compiler_options import infer_tpu_type
+from axlearn.common.compiler_options import (
+    default_xla_options,
+    get_megascale_options,
+    get_xla_options,
+    infer_tpu_type,
+    xla_flags_from_options,
+)
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -133,6 +139,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         if cfg.inner.enable_pre_provisioner:
             raise NotImplementedError("Pre-provisioner is currently not supported")
         self._is_single_head = True
+        xla_and_mxla_options = default_xla_options(
+            instance_type=self._tpu_type,
+            num_slices=cfg.inner.accelerator.num_replicas,
+            backend="tpu",
+        )
+        # Needs to be passed to pathways-proxy.
+        self._xla_options = get_xla_options(xla_and_mxla_options)
+        # Needs to be passed as command arguments to each pathways-worker.
+        self._mxla_options = get_megascale_options(xla_and_mxla_options)
 
     def _update_env_list(self, env_list: list[dict], name: str, value: str):
         for env in env_list:
@@ -211,6 +226,13 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # be connected to one pathways instance (a pathways-worker replicated job).
         pathways_instance_count = cfg.accelerator.num_replicas if self._is_single_head else 1
 
+        cmd_args = [
+            f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            f"--server_port={_PATHWAYS_PROXY_PORT}",
+            f"--gcs_scratch_location={staging_location}",
+        ]
+        cmd_args.extend(xla_flags_from_options(self._xla_options).split())
+
         return [
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
@@ -218,11 +240,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
-                args=[
-                    f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-                    f"--server_port={_PATHWAYS_PROXY_PORT}",
-                    f"--gcs_scratch_location={staging_location}",
-                ],
+                args=cmd_args,
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
             ),
             dict(
@@ -391,6 +409,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
         ]
+        mega_scale_args = xla_flags_from_options(self._mxla_options).split()
+        worker_container["args"].extend(mega_scale_args)
 
         worker_container["image"] = _PATHWAYS_SERVER_IMAGE
 
