@@ -43,7 +43,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.einops import rearrange, repeat
+from axlearn.common.ein_ops import rearrange, repeat
 from axlearn.common.layers import Conv1D, GroupNorm, Linear, MultiLinear, NormType, RMSNorm
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes, Initializer, Shape, constant_initializer, uniform
