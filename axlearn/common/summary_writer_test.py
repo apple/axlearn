@@ -9,6 +9,7 @@ To run tests with Weights & Biases writers, run this file with:
 """
 import os
 import tempfile
+from enum import Enum
 from unittest import mock
 
 import jax
@@ -18,6 +19,7 @@ from absl.testing import absltest
 from jax import numpy as jnp
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
+from axlearn.common.config import config_class
 from axlearn.common.evaler_test import DummyModel
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.summary import AudioSummary, ImageSummary
@@ -32,6 +34,24 @@ try:
     import wandb
 except ModuleNotFoundError:
     wandb = None
+
+
+class DummyLayerType(Enum):
+    """A dummy enum derived type."""
+
+    TYPE1 = 1
+
+
+class DummyModelForSummaryWriters(DummyModel):
+    @config_class
+    class Config(DummyModel.Config):
+        """Configures DummyModelForSummaryWriters.
+
+        type: int enums are often used in config definition
+              added here to test summary writers capability to handle them.
+        """
+
+        type: DummyLayerType = DummyLayerType.TYPE1
 
 
 class SummaryWriterTest(absltest.TestCase):
@@ -69,7 +89,7 @@ class SummaryWriterTest(absltest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             cfg: SummaryWriter.Config = SummaryWriter.default_config().set(name="test", dir=tempdir)
             writer = cfg.instantiate(parent=None)
-            writer.log_config(DummyModel.default_config())
+            writer.log_config(DummyModelForSummaryWriters.default_config())
             event_acc = EventAccumulator(tempdir, size_guidance={"tensors": 0})
             event_acc.Reload()
             summaries = {}
@@ -82,14 +102,17 @@ class SummaryWriterTest(absltest.TestCase):
 
             expected = {
                 "trainer_config/dtype": tf.constant(b"'jax.numpy.float32'"),
-                "trainer_config/klass": tf.constant(b"'axlearn.common.evaler_test.DummyModel'"),
+                "trainer_config/klass": tf.constant(
+                    b"'axlearn.common.summary_writer_test.DummyModelForSummaryWriters'"
+                ),
                 "trainer_config/layer.bias": tf.constant(b"False"),
                 "trainer_config/layer.input_dim": tf.constant(b"32"),
                 "trainer_config/layer.klass": tf.constant(b"'axlearn.common.layers.Linear'"),
                 "trainer_config/layer.output_dim": tf.constant(b"32"),
                 "trainer_config/layer.param_partition_spec[0]": tf.constant(b"'model'"),
                 "trainer_config/layer.param_partition_spec[1]": tf.constant(b"None"),
-                "trainer_config/name": tf.constant(b"'DummyModel'"),
+                "trainer_config/name": tf.constant(b"'DummyModelForSummaryWriters'"),
+                "trainer_config/type": tf.constant(b"<DummyLayerType.TYPE1: 1>"),
                 "trainer_config/param_init.klass": tf.constant(
                     b"'axlearn.common.param_init.ConstantInitializer'"
                 ),
@@ -195,7 +218,7 @@ class WandBWriterTest(absltest.TestCase):
 
     def test_log_config(self):
         with tempfile.TemporaryDirectory() as tempdir:
-            dummy_model_config = DummyModel.default_config()
+            dummy_model_config = DummyModelForSummaryWriters.default_config()
             flat_config = WandBWriter.format_config(
                 dummy_model_config.to_flat_dict(omit_default_values={})
             )
