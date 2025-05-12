@@ -98,6 +98,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
+        pathways_headless: Optional[bool] = False
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
 
@@ -105,6 +106,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     def define_flags(cls, fv):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_bool(
+            "pathways_headless",
+            False,
+            "Enable Pathways headless for remote cluster use case. Default is false.",
+            **common_kwargs,
+        )
         flags.DEFINE_string(
             "pathways_head_cpu",
             None,
@@ -148,6 +155,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._xla_options = get_xla_options(xla_and_mxla_options)
         # Needs to be passed as command arguments to each pathways-worker.
         self._mxla_options = get_megascale_options(xla_and_mxla_options)
+        self._staging_location = f"{cfg.output_dir}/pathways-staging"
 
     def _update_env_list(self, env_list: list[dict], name: str, value: str):
         for env in env_list:
@@ -207,6 +215,49 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
 
         return head_container
 
+    def _build_pathways_proxy_container(self) -> Nested[Any]:
+        cmd_args = [
+            f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            f"--server_port={_PATHWAYS_PROXY_PORT}",
+            f"--gcs_scratch_location={self._staging_location}",
+        ]
+        cmd_args.extend(xla_flags_from_options(self._xla_options).split())
+
+        return dict(
+            name=_PATHWAYS_PROXY_CONTAINER_NAME,
+            image=_PATHWAYS_PROXY_IMAGE,
+            args=cmd_args,
+            ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
+        )
+
+    def _build_pathways_resource_manager_container(self) -> Nested[Any]:
+        cfg: TPUReplicatedJob.Config = self._inner.config
+
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
+
+        # If multi-head, every pathways-head will only
+        # be connected to one pathways instance (a pathways-worker replicated job).
+        pathways_instance_count = cfg.accelerator.num_replicas if self._is_single_head else 1
+
+        return dict(
+            name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
+            image=_PATHWAYS_SERVER_IMAGE,
+            env=[
+                {
+                    "name": "TPU_SKIP_MDS_QUERY",
+                    "value": "true",
+                },
+            ],
+            args=[
+                f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
+                "--node_type=resource_manager",
+                f"--instance_count={pathways_instance_count}",
+                f"--instance_type={pathways_tpu_version}:{system.topology}",
+                f"--gcs_scratch_location={self._staging_location}",
+            ],
+        )
+
     def _build_pathways_head_sidecar_containers(self) -> list[Nested[Any]]:
         """Builds a config for the pathways containers which orchestrate resource management
         and pathways proxy communications.
@@ -215,54 +266,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             A list of nested dict corresponding to a pathways resource
             manager config and a pathways proxy config.
         """
-
-        cfg: TPUReplicatedJob.Config = self._inner.config
-
-        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        staging_location = f"{cfg.output_dir}/pathways-staging"
-        pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
-
-        # If multi-head, every pathways-head will only
-        # be connected to one pathways instance (a pathways-worker replicated job).
-        pathways_instance_count = cfg.accelerator.num_replicas if self._is_single_head else 1
-
-        cmd_args = [
-            f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-            f"--server_port={_PATHWAYS_PROXY_PORT}",
-            f"--gcs_scratch_location={staging_location}",
-        ]
-        cmd_args.extend(xla_flags_from_options(self._xla_options).split())
-
+        proxy_container = self._build_pathways_proxy_container()
+        resource_manager_container = self._build_pathways_resource_manager_container()
+        # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
+        # SideCar container is an init container with restartPolicy as "Always".
+        proxy_container["restartPolicy"] = "Always"
+        resource_manager_container["restartPolicy"] = "Always"
         return [
-            dict(
-                name=_PATHWAYS_PROXY_CONTAINER_NAME,
-                image=_PATHWAYS_PROXY_IMAGE,
-                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
-                # SideCar container is an init container with restartPolicy as "Always".
-                restartPolicy="Always",
-                args=cmd_args,
-                ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
-            ),
-            dict(
-                name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
-                image=_PATHWAYS_SERVER_IMAGE,
-                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
-                # SideCar container is an init container with restartPolicy as "Always".
-                restartPolicy="Always",
-                env=[
-                    {
-                        "name": "TPU_SKIP_MDS_QUERY",
-                        "value": "true",
-                    },
-                ],
-                args=[
-                    f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
-                    "--node_type=resource_manager",
-                    f"--instance_count={pathways_instance_count}",
-                    f"--instance_type={pathways_tpu_version}:{system.topology}",
-                    f"--gcs_scratch_location={staging_location}",
-                ],
-            ),
+            proxy_container,
+            resource_manager_container,
         ]
 
     def _build_pathways_head_pod(self) -> Nested[Any]:
@@ -271,6 +283,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         """
 
         cfg: TPUReplicatedJob.Config = self._inner.config
+        pathways_cfg: PathwaysReplicatedJob.Config = self.config
 
         annotations, labels, volumes, tolerations = {}, {}, [], []
 
@@ -293,9 +306,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
         }
 
-        head_container = self._build_pathways_head_container()
-        init_containers = self._build_pathways_head_sidecar_containers()
-
         # Hardcode metadata.google.internal ip address to avoid transient DNS resolution issue.
         metadata_host_alias = dict(
             ip=_METADATA_GOOGLE_INTERNAL_IP,
@@ -308,13 +318,22 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "hostAliases": [metadata_host_alias],
             "nodeSelector": node_selector,
             "tolerations": tolerations,
-            "containers": [head_container],
-            "initContainers": init_containers,
+            # "containers": [head_container],
+            # "initContainers": init_containers,
             "volumes": volumes,
             "serviceAccountName": cfg.service_account,
             "hostNetwork": True,
             "dnsPolicy": "ClusterFirstWithHostNet",
         }
+
+        if pathways_cfg.pathways_headless:
+            head_pod_spec["containers"] = [
+                self._build_pathways_proxy_container(),
+                self._build_pathways_resource_manager_container(),
+            ]
+        else:
+            head_pod_spec["containers"] = [self._build_pathways_head_container()]
+            head_pod_spec["initContainers"] = self._build_pathways_head_sidecar_containers()
 
         if cfg.priority_class:
             head_pod_spec["priorityClassName"] = cfg.priority_class
