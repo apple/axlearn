@@ -121,7 +121,12 @@ from axlearn.common.quantized_dot_general.layers import (
     QuantizedDotGeneral,
     set_quantized_dot_general_recursively,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose, dummy_segments_positions
+from axlearn.common.test_utils import (
+    TestCase,
+    assert_allclose,
+    dummy_segments_positions,
+    set_threefry_partitionable,
+)
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import (
     Nested,
@@ -3208,6 +3213,7 @@ class TransformerXLTest(TestCase):
             MultiheadAttentionXL.ScalePosition.QUERY,
         ),
     )
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove decorator after jax 0.5.0
     def test_per_dim_scale(self, per_dim_scale, scale_position):
         model_dim = 6
         num_heads = 2
@@ -3251,12 +3257,12 @@ class TransformerXLTest(TestCase):
         )
         expected_vals = {
             str(None): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.61916,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.136684,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 51.232643,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 51.397125,
             },
             str(PerDimScale.default_config()): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.732872,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.413155,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 50.681373,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 50.898140,
             },
         }
         assert_allclose(
@@ -3439,6 +3445,7 @@ class TransformerFeedForwardLayerTest(TestCase):
         dict(rms_norm_summary=["linear2_outputs"]),
         dict(rms_norm_summary=["final_outputs"], expected_raise_regex="add_value_rms_norm_summary"),
     )
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove after jax 0.5.0
     def test_add_value_rms_norm_summary(
         self, rms_norm_summary: list[str], *, expected_raise_regex=None
     ):
@@ -3465,7 +3472,7 @@ class TransformerFeedForwardLayerTest(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         self.assertSequenceEqual(x.shape, y.shape)
-        self.assertNestedAllClose(2.663487, jnp.sum(y))
+        self.assertNestedAllClose(2.990841, jnp.sum(y))
         if "tensor_stats" in output_collection.summaries:
             output_stats = output_collection.summaries["tensor_stats"]
         else:
@@ -3895,6 +3902,7 @@ class TransformerTest(BaseTransformerTest):
 class ParallelTransformerTest(TestCase):
     """Tests ParallelTransformerLayer."""
 
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove after jax 0.5.0
     def test_with_golden_value(self):
         """A test of ParallelTransformerLayer by comparing results to a golden value."""
         model_dim = 16
@@ -3946,7 +3954,7 @@ class ParallelTransformerTest(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         self.assertEqual(target.shape, layer_outputs.data.shape)
-        self.assertNestedAllClose(0.609666, np.mean(layer_outputs.data))
+        self.assertNestedAllClose(0.165421, np.mean(layer_outputs.data))
 
     def test_build_remat_spec(self):
         model_dim, num_heads = 6, 2
@@ -5059,6 +5067,7 @@ class StackedTransformerTest(BaseTransformerTest):
         [("data",), True],
         [("data", "self_attention_kv_state"), True],
     )
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove after jax 0.5.0
     def test_repeated_layer_with_custom_carry(self, repeat_carry, precomputed_kv_state):
         """Tests RepeatedTransformerLayer with customized `carry`."""
         batch_size = 1
@@ -5087,11 +5096,11 @@ class StackedTransformerTest(BaseTransformerTest):
                 key_positions=jnp.arange(seq_len)[None],
             )
             cfg.stack.layer.self_attention.attention.input_linear = QLinear.default_config()
-            expected_output = 1.8719857
+            expected_output = 0.7333336
         else:
             kv_state = None
             # carry=None and carry=("data",) are equivalent.
-            expected_output = 5.3901253
+            expected_output = 0.9357959
 
         layer = cfg.instantiate(parent=None)
         state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))

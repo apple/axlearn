@@ -20,7 +20,7 @@ from axlearn.common.poolings import (
     MaxPooling,
     PoolingWithProjection,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import shapes
 
 
@@ -143,6 +143,7 @@ class PoolingTest(TestCase):
             )
 
     @parameterized.parameters((jnp.float32), (jnp.bfloat16))
+    @set_threefry_partitionable(False)  # TODO(marblee): update for threefry_partitionable True
     def test_max_pooling(self, dtype):
         atol = 5e-3 if dtype == jnp.bfloat16 else 1e-6
         batch_size = 2
@@ -193,6 +194,7 @@ class PoolingTest(TestCase):
         assert_allclose(outputs, outputs_expected, atol=atol)
 
     @parameterized.parameters(itertools.product([1, 2, 3, 4, 5], [jnp.float32, jnp.bfloat16]))
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_first_n_pooling(self, n, dtype):
         atol = 5e-3 if dtype == jnp.bfloat16 else 1e-6
         batch_size = 2

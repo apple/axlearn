@@ -19,7 +19,7 @@ from axlearn.common import utils
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import functional as F
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, set_threefry_partitionable
 from axlearn.common.utils import as_tensor
 from axlearn.common.vision_transformer import build_vit_model_config
 from axlearn.vision.image_classification import ImageClassificationModel
@@ -169,6 +169,7 @@ class ClassificationModelTest(parameterized.TestCase):
 
 class ViTClassificationModelTest(TestCase):
     @parameterized.parameters(0, 1, 2)
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_padded_examples(self, num_padded_examples):
         vit_cfg = build_vit_model_config(
             num_layers=1,

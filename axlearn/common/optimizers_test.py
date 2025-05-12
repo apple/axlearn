@@ -798,7 +798,7 @@ class OptimizerTest(TestCase):
             if max_norm is None or g_norm < max_norm:
                 np.testing.assert_allclose(updates, grads, atol=1e-6)
             else:
-                np.testing.assert_allclose(max_norm, optax.global_norm(updates))
+                np.testing.assert_allclose(max_norm, optax.global_norm(updates), atol=1e-8)
         else:
             np.testing.assert_allclose(updates, jnp.zeros_like(grads))
 
@@ -857,7 +857,7 @@ class OptimizerTest(TestCase):
             if max_norm is None or g_norm < max_norm:
                 np.testing.assert_allclose(updates, grads, atol=1e-6)
             else:
-                np.testing.assert_allclose(max_norm, optax.global_norm(updates))
+                np.testing.assert_allclose(max_norm, optax.global_norm(updates), atol=1e-8)
             np.testing.assert_equal(state.nonvalid_count, jnp.zeros([], dtype=jnp.int32))
             np.testing.assert_equal(state.inner_state, jnp.ones([], dtype=jnp.int32))
             if use_adaptive_norm:

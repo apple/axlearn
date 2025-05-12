@@ -33,7 +33,7 @@ from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.rnn import BaseRNNCell, IdentityCell, LSTMCell
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import Nested, NestedTensor, Tensor, shapes
 
 _NEG_INF = -1.0e7
@@ -526,6 +526,7 @@ class CTCDecoderModelTest(TestCase):
         msg = f"mismatch in {name}: {summary_collection[name]} vs {value}"
         self.assertEqual(summary_collection[name], value, msg)
 
+    @set_threefry_partitionable(False)  # TODO(yongqiang): update for threefry_partitionable True
     def test_forward_summary(self):
         input_dim, vocab_size = 16, 20
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
@@ -785,6 +786,7 @@ class CTCDecoderModelTest(TestCase):
         )
         self.assertNestedAllClose(greedy_outputs.scores[:, 0], beam_search_outputs.scores[:, 0])
 
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_prefix_merger(self):
         # Use a small vocab_size to encourage similar prefixes.
         input_dim, vocab_size, num_decodes = 6, 3, 4
@@ -1157,6 +1159,7 @@ class TransducerDecoderModelTest(TestCase):
         ),
         (jnp.array([[9, 11, 8, 5, 2, -1, -1, -1]]), True),
     )
+    @set_threefry_partitionable(False)  # TODO(Luzy): update for threefry_partitionable True
     def test_forward(self, target_labels, tile_input):
         """Tests that loss computation excludes empty sequence, and respects paddings."""
         am_dim, bos_id = 4, 1
