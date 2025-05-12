@@ -26,7 +26,7 @@ from axlearn.audio.frontend_utils import (
     pre_emphasis,
     windowing,
 )
-from axlearn.common import einops
+from axlearn.common import ein_ops
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (
     REQUIRED,
@@ -253,8 +253,10 @@ class LogMelFrontend(BaseFrontend):
         outputs = self._spectrogram(self._fft(frames), dtype=_fft_dtype(frames.dtype))
         if self._output_transformation is not None:
             outputs = self._output_transformation(outputs)
-        outputs = outputs * (1 - einops.rearrange(frames_paddings, "b t -> b t 1"))
-        return dict(outputs=einops.rearrange(outputs, "b t f -> b t f 1"), paddings=frames_paddings)
+        outputs = outputs * (1 - ein_ops.rearrange(frames_paddings, "b t -> b t 1"))
+        return dict(
+            outputs=ein_ops.rearrange(outputs, "b t f -> b t f 1"), paddings=frames_paddings
+        )
 
     @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]):
