@@ -10,7 +10,7 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common import convolution, einops, utils
+from axlearn.common import convolution, ein_ops, utils
 from axlearn.common.convolution import (
     Conv1D,
     Conv1DTranspose,
@@ -759,7 +759,7 @@ class ConvTest(TestCase):
         prng_key, init_key = jax.random.split(prng_key)
         state = ref_layer.initialize_parameters_recursively(init_key)
         test_state = dict(
-            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+            bias=state["bias"], weight=ein_ops.rearrange(state["weight"], "t 1 i o -> t i o")
         )
 
         # Generate a batch of 10 input sequences.
@@ -780,7 +780,7 @@ class ConvTest(TestCase):
         output_shape = test_layer.output_shape(input_shape=inputs.shape)
         assert_allclose(test_outputs.shape, output_shape)
 
-        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        inputs = ein_ops.rearrange(inputs, "b t i -> b t 1 i")
         (ref_outputs, ref_paddings), _ = F(
             ref_layer,
             inputs=dict(x=inputs, paddings=paddings),
@@ -790,7 +790,7 @@ class ConvTest(TestCase):
         )
         output_shape = ref_layer.output_shape(input_shape=inputs.shape)
         assert_allclose(ref_outputs.shape, output_shape)
-        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+        ref_outputs = ein_ops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
         self.assertEqual(ref_paddings.dtype, jnp.bool)
         self.assertEqual(test_paddings.dtype, jnp.bool)
@@ -2019,7 +2019,7 @@ class ConvTransposeTest(TestCase):
         prng_key, init_key = jax.random.split(prng_key)
         state = ref_layer.initialize_parameters_recursively(init_key)
         test_state = dict(
-            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+            bias=state["bias"], weight=ein_ops.rearrange(state["weight"], "t 1 i o -> t i o")
         )
 
         # Generate a batch of 10 input sequences.
@@ -2038,7 +2038,7 @@ class ConvTransposeTest(TestCase):
             prng_key=prng_key,
         )
 
-        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        inputs = ein_ops.rearrange(inputs, "b t i -> b t 1 i")
         (ref_outputs, ref_paddings), _ = F(
             ref_layer,
             inputs=dict(x=inputs, paddings=paddings),
@@ -2046,7 +2046,7 @@ class ConvTransposeTest(TestCase):
             state=state,
             prng_key=prng_key,
         )
-        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+        ref_outputs = ein_ops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
         assert_allclose(ref_paddings, test_paddings)
         assert_allclose(ref_outputs, test_outputs)

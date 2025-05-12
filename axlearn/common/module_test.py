@@ -993,6 +993,29 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 ctx.output_collection.module_outputs[child_name_prefix]["nested"],
             )
 
+    def test_remat(self):
+        num_iters = 3
+
+        with self._dummy_context():
+            ref_carry, ref_ys = self._invoke(num_iters=num_iters, xs={})
+
+        with self._dummy_context():
+            test_carry, test_ys = self._invoke(
+                num_iters=num_iters,
+                xs={},
+                remat_kwargs=dict(policy=jax.checkpoint_policies.everything_saveable),
+            )
+        self.assertNestedEqual(ref_carry, test_carry)
+        self.assertNestedEqual(ref_ys, test_ys)
+
+        # prevent_cse=True raises ValueError.
+        with self._dummy_context(), self.assertRaises(ValueError):
+            _ = self._invoke(
+                num_iters=num_iters,
+                xs={},
+                remat_kwargs=dict(prevent_cse=True),
+            )
+
 
 if __name__ == "__main__":
     absltest.main()

@@ -23,6 +23,7 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
     flags.DEFINE_string("name", None, "Job name.", flag_values=flag_values)
     flags.DEFINE_alias("job_name", "name", flag_values=flag_values)
     flags.DEFINE_integer("worker", 0, "Worker ID.", flag_values=flag_values)
+    flags.DEFINE_integer("replica", 0, "Replica ID.", flag_values=flag_values)
     flags.DEFINE_integer(
         "num_lines", 1000, "Number of log lines.", short_name="n", flag_values=flag_values
     )
@@ -70,6 +71,7 @@ def main(_, *, flag_values: flags.FlagValues = FLAGS):
         "resource.labels.namespace_name": "default",
         "resource.labels.container_name": flag_values.name,
         "labels.k8s-pod/batch_kubernetes_io/job-completion-index": flag_values.worker,
+        "labels.k8s-pod/jobset_sigs_k8s_io/job-index": flag_values.replica,
     }
     filters = [f"{k}={v}" for k, v in query_eq_filters.items()]
 
