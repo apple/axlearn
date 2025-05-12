@@ -66,7 +66,7 @@ def named_runner_configs(
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
             )
         ),
-        "gke_tpu_jetstream": LWSRunnerJob.default_config().set(
+        "gke_tpu_lws_pathways": LWSRunnerJob.default_config().set(
             inner=GKELeaderWorkerSet.default_config().set(
                 builder=PathwaysLeaderWorkerTemplate.default_config(),
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
