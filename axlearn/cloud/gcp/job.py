@@ -315,7 +315,7 @@ class GKELeaderWorkerSet(GCPJob):
         cfg: GKELeaderWorkerSet.Config = self.config
         self._bundler = bundler
         # This instantiatees a builder for constructing replicated job specs, which will be managed
-        # together under the jobset represented by this class.
+        # together under the leaderworkerset represented by this class.
         # Note the distinction from bundlers, which are responsible for bundling any code assets
         # required to run the job.
         self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)

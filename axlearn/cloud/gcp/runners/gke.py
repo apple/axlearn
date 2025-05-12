@@ -645,7 +645,7 @@ class LWSRunnerJob(BaseRunnerJob):
         """Configures LWSRunnerJob.
 
         Attributes:
-            name: The name of the jobset.
+            name: The name of the LeaderWorkerSet.
             inner: LWS job configuration.
             output_dir: Output directory for artifacts (e.g. XLA dumps).
             namespace: K8s namespace propagated to inner.
