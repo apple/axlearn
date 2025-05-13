@@ -353,7 +353,7 @@ class GKELeaderWorkerSet(GCPJob):
             kind="LeaderWorkerSet",
             **self._build_leaderworkerset(),
         )
-        print(custom_object)
+        logging.info("submitting LeaderWorkerSet: %s", custom_object)
         return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
             body=custom_object,
