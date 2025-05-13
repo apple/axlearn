@@ -4,7 +4,7 @@ source ../jaxmoe/bin/activate
 
 export USE_SHARDMAP_FFN=1
 
-TEST_ARTIFACTS_PATH="test_artifacts_tkt"
+TEST_ARTIFACTS_PATH="test_artifacts"
 mkdir -p "$TEST_ARTIFACTS_PATH"
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
