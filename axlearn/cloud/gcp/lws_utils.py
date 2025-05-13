@@ -170,10 +170,10 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector = {}, {}, {}
-        if cfg.reservation is not None:
+        if cfg.reservation:
             logging.info("Using reservation=%s", cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
-        if cfg.reservation_project is not None:
+        if cfg.reservation_project:
             selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
 
         spec = dict(

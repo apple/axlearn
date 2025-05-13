@@ -772,7 +772,6 @@ class LWSRunnerJob(BaseRunnerJob):
             RuntimeError: When the job fails, and LWS runner will retry it.
         """
         cfg: LWSRunnerJob.Config = self.config
-        logging.info("get status: ")
         try:
             resp = k8s.client.CustomObjectsApi().get_namespaced_custom_object_status(
                 name=cfg.name,
@@ -789,8 +788,6 @@ class LWSRunnerJob(BaseRunnerJob):
             condition_progressive = None
             condition_update_in_progress = None
 
-            logging.info(conditions)
-
             for condition in conditions:
                 if condition.get("type") == "Progressing":
                     condition_progressive = condition.get("status")
@@ -798,10 +795,6 @@ class LWSRunnerJob(BaseRunnerJob):
                     condition_available = condition.get("status")
                 if condition.get("type") == "UpdateInProgress":
                     condition_update_in_progress = condition.get("status")
-
-            logging.info(condition_available)
-            logging.info(condition_progressive)
-            logging.info(condition_update_in_progress)
 
             if condition_update_in_progress:
                 return LWSRunnerJob.Status.UPDATING
@@ -842,10 +835,7 @@ class LWSRunnerJob(BaseRunnerJob):
         # Keep track of last status to prevent duplicate events.
         last_job_status = None
         while True:
-            logging.info("In Execute loop: ")
             status = self._get_status()
-            logging.info("Just after getting status: ")
-            logging.info(status)
 
             # Don't retry if FAILED, since we ask GKE to handle retries.
             # Note that LeaderWorkerSet remains ACTIVE until all retries are exhausted.
