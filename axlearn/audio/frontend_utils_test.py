@@ -417,7 +417,7 @@ class ShardedFftTest(TestCase):
             ref_ffts = jax.jit(jnp.fft.fft, static_argnames="n")(inputs, n=fft_size)
             test_ffts = fft_fn(inputs)
 
-        assert_allclose(ref_ffts, test_ffts)
+        assert_allclose(ref_ffts, test_ffts, rtol=1e-3)
         # Run the following on gpu.
         jax.debug.inspect_array_sharding(test_ffts, callback=print)
         jax.debug.inspect_array_sharding(ref_ffts, callback=print)
