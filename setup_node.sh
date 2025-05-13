@@ -22,6 +22,13 @@ SECONDS=0
 
 sudo apt-get update - > /dev/null
 
+sudo apt install -y software-properties-common
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt install -y python3.10
+
+sudo apt update
+sudo apt install -y python3.10-venv python3.10-dev python3-pip
+
 # Needed for TC_MALLOC fix
 sudo apt-get -f install -y
 sudo apt-get install -y google-perftools

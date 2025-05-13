@@ -113,10 +113,12 @@ def combine_outputs(permuted_output, token_permutation_idx, expert_index, expert
 import jax.numpy as jnp
 from jax import lax
 
-@partial(jax.jit, static_argnums=(7, 8, 9,))
+@partial(jax.jit, static_argnums=(7, 8,))
 def blockwise_mlp(
     hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, 
-    block_size, activation_fns, checkpoint_activation=False, ):
+    block_size, activation_fns):
+    # TODO: add support for checkpointing
+    checkpoint_activation=False
     O = hidden_states.shape[0]
     G = hidden_states.shape[1]
     # nki doesn't support batching 'E   NotImplementedError: Batching rule for 'nki_call' not implemented'
@@ -154,18 +156,19 @@ def blockwise_mlp(
         if checkpoint_activation:
             raise NotImplementedError
         else:
-            outputs = []
-            for o in range(O):
-                g_outputs = []
-                for g in range(G):
-                    hidden_states_og = hidden_states[o:o+1, g:g+1]
-                    expert_affinities_masked_og = expert_affinities_masked[o:o+1, g:g+1]
-                    token_position_to_id_og = token_position_to_id[o:o+1, g:g+1]
-                    block_to_expert_og = block_to_expert[o:o+1, g:g+1]
-                    output = blockwise_mlp_per_group(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size)
-                    g_outputs.append(output)
-                outputs.append(jnp.concatenate(g_outputs, axis=1))
-            return jnp.concatenate(outputs, axis=0)
+            # TODO add loop support for O>1, G>1
+            # outputs = []
+            # for o in range(O):
+            #     g_outputs = []
+            #     for g in range(G):
+            #         hidden_states_og = hidden_states[o:o+1, g:g+1]
+            #         expert_affinities_masked_og = expert_affinities_masked[o:o+1, g:g+1]
+            #         token_position_to_id_og = token_position_to_id[o:o+1, g:g+1]
+            #         block_to_expert_og = block_to_expert[o:o+1, g:g+1]
+            return blockwise_mlp_per_group(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size)
+            #         g_outputs.append(output)
+            #     outputs.append(jnp.concatenate(g_outputs, axis=1))
+            # return jnp.concatenate(outputs, axis=0)
 
 
 def blockwise_mm_per_group_native(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, checkpoint_activation=False):
@@ -1695,7 +1698,6 @@ class TransformerFeedForwardMoE(BaseLayer):
                 PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", None), # block_to_expert
                 None, # block size
                 None, # activation_fns
-                None, # checkpoint_activation
             ),
             out_specs=(
                 PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None)
@@ -1711,8 +1713,7 @@ class TransformerFeedForwardMoE(BaseLayer):
             token_position_to_id, 
             block_to_expert, 
             cfg.gating.block_size,
-            cfg.activation, 
-            False # checkpoint_activation
+            cfg.activation
         )
         with jax.named_scope("all_reduce"):
             outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
