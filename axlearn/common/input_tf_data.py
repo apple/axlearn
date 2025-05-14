@@ -883,7 +883,8 @@ def batch(
             ds = ds.repeat(repeat)
         elif is_training:
             ds = ds.repeat()
-        # If `prefetch_buffer_size` is not set, use autotune.
+        if not is_training:
+            ds = ds.take(8)
         ds = ds.prefetch(prefetch_buffer_size or tf.data.experimental.AUTOTUNE)
         return ds
 
