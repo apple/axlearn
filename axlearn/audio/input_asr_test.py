@@ -14,7 +14,7 @@ from absl.testing import parameterized
 from axlearn.audio import input_asr
 from axlearn.common import input_fake, input_tf_data
 from axlearn.common.config import config_for_class, config_for_function
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, set_threefry_partitionable
 
 tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers/sentencepiece")
 
@@ -104,6 +104,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             ],
         ),
     )
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_speech_input(
         self,
         max_len: int,

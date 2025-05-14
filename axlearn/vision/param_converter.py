@@ -284,7 +284,7 @@ def _parameters_from_clip_attention_dense(src: hf_clip.CLIPAttention) -> NestedT
         weight=output_dense.weight.view(-1, num_heads, per_head_dim),
         bias=output_dense.bias,
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_key={}, scale_query={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_key={}, scale_query={}, kv_cache={})
 
 
 def _parameters_from_clip_attention(

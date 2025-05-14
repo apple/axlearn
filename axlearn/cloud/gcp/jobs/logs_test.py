@@ -21,6 +21,7 @@ class MainTest(TestWithTemporaryCWD):
         # Basic sanity check.
         self.assertIsNone(fv["name"].default)
         self.assertIsNotNone(fv["worker"].default)
+        self.assertIsNotNone(fv["replica"].default)
 
     @parameterized.parameters(
         dict(start_time=None, end_time=None),

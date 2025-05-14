@@ -6,10 +6,10 @@ from collections.abc import Sequence
 from typing import Literal, Optional, Union
 
 import chex
-import einops
 import jax
 from jax import numpy as jnp
 
+from axlearn.common import ein_ops
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import nowrap
@@ -1323,7 +1323,7 @@ def compute_conv_transpose_paddings(
     # |0 0 1 1| ->  |0 * 0 * 1 * 1|
     def dilate_paddings(paddings):
         most, last = jnp.split(paddings, [paddings.shape[1] - 1], axis=1)
-        dilated = einops.repeat(most, "b t -> b (t s)", s=stride)
+        dilated = ein_ops.repeat(most, "b t -> b (t s)", s=stride)
         return jnp.concatenate([dilated, last], axis=1)
 
     in_paddings = dilate_paddings(in_paddings)
