@@ -134,7 +134,7 @@ def blockwise_mlp(
         intermediate_size_tp=gate_proj_weight.shape[-1],
         block_size=block_size,
         glu_mlp=len(activation_fns) == 2,
-    ):
+    ) and int(os.getenv('AXLEARN_USE_BLOCKWISE_MLP_KERNEL', '1')) == 1:
         blockwise_mlp_per_group = blockwise_mm
     else:
         blockwise_mlp_per_group = blockwise_mm_per_group_native

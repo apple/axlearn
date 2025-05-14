@@ -212,11 +212,11 @@ profile() {
 	# pick the largest neff, to ignore small second neff produced in multinode scenarios
 	neff_path=$(ls -S ${job_dir}/neuron_dump/*program*/file.neff | head -n1)
 
-	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
-	export NEURON_RT_PROFILE_BUF_DMA_MB=256
+	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
+	# export NEURON_RT_PROFILE_BUF_DMA_MB=256
 	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
 	export NEURON_RT_VIRTUAL_CORE_SIZE=2
-	export NEURON_RT_INSPECT_ON_FAIL=1
+	# export NEURON_RT_INSPECT_ON_FAIL=1
 	# export NEURON_RT_PROFILE_BUF_INFER_STATUS_MB=4
 	neuron-profile capture -r 64 --num-exec 3 \
 		--collectives-worker-count $((64* $SLURM_JOB_NUM_NODES)) \
