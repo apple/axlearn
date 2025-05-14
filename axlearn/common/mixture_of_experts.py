@@ -156,21 +156,6 @@ def blockwise_mlp(
         if checkpoint_activation:
             raise NotImplementedError
         else:
-<<<<<<< Updated upstream
-            # TODO add loop support for O>1, G>1
-            # outputs = []
-            # for o in range(O):
-            #     g_outputs = []
-            #     for g in range(G):
-            #         hidden_states_og = hidden_states[o:o+1, g:g+1]
-            #         expert_affinities_masked_og = expert_affinities_masked[o:o+1, g:g+1]
-            #         token_position_to_id_og = token_position_to_id[o:o+1, g:g+1]
-            #         block_to_expert_og = block_to_expert[o:o+1, g:g+1]
-            return blockwise_mlp_per_group(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size)
-            #         g_outputs.append(output)
-            #     outputs.append(jnp.concatenate(g_outputs, axis=1))
-            # return jnp.concatenate(outputs, axis=0)
-=======
             outputs = []
             for o in range(O):
                 g_outputs = []
@@ -183,7 +168,6 @@ def blockwise_mlp(
                     g_outputs.append(output)
                 outputs.append(jnp.concatenate(g_outputs, axis=1))
             return jnp.concatenate(outputs, axis=0)
->>>>>>> Stashed changes
 
 
 def blockwise_mm_per_group_native(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, checkpoint_activation=False):
