@@ -156,19 +156,18 @@ def blockwise_mlp(
         if checkpoint_activation:
             raise NotImplementedError
         else:
-            # TODO add loop support for O>1, G>1
-            # outputs = []
-            # for o in range(O):
-            #     g_outputs = []
-            #     for g in range(G):
-            #         hidden_states_og = hidden_states[o:o+1, g:g+1]
-            #         expert_affinities_masked_og = expert_affinities_masked[o:o+1, g:g+1]
-            #         token_position_to_id_og = token_position_to_id[o:o+1, g:g+1]
-            #         block_to_expert_og = block_to_expert[o:o+1, g:g+1]
-            return blockwise_mlp_per_group(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size)
-            #         g_outputs.append(output)
-            #     outputs.append(jnp.concatenate(g_outputs, axis=1))
-            # return jnp.concatenate(outputs, axis=0)
+            outputs = []
+            for o in range(O):
+                g_outputs = []
+                for g in range(G):
+                    hidden_states_og = hidden_states[o:o+1, g:g+1]
+                    expert_affinities_masked_og = expert_affinities_masked[o:o+1, g:g+1]
+                    token_position_to_id_og = token_position_to_id[o:o+1, g:g+1]
+                    block_to_expert_og = block_to_expert[o:o+1, g:g+1]
+                    output = blockwise_mlp_per_group(hidden_states_og, expert_affinities_masked_og, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id_og, block_to_expert_og, block_size)
+                    g_outputs.append(output)
+                outputs.append(jnp.concatenate(g_outputs, axis=1))
+            return jnp.concatenate(outputs, axis=0)
 
 
 def blockwise_mm_per_group_native(hidden_states, expert_affinities_masked, gate_proj_weight, up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, checkpoint_activation=False):
@@ -1304,13 +1303,13 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         expert_mask_after_dropping = jnp.reshape(expert_mask_after_dropping, (O, G, -1, S, E))
         expert_mask_after_dropping = jnp.sum(expert_mask_after_dropping, axis=2)
 
-        num_dropped = jnp.sum(expert_mask, axis=(0,1,2))- jnp.sum(expert_mask_after_dropping, axis=(0,1,2))
+        num_dropped = jnp.sum(expert_mask, axis=(0,1,2,3)) - jnp.sum(expert_mask_after_dropping, axis=(0,1,2,3))
         # jax.debug.print('num_dropped, {x}', x=num_dropped)
         # jax.debug.print('total_num_dropped, {x}', x=jnp.sum(num_dropped))
         num_blocks = self.compute_num_blocks(expert_capacity)
         
         # blocks_per_expert: (O, G, E)
-        blocks_per_expert = jnp.repeat(expert_capacity/cfg.block_size, E, axis=0)
+        blocks_per_expert = jnp.repeat(math.ceil(expert_capacity/cfg.block_size), E, axis=0)
         blocks_per_expert = jnp.expand_dims(blocks_per_expert, (0, 1))
         # print('blocks per expert', blocks_per_expert.shape)
         # jax.debug.print('blocks_per_expert, {x}', x=blocks_per_expert)
@@ -1700,7 +1699,7 @@ class TransformerFeedForwardMoE(BaseLayer):
                 None, # activation_fns
             ),
             out_specs=(
-                PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "model", "expert", None, None)
+                PartitionSpec(MOE_OUTER_BATCH_AXIS_NAMES, "expert", "model", None, None)
             ),
             check_rep=False
         )
@@ -1716,7 +1715,7 @@ class TransformerFeedForwardMoE(BaseLayer):
             cfg.activation
         )
         with jax.named_scope("all_reduce"):
-            outputs = jnp.sum(outputs, axis=1, dtype=outputs.dtype)
+            outputs = jnp.sum(outputs, axis=2, dtype=outputs.dtype)
         return outputs
 
     # pylint: disable-next=too-many-statements
