@@ -104,6 +104,7 @@ def _blockwise_mm_fwd(
         # (S+1, H)
         hidden_states = jnp.concat([hidden_states, padding_h], axis=0)
         expert_affinities_masked = jnp.concat([expert_affinities_masked, padding_e], axis=0)
+        expert_affinities_masked = jnp.reshape(expert_affinities_masked, (-1, 1))
 
     with jax.named_scope("setupweight"):
         gate_up_weight = jnp.stack([gate_weight, up_proj_weight], 
