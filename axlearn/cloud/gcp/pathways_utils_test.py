@@ -17,7 +17,7 @@ from axlearn.cloud.gcp.pathways_utils import (
     _PATHWAYS_SERVER_IMAGE,
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
-from axlearn.common.compiler_options import xla_flags_from_options
+from axlearn.common.compiler_options import default_xla_options, xla_flags_from_options
 from axlearn.common.test_utils import TestCase
 
 
@@ -158,6 +158,76 @@ class PathwaysReplicatedJobTest(TestCase):
                     "80",
                     annotations.get("axlearn/replicatedjob-load-balancer-port", {}),
                 )
+
+    def test_pathways_xla_flags_processing(self):
+        """Tests processing of pathways_xla_flags, including overrides and new flags."""
+        flag_to_override_key = "xla_tpu_enable_latency_hiding_scheduler"
+        override_value_str = "false"
+        # This flag's default value for v5p is "true" (string). Change it to False (bool).
+        expected_override_value_parsed = False
+
+        new_xla_flag_key = "xla_a_brand_new_one"
+        new_xla_flag_value_str = "12345"
+        expected_new_xla_value_parsed = 12345
+
+        new_mxla_flag_key = "megascale_another_setting"
+        new_mxla_flag_value_str = "a_string_value"
+        expected_new_mxla_value_parsed = new_mxla_flag_value_str
+
+        malformed_flag_str = "this_is_not_valid"
+
+        pathways_xla_flags_input = [
+            f"{flag_to_override_key}={override_value_str}",
+            f"{new_xla_flag_key}={new_xla_flag_value_str}",
+            f"--{new_mxla_flag_key}={new_mxla_flag_value_str}",  # Test with leading --
+            malformed_flag_str,
+        ]
+
+        initial_default_options = default_xla_options(
+            instance_type="tpu-v5p-16", num_slices=1, backend="tpu"
+        )
+        # Ensure the flag we intend to override actually exists in the defaults.
+        self.assertIn(flag_to_override_key, initial_default_options)
+
+        with self._job_config(
+            CloudBuildBundler,
+            pathways_xla_flags=pathways_xla_flags_input,
+        ) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="test-inner-name",
+                command="test-inner-command",
+                output_dir="test-inner-output",
+                service_account="test-service-account",
+            )
+
+            # Instantiate the builder and check for warnings.
+            with self.assertLogs(None, level="WARNING") as cm:
+                builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            self.assertTrue(
+                any(
+                    f"Invalid XLA flag format: {malformed_flag_str}" in output
+                    for output in cm.output
+                )
+            )
+            # pylint: disable=protected-access
+            actual_xla_options = builder._xla_options
+            actual_mxla_options = builder._mxla_options
+            # pylint: enable=protected-access
+
+            # Check overridden flag.
+            self.assertIn(flag_to_override_key, actual_xla_options)
+            self.assertEqual(
+                actual_xla_options[flag_to_override_key], expected_override_value_parsed
+            )
+
+            # Check new XLA flag.
+            self.assertIn(new_xla_flag_key, actual_xla_options)
+            self.assertEqual(actual_xla_options[new_xla_flag_key], expected_new_xla_value_parsed)
+
+            # Check new Megascale flag.
+            self.assertIn(new_mxla_flag_key, actual_mxla_options)
+            self.assertEqual(actual_mxla_options[new_mxla_flag_key], expected_new_mxla_value_parsed)
 
 
 class PathwaysMultiheadReplicatedJobTest(TestCase):

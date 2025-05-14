@@ -25,6 +25,7 @@ from axlearn.common.compiler_options import (
     get_megascale_options,
     get_xla_options,
     infer_tpu_type,
+    parse_xla_flag_value,
     xla_flags_from_options,
 )
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -98,6 +99,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
+        pathways_xla_flags: Optional[list[str]] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
 
@@ -105,6 +107,17 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     def define_flags(cls, fv):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        # XLA flags and megascale flags have to be passed at jobset creation time.
+        # The XLA flags automatically get passed to the pathways proxy and the
+        # Megascale flags get passed to pathways workers. A single flag is used since
+        # the implementation details could change later.
+        flags.DEFINE_list(
+            "pathways_xla_flags",
+            [],
+            "Set XLA and Megascale flags. Defaults are set by compiler_options.py. "
+            "Example: 'xla_tpu_x=24,megascale_y=true'",
+            **common_kwargs,
+        )
         flags.DEFINE_string(
             "pathways_head_cpu",
             None,
@@ -133,6 +146,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         super().__init__(cfg, bundler=bundler)
         self._bundler = bundler
         self._inner: TPUReplicatedJob = cfg.inner.instantiate(bundler=self._bundler)
+        pathways_cfg: PathwaysReplicatedJob.Config = self.config
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
@@ -144,6 +158,20 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             num_slices=cfg.inner.accelerator.num_replicas,
             backend="tpu",
         )
+        pathways_xla_flags = {}
+        for flag in pathways_cfg.pathways_xla_flags:
+            if "=" in flag:
+                k, v = flag.split("=", 1)
+                # Users may accidentally pass flags as args
+                k = k.lstrip("--")
+                pathways_xla_flags[k] = parse_xla_flag_value(v.strip())
+            else:
+                logging.warning(
+                    "Invalid XLA flag format: %s. --pathways_xla_flags expects 'key=value'.",
+                    flag,
+                )
+
+        xla_and_mxla_options.update(pathways_xla_flags)
         # Needs to be passed to pathways-proxy.
         self._xla_options = get_xla_options(xla_and_mxla_options)
         # Needs to be passed as command arguments to each pathways-worker.
