@@ -17,7 +17,7 @@ import chex
 import jax
 import jax.numpy as jnp
 
-from axlearn.common import einops
+from axlearn.common import ein_ops
 from axlearn.common.attention import MultiheadAttention, scaled_hidden_dim
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (
@@ -239,7 +239,7 @@ class AdaptiveLayerNormModulation(BaseLayer):
         x = get_activation_fn(cfg.activation)(input)
         output = self.linear(x)
         if output.ndim == 2:
-            output = einops.rearrange(output, "b d -> b 1 d")
+            output = ein_ops.rearrange(output, "b d -> b 1 d")
         output = jnp.split(output, cfg.num_outputs, axis=-1)
         return output
 

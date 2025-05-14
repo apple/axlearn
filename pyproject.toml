@@ -45,6 +45,7 @@ core = [
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.10.2", # for AQT, param converter and adapter.
     "prefixed==0.9.0", # For formatting file sizes, param counts, etc.
+    "grain==0.2.7", # Grain input processing. 0.2.6 onwards supports macos.
 ]
 # Apple Silicon dependencies.
 # Need to run `conda install -c apple tensorflow-deps` separately.
@@ -154,10 +155,6 @@ mmau = [
 orbax = [
     "humanize==4.10.0",
     "orbax-checkpoint==0.11.1",
-]
-# Grain input processing. 0.2.6 onwards supports macos.
-grain = [
-    "grain==0.2.7",
 ]
 # Audio dependencies.
 audio = [

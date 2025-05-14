@@ -40,7 +40,7 @@ from axlearn.common.deberta_test import (
 )
 from axlearn.common.deberta_test import build_cfg as deberta_build_cfg
 from axlearn.common.deberta_test import build_model_config as deberta_build_model_config
-from axlearn.common.einops import rearrange
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import (
     BaseClassificationHead,
     Conv3D,
@@ -111,6 +111,10 @@ class BaseParamConverterTest(TestCase):
         if test_torch_to_axlearn:
             params_from_ref_layer = torch_to_axlearn(ref_layer, dst_layer=test_layer)
             self.assertNestedAllClose(params_from_ref_layer, params)
+            self.assertEqual(
+                jax.tree_util.tree_structure(params_from_ref_layer),
+                jax.tree_util.tree_structure(params),
+            )
         test_outputs, _ = F(
             test_layer,
             is_training=True,
