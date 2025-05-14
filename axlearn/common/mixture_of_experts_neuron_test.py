@@ -294,6 +294,10 @@ class TestDev150b(LayerTestCase):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     
+    def test_fwd_blockwisegather_neuron_vs_cpu_150b_integ(self):
+        jax.config.update('jax_platform_name', 'neuron')
+        self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGatherBlockwise, test_device="neuron", golden_device="cpu"))
+    
     def test_fwdbwd_blockwisegather_vs_gather_150b_unit(self):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
@@ -305,6 +309,10 @@ class TestDev150b(LayerTestCase):
     def test_fwdbwd_blockwisegather_vs_gather_150b_integ(self):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
+    
+    def test_fwdbwd_blockwisegather_neuron_vs_cpu_150b_integ(self):
+        jax.config.update('jax_platform_name', 'neuron')
+        self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGatherBlockwise, test_device="neuron", golden_device="cpu"))
     
     def test_fwdbwd_gather_vs_einsum_150b_integ(self):
         jax.config.update('jax_platform_name', 'neuron')
