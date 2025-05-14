@@ -137,8 +137,8 @@ fi
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 
 # use to add debug logging at module level in xla
-export TF_CPP_MIN_LOG_LEVEL=0
-export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=4"
+# export TF_CPP_MIN_LOG_LEVEL=0
+# export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=4"
 
 # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="cache/"
