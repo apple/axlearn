@@ -384,11 +384,7 @@ class GridSpaceBuilder:
 
             # num experts
                 # failed broadcasting error
-<<<<<<< Updated upstream
-            self.create_test_config(**kwargs, n_experts=1, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
-=======
-            create_test_config(**kwargs, n_experts=1, top_k=1, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
->>>>>>> Stashed changes
+            self.create_test_config(**kwargs, n_experts=1, top_k=1, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
                 # failed assertionError
             self.create_test_config(**kwargs, n_experts=7, top_k=2, n_groups=2, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
             # num groups
