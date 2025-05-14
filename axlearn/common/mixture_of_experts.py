@@ -13,6 +13,7 @@
 
 Reference: https://arxiv.org/abs/2405.15052.
 """
+
 import re
 from typing import NamedTuple, Optional, Union
 
@@ -22,6 +23,7 @@ import numpy as np
 from absl import logging
 from jax.experimental.pjit import pjit
 
+from axlearn.common.attention import NormPosition
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -669,15 +671,19 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         # (outer_batch, inner_batch, seq_len, dim). This is useful for 3D mesh. Reference:
         # https://github.com/tensorflow/mesh/blob/fbf7b1e547e8b8cb134e81e1cd350c312c0b5a16/mesh_tensorflow/transformer/moe.py#L294-L336
         outer_batch: int = 1
-        norm: BaseNormalizationLayer.Config = LayerNorm.default_config()
+        # The normalization layer config.
+        norm: Union[
+            BaseNormalizationLayer.Config, dict[NormPosition, BaseNormalizationLayer.Config]
+        ] = LayerNorm.default_config()
         activation: Union[str, tuple[str, str]] = "nn.relu"
         dropout: InstantiableConfig = Dropout.default_config()
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
-        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm".
+        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm", "v2".
         # * prenorm: y = x + feedforward(norm(x))
         # * postnorm: y = norm(x + feedforward(x))
-        # * hybridnorm: y = postnorm(x + feedforward(prenorm(x)))
+        # * hybridnorm: y = x + postnorm(feedforward(prenorm(x)))
         # * nonorm: y = feedforward(x)   # no residual, which is usually applied externally.
+        # v2: see comments NormPosition for details.
         #
         # References:
         # prenorm/postnorm: https://arxiv.org/abs/2002.04745.
@@ -764,17 +770,28 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         self._add_child("gating", cfg.gating.set(num_experts=cfg.num_experts))
         self._add_child("stochastic_depth", cfg.stochastic_depth)
         # Add norm layers for different structures.
-        if cfg.structure in ["prenorm", "postnorm"]:
-            self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "hybridnorm":
-            self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
-            self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "nonorm":
-            pass
+
+        if cfg.structure == "v2":
+            if not isinstance(cfg.norm, dict):
+                raise ValueError(f"When structure=v2, cfg.norm must be a dict: {cfg.norm}")
+            for position, norm in cfg.norm.items():
+                self._add_child(position.value, norm.set(input_dim=cfg.input_dim))
         else:
-            raise NotImplementedError(cfg.structure)
+            if not isinstance(cfg.norm, InstantiableConfig):
+                raise ValueError("When structure != v2, cfg.norm must be a config.")
+            if cfg.structure in ["prenorm", "postnorm"]:
+                self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
+            elif cfg.structure == "hybridnorm":
+                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
+                self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
+            elif cfg.structure == "nonorm":
+                pass
+            else:
+                raise NotImplementedError(cfg.structure)
+
         # Add dropout layers for different structures.
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
+        # Always apply two dropouts in v2 structure.
+        if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
             self._add_child("dropout1", cfg.dropout)
             self._add_child("dropout2", cfg.dropout)
         elif cfg.structure in ["postnorm"]:
@@ -817,6 +834,16 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
             # this layer.
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
+        elif cfg.structure == "v2":
+            x = self.in_norm(inputs) if NormPosition.IN_NORM in cfg.norm else inputs
+            x = self._dispatch_and_combine(x)
+            x = self.res_norm(x) if NormPosition.RES_NORM in cfg.norm else x
+            x = self.dropout2(x)
+            x = self.stochastic_depth(x)
+            if cfg.residual_weight != 1:
+                x *= cfg.residual_weight
+            x += inputs
+            x = self.out_norm(x) if NormPosition.OUT_NORM in cfg.norm else x
         else:
             raise NotImplementedError(cfg.structure)
         return x
@@ -864,7 +891,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         x = jnp.einsum("ogsec,ogsm->oegcm", dispatch_tensor, x)
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
         x = self._wi_activation(x)
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
+        if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
             x = self.dropout1(x)
         with child_context("wo_einsum", module=self):
             x = self.einsum_maybe_quantized(
