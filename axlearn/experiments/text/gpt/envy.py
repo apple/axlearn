@@ -685,7 +685,7 @@ def model_config(
             MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, mesh_shape
         )
 
-    gating_type = TopKGatingGatherBlockwise if int(os.getenv('AXLEARN_USE_BLOCKWISE', 0)) == 1 else TopKGatingGather
+    gating_type = TopKGatingGatherBlockwise if int(os.getenv('AXLEARN_USE_BLOCKWISE', 1)) == 1 else TopKGatingGather
     expert_config = TransformerFeedForwardMoE.default_config().set(
         outer_batch=outer_batch_size,
         num_experts=num_experts,
