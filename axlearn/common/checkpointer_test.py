@@ -1110,7 +1110,15 @@ class CheckpointerTest(test_utils.TestCase):
         cfg = _checkpointer_config(Checkpointer)
         cfg.save_policy.min_step = 0
         ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
-        with mock.patch.object(ckpt, "stop") as stop_fn:
+        old_stop = ckpt.stop
+        has_exc = None
+
+        def new_stop(has_exception):
+            nonlocal has_exc
+            old_stop(has_exception=has_exception)
+            has_exc = has_exception
+
+        with mock.patch.object(ckpt, "stop", new_stop):
             with self.assertRaises(TypeError):
                 with _mesh(mesh_shape), ckpt:
                     # Pass a non serializable object to trigger an exception.
@@ -1121,9 +1129,7 @@ class CheckpointerTest(test_utils.TestCase):
                     )
                     ckpt.save(step=0, state=state0)
                     ckpt.wait_until_finished()
-            stop_fn.assert_called_with(has_exception=True)
-            # Stop the checkpoint garbage collection thread to make the test exit faster.
-            Checkpointer.stop(ckpt)
+        self.assertEqual(has_exc, True)
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
