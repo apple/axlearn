@@ -12,7 +12,7 @@ from axlearn.common.layers import GroupNorm, LayerNorm
 from axlearn.common.module import functional as F
 from axlearn.common.param_init import GaussianInitializer
 from axlearn.common.rnn import LSTMCell, RepeatedRNNLayer, StackedRNNLayer
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import VDict, shapes
 
 
@@ -25,6 +25,7 @@ class LSTMTest(TestCase):
         (None, 0.1, 6, 0.003402),
         (None, None, None, -0.055765),
     )
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_lstm_forward(self, norm_cfg, max_cell_value, hidden_dim, expected_output_mean):
         batch_size, seq_len, input_dim = 2, 5, 3
 

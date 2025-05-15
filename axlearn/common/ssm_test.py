@@ -49,7 +49,7 @@ from axlearn.common.ssm import (
     StackedSSMLayer,
 )
 from axlearn.common.ssm_kernels.ssd_kernels import ssd
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import Nested, Tensor, TensorSpec, cast_floats
 
 try:
@@ -716,6 +716,7 @@ class MambaBlockTest(TestCase):
         block_klass=(MambaBlock, JambaMambaBlock),
         dtype=(jnp.float32, jnp.bfloat16),
     )
+    @set_threefry_partitionable(False)  # TODO(swiseman): update for threefry_partitionable True
     def test_prefill(self, block_klass: MambaBlock, dtype: jnp.dtype):
         model_dim = 8
         state_dim = 16

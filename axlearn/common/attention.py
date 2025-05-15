@@ -2581,6 +2581,29 @@ class MultiheadAttentionXL(MultiheadAttention):
         raise NotImplementedError(type(self))
 
 
+class NormPosition(enum.Enum):
+    """NormPosition is used for structure=v2 to indicate the positions of
+    the normalization layers for TransformerAttentionLayer,
+    TransformerFeedForwardLayer and TransformerFeedForwardMoE.
+
+    Given structure=v2, the norm must be a dict[NormPosition, InstantiableConfig],
+    where the entries represent the normalization layer configs to use in
+      `y = out_norm(x + res_norm(fn(in_norm(x))))`,
+    and any absent key represent the identity function.
+
+    Examples:
+    `norm={NormPosition.IN_NORM:LayerNorm.default_config()}` is equivalent to "prenorm";
+    `norm={NormPosition.OUT_NORM:LayerNorm.default_config()}` is equivalent to "postnorm";
+    `norm={NormPosition.IN_NORM:LayerNorm.default_config(),
+           NormPosition.RES_NORM:LayerNorm.default_config()}` represents "hybridnorm"
+          (aka, peri-LN in https://arxiv.org/abs/2502.02732);
+    """
+
+    IN_NORM = "in_norm"
+    RES_NORM = "res_norm"
+    OUT_NORM = "out_norm"
+
+
 class TransformerAttentionLayer(BaseLayer):
     """A Transformer attention layer with normalization and a skip connection.
 
@@ -2593,7 +2616,10 @@ class TransformerAttentionLayer(BaseLayer):
 
         target_dim: Required[int] = REQUIRED  # Input target feature dim.
         source_dim: Required[int] = REQUIRED  # Input source feature dim.
-        norm: InstantiableConfig = LayerNorm.default_config()  # The normalization layer config.
+        # The normalization layer config.
+        norm: Union[
+            InstantiableConfig, dict[NormPosition, InstantiableConfig]
+        ] = LayerNorm.default_config()
         attention: InstantiableConfig = (
             MultiheadAttention.default_config()
         )  # The attention layer config.
@@ -2610,18 +2636,28 @@ class TransformerAttentionLayer(BaseLayer):
         # hybridnorm: TransformerAttentionLayer(x) = x + layernorm_2(attention(layernorm_1(x)))
         # Ref: https://github.com/google/praxis/blob/main/praxis/layers/transformers.py#L1129
         # TODO (bwzhang@) Adding a unittest for the hybridnorm.
+        # v2: see comments on NormPosition for details.
         structure: str = "prenorm"
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.structure in ["prenorm", "postnorm"]:
-            self._add_child("norm", cfg.norm.set(input_dim=cfg.target_dim))
-        elif cfg.structure == "hybridnorm":
-            self._add_child("prenorm", cfg.norm.set(input_dim=cfg.target_dim))
-            self._add_child("postnorm", cfg.norm.set(input_dim=cfg.target_dim))
+        if cfg.structure == "v2":
+            if not isinstance(cfg.norm, dict):
+                raise ValueError(f"When structure=v2, cfg.norm must be a dict: {cfg.norm}")
+            for position, norm in cfg.norm.items():
+                self._add_child(position.value, norm.set(input_dim=cfg.target_dim))
         else:
-            raise NotImplementedError(cfg.structure)
+            if not isinstance(cfg.norm, InstantiableConfig):
+                raise ValueError("When structure != v2, cfg.norm must be a config.")
+            if cfg.structure in ["prenorm", "postnorm"]:
+                self._add_child("norm", cfg.norm.set(input_dim=cfg.target_dim))
+            elif cfg.structure == "hybridnorm":
+                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.target_dim))
+                self._add_child("postnorm", cfg.norm.set(input_dim=cfg.target_dim))
+            else:
+                raise NotImplementedError(cfg.structure)
+
         self._add_child(
             "attention",
             cfg.attention.set(
@@ -2757,6 +2793,13 @@ class TransformerAttentionLayer(BaseLayer):
             data = skip_input + self.stochastic_depth(
                 self.dropout(self.postnorm(atten_output.data))
             )
+        elif cfg.structure == "v2":
+            norm_target = self.in_norm(target) if NormPosition.IN_NORM in cfg.norm else target
+            atten_state, atten_output = attention_thunk(norm_target)
+            data = atten_output.data
+            data = self.res_norm(data) if NormPosition.RES_NORM in cfg.norm else data
+            data = target + self.stochastic_depth(self.dropout(data))
+            data = self.out_norm(data) if NormPosition.OUT_NORM in cfg.norm else data
         else:
             raise NotImplementedError(cfg.structure)
         return dict(attention=atten_state), self.Output(
@@ -2917,8 +2960,10 @@ class TransformerFeedForwardLayer(BaseLayer):
         linear2: InstantiableConfig = Linear.default_config().set(
             param_partition_spec=["model", None]
         )
-        norm: InstantiableConfig = LayerNorm.default_config()  # The normalization layer config.
-
+        # The normalization layer config.
+        norm: Union[
+            InstantiableConfig, dict[NormPosition, InstantiableConfig]
+        ] = LayerNorm.default_config()
         # The activation function(s).
         #
         # If a single string, the activation applied on the output of linear1.
@@ -2941,11 +2986,12 @@ class TransformerFeedForwardLayer(BaseLayer):
         # https://github.com/tensorflow/models/blob/master/official/projects/vit/modeling/nn_blocks.py#L103-L119
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
 
-        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm".
+        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm", "v2".
         # * prenorm: y = x + feedforward(norm(x))
         # * postnorm: y = norm(x + feedforward(x))
-        # * hybridnorm: y = postnorm(x + feedforward(prenorm(x)))
+        # * hybridnorm: y = x + postnorm(feedforward(prenorm(x)))
         # * nonorm: y = feedforward(x)   # no residual, which is usually applied externally.
+        # * v2: see comments NormPosition for details.
         #
         # References:
         # prenorm/postnorm: https://arxiv.org/abs/2002.04745.
@@ -2977,15 +3023,23 @@ class TransformerFeedForwardLayer(BaseLayer):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg: TransformerFeedForwardLayer.Config = self.config
-        if cfg.structure in ["prenorm", "postnorm"]:
-            self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "hybridnorm":
-            self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
-            self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "nonorm":
-            pass
+        if cfg.structure == "v2":
+            if not isinstance(cfg.norm, dict):
+                raise ValueError(f"When structure=v2, cfg.norm must be a dict: {cfg.norm}")
+            for position, norm in cfg.norm.items():
+                self._add_child(position.value, norm.set(input_dim=cfg.input_dim))
         else:
-            raise NotImplementedError(cfg.structure)
+            if not isinstance(cfg.norm, InstantiableConfig):
+                raise ValueError("When structure != v2, cfg.norm must be a config.")
+            if cfg.structure in ["prenorm", "postnorm"]:
+                self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
+            elif cfg.structure == "hybridnorm":
+                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
+                self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
+            elif cfg.structure == "nonorm":
+                pass
+            else:
+                raise NotImplementedError(cfg.structure)
 
         if isinstance(cfg.hidden_dim, int):
             hidden_dim = cfg.hidden_dim
@@ -3009,7 +3063,9 @@ class TransformerFeedForwardLayer(BaseLayer):
             "linear2",
             cfg.linear2.set(input_dim=hidden_dim, output_dim=cfg.input_dim),
         )
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
+        # Add dropout layers for different structures.
+        # Always apply two dropouts in v2 structure.
+        if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
             self._add_child("dropout1", cfg.dropout)
             self._add_child("dropout2", cfg.dropout)
         elif cfg.structure in ["postnorm"]:
@@ -3080,6 +3136,19 @@ class TransformerFeedForwardLayer(BaseLayer):
             # this layer, e.g., in ParallelTransformerLayer.
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
+        elif cfg.structure == "v2":
+            x = self.in_norm(inputs) if NormPosition.IN_NORM in cfg.norm else inputs
+            x = self._linear1_activation(x)
+            x = self.dropout1(x)
+            x = _linear2(x)
+            x = self._remat_name(x, remat_pt2)
+            x = self.res_norm(x) if NormPosition.RES_NORM in cfg.norm else x
+            x = self.dropout2(x)
+            x = self.stochastic_depth(x)
+            if cfg.residual_weight != 1:
+                x *= cfg.residual_weight
+            x += inputs
+            x = self.out_norm(x) if NormPosition.OUT_NORM in cfg.norm else x
         else:
             raise NotImplementedError(cfg.structure)
         return x

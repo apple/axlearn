@@ -33,7 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 import tensorstore as ts
 from absl import logging
-from jax._src import array, config, typing
+from jax._src import array, typing
 from jax._src.layout import Layout
 from jax.experimental.array_serialization import serialization
 
@@ -155,7 +155,7 @@ def _transfer_to_host(data: Tensor) -> Tensor:
     """
     device = list(data.devices())[0]
     has_pinned_host = any(m.kind == "pinned_host" for m in device.addressable_memories())
-    if config.enable_memories.value and has_pinned_host:
+    if has_pinned_host:
         # If available, transfer to pinned host memory.
         data = jax.device_put(
             data, jax.sharding.SingleDeviceSharding(device, memory_kind="pinned_host")

@@ -42,7 +42,6 @@ from typing import (
 
 import attr
 import jax
-import jax.flatten_util
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
@@ -136,7 +135,11 @@ class TensorSpec:
     @property
     def sharding(self) -> jax.sharding.Sharding:
         mesh = thread_resources.env.physical_mesh
-        return jax.sharding.NamedSharding(mesh, self.mesh_axes, memory_kind=self.memory_kind)
+        return jax.sharding.NamedSharding(
+            mesh,
+            PartitionSpec() if self.mesh_axes is None else self.mesh_axes,
+            memory_kind=self.memory_kind,
+        )
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]

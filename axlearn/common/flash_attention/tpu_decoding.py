@@ -44,7 +44,7 @@ from axlearn.common.flash_attention.common import (
     get_tpu_dot_precision,
     query_iterator_indices,
 )
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 
 def _tpu_decoding_kernel(
@@ -140,13 +140,17 @@ class TPUDecoding(BaseSingleStepDecoding):
     "Wraps the TPU decoding kernel."
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(
+            input_batch=input_batch,
+        ):
             return False
 
         block_size = self.cfg.tpu_block_size
+        key: Tensor = input_batch["key"]
         k_seq_len = key.shape[1]
         if k_seq_len % block_size != 0 and k_seq_len > block_size:
             return self._log_unsupported(f"{k_seq_len=} is not divisible by {block_size=}")
@@ -155,14 +159,10 @@ class TPUDecoding(BaseSingleStepDecoding):
     @partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
+        bias: BaseAttentionBias = input_batch["bias"]
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:
             raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
@@ -181,6 +181,9 @@ class TPUDecoding(BaseSingleStepDecoding):
         # Pallas TPU doesn't support pl.load(..., mask=xxx), so we kv len must divide block size.
         # However, we can reduce the block size to support the case where
         # padded_kv_seq_len < block_size.
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
         block_size = min(self.cfg.tpu_block_size, key.shape[1])
         orig_q_shape = query.shape
         q_seq_len = query.shape[1]

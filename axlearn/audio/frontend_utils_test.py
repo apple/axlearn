@@ -35,7 +35,7 @@ from axlearn.audio.frontend_utils import (
     windowing,
 )
 from axlearn.audio.test_utils import fake_audio
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import as_tensor
 
 
@@ -393,6 +393,7 @@ def _ref_log_mel_spectrogram(
 
 
 class ShardedFftTest(TestCase):
+    @set_threefry_partitionable(False)  # TODO(Luzy): update for threefry_partitionable True
     def test_fft(self):
         input_shape = (8, 800, 400)
         fft_size = 512

@@ -22,6 +22,7 @@ from axlearn.cloud.common.bastion import (
 )
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.types import JobMetadata
+from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import bundler, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.jobset_utils import (
@@ -30,6 +31,8 @@ from axlearn.cloud.gcp.jobset_utils import (
     _MEMORY_REQUEST_PERCENTAGE,
     _METADATA_GOOGLE_INTERNAL_IP,
     BASTION_JOB_VERSION_LABEL,
+    BaseReplicatedJob,
+    CompositeReplicatedJob,
     GCSFuseMount,
     HostMount,
     _LoadBalancer,
@@ -42,6 +45,7 @@ from axlearn.cloud.gcp.system_characteristics import (
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.cloud.gcp.tpu import get_default_env
 from axlearn.common.compiler_options import infer_tpu_type
+from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
 
 
@@ -499,6 +503,49 @@ class TPUReplicatedJobTest(TestCase):
         self.assertEqual(lb2.service_name, "jobset1-job2-service")
         self.assertEqual(lb2.target_port, 8080)
         self.assertEqual(lb2.port, 443)
+
+
+class CompositeReplicatedJobTest(TestCase):
+    def test_composite_replicated_job(self):
+        # pylint: disable=missing-class-docstring
+
+        class DummyReplicatedJob(BaseReplicatedJob):
+            @config_class
+            class Config(BaseReplicatedJob.Config):
+                command: Required[str] = REQUIRED
+
+            @classmethod
+            def define_flags(cls, fv):
+                super().define_flags(fv)
+                flags.DEFINE_string("command", None, "Command", flag_values=fv)
+
+            def __call__(self):
+                cfg: DummyReplicatedJob.Config = self.config  # pytype: disable=invalid-annotation
+                return [{"name": cfg.name, "command": cfg.command}]
+
+        cfg: CompositeReplicatedJob.Config = CompositeReplicatedJob.default_config().set(
+            inner={
+                "a": DummyReplicatedJob.default_config(),
+                "b": DummyReplicatedJob.default_config(),
+            }
+        )
+        fv = flags.FlagValues()
+        define_flags(cfg, fv)
+        for child in ("a", "b"):
+            setattr(fv, f"{child}.name", child)
+            setattr(fv, f"{child}.command", f"{child}_command")
+        from_flags(cfg, fv)
+
+        for child in ("a", "b"):
+            # pylint: disable=unsubscriptable-object
+            self.assertEqual(cfg.inner[child].name, child)
+            self.assertEqual(cfg.inner[child].command, f"{child}_command")
+
+        composite = cfg.instantiate(bundler=mock.Mock())
+        self.assertNestedEqual(
+            [{"name": "a", "command": "a_command"}, {"name": "b", "command": "b_command"}],
+            composite(),
+        )
 
 
 class A3HighReplicatedJobTest(TestCase):

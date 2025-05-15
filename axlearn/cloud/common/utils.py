@@ -3,7 +3,9 @@
 """General-purpose utilities."""
 
 import collections
+import copy
 import dataclasses
+import functools
 import logging as pylogging
 import os
 import shlex
@@ -405,8 +407,9 @@ def infer_resources(cfg: ConfigBase) -> ResourceMap[int]:
     return dict(total_resources)
 
 
-# TODO(markblee): Support generic `--config_override=<path>=<value>` instead of requiring
-# `define_flags`.
+_FLAG_NAMESPACE_ATTRIBUTE = "__axlearn_flag_namespace_mapping"
+
+
 def define_flags(cfg: ConfigBase, fv: flags.FlagValues):
     """Define flags on `fv` by recursively invoking `cfg.klass.define_flags`.
 
@@ -420,17 +423,34 @@ def define_flags(cfg: ConfigBase, fv: flags.FlagValues):
     Raises:
         ValueError: If `cfg` is not a config.
     """
+    # pylint: disable=protected-access
     if not isinstance(cfg, ConfigBase):
         raise ValueError(f"Expected {ConfigBase}, got: {type(cfg)}")
 
-    def visit_fn(*_):  # Unused.
-        pass
+    def visit_fn(_, value):
+        if not isinstance(value, FlagConfigurable.Config):
+            return
+        for namespace, child in _get_namespaced_config(value).items():
+            sub_fv = flags.FlagValues()
+            define_flags(child, sub_fv)
+            # Flatten the child flags into `fv`. See `FlagValues.append_flag_values` for ref.
+            # The main difference is that we namespace the flags by child name.
+            for flag_name, flag in sub_fv._flags().items():
+                # absl flattens short names into `fv` during __setattr__.
+                # Keep things simple for now by limiting to verbose names.
+                if flag.short_name:
+                    raise NotImplementedError(
+                        f"Short names are currently not supported: {flag.short_name}"
+                    )
+                fv[f"{namespace}.{flag_name}"] = flag
 
     def enter_fn(_, value, default_kv):
         if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "define_flags"):
             return default_kv
         klass: FlagConfigurable = value.klass
         klass.define_flags(fv)
+        if hasattr(klass, _FLAG_NAMESPACE_ATTRIBUTE):
+            return None  # Enter visit_fn.
         return default_kv
 
     cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
@@ -457,17 +477,38 @@ def from_flags(cfg: _C, fv: flags.FlagValues, **kwargs) -> _C:
     Raises:
         ValueError: If `cfg` is not a config.
     """
+    # pylint: disable=protected-access
     if not isinstance(cfg, ConfigBase):
         raise ValueError(f"Expected {ConfigBase}, got: {type(cfg)}")
 
-    def visit_fn(*_):  # Unused.
-        pass
+    def visit_fn(_, value, method):
+        if not isinstance(value, FlagConfigurable.Config):
+            return
+        for namespace, child in _get_namespaced_config(value).items():
+            sub_fv = copy.deepcopy(fv)
+            fv_flags_dict = fv._flags()
+
+            # Propagate the following flags from fv to sub_fv:
+            # 1. flags starting with `namespace` will have the namespace prefix stripped;
+            # 2. if the resulting flag shares a name with an ancestor, inherit the default.
+            for flag_name, flag in fv_flags_dict.items():
+                parts = flag_name.split(".", maxsplit=1)
+                if len(parts) < 2 or parts[0] != namespace:
+                    continue
+                sub_fv.remove_flag_values([flag_name])
+                if parts[1] in fv_flags_dict:
+                    flag._set_default(fv_flags_dict[parts[1]].value)
+                sub_fv[parts[1]] = flag
+
+            method(child, sub_fv)
 
     def enter_set_defaults(_, value, default_kv):
         if not isinstance(value, Configurable.Config) or not hasattr(value.klass, "set_defaults"):
             return default_kv
         klass: FlagConfigurable = value.klass
         klass.set_defaults(fv)
+        if hasattr(klass, _FLAG_NAMESPACE_ATTRIBUTE):
+            return None  # Enter visit_fn.
         return default_kv
 
     def enter_from_flags(_, value, default_kv):
@@ -475,13 +516,22 @@ def from_flags(cfg: _C, fv: flags.FlagValues, **kwargs) -> _C:
             return default_kv
         klass: FlagConfigurable = value.klass
         klass.from_flags(fv, prebuilt_cfg=value, **kwargs)
+        if hasattr(klass, _FLAG_NAMESPACE_ATTRIBUTE):
+            return None  # Enter visit_fn.
         return default_kv
+
+    visit_set_defaults = functools.partial(
+        visit_fn, method=lambda child, fv: child.klass.set_defaults(fv)
+    )
+    visit_from_flags = functools.partial(
+        visit_fn, method=lambda child, fv, kwargs=kwargs: from_flags(child, fv, **kwargs)
+    )
 
     # Set all defaults across the hierarchy first, so that default override can happen.
     # This ensures that fv defaults are consistent.
-    cfg.visit(visit_fn=visit_fn, enter_fn=enter_set_defaults)
+    cfg.visit(visit_fn=visit_set_defaults, enter_fn=enter_set_defaults)
     # Read configs from flags.
-    cfg.visit(visit_fn=visit_fn, enter_fn=enter_from_flags)
+    cfg.visit(visit_fn=visit_from_flags, enter_fn=enter_from_flags)
     return cfg
 
 
@@ -552,3 +602,66 @@ class FlagConfigurable(Configurable):
         ```
         """
         del fv
+
+
+_F = TypeVar("_F", bound=FlagConfigurable)
+
+
+# This is provided as a decorator so that users do not need to modify inheritance chains.
+def namespaced(mapping: str):
+    """A class decorator that wraps `FlagConfigurable`s with flag namespaces.
+
+    The config field `mapping` should define a mapping from namespace to child `FlagConfigurable`.
+    When using `define_flags` and `from_flags`, each child will automatically have its flags
+    namespaced, s.t. the same configs can be set to different values across children.
+
+    For example, one can define a composite job that uses a config field "inner" to define the
+    namespace to child mapping:
+    ```
+    @namespaced('inner')
+    class CompositeFlagConfigurable(FlagConfigurable):
+
+        @config_class
+        class Config(FlagConfigurable.Config):
+            inner: Required[dict[str, FlagConfigurable]] = REQUIRED
+
+        def __call__(self):
+            outputs = []
+            for name, child in self._inner.items():
+                outputs.extend(child(...))
+            return outputs
+
+    JobAB = CompositeFlagConfigurable.default_config().set(inner={"a": JobA, "b": JobB})
+    ```
+
+    Supposing that `JobA` and `JobB` both define the flags `--name` and `--command`, the
+    corresponding composite flags will be defined:
+    ```
+    --a.name --a.command
+    --b.name --b.command
+    ```
+    This allows for providing flags to specific nested jobs even if they follow similar interfaces.
+    """
+
+    def wrapper(cls: type[_F]) -> type[_F]:
+        existing = getattr(cls, _FLAG_NAMESPACE_ATTRIBUTE, None)
+        if existing is not None and existing != mapping:
+            raise ValueError(f"{cls} already defines a namespace: {existing}")
+        setattr(cls, _FLAG_NAMESPACE_ATTRIBUTE, mapping)
+        return cls
+
+    return wrapper
+
+
+def _get_namespaced_config(cfg: ConfigBase) -> dict[str, ConfigBase]:
+    """Obtains the value of cfg that defines the {namespace: child} mapping.
+
+    If the cfg doesn't define a namespace attribute, an empty dict will be returned.
+    """
+    config_key = getattr(cfg.klass, _FLAG_NAMESPACE_ATTRIBUTE, None)
+    if config_key is None:
+        return {}
+    mapping = getattr(cfg, config_key, None)
+    if not isinstance(mapping, dict):
+        raise ValueError(f"{type(cfg)} does not define a mapping at {config_key}.")
+    return mapping
