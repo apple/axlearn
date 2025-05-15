@@ -175,6 +175,40 @@ def get_remat_policy():
         remat_policy = {}
     return remat_policy
 
+def callback_modify_trainer_kwargs_env_vars(trainer_kwargs):
+    """
+    Update trainer_kwargs based on environment variables.
+
+    Args:
+        trainer_kwargs (dict): Trainer configuration to modify.
+
+    Returns:
+        dict: Updated trainer_kwargs.
+    """
+    if EVAL_GBS := os.getenv("EVAL_GBS"):
+        trainer_kwargs["eval_batch_size"] = int(EVAL_GBS)
+
+    if all(os.getenv(var) for var in ["OPTIMIZER_LR_BASE", "OPTIMIZER_LR_EXP"]):
+        lr_exp = int(os.getenv("OPTIMIZER_LR_EXP"))
+        opt_lr = float(os.getenv("OPTIMIZER_LR_BASE")) * (10 ** lr_exp)
+        trainer_kwargs["learner_kwargs"]["peak_lr"] = opt_lr
+    if OPTIMIZER_WD := os.getenv("OPTIMIZER_WD"):
+        trainer_kwargs["learner_kwargs"]["weight_decay"] = float(OPTIMIZER_WD)
+
+    if SAVE_EVERY_N_STEPS := os.getenv("SAVE_EVERY_N_STEPS"):
+        trainer_kwargs["save_every_n_steps"] = int(SAVE_EVERY_N_STEPS)
+    if EVAL_EVERY_N_STEPS := os.getenv("EVAL_EVERY_N_STEPS"):
+        trainer_kwargs["eval_every_n_steps"] = int(EVAL_EVERY_N_STEPS)
+
+    return trainer_kwargs
+ 
+def check_env_vars():
+    required_vars = ["OPTIMIZER_LR_EXP", "OPTIMIZER_LR_BASE", "OPTIMIZER_WD", "SAVE_EVERY_N_STEPS", "EVAL_EVERY_N_STEPS"]
+    missing_vars = [var for var in required_vars if os.getenv(var) is None]
+    if missing_vars:
+        raise EnvironmentError(f"The following environment variables are expected but not found: {', '.join(missing_vars)}")
+
+
 def common_trainer_kwargs() -> dict[str, Any]:
     """Returns kwargs that are common to all configs."""
     return {
@@ -338,6 +372,7 @@ def get_trainer_kwargs(
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 8 * (1024**2)  # 8M tokens.
     trn2_config = _generate_trn2_custom_configs(model_size)
+    check_env_vars()
     # pylint: disable=use-dict-literal
     if model_size == "test":
         trainer_kwargs = dict(
@@ -588,7 +623,7 @@ def get_trainer_kwargs(
     merged_trainer_kwargs.update(
         {k: v for k, v in trainer_kwargs.items() if k not in ("model_kwargs", "learner_kwargs")}
     )
-
+    callback_modify_trainer_kwargs_env_vars(trainer_kwargs)
     # Update the model_kwargs
     model_kwargs: dict[str, Any] = merged_trainer_kwargs.pop("model_kwargs")
     model_kwargs.update(trainer_kwargs.get("model_kwargs", {}))
