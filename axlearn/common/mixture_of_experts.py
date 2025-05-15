@@ -31,11 +31,8 @@ from jax._src.mesh import thread_resources
 import numpy as np
 from absl import logging
 from jax.experimental.pjit import pjit
-<<<<<<< HEAD
-=======
 import jax.lax as lax
 from axlearn.common.attention import NormPosition
->>>>>>> aws-moe
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
