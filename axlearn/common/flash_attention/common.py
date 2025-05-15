@@ -43,20 +43,13 @@ def build_mask(
     num_q_blocks = pl.cdiv(q_seq_len, block_q)
     num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
     block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
-    # # Initialize the scan begin and end indices.
-    rows = np.arange(q_seq_len, dtype=np.int32)
-    cols = np.arange(kv_seq_len, dtype=np.int32)
     # Run a compile-time evaluation to get the mask array.
-    # TODO(kelvin-zou): use a block-wise mask function to avoid the compile-time
-    # high memory usage.
-    with jax.ensure_compile_time_eval():
-        mask_array = np.asarray(mask_fn(rows[:, None], cols[None, :]))
     for i in range(0, q_seq_len, block_q):
         for j in range(0, kv_seq_len, block_k):
-            # Extract the block
-            block = mask_array[i : i + block_q, j : j + block_k]
+            rows = np.arange(i, i + block_q, dtype=np.int32)
+            cols = np.arange(j, j + block_k, dtype=np.int32)
             # All empty means skipping
-            if not block.any():
+            if not mask_fn(rows[:, None], cols[None, :]).any():
                 block_mask_map[i // block_q, j // block_k] = False
     return block_mask_map
 
