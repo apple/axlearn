@@ -41,6 +41,7 @@ from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
+    FP8ConfigModifier,
     GradientAccumulationModifier,
     MeshShapeModifier,
     ModuleConfigModifier,
@@ -65,9 +66,6 @@ from axlearn.experiments.text.gpt.common import (
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
-
-# Import the FP8ConfigModifier below if using FP8 training. See config for A3 / A4 instances below
-# from axlearn.common.trainer_config_modifier import FP8ConfigModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
@@ -500,18 +498,13 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
-                # Enable support for FP8 training on H100/200 instance types
                 (
                     "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
-                            ),
-                            # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            # FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=128
-                            # )
+                            )
                         ],
                     ),
                 ),
@@ -525,10 +518,6 @@ def get_trainer_kwargs(
                             ),
                             # Modify the GPU block-size for B200 platform (Pallas kernels)
                             FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
-                            # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            # FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=128
-                            # ),
                         ],
                     ),
                 ),
@@ -623,7 +612,8 @@ def get_trainer_kwargs(
                 ),
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
+                    # pylint: disable = line-too-long
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
                 (
@@ -768,10 +758,6 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
                             ),
-                            # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            # FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=128
-                            # )
                         ],
                     ),
                 ),
@@ -784,10 +770,6 @@ def get_trainer_kwargs(
                             ),
                             # Modify the GPU block-size for B200 platform (Pallas kernels)
                             FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
-                            # Uncomment the FP8ConfigModifier block to use FP8 training.
-                            # FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=128
-                            # )
                         ],
                     ),
                 ),
@@ -959,6 +941,54 @@ def trainer_configs(
             ),
             **kwargs,
         )
+
+        def make_fp8_config(base_config_name: str) -> SpmdTrainer.Config:
+            """Make a FP8 variant of the base config.
+
+            Not all accelerators are compatible with FP8. Support is currently
+            available for NVIDIA H100, H200, and B200.
+
+            Args:
+                base_config_name: The base config name.
+
+            Returns:
+                A trainer config that uses FP8.
+            """
+
+            # pytype: disable=annotation-type-mismatch
+            cfg: SpmdTrainer.Config = config_map[base_config_name]().clone()
+            for accelerator, current_config in cfg.mesh_rules:
+                # Only create FP8 configs for accelerators that support them
+                if any(
+                    _accelerator in accelerator
+                    for _accelerator in [
+                        "a3-highgpu-8g",
+                        "a3-megagpu-8g",
+                        "a3-ultragpu-8g",
+                        "a4-highgpu-8g",
+                        "p5.48xlarge",
+                        "p4de.24xlarge",
+                    ]
+                ):
+                    # If we already are using ChainConfigModifier, just append the FP8ConfigModifier
+                    if isinstance(current_config, ChainConfigModifier.Config):
+                        current_config.config_modifiers.append(
+                            FP8ConfigModifier.default_config().set(fp8_amax_history_length=128)
+                        )
+                    else:
+                        # Create a new ChainConfigModifier, preserving the mesh_shape
+                        current_config = ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(mesh_shape=current_config),
+                                FP8ConfigModifier.default_config().set(fp8_amax_history_length=128),
+                            ]
+                        )
+            return cfg
+
+        # Make FP8 config
+        make_fp8_config_func = functools.partial(make_fp8_config, config_name)
+        config_map[f"{config_name}-fp8"] = make_fp8_config_func
+
         if model_size == "test":
 
             def wrapper(config_name: str = config_name):
@@ -1013,5 +1043,12 @@ def trainer_configs(
             # Make single-host config
             make_single_host_config_func = functools.partial(make_single_host_config, config_name)
             config_map[f"{config_name}-single-host"] = make_single_host_config_func
+
+            # Make single-host configs for FP8
+            if f"{config_name}-fp8" in config_map:
+                make_single_host_fp8_config_func = functools.partial(
+                    make_single_host_config, f"{config_name}-fp8"
+                )
+                config_map[f"{config_name}-fp8-single-host"] = make_single_host_fp8_config_func
 
     return config_map
