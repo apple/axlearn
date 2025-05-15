@@ -563,6 +563,8 @@ def get_training_configs(test_suite="presubmit", layer='moe', test=TopKGatingGat
         return builder.build_toy_grid_space()
     elif test_suite == 'presubmit':
         return builder.build_presubmit_grid_space()
+    elif test_suite == 'small_models':
+        return builder.build_grid_space_12B() + builder.build_grid_space_50B()
     elif test_suite == '12b':
         return builder.build_grid_space_12B()
     elif test_suite == '50b':

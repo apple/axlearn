@@ -6,10 +6,9 @@ import contextlib
 import enum
 import numbers
 import os
-from collections.abc import Sequence
 from functools import wraps
 from types import FunctionType
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 import jax
 import numpy as np
@@ -160,6 +159,61 @@ class NoOpWriter(BaseWriter):
         pass
 
 
+# Enumeration of summary types for configurable write intervals.
+# Used to specify the summary category when configuring type-specific `write_every_n_steps_map`
+# in `SummaryWriter.Config`.
+# We use `Literal` instead of `Enum` because W&B config logging only supports Python primitives.
+# Values:
+#     Scalar: Scalar values, e.g., loss, learning rate.
+#     Tensor: Tensor values whose ndim is neither 0 (SCALAR) nor 4 (IMAGE).
+#     Text: Text summaries, such as configs or notes.
+#     Audio: Audio samples, such as waveform outputs.
+#     Image: Image summaries, including input/output visualizations.
+SummaryKind = Literal["Scalar", "Tensor", "Text", "Audio", "Image"]
+
+
+def _match_summary_type(
+    kind: SummaryKind,
+    *,
+    value: Union[Summary, Tensor],
+    raw_value: Union[np.ndarray, numbers.Number, str],
+) -> bool:
+    """Checks whether a given value is appropriate for the specified summary kind.
+
+    This is used to determine whether a particular summary value (or wrapper) matches
+    the expected structure for a given summary type. This ensures that logging backends
+    (like TensorBoard or WandB) can handle the value correctly.
+
+    Args:
+        kind: The target summary kind, such as "Scalar", "Tensor", "Text", "Image", or "Audio".
+        value: The wrapped or annotated summary object (e.g., ImageSummary, AudioSummary),
+            or the raw array itself.
+        raw_value: The underlying unwrapped value, typically a NumPy array or scalar.
+
+    Returns:
+        True if the value matches the expected shape/type for the summary kind.
+
+    Raises:
+        ValueError: If the provided `kind` is unrecognized.
+    """
+    if kind == "Text":
+        return isinstance(raw_value, str)
+    elif kind == "Scalar":
+        return isinstance(raw_value, numbers.Number) or (
+            isinstance(raw_value, np.ndarray) and raw_value.ndim == 0
+        )
+    elif kind == "Tensor":
+        return isinstance(raw_value, np.ndarray) and raw_value.ndim != 4
+    elif kind == "Image":
+        return isinstance(value, ImageSummary) or (
+            isinstance(raw_value, np.ndarray) and raw_value.ndim == 4
+        )
+    elif kind == "Audio":
+        return isinstance(value, AudioSummary)
+    else:
+        raise ValueError(f"Invalid summary kind: {kind}")
+
+
 class SummaryWriter(BaseWriter):
     """Tensorflow summary writer."""
 
@@ -171,6 +225,11 @@ class SummaryWriter(BaseWriter):
 
         Attributes:
             write_every_n_steps: Writes summary every N steps.
+            write_every_n_steps_map: Optional per-summary-type interval override. Keys are
+                members of `SummaryType`, and values are integers indicating how frequently
+                that type of summary should be logged (e.g., log images every 1000 steps).
+                If a type is not listed, `write_every_n_steps` is used as fallback. Each value must
+                be a positive integer multiple of `write_every_n_steps`.
             max_queue: Configures maximum number of summaries before flush.
                 If None, uses the `tf_summary` default (10).
             flush_ms: Largest interval between flushes in milliseconds.
@@ -178,6 +237,7 @@ class SummaryWriter(BaseWriter):
         """
 
         write_every_n_steps: int = 1
+        write_every_n_steps_map: Optional[dict[SummaryKind, int]] = None
         max_queue: Optional[int] = None
         flush_ms: Optional[float] = None
 
@@ -206,6 +266,14 @@ class SummaryWriter(BaseWriter):
                 if len(parts) == 2:
                     tf_summary.text(f"trainer_config/{parts[0]}", parts[1], step=step)
 
+    def _time_to_write(self, step: int, kind: SummaryKind) -> bool:
+        cfg = self.config
+        if cfg.write_every_n_steps_map is None:
+            return True
+        else:
+            n_steps = cfg.write_every_n_steps_map.get(kind, cfg.write_every_n_steps)
+            return step % n_steps == 0
+
     def __call__(self, step: int, values: dict[str, Any]):
         cfg = self.config
         if step % cfg.write_every_n_steps != 0:
@@ -225,26 +293,49 @@ class SummaryWriter(BaseWriter):
                     logging.warning(
                         "SummaryWriter: %s: %s is not fully replicated", path, raw_value
                     )
-                elif isinstance(value, ImageSummary):
-                    tf_summary.image(path, raw_value, step=step, max_outputs=32)
-                elif isinstance(value, AudioSummary):
-                    tf_summary.audio(
-                        path, raw_value, value.sample_rate, step=step, max_outputs=1, encoding="wav"
-                    )
-                elif isinstance(raw_value, str):
-                    tf_summary.text(path, raw_value, step=step)
-                elif isinstance(raw_value, numbers.Number) or raw_value.ndim == 0:
-                    tf_summary.scalar(path, raw_value, step=step)
-                elif isinstance(raw_value, np.ndarray) and raw_value.ndim == 4:
-                    tf_summary.image(path, raw_value, step=step, max_outputs=25)
-                elif isinstance(raw_value, jax.Array):
-                    tf_summary.histogram(path, raw_value, step=step)
-                else:
-                    logging.warning(
-                        "SummaryWriter: Does not know how to " 'log "%s" (%s).',
-                        path,
-                        raw_value.__class__,
-                    )
+                    return
+
+                if isinstance(raw_value, jax.Array):
+                    raw_value = np.asarray(raw_value)
+
+                if _match_summary_type("Image", value=value, raw_value=raw_value):
+                    if self._time_to_write(step, "Image"):
+                        tf_summary.image(path, raw_value, step=step, max_outputs=32)
+                    return
+
+                if _match_summary_type("Audio", value=value, raw_value=raw_value):
+                    if self._time_to_write(step, "Audio"):
+                        tf_summary.audio(
+                            path,
+                            raw_value[None],
+                            value.sample_rate,
+                            step=step,
+                            max_outputs=1,
+                            encoding="wav",
+                        )
+                    return
+
+                if _match_summary_type("Text", value=value, raw_value=raw_value):
+                    if self._time_to_write(step, "Text"):
+                        tf_summary.text(path, raw_value, step=step)
+                    return
+
+                if _match_summary_type("Scalar", value=value, raw_value=raw_value):
+                    if self._time_to_write(step, "Scalar"):
+                        tf_summary.scalar(path, raw_value, step=step)
+                    return
+
+                # Note: The tensor check must come after the audio check, since audio is a tensor.
+                if _match_summary_type("Tensor", value=value, raw_value=raw_value):
+                    if self._time_to_write(step, "Tensor"):
+                        tf_summary.histogram(path, raw_value, step=step)
+                    return
+
+                logging.warning(
+                    "SummaryWriter: Does not know how to " 'log "%s" (%s).',
+                    path,
+                    raw_value.__class__,
+                )
 
             def is_leaf(x):
                 return isinstance(x, Summary)
@@ -271,6 +362,12 @@ class WandBWriter(BaseWriter):
         """Configures WandBWriter."""
 
         write_every_n_steps: int = 1  # Writes summary every N steps.
+        # Optional per-summary-type interval override. Keys are members of `SummaryType`,
+        # and values are integers indicating how frequently that type of summary should be logged
+        # (e.g., log images every 1000 steps).
+        # If a type is not listed, `write_every_n_steps` is used as fallback. Each value must be
+        # a positive integer multiple of `write_every_n_steps`.
+        write_every_n_steps_map: Optional[dict[SummaryKind, int]] = None
         prefix: Optional[str] = None  # A prefix to prepend to all metric keys.
 
         # Weights and Biases init arguments.
@@ -364,6 +461,8 @@ class WandBWriter(BaseWriter):
         """Helper function to format config for wandb logging."""
         if isinstance(val, RequiredFieldValue):
             return "REQUIRED"
+        elif isinstance(val, enum.Enum):
+            return str(val)
         elif isinstance(val, dict):
             return type(val)({k: WandBWriter.format_config(v) for k, v in val.items()})
         elif isinstance(val, (tuple, list)):
@@ -389,6 +488,14 @@ class WandBWriter(BaseWriter):
             allow_val_change=True,
         )
 
+    def _time_to_write(self, step: int, kind: SummaryKind) -> bool:
+        cfg = self.config
+        if cfg.write_every_n_steps_map is None:
+            return True
+        else:
+            n_steps = cfg.write_every_n_steps_map.get(kind, cfg.write_every_n_steps)
+            return step % n_steps == 0
+
     @processor_zero_only
     def __call__(self, step: int, values: dict[str, Any]) -> None:
         """Convert nested summary values to wandb acceptable format and upload run data."""
@@ -409,16 +516,40 @@ class WandBWriter(BaseWriter):
             if isinstance(raw_value, jax.Array):
                 raw_value = np.asarray(raw_value)
 
-            if isinstance(value, ImageSummary):
-                return [wandb.Image(el) for el in raw_value]
-            elif isinstance(value, AudioSummary):
-                # W&B calls soundfile.write and saves a wav file with int16 dtype.
-                sample_rate = value.sample_rate
-                assert raw_value.ndim == 3, raw_value.shape
-                assert np.issubdtype(raw_value.dtype, np.floating), raw_value.dtype
-                raw_value = (raw_value * 32768).clip(-32768, 32767).astype(np.int16)
-                return [wandb.Audio(el, sample_rate=sample_rate) for el in raw_value]
-            return raw_value
+            if _match_summary_type("Image", value=value, raw_value=raw_value):
+                if self._time_to_write(step, "Image"):
+                    return [wandb.Image(el) for el in raw_value]
+                return
+
+            if _match_summary_type("Audio", value=value, raw_value=raw_value):
+                if self._time_to_write(step, "Audio"):
+                    # W&B calls soundfile.write and saves a wav file with int16 dtype.
+                    sample_rate = value.sample_rate
+                    assert raw_value.ndim == 2, raw_value.shape
+                    assert np.issubdtype(raw_value.dtype, np.floating), raw_value.dtype
+                    raw_value = (raw_value * 32768).clip(-32768, 32767).astype(np.int16)
+                    return wandb.Audio(raw_value, sample_rate=sample_rate)
+                return
+
+            if _match_summary_type("Text", value=value, raw_value=raw_value):
+                if self._time_to_write(step, "Text"):
+                    return raw_value
+                return
+
+            if _match_summary_type("Scalar", value=value, raw_value=raw_value):
+                if self._time_to_write(step, "Scalar"):
+                    return raw_value
+                return
+
+            # Note: The tensor check must come after the audio check, since audio is a tensor.
+            if _match_summary_type("Tensor", value=value, raw_value=raw_value):
+                if self._time_to_write(step, "Tensor"):
+                    return raw_value
+                return
+
+            logging.warning(
+                "WandBWriter: Does not know how to " 'log "%s" (%s).', path, raw_value.__class__
+            )
 
         def is_leaf(x):
             return isinstance(x, Summary)
@@ -431,6 +562,6 @@ class WandBWriter(BaseWriter):
 
         # Wandb doesn't recognize dot-delimited structures, but does recognize `/`
         # and will create the proper nesting if we replace `.` with `/`.
-        values = {k.replace(".", "/"): v for k, v in values.items()}
+        values = {k.replace(".", "/"): v for k, v in values.items() if v is not None}
 
         wandb.log(values, step=step)

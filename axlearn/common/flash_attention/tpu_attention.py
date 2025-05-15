@@ -28,11 +28,9 @@ from jax.experimental.pallas.ops.tpu.flash_attention import (
     below_or_on_diag,
 )
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds as SplashSegmentIds
-from jax.experimental.pallas.ops.tpu.splash_attention import (
-    splash_attention_kernel,
-    splash_attention_mask,
-)
+from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 
+import axlearn.common.flash_attention.tpu_splash_attention as splash_attention_kernel
 from axlearn.common.attention_bias import (
     BaseAttentionBias,
     CausalAttentionBias,
