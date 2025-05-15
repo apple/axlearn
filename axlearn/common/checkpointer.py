@@ -504,11 +504,16 @@ class TensorStoreStateStorage(StateStorage):
         # `on_commit_callback` to finalize the checkpoint.
         spec = self._get_spec(step, state, ckpt_dir)
         if jax.process_index() == 0:
-            if not ckpt_dir.startswith("gs://"):
-                dirs = sorted(list(set(os.path.dirname(path) for path in spec.storage_paths)))
-                logging.info("Creating directories: %s", dirs)
-                list(self._executor.map(fs.makedirs, dirs))
-                logging.info("All directories created")
+            # Only process 0 should create directories to avoid remote filesystem rate limiting
+            # on directory/object creation requests per object.
+            # For example, GCS only allows 1 write per second to the same object name.
+            # See https://cloud.google.com/storage/quotas#objects.
+            # Later fs.makedirs call is fine since it usually checks directory/object existence
+            # before making the creation request.
+            dirs = sorted(list(set(os.path.dirname(path) for path in spec.storage_paths)))
+            logging.info("Creating directories: %s", dirs)
+            list(self._executor.map(fs.makedirs, dirs))
+            logging.info("All directories created")
         # Wait for directory and index creation.
         multihost_utils.sync_global_devices(ckpt_dir)
         # Each worker writes its tf checkpoints under a different path.
