@@ -63,6 +63,21 @@ from axlearn.common.utils import (
     thread_stack_traces,
 )
 
+@contextlib.contextmanager
+def TraceProfileNeuron(num_steps):
+    try:
+        enabled = os.getenv("NEURON_RT_INSPECT_DEVICE_PROFILE", "0" ) == "1" and num_steps == 2
+        if enabled:
+            assert os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR") is not None
+            with jax.profiler.trace(os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR")):
+                yield
+        else:
+            yield
+    finally:
+        if enabled:
+            logging.info(f"Done profiling step 3, exiting now")
+            # run the following command within next 5 min: 'scancel --signal=SIGINT {os.environ.get('SLURM_JOBID')}'")
+            import sys; sys.exit(0)
 
 class TrainerState(NamedTuple):
     prng_key: Union[Tensor, TensorSpec, jax.sharding.NamedSharding]
@@ -241,6 +256,7 @@ class SpmdTrainer(Module):
         self._device_monitor = maybe_instantiate(cfg.device_monitor)
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
+        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -349,6 +365,7 @@ class SpmdTrainer(Module):
                     model=self.model,
                     model_param_partition_specs=model_param_partition_specs,
                 )
+        self._maybe_record_event(measurement.Event.END_ACCELERATOR_INIT)
 
     @property
     def step(self):
@@ -580,53 +597,50 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                for input_batch in self.input.batches(self._input_iter):
-                    self._maybe_record_event(measurement.Event.START_STEP, self._step)
-                    logging.log_first_n(
-                        logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
-                    )
+                input_iterator = self.input.batches(self._input_iter)
+                while True:
+                    self._maybe_record_event(measurement.Event.START_DATA_LOADING)
+                    try:
+                        input_batch = next(input_iterator)
+                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
+                        logging.log_first_n(
+                            logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
+                        )
 
-                    # Stop or start tracing if necessary.
-                    stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
+                        # Stop or start tracing if necessary.
+                        stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
 
-                    self._step = self._step + 1
-                    self.vlog(3, "Start step %s", self.step)
-                    if os.getenv("NEURON_RT_INSPECT_DEVICE_PROFILE", "0" ) == "1" and num_steps == 2:
-                        assert os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR") is not None
-                        with jax.profiler.trace(os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR")):
+                        self._step = self._step + 1
+                        self.vlog(3, "Start step %s", self.step)
+                        self._maybe_record_event(measurement.Event.START_STEP, self._step)
+                        with TraceProfileNeuron(num_steps):
                             output = self._run_step(
                                 utils.host_to_global_device_array(
                                     input_batch,
                                     partition=self._train_step_input_partition_specs(),
                                 ),
                                 force_run_evals=(
-                                    force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
+                                    force_run_eval_sets_at_max_step
+                                    if self.step >= cfg.max_step
+                                    else None
                                 ),
                             )
-                            logging.info(f"Done profiling step 3, waiting for sigint. Run the following command within next 5 min: 'scancel --signal=SIGINT {os.environ.get('SLURM_JOBID')}'")
-                            time.sleep(1800)
-                            import sys; sys.exit(0)
-                    else:
-                        output = self._run_step(
-                            utils.host_to_global_device_array(
-                                input_batch,
-                                partition=self._train_step_input_partition_specs(),
-                            ),
-                            force_run_evals=(
-                                force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
-                            ),
-                        )
-                    self.vlog(3, "Done step %s", self.step)
-                    num_steps += 1
-                    if num_steps % 100 == 0:
-                        now = time.perf_counter()
-                        average_step_time = (now - start_time) / num_steps
-                        self._step_log("Average step time: %s seconds", average_step_time)
-                        self.summary_writer(self.step, {"average_step_time": average_step_time})
-                        num_steps = 0
-                        start_time = now
-                    if self.step >= cfg.max_step:
-                        self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
+                        self.vlog(3, "Done step %s", self.step)
+                        num_steps += 1
+                        if num_steps % 100 == 0:
+                            now = time.perf_counter()
+                            average_step_time = (now - start_time) / num_steps
+                            self._step_log("Average step time: %s seconds", average_step_time)
+                            self.summary_writer(self.step, {"average_step_time": average_step_time})
+                            num_steps = 0
+                            start_time = now
+                        if self.step >= cfg.max_step:
+                            self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
+                            break
+                    except StopIteration:
+                        # Add END_DATA_LOADING event here to close the unpaired START_DATA_LOADING
+                        # event.
+                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         break
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
@@ -866,6 +880,7 @@ class SpmdTrainer(Module):
             A boolean indicating whether the model training should start. If not, return
                 None from the `run` function.
         """
+        self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
         cfg = self.config
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
@@ -898,6 +913,7 @@ class SpmdTrainer(Module):
             return False
 
         self._jit_train_step = self._pjit_train_step()
+        self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:

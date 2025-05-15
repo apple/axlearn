@@ -10,25 +10,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from absl import flags
 
-from axlearn.open_api.mock_utils import mock_huggingface_hub_package, mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
-mock_huggingface_hub_package()
-
-# isort: off
-# pylint: disable=wrong-import-position
-from axlearn.open_api import common
-from axlearn.open_api.common import Evaluator, Generator
-from axlearn.open_api.evaluator import evaluate_from_file, evaluate_from_eval_set
+# Mock openai to avoid unnecessary dependency on openai library.
+with mock_utils.mock_openai_package():
+    # isort: off
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api import common
+    from axlearn.open_api.common import Evaluator, Generator
+    from axlearn.open_api.evaluator import evaluate_from_file, evaluate_from_eval_set
 
 # pylint: enable=wrong-import-position
 # isort: one
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package, mock_utils.mock_huggingface_hub_package)
 class TestEvaluateFromFile(unittest.IsolatedAsyncioTestCase):
     """Unit test for evaluate_from_file."""
 
     def setUp(self):
+        super().setUp()
         self.mock_responses = [
             {"response": "response1"},
             {"response": "response2"},
@@ -47,6 +48,7 @@ class TestEvaluateFromFile(unittest.IsolatedAsyncioTestCase):
         # Close and remove the temporary file
         self.temp_file.close()
         os.remove(self.temp_file_path)
+        super().tearDown()
 
     @patch(
         f"{common.__name__}.Evaluator.evaluate",

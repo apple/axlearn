@@ -41,7 +41,6 @@ from absl import logging
 from array_record.python.array_record_data_source import PathLikeOrFileInstruction
 from grain._src.python.data_loader import _determine_worker_count
 from grain._src.python.dataset import dataset as dataset_base
-from grain._src.python.dataset.transformations import packing
 from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
 
@@ -62,6 +61,10 @@ SequenceOr = Union[Sequence[_T], _T]
 Tensor = np.ndarray
 # Same as `input_tf_data.PadExampleFn`.
 PadExampleFn = Callable[[Any], Any]
+
+
+class RaggedTensor(list):
+    pass
 
 
 @runtime_checkable
@@ -98,6 +101,25 @@ class BuildDatasetFn(Protocol):
 def _copy_tree(x: _T) -> _T:
     """Copies tree structure without copying values."""
     return jax.tree.map(lambda v: v, x)
+
+
+def _ragged_batch_size(tensor: Union[Tensor, RaggedTensor]) -> int:  # type: ignore
+    """Determines the batch_size of the (optionally ragged) tensor.
+
+    Ragged tensor are represented as list of np.ndarray.
+
+    Args:
+        tensor: A tensor, which could be an Tensor or RaggedTensor.
+
+    Returns:
+        batch_size of the tensor.
+    """
+    if isinstance(tensor, RaggedTensor):
+        return len(tensor)
+    elif hasattr(tensor, "shape"):
+        return tensor.shape[0]
+    else:
+        raise NotImplementedError(type(tensor))
 
 
 def array_record_dataset(
@@ -208,7 +230,9 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
                     continue  # Parent produced an empty batch, continue.
 
                 # Make sure all leaves have same batch dim.
-                if not all(leaves[0].shape[0] == x.shape[0] for x in leaves[1:]):
+                if not all(
+                    _ragged_batch_size(leaves[0]) == _ragged_batch_size(x) for x in leaves[1:]
+                ):
                     raise ValueError(
                         f"Expected all leaves to have same batch dim: {utils.shapes(example)}"
                     )
@@ -216,7 +240,9 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
 
             leaves, structure = self._current_batch
             assert len(leaves) > 0, self._current_batch
-            batch_size = leaves[0].shape[0]  # All leaves have same batch size due to check above.
+            batch_size = _ragged_batch_size(
+                leaves[0]
+            )  # All leaves have same batch size due to check above.
             if batch_size == 0 and self._skip_empty_batch:
                 example = None
             else:
@@ -369,28 +395,6 @@ def _ensure_iter_dataset(ds: Dataset):
         )
 
 
-def trim_and_pack_dataset(ds: Dataset, *, feature_lengths: utils.Nested[int]) -> Dataset:
-    """Similar to `seqio.trim_and_pack_dataset`.
-
-    Different from `seqio.trim_and_pack_dataset`, elements may be packed out of order if doing so
-    produces less padding. Further, elements may be truncated (with remainder dropped). See
-    `SingleBinPackIterDataset` in `grain` or test cases for details.
-
-    Args:
-        ds: A Dataset containing keys in `feature_lengths`.
-        feature_lengths: A (nested) mapping from of feature key to target length.
-            Packing will happen across 0th dimension. Features must be array-like.
-
-    Returns:
-        A Dataset with packed features. Similar to `seqio.trim_and_pack_dataset`, packing introduces
-        additional fields for each feature:
-        - `{feature}_segment_ids`: segment IDs for each packed example, where 0's represent padding;
-        - `{feature}_positions`: positions for each segment, where 0's represent padding.
-    """
-    _ensure_iter_dataset(ds)
-    return packing.SingleBinPackIterDataset(parent=ds, length_struct=feature_lengths)
-
-
 class _ShardDataset(slice_dataset.SliceMapDataset):
     """A thin wrapper of SliceMapDataset that allows setting read config after instantiation.
 
@@ -401,13 +405,14 @@ class _ShardDataset(slice_dataset.SliceMapDataset):
         super().__init__(*args, **kwargs)
         self._iterated = False
 
-    def set_read_config(self, *, num_shards: int, shard_index: int):
+    def set_dispatch_config(self, *, num_shards: int, shard_index: int, feed_batch_size: int):
         """Sets the shard index and count.
 
         The API follows that of `tfds_read_config`.
         """
+        del feed_batch_size
         if self._iterated:
-            raise ValueError("Attempting to `set_read_config` after iterating.")
+            raise ValueError("Attempting to `set_dispatch_config` after iterating.")
         self._start = shard_index
         self._step = num_shards
 
@@ -688,17 +693,26 @@ def pad_for_evaluation(
     return ds
 
 
-def _set_read_config_recursively(source: Dataset, **kwargs) -> bool:
-    """Sets **kwargs on all `shard_dataset` in `source`."""
-    if isinstance(source, _ShardDataset):
+@runtime_checkable
+class PerFeedDataset(Protocol):
+    """A per-feed dataset supports configuring dispatch configs."""
+
+    def set_dispatch_config(self, *, num_shards: int, shard_index: int, feed_batch_size: int):
+        ...
+
+
+def _set_dispatch_config_on_ancestors(source: Dataset, **kwargs) -> bool:
+    """Sets **kwargs for all parents in `source`."""
+    set_any = False
+    if isinstance(source, PerFeedDataset):
         logging.info("Setting read config on %s", source)
-        source.set_read_config(**kwargs)
-        return True
+        source.set_dispatch_config(**kwargs)
+        set_any = True
 
     for parent in source.parents:
-        if _set_read_config_recursively(parent, **kwargs):
-            return True
-    return False
+        set_current = _set_dispatch_config_on_ancestors(parent, **kwargs)
+        set_any = set_any or set_current
+    return set_any
 
 
 class Input(input_base.Input):
@@ -727,10 +741,14 @@ class Input(input_base.Input):
     def dataset(self) -> grain.IterDataset:
         ds = self._source()
         if "input_dispatcher" in self.children:
-            if not _set_read_config_recursively(ds, **self.input_dispatcher.feed_read_config()):
+            if not _set_dispatch_config_on_ancestors(
+                ds,
+                **self.input_dispatcher.feed_read_config(),
+                feed_batch_size=self.input_dispatcher.feed_logical_batch_size,
+            ):
                 raise ValueError(
                     f"Failed to set read config on {ds}. "
-                    f"Please make sure to call {shard_dataset.__name__} if using input dispatch."
+                    f"Please make sure to use a {PerFeedDataset.__name__} if using input dispatch."
                 )
         return maybe_to_iter_dataset(ds)
 

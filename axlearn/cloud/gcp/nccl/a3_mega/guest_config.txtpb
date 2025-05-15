@@ -1,0 +1,132 @@
+# proto-file: guest_config_checker.proto
+# proto-message: guest_config_checker.GuestConfigValidatorConfig
+
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_CROSS_NIC"
+  value: "0"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_ALGO"
+  value: "Ring,Tree"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_PROTO"
+  value: "Simple"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_MIN_NCHANNELS"
+  value: "4"
+}
+env_var {
+  check_policy: POLICY_RECOMMENDED # version needs to be updated
+  name: "NCCL_TUNER_PLUGIN"
+  value: "libnccl-tuner.so"
+}
+# ignore NCCL_TUNER_CONFIG_PATH which causes NCCL to crash if not set properly
+env_var {
+  check_policy: POLICY_RECOMMENDED
+  name: "NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS"
+  value: "600000"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_P2P_NET_CHUNKSIZE"
+  value: "524288"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_P2P_PCI_CHUNKSIZE"
+  value: "524288"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_P2P_NVL_CHUNKSIZE"
+  value: "1048576"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_FASTRAK_NUM_FLOWS"
+  value: "2"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_FASTRAK_USE_SNAP"
+  value: "1"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL"
+  value: "0"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_BUFFSIZE"
+  value: "8388608"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_NET_GDR_LEVEL"
+  value: "PIX"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING"
+  value: "0"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_FASTRAK_USE_LLCM"
+  value: "1"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_NVLS_ENABLE"
+  value: "0"
+}
+# required items
+env_var {
+  check_policy: POLICY_REQUIRED
+  name: "LD_LIBRARY_PATH"
+}
+env_var {
+  check_policy: POLICY_REQUIRED
+  name: "NCCL_FASTRAK_CTRL_DEV"
+}
+env_var {
+  check_policy: POLICY_REQUIRED
+  name: "NCCL_FASTRAK_IFNAME"
+}
+env_var {
+  check_policy: POLICY_REQUIRED
+  name: "NCCL_SOCKET_IFNAME"
+}
+# recommended
+env_var_check_level: CHECK_STRICT
+
+attention_keyword: "NCCL"
+attention_keyword: "FASTRAK"
+attention_keyword: "GPUDIRECTTCPX"
+attention_keyword_check_policy: POLICY_RECOMMENDED
+attention_keyword_check_level: CHECK_STRICT
+unattention_keyword: "NCCL_VERSION"
+unattention_keyword: "NV_LIBNCCL"
+unattention_keyword: "NCCL_GRAPH_DUMP_FILE"
+unattention_keyword: "NCCL_TOPO_DUMP_FILE"
+unattention_keyword: "NCCL_DEBUG"
+unattention_keyword: "NCCL_DEBUG_FILE"
+unattention_keyword: "NCCL_DEBUG_SUBSYS"
+unattention_keyword: "NCCL_SHIM_GUEST_CONFIG_CHECKER_CONFIG_FILE"
+unattention_keyword: "NCCL_TUNER_CONFIG_PATH"  # NCCL crashes if this is not set properly
+unattention_keyword: "NCCL_NET_PLUGIN_TELEMETRY_MODE"  # telemetry related env vars, not performance critical
+unattention_keyword: "NCCL_GPUVIZ"  # telemetry related env vars, not performance critical
+
+cpu_affinity {
+  lo: 32
+  hi: 63
+}
+cpu_affinity_check_policy: POLICY_RECOMMENDED
+cpu_affinity_check_level: CHECK_STRICT

@@ -1,3 +1,4 @@
+# pylint: disable=unbalanced-tuple-unpacking
 # Copyright © 2023 Apple Inc.
 #
 # Some of the code in this file is adapted from:
@@ -35,7 +36,7 @@ from axlearn.common.flash_attention.gpu_attention import (
     PallasGPUFlashAttention,
 )
 from axlearn.common.flash_attention.test_utils import generate_attention_data
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 if jax.default_backend() not in ("gpu", "cpu"):
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
@@ -52,7 +53,7 @@ def _default_tol_fn(backend, dtype):
     raise ValueError(f"Unsupported dtype: {dtype}")
 
 
-TestFn = Callable[[Tensor, Tensor, Tensor], Tensor]
+TestFn = Callable[[Nested[Tensor]], Tensor]
 TolFn = Callable[[str, Any], dict[str, float]]
 
 
@@ -67,21 +68,29 @@ def _test_forward_and_backward(
     forward_tol_fn: Callable = _default_tol_fn,
     backward_tol_fn: Callable = _default_tol_fn,
 ):
+    float_batch = dict(query=q, key=k, value=v)
+    aux_batch = dict(prng_key=jax.random.PRNGKey(44), bias=bias)
+    input_batch = {**float_batch, **aux_batch}
     ref_fn = jax.jit(ref_fn)
     test_fn = jax.jit(test_fn)
-    prng_key = jax.random.PRNGKey(44)
-    jax_out = test_fn(q, k, v, bias, prng_key)
-    jax_ref_out = ref_fn(q, k, v, bias, prng_key)
+    # pylint: disable=not-callable
+    jax_out = test_fn(input_batch)
+    jax_ref_out = ref_fn(input_batch)
     backend = jax.default_backend()
     chex.assert_trees_all_close(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))
 
+    def grad_ref(float_inputs, aux_inputs):
+        full_batch = {**float_inputs, **aux_inputs}
+        return ref_fn(full_batch).mean()
+
+    def grad_test(float_inputs, aux_inputs):
+        full_batch = {**float_inputs, **aux_inputs}
+        return test_fn(full_batch).mean()
+
     # Compare gradients.
-    jax_grads = jax.grad(lambda *args: ref_fn(*args).mean(), argnums=(0, 1, 2))(
-        q, k, v, bias, prng_key
-    )
-    jax_ref_grads = jax.grad(lambda *args: test_fn(*args).mean(), argnums=(0, 1, 2))(
-        q, k, v, bias, prng_key
-    )
+    jax_grads = jax.grad(grad_ref, argnums=0)(float_batch, aux_batch)
+    jax_ref_grads = jax.grad(grad_test, argnums=0)(float_batch, aux_batch)
+
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, **backward_tol_fn(backend, q.dtype))
 
 
@@ -150,10 +159,10 @@ def test_triton_fwd_only_against_ref(
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
-    prng_key = jax.random.PRNGKey(43)
-    o = test_fn(q, k, v, bias, prng_key)
-    o_ref = ref_fn(q, k, v, bias, prng_key)
+    input_batch = dict(query=q, key=k, value=v, prng_key=jax.random.PRNGKey(43), bias=bias)
+    chex.assert_equal(test_fn.is_supported(input_batch), True)
+    o = test_fn(input_batch)
+    o_ref = ref_fn(input_batch)
 
     if dtype == jnp.float16:
         chex.assert_trees_all_close(o, o_ref, atol=0.07)
@@ -204,12 +213,18 @@ def test_triton_against_xla_ref(
         softmax_scale=q.shape[-1] ** -0.5,
         interpret=jax.default_backend() == "cpu",
         dropout_rate=dropout_rate,
-        gpu_block_size=block_size,
+        # Override the gpu_block_size if running on the B200 platform
+        gpu_block_size=(
+            64
+            if jax.default_backend() == "gpu" and "NVIDIA B200" in jax.devices("gpu")[0].device_kind
+            else block_size
+        ),
     )
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
+    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    chex.assert_equal(test_fn.is_supported(input_batch), True)
 
     def forward_tol_fn(backend, dtype):
         del dtype
@@ -249,6 +264,7 @@ def test_sliding_window_mask(
         per_head_dim,
         sliding_window_sz=sliding_window_size,
         with_segment_ids=use_segment_ids,
+        dtype=jnp.float16,
     )
 
     cfg = dict(
@@ -256,10 +272,11 @@ def test_sliding_window_mask(
         interpret=jax.default_backend() == "cpu",
     )
     test_fn = test_cls.default_config().set(**cfg).instantiate()
+    input_batch = dict(query=q, key=k, value=v, bias=bias)
     if test_cls is CuDNNGPUFlashAttention and use_segment_ids:
-        chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), False)
+        chex.assert_equal(test_fn.is_supported(input_batch), False)
         test_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
+    chex.assert_equal(test_fn.is_supported(input_batch), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
     _test_forward_and_backward(q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn)
 
@@ -304,7 +321,8 @@ def test_cudnn_against_triton_ref(
 
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
+    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    chex.assert_equal(test_fn.is_supported(input_batch), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
     def forward_tol_fn(backend, dtype):
@@ -373,10 +391,14 @@ def test_cudnn_dropout_against_xla_dropout(
 
     dropout_mask = (
         test_fn(
-            jnp.zeros(qkv_shape, dtype=dtype),
-            jnp.zeros(qkv_shape, dtype=dtype),
-            jnp.broadcast_to(jnp.eye(per_head_dim, dtype=dtype)[None, :, None], qkv_shape),
-            bias,
+            dict(
+                query=jnp.zeros(qkv_shape, dtype=dtype),
+                key=jnp.zeros(qkv_shape, dtype=dtype),
+                value=jnp.broadcast_to(
+                    jnp.eye(per_head_dim, dtype=dtype)[None, :, None], qkv_shape
+                ),
+                bias=bias,
+            ),
         )
         == 0.0
     ).swapaxes(1, 2)
@@ -388,7 +410,8 @@ def test_cudnn_dropout_against_xla_dropout(
     q = jax.random.normal(k1, qkv_shape, dtype=dtype)
     k = jax.random.normal(k2, qkv_shape, dtype=dtype)
     v = jax.random.normal(k3, qkv_shape, dtype=dtype)
-    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
+    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    chex.assert_equal(test_fn.is_supported(input_batch), True)
 
     ref_fn = functools.partial(
         ref_fn,
@@ -438,7 +461,8 @@ def test_cudnn_seqlen_head_support(
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(query=q, key=k, value=v, bias=bias), True)
+    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    chex.assert_equal(test_fn.is_supported(input_batch), True)
 
     _test_forward_and_backward(
         q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=_cudnn_xla_forward_tol_fn
@@ -450,20 +474,32 @@ def test_cudnn_dropout_determinism():
     if jax.default_backend() == "cpu":
         pytest.skip(reason="cudnn function needs GPU.")
     q, k, v, bias = generate_attention_data(*(1, 128, 128, 2, 64))
+    input_batch = dict(
+        query=q,
+        key=k,
+        value=v,
+        bias=bias,
+    )
     fn = CuDNNGPUFlashAttention.default_config().set(dropout_rate=0.1).instantiate()
 
     outputs = []
     grads = []
 
     def grad_fn(q, k, v, bias):
-        return fn(q, k, v, bias).mean()
+        input_batch = dict(
+            query=q,
+            key=k,
+            value=v,
+            bias=bias,
+        )
+        return fn(input_batch).mean()
 
     for i in range(10):
-        outputs.append(fn(q, k, v, bias))
+        outputs.append(fn(input_batch))
         grads.append(jax.grad(grad_fn, argnums=(0, 1, 2))(q, k, v, bias))
 
     jax.clear_caches()
 
     for i in range(10):
-        chex.assert_trees_all_equal(fn(q, k, v, bias), outputs[i])
+        chex.assert_trees_all_equal(fn(input_batch), outputs[i])
         chex.assert_trees_all_equal(jax.grad(grad_fn, argnums=(0, 1, 2))(q, k, v, bias), grads[i])

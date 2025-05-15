@@ -20,7 +20,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 from axlearn.common.evaler_test import DummyModel
 from axlearn.common.metrics import WeightedScalar
-from axlearn.common.summary import ImageSummary
+from axlearn.common.summary import AudioSummary, ImageSummary
 from axlearn.common.summary_writer import (
     CheckpointerAction,
     CompositeWriter,
@@ -163,6 +163,7 @@ class WandBWriterTest(absltest.TestCase):
                 "accuracy": WeightedScalar(mean=0.7, weight=16),
                 "learner": {"learning_rate": 0.1},
                 "image": ImageSummary(jax.numpy.ones((2, 5, 5, 3))),
+                "audio": AudioSummary(jax.numpy.ones((5, 2), dtype=jnp.float32), sample_rate=12345),
             },
         )
 
@@ -184,6 +185,14 @@ class WandBWriterTest(absltest.TestCase):
                 self.assertAlmostEqual(wandb.run.summary["learner"]["learning_rate"], 0.1)
                 self.assertTrue("image" in wandb.run.summary.keys())
                 self.assertEqual(len(wandb.run.summary["image"].filenames), 2)
+                self.assertTrue("audio" in wandb.run.summary.keys())
+                audio_summary = wandb.run.summary["audio"]
+                self.assertIsInstance(audio_summary, wandb.sdk.wandb_summary.SummarySubDict)
+                self.assertEqual(audio_summary.count, 1)
+                self.assertEqual(len(audio_summary.durations), 1)
+                self.assertAlmostEqual(audio_summary.durations[0], 5 / 12345)
+                self.assertEqual(len(audio_summary.sampleRates), 1)
+                self.assertEqual(audio_summary.sampleRates[0], 12345)
             finally:
                 wandb.finish()
 

@@ -2,13 +2,16 @@
 
 """A helper module to launch and manage Apache Flink + Beam bundles on GKE."""
 
+import enum
 import logging
 import math
 import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import kubernetes as k8s
+import requests
+from absl import flags
 
 from axlearn.cloud.gcp import job
 from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
@@ -22,13 +25,52 @@ from axlearn.cloud.gcp.system_characteristics import (
 from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import BEAM_SUBMITTER_LABEL, delete_flink_deployment, delete_k8s_job
 from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
+from axlearn.common.config import config_class
 
 _FINK_MAIN_CONTAINER_CPU_PERCENTAGE = 0.4
 
 _FINK_MAIN_CONTAINER_MEMORY_PERCENTAGE = 0.4
 _PYTHON_HARNESS_MEMORY_PERCENTAGE = 0.4
 
-_TIMEOUT_SECS = 600
+_TIMEOUT_SECS = 1800
+
+_FLINK_VERSION = "1.18"
+
+
+class FlinkJobStatus(enum.Enum):
+    """Flink Job Status.
+
+    See also:
+    https://nightlies.apache.org/flink/flink-docs-master/api/java/org/apache/flink/api/common/JobStatus.html
+
+    Attributes:
+        CANCELED: Job has been cancelled.
+        CANCELLING: Job is being cancelled.
+        CREATED: Job is newly created, no task has started to run.
+        FAILED: The job has failed and is currently waiting for the cleanup to complete.
+        FAILING: JobSet has failed.
+        FINISHED: All of the job's tasks have successfully finished.
+        INITIALIZING: The job has been received by the Dispatcher,
+                      and is waiting for the job manager to receive leadership and to be created.
+        RECONCILING: The job is currently reconciling and waits for task execution
+                     report to recover state.
+        RESTARTING: The job is currently undergoing a reset and total restart.
+        RUNNING: Some tasks are scheduled or running, some may be pending, some may be finished.
+        SUSPENDED: The job has been suspended which means that it has been stopped
+                   but not been removed from a potential HA job store.
+    """
+
+    CANCELED = "CANCELED"
+    CANCELLING = "CANCELLING"
+    CREATED = "CREATED"
+    FAILED = "FAILED"
+    FAILING = "FAILING"
+    FINISHED = "FINISHED"
+    INITIALIZING = "INITIALIZING"
+    RECONCILING = "RECONCILING"
+    RESTARTING = "RESTARTING"
+    RUNNING = "RUNNING"
+    SUSPENDED = "SUSPENDED"
 
 
 def _custom_flinkdeployment_kwargs() -> dict[str, str]:
@@ -42,8 +84,42 @@ def _custom_flinkdeployment_kwargs() -> dict[str, str]:
 class FlinkTPUGKEJob(job.GKEJob):
     """A Job that submits a Flink + Beam bundle and monitors its status."""
 
-    builder = TPUReplicatedJob
-    Config = job.GKEJob.Config
+    @config_class
+    class Config(job.GKEJob.Config):
+        """Configures FlinkTPUGKEJob.
+
+        Attributes:
+            flink_threads_per_worker: Threads per worker.
+        """
+
+        flink_threads_per_worker: int = 1
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_integer(
+            "flink_threads_per_worker",
+            1,
+            "For advanced users only: the number of threads per worker. "
+            "A large number of flink_threads_per_worker can better utilize I/O of the node, but"
+            "it will also use more TPU memory, since every inference thread will load the model "
+            "once if the model loading is implemented in a singleton way. \n"
+            "If this is not set, job_flink will set it to be chips_per_vm based on the TPU type.",
+            **common_kwargs,
+        )
+
+    @classmethod
+    def default_config(cls):
+        return super().default_config().set(builder=TPUReplicatedJob.default_config())
+
+    def __init__(self, cfg: Config, *, bundler):
+        super().__init__(cfg, bundler=bundler)
+        if not isinstance(cfg.builder, TPUReplicatedJob.Config):
+            raise NotImplementedError(type(cfg.builder))
+        # Job_manager_ip is assigned after the flink cluster is ready
+        # Before that job_manager_ip is None
+        self.job_manager_ip: Optional[str] = None
 
     def _delete(self):
         """This is a non-blocking method to delete the flink deployment and submitter job.
@@ -114,6 +190,46 @@ class FlinkTPUGKEJob(job.GKEJob):
             raise RuntimeError(f"Can't find specs for {single_host_tpu_name}.")
         return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[single_host_tpu_name].topology
 
+    def _get_num_of_tpu_nodes(self, system: _SystemCharacteristics) -> int:
+        cfg: FlinkTPUGKEJob.Config = self.config
+        return cfg.builder.accelerator.num_replicas * system.vms_per_slice
+
+    def _wait_for_tpu_workers_all_ready(self, job_manager_ip: str, system: _SystemCharacteristics):
+        expected_tpu_workers = self._get_num_of_tpu_nodes(system)
+        ready_tpu_workers = 0
+
+        start_time = time.perf_counter()
+        while True:
+            # Please refer to:
+            # https://nightlies.apache.org/flink/flink-docs-master/docs/ops/metrics/#rest-api-integration
+            # for the endpoint and
+            # https://nightlies.apache.org/flink/flink-docs-master/docs/ops/metrics/#cluster
+            # for details about this metrics
+            response = requests.get(
+                f"http://{job_manager_ip}:8081/jobmanager/metrics?get=numRegisteredTaskManagers",
+                timeout=30,
+            )
+            # When the flink cluster is just brought up, this metrics may not be available yet.
+            if response and response.json():
+                ready_tpu_workers = int(response.json()[0]["value"])
+            if ready_tpu_workers == expected_tpu_workers:
+                logging.info(
+                    "All %s/%s TPU workers are ready.", ready_tpu_workers, expected_tpu_workers
+                )
+                break
+            elapsed_time = time.perf_counter() - start_time
+            if elapsed_time > _TIMEOUT_SECS:
+                raise RuntimeError(
+                    f"Not all of {expected_tpu_workers} workers are "
+                    f"ready after {_TIMEOUT_SECS} seconds."
+                )
+            logging.info(
+                "%s/%s TPU workers are ready, waiting 30 seconds...",
+                ready_tpu_workers,
+                expected_tpu_workers,
+            )
+            time.sleep(30)
+
     def _execute(self) -> Any:
         """Submits a Flink Cluster and a Beam job submitter to the cluster."""
         cfg: FlinkTPUGKEJob.Config = self.config
@@ -161,10 +277,14 @@ class FlinkTPUGKEJob(job.GKEJob):
             label_selector=f"app={flink_deployment['metadata']['name']},component=jobmanager",
         )
         # TODO(muyang_yu): consider using pod name instead of id.
-        jobmanager_ip = jobmanager_pods.items[0].status.pod_ip
+        self.job_manager_ip = jobmanager_pods.items[0].status.pod_ip
 
-        # 3) Create a job to submit user's pipeline to the Flink cluster
-        job_submission = self._build_job_submission_deployment(jobmanager_ip, system)
+        # 3) Make sure all TPU pods are ready and registered to the flink cluster before submitting
+        # the beam pipeline, otherwise the submitter may time out before TPU workers are all ready.
+        self._wait_for_tpu_workers_all_ready(self.job_manager_ip, system)
+
+        # 4) Create a job to submit user's pipeline to the Flink cluster
+        job_submission = self._build_job_submission_deployment(self.job_manager_ip, system)
         logging.info("Submitting Job job_submission=%s", job_submission)
         return k8s.client.BatchV1Api().create_namespaced_job(
             namespace=cfg.namespace,
@@ -236,9 +356,9 @@ class FlinkTPUGKEJob(job.GKEJob):
             kind="FlinkDeployment",
             metadata=dict(namespace=cfg.namespace, name=self._get_flink_cluster_name()),
             spec=dict(
-                image="flink:1.18",
-                flinkVersion="v1_18",
-                serviceAccount=cfg.service_account,
+                image=f"flink:{_FLINK_VERSION}",
+                flinkVersion=f"v{_FLINK_VERSION.replace('.', '_')}",
+                serviceAccount=cfg.builder.service_account,
                 # Standalone mode supports initing Task Manager before beam
                 # pipeline is submitted. This can avoid Task Manager initialization
                 # taking too long and the job submission timeouts.
@@ -268,11 +388,18 @@ class FlinkTPUGKEJob(job.GKEJob):
                 flinkConfiguration={
                     # taskmanager.numberOfTaskSlots controls the number of concurrent
                     # threads per worker.
-                    # TODO(muyang_yu): enable users override this default value via a flag
-                    "taskmanager.numberOfTaskSlots": f"{system.chips_per_vm}",
+                    "taskmanager.numberOfTaskSlots": f"{cfg.flink_threads_per_worker}",
                     "taskmanager.memory.task.off-heap.size": "16g",
                     "taskmanager.network.bind-host": "0.0.0.0",
                     "rest.address": "0.0.0.0",
+                    # Store checkpointing for retry.
+                    "execution.checkpointing.interval": "10m",
+                    "execution.checkpointing.mode": "EXACTLY_ONCE",
+                    # Fixed-delay restart strategy.
+                    "restart-strategy.type": "fixed-delay",
+                    "restart-strategy.fixed-delay.attempts": "3",  # Max 30 restarts
+                    # Delay 10m so that TPU node have enough time to recover.
+                    "restart-strategy.fixed-delay.delay": "10m",
                 },
                 # job manager's responsibility is lightweight, it is only responsible to
                 # accept one request from one job submitter in this setup. So a minimum
@@ -280,7 +407,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                 jobManager=dict(resource=dict(memory="2g", cpu=1)),
                 taskManager=dict(
                     # We use large slices as multiple independent single nodes in inference
-                    replicas=(cfg.builder.accelerator.num_replicas * system.vms_per_slice),
+                    replicas=self._get_num_of_tpu_nodes(system),
                     resource=self._build_resource(
                         system=system,
                         cpu_percentage=_FINK_MAIN_CONTAINER_CPU_PERCENTAGE,
@@ -392,14 +519,21 @@ class FlinkTPUGKEJob(job.GKEJob):
         # But if it is too large, it takes large amount of memory and time to initialize them.
         # And since this is the only job running on the flink cluster, we are using all task
         # slots from all taskmasters for this job, which is a reasonable number.
-        # TODO(muyang_yu): enable users override this default value via a flag
-        flink_parallelism = (
-            cfg.builder.accelerator.num_replicas * system.vms_per_slice * system.chips_per_vm
-        )
+        flink_parallelism = self._get_num_of_tpu_nodes(system) * cfg.flink_threads_per_worker
         user_command += (
-            f" --flink_master={job_manager_ip}"
+            f" --flink_master={job_manager_ip}:8081"
             f" --parallelism={flink_parallelism}"
+            # This directory is used by FlinkRunner to store artifacts like
+            # JARs, Python wheels, custom files from the main session and
+            # intermediate outputs. All workers will share it.
             f" --artifacts_dir={os.path.join(cfg.builder.output_dir, 'artifacts_dir')}"
+            f" --flink_version={_FLINK_VERSION}"
+            f" --runner=FlinkRunner"
+            # The following two flags makes sure the Flink Job manager routes the
+            # execution to "EXTERNAL" flink task managers. And the flink cluster
+            # has configured in a way that the routing can be done via "localhost:50000"
+            f" --environment_type=EXTERNAL"
+            f" --environment_config=localhost:50000"
             # Replicate output to /output/beam_pipline_log
             f" 2>&1 | tee /output/beam_pipline_log"
         )
@@ -417,7 +551,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                         )
                     ),
                     spec=dict(
-                        serviceAccountName=cfg.service_account,
+                        serviceAccountName=cfg.builder.service_account,
                         volumes=[dict(name="shared-output", emptyDir={})],
                         # Makes sure all logs are uploaded before terminating the pod.
                         terminationGracePeriodSeconds=100,

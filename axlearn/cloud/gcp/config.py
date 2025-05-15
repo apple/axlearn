@@ -166,11 +166,11 @@ def gcp_settings(
         value = project_configs.get("zone")
 
     if required and value is None:
-        logging.error("Could not find key %s in settings.", key)
         logging.error(
-            "Please check that the file %s has properly set a value for it "
-            "under the config section %s.",
+            'Please check that the file %s has properly set a value for key "%s" '
+            'under the config section "%s".',
             config_file,
+            key,
             config_name,
         )
         sys.exit(1)

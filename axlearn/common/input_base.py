@@ -114,7 +114,7 @@ def partition_by_path_rank(
                 "specify `PartitionSpec.UNCONSTRAINED` explicitly."
             )
 
-        return jax.tree_map(maybe_constrain, tree_paths(input_batch), input_batch)
+        return jax.tree.map(maybe_constrain, tree_paths(input_batch), input_batch)
 
     return fn
 
@@ -167,6 +167,8 @@ class Input(Module):
                 batch during `dispatch_global_batch`.
         """
 
+        # TODO(markblee): Consider allowing PartitionSpec to be a tree-prefix of the input batch,
+        # which is more flexible but potentially complicates dispatch.
         partition_spec: Optional[PartitionSpec] = None
         input_dispatcher: Optional[InputDispatcher.Config] = None
         input_partitioner: Optional[ConfigOr[InputPartitionFn]] = None
@@ -229,9 +231,14 @@ class Input(Module):
                 def check_per_feed_batch(x: Tensor):
                     expected = self.input_dispatcher.feed_logical_batch_size
                     actual = x.shape[0]
-                    if expected != actual:
+                    # The actual batch size is allowed to be smaller than feed batch size in the
+                    # case where global batch sizes differ across paths in the batch.
+                    # In this case, we currently still configure the global_logical_batch_size to be
+                    # the maximum across paths. Note that this means we require the partition spec
+                    # to evenly divide all input paths.
+                    if actual > expected:
                         raise ValueError(
-                            f"Expected per-feed batch size to be {expected}, got: {actual}"
+                            f"Expected per-feed batch size to be at most {expected}, got: {actual}"
                         )
 
                 jax.tree.map(check_per_feed_batch, input_batch)

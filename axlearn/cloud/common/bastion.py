@@ -63,7 +63,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from subprocess import CalledProcessError
-from typing import IO, Any, Optional, Union
+from typing import IO, Any, NamedTuple, Optional, Union
 
 from absl import flags, logging
 from tensorflow import nest as tf_nest
@@ -82,6 +82,7 @@ from axlearn.cloud.common.scheduler import BaseScheduler, JobMetadata, JobSchedu
 from axlearn.cloud.common.types import JobSpec
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
+from axlearn.cloud.common.validator import JobValidator
 from axlearn.common.config import (
     REQUIRED,
     Configurable,
@@ -331,6 +332,7 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
     raise ValidationError(f"Unsupported version: {data['version']}")
 
 
+# TODO(clopeznataren): Refactor into JobValidator
 def is_valid_job_name(name: str) -> bool:
     """Ensures job name is not path-like and only contains safe characters.
 
@@ -498,6 +500,20 @@ def _start_cleanup_command(job: Job):
         )
 
 
+class DownloadJobsResult(NamedTuple):
+    """Data object to encapsulate download job's various outputs.
+
+    Attributes:
+        jobs: A mapping from job name to Job(spec, state).
+        jobs_with_user_states: A set of job names whose state originates from user_state_dir.
+        invalid_jobs: A mapping of job name to validation failure reason.
+    """
+
+    jobs: dict[str, Job]
+    jobs_with_user_states: set[str]
+    invalid_jobs: dict[str, str]
+
+
 def download_job_batch(
     *,
     spec_dir: str,
@@ -505,9 +521,10 @@ def download_job_batch(
     user_state_dir: str,
     local_spec_dir: str = _JOB_DIR,
     verbose: bool = False,
-    remove_invalid_job_specs: bool = False,
+    remove_invalid_user_states: bool = False,
     quota: Optional[QuotaFn] = None,
-) -> tuple[dict[str, Job], set[str]]:
+    validator: Optional[JobValidator] = None,
+) -> DownloadJobsResult:
     """Downloads a batch of jobs.
 
     Args:
@@ -516,25 +533,25 @@ def download_job_batch(
         user_state_dir: Directory to look for user states.
         local_spec_dir: Directory to store downloaded job specs.
         verbose: Verbose logging.
-        remove_invalid_job_specs: Whether to remove invalid job specs.
+        remove_invalid_user_states: Whether to remove invalid user states.
         quota: A thunk returning the QuotaInfo to use for validating
                user project membership.
                If None, do not validate project membership.
+        validator: An optional job validator. If None, we don't try to perform validation with it.
 
     Returns:
-        A mapping from job name to Job(spec, state), and
-        A set of job names whose state originates from user_state_dir.
+        A DownloadJobResult containing the jobs, jobs with user states, and invalid jobs.
     """
     jobspecs = []
-    invalid_jobspecs = []
+    invalid_jobspecs = {}
     user_states = []
     invalid_user_states = []
 
     for job_name in _listdir(spec_dir):
-        if is_valid_job_name(job_name):
-            jobspecs.append(job_name)
-        else:
-            invalid_jobspecs.append(job_name)
+        # NOTE: Even if name is invalid we add it, so that its job history can be populated.
+        jobspecs.append(job_name)
+        if not is_valid_job_name(job_name):
+            invalid_jobspecs[job_name] = f"Job name {job_name} is invalid."
 
     for job_name in _listdir(user_state_dir):
         if is_valid_job_name(job_name):
@@ -596,24 +613,21 @@ def download_job_batch(
                     user_id = spec.metadata.user_id
                     project_id = spec.metadata.project_id
                     if project_id not in quota_info.user_projects(user_id):
-                        # TODO(markblee): surface invalid specs in job history.
-                        logging.warning(
-                            "Job %s will be removed because user %s is not a member of %s",
-                            job_name,
-                            user_id,
-                            project_id,
+                        message = (
+                            f"Job {job_name} will be marked as failed validation because "
+                            f"user {user_id} is not a member of {project_id}"
                         )
-                        invalid_jobspecs.append(job_name)
-                        continue
+                        invalid_jobspecs[job_name] = message
+                if validator:
+                    validator.validate(spec)
             except ValidationError as e:
-                logging.warning("Job %s failed validation and will be removed: %s", job_name, e)
-                invalid_jobspecs.append(job_name)
-                continue
+                invalid_jobspecs[job_name] = str(e)
             except Exception as e:  # pylint: disable=broad-except
                 # TODO(markblee): Distinguish transient vs non-transient errors.
                 logging.warning("Failed to load job %s with error: %s", job_name, e)
                 continue
 
+            # TODO(markblee): Move the state transition logic to _sync_jobs
             if user_state is not None:
                 if user_state.status == JobStatus.CANCELLING and state.status not in (
                     JobStatus.CLEANING,
@@ -627,21 +641,33 @@ def download_job_batch(
                     )
                 # Even if user_state is ignored, we still want to clean it up.
                 jobs_with_user_states.add(job_name)
+
+            if job_name in invalid_jobspecs:
+                if state.status not in (
+                    JobStatus.CANCELLING,
+                    JobStatus.CLEANING,
+                    JobStatus.COMPLETED,
+                ):
+                    state.status = JobStatus.CANCELLING
+
             jobs[job_name] = Job(spec=spec, state=state, command_proc=None, cleanup_proc=None)
 
         # Remove invalid jobspecs and user states.
-        if remove_invalid_job_specs and (invalid_jobspecs or invalid_user_states):
+        if remove_invalid_user_states and invalid_user_states:
             logging.info(
-                "Removing invalid jobspecs: %s and user states: %s",
-                invalid_jobspecs,
+                "Removing invalid user states: %s",
                 invalid_user_states,
             )
             pool.map(
                 _remove,
-                [os.path.join(spec_dir, job_name) for job_name in invalid_jobspecs]
-                + [os.path.join(user_state_dir, job_name) for job_name in invalid_user_states],
+                [os.path.join(user_state_dir, job_name) for job_name in invalid_user_states],
             )
-    return jobs, jobs_with_user_states
+
+    return DownloadJobsResult(
+        jobs=jobs,
+        jobs_with_user_states=jobs_with_user_states,
+        invalid_jobs=invalid_jobspecs,
+    )
 
 
 def _load_runtime_options(bastion_dir: str) -> dict[str, Any]:
@@ -686,6 +712,8 @@ class Bastion(Configurable):
         quota: Required[QuotaFn] = REQUIRED
         # The event publisher sends events into queue.
         event_publisher: Optional[BaseQueueClient.Config] = None
+        # Validator to determine if job is valid.
+        validator: Optional[JobValidator.Config] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -730,10 +758,11 @@ class Bastion(Configurable):
         self._cleaner: Cleaner = cfg.cleaner.instantiate()
         self._uploader = cfg.uploader.set(src_dir=_LOG_DIR, dst_dir=self._log_dir).instantiate()
         self._event_publisher = maybe_instantiate(cfg.event_publisher)
+        self._validator = cfg.validator.instantiate() if cfg.validator else None
 
     def _append_to_job_history(self, job: Job, *, msg: str, state: JobLifecycleState):
         with fs_open(os.path.join(self._job_history_dir, f"{job.spec.name}"), "a") as f:
-            curr_time = datetime.now(timezone.utc).strftime("%m%d %H:%M:%S")
+            curr_time = datetime.now(timezone.utc).strftime("%Y%m%d-%H:%M:%S")
             f.write(f"{curr_time} {msg}\n")
         # Publish event into queue.
         if self._event_publisher:
@@ -872,13 +901,14 @@ class Bastion(Configurable):
 
         We use these jobspecs to update the local self._active_jobs.
         """
-        active_jobs, jobs_with_user_states = download_job_batch(
+        active_jobs, jobs_with_user_states, jobs_with_failed_validation = download_job_batch(
             spec_dir=self._active_dir,
             state_dir=self._state_dir,
             user_state_dir=self._user_state_dir,
             verbose=True,
-            remove_invalid_job_specs=True,
+            remove_invalid_user_states=True,
             quota=self._quota,
+            validator=self._validator,
         )
         self._jobs_with_user_states = jobs_with_user_states
         # Iterate over unique job names.
@@ -886,15 +916,25 @@ class Bastion(Configurable):
         for job_name in {*active_jobs.keys(), *self._active_jobs.keys()}:
             # Detected new job: exists in remote, but not local.
             if job_name not in self._active_jobs:
-                logging.info("Detected new job %s.", job_name)
-                self._active_jobs[job_name] = active_jobs[job_name]
+                job = active_jobs[job_name]
+                job_id = job.spec.metadata.job_id
+                logging.info("Detected new job %s (job_id=%s).", job_name, job_id)
+                self._active_jobs[job_name] = job
                 self._append_to_job_history(
-                    active_jobs[job_name],
-                    msg="PENDING: detected jobspec",
+                    job,
+                    msg=f"PENDING: detected jobspec ({job_id=})",
                     # When Bastion restarts, we will see this for every job.
                     # Leave to consumer to handle this case.
                     state=JobLifecycleState.QUEUED,
                 )
+                # The new job detection takes precedence over the job status in this case,
+                # since it is invalid, unconditionally write it to its history.
+                if job_name in jobs_with_failed_validation:
+                    self._append_to_job_history(
+                        job,
+                        msg=f"FAILED: {jobs_with_failed_validation[job_name]}",
+                        state=JobLifecycleState.FAILED,
+                    )
             # Detected removed job: exists locally, but not in remote.
             elif job_name not in active_jobs:
                 job = self._active_jobs[job_name]
@@ -906,6 +946,23 @@ class Bastion(Configurable):
             # Detected updated job: exists in both.
             else:
                 curr_job = self._active_jobs[job_name]
+                if job_name in jobs_with_failed_validation:
+                    if curr_job.state.status in {
+                        JobStatus.ACTIVE,
+                        JobStatus.PENDING,
+                    }:
+                        self._append_to_job_history(
+                            curr_job,
+                            msg=f"FAILED: {jobs_with_failed_validation[job_name]}",
+                            state=JobLifecycleState.FAILED,
+                        )
+                    else:
+                        assert curr_job.state.status in {
+                            JobStatus.CANCELLING,
+                            JobStatus.CLEANING,
+                            JobStatus.COMPLETED,
+                        }
+
                 updated_job = active_jobs[job_name]
                 if updated_job.spec.metadata.version != curr_job.spec.metadata.version:
                     # When a new version is detected, add "updated" in the metadata to signal
@@ -1287,17 +1344,25 @@ class BastionDirectory(Configurable):
 
     def list_jobs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            jobs, _ = download_job_batch(
+            jobs, _, _ = download_job_batch(
                 spec_dir=self.active_job_dir,
                 state_dir=self.job_states_dir,
                 user_state_dir=self.user_states_dir,
                 local_spec_dir=tmpdir,
-                remove_invalid_job_specs=False,
+                remove_invalid_user_states=False,
             )
             jobs: dict[str, Job] = dict(sorted(jobs.items(), key=lambda kv: kv[0]))
             return jobs
 
-    def cancel_job(self, job_name: str):
+    @staticmethod
+    def _wait_for_stop(jobspec: str) -> None:
+        # Poll for jobspec to be removed.
+        while exists(jobspec):
+            logging.info("Waiting for job to stop (which usually takes a few minutes)...")
+            time.sleep(10)
+        logging.info("Job is stopped.")
+
+    def cancel_job(self, job_name: str, *, wait_for_stop: bool = True):
         try:
             jobspec = os.path.join(self.active_job_dir, job_name)
             if not exists(jobspec):
@@ -1308,11 +1373,8 @@ class BastionDirectory(Configurable):
                 remote_dir=self.user_states_dir,
             )
             logging.info("Job %s is cancelling.", job_name)
-            # Poll for jobspec to be removed.
-            while exists(jobspec):
-                logging.info("Waiting for job to stop (which usually takes a few minutes)...")
-                time.sleep(10)
-            logging.info("Job is stopped.")
+            if wait_for_stop:
+                self._wait_for_stop(jobspec=jobspec)
         except ValueError as e:
             logging.info("Failed with error: %s -- Has the job been cancelled already?", e)
 

@@ -379,12 +379,12 @@ class T5EncoderDecoderModelTest(TestCase):
 
                 return dict(
                     prng_key=new_prng_key,
-                    model=jax.tree_map(lambda x, y: x + y, state["model"], grads),
+                    model=jax.tree.map(lambda x, y: x + y, state["model"], grads),
                 )
 
             state_partition_specs = dict(
                 prng_key=None,
-                model=jax.tree_map(
+                model=jax.tree.map(
                     lambda spec: spec.mesh_axes,
                     layer.create_parameter_specs_recursively(),
                 ),
