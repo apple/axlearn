@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+set -ex
+source ../jaxmoe/bin/activate
 
 export USE_SHARDMAP_FFN=1
 
 TEST_ARTIFACTS_PATH="test_artifacts"
-rm -rf "$TEST_ARTIFACTS_PATH"
 mkdir -p "$TEST_ARTIFACTS_PATH"
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
@@ -16,7 +17,7 @@ export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
 export NEURON_ENABLE_INT_MATMUL_DOWNCAST=1
 export NEURON_FSDP=0
 export NEURON_FSDP_NUM_LAYER_COALESCE=-1
-export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=0
+export NEURON_RUN_TRIVIAL_COMPUTATION_ON_CPU=1 # changed from 0
 export NEURON_DISABLE_BOUNDARY_MARKER=1
 
 # Neuron runtime flags
@@ -53,19 +54,23 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 
+export TF_CPP_MIN_LOG_LEVEL=3
 # # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="/shared/aahila/compiler/cache/"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
-echo "setup env vars"
-export TEST_SUITE="presubmit" # set to presubmit/12B/50B/150B
+# default set to presubmit/12B/50B/150B
+# used by mixture_of_experts_neuron_test.py
+export TEST_SUITE=${2:-"presubmit"}
+set -ex
 if [ "$1" = "unit" ]; then
-    echo "Running Unit Test"
-    export JAX_PLATFORMS=cpu
-    export IS_UNIT="true"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_bwd_correctness"
-else
-    echo "Running Integ Test"
-    export IS_UNIT="false"
-    pytest axlearn/common/mixture_of_experts_neuron_test.py -k "test_fwd_bwd_correctness"
+    pytest -rA --tb=short --junitxml=test-results/$TEST_SUITE/unit.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnCpu
+elif [ "$1" = "150b" ]; then
+    pytest -rA --tb=short --junitxml=test-results/$TEST_SUITE/150b.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150b or TestDev150bGating"
+elif [ "$1" = "150b_blockwise_cpu" ]; then
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'test_fwd_gating_blockwisegather_vs_gather_150b_unit or test_fwd_blockwisegather_vs_gather_150b_unit'
+elif [ "$1" = "150b_blockwise_neuron" ]; then
+    pytest -rA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'test_fwd_blockwisegather_vs_gather_150b_integ or test_fwd_gating_blockwisegather_vs_gather_150b_integ'
+elif [ "$1" = "integ" ]; then
+    pytest -rA --tb=short --junitxml=test-results/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
 fi

@@ -18,6 +18,7 @@ from absl import logging
 from jax import numpy as jnp
 from jax.experimental import multihost_utils
 from jax.experimental.pjit import pjit
+from jax_neuronx.experimental import debug_callback
 
 from axlearn.common import file_system as fs
 from axlearn.common import measurement, utils
@@ -62,6 +63,21 @@ from axlearn.common.utils import (
     thread_stack_traces,
 )
 
+@contextlib.contextmanager
+def TraceProfileNeuron(num_steps):
+    try:
+        enabled = os.getenv("NEURON_RT_INSPECT_DEVICE_PROFILE", "0" ) == "1" and num_steps == 2
+        if enabled:
+            assert os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR") is not None
+            with jax.profiler.trace(os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR")):
+                yield
+        else:
+            yield
+    finally:
+        if enabled:
+            logging.info(f"Done profiling step 3, exiting now")
+            # run the following command within next 5 min: 'scancel --signal=SIGINT {os.environ.get('SLURM_JOBID')}'")
+            import sys; sys.exit(0)
 
 class TrainerState(NamedTuple):
     prng_key: Union[Tensor, TensorSpec, jax.sharding.NamedSharding]
@@ -597,17 +613,18 @@ class SpmdTrainer(Module):
                         self._step = self._step + 1
                         self.vlog(3, "Start step %s", self.step)
                         self._maybe_record_event(measurement.Event.START_STEP, self._step)
-                        output = self._run_step(
-                            utils.host_to_global_device_array(
-                                input_batch,
-                                partition=self._train_step_input_partition_specs(),
-                            ),
-                            force_run_evals=(
-                                force_run_eval_sets_at_max_step
-                                if self.step >= cfg.max_step
-                                else None
-                            ),
-                        )
+                        with TraceProfileNeuron(num_steps):
+                            output = self._run_step(
+                                utils.host_to_global_device_array(
+                                    input_batch,
+                                    partition=self._train_step_input_partition_specs(),
+                                ),
+                                force_run_evals=(
+                                    force_run_eval_sets_at_max_step
+                                    if self.step >= cfg.max_step
+                                    else None
+                                ),
+                            )
                         self.vlog(3, "Done step %s", self.step)
                         num_steps += 1
                         if num_steps % 100 == 0:
@@ -1123,6 +1140,7 @@ class SpmdTrainer(Module):
         return evaler_summaries
 
     def _pjit_train_step(self) -> jax.stages.Wrapped:
+        # return debug_callback(
         return pjit(
             self._train_step,
             in_shardings=(
@@ -1139,6 +1157,8 @@ class SpmdTrainer(Module):
             ),
             donate_argnums=(0,),  # donate the state
         )
+        # )
+    
 
     def compile_train_step(
         self,

@@ -50,7 +50,7 @@ from axlearn.common.attention import (
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
-from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh, TopKGatingGather
+from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh, TopKGatingGather, TopKGatingGatherBlockwise
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
@@ -534,7 +534,7 @@ def get_trainer_kwargs(
                 num_heads=num_heads,
                 num_kv_heads=max(8, tp_degree),
                 num_experts=NUM_EXPERTS[model_size],
-                train_capacity_factor=2.0,
+                train_capacity_factor=2,
                 num_groups=1,
                 ffn_layer_types=ffn_layer_types,
                 outer_batch_size=get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, neuron_mesh),
@@ -684,13 +684,15 @@ def model_config(
         outer_batch_size = get_outer_batch_from_mesh(
             MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, mesh_shape
         )
+
+    gating_type = TopKGatingGatherBlockwise if int(os.getenv('AXLEARN_USE_BLOCKWISE', 0)) == 1 else TopKGatingGather
     expert_config = TransformerFeedForwardMoE.default_config().set(
         outer_batch=outer_batch_size,
         num_experts=num_experts,
         input_dim=hidden_dim,
         num_groups=num_groups,
         dim_to_mesh_axis_map=MOE_DIM_TO_MESH_AXIS_MAP,
-        gating=TopKGatingGather.default_config(),
+        gating=gating_type.default_config(),
     )
     expert_config.gating.top_k = ffn_sparse_top_k
     expert_config.gating.train_capacity_factor = train_capacity_factor
