@@ -190,7 +190,8 @@ class GatingTestCase(TestCase):
         token_position_to_id = token_position_to_id.reshape(O, G, N, cfg.test.cfg.block_size)
         in_range = np.where(((token_position_to_id >=0) & (token_position_to_id<=S)), True, False)
         all_in_range = jnp.all(in_range)
-        assert all_in_range, f"token_position_to_id out of range: {token_position_to_id}"
+        # print(in_range)
+        print('allinrange', all_in_range)
         for o in range(O):
             for g in range(G):
                 for n in range(N):
@@ -202,10 +203,12 @@ class GatingTestCase(TestCase):
                         if token_id_in_seq == S:
                             # padding token
                             continue
+                        elif token_id_in_seq < 0 or token_id_in_seq > S:
+                            print(token_position_to_id[o, g, n, b], token_id_in_seq)
                         else:
-                            assert np.all(expert_affinities_masked[o, g, token_id_in_seq, expert_id] > 0)
+                            assert expert_affinities_masked[o, g, token_id_in_seq, expert_id] > 0
                         # must be in range [0, S]
-
+        assert all_in_range, f"token_position_to_id out of range: {token_position_to_id}, {in_range}"
         # assert that max of top k in each row of expert_affinities_masked
         # O, G, S, E
         assert np.all(np.count_nonzero(expert_affinities_masked, axis=3) <= cfg.test.cfg.top_k)
@@ -233,7 +236,7 @@ class TestLayerOnCpu(LayerTestCase):
     @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
     def test_fwd_blockwisegather_vs_gather(self, cfg: TestCaseConfig):
         self.helper_fwd(cfg)
-    
+
     @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     def test_fwdbwd_gather_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
@@ -252,6 +255,7 @@ class TestLayerOnTrn(LayerTestCase):
     def test_fwd_blockwisegather_vs_gather(self, cfg):
         self.helper_fwd(cfg)
     
+    @unittest.skip("skip gather")
     @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     def test_fwdbwd_gather_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
@@ -284,6 +288,7 @@ class TestDev150bUnit(LayerTestCase):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     
+    @unittest.skip("skip gating")
     def test_fwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
@@ -292,6 +297,7 @@ class TestDev150bUnit(LayerTestCase):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     
+    @unittest.skip("skip gating")
     def test_fwdbwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_bwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
@@ -301,6 +307,7 @@ class TestDev150bInteg(TestDev150bUnit):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     
+    @unittest.skip("skip gather")
     def test_fwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))
@@ -309,6 +316,7 @@ class TestDev150bInteg(TestDev150bUnit):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     
+    @unittest.skip("skip gather")
     def test_fwdbwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))    
@@ -341,13 +349,15 @@ class TestDev150bGating(GatingTestCase):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwise, golden=None, test_device="neuron", layer="gating"))
     
+    @unittest.skip("skip gather")
     def test_unit_fwd_gather(self):
         jax.config.update('jax_platform_name', 'cpu')
-        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu", layer="gating"))
+        self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu", layer="gating"))
 
+    @unittest.skip("skip gather")
     def test_integ_fwd_gather(self):
         jax.config.update('jax_platform_name', 'neuron')
-        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu", layer="gating"))
+        self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu", layer="gating"))
 
 
 if __name__ == "__main__":

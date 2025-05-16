@@ -266,35 +266,35 @@ class GridSpaceBuilder:
                 batch=1, seq=8, dtype=jnp.float32, 
                 block_size=4
             ),
-            create_test_config(
+            self.create_test_config(
                 input_dim=3, hidden_dim=6, 
                 n_experts=4, top_k=2, n_groups=1, capacity_factor=2,
                 mesh_spec={}, 
                 batch=1, seq=8, dtype=jnp.float32, 
                 block_size=4
             ),
-            create_test_config(
+            self.create_test_config(
                 input_dim=256, hidden_dim=512,
                 n_experts=16, top_k=2, n_groups=1, capacity_factor=2,
                 mesh_spec={}, 
                 batch=1, seq=2048, dtype=jnp.float32, 
                 block_size=256
             ),
-            create_test_config(
+            self.create_test_config(
                 input_dim=3, hidden_dim=6, n_experts=4, 
                 top_k=1, n_groups=1, capacity_factor=2, 
                 mesh_spec={}, 
                 batch=4, seq=8, dtype=jnp.float32, 
                 block_size=4
             ),
-            create_test_config(
+            self.create_test_config(
                 input_dim=3, hidden_dim=6, n_experts=4, 
                 top_k=2, n_groups=1, capacity_factor=2, 
                 mesh_spec={}, 
                 batch=4, seq=8, dtype=jnp.float32, 
                 block_size=4
             ),
-            create_test_config(
+            self.create_test_config(
                 input_dim=3, hidden_dim=6, n_experts=4, 
                 top_k=1, n_groups=1, capacity_factor=2, 
                 mesh_spec={}, 
