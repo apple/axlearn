@@ -48,9 +48,10 @@ def build_mask(
         for j in range(0, kv_seq_len, block_k):
             rows = np.arange(i, i + block_q, dtype=np.int32)
             cols = np.arange(j, j + block_k, dtype=np.int32)
-            # All empty means skipping
-            if not mask_fn(rows[:, None], cols[None, :]).any():
-                block_mask_map[i // block_q, j // block_k] = False
+            with jax.ensure_compile_time_eval():
+                # All empty means skipping
+                if not mask_fn(rows[:, None], cols[None, :]).any():
+                    block_mask_map[i // block_q, j // block_k] = False
     return block_mask_map
 
 
