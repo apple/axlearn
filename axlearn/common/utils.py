@@ -1969,6 +1969,20 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: jnp.dtype = jnp.bool)
     return (sequence < lengths).astype(dtype)
 
 
+def safe_not(mask: Tensor) -> Tensor:
+    """Inverts a boolean mask.
+
+    Commonly used to switch between paddings and mask.
+
+    Args:
+        mask: A boolean tensor.
+
+    Returns:
+        A boolean tensor of the same shape.
+    """
+    return ~(mask.astype(jnp.bool))
+
+
 def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
     """Raises ValueError if any of the given `paths` are not present in `x`."""
     for path in paths:

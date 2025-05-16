@@ -18,7 +18,7 @@ import jax.numpy as jnp
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class MaskSampler(BaseLayer):
@@ -166,7 +166,7 @@ class SpectrumAugmenter(BaseLayer):
         )
         # [batch_size, num_frames].
         time_masks = self.time_mask_sampler(
-            input_lengths=jnp.sum(1 - paddings, axis=1),
+            input_lengths=jnp.sum(safe_not(paddings), axis=1),
             max_length=num_frames,
         )
 
