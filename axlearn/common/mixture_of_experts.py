@@ -1280,7 +1280,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
 
         token_position_to_id = token_position_to_id - 1
         # jax.debug.print("token_position_to_id after sub1 {x}", x=token_position_to_id)
-        token_position_to_id = jnp.where(token_position_to_id==-1, num_tokens,token_position_to_id)
+        # token_position_to_id = jnp.where(token_position_to_id==-1, num_tokens,token_position_to_id)
         # jax.debug.print("token_position_to_id after replacing -1 {x}", x=token_position_to_id)
         # zero_tensor = jnp.zeros(1, dtype=token_position_to_id.dtype)
         # token_position_to_id = jnp.maximum(token_position_to_id, zero_tensor)

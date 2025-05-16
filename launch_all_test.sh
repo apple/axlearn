@@ -1,4 +1,3 @@
-sbatch --exclusive -J rh_test_toy test.slurm toy
 sbatch --exclusive -J rh_test_presubmit test.slurm presubmit
 sbatch --exclusive -J rh_test_12b test.slurm 12b
 sbatch --exclusive -J rh_test_50b test.slurm 50b

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -ex
+set -e
 source ../jaxmoe/bin/activate
 
 export USE_SHARDMAP_FFN=1
@@ -27,7 +27,7 @@ export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
 export NEURON_RT_VIRTUAL_CORE_SIZE=2
 export NEURON_RT_RESET_CORES=1
-export NEURON_RT_LOG_LEVEL="WARNING"
+export NEURON_RT_LOG_LEVEL="ERROR"
 export NEURON_RT_ENABLE_INTERNODE_EXECUTION_BARRIER=1
 
 # Neuron collectives flag
@@ -64,13 +64,17 @@ export TF_CPP_MIN_LOG_LEVEL=3
 export TEST_SUITE=${2:-"presubmit"}
 set -ex
 if [ "$1" = "unit" ]; then
-    pytest -rA --tb=short --junitxml=test-results/$TEST_SUITE/unit.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnCpu
-elif [ "$1" = "150b" ]; then
-    pytest -rA --tb=short --junitxml=test-results/$TEST_SUITE/150b.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150b or TestDev150bGating"
-elif [ "$1" = "150b_blockwise_cpu" ]; then
-    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'test_fwd_gating_blockwisegather_vs_gather_150b_unit or test_fwd_blockwisegather_vs_gather_150b_unit'
-elif [ "$1" = "150b_blockwise_neuron" ]; then
-    pytest -rA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'test_fwd_blockwisegather_vs_gather_150b_integ or test_fwd_gating_blockwisegather_vs_gather_150b_integ'
+    pytest -rsA --tb=short --junitxml=test-results/$TEST_SUITE/unit.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnCpu
 elif [ "$1" = "integ" ]; then
-    pytest -rA --tb=short --junitxml=test-results/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
+    pytest -rsA --tb=short --junitxml=test-results/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
+elif [ "$1" = "150b" ]; then
+    pytest -rsA --tb=short --junitxml=test-results/$TEST_SUITE/150b.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150bUnit or TestDev150bInteg or TestDev150bGating"
+elif [ "$1" = "150b_gather" ]; then
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_gather_vs_einsum or TestDev150bUnit and test_fwdbwd_gather_vs_einsum or TestDev150bInteg and test_fwd_gather_vs_einsum or TestDev150bInteg and test_fwdbwd_gather_vs_einsum'
+elif [ "$1" = "150b_blockwise" ]; then
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_blockwise_vs_einsum or TestDev150bUnit and test_fwdbwd_blockwise_vs_einsum or TestDev150bInteg and test_fwd_blockwise_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwise_vs_einsum'
+elif [ "$1" = "150b_blockwise_cpu" ]; then
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_blockwise_vs_einsum or TestDev150bUnit and test_fwdbwd_blockwise_vs_einsum'
+elif [ "$1" = "150b_blockwise_neuron" ]; then
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bInteg and test_fwd_blockwise_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwise_vs_einsum'
 fi

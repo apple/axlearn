@@ -25,10 +25,6 @@ from axlearn.common.test_utils import TestCase
 from axlearn.common.utils_neuron import TestCaseConfig, create_test_config, get_training_configs
 
 
-# is_unit = os.getenv('IS_UNIT', 'false').lower() == 'true'
-# is_blockwise = os.getenv('IS_BLOCKWISE', 'false').lower() == 'true'
-# test_configs = get_training_configs(is_unit, is_blockwise)
-
 TEST_SUITE = os.environ.get("TEST_SUITE", 'presubmit').lower()
 
 class LayerTestCase(TestCase):
@@ -87,27 +83,33 @@ class LayerTestCase(TestCase):
             (loss, output), grads = jax.value_and_grad(loss_fn, has_aux=True)(golden_state)
             return loss, grads, output
 
+        jax.config.update('jax_platform_name', cfg.test.device)
         with cfg.test.mesh:
             test_loss, test_grads, test_output = test_bwd_call(cfg.test.layer, cfg.test.state, cfg.test.inputs)
-        with cfg.golden.mesh:
-            golden_loss, golden_grads, golden_output = golden_bwd_call(cfg.golden.layer, cfg.golden.state, cfg.golden.inputs)
-
-        #Transfer results to CPU before comparison
-        test_loss = jax.tree_map(jax.device_get, test_loss)
-        golden_loss = jax.tree_map(jax.device_get, golden_loss)
-        test_grads = jax.tree_map(jax.device_get, test_grads)
-        golden_grads = jax.tree_map(jax.device_get, golden_grads)
+        
         test_output = jax.tree_map(jax.device_get, test_output)
-        golden_output = jax.tree_map(jax.device_get, golden_output)
+        test_loss = jax.tree_map(jax.device_get, test_loss)
+        test_grads = jax.tree_map(jax.device_get, test_grads)
         
-        # Compare losses
-        self.assertNestedAllClose(test_loss, golden_loss, atol=cfg.test.atol, rtol=cfg.test.rtol)
-        
-        # Compare gradients
-        self.assertNestedAllClose(test_grads, golden_grads, atol=cfg.test.atol, rtol=cfg.test.rtol)
-        
-        # Compare outputs
-        self.assertNestedAllClose(test_output, golden_output, atol=cfg.test.atol, rtol=cfg.test.rtol)
+        if cfg.golden:
+            jax.config.update('jax_platform_name', cfg.golden.device)
+            with cfg.golden.mesh:
+                golden_loss, golden_grads, golden_output = golden_bwd_call(cfg.golden.layer, cfg.golden.state, cfg.golden.inputs)
+
+                #Transfer results to CPU before comparison
+                if cfg.golden.device == "neuron":
+                    golden_loss = jax.tree_map(jax.device_get, golden_loss)
+                    golden_grads = jax.tree_map(jax.device_get, golden_grads)
+                    golden_output = jax.tree_map(jax.device_get, golden_output)
+                
+            # Compare losses
+            self.assertNestedAllClose(test_loss, golden_loss, atol=cfg.test.atol, rtol=cfg.test.rtol)
+            
+            # Compare gradients
+            self.assertNestedAllClose(test_grads, golden_grads, atol=cfg.test.atol, rtol=cfg.test.rtol)
+            
+            # Compare outputs
+            self.assertNestedAllClose(test_output, golden_output, atol=cfg.test.atol, rtol=cfg.test.rtol)
 
 class GatingTestCase(TestCase):
     def _fwd_call(self, layer, state, inputs):
@@ -258,7 +260,7 @@ class TestLayerOnTrn(LayerTestCase):
     def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
 
-class TestDev150b(LayerTestCase):
+class TestDev150bUnit(LayerTestCase):
     def create_cfg(self, test, golden, test_device, golden_device, layer="moe"):
         return create_test_config(
             layer=layer,
@@ -278,46 +280,38 @@ class TestDev150b(LayerTestCase):
             dtype=jnp.bfloat16,
         )[1]
     
-    def test_fwd_blockwisegather_vs_gather_150b_unit(self):
+    def test_fwd_blockwise_vs_einsum(self):
         jax.config.update('jax_platform_name', 'cpu')
-        self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
+        self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     
-    def test_fwd_gather_vs_einsum_150b_unit(self):
+    def test_fwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     
-    def test_fwd_blockwisegather_vs_gather_150b_integ(self):
-        jax.config.update('jax_platform_name', 'neuron')
-        self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
+    def test_fwdbwd_blockwise_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'cpu')
+        self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     
-    def test_fwd_gather_vs_einsum_150b_integ(self):
+    def test_fwdbwd_gather_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'cpu')
+        self.helper_bwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
+
+class TestDev150bInteg(TestDev150bUnit):
+    def test_fwd_blockwise_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
+        self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
+    
+    def test_fwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     
-    def test_fwd_blockwisegather_neuron_vs_cpu_150b_integ(self):
+    def test_fwdbwd_blockwise_vs_einsum(self):
         jax.config.update('jax_platform_name', 'neuron')
-        self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGatherBlockwise, test_device="neuron", golden_device="cpu"))
+        self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     
-    def test_fwdbwd_blockwisegather_vs_gather_150b_unit(self):
-        jax.config.update('jax_platform_name', 'cpu')
-        self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="cpu", golden_device="cpu"))
-    
-    def test_fwdbwd_gather_vs_einsum_150b_unit(self):
-        jax.config.update('jax_platform_name', 'cpu')
-        self.helper_bwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
-    
-    def test_fwdbwd_blockwisegather_vs_gather_150b_integ(self):
+    def test_fwdbwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'neuron')
-        self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
-    
-    def test_fwdbwd_blockwisegather_neuron_vs_cpu_150b_integ(self):
-        jax.config.update('jax_platform_name', 'neuron')
-        self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGatingGatherBlockwise, test_device="neuron", golden_device="cpu"))
-    
-    def test_fwdbwd_gather_vs_einsum_150b_integ(self):
-        jax.config.update('jax_platform_name', 'neuron')
-        self.helper_bwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))
-    
+        self.helper_bwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu"))    
 
 class TestDev150bGating(GatingTestCase):
     def create_cfg(self, test, golden, test_device, golden_device="cpu", layer="gating"):
@@ -339,21 +333,21 @@ class TestDev150bGating(GatingTestCase):
             dtype=jnp.bfloat16,
         )[1]
     
-    def test_fwd_gating_blockwisegather_vs_gather_150b_unit(self):
+    def test_unit_fwd_blockwise(self):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwise, golden=None, test_device="cpu", layer="gating"))
 
-    def test_fwd_gating_blockwisegather_vs_gather_150b_integ(self):
+    def test_integ_fwd_blockwise(self):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwise, golden=None, test_device="neuron", layer="gating"))
     
-    def test_fwd_gating_gather_vs_einsum_150b_unit(self):
+    def test_unit_fwd_gather(self):
         jax.config.update('jax_platform_name', 'cpu')
-        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", layer="gating"))
+        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu", layer="gating"))
 
-    def test_fwd_gating_gather_vs_einsum_150b_integ(self):
+    def test_integ_fwd_gather(self):
         jax.config.update('jax_platform_name', 'neuron')
-        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", layer="gating"))
+        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu", layer="gating"))
 
 
 if __name__ == "__main__":
