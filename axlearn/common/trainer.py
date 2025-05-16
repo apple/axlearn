@@ -851,7 +851,8 @@ class SpmdTrainer(Module):
         """Prepares training.
 
         This function does the following to prepare the training procedure:
-        1. Restores trainer state from checkpoint.
+        1. Restores the trainer state from a checkpoint. If no checkpoint exists,
+           initializes a new trainer state using the provided prng_key.
         2. Initializes step to zero if it's not in the checkpoint.
         3. Returns early if max_steps has been reached.
         4. Otherwise Jits self._train_step.
