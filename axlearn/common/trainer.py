@@ -1044,7 +1044,7 @@ class SpmdTrainer(Module):
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
 
         self._maybe_record_event(
-            measurement.Event.START_CUSTOM_BADPUT_EVENT, custom_badput_event_type="SDC_CHECK"
+            measurement.Event.START_CUSTOM_BADPUT_EVENT, custom_badput_event_type="SDC_COMPILATION"
         )
         compiled_jit_train_step_fn = self.compile_train_step(
             trainer_state=trainer_state,
@@ -1055,7 +1055,7 @@ class SpmdTrainer(Module):
             ),
         )
         self._maybe_record_event(
-            measurement.Event.END_CUSTOM_BADPUT_EVENT, custom_badput_event_type="SDC_CHECK"
+            measurement.Event.END_CUSTOM_BADPUT_EVENT, custom_badput_event_type="SDC_COMPILATION"
         )
         return compiled_jit_train_step_fn
 
