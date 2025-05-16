@@ -64,11 +64,11 @@ export TF_CPP_MIN_LOG_LEVEL=3
 export TEST_SUITE=${2:-"presubmit"}
 set -ex
 if [ "$1" = "unit" ]; then
-    pytest -rsA --tb=short --junitxml=test-results/$TEST_SUITE/unit.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnCpu
+    pytest -rsA --tb=short --junitxml=test_logs/$TEST_SUITE/unit.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnCpu
 elif [ "$1" = "integ" ]; then
-    pytest -rsA --tb=short --junitxml=test-results/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
+    pytest -rsA --tb=short --junitxml=test_logs/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
 elif [ "$1" = "150b" ]; then
-    pytest -rsA --tb=short --junitxml=test-results/$TEST_SUITE/150b.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150bUnit or TestDev150bInteg or TestDev150bGating"
+    pytest -rsA --tb=short --junitxml=test_logs/$TEST_SUITE/150b.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150bUnit or TestDev150bGating or TestDev150bInteg"
 elif [ "$1" = "150b_gather" ]; then
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_gather_vs_einsum or TestDev150bUnit and test_fwdbwd_gather_vs_einsum or TestDev150bInteg and test_fwd_gather_vs_einsum or TestDev150bInteg and test_fwdbwd_gather_vs_einsum'
 elif [ "$1" = "150b_blockwise" ]; then
