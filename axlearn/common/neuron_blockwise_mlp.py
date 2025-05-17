@@ -65,26 +65,24 @@ def can_use_blockwise_matmul_nki(
     return True
 
 
-@partial(custom_vjp, nondiff_argnums=(7,))
+@partial(custom_vjp, nondiff_argnums=(6,))
 def blockwise_mm(
     hidden_states: Tensor,
     expert_affinities_masked: Tensor,
-    gate_weight: Tensor,
-    up_proj_weight: Tensor,
+    gate_up_weight: Tensor,
     down_proj_weight: Tensor,
     token_position_to_id: Tensor,
     block_to_expert: Tensor,
     block_size: int,
 ):
-    out, _ = _blockwise_mm_fwd(hidden_states, expert_affinities_masked, gate_weight, up_proj_weight,
+    out, _ = _blockwise_mm_fwd(hidden_states, expert_affinities_masked, gate_up_weight,
                             down_proj_weight, token_position_to_id, block_to_expert, block_size)
     return out
 
 def _blockwise_mm_fwd(
     hidden_states: Tensor,
     expert_affinities_masked: Tensor,
-    gate_weight: Tensor,
-    up_proj_weight: Tensor,
+    gate_up_weight: Tensor,
     down_proj_weight: Tensor,
     token_position_to_id: Tensor,
     block_to_expert: Tensor,
@@ -106,10 +104,6 @@ def _blockwise_mm_fwd(
         expert_affinities_masked = jnp.concat([expert_affinities_masked, padding_e], axis=0)
         expert_affinities_masked = jnp.reshape(expert_affinities_masked, (-1, 1))
 
-    with jax.named_scope("setupweight"):
-        gate_up_weight = jnp.stack([gate_weight, up_proj_weight], 
-            axis=2
-        )
     with jax.named_scope("make NKI call"):
         out, gate_up_activations_T, down_activations = _blockwise_mm_nki_call[VNC(2)](
             hidden_states,
@@ -160,14 +154,10 @@ def _blockwise_mm_bwd(
     affinities_grad = jnp.reshape(affinities_grad, (-1, E))
     affinities_grad = affinities_grad[:-1, :].reshape(1, 1, -1, E)
 
-    gate_proj_weight_grad = gate_up_proj_weight_grad[:, :, 0, :]  # Shape: (E, H, I)
-    up_proj_weight_grad = gate_up_proj_weight_grad[:, :, 1, :]
-
     return (
         hidden_states_grad,
         affinities_grad,
-        gate_proj_weight_grad,
-        up_proj_weight_grad,
+        gate_up_proj_weight_grad,
         down_weight_grad,
         token_position_to_id,
         block_to_expert
