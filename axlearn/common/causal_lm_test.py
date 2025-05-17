@@ -80,7 +80,7 @@ class Gpt2TransformerTest(TestCase):
             dropout_rate=ref_cfg.attn_pdrop,
         )
         if causal_attention_mode == "attention_mask":
-            decoder_cfg.transformer.layer.self_attention.attention.causal = False
+            decoder_cfg.transformer.layer.self_attention.attention.causal = None
             decoder_cfg.attention_mask = CausalAttentionLogitBiasLayer.default_config()
             require_same_tree_structure = True
         elif causal_attention_mode == "causal_attention":
@@ -220,7 +220,7 @@ class ModelTest(TestCase):
 
         # Enable attention_mask
         decoder_cfg = ref_decoder_cfg.clone()
-        decoder_cfg.transformer.layer.self_attention.attention.causal = False
+        decoder_cfg.transformer.layer.self_attention.attention.causal = None
         decoder_cfg.attention_mask = CausalAttentionLogitBiasLayer.default_config()
         model_cfg = causal_lm.Model.default_config().set(decoder=decoder_cfg, name="model")
         model = model_cfg.instantiate(parent=None)
