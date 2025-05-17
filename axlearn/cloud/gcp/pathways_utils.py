@@ -99,7 +99,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
-        pathways_xla_flags: Optional[list[str]] = []
+        pathways_xla_flags: list[str] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
 
