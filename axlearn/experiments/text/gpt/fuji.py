@@ -612,7 +612,7 @@ def get_trainer_kwargs(
                 ),
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 (
-                    # pylint: disable = line-too-long
+                    # pylint: disable=line-too-long
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
@@ -960,8 +960,8 @@ def trainer_configs(
             for accelerator, current_config in cfg.mesh_rules:
                 # Only create FP8 configs for accelerators that support them
                 if any(
-                    _accelerator in accelerator
-                    for _accelerator in [
+                    supported_accelerator in accelerator
+                    for supported_accelerator in [
                         "a3-highgpu-8g",
                         "a3-megagpu-8g",
                         "a3-ultragpu-8g",
@@ -985,9 +985,10 @@ def trainer_configs(
                         )
             return cfg
 
-        # Make FP8 config
+        # Make FP8 config, excluding the test model size
         make_fp8_config_func = functools.partial(make_fp8_config, config_name)
-        config_map[f"{config_name}-fp8"] = make_fp8_config_func
+        if model_size != "test":
+            config_map[f"{config_name}-fp8"] = make_fp8_config_func
 
         if model_size == "test":
 
