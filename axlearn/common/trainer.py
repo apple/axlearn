@@ -1037,14 +1037,23 @@ class SpmdTrainer(Module):
             mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
         if not with_xsc:
+            self._maybe_record_event(
+                measurement.Event.START_CUSTOM_BADPUT_EVENT,
+                custom_badput_event_type="COMPILATION_NO_XSC",
+            )
             self._compiled_train_step = self.compile_train_step(
                 trainer_state=trainer_state, input_batch=input_batch, compiler_options=options
+            )
+            self._maybe_record_event(
+                measurement.Event.END_CUSTOM_BADPUT_EVENT,
+                custom_badput_event_type="COMPILATION_NO_XSC",
             )
             return self._compiled_train_step
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
 
         self._maybe_record_event(
-            measurement.Event.START_CUSTOM_BADPUT_EVENT, custom_badput_event_type="SDC_COMPILATION"
+            measurement.Event.START_CUSTOM_BADPUT_EVENT,
+            custom_badput_event_type="COMPILATION_WITH_XSC",
         )
         compiled_jit_train_step_fn = self.compile_train_step(
             trainer_state=trainer_state,
@@ -1055,7 +1064,8 @@ class SpmdTrainer(Module):
             ),
         )
         self._maybe_record_event(
-            measurement.Event.END_CUSTOM_BADPUT_EVENT, custom_badput_event_type="SDC_COMPILATION"
+            measurement.Event.END_CUSTOM_BADPUT_EVENT,
+            custom_badput_event_type="COMPILATION_WITH_XSC",
         )
         return compiled_jit_train_step_fn
 
