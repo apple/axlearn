@@ -11,6 +11,7 @@ from absl import flags
 
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.utils import parse_kv_flags
 from axlearn.cloud.gcp.jobset_utils import (
     _ANNOTATION_NODE_SERVICE_ACCOUNT,
     _METADATA_GOOGLE_INTERNAL_IP,
@@ -158,20 +159,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             num_slices=cfg.inner.accelerator.num_replicas,
             backend="tpu",
         )
-        pathways_xla_flags = {}
-        for flag in pathways_cfg.pathways_xla_flags:
-            if "=" in flag:
-                k, v = flag.split("=", 1)
-                # Users may accidentally pass flags as args
-                k = k.lstrip("--")
-                pathways_xla_flags[k] = parse_xla_flag_value(v.strip())
-            else:
-                logging.warning(
-                    "Invalid XLA flag format: %s. --pathways_xla_flags expects 'key=value'.",
-                    flag,
-                )
+        pathways_xla_flags = parse_kv_flags(pathways_cfg.pathways_xla_flags, delimiter="=")
+        for k, v in pathways_xla_flags.items():
+            k = k.lstrip("--")
+            v = parse_xla_flag_value(v)
+            xla_and_mxla_options[k] = v
 
-        xla_and_mxla_options.update(pathways_xla_flags)
         # Needs to be passed to pathways-proxy.
         self._xla_options = get_xla_options(xla_and_mxla_options)
         # Needs to be passed as command arguments to each pathways-worker.

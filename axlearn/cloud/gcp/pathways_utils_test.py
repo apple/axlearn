@@ -174,13 +174,10 @@ class PathwaysReplicatedJobTest(TestCase):
         new_mxla_flag_value_str = "a_string_value"
         expected_new_mxla_value_parsed = new_mxla_flag_value_str
 
-        malformed_flag_str = "this_is_not_valid"
-
         pathways_xla_flags_input = [
             f"{flag_to_override_key}={override_value_str}",
             f"{new_xla_flag_key}={new_xla_flag_value_str}",
-            f"--{new_mxla_flag_key}={new_mxla_flag_value_str}",  # Test with leading --
-            malformed_flag_str,
+            f"--{new_mxla_flag_key}={new_mxla_flag_value_str}",
         ]
 
         initial_default_options = default_xla_options(
@@ -200,16 +197,8 @@ class PathwaysReplicatedJobTest(TestCase):
                 output_dir="test-inner-output",
                 service_account="test-service-account",
             )
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
-            # Instantiate the builder and check for warnings.
-            with self.assertLogs(None, level="WARNING") as cm:
-                builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
-            self.assertTrue(
-                any(
-                    f"Invalid XLA flag format: {malformed_flag_str}" in output
-                    for output in cm.output
-                )
-            )
             # pylint: disable=protected-access
             actual_xla_options = builder._xla_options
             actual_mxla_options = builder._mxla_options
