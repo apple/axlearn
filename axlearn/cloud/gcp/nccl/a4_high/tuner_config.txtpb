@@ -1,0 +1,779 @@
+# proto-file: config_proto/tuner_config.proto
+# proto-message: TunerConfigs
+
+# 2 nodes 1 rank
+communicator_configs {
+  node_range: {
+    min: 2
+    max: 3  # exclusive
+  }
+  rank_per_node_range: {
+    min: 1
+    max: 2  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 8 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+        max: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 8 }
+    }
+  }
+}
+
+# 2 nodes 4-8 ranks
+communicator_configs {
+  node_range: {
+    min: 2
+    max: 3  # exclusive
+  }
+  rank_per_node_range: {
+    min: 4
+    max: 9  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 16384
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16384
+        max: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_NVLS_TREE protocol: PROTO_SIMPLE num_channel: 32 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 262144
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 262144
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 32 }
+    }
+  }
+}
+
+# 4 nodes 1 rank
+communicator_configs {
+  node_range: {
+    min: 3
+    max: 5  # exclusive
+  }
+  rank_per_node_range: {
+    min: 1
+    max: 2  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 16384
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16384
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+        max: 131072
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 1 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 131072
+        max: 262144
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 2 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 262144
+        max: 524288
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 524288
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+        max: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 8 }
+    }
+  }
+}
+
+# 4 nodes 4-8 ranks
+communicator_configs {
+  node_range: {
+    min: 3
+    max: 5  # exclusive
+  }
+  rank_per_node_range: {
+    min: 4
+    max: 9  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 8192
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 8192
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 131072
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 131072
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+}
+
+# 8 nodes 1 rank
+communicator_configs {
+  node_range: {
+    min: 5
+    max: 9  # exclusive
+  }
+  rank_per_node_range: {
+    min: 1
+    max: 2  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 1024
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 2 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1024
+        max: 8192
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 8192
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+        max: 262144
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 262144
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 8192
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 1 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 8192
+        max: 262144
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 2 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 262144
+        max: 524288
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 524288
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+        max: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 8 }
+    }
+  }
+}
+
+
+# 8 nodes 4-8 ranks
+communicator_configs {
+  node_range: {
+    min: 5
+    max: 9  # exclusive
+  }
+  rank_per_node_range: {
+    min: 4
+    max: 9  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 2048
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 2048
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 131072
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 131072
+        max: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 2097152
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 33554432
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+}
+
+# 16 nodes 1 rank
+communicator_configs {
+  node_range: {
+    min: 9
+    max: 17  # exclusive
+  }
+  rank_per_node_range: {
+    min: 1
+    max: 2  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 128
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 1 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 128
+        max: 1024
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 2 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1024
+        max: 4096
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 4096
+        max: 32768
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 32768
+        max: 262144
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 262144
+        max: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 512
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 1 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 512
+        max: 262144
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 2 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 262144
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+  }
+}
+
+# 16 nodes 4-8 ranks
+communicator_configs {
+  node_range: {
+    min: 9
+    max: 17  # exclusive
+  }
+  rank_per_node_range: {
+    min: 4
+    max: 9  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 1024
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1024
+        max: 8192
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 8192
+        max: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 4194304
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 131072
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 131072
+        max: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 2097152
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+}
+
+# 32 nodes 1 rank
+communicator_configs {
+  node_range: {
+    min: 17
+    max: 33  # exclusive
+  }
+  rank_per_node_range: {
+    min: 1
+    max: 2  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 2048
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 1 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 2048
+        max: 32768
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 32768
+        max: 524288
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 524288
+        max: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 32768
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 1 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 32768
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 2 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+        max: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_PAT protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 1048576
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+  }
+}
+
+# 32 nodes 4-8 ranks
+communicator_configs {
+  node_range: {
+    min: 17
+    max: 33  # exclusive
+  }
+  rank_per_node_range: {
+    min: 4
+    max: 9  # exclusive
+  }
+  coll_configs {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 512
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 512
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+        max: 524288
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 524288
+        max: 4194304
+      }
+      coll_tuning_spec: { algorithm: ALGO_NVLS_TREE protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 4194304
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+  coll_configs {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL num_channel: 8 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+        max: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 16 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 2097152
+        max: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_LL128 num_channel: 32 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 16777216
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 16 }
+    }
+  }
+}

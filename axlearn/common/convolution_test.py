@@ -10,14 +10,16 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common import convolution, einops, utils
+from axlearn.common import convolution, ein_ops, utils
 from axlearn.common.convolution import (
     Conv1D,
+    Conv1DTranspose,
     Conv1DWithPadding,
     Conv2D,
     Conv2DTranspose,
     Conv2DWith1DPadding,
     Conv3D,
+    Conv3DTranspose,
     ConvPaddingType,
     StackOverTime,
     compute_conv_paddings,
@@ -757,7 +759,7 @@ class ConvTest(TestCase):
         prng_key, init_key = jax.random.split(prng_key)
         state = ref_layer.initialize_parameters_recursively(init_key)
         test_state = dict(
-            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+            bias=state["bias"], weight=ein_ops.rearrange(state["weight"], "t 1 i o -> t i o")
         )
 
         # Generate a batch of 10 input sequences.
@@ -778,7 +780,7 @@ class ConvTest(TestCase):
         output_shape = test_layer.output_shape(input_shape=inputs.shape)
         assert_allclose(test_outputs.shape, output_shape)
 
-        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        inputs = ein_ops.rearrange(inputs, "b t i -> b t 1 i")
         (ref_outputs, ref_paddings), _ = F(
             ref_layer,
             inputs=dict(x=inputs, paddings=paddings),
@@ -788,7 +790,7 @@ class ConvTest(TestCase):
         )
         output_shape = ref_layer.output_shape(input_shape=inputs.shape)
         assert_allclose(ref_outputs.shape, output_shape)
-        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+        ref_outputs = ein_ops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
         self.assertEqual(ref_paddings.dtype, jnp.bool)
         self.assertEqual(test_paddings.dtype, jnp.bool)
@@ -1239,6 +1241,99 @@ class ConvTransposeTest(TestCase):
         expected = jnp.array(expected).astype(outputs.dtype)
         self.assertNestedEqual(outputs[0, :, 0], expected)
 
+    @parameterized.named_parameters(
+        {
+            "testcase_name": "1D_W2_S1",
+            "window": 2,
+            "strides": 1,
+            "padding": "VALID",
+        },
+        {
+            "testcase_name": "1D_W2_S2",
+            "window": 2,
+            "strides": 2,
+            "padding": "VALID",
+        },
+        {
+            "testcase_name": "1D_W3_S2",
+            "window": 3,
+            "strides": 2,
+            "padding": "VALID",
+        },
+    )
+    def test_conv1d_transpose_grouped_against_pytorch(
+        self,
+        window: int,
+        strides: int,
+        padding: str,
+    ):
+        input_dim, output_dim, groups = 78, 52, 13
+        deconv_padding = padding
+        cfg = Conv1DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=deconv_padding,
+            num_input_dim_groups=groups,
+        )
+        layer: Conv1DTranspose = cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(
+            dict(
+                weight=(window, input_dim // groups, output_dim),
+                bias=(output_dim,),
+            ),
+            shapes(layer_params),
+        )
+        bias = layer_params["bias"]
+        assert_allclose(bias, jnp.zeros_like(bias))
+        # Randomize bias.
+        layer_params["bias"] = jax.random.normal(
+            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        )
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [2, 11, input_dim])
+        # Compute layer outputs.
+        (outputs, _), _ = F(
+            layer,
+            inputs=(inputs,),
+            is_training=True,
+            state=layer_params,
+            prng_key=prng_key,
+        )
+
+        ref = torch.nn.ConvTranspose1d(
+            in_channels=input_dim,
+            out_channels=output_dim,
+            kernel_size=window,
+            stride=strides,
+            padding=0,
+            groups=groups,
+        )
+        # torch.nn.ConvTranspose1d shape: (I, O//G, k0).
+        weight = layer_params["weight"]  # (k0, I//G, O)
+        k0, _, _ = weight.shape
+        weight = jnp.reshape(weight, (k0, input_dim // groups, groups, output_dim // groups))
+        weight = jnp.transpose(weight, (0, 2, 1, 3))
+        weight = jnp.reshape(weight, (k0, input_dim, output_dim // groups))
+        # Flip spatial dim
+        weight = jnp.flip(weight, axis=0)
+        _copy(weight.transpose(1, 2, 0), ref.weight)
+        _copy(layer_params["bias"], ref.bias)
+        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 2, 1)))
+        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 1))
+        # Tests output_shape.
+        output_shape = layer.output_shape(input_shape=inputs.shape)
+        assert_allclose(outputs.shape, output_shape)
+
     @parameterized.parameters(*CONVT_PARAMS)
     def test_conv2d_transpose_simple(self, window, strides, padding, dilation, expected):
         """Tests the cases in conv_transpose_explicit_padding() description."""
@@ -1370,6 +1465,111 @@ class ConvTransposeTest(TestCase):
         output_shape = layer.output_shape(input_shape=inputs.shape)
         assert_allclose(outputs.shape, output_shape)
 
+    @parameterized.named_parameters(
+        {
+            "testcase_name": "2x2",
+            "window": (2, 2),
+            "strides": (1, 1),
+            "padding": "VALID",
+        },
+        {
+            "testcase_name": "2x2_S2",
+            "window": (2, 2),
+            "strides": (2, 2),
+            "padding": "VALID",
+        },
+        {
+            "testcase_name": "3x3_S2",
+            "window": (3, 3),
+            "strides": (2, 2),
+            "padding": "VALID",
+        },
+    )
+    def test_conv2d_transpose_grouped_against_pytorch(
+        self,
+        window: tuple[int, int],
+        strides: tuple[int, int],
+        padding: Union[str, tuple[int, int]],
+    ):
+        input_dim, output_dim, groups = 78, 52, 13
+        if isinstance(padding, tuple):
+            deconv_padding = ((padding[0], padding[0]), (padding[1], padding[1]))
+        else:
+            deconv_padding = padding
+        cfg = Conv2DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=deconv_padding,
+            transpose_kernel=True,
+            num_input_dim_groups=groups,
+        )
+        layer: Conv2DTranspose = cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(
+            dict(
+                weight=(window[0], window[1], output_dim, input_dim // groups),
+                bias=(output_dim,),
+            ),
+            shapes(layer_params),
+        )
+        bias = layer_params["bias"]
+        assert_allclose(bias, jnp.zeros_like(bias))
+        # Randomize bias.
+        layer_params["bias"] = jax.random.normal(
+            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        )
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [2, 11, 7, input_dim])
+        # Compute layer outputs.
+        outputs, _ = F(
+            layer,
+            inputs=(inputs,),
+            is_training=True,
+            state=layer_params,
+            prng_key=prng_key,
+        )
+
+        # Compute ref outputs.
+        if isinstance(padding, tuple):
+            ref_padding = padding[0]
+        elif isinstance(padding, str):
+            ref_padding = padding.lower()
+            if ref_padding == "valid":
+                ref_padding = 0
+        else:
+            ref_padding = 0
+
+        ref = torch.nn.ConvTranspose2d(
+            in_channels=input_dim,
+            out_channels=output_dim,
+            kernel_size=window,
+            stride=strides,
+            padding=ref_padding,
+            groups=groups,
+        )
+        # torch.nn.ConvTranspose2d shape: (I, O//G, k0, k1).
+        weight = layer_params["weight"]  # (k0, k1, O, I//G)
+        k0, k1, _, _ = weight.shape
+        weight = jnp.reshape(weight, (k0, k1, groups, output_dim // groups, input_dim // groups))
+        weight = jnp.transpose(weight, (0, 1, 3, 2, 4))
+        weight = jnp.reshape(weight, (k0, k1, output_dim // groups, input_dim))
+        _copy(weight.transpose(3, 2, 0, 1), ref.weight)
+        _copy(layer_params["bias"], ref.bias)
+        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 3, 1, 2)))
+        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 1))
+        # Tests output_shape.
+        output_shape = layer.output_shape(input_shape=inputs.shape)
+        assert_allclose(outputs.shape, output_shape)
+
     @parameterized.parameters(*CONVT_PARAMS)
     def test_conv3d_transpose_simple(self, window, strides, padding, dilation, expected):
         """Tests the cases in conv_transpose_explicit_padding() description."""
@@ -1402,6 +1602,114 @@ class ConvTransposeTest(TestCase):
         assert_allclose(outputs.shape, out_shape)
         expected = jnp.array(expected).astype(outputs.dtype)
         self.assertNestedEqual(outputs[0, :, 0, 0, 0], expected)
+
+    @parameterized.named_parameters(
+        {
+            "testcase_name": "2x2x2",
+            "window": (2, 2, 2),
+            "strides": (1, 1, 1),
+            "padding": "VALID",
+        },
+        {
+            "testcase_name": "2x2x2_S2",
+            "window": (2, 2, 2),
+            "strides": (2, 2, 2),
+            "padding": "VALID",
+        },
+        {
+            "testcase_name": "3x3_S2",
+            "window": (3, 3, 3),
+            "strides": (2, 2, 2),
+            "padding": "VALID",
+        },
+    )
+    def test_conv3d_transpose_grouped_against_pytorch(
+        self,
+        window: tuple[int, int],
+        strides: tuple[int, int],
+        padding: Union[str, tuple[int, int]],
+    ):
+        input_dim, output_dim, groups = 78, 52, 13
+        if isinstance(padding, tuple):
+            deconv_padding = ((padding[0], padding[0]), (padding[1], padding[1]))
+        else:
+            deconv_padding = padding
+        cfg = Conv3DTranspose.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+            window=window,
+            strides=strides,
+            padding=deconv_padding,
+            num_input_dim_groups=groups,
+        )
+        layer: Conv3DTranspose = cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(
+            dict(
+                weight=(window[0], window[1], window[2], input_dim // groups, output_dim),
+                bias=(output_dim,),
+            ),
+            shapes(layer_params),
+        )
+        bias = layer_params["bias"]
+        assert_allclose(bias, jnp.zeros_like(bias))
+        # Randomize bias.
+        layer_params["bias"] = jax.random.normal(
+            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        )
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [2, 10, 7, 17, input_dim])
+        # Compute layer outputs.
+        outputs, _ = F(
+            layer,
+            inputs=(inputs,),
+            is_training=True,
+            state=layer_params,
+            prng_key=prng_key,
+        )
+
+        # Compute ref outputs.
+        if isinstance(padding, tuple):
+            ref_padding = padding[0]
+        elif isinstance(padding, str):
+            ref_padding = padding.lower()
+            if ref_padding == "valid":
+                ref_padding = 0
+        else:
+            ref_padding = 0
+
+        ref = torch.nn.ConvTranspose3d(
+            in_channels=input_dim,
+            out_channels=output_dim,
+            kernel_size=window,
+            stride=strides,
+            padding=ref_padding,
+            groups=groups,
+        )
+        # torch.nn.ConvTranspose3d shape: (I, O//G, k0, k1, k2).
+        weight = layer_params["weight"]  # (k0, k1, k2, O, I//G)
+        k0, k1, k2, _, _ = weight.shape
+        weight = jnp.reshape(
+            weight, (k0, k1, k2, input_dim // groups, groups, output_dim // groups)
+        )
+        weight = jnp.transpose(weight, (0, 1, 2, 4, 3, 5))
+        weight = jnp.reshape(weight, (k0, k1, k2, input_dim, output_dim // groups))
+        # Flip spatial dims
+        weight = jnp.flip(weight, axis=(0, 1, 2))
+        _copy(weight.transpose(3, 4, 0, 1, 2), ref.weight)
+        _copy(layer_params["bias"], ref.bias)
+        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 4, 1, 2, 3)))
+        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 4, 1))
+        # Tests output_shape.
+        output_shape = layer.output_shape(input_shape=inputs.shape)
+        assert_allclose(outputs.shape, output_shape)
 
     @parameterized.product(window=(1, 3, 5), padding=("SAME", "VALID", "CAUSAL"), dilation=(1, 2))
     def test_conv1d_transpose_against_conv1d(self, window, padding, dilation):
@@ -1711,7 +2019,7 @@ class ConvTransposeTest(TestCase):
         prng_key, init_key = jax.random.split(prng_key)
         state = ref_layer.initialize_parameters_recursively(init_key)
         test_state = dict(
-            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+            bias=state["bias"], weight=ein_ops.rearrange(state["weight"], "t 1 i o -> t i o")
         )
 
         # Generate a batch of 10 input sequences.
@@ -1730,7 +2038,7 @@ class ConvTransposeTest(TestCase):
             prng_key=prng_key,
         )
 
-        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        inputs = ein_ops.rearrange(inputs, "b t i -> b t 1 i")
         (ref_outputs, ref_paddings), _ = F(
             ref_layer,
             inputs=dict(x=inputs, paddings=paddings),
@@ -1738,7 +2046,7 @@ class ConvTransposeTest(TestCase):
             state=state,
             prng_key=prng_key,
         )
-        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+        ref_outputs = ein_ops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
         assert_allclose(ref_paddings, test_paddings)
         assert_allclose(ref_outputs, test_outputs)

@@ -2,11 +2,12 @@
 
 """A helper module to launch and manage Apache Flink + Beam bundles on GKE."""
 
+import enum
 import logging
 import math
 import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import kubernetes as k8s
 import requests
@@ -34,6 +35,42 @@ _PYTHON_HARNESS_MEMORY_PERCENTAGE = 0.4
 _TIMEOUT_SECS = 1800
 
 _FLINK_VERSION = "1.18"
+
+
+class FlinkJobStatus(enum.Enum):
+    """Flink Job Status.
+
+    See also:
+    https://nightlies.apache.org/flink/flink-docs-master/api/java/org/apache/flink/api/common/JobStatus.html
+
+    Attributes:
+        CANCELED: Job has been cancelled.
+        CANCELLING: Job is being cancelled.
+        CREATED: Job is newly created, no task has started to run.
+        FAILED: The job has failed and is currently waiting for the cleanup to complete.
+        FAILING: JobSet has failed.
+        FINISHED: All of the job's tasks have successfully finished.
+        INITIALIZING: The job has been received by the Dispatcher,
+                      and is waiting for the job manager to receive leadership and to be created.
+        RECONCILING: The job is currently reconciling and waits for task execution
+                     report to recover state.
+        RESTARTING: The job is currently undergoing a reset and total restart.
+        RUNNING: Some tasks are scheduled or running, some may be pending, some may be finished.
+        SUSPENDED: The job has been suspended which means that it has been stopped
+                   but not been removed from a potential HA job store.
+    """
+
+    CANCELED = "CANCELED"
+    CANCELLING = "CANCELLING"
+    CREATED = "CREATED"
+    FAILED = "FAILED"
+    FAILING = "FAILING"
+    FINISHED = "FINISHED"
+    INITIALIZING = "INITIALIZING"
+    RECONCILING = "RECONCILING"
+    RESTARTING = "RESTARTING"
+    RUNNING = "RUNNING"
+    SUSPENDED = "SUSPENDED"
 
 
 def _custom_flinkdeployment_kwargs() -> dict[str, str]:
@@ -80,6 +117,9 @@ class FlinkTPUGKEJob(job.GKEJob):
         super().__init__(cfg, bundler=bundler)
         if not isinstance(cfg.builder, TPUReplicatedJob.Config):
             raise NotImplementedError(type(cfg.builder))
+        # Job_manager_ip is assigned after the flink cluster is ready
+        # Before that job_manager_ip is None
+        self.job_manager_ip: Optional[str] = None
 
     def _delete(self):
         """This is a non-blocking method to delete the flink deployment and submitter job.
@@ -237,14 +277,14 @@ class FlinkTPUGKEJob(job.GKEJob):
             label_selector=f"app={flink_deployment['metadata']['name']},component=jobmanager",
         )
         # TODO(muyang_yu): consider using pod name instead of id.
-        jobmanager_ip = jobmanager_pods.items[0].status.pod_ip
+        self.job_manager_ip = jobmanager_pods.items[0].status.pod_ip
 
         # 3) Make sure all TPU pods are ready and registered to the flink cluster before submitting
         # the beam pipeline, otherwise the submitter may time out before TPU workers are all ready.
-        self._wait_for_tpu_workers_all_ready(jobmanager_ip, system)
+        self._wait_for_tpu_workers_all_ready(self.job_manager_ip, system)
 
         # 4) Create a job to submit user's pipeline to the Flink cluster
-        job_submission = self._build_job_submission_deployment(jobmanager_ip, system)
+        job_submission = self._build_job_submission_deployment(self.job_manager_ip, system)
         logging.info("Submitting Job job_submission=%s", job_submission)
         return k8s.client.BatchV1Api().create_namespaced_job(
             namespace=cfg.namespace,
@@ -352,6 +392,14 @@ class FlinkTPUGKEJob(job.GKEJob):
                     "taskmanager.memory.task.off-heap.size": "16g",
                     "taskmanager.network.bind-host": "0.0.0.0",
                     "rest.address": "0.0.0.0",
+                    # Store checkpointing for retry.
+                    "execution.checkpointing.interval": "10m",
+                    "execution.checkpointing.mode": "EXACTLY_ONCE",
+                    # Fixed-delay restart strategy.
+                    "restart-strategy.type": "fixed-delay",
+                    "restart-strategy.fixed-delay.attempts": "3",  # Max 30 restarts
+                    # Delay 10m so that TPU node have enough time to recover.
+                    "restart-strategy.fixed-delay.delay": "10m",
                 },
                 # job manager's responsibility is lightweight, it is only responsible to
                 # accept one request from one job submitter in this setup. So a minimum

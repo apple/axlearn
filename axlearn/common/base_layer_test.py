@@ -41,7 +41,7 @@ from axlearn.common.param_init import (
     FanAxes,
     WeightInitializer,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 
 
 class TestLayer(BaseLayer):
@@ -126,7 +126,7 @@ def _callback_primitive(forward, backward):
         backward()
         return (x,)
 
-    prim = jax.core.Primitive("passthrough_with_callback")
+    prim = jax.extend.core.Primitive("passthrough_with_callback")
     prim.def_impl(forward_impl)
     prim.def_abstract_eval(forward_impl)
     jax.interpreters.ad.deflinear(prim, backward_impl)
@@ -302,7 +302,7 @@ class BaseLayerTest(TestCase):
         tagged_params = [el for el in jaxpr.eqns if "name" in el.params]
         self.assertEqual(len(tagged_params), 1)
         tagged_param = tagged_params.pop()
-        self.assertIsInstance(tagged_param.primitive, jax.core.Primitive)
+        self.assertIsInstance(tagged_param.primitive, jax.extend.core.Primitive)
         self.assertEqual(tagged_param.primitive.name, "name")
         self.assertEqual(f"{type(test_module).__name__}.{var_tag}", tagged_param.params.get("name"))
 
@@ -374,6 +374,7 @@ class BaseLayerTest(TestCase):
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
 
     @parameterized.parameters(False, True)
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove during jax 0.5.0+ upgrade
     def test_tensor_stats(self, inline_child_summaries: bool):
         test_layer: TestLayer = (
             TestLayer.default_config()
@@ -403,16 +404,16 @@ class BaseLayerTest(TestCase):
         if inline_child_summaries:
             self.assertNestedAllClose(
                 {
-                    "x": {"rms_norm": 9.327524, "max_abs": 26.052944},
-                    "y": {"rms_norm": 9.231870, "max_abs": 26.109497},
+                    "x": {"rms_norm": 9.478282, "max_abs": 26.26252},
+                    "y": {"rms_norm": 9.583241, "max_abs": 25.26252},
                 },
                 output_collections.summaries["tensor_stats"],
             )
         else:
             self.assertNestedAllClose(
                 {
-                    "x": {"norm": {"rms_norm": 9.327524}, "max": {"max_abs": 26.052944}},
-                    "y": {"norm": {"rms_norm": 9.231870}, "max": {"max_abs": 26.109497}},
+                    "x": {"norm": {"rms_norm": 9.478282}, "max": {"max_abs": 26.26252}},
+                    "y": {"norm": {"rms_norm": 9.583241}, "max": {"max_abs": 25.26252}},
                 },
                 output_collections.summaries["tensor_stats"],
             )

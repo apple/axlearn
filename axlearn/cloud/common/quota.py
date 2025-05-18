@@ -11,7 +11,8 @@ import toml
 from axlearn.cloud.common.types import ProjectResourceMap, ResourceMap
 from axlearn.common.file_system import readfile
 
-QUOTA_CONFIG_PATH = "project-quotas/project-quotas.config"
+QUOTA_CONFIG_DIR = "project-quotas"
+QUOTA_CONFIG_FILE = "project-quotas.config"
 
 
 @dataclass

@@ -190,7 +190,7 @@ class BEiTImageVQKD(BaseLayer):
             quantized_output.ids,
             num_classes=self.config.quantizer.codebook_size,
             axis=-1,
-            dtype=paddings.dtype,
+            dtype=jnp.int32,
         )
         return jnp.squeeze(quantized_output.ids, axis=-1), {
             "quantized_vectors": jnp.squeeze(quantized_output.quantized_vectors, axis=-2),

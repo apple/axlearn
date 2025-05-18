@@ -54,6 +54,7 @@ from axlearn.common.attention import (
     MultiheadInputLinear,
     MultiheadOutputLinear,
     MultiheadRelativePositionLinear,
+    NormPosition,
     ParallelTransformerLayer,
     PerDimScale,
     PipelinedTransformerLayer,
@@ -121,7 +122,12 @@ from axlearn.common.quantized_dot_general.layers import (
     QuantizedDotGeneral,
     set_quantized_dot_general_recursively,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose, dummy_segments_positions
+from axlearn.common.test_utils import (
+    TestCase,
+    assert_allclose,
+    dummy_segments_positions,
+    set_threefry_partitionable,
+)
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import (
     Nested,
@@ -813,6 +819,9 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
         positions = jnp.expand_dims(jnp.arange(token_ids.shape[-1], dtype=jnp.int32), 0)
         ref_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
+        # In recent transformers API, PE's `_init_weight` is called recursively by parent module.
+        # Since we only initialize the PE layer here, we need to manually call it.
+        ref_layer._init_weight()  # pylint: disable=protected-access
         ref_output = ref_layer(as_torch_tensor(token_ids).shape)
         # Set up the RoPE AXLearn configs.
         test_layer = (
@@ -1742,7 +1751,7 @@ class ScaleQueryTest(TestCase):
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
-            inputs=dict(proj=q_proj),
+            inputs=dict(proj=q_proj, positions=jnp.arange(tgt_len)[None, :]),
         )
         return kwargs
 
@@ -1816,7 +1825,7 @@ class ScaleKeyTest(TestCase):
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
-            inputs=dict(proj=k_proj),
+            inputs=dict(proj=k_proj, positions=jnp.arange(tgt_len)[None, :]),
         )
         return kwargs
 
@@ -2300,7 +2309,7 @@ class MultiheadAttentionTest(TestCase):
 
         sliding_window_size = 2
         test_cfg = ref_cfg.clone(
-            causal=False,
+            causal=None,
             mask=SlidingWindowAttentionBias.default_config(sliding_window_size=sliding_window_size),
         )
         test_layer = test_cfg.instantiate(parent=None)
@@ -3076,19 +3085,34 @@ class ScaleFunctionsTest(TestCase):
         state = sigmoid_attention.initialize_parameters_recursively(prng_key=init_key)
 
         qkv_shape = [batch_size, seq_len, num_heads, num_heads]
+
+        # Get outputs.
+        forward_key = jax.random.PRNGKey(456)
+
+        q_proj = jnp.full(qkv_shape, fill_value=qkv_value, dtype=jnp.float32)
+        k_proj = jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype)
+        v_proj = jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype)
+        pos = jnp.arange(seq_len)[None, :]
+
+        (q_proj, k_proj), _ = F(
+            sigmoid_attention,
+            method="_scale_qk",
+            state=state,
+            is_training=False,
+            prng_key=forward_key,
+            inputs=dict(q_proj=q_proj, k_proj=k_proj, query_positions=pos, key_positions=pos),
+        )
+
         inputs = dict(
             mode=mode,
-            q_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=jnp.float32),
-            k_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype),
-            v_proj=jnp.full(qkv_shape, fill_value=qkv_value, dtype=kv_dtype),
+            q_proj=q_proj,
+            k_proj=k_proj,
+            v_proj=v_proj,
             attention_logit_biases=attention_bias.CausalAttentionBias(
                 target_positions=jnp.arange(seq_len)[None],
                 source_positions=jnp.arange(seq_len)[None],
             ),
         )
-
-        # Get outputs.
-        forward_key = jax.random.PRNGKey(456)
 
         (context, probs), _ = F(
             sigmoid_attention,
@@ -3190,6 +3214,7 @@ class TransformerXLTest(TestCase):
             MultiheadAttentionXL.ScalePosition.QUERY,
         ),
     )
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove decorator after jax 0.5.0
     def test_per_dim_scale(self, per_dim_scale, scale_position):
         model_dim = 6
         num_heads = 2
@@ -3233,12 +3258,12 @@ class TransformerXLTest(TestCase):
         )
         expected_vals = {
             str(None): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.61916,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.136684,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 51.232643,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 51.397125,
             },
             str(PerDimScale.default_config()): {
-                MultiheadAttentionXL.ScalePosition.LOGIT.value: 48.732872,
-                MultiheadAttentionXL.ScalePosition.QUERY.value: 48.413155,
+                MultiheadAttentionXL.ScalePosition.LOGIT.value: 50.681373,
+                MultiheadAttentionXL.ScalePosition.QUERY.value: 50.898140,
             },
         }
         assert_allclose(
@@ -3414,6 +3439,90 @@ class TransformerAttentionLayerTest(TestCase):
             # Prefill + extend_step == forward.
             assert_allclose(forward_outputs.data, data)
 
+    @parameterized.product(
+        structure=("prenorm", "postnorm", "hybridnorm"), with_source=(False, True)
+    )
+    def test_v2_structure(self, structure, with_source: bool):
+        # Test equivalence bewteen (prenorm, postnorm, hybridnorm) and v2 structure.
+        # prenorm == in_norm (v2)
+        # postnorm == out_norm (v2)
+        # hybridnorm == (in_norm, res_norm) (v2)
+        init_prng, target_prng, source_prng = jax.random.split(jax.random.PRNGKey(0), 3)
+        batch, decode_len, model_dim = 2, 6, 8
+        target = jax.random.uniform(target_prng, shape=[batch, decode_len, model_dim])
+
+        input_kwargs = {}
+        if with_source:
+            input_kwargs.update(
+                source=jax.random.uniform(source_prng, shape=[batch, decode_len, model_dim])
+            )
+
+        ref_layer_kwargs = dict(
+            target_dim=model_dim,
+            source_dim=model_dim,
+            structure=structure,
+            norm=RMSNorm.default_config(),
+        )
+
+        ref_cfg: TransformerAttentionLayer.Config = TransformerAttentionLayer.default_config().set(
+            **ref_layer_kwargs
+        )
+        ref_cfg.attention.set(num_heads=2, mask=CausalAttentionBias.default_config())
+        ref_layer: TransformerAttentionLayer = ref_cfg.set(name="ref").instantiate(parent=None)
+        ref_layer_params = ref_layer.initialize_parameters_recursively(prng_key=init_prng)
+
+        ref_outputs, _ = F(
+            ref_layer,
+            inputs=dict(target=jnp.asarray(target), **input_kwargs),
+            state=ref_layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+
+        norm = {}
+        if structure == "prenorm":
+            norm = {NormPosition.IN_NORM: RMSNorm.default_config()}
+        elif structure == "postnorm":
+            norm = {NormPosition.OUT_NORM: RMSNorm.default_config()}
+        elif structure == "hybridnorm":
+            norm = {
+                NormPosition.IN_NORM: RMSNorm.default_config(),
+                NormPosition.RES_NORM: RMSNorm.default_config(),
+            }
+        else:
+            raise ValueError(f"No equivalent structure is available in v2 to {structure}.")
+
+        layer_kwargs = dict(target_dim=model_dim, source_dim=model_dim, structure="v2", norm=norm)
+
+        cfg: TransformerAttentionLayer.Config = TransformerAttentionLayer.default_config().set(
+            **layer_kwargs
+        )
+        cfg.attention.set(num_heads=2, mask=CausalAttentionBias.default_config())
+        layer: TransformerAttentionLayer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = ref_layer_params
+        if structure == "prenorm":
+            layer_params["in_norm"] = layer_params["norm"]
+            del layer_params["norm"]
+        elif structure == "postnorm":
+            layer_params["out_norm"] = layer_params["norm"]
+            del layer_params["norm"]
+        elif structure == "hybridnorm":
+            layer_params["in_norm"] = layer_params["prenorm"]
+            layer_params["res_norm"] = layer_params["postnorm"]
+            del layer_params["prenorm"]
+            del layer_params["postnorm"]
+        else:
+            raise ValueError(f"No equivalent structure is available in v2 to {structure}.")
+
+        outputs, _ = F(
+            layer,
+            inputs=dict(target=jnp.asarray(target), **input_kwargs),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertNestedAllClose(outputs, ref_outputs)
+
 
 class TransformerFeedForwardLayerTest(TestCase):
     @parameterized.parameters(
@@ -3421,6 +3530,7 @@ class TransformerFeedForwardLayerTest(TestCase):
         dict(rms_norm_summary=["linear2_outputs"]),
         dict(rms_norm_summary=["final_outputs"], expected_raise_regex="add_value_rms_norm_summary"),
     )
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove after jax 0.5.0
     def test_add_value_rms_norm_summary(
         self, rms_norm_summary: list[str], *, expected_raise_regex=None
     ):
@@ -3447,7 +3557,7 @@ class TransformerFeedForwardLayerTest(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         self.assertSequenceEqual(x.shape, y.shape)
-        self.assertNestedAllClose(2.663487, jnp.sum(y))
+        self.assertNestedAllClose(2.990841, jnp.sum(y))
         if "tensor_stats" in output_collection.summaries:
             output_stats = output_collection.summaries["tensor_stats"]
         else:
@@ -3539,6 +3649,82 @@ class TransformerFeedForwardLayerTest(TestCase):
             str(save_name_backward).count(" dot_general"),
             str(save_dots_backward).count(" dot_general"),
         )
+
+    @parameterized.parameters(
+        "prenorm",
+        "postnorm",
+        "hybridnorm",
+    )
+    def test_v2_structure(self, structure):
+        # Test equivalence bewteen (prenorm, postnorm, hybridnorm) and v2 structure.
+        # prenorm == in_norm (v2)
+        # postnorm == out_norm (v2)
+        # hybridnorm == (in_norm, res_norm) (v2)
+        batch, seq_len, dim = 2, 3, 4
+        ref_cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            structure=structure,
+            norm=RMSNorm.default_config(),
+        )
+        ref_layer = ref_cfg.instantiate(parent=None)
+        ref_layer_params = ref_layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(0)
+        )
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, seq_len, dim])
+        ref_y, _ = F(
+            ref_layer,
+            inputs=dict(inputs=x),
+            state=ref_layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+
+        norm = {}
+        if structure == "prenorm":
+            norm = {NormPosition.IN_NORM: RMSNorm.default_config()}
+        elif structure == "postnorm":
+            norm = {NormPosition.OUT_NORM: RMSNorm.default_config()}
+        elif structure == "hybridnorm":
+            norm = {
+                NormPosition.IN_NORM: RMSNorm.default_config(),
+                NormPosition.RES_NORM: RMSNorm.default_config(),
+            }
+        else:
+            raise ValueError(f"No equivalent structure is available in v2 to {structure}.")
+
+        cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            structure="v2",
+            norm=norm,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = ref_layer_params
+        if structure == "prenorm":
+            layer_params["in_norm"] = layer_params["norm"]
+            del layer_params["norm"]
+        elif structure == "postnorm":
+            layer_params["out_norm"] = layer_params["norm"]
+            del layer_params["norm"]
+        elif structure == "hybridnorm":
+            layer_params["in_norm"] = layer_params["prenorm"]
+            layer_params["res_norm"] = layer_params["postnorm"]
+            del layer_params["prenorm"]
+            del layer_params["postnorm"]
+        else:
+            raise ValueError(f"No equivalent structure is available in v2 to {structure}.")
+
+        y, _ = F(
+            layer,
+            inputs=dict(inputs=x),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        self.assertNestedAllClose(y, ref_y)
 
 
 class BaseTransformerTest(TestCase):
@@ -3877,6 +4063,7 @@ class TransformerTest(BaseTransformerTest):
 class ParallelTransformerTest(TestCase):
     """Tests ParallelTransformerLayer."""
 
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove after jax 0.5.0
     def test_with_golden_value(self):
         """A test of ParallelTransformerLayer by comparing results to a golden value."""
         model_dim = 16
@@ -3928,7 +4115,7 @@ class ParallelTransformerTest(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         self.assertEqual(target.shape, layer_outputs.data.shape)
-        self.assertNestedAllClose(0.609666, np.mean(layer_outputs.data))
+        self.assertNestedAllClose(0.165421, np.mean(layer_outputs.data))
 
     def test_build_remat_spec(self):
         model_dim, num_heads = 6, 2
@@ -5041,6 +5228,7 @@ class StackedTransformerTest(BaseTransformerTest):
         [("data",), True],
         [("data", "self_attention_kv_state"), True],
     )
+    @set_threefry_partitionable(True)  # TODO(mhopkins): remove after jax 0.5.0
     def test_repeated_layer_with_custom_carry(self, repeat_carry, precomputed_kv_state):
         """Tests RepeatedTransformerLayer with customized `carry`."""
         batch_size = 1
@@ -5069,11 +5257,11 @@ class StackedTransformerTest(BaseTransformerTest):
                 key_positions=jnp.arange(seq_len)[None],
             )
             cfg.stack.layer.self_attention.attention.input_linear = QLinear.default_config()
-            expected_output = 1.8719857
+            expected_output = 0.7333336
         else:
             kv_state = None
             # carry=None and carry=("data",) are equivalent.
-            expected_output = 5.3901253
+            expected_output = 0.9357959
 
         layer = cfg.instantiate(parent=None)
         state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))

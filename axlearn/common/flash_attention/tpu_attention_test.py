@@ -139,6 +139,8 @@ class TestFlashAttention(TestCase):
         if jax.default_backend() == "cpu":
             # TODO(dhwang2): this has been broken for a while on CPU.
             pytest.skip(reason="Backward path is broken on CPU")
+        if mask not in (None, causal_mask) and query_length_multiplier > 1:
+            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
         # pylint: disable=protected-access
         fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
         q, k, v, bias = generate_attention_data(
@@ -158,22 +160,32 @@ class TestFlashAttention(TestCase):
         )
         ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
         fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
-        if not fn.is_supported(query=q, key=k, value=v, bias=bias):
+        input_batch = dict(
+            query=q,
+            key=k,
+            value=v,
+            bias=bias,
+        )
+        if not fn.is_supported(input_batch=input_batch):
             # Check splash attention is used when it should be.
             self.assertEqual(fallback_to_legacy, True)
             fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
-            self.assertEqual(fn.is_supported(query=q, key=k, value=v, bias=bias), True)
+            self.assertEqual(fn.is_supported(input_batch=input_batch), True)
 
         # Compare outputs.
-        out = fn(q, k, v, bias)
-        ref_out = ref_fn(q, k, v, bias)
+        out = fn(input_batch)
+        ref_out = ref_fn(input_batch)
         self.assertNestedAllClose(out, ref_out, atol=0.05)
 
         # Compare grads.
-        grad_out = jax.grad(lambda *args: fn(*args).mean(), argnums=(0, 1, 2))(q, k, v, bias)
-        ref_grad_out = jax.grad(lambda *args: ref_fn(*args).mean(), argnums=(0, 1, 2))(
-            q, k, v, bias
-        )
+        def grad_fn(float_inputs, aux_inputs, f):
+            full_batch = {**float_inputs, **aux_inputs}
+            return f(full_batch).mean()
+
+        float_inputs = dict(query=q, key=k, value=v)
+        aux_inputs = dict(bias=bias)
+        grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
+        ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
         self.assertNestedAllClose(grad_out, ref_grad_out, atol=0.05)
 
 

@@ -48,7 +48,7 @@ from axlearn.common.attention import (
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.bert import BertModel, BertPooler, BertSequenceClassificationHead
 from axlearn.common.causal_lm import Model as CausalLMModel
-from axlearn.common.convolution import Conv2D
+from axlearn.common.convolution import Conv2D, Conv3D
 from axlearn.common.deberta import DeBERTaV2Encoder
 from axlearn.common.decoder import Decoder
 from axlearn.common.dit import (
@@ -355,6 +355,15 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             axlearn_to_torch(
                 getattr(layer, encoder_name), src[encoder_name], dst.stream_encoders[encoder_name]
             )
+    elif isinstance(dst, torch.nn.Conv3d):
+        check_supported(Conv3D)
+        # axlearn: (k0, k1, k2, input_dim, output_dim)
+        # torch: (output_dim, input_dim, k0, k1, k2)
+        dst.weight.data = as_torch_tensor(src["weight"]).permute(
+            (4, 3, 0, 1, 2)
+        )  # pytype: disable=attribute-error
+        if "bias" in src:
+            dst.bias.data = as_torch_tensor(src["bias"])
     elif isinstance(dst, torch.nn.Conv2d):
         check_supported(Conv2D)
         dst.weight.data = as_torch_tensor(src["weight"]).permute(
@@ -690,6 +699,12 @@ def torch_to_axlearn(
             dst["bias"] = src.bias
     elif isinstance(src, torch.nn.Embedding):
         dst = dict(weight=src.weight)
+    elif isinstance(src, torch.nn.Conv3d):
+        # torch.nn.Conv3d.weight uses layout (output, input, k0, k1, k2) while AXLearn uses
+        # (k0, k1, k2, input, output)
+        dst = dict(weight=src.weight.permute(2, 3, 4, 1, 0))
+        if src.bias is not None:
+            dst["bias"] = src.bias
     elif isinstance(src, torch.nn.Conv2d):
         # torch.nn.Conv2d.weight uses layout (output, input, H, W) while AXLearn uses
         # (H, W, input, output).
@@ -966,6 +981,8 @@ def _parameters_from_deberta_self_attention(
         params["pos_k_proj"] = {}
     if "pos_q_proj" not in params:
         params["pos_q_proj"] = {}
+    if "kv_cache" not in params:
+        params["kv_cache"] = {}
     return as_tensor(params)
 
 
@@ -1169,7 +1186,7 @@ def _parameters_from_attention_dense(
         weight=o_proj["weight"].transpose().reshape(-1, num_heads, per_head_dim),
         bias=o_proj["bias"],
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={}, kv_cache={})
 
 
 def _parameters_from_roberta_attention(src: hf_roberta.RobertaAttention):
@@ -1554,7 +1571,7 @@ def _parameters_from_t5_attention(src: hf_t5.T5Attention, *, dst_layer: Transfor
                 )
             ),
         )
-    return dict(i_proj=i_proj, dropout={}, **o_proj, scale_query={}, scale_key={})
+    return dict(i_proj=i_proj, dropout={}, **o_proj, scale_query={}, scale_key={}, kv_cache={})
 
 
 def _parameters_from_t5_self_attention(
@@ -1737,6 +1754,7 @@ def _parameters_from_xlnet_attention(src: hf_xlnet.XLNetRelativeAttention):
             relative_pos_emb={},
             scale_query={},
             scale_key={},
+            kv_cache={},
         ),
         norm=torch_to_axlearn(src.layer_norm),
         dropout={},
@@ -1794,7 +1812,7 @@ def _parameters_from_distilbert_attention_dense(
         weight=output_dense.weight.view(-1, num_heads, per_head_dim),
         bias=output_dense.bias,
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={}, kv_cache={})
 
 
 def _parameters_from_distilbert_attention(src: hf_distilbert.Transformer):

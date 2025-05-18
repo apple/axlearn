@@ -94,7 +94,7 @@ class TestUtils(parameterized.TestCase):
 
     @parameterized.parameters(
         dict(instance_type="tpu-v4-8", expected="gke_tpu_single"),
-        dict(instance_type="gpu-a3-highgpu-8g", expected="gke_gpu_a3_single"),
+        dict(instance_type="gpu-a3-highgpu-8g", expected="gke_gpu_a3_high_single"),
         dict(job_type=_JobType.FLINK.value, expected="gke_tpu_flink"),
         dict(expected=app.UsageError("runner_name")),
     )
@@ -410,7 +410,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             dict(
                 name=None,
                 output_dir=None,
-                zone=None,
+                env_id=None,
                 bastion=None,
                 bundler_type=None,
                 bundler_exclude=None,
@@ -421,7 +421,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             dict(
                 name="test-name",
                 output_dir="test-output",
-                zone="test-zone",
+                env_id="test-env-id",
                 bastion="test-bastion",
                 bundler_type="artifactregistry",
                 bundler_exclude=["a", "b"],
@@ -437,7 +437,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
         action,
         name,
         output_dir,
-        zone,
+        env_id,
         bastion,
         bundler_type,
         bundler_exclude,
@@ -464,8 +464,8 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             argv.append(f"--output_dir={output_dir}")
         if project is not None:
             argv.append(f"--project={project}")
-        if zone is not None:
-            argv.append(f"--zone={zone}")
+        if env_id is not None:
+            argv.append(f"--env_id={env_id}")
         if bastion is not None:
             argv.append(f"--bastion={bastion}")
         if bundler_type is not None:
@@ -493,7 +493,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
 
         self.assertEqual(cfg.name, name or "job-name")
         self.assertEqual(cfg.project, project or self._settings["project"])
-        self.assertEqual(cfg.zone, zone or self._settings["zone"])
+        self.assertEqual(cfg.env_id, env_id or self._settings["env_id"])
         self.assertEqual(cfg.namespace, namespace or "default")
 
         if action in _RUNNER_ACTIONS:
@@ -504,16 +504,16 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
                 # Defaults to cloud build.
                 self.assertIs(cfg.bundler.klass, bundler.CloudBuildBundler)
 
-        # Check bastion flag. If None, we should infer from zone in mock_settings.
+        # Check bastion flag. If None, we should infer from env_id in mock_settings.
         if bastion:
             self.assertEqual(bastion, cfg.bastion_name)
-        elif zone is None:
+        elif env_id is None:
             self.assertEqual(
-                f"{self._settings['zone']}-gke-bastion",
+                f"{self._settings['env_id']}-gke-bastion",
                 cfg.bastion_name,
             )
         else:
-            self.assertEqual(f"{zone}-gke-bastion", cfg.bastion_name)
+            self.assertEqual(f"{env_id}-gke-bastion", cfg.bastion_name)
 
         # Check output_dir.
         if output_dir is None:
@@ -665,10 +665,12 @@ class MainTest(parameterized.TestCase):
         # Test that runner name is optional if not using runner action.
         dict(action="list", expected=None),
         dict(action="stop", expected=None),
+        dict(action="stop", wait_for_stop=None, expected=None),
+        dict(action="stop", nowait_for_stop=None, expected=None),
     )
     def test_main_infer_runner_name(self, action: str, expected: Union[Exception, type], **kwargs):
         argv = ["cli", action]
-        argv.extend([f"--{key}={value}" for key, value in kwargs.items()])
+        argv.extend([f"--{key}={value}" if value else f"--{key}" for key, value in kwargs.items()])
         argv.append("--dry_run")  # Don't run anything.
         argv.extend(["--bundler_type=cloudbuild", "--bundler_spec=image=tpu"])
 
@@ -872,3 +874,22 @@ class MainTest(parameterized.TestCase):
             fv(argv)  # Parse flags.
             launch.main(argv, fv=fv)
             mock_instantiate.assert_called_once()
+
+    @parameterized.parameters(dict(argv=[]), dict(argv=["--env_id=test-env"]))
+    def test_list(self, argv):
+        argv = ["cli", "list", *argv]  # Don't run anything.
+        mock_job = mock.Mock()
+
+        def instantiate(cfg: BaseBastionManagedJob.Config):
+            self.assertIsNotNone(cfg.env_id)
+            return mock_job
+
+        patch_job = mock.patch.object(
+            BaseBastionManagedJob.Config, "instantiate", side_effect=instantiate, autospec=True
+        )
+        with mock.patch("sys.argv", argv), patch_job:
+            fv = flags.FlagValues()  # Don't modify global FLAGS.
+            _private_flags(fv)
+            fv(argv)  # Parse flags.
+            launch.main(argv, fv=fv)
+            self.assertTrue(mock_job.list.called)

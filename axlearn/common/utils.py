@@ -42,7 +42,6 @@ from typing import (
 
 import attr
 import jax
-import jax.flatten_util
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
@@ -51,8 +50,8 @@ from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.ad_checkpoint import Offloadable, Recompute, Saveable
-from jax.core import Primitive
 from jax.experimental import mesh_utils, multihost_utils
+from jax.extend.core import Primitive
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
@@ -136,7 +135,11 @@ class TensorSpec:
     @property
     def sharding(self) -> jax.sharding.Sharding:
         mesh = thread_resources.env.physical_mesh
-        return jax.sharding.NamedSharding(mesh, self.mesh_axes, memory_kind=self.memory_kind)
+        return jax.sharding.NamedSharding(
+            mesh,
+            PartitionSpec() if self.mesh_axes is None else self.mesh_axes,
+            memory_kind=self.memory_kind,
+        )
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
@@ -408,7 +411,7 @@ def tree_paths(
         Note that None is not considered a leaf by jax.tree_util, hence also preserved by
         tree_paths.
     """
-    return jax.tree_util.tree_map_with_path(
+    return jax.tree.map_with_path(
         lambda kp, _: separator.join(_key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
     )
 
@@ -1162,7 +1165,7 @@ def per_param_dtype_by_path(
     """
 
     def fn(
-        tree: Union[Nested[Tensor], Nested[TensorSpec]]
+        tree: Union[Nested[Tensor], Nested[TensorSpec]],
     ) -> Union[Nested[Tensor], Nested[TensorSpec]]:
         if update_rules is None:
             return jax.tree.map(lambda x: default_dtype, tree_paths(tree))
@@ -1217,7 +1220,7 @@ def cast_floats_per_param(
 
 
 def canonicalize_per_param_dtype(
-    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]]
+    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]],
 ) -> ConfigOr[PerParamFn[jnp.dtype]]:
     """Canonicalize the input `param_dtype` to a consistent format of
     `ConfigOr[PerParamFn[jnp.dtype]]`, which handles three possible cases:
@@ -1947,7 +1950,7 @@ class DeviceUsage:
     hbm_memory_bandwidth_utilization: Optional[float] = None
 
 
-def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] = None) -> Tensor:
+def sequence_mask(*, lengths: Tensor, max_len: int, dtype: jnp.dtype = jnp.bool) -> Tensor:
     """Computes a mask over sequence positions for each given length.
 
     Args:
@@ -1958,9 +1961,6 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] =
     Returns:
         Tensor [..., T]. 1 is valid and 0 is padding.
     """
-    if dtype is None:
-        dtype = lengths.dtype
-
     prefix_axis = tuple(range(lengths.ndim))
     # [..., T]
     sequence = jnp.expand_dims(jnp.arange(max_len), axis=prefix_axis)

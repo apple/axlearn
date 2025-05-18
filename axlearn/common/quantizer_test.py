@@ -34,7 +34,12 @@ from axlearn.common.quantizer import (
     compute_code_pplx,
     quantize_by_nearest_neighbor,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose, prng_impl
+from axlearn.common.test_utils import (
+    TestCase,
+    assert_allclose,
+    prng_impl,
+    set_threefry_partitionable,
+)
 from axlearn.common.utils import Tensor, shapes
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
@@ -87,7 +92,7 @@ class HelpersTest(TestCase):
                 inputs=inputs, codebook=codebook, metric=metric
             )
             # Compute codebook metrics.
-            onehots = _ids_to_onehots(q_outputs.ids, codebook_size=vocab_size, dtype=paddings.dtype)
+            onehots = _ids_to_onehots(q_outputs.ids, codebook_size=vocab_size, dtype=jnp.int32)
             coverage = compute_code_coverage(onehots=onehots, paddings=paddings)
             pplx, entropy = compute_code_pplx(onehots=onehots, paddings=paddings)
 
@@ -183,6 +188,7 @@ class RandomVectorQuantizerTest(TestCase):
         (4, 7, 16, 256, 20, 8, True, False),
         (4, 7, 16, 256, 20, 8, False, False),
     )
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_forward(
         self,
         batch_size,

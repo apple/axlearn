@@ -362,7 +362,7 @@ class DenseGeneralBaseLayer(BaseLayer):
     follow these steps:
 
     1. Inherent from `DenseGeneralBaseLayer`.
-    2. Call `self. einsum_maybe_quantized` instead of `jax.numpy.einsum`.
+    2. Call `self.einsum_maybe_quantized` instead of `jax.numpy.einsum`.
     3. Recursively populate `quantized_dot_general` configs with
         `axlearn.common.layers.set_quantized_dot_general_recursively`.
     """

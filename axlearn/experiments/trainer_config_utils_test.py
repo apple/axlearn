@@ -4,6 +4,7 @@
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
 from axlearn.common.flash_attention.layer_test import DummyModel as FlashDummyModel
 from axlearn.common.flash_attention.layer_test import FlashAttention
 from axlearn.common.input_fake import FakeLmInput
@@ -47,6 +48,13 @@ class TrainerConfigUtilsTest(parameterized.TestCase):
         cfg_modifier = V6eFlashConfigModifier.default_config().instantiate()
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.layer.tpu_block_size, 1024)
+
+    def test_gpu_flash_config_modifier(self):
+        cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
+        cfg.layer = FlashAttention.default_config()
+        cfg_modifier = FlashBlockSizeModifier.default_config().set(gpu_block_size=64).instantiate()
+        cfg = cfg_modifier(cfg)
+        self.assertEqual(cfg.layer.gpu_block_size, 64)
 
 
 if __name__ == "__main__":

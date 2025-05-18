@@ -17,6 +17,7 @@ from neuronxcc.nki.kernels.attention import flash_attn_bwd, flash_fwd
 
 from axlearn.common.attention_bias import BaseAttentionBias, CausalAttentionBias, split
 from axlearn.common.flash_attention.common import BaseFlashAttention, repeat_kv_heads
+from axlearn.common.utils import Nested
 
 # pytype: enable=import-error
 
@@ -224,12 +225,15 @@ class NeuronFlashAttention(BaseFlashAttention):
     """Wraps the Neuron attention kernel."""
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         # TODO(hanzhi-zhou): neuron may error out for unsupported sequence length and head size.
         # Should we add checks for them and fallback to XLA?
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(
+            input_batch=input_batch,
+        ):
             return False
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
@@ -239,15 +243,14 @@ class NeuronFlashAttention(BaseFlashAttention):
     @partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
 
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
+        bias: BaseAttentionBias = input_batch["bias"]
         key = repeat_kv_heads(query.shape[2], key)
         value = repeat_kv_heads(query.shape[2], value)
 
