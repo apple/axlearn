@@ -1654,12 +1654,13 @@ class MultiheadAttention(BaseLayer):
         # code paths may be used. (See the FlashAttention docstring for more details.)
         # This field may not be specified if `causal` (deprecated) is specified.
         # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
+        # TODO (apghml) Remove this field and have AttentionLogitBiasLayer return an AttentionBias.
         mask: Optional[ClassConfigBase[MaskFnAttentionBias]] = None
         # Deprecated. Use `mask=CausalAttentionBias.default_config()` instead.
         # If True, applies causal masking. `key` and `value` must be None.
         # May not be specified if `mask` is already specified.
         # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
-        # TODO (apghml) Eliminate this field in favor of `mask`.
+        # TODO (apghml) Remove this field and have AttentionLogitBiasLayer return an AttentionBias.
         causal: Optional[bool] = None
         # Determines KV cache's behavior, such as standard, sliding window, sparse KV cache, etc.
         # If None, uses KVCache.default_config().
@@ -1668,7 +1669,7 @@ class MultiheadAttention(BaseLayer):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.causal and cfg.mask is not None:
+        if cfg.causal is not None and cfg.mask is not None:
             raise NotImplementedError("Cannot specify `causal` when using `mask`.")
         if cfg.causal:
             self._mask_tpl = CausalAttentionBias.default_config()
