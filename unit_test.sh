@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -e
-source ../jaxmoe/bin/activate
+
+if [ -z "$VENV_NAME" ]; then
+	VENV_NAME=../jaxmoe
+fi
+
+source $VENV_NAME/bin/activate
 
 export USE_SHARDMAP_FFN=1
 
