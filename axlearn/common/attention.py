@@ -3418,6 +3418,7 @@ class TransformerLayer(BaseTransformerLayer):
         """
         if isinstance(data, Tensor):
             self.vlog(3, "transformer.input=%s", data.sum())  # pytype: disable=attribute-error
+            data = self._remat_name(data, "input")
         self_attention_return_aux = set()
         cross_attention_return_aux = set()
         if return_aux:
