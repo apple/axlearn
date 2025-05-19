@@ -372,7 +372,7 @@ def get_trainer_kwargs(
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 8 * (1024**2)  # 8M tokens.
     trn2_config = _generate_trn2_custom_configs(model_size)
-    check_env_vars()
+    # check_env_vars()
     # pylint: disable=use-dict-literal
     if model_size == "test":
         trainer_kwargs = dict(
