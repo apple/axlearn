@@ -128,6 +128,7 @@ class TestFlashAttention(TestCase):
         per_head_dim=[32, 64, 128],
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
+        matmul_precision=[None, "highest"],
     )
     def test_forward_and_backward(
         self,
@@ -141,15 +142,15 @@ class TestFlashAttention(TestCase):
         with_segment_ids,
         q_dtype,
         kv_dtype,
+        matmul_precision,
     ):
         if jax.default_backend() == "cpu":
             # TODO(dhwang2): this has been broken for a while on CPU.
             pytest.skip(reason="Backward path is broken on CPU")
         if mask not in (None, causal_mask) and query_length_multiplier > 1:
             pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
-        # KV should not have a higher precision than Q.
         if kv_dtype == jnp.float32 and q_dtype == jnp.bfloat16:
-            return
+            pytest.skip(reason="KV should not have a higher precision than Q.")
         # pylint: disable=protected-access
         fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
         q, k, v, bias = generate_attention_data(
@@ -177,17 +178,24 @@ class TestFlashAttention(TestCase):
             value=v,
             bias=bias,
         )
-        if not fn.is_supported(input_batch=input_batch):
-            # Check splash attention is used when it should be.
-            self.assertEqual(fallback_to_legacy, True)
-            fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
-            legacy_supported = fn.is_supported(input_batch=input_batch)
-            if q_dtype != kv_dtype:
-                self.assertEqual(legacy_supported, False)
-                return
-            self.assertEqual(legacy_supported, True)
 
-        with jax.default_matmul_precision("highest") if q_dtype == jnp.float32 else nullcontext():
+        with jax.default_matmul_precision(matmul_precision) if matmul_precision else nullcontext():
+            err = matmul_precision == "highest" and q_dtype == jnp.bfloat16
+            with self.assertRaises(RuntimeError) if err else nullcontext():
+                is_supported = fn.is_supported(input_batch=input_batch)
+            if err:
+                return
+
+            if not is_supported:
+                # Check splash attention is used when it should be.
+                self.assertEqual(fallback_to_legacy, True)
+                fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
+                legacy_supported = fn.is_supported(input_batch=input_batch)
+                if q_dtype != kv_dtype:
+                    self.assertEqual(legacy_supported, False)
+                    return
+                self.assertEqual(legacy_supported, True)
+
             # Compare outputs.
             out = fn(input_batch)
             ref_out = ref_fn(input_batch)

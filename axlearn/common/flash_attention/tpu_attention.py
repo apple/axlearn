@@ -874,6 +874,14 @@ class TPUFlashAttention(BaseFlashAttention):
             return False
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
+        if (
+            jax.config.jax_default_matmul_precision == "highest"
+            and input_batch["query"].dtype == jnp.bfloat16
+        ):
+            raise RuntimeError(
+                "TPU FlashAttention doesn't support default_matmul_precision=='highest' "
+                "when the query dtype is bfloat16!"
+            )
         return True
 
 
