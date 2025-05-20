@@ -15,6 +15,7 @@ from axlearn.common import utils
 from axlearn.common.layers import BatchNorm
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
+from axlearn.common.utils import safe_not
 
 
 class ConvSubSamplerTest(TestCase):
@@ -210,7 +211,6 @@ class ConvSubSamplerTest(TestCase):
         lengths = jnp.array([5, 10, 9, 0])
         paddings = jnp.arange(num_frames)[None, :] >= lengths[:, None]
         inputs = inputs.astype(dtype)
-        paddings = paddings.astype(dtype)
         outputs, output_collections = F(
             layer,
             inputs=dict(inputs=inputs, paddings=paddings),
@@ -221,7 +221,7 @@ class ConvSubSamplerTest(TestCase):
 
         # Compute expected summaries.
         input_weights = jnp.sum(lengths)
-        inputs = inputs * (1 - paddings)[:, :, None, None]
+        inputs = inputs * safe_not(paddings)[:, :, None, None]
         norms = jnp.sqrt(jnp.sum(inputs**2, axis=(2, 3))) / jnp.sqrt(num_filters * input_dim)
         expected_inputs_mean = jnp.sum(inputs) / input_weights / (num_filters * input_dim)
         expected_inputs_norm = jnp.sum(norms) / input_weights
@@ -253,7 +253,7 @@ class ConvSubSamplerTest(TestCase):
         )
         self.assertNestedAllClose(
             output_collections.summaries["activations/subsampler_inputs_mean"].weight,
-            input_weights.astype(dtype),
+            input_weights,
         )
         self.assertNestedAllClose(
             output_collections.summaries["activations/subsampler_outputs_norm"].weight,
