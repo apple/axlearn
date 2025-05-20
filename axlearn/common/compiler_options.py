@@ -162,20 +162,6 @@ def default_xla_options(
     return options
 
 
-def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
-    """
-    Attempts to convert an XLA flag string value to int, then bool.
-    If conversion fails, returns the original string (stripped).
-    """
-    bool_mapper = {"true": True, "false": False}
-    stripped_value_str = value.strip()
-    try:
-        return int(stripped_value_str)
-    except ValueError:
-        # Not an integer, try boolean conversion.
-        return bool_mapper.get(stripped_value_str.lower(), stripped_value_str)
-
-
 def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:
     """Convert an XLA options dict suitable for
     `jitted_fn.lower(...).compile(compiler_options=xla_options)`

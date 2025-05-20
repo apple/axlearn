@@ -24,7 +24,6 @@ from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_
 from axlearn.common.compiler_options import (
     default_xla_options,
     infer_tpu_type,
-    parse_xla_flag_value,
     xla_flags_from_options,
 )
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -63,6 +62,20 @@ _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
+
+
+def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
+    """
+    Attempts to convert an XLA flag string value to int, then bool.
+    If conversion fails, returns the original string (stripped).
+    """
+    bool_mapper = {"true": True, "false": False}
+    stripped_value_str = value.strip()
+    try:
+        return int(stripped_value_str)
+    except ValueError:
+        # Not an integer, try boolean conversion.
+        return bool_mapper.get(stripped_value_str.lower(), stripped_value_str)
 
 
 def get_pathways_tpu_version(gke_machine_type: str) -> str:
