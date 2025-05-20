@@ -135,8 +135,8 @@ fi
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 
 # use to add debug logging at module level in xla
-# export TF_CPP_MIN_LOG_LEVEL=0
-# export TF_CPP_VMODULE="neuron_token_threading=2"
+export TF_CPP_MIN_LOG_LEVEL=0
+export TF_CPP_VMODULE="neuron_token_threading=2"
 
 # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="cache/"
@@ -273,7 +273,7 @@ else
 
 	if [ "$AXLEARN_PROFILE_MODE" = "tracerun" ]; then
 		if [ $SLURM_PROCID -eq 0 ]; then
-			bash /fsx/huilgolr/bin/upload_profile.sh $SLURM_JOB_ID $SLURM_JOB_NAME
+			bash /fsx/huilgolr/bin/upload_profile.sh $SLURM_JOB_ID ${SLURM_JOB_NAME}_${SLURM_JOB_ID}
 		fi
 	fi
 	./get_memory_split.sh
