@@ -975,8 +975,8 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(input_batch):
             return False
-        query: Tensor = input_batch["query"].dtype
-        key: Tensor = input_batch["key"].dtype
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
         if query.dtype != key.dtype:
             return self._log_unsupported(f"{query.dtype=} != {key.dtype=}")
         logging.info("Using %s.", self.name())
