@@ -172,6 +172,27 @@ def get_remat_policy():
                 ),
             }
         )
+    elif remat_config == 'selkernel':
+        remat_policy = RematSpecModifier.default_config().set(
+            remat_policies={
+                "model.decoder.transformer.layer": RematSpec(
+                    prevent_cse=True,
+                    policy=config_for_function(
+                        save_and_offload_only_these_names_regex
+                    ).set(
+                        names_which_can_be_saved="|".join(
+                            [
+                                RematRegexSavePatterns.BLOCKWISE.value,
+                                r".*blockwisegating\.*",
+                            ]
+                        ),
+                        names_which_can_be_offloaded=None,
+                        offload_src=None,
+                        offload_dst=None,
+                    ),
+                ),
+            }
+        )
     else:
         remat_policy = {}
     return remat_policy

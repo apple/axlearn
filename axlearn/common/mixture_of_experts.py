@@ -1707,6 +1707,9 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         expert_affinities_masked = gating.combine_tensor[1]
         token_position_to_id = gating.combine_tensor[0]
         block_to_expert = gating.dispatch_tensor
+        token_position_to_id = self._remat_name(token_position_to_id, "blockwisegating.token_position_to_id")
+        block_to_expert = self._remat_name(block_to_expert, "blockwisegating.token_position_to_id")
+        expert_affinities_masked = self._remat_name(expert_affinities_masked, "blockwisegating.expert_affinities_masked")
         
         gate_up_weight = jnp.stack([self.parameters["wi_0_weight"],self.parameters["wi_1_weight"],], axis=2)
         gate_up_weight = with_sharding_constraint(gate_up_weight, PartitionSpec("expert", "fsdp", None, "model"))
@@ -1740,8 +1743,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
             cfg.gating.block_size,
             cfg.activation
         )
-        with jax.named_scope("all_reduce"):
-            outputs = jnp.sum(outputs, axis=2, dtype=outputs.dtype)
+        outputs = jnp.sum(outputs, axis=2, dtype=outputs.dtype)
         return outputs
 
     # pylint: disable-next=too-many-statements

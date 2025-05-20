@@ -106,16 +106,15 @@ def _blockwise_mm_fwd(
         expert_affinities_masked = jnp.concat([expert_affinities_masked, padding_e], axis=0)
         expert_affinities_masked = jnp.reshape(expert_affinities_masked, (-1, 1))
 
-    with jax.named_scope("make NKI call"):
-        out, gate_up_activations_T, down_activations = _blockwise_mm_nki_call[VNC(2)](
-            hidden_states,
-            expert_affinities_masked,
-            gate_up_weight,
-            down_proj_weight,
-            token_position_to_id,
-            block_to_expert,
-            block_size=block_size,
-        )
+    out, gate_up_activations_T, down_activations = _blockwise_mm_nki_call[VNC(2)](
+        hidden_states,
+        expert_affinities_masked,
+        gate_up_weight,
+        down_proj_weight,
+        token_position_to_id,
+        block_to_expert,
+        block_size=block_size,
+    )
 
     down_activations = checkpoint_name(down_activations, "blockwise.down_activations")
     gate_up_activations_T = checkpoint_name(gate_up_activations_T, "blockwise.gate_up_activations_T")
@@ -136,28 +135,29 @@ def _blockwise_mm_bwd(
     T,H = hidden_states.shape
     E, _, _, _ = gate_up_proj_weight.shape
 
-    grad_output =  jnp.squeeze(grad_output, axis=(0,1,2))
-    padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
-    grad_output = jnp.concat([grad_output, padding_h], axis=0)
-    # Compute gradients
-    hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = _blockwise_mm_bwd_nki_call[VNC(2)](
-        hidden_states,
-        expert_affinities_masked,
-        gate_up_proj_weight,
-        gate_up_activations_T,
-        down_proj_weight,
-        down_activations,
-        token_position_to_id.astype(jnp.int32),
-        block_to_expert.astype(jnp.int32),
-        grad_output,
-        block_size=block_size,
-    )
-    
-    sliced_tensor = hidden_states_grad[:-1,:]
-    hidden_states_grad = sliced_tensor.reshape(1, 1, -1, H)
-    
-    affinities_grad = jnp.reshape(affinities_grad, (-1, E))
-    affinities_grad = affinities_grad[:-1, :].reshape(1, 1, -1, E)
+    with jax.named_scope("blockwise_backward"):
+        grad_output =  jnp.squeeze(grad_output, axis=(0,1,2))
+        padding_h = jnp.zeros((1, hidden_states.shape[1]), dtype=hidden_states.dtype)
+        grad_output = jnp.concat([grad_output, padding_h], axis=0)
+        # Compute gradients
+        hidden_states_grad, affinities_grad, gate_up_proj_weight_grad, down_weight_grad = _blockwise_mm_bwd_nki_call[VNC(2)](
+            hidden_states,
+            expert_affinities_masked,
+            gate_up_proj_weight,
+            gate_up_activations_T,
+            down_proj_weight,
+            down_activations,
+            token_position_to_id.astype(jnp.int32),
+            block_to_expert.astype(jnp.int32),
+            grad_output,
+            block_size=block_size,
+        )
+        
+        sliced_tensor = hidden_states_grad[:-1,:]
+        hidden_states_grad = sliced_tensor.reshape(1, 1, -1, H)
+        
+        affinities_grad = jnp.reshape(affinities_grad, (-1, E))
+        affinities_grad = affinities_grad[:-1, :].reshape(1, 1, -1, E)
 
     return (
         hidden_states_grad,
