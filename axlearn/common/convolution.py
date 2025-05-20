@@ -14,7 +14,7 @@ from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpe
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import nowrap
 from axlearn.common.param_init import FanAxes
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 # The padding type for jax.lax.conv_general_dilated API. Either the strings ‘SAME’, or ‘VALID’, or
 # 'CAUSAL' or a sequence of n (low, high) integer pairs that give the padding to apply before and
@@ -300,6 +300,7 @@ def compute_conv_paddings(
         ValueError: If anchor is not between left_time_padding and right_time_padding.
     """
     chex.assert_rank(in_paddings, 2)
+    chex.assert_type(in_paddings, jnp.bool)
     dilation = dilation or 1
     conv_padding = conv_explicit_padding(
         window=(window,), strides=(stride,), padding=conv_padding, dilation=(dilation,)
@@ -475,7 +476,7 @@ class Conv1DWithPadding(Conv1D):
         cfg = self.config
         chex.assert_rank(x, paddings.ndim + 1)
         # Apply padding to the input.
-        x = x * (1 - paddings[..., None])
+        x = x * safe_not(paddings)[..., None]
 
         # Apply Conv1D.
         output = super().forward(x)
@@ -698,7 +699,7 @@ class Conv2DWith1DPadding(Conv2D):
         cfg = self.config
         # Apply padding to the input.
         assert len(x.shape) == len(paddings.shape) + 2
-        x = x * (1 - paddings[..., None, None])
+        x = x * safe_not(paddings)[..., None, None]
 
         # Apply Conv2D.
         output = super().forward(x)
@@ -1292,6 +1293,7 @@ def compute_conv_transpose_paddings(
     """
 
     chex.assert_rank(in_paddings, 2)
+    chex.assert_type(in_paddings, jnp.bool)
     conv_padding = conv_transpose_explicit_padding(
         window=(window,), strides=(stride,), padding=conv_padding, dilation=(dilation,)
     )
@@ -1412,7 +1414,7 @@ class Conv1DTranspose(BaseConv):
         if paddings is not None:
             chex.assert_rank(x, paddings.ndim + 1)
             # Apply padding to the input.
-            x = x * (1 - paddings[..., None])
+            x = x * safe_not(paddings)[..., None]
 
         output = self._conv(
             x=x, strides=(cfg.strides,), padding=conv_padding, dilation=(cfg.dilation,)
@@ -1632,7 +1634,7 @@ class Conv2DTransposeWith1DPadding(Conv2DTranspose):
         cfg = self.config
         # Apply padding to the input.
         assert len(x.shape) == len(paddings.shape) + 2
-        x = x * (1 - paddings[..., None, None])
+        x = x * safe_not(paddings)[..., None, None]
 
         # Apply Conv2D.
         output = super().forward(x)
@@ -1792,7 +1794,7 @@ class StackOverTime(BaseLayer):
             raise ValueError(f"stride should be greater than 1, but got {cfg.stride}.")
 
         # For the last partial frame.
-        inputs = inputs * (1 - paddings)[:, :, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
 
         padding = cfg.padding
         if isinstance(padding, str):

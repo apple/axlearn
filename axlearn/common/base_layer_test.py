@@ -42,6 +42,7 @@ from axlearn.common.param_init import (
     WeightInitializer,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
+from axlearn.common.utils import safe_not
 
 
 class TestLayer(BaseLayer):
@@ -450,14 +451,14 @@ class BaseLayerTest(TestCase):
                 output_collections.summaries["activations/inputs_norm"].weight, batch_size
             )
         else:
-            num_frames = jnp.sum(1 - paddings)
+            num_frames = jnp.sum(safe_not(paddings))
             self.assertEqual(
                 output_collections.summaries["activations/inputs_mean"].weight, num_frames
             )
             self.assertEqual(
                 output_collections.summaries["activations/inputs_norm"].weight, num_frames
             )
-            inputs_with_padding = inputs * (1 - paddings)[:, :, None, None]
+            inputs_with_padding = inputs * safe_not(paddings)[:, :, None, None]
             expected_mean = jnp.sum(inputs_with_padding) / jnp.maximum(1, num_frames) / (2 * 4)
             inputs_norm = jnp.sqrt(jnp.sum(inputs_with_padding**2, axis=(2, 3)) / (2 * 4))
             expected_norm = jnp.sum(inputs_norm) / jnp.maximum(1, num_frames)
