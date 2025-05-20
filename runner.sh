@@ -273,7 +273,7 @@ else
 
 	if [ "$AXLEARN_PROFILE_MODE" = "tracerun" ]; then
 		if [ $SLURM_PROCID -eq 0 ]; then
-			bash /fsx/huilgolr/bin/upload_profile.sh $SLURM_JOB_ID ${SLURM_JOB_NAME}_${SLURM_JOB_ID}
+			bash /fsx/huilgolr/bin/upload_profile.sh $SLURM_JOB_ID ${PROFILE_JOB_NAME}_${SLURM_JOB_ID}
 		fi
 	fi
 	./get_memory_split.sh
