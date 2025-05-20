@@ -15,10 +15,24 @@ from axlearn.cloud.gcp.pathways_utils import (
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
     _PATHWAYS_PROXY_CONTAINER_NAME,
     _PATHWAYS_SERVER_IMAGE,
+    get_megascale_options,
+    get_xla_options,
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.compiler_options import default_xla_options, xla_flags_from_options
 from axlearn.common.test_utils import TestCase
+
+
+class SplitXLAMXLAFlagsTest(TestCase):
+    """Test the splitting of XLA and Megascale flags."""
+
+    def test_v6e_default_options_split_megascale_and_xla(self):
+        default_options = default_xla_options(
+            instance_type="tpu-v6e-512", num_slices=2, backend="tpu"
+        )
+        megascale_options = get_megascale_options(default_options)
+        xla_options = get_xla_options(default_options)
+        self.assertEqual(len(megascale_options) + len(xla_options), len(default_options))
 
 
 class PathwaysReplicatedJobTest(TestCase):

@@ -56,14 +56,6 @@ class CompilerOptionsTest(test_utils.TestCase):
     def test_tpu_version_alias(self, tpu_type: str, expected: str):
         self.assertEqual(expected, compiler_options.infer_tpu_version(tpu_type))
 
-    def test_v6e_default_options_split_megascale_and_xla(self):
-        default_options = compiler_options.default_xla_options(
-            instance_type="tpu-v6e-512", num_slices=2, backend="tpu"
-        )
-        megascale_options = compiler_options.get_megascale_options(default_options)
-        xla_options = compiler_options.get_xla_options(default_options)
-        self.assertEqual(len(megascale_options) + len(xla_options), len(default_options))
-
     def test_xla_performance_flags(self):
         self.assertEqual(
             {},

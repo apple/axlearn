@@ -5,7 +5,7 @@
 import copy
 import logging
 import os
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, Union
 
 from absl import flags
 
@@ -23,8 +23,6 @@ from axlearn.cloud.gcp.jobset_utils import (
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.common.compiler_options import (
     default_xla_options,
-    get_megascale_options,
-    get_xla_options,
     infer_tpu_type,
     parse_xla_flag_value,
     xla_flags_from_options,
@@ -84,6 +82,35 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
         "ct4p-hightpu-4t": "tpuv4",
     }
     return pathways_tpu_devices[gke_machine_type.lower()]
+
+
+def get_megascale_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    """Filters XLA options for those pertaining to Megascale.
+
+    Args:
+        xla_options: A dictionary of XLA options.
+
+    Returns:
+        A dictionary containing only Megascale-related XLA options
+        (those starting with 'megascale').
+    """
+    return {k: v for k, v in xla_options.items() if k.startswith("megascale")}
+
+
+def get_xla_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    """Filters XLA options for those starting with 'xla_'.
+
+    Args:
+        xla_options: A dictionary of XLA options.
+
+    Returns:
+        A dictionary containing only XLA-specific options (those starting with 'xla').
+    """
+    return {k: v for k, v in xla_options.items() if k.startswith("xla")}
 
 
 class PathwaysReplicatedJob(BaseReplicatedJob):
