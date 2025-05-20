@@ -39,18 +39,18 @@ def generate_paged_attention_data(
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, CompositeAttentionBias]:
     """Generates query, key value pages, and page tables for paged attention testing."""
     bias = generate_attention_data(
-        batch_size,
-        query_len,
-        kv_len,
-        num_heads,
-        per_head_dim,
-        num_kv_heads,
-        mask_fn,
-        sliding_window_sz,
-        attention_bias_type,
-        with_segment_ids,
-        dtype,
-        query_offset,
+        batch_size=batch_size,
+        query_len=query_len,
+        kv_len=kv_len,
+        num_heads=num_heads,
+        per_head_dim=per_head_dim,
+        num_kv_heads=num_kv_heads,
+        mask_fn=mask_fn,
+        sliding_window_sz=sliding_window_sz,
+        attention_bias_type=attention_bias_type,
+        with_segment_ids=with_segment_ids,
+        dtype=dtype,
+        query_offset=query_offset,
     )[3]
     assert kv_len % page_size == 0
     k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
