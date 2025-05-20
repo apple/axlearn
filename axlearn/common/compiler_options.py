@@ -162,35 +162,6 @@ def default_xla_options(
     return options
 
 
-def get_megascale_options(
-    xla_options: dict[str, Union[str, bool, int]]
-) -> dict[str, Union[str, bool, int]]:
-    """Filters XLA options for those pertaining to Megascale.
-
-    Args:
-        xla_options: A dictionary of XLA options.
-
-    Returns:
-        A dictionary containing only Megascale-related XLA options
-        (those starting with 'megascale').
-    """
-    return {k: v for k, v in xla_options.items() if k.startswith("megascale")}
-
-
-def get_xla_options(
-    xla_options: dict[str, Union[str, bool, int]]
-) -> dict[str, Union[str, bool, int]]:
-    """Filters XLA options for those starting with 'xla_'.
-
-    Args:
-        xla_options: A dictionary of XLA options.
-
-    Returns:
-        A dictionary containing only XLA-specific options (those starting with 'xla').
-    """
-    return {k: v for k, v in xla_options.items() if k.startswith("xla")}
-
-
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
     """
     Attempts to convert an XLA flag string value to int, then bool.
