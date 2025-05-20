@@ -2309,7 +2309,7 @@ class MultiheadAttentionTest(TestCase):
 
         sliding_window_size = 2
         test_cfg = ref_cfg.clone(
-            causal=False,
+            causal=None,
             mask=SlidingWindowAttentionBias.default_config(sliding_window_size=sliding_window_size),
         )
         test_layer = test_cfg.instantiate(parent=None)
