@@ -634,8 +634,6 @@ class SpmdTrainer(Module):
                             self.summary_writer(self.step, {"average_step_time": average_step_time})
                             num_steps = 0
                             start_time = now
-                        if self.step == MAX_STEPS:
-                            break
                         if self.step >= cfg.max_step:
                             self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
                             break
