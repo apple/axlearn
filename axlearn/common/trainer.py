@@ -597,11 +597,6 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                # skip previous batches
-                for i in range(self.step):
-                    self.vlog(3, f"skipping batch for step {i}")
-                    next(self.input.batches(self._input_iter))
-
                 input_iterator = self.input.batches(self._input_iter)
                 while True:
                     self._maybe_record_event(measurement.Event.START_DATA_LOADING)
