@@ -874,10 +874,8 @@ class TPUFlashAttention(BaseFlashAttention):
             return False
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
-        if (
-            jax.config.jax_default_matmul_precision == "highest"
-            and input_batch["query"].dtype == jnp.bfloat16
-        ):
+        query: Tensor = input_batch["query"]
+        if jax.config.jax_default_matmul_precision == "highest" and query.dtype == jnp.bfloat16:
             raise RuntimeError(
                 "TPU FlashAttention doesn't support default_matmul_precision=='highest' "
                 "when the query dtype is bfloat16!"
@@ -977,10 +975,10 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(input_batch):
             return False
-        query_dtype = input_batch["query"].dtype
-        key_dtype = input_batch["key"].dtype
-        if query_dtype != key_dtype:
-            return self._log_unsupported(f"{query_dtype=} != {key_dtype=}")
+        query: Tensor = input_batch["query"].dtype
+        key: Tensor = input_batch["key"].dtype
+        if query.dtype != key.dtype:
+            return self._log_unsupported(f"{query.dtype=} != {key.dtype=}")
         logging.info("Using %s.", self.name())
         return True
 
