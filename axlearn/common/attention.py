@@ -4327,6 +4327,7 @@ class RematRegexSavePatterns(enum.Enum):
     FLASH_CONTEXT = f".*{FLASH_ATTN_RESIDUAL_NAME}"
     FLASH_ATTENTION = "|".join([FLASH_CONTEXT, QKV_PROJ, O_PROJ])
     FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
+    BLOCKWISE = r".*blockwise\.(down_activations|gate_up_activations_T)"
 
 
 def build_remat_spec(

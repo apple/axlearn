@@ -162,6 +162,7 @@ def get_remat_policy():
                             [
                                 RematRegexSavePatterns.QKV_PROJ.value,
                                 RematRegexSavePatterns.LINEAR1_X.value,
+                                RematRegexSavePatterns.BLOCKWISE.value,
                             ]
                         ),
                         names_which_can_be_offloaded=None,
