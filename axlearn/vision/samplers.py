@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from axlearn.common.module import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 def sample(*, is_candidate: Tensor, size: Tensor, prng_key: Tensor) -> Tensor:
@@ -89,7 +89,7 @@ class LabelSampler:
         """
         prng_key1, prng_key2 = jax.random.split(prng_key, num=2)
         foreground_candidates = (
-            ~paddings & (labels != self.ignore_label) & (labels != self.background_label)
+            safe_not(paddings) & (labels != self.ignore_label) & (labels != self.background_label)
         )
         num_foreground = jnp.minimum(jnp.sum(foreground_candidates, axis=-1), self.num_foreground)
         foreground_samples = sample(
@@ -97,7 +97,7 @@ class LabelSampler:
             size=num_foreground,
             prng_key=prng_key1,
         )
-        background_candidates = ~paddings & (labels == self.background_label)
+        background_candidates = safe_not(paddings) & (labels == self.background_label)
         num_background = self.size - num_foreground
         background_samples = sample(
             is_candidate=background_candidates,
