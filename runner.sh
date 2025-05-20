@@ -52,7 +52,7 @@ else
 		# unset
 		# export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=2
 	fi
-	export NEURON_FSDP_NUM_LAYER_COALESCE=-1
+	export NEURON_FSDP_NUM_LAYER_COALESCE=0
 fi
 # 10 also was fast enough for a particular set of nodes
 # export NEURON_REMAT_LARGE_BROADCAST_MIN_SIZE_IN_MB=100
@@ -112,18 +112,15 @@ if [ "$NEURON_FSDP_CC_MULTISTREAM" = "1" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-hlo2tensorizer-options='--disable-early-opt-barrier-removal'"
 fi
 
-if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ] || [ "$AXLEARN_PROFILE_MODE" = "tracerun" ] || [ "$FOR_PROFILE" = "1" ]; then
+if [ "$AXLEARN_PROFILE_MODE" = "tracerun" ] || [ "$FOR_PROFILE" = "1" ]; then
 	export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-compiler-debug-mode=penguin"
 	export XLA_IR_DEBUG=1
 	export XLA_HLO_DEBUG=1
-	if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ]; then
-		# runs a step and captures profile immediately after
-		export AXLEARN_MAX_STEP=1
-	elif [ "$AXLEARN_PROFILE_MODE" = "tracerun" ]; then
+	if [ "$AXLEARN_PROFILE_MODE" = "tracerun" ]; then
 		export NEURON_RT_INSPECT_OUTPUT_DIR="${RT_PROFILE_DUMP_PATH}"
 		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
 		export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
-		# export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=1
+		# export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
 		# export NEURON_RT_PROFILE_BUF_DMA_MB=1024
 	else
 		echo ""
@@ -139,7 +136,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --dump=${NEURON_DUMP_PATH}"
 
 # use to add debug logging at module level in xla
 # export TF_CPP_MIN_LOG_LEVEL=0
-# export TF_CPP_VMODULE="neuron_fsdp_all_gather_split=4"
+# export TF_CPP_VMODULE="neuron_token_threading=2"
 
 # JAX Cache
 # export JAX_COMPILATION_CACHE_DIR="cache/"
@@ -274,8 +271,10 @@ else
 		--distributed_coordinator=$MASTER_ADDR:$JAX_COORDINATOR_PORT --num_processes=$num_nodes \
 		--process_id=$NEURON_PJRT_PROCESS_INDEX
 
-	if [ "$AXLEARN_PROFILE_MODE" = "capture_postrun" ]; then
-		profile $SLURM_JOB_ID $SLURM_JOB_NAME $S3_PROFILE_BASE_PATH
+	if [ "$AXLEARN_PROFILE_MODE" = "tracerun" ]; then
+		if [ $SLURM_PROCID -eq 0 ]; then
+			bash /fsx/huilgolr/bin/upload_profile.sh $SLURM_JOB_ID $SLURM_JOB_NAME
+		fi
 	fi
 	./get_memory_split.sh
 fi
