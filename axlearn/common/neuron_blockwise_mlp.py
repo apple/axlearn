@@ -20,6 +20,8 @@ from neuronxcc.nki._private_kernels.blockwise_mm_bwd import (
 from neuronxcc.nki.compiler.backends.neuron.dimensions import VNC
 import neuronxcc.nki as nki
 
+from jax.ad_checkpoint import checkpoint_name
+
 _blockwise_mm_nki_call = nki.jit(show_compiler_tb=True)(blockwise_mm_nki)
 _blockwise_mm_bwd_nki_call = nki.jit(show_compiler_tb=True)(blockwise_mm_bwd_nki)
 
@@ -114,6 +116,9 @@ def _blockwise_mm_fwd(
             block_to_expert,
             block_size=block_size,
         )
+
+    down_activations = checkpoint_name(down_activations, "blockwise.down_activations")
+    gate_up_activations_T = checkpoint_name(gate_up_activations_T, "blockwise.gate_up_activations_T")
 
     return out[None, None, None, :-1, :], (hidden_states, expert_affinities_masked, gate_up_weight, 
                 down_proj_weight, down_activations, gate_up_activations_T, 
