@@ -24,7 +24,7 @@ from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Linear
 from axlearn.common.module import Module
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class BasePoolingLayer(BaseLayer):
@@ -98,10 +98,10 @@ class AttentionPooling(BasePoolingLayer):
         self.vlog(3, "targets shape: %s", targets.shape)
 
         if paddings is None:
-            paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=tokens.dtype)
+            paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=jnp.bool)
 
-        source_masks = 1 - paddings
-        target_masks = jnp.ones((tokens.shape[0], cfg.num_outputs), dtype=tokens.dtype)
+        source_masks = safe_not(paddings)
+        target_masks = jnp.ones((tokens.shape[0], cfg.num_outputs), dtype=jnp.bool)
         masks = make_segment_mask(source_segments=source_masks, target_segments=target_masks)
 
         targets = self.cross_attention(
@@ -152,8 +152,8 @@ class AveragePooling(BasePoolingLayer):
             raise ValueError("AveragePooling requrires input_dim == output_dim.")
 
         if paddings is None:
-            paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=tokens.dtype)
-        input_masks = 1 - paddings
+            paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=jnp.bool)
+        input_masks = safe_not(paddings)
         input_masks = jnp.expand_dims(input_masks, axis=-1)
         embeddings_sum = jnp.sum(tokens * input_masks, axis=1, keepdims=True)
         masks_sum = input_masks.sum(axis=1, keepdims=True) + self.config.eps
@@ -226,7 +226,7 @@ class FirstNTokenPooling(BasePoolingLayer):
         n = self.config.num_outputs
         if paddings is None:
             paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=tokens.dtype)
-        return tokens[:, :n, :] * (1 - paddings[:, :n, None])
+        return tokens[:, :n, :] * safe_not(paddings)[:, :n, None]
 
 
 class LastNTokenPooling(BasePoolingLayer):
@@ -266,8 +266,8 @@ class LastNTokenPooling(BasePoolingLayer):
         cfg = self.config
         num_outputs = cfg.num_outputs
         if paddings is None:
-            paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=tokens.dtype)
-        input_masks = 1 - paddings
+            paddings = jnp.zeros((tokens.shape[0], tokens.shape[1]), dtype=jnp.bool)
+        input_masks = safe_not(paddings)
         # Determine the last N tokens via input_masks.
         # The idea is to obtain the last N positions per line with input_masks==1.
         # Concretely, we count the position of the input_masks==1 per line

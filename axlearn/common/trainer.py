@@ -851,7 +851,8 @@ class SpmdTrainer(Module):
         """Prepares training.
 
         This function does the following to prepare the training procedure:
-        1. Restores trainer state from checkpoint.
+        1. Restores the trainer state from a checkpoint. If no checkpoint exists,
+           initializes a new trainer state using the provided prng_key.
         2. Initializes step to zero if it's not in the checkpoint.
         3. Returns early if max_steps has been reached.
         4. Otherwise Jits self._train_step.
@@ -1037,12 +1038,24 @@ class SpmdTrainer(Module):
             mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
         if not with_xsc:
+            self._maybe_record_event(
+                measurement.Event.START_CUSTOM_BADPUT_EVENT,
+                custom_badput_event_type="COMPILATION_NO_XSC",
+            )
             self._compiled_train_step = self.compile_train_step(
                 trainer_state=trainer_state, input_batch=input_batch, compiler_options=options
+            )
+            self._maybe_record_event(
+                measurement.Event.END_CUSTOM_BADPUT_EVENT,
+                custom_badput_event_type="COMPILATION_NO_XSC",
             )
             return self._compiled_train_step
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
 
+        self._maybe_record_event(
+            measurement.Event.START_CUSTOM_BADPUT_EVENT,
+            custom_badput_event_type="COMPILATION_WITH_XSC",
+        )
         compiled_jit_train_step_fn = self.compile_train_step(
             trainer_state=trainer_state,
             input_batch=input_batch,
@@ -1050,6 +1063,10 @@ class SpmdTrainer(Module):
             | infer_xsc_compiler_options(
                 halt_on_detection=True, repeat_count=1, device_kind=device_kind
             ),
+        )
+        self._maybe_record_event(
+            measurement.Event.END_CUSTOM_BADPUT_EVENT,
+            custom_badput_event_type="COMPILATION_WITH_XSC",
         )
         return compiled_jit_train_step_fn
 
@@ -1107,6 +1124,9 @@ class SpmdTrainer(Module):
         force_runs: Optional[set[str]] = None,
     ) -> dict[str, Any]:
         """Runs evaluations and returns the corresponding summaries."""
+        self._maybe_record_event(
+            measurement.Event.START_CUSTOM_BADPUT_EVENT, custom_badput_event_type="EVAL"
+        )
         evaler_summaries = {}
         # Note: we will use the same eval key as the training keys of the future step,
         # which should be okay.
@@ -1120,6 +1140,9 @@ class SpmdTrainer(Module):
                 force_run=bool(force_runs is not None and evaler_name in force_runs),
             )
             evaler_summaries[evaler_name] = summaries
+        self._maybe_record_event(
+            measurement.Event.END_CUSTOM_BADPUT_EVENT, custom_badput_event_type="EVAL"
+        )
         return evaler_summaries
 
     def _pjit_train_step(self) -> jax.stages.Wrapped:
