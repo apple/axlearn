@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import sys
-import warnings
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Optional
@@ -162,17 +161,23 @@ def validate_region_matching(gcs_bucket_name: str, config_zone: str):
             f"Expected format like 'us-east1-b'."
         ) from e
 
-    # Compare lower-cased regions, warn if mismatched
+    # Compare lower-cased regions, warn if mismatched and prompt for confirmation
     if gcs_bucket_region.lower() != config_region.lower():
         warning_message = (
             f"Region mismatch: GCS bucket '{gcs_bucket_name}' is in '{gcs_bucket_region}', "
-            f"but the config region is '{config_region}'."
+            f"but the config region is '{config_region}'.\n"
+            f"Do you want to proceed despite the region mismatch? (yes/no): "
         )
-        warnings.warn(warning_message)
+        user_response = input(warning_message).lower()
+        if user_response not in ("yes", "y"):
+            raise KeyboardInterrupt("Operation aborted by user due to region mismatch.")
+        else:
+            logging.warning("Proceeding despite region mismatch as confirmed by user.")
     else:
-        print(
-            f"Region match: GCS bucket region ({gcs_bucket_region}) "
-            f"matches config region ({config_region})."
+        logging.info(
+            "Region match: GCS bucket region ({%s}) " "matches config region ({%s}).",
+            gcs_bucket_region,
+            config_region,
         )
 
 
