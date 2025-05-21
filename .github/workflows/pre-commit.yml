@@ -17,17 +17,20 @@ jobs:
       - run: pip install '.[core,dev,grain,gcp,vertexai_tensorboard,open_api]'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
+          # Start memory monitor as a background process.
           .github/scripts/monitor_memory.sh &
           MONITOR_PID=$!
-          # A short sleep to wait for monitor process start running.
+          # A short sleep to wait for monitor process to start.
           sleep 1
 
+          # Start pre-commit check.
           echo "====== Starting pre-commit... ======"
           pre-commit run --all-files
           echo "====== pre-commi complted. ======"
 
+          # Clean up memory monitor process.
           if kill -0 $MONITOR_PID 2>/dev/null; then
-            echo "Manually stopping monitor..."
+            echo "Manually stopping monitor process..."
             kill $MONITOR_PID
           fi
       - run: pytype -j auto .

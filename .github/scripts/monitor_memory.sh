@@ -1,6 +1,6 @@
 #!/bin/bash
-# Simple memory monitor that prints to console every minute
-# Designed for GitHub Actions monitoring
+# Simple memory monitor that prints to console periodically.
+# Designed for GitHub Actions monitoring.
 
 INFO="\033[90m"
 RESET="\033[0m"
