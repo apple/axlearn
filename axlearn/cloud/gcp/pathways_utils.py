@@ -123,7 +123,7 @@ def get_xla_options(
     Returns:
         A dictionary containing only XLA-specific options (those starting with 'xla').
     """
-    return {k: v for k, v in xla_options.items() if k.startswith("xla")}
+    return {k: v for k, v in xla_options.items() if k.startswith("xla_")}
 
 
 class PathwaysReplicatedJob(BaseReplicatedJob):
