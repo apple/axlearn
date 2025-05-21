@@ -65,8 +65,8 @@ _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
-    """
-    Attempts to convert an XLA flag string value to int, then bool.
+    """Attempts to convert an XLA flag string value to int, then bool.
+    
     If conversion fails, returns the original string (stripped).
     """
     bool_mapper = {"true": True, "false": False}
