@@ -16,7 +16,7 @@ jobs:
           docker_layer_caching: false
       - run: pip install --upgrade pip
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
-      - run: pip install '.[core,dev,grain,gcp,vertexai_tensorboard]'
+      - run: pip install '.[core,dev,grain,gcp,vertexai_tensorboard,open_api]'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: pre-commit run --all-files
       - run: pytype -j auto .

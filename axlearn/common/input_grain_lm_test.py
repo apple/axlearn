@@ -658,7 +658,8 @@ class LmTrainingInputTest(TestCase):
             sentencepiece_model_file=t5_sentence_piece_vocab_file,
         )
 
-        def source():
+        def source(dispatch_config):
+            del dispatch_config
             ds = fake_grain_source(examples)
             ds = text_to_lm_training_input(
                 ds,

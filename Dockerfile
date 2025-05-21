@@ -40,7 +40,7 @@ RUN pip install --upgrade pip
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN pip install .[core,dev,grain,gcp,vertexai_tensorboard]
+RUN pip install .[core,dev,grain,gcp,vertexai_tensorboard,open_api]
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.

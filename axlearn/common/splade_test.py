@@ -26,7 +26,7 @@ from axlearn.common.poolings import BasePoolingLayer
 from axlearn.common.splade import SpladePooling
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class SpladePoolingParentLayer(BaseLayer):
@@ -98,7 +98,7 @@ class SpladePoolingTest(TestCase):
         else:
             torch_paddings = torch.from_numpy(paddings.astype(float))
             # axlearn_paddings = True means padded tokens.
-            axlearn_paddings = jnp.asarray((1 - paddings).astype(bool))
+            axlearn_paddings = safe_not(paddings)
 
         # Reference output.
         ref_output, ref_model_params = self.ref_splade_implementation(

@@ -524,7 +524,7 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
     def submit(self) -> JobSpec:
         """Submits the command to bastion."""
         cfg: BastionManagedGKEJob.Config = self.config
-        worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --worker=0"
+        worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --replica=0 --worker=0"
         print(f"\nOnce started, view log outputs with:\n{worker_log}\n")
         job_spec = super().submit()
         print(

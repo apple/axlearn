@@ -22,7 +22,7 @@ from axlearn.common.attention import (
     QLinear,
 )
 from axlearn.common.attention_bias import CausalAttentionBias
-from axlearn.common.einops import rearrange
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import Linear
 from axlearn.common.lora import (
     LoraFusedQKVAdapter,

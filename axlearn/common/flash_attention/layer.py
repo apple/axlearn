@@ -41,11 +41,6 @@ class FlashAttention(GroupedQueryAttention):
     class Config(GroupedQueryAttention.Config):
         """Configures FlashAttention."""
 
-        # Deprecated. Use `mask=causal_mask` instead.
-        # If True, applies additional optimizations in the FlashAttention kernels.
-        # Causal attention can still be used when False, by passing logit biases.
-        # TODO (apghml) remove this in favor of `mask`.
-        causal: bool = False
         # The block size used to tile attention computation (for TPU only).
         # Should be less than the target sequence length and a multiple of 128 on TPU.
         # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.

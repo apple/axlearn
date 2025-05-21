@@ -62,7 +62,7 @@ def _fake_input_batch(prng_key: Tensor, *, pad_id: int, eos_id: int):
         prng_key, minval=-(2**15), maxval=2**15, shape=[batch_size, max_src_len]
     )
     src_length = jnp.array([0, 3000, 4000, 4500])
-    src_paddings = (jnp.arange(max_src_len)[None, :] >= src_length[:, None]).astype(jnp.int32)
+    src_paddings = jnp.arange(max_src_len)[None, :] >= src_length[:, None]
     input_ids = jnp.array(
         [
             [1, eos_id, pad_id, pad_id, pad_id],

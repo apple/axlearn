@@ -39,7 +39,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import struct
 from axlearn.common.config import ClassConfigBase, ConfigOr, config_for_class, maybe_instantiate
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 NEG_INF = -1e15
 
@@ -786,7 +786,7 @@ def bool_to_bias(mask: OpT) -> OpT:
         return None
     if mask.dtype != jnp.bool:
         raise ValueError("mask must be a Boolean tensor.")
-    return (~mask) * NEG_INF
+    return safe_not(mask) * NEG_INF
 
 
 def _make_bool_segment_mask(*, source_segments: Tensor, target_segments: Tensor) -> Tensor:

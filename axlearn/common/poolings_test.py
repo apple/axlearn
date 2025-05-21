@@ -101,7 +101,7 @@ class PoolingTest(TestCase):
         # test w/ mask
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -180,7 +180,7 @@ class PoolingTest(TestCase):
         # test w/ mask
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -230,7 +230,7 @@ class PoolingTest(TestCase):
         # Test w/ mask.
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -250,7 +250,7 @@ class PoolingTest(TestCase):
         assert_allclose(outputs, outputs_expected, atol=atol)
 
         # Test w/ all zero masks.
-        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]))
+        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]), jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -300,7 +300,7 @@ class PoolingTest(TestCase):
         # Test w/ mask.
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -316,7 +316,7 @@ class PoolingTest(TestCase):
 
         # Test w/ specific mask.
         inputs = jax.random.normal(input_key, [3, 3, input_dim])
-        paddings = jnp.asarray([[0, 0, 1], [0, 0, 1], [0, 0, 0]], dtype=jnp.int32)
+        paddings = jnp.asarray([[0, 0, 1], [0, 0, 1], [0, 0, 0]], dtype=jnp.bool)
         outputs, _ = F(
             pooler,
             inputs=utils.cast_floats((inputs, paddings), dtype),
@@ -332,7 +332,7 @@ class PoolingTest(TestCase):
         inputs = jnp.asarray(
             [[[0.1, 0.2, 0.3], [0.2, 0.3, 0.4]], [[0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]]
         )
-        paddings = jnp.asarray([[0, 1], [0, 0]], dtype=jnp.int32)
+        paddings = jnp.asarray([[0, 1], [0, 0]], dtype=jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -409,7 +409,7 @@ class PoolingTest(TestCase):
         # Test w/ mask.
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -424,7 +424,7 @@ class PoolingTest(TestCase):
         self.assertEqual(outputs.dtype, dtype)
 
         # Test w/ all zero masks.
-        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]))
+        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]), jnp.bool)
 
         outputs, _ = F(
             pooler,

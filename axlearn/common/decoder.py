@@ -554,6 +554,8 @@ class Decoder(BaseLayer):
             # Reuse the token embedding.
             with child_context("emb_attend", module=self.emb):
                 logits = self.emb.attend(x)
+        if self._output_logits_modifier is not None:
+            logits = self._output_logits_modifier(logits)
         logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
         # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
         return dict(transformer_state=transformer_state), dict(logits=logits, hidden_states=x)
@@ -608,8 +610,6 @@ class Decoder(BaseLayer):
             cached_states=None,
             **kwargs,
         )
-        if self._output_logits_modifier is not None:
-            output["logits"] = self._output_logits_modifier(output["logits"])
         return output
 
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:

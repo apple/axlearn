@@ -137,7 +137,13 @@ class VertexAITensorboardUploader(Configurable):
                 resource_name=self._resource_name,
                 logdir=cfg.summary_dir,
             )
-            self._uploader_proc = multiprocessing.Process(
+            # Uses spawn method to start the process as it was observed that using fork method may
+            # cause training job fail to exit correctly after completion. It is also suggested by
+            # the warning message: "RuntimeWarning: os.fork() was called. os.fork() is incompatible
+            # with multithreaded code, and JAX is multithreaded, so this will likely lead to a
+            # deadlock.".
+            ctx = multiprocessing.get_context("spawn")
+            self._uploader_proc = ctx.Process(
                 target=_start_vertexai_tensorboard, kwargs=kwargs, daemon=True
             )
             self._uploader_proc.start()

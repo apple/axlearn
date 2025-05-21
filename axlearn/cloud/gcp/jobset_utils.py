@@ -580,6 +580,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
                             # pylint: disable=line-too-long
                             mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
                             gcsfuseMetadataPrefetchOnMount="true",  # Improves first-time read.
+                            disableMetrics="false",  # Enables GCSFuse metrics by default.
                         ),
                     ),
                 )

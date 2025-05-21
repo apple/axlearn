@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from math import prod
 from typing import Any, Optional
 
+import chex
 import jax.numpy as jnp
 
 from axlearn.audio.frontend import LogMelFrontend
@@ -19,10 +20,10 @@ from axlearn.common.attention import SinusoidalPositionalEmbedding
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.conformer import RepeatedConformerLayer
-from axlearn.common.einops import rearrange
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class SpeechFeatureLayer(BaseLayer):
@@ -81,6 +82,7 @@ class SpeechFeatureLayer(BaseLayer):
                 [batch_size, subsampled_frames, subsampled_freq, output_dim].
             - paddings: A 0/1 Tensor of shape [batch_size, subsampled_frames].
         """
+        chex.assert_type(paddings, jnp.bool)
         # Compute frontend features.
         features = self.frontend(inputs=inputs, paddings=paddings)
         self.add_module_output("spectrogram", features)
@@ -173,7 +175,7 @@ class SpeechContextNetwork(BaseLayer):
             activations=x,
             activation_paddings=paddings,
         )
-        return dict(outputs=x * (1 - paddings[..., None]), paddings=paddings)
+        return dict(outputs=x * safe_not(paddings)[..., None], paddings=paddings)
 
 
 class ASREncoder(BaseLayer):

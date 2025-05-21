@@ -61,6 +61,7 @@ import subprocess
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import suppress
 from datetime import datetime, timezone
 from subprocess import CalledProcessError
 from typing import IO, Any, NamedTuple, Optional, Union
@@ -884,8 +885,20 @@ class Bastion(Configurable):
         """
         if job.command_proc is not None:
             self._wait_and_close_proc(job.command_proc, kill=True)
+            job.command_proc = None
         if job.cleanup_proc is not None:
             self._wait_and_close_proc(job.cleanup_proc, kill=True)
+            job.cleanup_proc = None
+
+    def _remove_local_job(self, job: Job):
+        """Removes a job that is being tracked by self._active_jobs locally."""
+        try:
+            self._kill_job(job)
+            del self._active_jobs[job.spec.name]
+            logging.info("Removed job %s.", job.spec.name)
+        except Exception as e:  # pylint: disable=broad-except
+            logging.warning("Fail to remove a job %s with error: %s", job.spec.name, e)
+            raise
 
     def _sync_jobs(self):
         """Makes the local bastion state consistent with the remote state.
@@ -940,9 +953,7 @@ class Bastion(Configurable):
                 job = self._active_jobs[job_name]
                 if job.state.status != JobStatus.COMPLETED:
                     logging.warning("Detected orphaned job %s! Killing it...", job.spec.name)
-                    self._kill_job(job)
-                logging.info("Removed job %s.", job_name)
-                del self._active_jobs[job_name]
+                self._remove_local_job(job)
             # Detected updated job: exists in both.
             else:
                 curr_job = self._active_jobs[job_name]
@@ -1286,12 +1297,11 @@ class Bastion(Configurable):
             self._execute()
         except Exception:
             logging.error("Caught exception, will cleanup all child jobs.")
-            for job in self._active_jobs.values():
-                try:
-                    self._kill_job(job)
-                except Exception as e:  # pylint: disable=broad-except
-                    logging.warning("Fail to kill a job with error: %s", e)
-            self._active_jobs = {}
+            for job in [*self._active_jobs.values()]:
+                # Gracefully attempt to kill each job, ignoring any exception without
+                # affecting cleanup of the next job.
+                with suppress(Exception):  # pylint: disable=broad-except
+                    self._remove_local_job(job)
             self._uploader.cleanup()
             raise  # Re-raise.
 

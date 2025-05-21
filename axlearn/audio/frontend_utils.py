@@ -21,7 +21,7 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from numpy.typing import ArrayLike
 
-from axlearn.common import einops
+from axlearn.common import ein_ops
 from axlearn.common.utils import Tensor
 
 
@@ -193,7 +193,7 @@ def frame(x: Tensor, *, frame_size: int, hop_size: int, pad_value: int = 0) -> T
         idx = hop_size * jnp.arange(output_size)[:, None] + jnp.arange(frame_size)[None, :]
         frame_x = x[..., idx]
     else:
-        chunk_x = einops.rearrange(x, "b (t c) -> b t c", c=chunk_size)
+        chunk_x = ein_ops.rearrange(x, "b (t c) -> b t c", c=chunk_size)
         num_chunk = chunk_x.shape[1]
 
         frame_ratio = frame_size // chunk_size
@@ -203,7 +203,7 @@ def frame(x: Tensor, *, frame_size: int, hop_size: int, pad_value: int = 0) -> T
         in_frame_indices = jnp.arange(frame_ratio)[jnp.newaxis, :]
         out_frame_indices = (jnp.arange(output_size) * hop_ratio)[:, jnp.newaxis]
         frame_x = chunk_x[:, out_frame_indices + in_frame_indices, :]
-        frame_x = einops.rearrange(
+        frame_x = ein_ops.rearrange(
             frame_x, "b ow iw c-> b ow (iw c)", ow=output_size, iw=frame_ratio, c=chunk_size
         )
     return jnp.reshape(frame_x, (*orig_shape[:-1], *frame_x.shape[-2:]))  # Restore orig_shape[:-1].

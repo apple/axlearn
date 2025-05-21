@@ -15,7 +15,7 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec
 from torch.nn import functional as F
 
-from axlearn.common.einops import rearrange, repeat
+from axlearn.common.ein_ops import rearrange, repeat
 from axlearn.common.ssm_kernels.ssd_kernels import _ssd_backward, _ssd_forward, ssd, ssd_linear_scan
 from axlearn.common.test_utils import TestCase, assert_allclose
 

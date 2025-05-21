@@ -8,7 +8,7 @@ import jax
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common.einops import _parse_axes, rearrange, repeat
+from axlearn.common.ein_ops import _parse_axes, rearrange, repeat
 from axlearn.common.test_utils import TestCase
 
 

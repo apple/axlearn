@@ -10,7 +10,7 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common import convolution, einops, utils
+from axlearn.common import convolution, ein_ops, utils
 from axlearn.common.convolution import (
     Conv1D,
     Conv1DTranspose,
@@ -27,7 +27,7 @@ from axlearn.common.convolution import (
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import shapes
+from axlearn.common.utils import safe_not, shapes
 
 
 def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
@@ -93,7 +93,10 @@ class ConvTest(TestCase):
         # https://github.com/tensorflow/lingvo/blob/master/lingvo/core/conv_layers_with_time_padding_test.py#L157.
         window = 3
         out_paddings = compute_conv_paddings(
-            jnp.array([input_paddings]), window=window, stride=stride, conv_padding=padding_cfg
+            jnp.array([input_paddings], jnp.bool),
+            window=window,
+            stride=stride,
+            conv_padding=padding_cfg,
         )
         assert_allclose(out_paddings[0], expected_paddings)
 
@@ -222,7 +225,7 @@ class ConvTest(TestCase):
         """Tests conv_output_shape() with explicit padding cfg."""
         batch_size = 5
         seq_len = 5
-        paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
+        paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1).astype(jnp.bool)
 
         explicit_padding = convolution.conv_explicit_padding(
             window=(window,), strides=(stride,), padding=ref_padding, dilation=(1,)
@@ -251,7 +254,7 @@ class ConvTest(TestCase):
         """Tests compute_conv_paddings() as described in conv_explicit_padding()."""
         window, stride = 5, 2
         out_paddings = compute_conv_paddings(
-            jnp.array([paddings]),
+            jnp.array([paddings], jnp.bool),
             window=window,
             stride=stride,
             conv_padding=padding,
@@ -285,7 +288,7 @@ class ConvTest(TestCase):
         input_paddings = [0, 0, 0, 1, 1, 1]
         try:
             out_paddings = compute_conv_paddings(
-                jnp.array([input_paddings]),
+                jnp.array([input_paddings], jnp.bool),
                 window=window,
                 stride=1,
                 conv_padding=padding,
@@ -759,7 +762,7 @@ class ConvTest(TestCase):
         prng_key, init_key = jax.random.split(prng_key)
         state = ref_layer.initialize_parameters_recursively(init_key)
         test_state = dict(
-            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+            bias=state["bias"], weight=ein_ops.rearrange(state["weight"], "t 1 i o -> t i o")
         )
 
         # Generate a batch of 10 input sequences.
@@ -780,7 +783,7 @@ class ConvTest(TestCase):
         output_shape = test_layer.output_shape(input_shape=inputs.shape)
         assert_allclose(test_outputs.shape, output_shape)
 
-        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        inputs = ein_ops.rearrange(inputs, "b t i -> b t 1 i")
         (ref_outputs, ref_paddings), _ = F(
             ref_layer,
             inputs=dict(x=inputs, paddings=paddings),
@@ -790,7 +793,7 @@ class ConvTest(TestCase):
         )
         output_shape = ref_layer.output_shape(input_shape=inputs.shape)
         assert_allclose(ref_outputs.shape, output_shape)
-        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+        ref_outputs = ein_ops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
         self.assertEqual(ref_paddings.dtype, jnp.bool)
         self.assertEqual(test_paddings.dtype, jnp.bool)
@@ -1876,7 +1879,7 @@ class ConvTransposeTest(TestCase):
         prng_key, input_key = jax.random.split(prng_key)
         width, height = 12, 13
         inputs = jax.random.normal(input_key, [2, width, height, input_dim])
-        paddings = jnp.zeros([2, width], dtype=inputs.dtype).at[:, -2:].set(1)
+        paddings = jnp.zeros([2, width], dtype=jnp.bool).at[:, -2:].set(1)
         # Compute layer outputs.
         (ref_outputs, ref_paddings), _ = F(
             ref_layer,
@@ -2019,7 +2022,7 @@ class ConvTransposeTest(TestCase):
         prng_key, init_key = jax.random.split(prng_key)
         state = ref_layer.initialize_parameters_recursively(init_key)
         test_state = dict(
-            bias=state["bias"], weight=einops.rearrange(state["weight"], "t 1 i o -> t i o")
+            bias=state["bias"], weight=ein_ops.rearrange(state["weight"], "t 1 i o -> t i o")
         )
 
         # Generate a batch of 10 input sequences.
@@ -2028,7 +2031,7 @@ class ConvTransposeTest(TestCase):
         prng_key, input_key = jax.random.split(prng_key)
         inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim])
         # The 10 sequences have length 1 to 10.
-        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1)
+        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1).astype(jnp.bool)
 
         (test_outputs, test_paddings), _ = F(
             test_layer,
@@ -2038,7 +2041,7 @@ class ConvTransposeTest(TestCase):
             prng_key=prng_key,
         )
 
-        inputs = einops.rearrange(inputs, "b t i -> b t 1 i")
+        inputs = ein_ops.rearrange(inputs, "b t i -> b t 1 i")
         (ref_outputs, ref_paddings), _ = F(
             ref_layer,
             inputs=dict(x=inputs, paddings=paddings),
@@ -2046,7 +2049,7 @@ class ConvTransposeTest(TestCase):
             state=state,
             prng_key=prng_key,
         )
-        ref_outputs = einops.rearrange(ref_outputs, "b t 1 o -> b t o")
+        ref_outputs = ein_ops.rearrange(ref_outputs, "b t 1 o -> b t o")
 
         assert_allclose(ref_paddings, test_paddings)
         assert_allclose(ref_outputs, test_outputs)
@@ -2079,7 +2082,7 @@ class StackOverTimeTest(TestCase):
             [[[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], [[7, 7], [8, 8], [0, 0], [0, 0], [0, 0]]],
             dtype=jnp.float32,
         )
-        paddings = jnp.array([[0, 0, 0, 0, 0], [0, 0, 1, 1, 1]])
+        paddings = jnp.array([[0, 0, 0, 0, 0], [0, 0, 1, 1, 1]], jnp.bool)
         layer: StackOverTime = (
             StackOverTime.default_config()
             .set(
@@ -2106,10 +2109,10 @@ class StackOverTimeTest(TestCase):
         """Tests that the stacked outputs is masked with the output paddings."""
         np.random.seed(500)
         inputs = np.random.normal(size=[2, 21, 16])
-        paddings = np.ones([2, 21], dtype=np.float32)
+        paddings = np.ones([2, 21], dtype=np.bool_)
         paddings[0, :9] = 0
         paddings[1, :14] = 0
-        inputs = inputs * (1 - paddings)[:, :, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
 
         layer: StackOverTime = (
             StackOverTime.default_config()
