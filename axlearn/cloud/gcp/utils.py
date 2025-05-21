@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import warnings
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Optional
@@ -17,6 +18,7 @@ from absl import app, flags, logging
 from google.auth import exceptions as gauthexceptions
 from google.auth import impersonated_credentials
 from google.auth.credentials import Credentials
+from google.cloud import storage
 
 from axlearn.cloud.common.utils import Table, infer_cli_name, subprocess_run
 from axlearn.cloud.gcp.scopes import DEFAULT_APPLICATION
@@ -126,6 +128,51 @@ def validate_jobset_name(name: str, *, num_workers: int, num_replicas: int, job_
             f"Job name {job_name} contains invalid characters. "
             "It should only contain lowercase alphanumerics, hyphens and periods, "
             "and must start and end with alphanumerics."
+        )
+
+
+def validate_region_matching(gcs_bucket_name: str, config_zone: str):
+    """Ensures that output bucket region matches the region of a given configuration zone.
+
+    Args:
+        gcs_bucket_name (str): The name of the GCS bucket.
+        config_zone (str): The Google Cloud zone string (e.g., 'us-east1-b').
+
+    Raises:
+        Warning: If values do not match.
+        RuntimeError: If the GCS bucket cannot be retrieved or if the zone format is invalid.
+    """
+
+    # Get GCS bucket region
+    storage_client = storage.Client()
+    try:
+        bucket = storage_client.get_bucket(gcs_bucket_name)
+        gcs_bucket_region = bucket.location
+    except Exception as e:
+        # Fixed: W0707: raise-missing-from
+        raise RuntimeError(f"Could not retrieve GCS bucket '{gcs_bucket_name}': {e}") from e
+
+    # Extract region from zone
+    try:
+        segments = config_zone.split("-")
+        config_region = f"{segments[0]}-{segments[1]}"
+    except Exception as e:
+        raise RuntimeError(
+            f"Invalid configuration zone format: '{config_zone}'. "
+            f"Expected format like 'us-east1-b'."
+        ) from e
+
+    # Compare lower-cased regions, warn if mismatched
+    if gcs_bucket_region.lower() != config_region.lower():
+        warning_message = (
+            f"Region mismatch: GCS bucket '{gcs_bucket_name}' is in '{gcs_bucket_region}', "
+            f"but the config region is '{config_region}'."
+        )
+        warnings.warn(warning_message)
+    else:
+        print(
+            f"Region match: GCS bucket region ({gcs_bucket_region}) "
+            f"matches config region ({config_region})."
         )
 
 
