@@ -18,7 +18,7 @@ jobs:
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
-          .github/scripts/monitor_memory.sh &
+          { .github/scripts/monitor_memory.sh & } || true
           MONITOR_PID=$!
           # A short sleep to wait for monitor process to start.
           sleep 1
@@ -31,6 +31,6 @@ jobs:
           # Clean up memory monitor process.
           if kill -0 $MONITOR_PID 2>/dev/null; then
             echo "Manually stopping monitor process..."
-            kill $MONITOR_PID
+            kill $MONITOR_PID || true
           fi
       - run: pytype -j auto .
