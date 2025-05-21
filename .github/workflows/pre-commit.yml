@@ -16,5 +16,18 @@ jobs:
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
       - run: pip install '.[core,dev,grain,gcp,vertexai_tensorboard,open_api]'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
-      - run: pre-commit run --all-files
+      - run: |
+          .github/scripts/monitor_memory.sh &
+          MONITOR_PID=$!
+          # A short sleep to wait for monitor process start running.
+          sleep 1
+
+          echo "====== Starting pre-commit... ======"
+          pre-commit run --all-files
+          echo "====== pre-commi complted. ======"
+
+          if kill -0 $MONITOR_PID 2>/dev/null; then
+            echo "Manually stopping monitor..."
+            kill $MONITOR_PID
+          fi
       - run: pytype -j auto .
