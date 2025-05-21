@@ -91,7 +91,7 @@ def _gs_client():
 @functools.cache
 def _gs_control_client():
     """Creates or retrieves the google cloud storage control client.
-    Different from `_gs_client`, it provides metadata-specific and control plane operations .
+    Different from `_gs_client`, it provides metadata-specific and control plane operations.
     """
     # pylint: disable=import-outside-toplevel
     # Avoid introducing a global dependency on `gcp`.
