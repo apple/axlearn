@@ -81,7 +81,28 @@ def get_all_fp8_param_names():
     return [x.value for x in FP8ScaleParams] + [x.value for x in FP8AmaxHistoryParams]
 
 
-class QuantizedDotGeneral(BaseLayer):
+class BaseQuantizedEinsum(BaseLayer):
+    """An abstract class to define the common interface for layers implementing
+    a quantized einsum.
+    """
+
+    def einsum_maybe_quantized(self, subscripts, *, activation: Tensor, kernel: Tensor) -> Tensor:
+        """Implements activation-kernel einsum with quantization (e.g. fakequant, fp8-fp8, etc.)
+
+        Args:
+            subscripts: Specifies the subscripts for summation as comma separated
+                list of subscript labels. An implicit (classical Einstein summation)
+                calculation is performed unless the explicit indicator ‘->’ is included
+                as well as subscript labels of the precise output form.
+            activation: Activation tensor.
+            kernel: Kernel tensor.
+        Returns:
+            Output of einsum.
+        """
+        raise NotImplementedError(type(self))
+
+
+class QuantizedDotGeneral(BaseQuantizedEinsum):
     """Hardware accelerated quantized dot general layer.
 
     This layer offers hardware accelerated lower width dot_general and einsum operations,
@@ -309,17 +330,8 @@ class QuantizedDotGeneral(BaseLayer):
         Note that you should only use 2 operands with this function, with the lhs
         operand being activation and the rhs one being model weight.
 
-        Args:
-            subscripts: Specifies the subscripts for summation as comma separated
-                list of subscript labels.
-                An implicit (classical Einstein summation) calculation is
-                performed unless the explicit indicator ‘->’ is included
-                as well as subscript labels of the precise output form.
-            activation: Activation tensor. AQT einsum requires activation in lhs.
-            kernel: Kernel tensor. AQT einsum requires kernel in rhs.
-
-        Returns:
-            Output of einsum.
+        See BaseQuantizationLayer.einsum_maybe_quantized() for more details on arguments
+        and return types.
         """
         cfg = self.config
         is_swapped: bool = is_einsum_swapped_operands(subscripts, activation, kernel)
@@ -369,12 +381,13 @@ class DenseGeneralBaseLayer(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        # QuantizedDotGeneral config. Replace jax.lax.dot_general with
-        # dot_general_maybe_quantized from this layer to achieve
-        # hardware accelerated quantized dot_general.
+        # A BaseQuantizedEinsum config that implements quantized dot general, fakequant einsum,
+        # or other style of quantized computation. For example, using QuantizedDotGeneral
+        # replaces jax.lax.dot_general with dot_general_maybe_quantized to achieve hardware
+        # accelerated quantized dot_general.
         # TODO(jiarui): Switch to ConfigOr[Protocol] which defines the implementation of
         #  dot_general(subscript, activation, kernel) (which can be a layer) to generalize the API.
-        quantized_dot_general: Optional[QuantizedDotGeneral.Config] = None
+        quantized_dot_general: Optional[BaseQuantizedEinsum.Config] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
