@@ -10,12 +10,12 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.audio.spectrum_augmenter import MaskSampler, SpectrumAugmenter
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase, dummy_padding_mask
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class MaskSamplerTest(TestCase):
@@ -180,7 +180,9 @@ class SpectrumAugmenterTest(TestCase):
             inputs = jnp.ones(input_shape)
         else:
             inputs = jax.random.normal(jax.random.PRNGKey(123), input_shape)
-        paddings = 1 - dummy_padding_mask(batch_size=inputs.shape[0], max_seq_len=inputs.shape[1])
+        paddings = safe_not(
+            dummy_padding_mask(batch_size=inputs.shape[0], max_seq_len=inputs.shape[1])
+        )
         outputs = self._generate_masks(
             dict(inputs=inputs, paddings=paddings), is_training=is_training, **kwargs
         )
@@ -210,7 +212,7 @@ class SpectrumAugmenterTest(TestCase):
     @pytest.mark.skip(reason="Comment out to run manually.")
     def test_visualize(self, input_shape: Sequence[int], **kwargs):
         inputs = jnp.ones(input_shape)
-        paddings = jnp.zeros([input_shape[0], input_shape[1]])
+        paddings = jnp.zeros([input_shape[0], input_shape[1]], jnp.bool)
         outputs = self._generate_masks(
             dict(inputs=inputs, paddings=paddings), is_training=True, **kwargs
         )
@@ -222,3 +224,7 @@ class SpectrumAugmenterTest(TestCase):
             # Show time on x axis and freq on y.
             plot.imshow(jnp.moveaxis(output, 0, 1), cmap=plt.cm.gray)
         plt.show()
+
+
+if __name__ == "__main__":
+    absltest.main()
