@@ -66,7 +66,7 @@ from axlearn.common.utils import (
 @contextlib.contextmanager
 def TraceProfileNeuron(num_steps):
     try:
-        enabled = os.getenv("NEURON_RT_INSPECT_DEVICE_PROFILE", "0" ) == "1" and num_steps == 2
+        enabled = os.getenv("NEURON_RT_INSPECT_DEVICE_PROFILE", "0" ) == "1" and num_steps == int(os.getenv("AXLEARN_PROFILE_TRACE_STEP_NUM", 2))
         if enabled:
             assert os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR") is not None
             with jax.profiler.trace(os.environ.get("NEURON_RT_INSPECT_OUTPUT_DIR")):
