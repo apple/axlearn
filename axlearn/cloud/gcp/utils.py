@@ -148,7 +148,6 @@ def validate_region_matching(gcs_bucket_name: str, config_zone: str):
         bucket = storage_client.get_bucket(gcs_bucket_name)
         gcs_bucket_region = bucket.location
     except Exception as e:
-        # Fixed: W0707: raise-missing-from
         raise RuntimeError(f"Could not retrieve GCS bucket '{gcs_bucket_name}': {e}") from e
 
     # Extract region from zone
