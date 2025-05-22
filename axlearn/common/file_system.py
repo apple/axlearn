@@ -119,7 +119,7 @@ def listdir(path: str) -> list[str]:
             client = _gs_client()
             blobs = client.list_blobs(
                 bucket_name,
-                prefix=prefix.strip("/") + "/",
+                prefix=(prefix.rstrip("/") + "/").lstrip("/"),
                 delimiter="/",
                 include_folders_as_prefixes=True,
             )
