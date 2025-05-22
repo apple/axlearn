@@ -254,8 +254,12 @@ def _rm_empty_folders(bucket: str, prefix: str):
 @_wrap_tf_errors
 def rmtree(path: str):
     """Analogous to tf.io.gfile.rmtree.
-    
-    For a hierarchical namespace bucket, all the folders will also be removed.
+
+    For a hierarchical namespace bucket, (until tensorflow@v2.19)
+    `tf.io.gfile.rmtree` only removes objects, leaving all the empty parent
+    folders intact. Here we manually delete the empty folders recursively with
+    [google-cloud-storage-control]
+    (https://cloud.google.com/python/docs/reference/google-cloud-storage-control/latest).
     """
     tf.io.gfile.rmtree(path)
 
