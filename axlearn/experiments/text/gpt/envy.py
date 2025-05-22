@@ -182,6 +182,7 @@ def get_remat_policy():
                     ).set(
                         names_which_can_be_saved="|".join(
                             [
+                                RematRegexSavePatterns.QKV_PROJ.value,
                                 RematRegexSavePatterns.BLOCKWISE.value,
                                 r".*blockwisegating\.token_position_to_id",
                             ]
