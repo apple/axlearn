@@ -84,7 +84,7 @@ class ScheduleTest(parameterized.TestCase):
         samples = [3, 4, 1, 2, 4, 6, 8, 9]
         moment = 0
         for i, sample in enumerate(samples):
-            decay_i = s(i)
+            decay_i = s(i + 1)  # step starts from 1.
             moment = (1 - decay_i) * sample + decay_i * moment
             # Initially moment is an approximation of the mean value.
             self.assertAlmostEqual(moment, sum(samples[: i + 1]) / (i + 1), places=2)
@@ -220,7 +220,8 @@ class ScheduleTest(parameterized.TestCase):
         fn = adafactor_decay_rate(step_offset=100)
         self.assertAlmostEqual(fn(1), 0)
         self.assertAlmostEqual(fn(100), 0)
-        self.assertAlmostEqual(fn(200), 1 - (101) ** (-0.8))
+        self.assertAlmostEqual(fn(101), 0)
+        self.assertAlmostEqual(fn(200), 1 - (100) ** (-0.8))
 
     def test_ema_schedule(self):
         warmup_steps = 5

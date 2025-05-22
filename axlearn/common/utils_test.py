@@ -945,6 +945,18 @@ class TreeUtilsTest(TestCase):
         expected = jnp.array(expected).astype(dtype)
         self.assertNestedAllClose(mask, expected)
 
+    @parameterized.parameters(
+        dict(mask=[True, False], expected=[False, True]),
+        dict(mask=[[False, True], [True, False]], expected=[[True, False], [False, True]]),
+        dict(mask=[1, 0], expected=[False, True]),
+        dict(mask=[10, 0], expected=[False, True]),
+        dict(mask=[1.0, 0.0], expected=[False, True]),
+    )
+    def test_safe_not(self, mask, expected):
+        inverted_mask = utils.safe_not(jnp.array(mask))
+        self.assertEqual(inverted_mask.dtype, jnp.bool)
+        self.assertEqual(inverted_mask.tolist(), expected)
+
     def test_prune_empty_state(self):
         state = {
             "state": {

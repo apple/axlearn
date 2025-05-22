@@ -134,9 +134,12 @@ def scale_by_factored_rms(
         if params is None:
             raise ValueError("param is None")
 
-        def _update(grad, v_row, v_col, v, param, step):
+        count_inc = optax.safe_int32_increment(state.count)
+
+        def _update(grad, v_row, v_col, v, param):
             grad = grad.astype(jnp.float32)
-            decay_rate_t = decay_rate(step)
+            # `decay_rate` assumes that the first step is 1, so we pass `count_inc` to it.
+            decay_rate_t = decay_rate(count_inc)
 
             # Scaled by factorized second moment statistics.
             new_v_row = jnp.zeros((1,), dtype=jnp.float32)
@@ -169,18 +172,11 @@ def scale_by_factored_rms(
             return _UpdateResult(update, new_v_row, new_v_col, new_v)
 
         # Transform grad and compute new per-parameter stats.
-        output = jax.tree.map(
-            lambda *args: _update(*args, state.count),
-            grads,
-            state.v_row,
-            state.v_col,
-            state.v,
-            params,
-        )
+        output = jax.tree.map(_update, grads, state.v_row, state.v_col, state.v, params)
 
         # Unpack updates / stats and return.
         updates = jax.tree.map(lambda o: o.update, output)
-        return updates, _to_state(optax.safe_int32_increment(state.count), output)
+        return updates, _to_state(count_inc, output)
 
     @dataclasses.dataclass
     class VxSpec:

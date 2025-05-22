@@ -19,6 +19,7 @@ https://github.com/tensorflow/lingvo/blob/d2f1e1b3cccdac8f73ae20f86afb03560b1c17
 
 from typing import Literal, Optional, Sequence, Union
 
+import chex
 from jax import numpy as jnp
 
 from axlearn.common.attention import (
@@ -43,7 +44,7 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module
 from axlearn.common.repeat import Repeat
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class LConvLayer(BaseLayer):
@@ -125,6 +126,7 @@ class LConvLayer(BaseLayer):
             The output feature of shape [batch, seq_len, input_dim].
         """
         cfg = self.config
+        chex.assert_type(paddings, jnp.bool)
         x = self.linear1_norm(inputs)
         activations = [
             get_activation_fn(activation)(self.children[f"linear1_{i}"](x))
@@ -134,7 +136,7 @@ class LConvLayer(BaseLayer):
         x = activations[0] * activations[1]
         # We need to clear padded positions in 'x' before feeding into `conv` to ensure padding
         # doesn't affect results.
-        x = self.conv(x * jnp.expand_dims(1 - paddings, axis=-1))
+        x = self.conv(x * jnp.expand_dims(safe_not(paddings), axis=-1))
         x = self.conv_norm(x, paddings=paddings)
         x = get_activation_fn(cfg.conv_activation)(x)
         x = self.linear2(x)
