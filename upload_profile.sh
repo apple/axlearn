@@ -28,6 +28,8 @@ cp hlo_dump.tar $upload_dir/
 cd $profile_dir
 cp *vnc_0.ntff $upload_dir/
 
+
 aws s3 sync --no-progress $upload_dir $s3_profile_path
+set +x
 echo "Profile uploaded to $s3_profile_path"
 echo "profile-upload -F \"s3=$s3_profile_path\" -F name=$profile_id -F \"profiler-opts='--enable-memory-tracker'\""

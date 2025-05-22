@@ -183,7 +183,7 @@ def get_remat_policy():
                         names_which_can_be_saved="|".join(
                             [
                                 RematRegexSavePatterns.BLOCKWISE.value,
-                                r".*blockwisegating\.*",
+                                r".*blockwisegating\.token_position_to_id",
                             ]
                         ),
                         names_which_can_be_offloaded=None,

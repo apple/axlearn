@@ -1284,6 +1284,7 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # jax.debug.print("token_position_to_id after replacing -1 {x}", x=token_position_to_id)
         # zero_tensor = jnp.zeros(1, dtype=token_position_to_id.dtype)
         # token_position_to_id = jnp.maximum(token_position_to_id, zero_tensor)
+        token_position_to_id = self._remat_name(token_position_to_id, "blockwisegating.token_position_to_id")
         return token_position_to_id
 
     def forward(self, logits):
@@ -1707,10 +1708,6 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         expert_affinities_masked = gating.combine_tensor[1]
         token_position_to_id = gating.combine_tensor[0]
         block_to_expert = gating.dispatch_tensor
-        token_position_to_id = self._remat_name(token_position_to_id, "blockwisegating.token_position_to_id")
-        block_to_expert = self._remat_name(block_to_expert, "blockwisegating.token_position_to_id")
-        expert_affinities_masked = self._remat_name(expert_affinities_masked, "blockwisegating.expert_affinities_masked")
-        
         gate_up_weight = jnp.stack([self.parameters["wi_0_weight"],self.parameters["wi_1_weight"],], axis=2)
         gate_up_weight = with_sharding_constraint(gate_up_weight, PartitionSpec("expert", "fsdp", None, "model"))
 

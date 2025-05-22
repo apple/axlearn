@@ -598,6 +598,8 @@ class SpmdTrainer(Module):
                 stop_trace_step = None
 
                 input_iterator = self.input.batches(self._input_iter)
+                MAX_STEP_BREAK = os.getenv("AXLEARN_MAX_STEP", None)
+                MAX_STEP_BREAK = int(MAX_STEP_BREAK) if MAX_STEP_BREAK else None
                 while True:
                     self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                     try:
@@ -634,6 +636,8 @@ class SpmdTrainer(Module):
                             self.summary_writer(self.step, {"average_step_time": average_step_time})
                             num_steps = 0
                             start_time = now
+                        if self.step >= MAX_STEP_BREAK:
+                            break
                         if self.step >= cfg.max_step:
                             self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
                             break
