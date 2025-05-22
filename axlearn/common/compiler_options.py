@@ -1,6 +1,8 @@
 # Copyright © 2024 Apple Inc.
 """Runtime and compiler options for JAX/XLA."""
 
+import math
+
 # This module must not depend on any jax/axlearn modules so that
 # importing this module does not result in initializing jax.
 import re
@@ -83,6 +85,9 @@ def default_xla_options(
             # TODO(hanzhi-zhou): temporary workaround to avoid PCIe overload when using multi-slice
             # v6e training caused by allreduce over DCN. This flag doesn't impact performance.
             xla_tpu_iova_dma_chunk_size_bytes=1048576,
+            # Disable collective matmul. Collective matmul could negatively affect performance in
+            # some cases.
+            xla_jf_spmd_threshold_for_windowed_einsum_mib=1000000,
         )
 
         # These flags enable SparseCore (SC).
@@ -282,17 +287,19 @@ def infer_xla_performance_flags(
         return {}
     # Sparse core offloading all collectives can improve performance of model parallelism on
     # v6e. However, it negative impacts the performance of some pure FSDP runs by about 6%.
-    # Therefore, we enable them selectively on mesh shapes that have model parallelism.
+    # Therefore, we enable them selectively on mesh shapes that have model parallelism and are
+    # verified to have improved performance with sparse core offloading.
     # TODO(hanzhi-zhou): Check if these flags also improve performance on fsdp=16, model=16.
-    target_configurations = [dict(fsdp=32, model=8), dict(fsdp=64, model=4)]
+    tested_configurations = []
+    for a, b in [(32, 8), (64, 4), (16, 8)]:
+        tested_configurations.append(dict(fsdp=a, track=b))
+        tested_configurations.append(dict(fsdp=a, model=b))
     current_configuration = {}
     for name, size in zip(mesh_axis_names, mesh_shape):
-        if name in ("fsdp", "model"):
+        if name in ("fsdp", "track", "model") and size != 1:
             current_configuration[name] = size
-    if current_configuration in target_configurations:
+    if current_configuration in tested_configurations:
         flags = dict(
-            # Perf optimization.
-            xla_tpu_sparse_core_all_gather_latency_multiplier="2",
             # Must disable continuation fusion to enable sparse core offloading.
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
             xla_tpu_enable_async_collective_fusion_fuse_all_reduce="false",
@@ -304,6 +311,11 @@ def infer_xla_performance_flags(
             xla_tpu_enable_reduce_scatter_offload_tracing="true",
             xla_tpu_enable_all_reduce_offload_tracing="true",
         )
+        # 64x4 and 32x8 are non-native mesh shapes, which means the available bandwidth is half
+        # of that compared to the native mesh shape. Specify the latency modifier so that the
+        # latency hiding scheduler can model the actual latency better.
+        if math.prod(current_configuration.values()) == 256:
+            flags.update(xla_tpu_sparse_core_all_gather_latency_multiplier="2")
         logging.log_first_n(
             logging.INFO,
             "Adding new XLA flags for %s:\n%s",

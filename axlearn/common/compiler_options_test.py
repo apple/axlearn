@@ -81,3 +81,19 @@ class CompilerOptionsTest(test_utils.TestCase):
                 mesh_shape=[64, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v5p"
             ),
         )
+        self.assertNotEqual(
+            {},
+            compiler_options.infer_xla_performance_flags(
+                mesh_shape=[32, 8, 1],
+                mesh_axis_names=("fsdp", "track", "model"),
+                device_kind="TPU v6 lite",
+            ),
+        )
+        self.assertNotEqual(
+            {},
+            compiler_options.infer_xla_performance_flags(
+                mesh_shape=[16, 8, 1],
+                mesh_axis_names=("fsdp", "track", "model"),
+                device_kind="TPU v6 lite",
+            ),
+        )
