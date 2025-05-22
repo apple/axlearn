@@ -37,6 +37,7 @@ from axlearn.common.config import (
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.input_base import Input
 from axlearn.common.learner import Learner
+from axlearn.common.logging_utils import LoggingContext
 from axlearn.common.module import InvocationContext, Module, child_context, clone_context_stack
 from axlearn.common.module import functional as F
 from axlearn.common.module import install_context_stack, new_output_collection
@@ -585,7 +586,8 @@ class SpmdTrainer(Module):
                 while True:
                     self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                     try:
-                        input_batch = next(input_iterator)
+                        with LoggingContext("input_iterator", threshold=60):
+                            input_batch = next(input_iterator)
                         self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         logging.log_first_n(
                             logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
@@ -1091,8 +1093,9 @@ class SpmdTrainer(Module):
             train_summaries=outputs["summaries"], force_runs=force_run_evals
         )
 
-        # Checkpointer policy will decide if we should save.
-        self.save_checkpoint(evaler_summaries=evaler_summaries)
+        with LoggingContext("save_checkpoint", threshold=120):
+            # Checkpointer policy will decide if we should save.
+            self.save_checkpoint(evaler_summaries=evaler_summaries)
 
         return_dict = {"loss": outputs["loss"], "aux": outputs["aux"]}
         # Returns evaler_summaries if force_run_evals is not None or empty set.
