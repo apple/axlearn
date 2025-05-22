@@ -254,7 +254,9 @@ def _rm_empty_folders(bucket: str, prefix: str):
 @_wrap_tf_errors
 def rmtree(path: str):
     """Analogous to tf.io.gfile.rmtree.
-    For a hierarchical namespace bucket, all the folders will also be removed."""
+    
+    For a hierarchical namespace bucket, all the folders will also be removed.
+    """
     tf.io.gfile.rmtree(path)
 
     # For HNS enabled bucket, we also need to delete folders recursively.
