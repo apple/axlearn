@@ -11,8 +11,8 @@ from typing import Any, Optional
 from unittest import mock
 
 import jax.ad_checkpoint
-import jax.core
-import jax.interpreters.ad
+import jax.extend.core
+import jax.extend.ad
 import jax.random
 import numpy as np
 from absl.testing import absltest, parameterized
@@ -130,7 +130,7 @@ def _callback_primitive(forward, backward):
     prim = jax.extend.core.Primitive("passthrough_with_callback")
     prim.def_impl(forward_impl)
     prim.def_abstract_eval(forward_impl)
-    jax.interpreters.ad.deflinear(prim, backward_impl)
+    jax.extend.ad.deflinear(prim, backward_impl)
     return prim.bind
 
 
