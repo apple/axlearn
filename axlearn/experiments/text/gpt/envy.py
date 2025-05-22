@@ -151,6 +151,7 @@ def get_remat_policy():
             }
         )
     elif remat_config == 'nonmatmul':
+        # to be used for non kernel case
         remat_policy = RematSpecModifier.default_config().set(
             remat_policies={
                 "model.decoder.transformer.layer": RematSpec(
@@ -162,7 +163,28 @@ def get_remat_policy():
                             [
                                 RematRegexSavePatterns.QKV_PROJ.value,
                                 RematRegexSavePatterns.LINEAR1_X.value,
-                                RematRegexSavePatterns.BLOCKWISE.value,
+                            ]
+                        ),
+                        names_which_can_be_offloaded=None,
+                        offload_src=None,
+                        offload_dst=None,
+                    ),
+                ),
+            }
+        )
+    elif remat_config == 'selective':
+        remat_policy = RematSpecModifier.default_config().set(
+            remat_policies={
+                "model.decoder.transformer.layer": RematSpec(
+                    prevent_cse=True,
+                    policy=config_for_function(
+                        save_and_offload_only_these_names_regex
+                    ).set(
+                        names_which_can_be_saved="|".join(
+                            [
+                                RematRegexSavePatterns.QKV_PROJ.value,
+                                # RematRegexSavePatterns.BLOCKWISE.value,
+                                r".*blockwisegating\.token_position_to_id",
                             ]
                         ),
                         names_which_can_be_offloaded=None,
@@ -182,7 +204,7 @@ def get_remat_policy():
                     ).set(
                         names_which_can_be_saved="|".join(
                             [
-                                RematRegexSavePatterns.QKV_PROJ.value,
+                                # RematRegexSavePatterns.QKV_PROJ.value,
                                 RematRegexSavePatterns.BLOCKWISE.value,
                                 r".*blockwisegating\.token_position_to_id",
                             ]
