@@ -230,16 +230,16 @@ class UtilsTest(TestWithTemporaryCWD):
         (True, True),
         (False, False),
         ("yes", ValueError),
-        (1, ValueError)
-        )
+        (1, ValueError),
+    )
     def test_to_bool(self, value, expected):
         if isinstance(expected, type) and issubclass(expected, Exception):
             with self.assertRaises(expected):
-                to_bool(value)
+                utils.to_bool(value)
         else:
-            result = to_bool(value)
+            result = utils.to_bool(value)
             self.assertEqual(result, expected)
-            
+
     def test_infer_resources(self):
         @config_class
         class DummyConfig(ConfigBase):

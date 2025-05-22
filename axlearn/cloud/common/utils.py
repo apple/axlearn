@@ -291,6 +291,7 @@ def merge(base: dict, overrides: dict):
         base[k] = merge(base.get(k), v)
     return base
 
+
 def to_bool(value: any) -> bool:
     """Converts a string representation of truth to a bool."""
     if isinstance(value, bool):

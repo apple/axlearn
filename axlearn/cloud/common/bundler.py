@@ -345,7 +345,9 @@ class BaseDockerBundler(Bundler):
         skip_bundle = to_bool(cfg.skip_bundle)
         # Non-config specs are treated as build args.
         build_args = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k not in cfg}
-        return cfg.set(build_args=build_args, cache_from=cache_from, skip_bundle=skip_bundle, **kwargs)
+        return cfg.set(
+            build_args=build_args, cache_from=cache_from, skip_bundle=skip_bundle, **kwargs
+        )
 
     # pylint: disable-next=arguments-renamed
     def id(self, tag: str) -> str:
