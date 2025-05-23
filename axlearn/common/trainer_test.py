@@ -1090,8 +1090,8 @@ class TrainerTest(test_utils.TestCase):
                 jax.debug.inspect_array_sharding(
                     x,
                     callback=lambda sharding: self.assertEqual(
-                        partition_spec._normalized_spec(x.ndim),
-                        sharding.spec._normalized_spec(x.ndim),
+                        partition_spec._normalized_spec_for_aval(x.ndim),
+                        sharding.spec._normalized_spec_for_aval(x.ndim),
                         msg=f"{path=}, {sharding=}",
                     ),
                 )
