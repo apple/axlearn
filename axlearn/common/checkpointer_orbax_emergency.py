@@ -346,6 +346,8 @@ def _init_consistent_proc_ids(
             # very first run. In that case, first_run_assign_fn will be used.
             if already_assigned_slice_ids:
                 to_be_assigned_slice_ids = set(range(num_slices)) - already_assigned_slice_ids
+                print(f"{to_be_assigned_slice_ids=}")
+                print(f"{failed_slices_new_ids=}")
                 assert len(to_be_assigned_slice_ids) == len(failed_slices_new_ids)
                 for k, new_id in zip(failed_slices_new_ids.keys(), to_be_assigned_slice_ids):
                     failed_slices_new_ids[k] = new_id

@@ -508,10 +508,10 @@ class TPUReplicatedJob(SingleReplicatedJob):
         dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
         sync_command = f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done"
-        resources = {
-            "requests": {"cpu": "100m", "memory": "128Mi"},
-            "limits": {"cpu": "500m", "memory": "256Mi"},
-        }
+        # resources = {
+        #     "requests": {"cpu": "100m", "memory": "128Mi"},
+        #     "limits": {"cpu": "500m", "memory": "256Mi"},
+        # }
         return dict(
             name="output-uploader",
             image="google/cloud-sdk:alpine",
@@ -520,7 +520,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
             restartPolicy="Always",
             command=["/bin/sh", "-c"],
             args=[sync_command],
-            resources=resources,
+            # resources=resources,
             volumeMounts=[output_volume_mount],
         )
 
