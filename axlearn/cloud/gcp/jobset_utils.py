@@ -691,6 +691,8 @@ class TPUReplicatedJob(SingleReplicatedJob):
         spec = dict(
             # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
             terminationGracePeriodSeconds=60,
+            hostNetwork=True,
+            dnsPolicy="ClusterFirstWithHostNet",
             # Fail if any pod fails, and allow retries to happen at JobSet level.
             restartPolicy="Never",
             # https://kubernetes.io/docs/tasks/network/customize-hosts-file-for-pods/#adding-additional-entries-with-hostaliases
