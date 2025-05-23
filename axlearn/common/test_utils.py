@@ -664,7 +664,7 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     input_len = jax.random.randint(
         jax.random.PRNGKey(123), shape=(batch_size,), minval=0, maxval=max_seq_len
     )
-    return lower_diag[input_len].astype(jnp.int32)
+    return lower_diag[input_len].astype(jnp.bool)
 
 
 # TODO(markblee): Update to take prng_key explicitly.
