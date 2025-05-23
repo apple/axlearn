@@ -730,11 +730,13 @@ def get_trainer_config_fn(
                 OrbaxEmergencyCheckpointer.default_config()
             )
             ckpt_config.save_policy = config_for_function(every_n_steps_and_last_policy).set(
-                n=calculated_save_every_n_steps,
+                # n=calculated_save_every_n_steps,
+                n=500,
                 max_step=max_step,
             )
             ckpt_config.local_save_policy = config_for_function(every_n_steps_and_last_policy).set(
-                n=calculated_save_every_n_steps,
+                # n=calculated_save_every_n_steps,
+                n=10,
                 max_step=max_step,
             )
             ckpt_config.local_dir = "/host-tmp/checkpoints"
