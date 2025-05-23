@@ -569,7 +569,7 @@ class CTCDecoderModelTest(TestCase):
         summaries = output_collections.summaries
         # 6 out of 8 examples are valid, therefore the average example weight is 0.75
         self._check_summary(summaries, "loss/example_weight", WeightedScalar(0.75, 8))
-        self._check_summary(summaries, "loss/ctc_loss", WeightedScalar(6972.1353, 6))
+        self._check_summary(summaries, "loss/ctc_loss", WeightedScalar(6972.135, 6))
         self._check_summary(summaries, "loss/invalid_seq_percent", 0.25)
         total_ctc_loss = summaries["loss/ctc_loss"].weight * summaries["loss/ctc_loss"].mean
         num_valid_frames = jnp.sum(safe_not(paddings) * per_example_weight[:, None])
