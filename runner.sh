@@ -45,13 +45,13 @@ if [ "$AXLEARN_REPEATED" = "1" ]; then
 else
 	# cancel-all-gather-dynamic-slice-2d
 	export XLA_FLAGS="--xla_disable_hlo_passes=aws_neuron_flip_all_gather_dot,neuron-hierarchical-collectives"
-	export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=1
+	export NEURON_FSDP_NUM_LAYER_EARLY_AG_SHIFT=2
 	export NEURON_FSDP=1
 	if [ -n "$CUSTOM_TAG_rsshift" ]; then
 		export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=$CUSTOM_TAG_rsshift
-	# else
+	else
 		# unset
-		# export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=3
+		export NEURON_FSDP_NUM_LAYER_LATE_RS_SHIFT=3
 	fi
 	export NEURON_FSDP_NUM_LAYER_COALESCE=-1
 fi

@@ -182,7 +182,7 @@ def get_remat_policy():
                     ).set(
                         names_which_can_be_saved="|".join(
                             [
-                                RematRegexSavePatterns.QKV_PROJ.value,
+                                RematRegexSavePatterns.FLASH_ATTENTION.value,
                                 # RematRegexSavePatterns.BLOCKWISE.value,
                                 r".*blockwisegating\.token_position_to_id",
                             ]
@@ -586,7 +586,8 @@ def get_trainer_kwargs(
         remat_policy = get_remat_policy()
         tp_degree=int(os.getenv("AXLEARN_TP_DEGREE", 4))
         fsdp_degree=int(os.getenv("AXLEARN_FSDP_DEGREE", -1))
-        neuron_mesh = mesh_shape_from_axes(fsdp=fsdp_degree, model=tp_degree)
+        ep_degree=int(os.getenv("AXLEARN_EP_DEGREE", 1))
+        neuron_mesh = mesh_shape_from_axes(fsdp=fsdp_degree, model=tp_degree, expert=ep_degree)
         num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4))
         if model_size == "Mistral-toy":
             num_heads = 32
