@@ -21,7 +21,8 @@ from absl.testing import absltest, parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
 from torch import nn
 
-from axlearn.common.attention_bias import NEG_INF, CausalAttentionBias, SlidingWindowAttentionBias
+from axlearn.common.attention import CausalAttentionBias, enable_sliding_window_attention
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.dit import (
     AdaptiveLayerNormModulation,
     DiTAttentionLayer,
@@ -663,8 +664,8 @@ class TestDiTAttn(parameterized.TestCase):
         if causal_type == "causal":
             layer_cfg.attention.mask = CausalAttentionBias.default_config()
         elif causal_type == "sliding_window":
-            layer_cfg.attention.mask = SlidingWindowAttentionBias.default_config(
-                sliding_window_size=10
+            layer_cfg.attention = enable_sliding_window_attention(
+                layer_cfg.attention, sliding_window_size=10
             )
 
         layer = layer_cfg.instantiate(parent=None)
@@ -775,8 +776,8 @@ class TestDiTBlock(parameterized.TestCase):
         if causal_type == "causal":
             layer_cfg.attention.attention.mask = CausalAttentionBias.default_config()
         elif causal_type == "sliding_window":
-            layer_cfg.attention.attention.mask = SlidingWindowAttentionBias.default_config(
-                sliding_window_size=10
+            layer_cfg.attention.attention = enable_sliding_window_attention(
+                layer_cfg.attention.attention, sliding_window_size=10
             )
 
         layer = layer_cfg.instantiate(parent=None)
