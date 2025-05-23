@@ -72,6 +72,8 @@ from axlearn.common.utils import (
 )
 
 _USING_SHARDMAP_FFN=int(os.getenv('USE_SHARDMAP_FFN', 1))
+_USING_INDEX_SHARDING = int(os.getenv('USE_INDEX_SHARDING', 1))
+
 
 @jax.jit
 def down_proj(x, wo_weight):
@@ -173,6 +175,33 @@ def blockwise_mlp(
                 outputs.append(jnp.concatenate(g_outputs, axis=1))
             return jnp.concatenate(outputs, axis=0)
 
+@partial(jax.jit, static_argnums=(2,3,4,))
+def calculate_token_position_to_id(block_position_indices, tokens_indices, 
+                                   num_blocks, block_size, total_tokens, dest_output):
+        """
+        Invert block_position_indices to obtain token_position_to_id.
+        """
+
+        O, G, num_tokens, E = block_position_indices.shape 
+
+        # Create batch and group indices
+        # (O, G, S*top_k, E)
+        batch_indices = jnp.arange(O)[:, None, None, None]
+        batch_indices = jnp.broadcast_to(batch_indices, (O, G, num_tokens, E))
+
+        # (O, G, S*top_k, E)
+        group_indices = jnp.arange(G)[None, :, None, None]
+        group_indices = jnp.broadcast_to(group_indices, (O, G, num_tokens, E))
+
+        token_position_to_id = jnp.zeros((O, G, num_blocks * block_size + 1), dtype=jnp.int32)
+        token_position_to_id = token_position_to_id.at[batch_indices, group_indices, block_position_indices].set(tokens_indices+1) 
+
+        token_position_to_id = token_position_to_id[:, :, 1:]
+        token_position_to_id = token_position_to_id - 1
+        token_position_to_id = jnp.where(token_position_to_id==-1, total_tokens, token_position_to_id)   
+        dest_output = dest_output.at[0].set(token_position_to_id)
+
+        return dest_output
 
 def blockwise_mm_per_group_native(hidden_states, expert_affinities_masked, gate_up_proj_weight, down_proj_weights, token_position_to_id, block_to_expert, block_size, checkpoint_activation=False):
     with jax.named_scope("take_out_OG"):
@@ -1349,7 +1378,9 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
         # after masking this represents for each token, 
         # the position in blocks if all tokens in blocks were laid out in a linear array
         # b0t0, b0t1,..., b1t0, b1t1,...
-        block_position_indices = _cum_sum(expert_mask_after_dropping.astype(jnp.int32), axis=-2).astype(jnp.int32)
+        expert_mask_after_dropping = with_sharding_constraint(expert_mask_after_dropping, PartitionSpec(("fsdp", "data"), "expert", None, None))
+        block_position_indices = _cum_sum(expert_mask_after_dropping.astype(jnp.int32), axis=-2).astype(jnp.int32)  #constrain shapes around cum_sum to avoid collective-permutes for index-sharding
+        block_position_indices = with_sharding_constraint(block_position_indices, PartitionSpec(("fsdp", "data"), "expert", None, None))
 
         # print("block_position_indices shape", block_position_indices.shape)
         # jax.debug.print("block_position_indices after cumsum:{x}", x=block_position_indices)
@@ -1366,7 +1397,35 @@ class TopKGatingGatherBlockwise(TopKGatingGather):
 
         # token_position_to_id: (O, G, N*B)
         # for every position in the block, gets the token id in sequence
-        token_position_to_id = self.get_token_position_to_id(cfg, block_position_indices, num_blocks,)
+        # TODO: use same fn for both shard and unsharded path
+        if not _USING_INDEX_SHARDING:
+            token_position_to_id = self.get_token_position_to_id(cfg, block_position_indices, num_blocks,)
+        else: 
+            mesh = thread_resources.env.physical_mesh 
+            T = mesh.shape["model"] 
+            output = jnp.zeros((T, O, G, num_blocks*cfg.block_size), dtype=jnp.int32) 
+
+            #create full tokens_indices and then shard within TP
+            tokens_indices = jnp.arange(S, dtype=jnp.int32)[None, None, :, None]
+            tokens_indices = jnp.broadcast_to(tokens_indices, (O, G, S, E)) 
+
+            token_position_to_id_sm = shard_map(
+                calculate_token_position_to_id,
+                mesh=thread_resources.env.physical_mesh,
+                in_specs=(
+                    PartitionSpec(("fsdp", "data"), "expert", "model", None), 
+                    PartitionSpec(("fsdp", "data"), "expert", "model", None), 
+                    None,
+                    None,
+                    None,
+                    PartitionSpec("model", ("fsdp", "data"), "expert",  None),
+                ),
+                out_specs=PartitionSpec("model", ("fsdp", "data"), "expert",  None),
+                check_rep=False
+                )
+            output = token_position_to_id_sm(block_position_indices, tokens_indices, num_blocks, cfg.block_size, S, output)  # (TP, O, G, N*B)
+            token_position_to_id  = jnp.min(output, axis=0)                                                                  # allreduce to get (O, G, N*B)
+
         # print("token_position_to_id shape:", token_position_to_id.shape)
         # jax.debug.print("token_position_to_id: {x}", x=token_position_to_id)
         router_z_loss = _router_z_loss(logits)
