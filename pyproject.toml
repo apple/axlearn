@@ -110,6 +110,7 @@ tpu = [
     "axlearn[gcp]",
     "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
+    "libtpu==0.0.11.2"
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
@@ -154,7 +155,7 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.11.13",
+    "orbax-checkpoint==0.11.5",
 ]
 # Audio dependencies.
 audio = [
