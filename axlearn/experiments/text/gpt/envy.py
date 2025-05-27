@@ -589,6 +589,7 @@ def get_trainer_kwargs(
         ep_degree=int(os.getenv("AXLEARN_EP_DEGREE", 1))
         neuron_mesh = mesh_shape_from_axes(fsdp=fsdp_degree, model=tp_degree, expert=ep_degree)
         num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4))
+        ffn_sparse_top_k=4
         if model_size == "Mistral-toy":
             num_heads = 32
             head_size = 32
@@ -604,9 +605,11 @@ def get_trainer_kwargs(
             if model_size == "Mistral-16x10B":
                 # 32 layers gets to 147B
                 ffn_scale_factor=2.5
+                ffn_sparse_top_k=4
             elif model_size == "Mistral-8x20B":
                 # 60 layers gets to 150B
                 ffn_scale_factor=2.66
+                ffn_sparse_top_k=2
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=num_layers,
@@ -615,9 +618,10 @@ def get_trainer_kwargs(
                 num_heads=num_heads,
                 num_kv_heads=max(8, tp_degree),
                 num_experts=NUM_EXPERTS[model_size],
-                train_capacity_factor=2,
+                train_capacity_factor=ffn_sparse_top_k,
                 num_groups=1,
                 ffn_layer_types=ffn_layer_types,
+                ffn_sparse_top_k=ffn_sparse_top_k,
                 outer_batch_size=get_outer_batch_from_mesh(MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, neuron_mesh),
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
