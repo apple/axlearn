@@ -876,7 +876,9 @@ class TPUFlashAttention(BaseFlashAttention):
             return self._log_unsupported("dropout is not supported.")
         query: Tensor = input_batch["query"]
         if jax.config.jax_default_matmul_precision == "highest" and query.dtype == jnp.bfloat16:
-            raise RuntimeError(
+            # Pallas is having some trouble compiling bfloat with precision default is the highest
+            # precision.
+            raise ValueError(
                 "TPU FlashAttention doesn't support default_matmul_precision=='highest' "
                 "when the query dtype is bfloat16!"
             )
