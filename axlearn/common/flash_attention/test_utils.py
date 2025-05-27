@@ -39,18 +39,18 @@ def generate_paged_attention_data(
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, CompositeAttentionBias]:
     """Generates query, key value pages, and page tables for paged attention testing."""
     bias = generate_attention_data(
-        batch_size,
-        query_len,
-        kv_len,
-        num_heads,
-        per_head_dim,
-        num_kv_heads,
-        mask_fn,
-        sliding_window_sz,
-        attention_bias_type,
-        with_segment_ids,
-        dtype,
-        query_offset,
+        batch_size=batch_size,
+        query_len=query_len,
+        kv_len=kv_len,
+        num_heads=num_heads,
+        per_head_dim=per_head_dim,
+        num_kv_heads=num_kv_heads,
+        mask_fn=mask_fn,
+        sliding_window_sz=sliding_window_sz,
+        attention_bias_type=attention_bias_type,
+        with_segment_ids=with_segment_ids,
+        dtype=dtype,
+        query_offset=query_offset,
     )[3]
     assert kv_len % page_size == 0
     k1, k2, k3, k4 = jax.random.split(jax.random.PRNGKey(0), 4)
@@ -80,6 +80,7 @@ def generate_attention_data(
     attention_bias_type: Literal[None, "2d", "4d"] = None,
     with_segment_ids: bool = False,
     dtype=jnp.bfloat16,
+    kv_dtype=None,
     query_offset: int = 0,
 ) -> tuple[Tensor, Tensor, Tensor, CompositeAttentionBias]:
     """Generates QKV and Bias for unit test purposes."""
@@ -92,9 +93,11 @@ def generate_attention_data(
     kv_len = kv_len or query_len
     if kv_len != query_len and with_segment_ids:
         pytest.skip(reason="segment ids require kv_seq_len == q_seq_len")
+    if kv_dtype is None:
+        kv_dtype = dtype
     q = jax.random.normal(k1, (batch_size, query_len, num_heads, per_head_dim), dtype=dtype)
-    k = jax.random.normal(k2, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=dtype)
-    v = jax.random.normal(k3, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=dtype)
+    k = jax.random.normal(k2, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=kv_dtype)
+    v = jax.random.normal(k3, (batch_size, kv_len, num_kv_heads, per_head_dim), dtype=kv_dtype)
     attention_bias = None
     if attention_bias_type == "2d":
         attention_bias = jax.random.normal(k4, (1, 1, query_len, kv_len), dtype=dtype)
