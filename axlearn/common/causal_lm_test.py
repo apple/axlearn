@@ -343,10 +343,10 @@ class ModelTest(TestCase):
 
         class DummyMetrics(BaseLossMetrics):
             def forward(self, *args, **kwargs):
-                self.add_summary(f"{self.name}_summary", 0)
+                self.add_summary(f"{self.name}_summary", loss := WeightedScalar(0, 1))
                 self.add_module_output(f"{self.name}_output", 0)
                 self.add_state_update(f"{self.name}_state", 0)
-                return 0, {f"{self.name}_output": 0}
+                return loss, {f"{self.name}_output": loss}
 
         class DummyConflictModel(causal_lm.Model):
             def _metrics(self, *args, **kwargs):
@@ -379,7 +379,7 @@ class ModelTest(TestCase):
 
         class DummyModel(causal_lm.Model):
             def _metrics(self, *args, **kwargs):
-                self.add_summary("parent_summary", 1)
+                self.add_summary("parent_summary", WeightedScalar(1, 1))
                 self.add_module_output("parent_output", 1)
                 self.add_state_update("parent_state", 1)
                 return super()._metrics(*args, **kwargs)
@@ -398,11 +398,14 @@ class ModelTest(TestCase):
         test_no_conflict(
             DummyMetrics.default_config(),
             OutputCollection(
-                summaries={"parent_summary": 1, "metrics_summary": 0},
+                summaries={
+                    "parent_summary": WeightedScalar(1, 1),
+                    "metrics_summary": WeightedScalar(0, 1),
+                },
                 module_outputs={"parent_output": 1, "metrics": {"metrics_output": 0}},
                 state_updates={"parent_state": 1, "metrics": {"metrics_state": 0}},
             ),
-            {"metrics_output": 0},
+            {"metrics_output": WeightedScalar(0, 1)},
         )
         for flatten_metrics in (None, True):
             test_no_conflict(
@@ -414,7 +417,11 @@ class ModelTest(TestCase):
                     flatten_metrics=flatten_metrics,
                 ),
                 OutputCollection(
-                    summaries={"parent_summary": 1, "child1_summary": 0, "child2_summary": 0},
+                    summaries={
+                        "parent_summary": WeightedScalar(1, 1),
+                        "child1_summary": WeightedScalar(0, 1),
+                        "child2_summary": WeightedScalar(0, 1),
+                    },
                     module_outputs={
                         "parent_output": 1,
                         "metrics": {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
@@ -424,7 +431,12 @@ class ModelTest(TestCase):
                         "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
                     },
                 ),
-                {"child1_output": 0, "child2_output": 0},
+                {
+                    "child1_output": WeightedScalar(0, 1),
+                    "child2_output": WeightedScalar(0, 1),
+                    "loss_child1": WeightedScalar(0, 1),
+                    "loss_child2": WeightedScalar(0, 1),
+                },
             )
 
         # Test without flattening.
@@ -438,9 +450,9 @@ class ModelTest(TestCase):
             ),
             OutputCollection(
                 summaries={
-                    "parent_summary": 1,
-                    "child1": {"child1_summary": 0},
-                    "child2": {"child2_summary": 0},
+                    "parent_summary": WeightedScalar(1, 1),
+                    "child1": {"child1_summary": WeightedScalar(0, 1)},
+                    "child2": {"child2_summary": WeightedScalar(0, 1)},
                 },
                 module_outputs={
                     "parent_output": 1,
@@ -451,7 +463,16 @@ class ModelTest(TestCase):
                     "metrics": {"child1": {"child1_state": 0}, "child2": {"child2_state": 0}},
                 },
             ),
-            {"child1": {"child1_output": 0}, "child2": {"child2_output": 0}},
+            {
+                "child1": {
+                    "child1_output": WeightedScalar(0, 1),
+                    "loss_child1": WeightedScalar(0, 1),
+                },
+                "child2": {
+                    "child2_output": WeightedScalar(0, 1),
+                    "loss_child2": WeightedScalar(0, 1),
+                },
+            },
         )
 
     # TODO(markblee): Add a pytest marker for multi-device tests.
@@ -550,7 +571,7 @@ class CrossEntropyLossMetricsTest(TestCase):
         # Test without live_targets. Should be equivalent to target_labels >= 0.
         test_loss, metrics = forward(live_targets=None)
         ref_loss, _ = cross_entropy(logits, target_labels, live_targets=target_labels >= 0)
-        self.assertAlmostEqual(test_loss, ref_loss)
+        self.assertAlmostEqual(test_loss.value(), ref_loss)
         self.assertEqual(metrics["num_targets"], (target_labels >= 0).sum())
 
         # Test with live_targets.
@@ -559,23 +580,26 @@ class CrossEntropyLossMetricsTest(TestCase):
         )
         test_loss, metrics = forward(live_targets=live_targets)
         ref_loss, _ = cross_entropy(logits, target_labels, live_targets=live_targets)
-        self.assertAlmostEqual(test_loss, ref_loss)
+        self.assertAlmostEqual(test_loss.value(), ref_loss)
         self.assertEqual(metrics["num_targets"], live_targets.sum())
 
 
 class CompositeLossMetricsTest(TestCase):
     """Tests CompositeLossMetrics."""
 
-    def test_loss_weights(self):
+    @parameterized.product(test0=(0.5,), test1=(1.0, 0.0))
+    def test_loss_weights(self, test0, test1):
+        loss_weights = dict(test0=test0, test1=test1)
+
         class DummyMetrics(BaseLossMetrics):
             def forward(self, input_batch, **kwargs):
                 del kwargs
-                return input_batch[self.name], {}
+                return WeightedScalar(input_batch[self.name], 1.0), {}
 
         class FixedLossWeights(causal_lm.CompositeLossWeights):
             def forward(self, child_metrics):
                 del child_metrics
-                return {"test0": 0.5, "test1": 1.0}
+                return loss_weights
 
         cfg = causal_lm.CompositeLossMetrics.default_config().set(
             name="test",
@@ -588,7 +612,7 @@ class CompositeLossMetricsTest(TestCase):
 
         metrics = cfg.instantiate(parent=None)
 
-        (loss, _), _ = functional(
+        (loss, aux), _ = functional(
             metrics,
             prng_key=jax.random.PRNGKey(123),
             state={},
@@ -597,7 +621,17 @@ class CompositeLossMetricsTest(TestCase):
             ),
             is_training=True,
         )
-        self.assertAlmostEqual(loss, 1.23 * 0.5 + 3.45)
+        self.assertAlmostEqual(
+            loss.value(), 1.23 * loss_weights["test0"] + 3.45 * loss_weights["test1"]
+        )
+
+        def _aggregate(aux):
+            loss = 0.0
+            for name, loss_weight in loss_weights.items():
+                loss += loss_weight * aux[f"loss_{name}"].mean
+            return loss
+
+        self.assertAlmostEqual(loss.value(), _aggregate(aux))
 
 
 class DummyFeedForwardWithAuxLoss(TransformerFeedForwardLayer):
@@ -695,13 +729,15 @@ class ModelAuxLossTest(TestCase):
         if aux_loss_regex is not None:
             self.assertIn("aux_loss", aux["metrics"])
             if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
-                self.assertEqual(aux["metrics"]["aux_loss"], 1.0)
+                self.assertEqual(aux["metrics"]["aux_loss"].value(), 1.0)
             else:
-                self.assertEqual(aux["metrics"]["aux_loss"], 0.0)
-            self.assertEqual(aux["metrics"]["cross_entropy"] + aux["metrics"]["aux_loss"], loss)
+                self.assertEqual(aux["metrics"]["aux_loss"].value(), 0.0)
+            self.assertEqual(
+                aux["metrics"]["cross_entropy"].value() + aux["metrics"]["aux_loss"].value(), loss
+            )
         else:
             self.assertNotIn("aux_loss", aux)
-            self.assertEqual(aux["metrics"]["cross_entropy"], loss)
+            self.assertEqual(aux["metrics"]["cross_entropy"].value(), loss)
 
     @parameterized.product(
         stack_cfg=(
@@ -773,9 +809,9 @@ class ModelAuxLossTest(TestCase):
         output_collection: OutputCollection = outputs.forward_outputs.output_collection
         summaries: dict[str, WeightedScalar] = output_collection.summaries
         self.assertIn("aux_loss", summaries)
-        self.assertEqual(summaries["aux_loss"].mean, 1.0)
-        self.assertEqual(
-            summaries["cross_entropy_loss"].mean + summaries["aux_loss"].mean,
+        self.assertEqual(summaries["aux_loss"].value(), 1.0)
+        self.assertNestedAllClose(
+            summaries["cross_entropy_loss"].value() + summaries["aux_loss"].value(),
             outputs.forward_outputs.loss,
         )
 
