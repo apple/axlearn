@@ -732,13 +732,13 @@ def get_trainer_config_fn(
             ckpt_config.save_policy = config_for_function(every_n_steps_and_last_policy).set(
                 # n=calculated_save_every_n_steps,
                 # Every 15 minures ore more recommended
-                n=100,
+                n=200,
                 max_step=max_step,
             )
             ckpt_config.local_save_policy = config_for_function(every_n_steps_and_last_policy).set(
                 # n=calculated_save_every_n_steps,
                 # Every 2 minutes or more generally recommended
-                n=10,
+                n=30,
                 max_step=max_step,
             )
             ckpt_config.local_dir = "/host-tmp/checkpoints"
