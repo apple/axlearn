@@ -123,7 +123,6 @@ def default_xla_options(
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
-            tpu_use_continuations="true",
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )
