@@ -1,0 +1,161 @@
+schemaVersion: 2.0
+timeout: 240
+
+# Configures the number of pipelines that can run in parallel. Max 16.
+# https://docs.aci.apple.com/rio/guide-to-rio/schema.html?highlight=concurrentbuild#guide-to-rio-schema-pipelines-jenkins-2-0
+jenkins:
+  concurrentBuild: true
+  maxConcurrentTotal: 16
+
+pipelines:
+  # This pipeline will add all of our internal apple build decorators to the other branches. The most
+  # important piece is committing rio.yaml files to each branch we are interested in because Rio is
+  # designed to only build when it sees configuration on a given branch. There is no elegant method to
+  # configure builds on one branch and trigger them on another.
+  #
+  # We will take the upstream branches such as main, prefix them as apple-main, and after adding our
+  # build information and optional downstream forking patches, commit back to the repo.
+  - name: 01-generate-rio-pipelines
+    branchName: apple-rio
+    machine:
+      baseImage: docker.apple.com/base-images/ubi9-minimal/ubi-minimal
+    trigger:
+      # Run once an hour, at a random but consistent offset.
+      timer: "@hourly"
+      # ... but also run if the build has changed
+      gitPush: true
+    build:
+      template: freestyle:v4:build
+      steps:
+        # This doesn't work when set in machine:env: anymore, but still seems to work here
+        # https://docs.aci.apple.com/rio/guide-to-rio/build-and-test/ssh-keys.html#rio-deploy-ssh-key
+        # We can expect to need to migrate to a different approach sometime soon
+        - export SSH_AUTH_SOCK=${SSH_AUTH_SOCK_DEPLOY_KEY}
+
+        # This provides git
+        - microdnf install -y git
+
+        # Set up variables for the helper script
+        - export GIT_COMMIT
+        - export GIT_PREVIOUS_SUCCESSFUL_COMMIT
+
+        - ./generate.sh main latest
+
+  # Build and test (but don't publish) for every PR to apple-main.
+  - name: main-prb
+    branchName: apple-main
+    machine:
+      baseImage: docker.apple.com/base-images/ubi8/python3.9-builder
+      env:
+        DOCKER_BUILDKIT: "1"
+    build:
+      template: freestyle:v4:prb
+      steps: ["true"]
+    package:
+      dockerfile:
+        - dockerfilePath: Dockerfile
+          perApplication: false
+          target: ci
+          env:
+            TARGET: ci
+          context: .
+          version: ci-${GIT_BRANCH}-${GIT_HASH}
+
+  # GPU Bolt prb pipeline.
+  - group: unit-tests-gpu
+    disabled: false
+    branchName: apple-main
+    machine:
+      baseImage: docker.apple.com/base-images/ubi9/python3.10-builder:latest
+    secrets:
+      names:
+        - mlinfrasys-env
+    build:
+      template: freestyle:v4:prb
+      steps:
+        # CI testing content is kept on apple-ci branch to minimize the amount
+        # of changes developers may see in their pull-requests having to do only
+        # with CI testing as they become out-of-date with apple-main branch.
+        - git fetch origin apple-ci
+        - git merge --no-verify --no-commit --ff --allow-unrelated-histories -X ours origin/apple-ci
+        - bash ci/run_on_bolt.sh
+    finally:
+      notify:
+        pullRequestComment:
+          postOnSuccess: false
+          postOnFailure: false
+        email:
+          enabled: True
+    reports:
+      junit:
+        trim: false
+        paths:
+        - tests*.xml
+
+  # Publish nightly pypi package to internal.
+  - name: nightly
+    branchName: apple-main
+    machine:
+      baseImage: docker.apple.com/base-images/ubi8/python3.9-builder
+      env:
+        DOCKER_BUILDKIT: "1"
+    secrets:
+      names:
+        - pypirc
+    trigger:
+      timer: "@midnight"
+      gitPush: false
+    build:
+      template: freestyle:v4:build
+      steps:
+        # See 01-generate-rio-pipeline for details.
+        - export SSH_AUTH_SOCK=${SSH_AUTH_SOCK_DEPLOY_KEY}
+        # The publish script is only in apple-rio branch, not apple-main. We fetch this file explicitly.
+        - git fetch origin && git checkout origin/apple-rio -- publish.sh
+        - ./publish.sh --repository=apple-pypi --name_suffix=nightly --version_suffix="dev$(date '+%Y%m%d%H%M%S')"
+
+  # Publish pypi package to PUBLIC testing repo. Must be triggered manually.
+  - name: PUBLIC-pypi-test
+    branchName: apple-main
+    machine:
+      baseImage: docker.apple.com/base-images/ubi8/python3.9-builder
+      env:
+        DOCKER_BUILDKIT: "1"
+    secrets:
+      names:
+        - pypirc
+    trigger:
+      # Note: we disable timer, since it should be manually triggered.
+      gitPush: false
+    build:
+      template: freestyle:v4:build
+      steps:
+        # See 01-generate-rio-pipeline for details.
+        - export SSH_AUTH_SOCK=${SSH_AUTH_SOCK_DEPLOY_KEY}
+        # The publish script is only in apple-rio branch, not apple-main. We fetch this file explicitly.
+        - git fetch origin && git checkout origin/apple-rio -- publish.sh
+        # Publish with suffix so we can test the same version multiple times.
+        - ./publish.sh --repository=testpypi --version_suffix="dev$(date '+%Y%m%d%H%M%S')"
+
+  # Publish pypi package to PUBLIC repo. Must be triggered manually.
+  - name: PUBLIC-pypi
+    branchName: apple-main
+    machine:
+      baseImage: docker.apple.com/base-images/ubi8/python3.9-builder
+      env:
+        DOCKER_BUILDKIT: "1"
+    secrets:
+      names:
+        - pypirc
+    trigger:
+      # Note: we disable timer, since it should be manually triggered.
+      gitPush: false
+    build:
+      template: freestyle:v4:build
+      steps:
+        # See 01-generate-rio-pipeline for details.
+        - export SSH_AUTH_SOCK=${SSH_AUTH_SOCK_DEPLOY_KEY}
+        # The publish script is only in apple-rio branch, not apple-main. We fetch this file explicitly.
+        - git fetch origin && git checkout origin/apple-rio -- publish.sh
+        # Publishes using the pyproject version in apple-main.
+        - ./publish.sh --repository=pypi
