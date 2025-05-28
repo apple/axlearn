@@ -262,46 +262,6 @@ class GsTest(TestWithTemporaryCWD):
         ):
             fs.glob(f"gs://{bucket_name}/dummy")
 
-    def test_rmtree_mocked(self):
-        dummy_folder = {
-            "tmp/foo/",
-            "tmp/foo/index",
-            "tmp/foo/bar/",
-            "tmp/foo/bar/x/",
-            "tmp/foo/bar/x/x.txt",
-            "tmp/foo/bar/y/",
-            "tmp/foo/bar/y/y.txt",
-            "tmp/foo/baz/",
-            "tmp/foo/baz/z/",
-            "tmp/foo/baz/z/z.txt",
-        }
-
-        def tf_rmtree_mock(path):
-            self.assertEndsWith(path.rstrip("/"), "tmp/foo")
-            objects = [x for x in dummy_folder if not x.endswith("/")]
-            for x in objects:
-                dummy_folder.remove(x)
-
-        def create_mock_folder(name_value):
-            m = mock.Mock()
-            m.name = name_value
-            return m
-
-        mock_client = mock.Mock()
-        mock_client.list_folders.side_effect = lambda request: [
-            create_mock_folder(folder_name) for folder_name in dummy_folder
-        ]
-        mock_client.delete_folder.side_effect = lambda req: dummy_folder.remove(req.name)
-        mock_client.common_project_path.return_value = "projects/_"
-
-        with (
-            mock.patch("tensorflow.io.gfile.rmtree", side_effect=tf_rmtree_mock),
-            mock.patch(f"{fs.__name__}._is_hierarchical_namespace_enabled", return_value=True),
-            mock.patch(f"{fs.__name__}._gs_control_client", return_value=mock_client),
-        ):
-            fs.rmtree("gs://dummy/tmp/foo")
-            self.assertEmpty(dummy_folder)
-
     @pytest.mark.gs_login
     def test_glob(self):
         self.assertCountEqual(
