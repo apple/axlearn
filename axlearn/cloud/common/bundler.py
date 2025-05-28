@@ -342,7 +342,7 @@ class BaseDockerBundler(Bundler):
         cfg: BaseDockerBundler.Config = super().from_spec(spec, fv=fv)
         kwargs = parse_kv_flags(spec, delimiter="=")
         cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
-        skip_bundle = to_bool(cfg.skip_bundle)
+        skip_bundle = to_bool(kwargs.pop("skip_bundle", False))
         # Non-config specs are treated as build args.
         build_args = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k not in cfg}
         return cfg.set(
