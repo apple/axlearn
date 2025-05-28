@@ -22,7 +22,10 @@ The main differences from the original implementation are as follows:
 This file was implemented from scratch. The concept that `rearrange` can be implemented as
 reshape → transpose → reshape, and `repeat` as reshape → tile → reshape, was understood from
 the original einops design. The key API differences are:
-* `...` is not supported.
+* Only the numeric literal 1 is supported. Other numbers like 2, 3, 4 are not.
+  e.g., instead of `repeat("a -> a 2")`, use `repeat("a -> a k", k=2)`.
+* Other APIs (e.g. pack, reduce) are not supported, as JAX's APIs (e.g. concat, sum/mean/max/min)
+  are clear enough.
 * Numpy and TensorFlow are not supported.
 
 For how to use einops pattern syntax, please refer to the official einops tutorial.
@@ -57,7 +60,7 @@ def rearrange(x: Tensor, pattern: str, **axes_lengths) -> Tensor:
     >>> rearrange(jnp.ones((32, 30, 40, 3)), 'b h w c -> b h w c').shape
     (32, 30, 40, 3)
 
-    >>> rearrange(jnp.ones((32, 30, 40, 3)), 'b h w c -> (b h) w c').shape
+    >>> rearrange(jnp.ones((32, 30, 40, 3)), 'b h ... -> (b h) ...').shape
     (960, 40, 3)
 
     >>> rearrange(jnp.ones((32, 30, 40, 3)), 'b h w c -> h (b w) c').shape
@@ -129,6 +132,12 @@ def repeat(x: Tensor, pattern: str, **axes_lengths) -> Tensor:
     # change it to RGB format by repeating in each channel
     >>> repeat(image, 'h w -> h w c', c=3).shape
     (30, 40, 3)
+
+    >>> repeat(image, '... -> ... c', c=3).shape
+    (30, 40, 3)
+
+    >>> repeat(image, 'h w -> h w 1 c', c=3).shape
+    (30, 40, 1, 3)
 
     # repeat image 2 times along height (vertical axis)
     >>> repeat(image, 'h w -> (repeat h) w', repeat=2).shape
@@ -220,12 +229,9 @@ def _compute_rearrange_plan(in_shape: tuple[int, ...], pattern: str, **axes_leng
     Raises:
         ValueError: If the pattern is malformed or axes don't match the shape.
     """
-    # _parse_axes() can handle any spacing around the "->" in the pattern.
-    left, right = pattern.split("->")
-    left_axes = _parse_axes(left)
-    right_axes = _parse_axes(right)
-    dim_size_map = _get_input_reshape(shape=in_shape, axes=left_axes, axes_lengths=axes_lengths)
-    perm, output_shape = _get_rearrange_shape(axes=right_axes, dim_size_map=dim_size_map)
+    lhs_axes, rhs_axes = _parse_pattern(pattern=pattern, in_shape=in_shape)
+    dim_size_map = _get_input_reshape(shape=in_shape, lhs_axes=lhs_axes, axes_lengths=axes_lengths)
+    perm, output_shape = _get_rearrange_shape(rhs_axes=rhs_axes, dim_size_map=dim_size_map)
     return _Plan(_to_input_reshape(dim_size_map), perm, output_shape)
 
 
@@ -254,18 +260,13 @@ def _compute_repeat_plan(in_shape: tuple[int, ...], pattern: str, **axes_lengths
     Raises:
         ValueError: If the lhs pattern is not canonical or if axes are invalid.
     """
-    # _parse_axes() can handle any spacing around the "->" in the pattern.
-    left, right = pattern.split("->")
-    left_axes = _parse_axes(left)
-    right_axes = _parse_axes(right)
+    lhs_axes, rhs_axes = _parse_pattern(pattern=pattern, in_shape=in_shape)
 
     # Reuse _get_input_reshape to know lhs's each size.
-    dim_size_map = _get_input_reshape(shape=in_shape, axes=left_axes, axes_lengths=dict())
-    if _to_input_reshape(dim_size_map) != list(in_shape):
-        raise ValueError(f"The lhs {left_axes} must be canonical form.")
+    dim_size_map = _get_input_reshape(shape=in_shape, lhs_axes=lhs_axes, axes_lengths=dict())
 
     repeat_plan = _get_repeat_shape(
-        axes=right_axes,
+        rhs_axes=rhs_axes,
         dim_size_map=dim_size_map,
         axes_lengths=axes_lengths,
     )
@@ -274,6 +275,48 @@ def _compute_repeat_plan(in_shape: tuple[int, ...], pattern: str, **axes_lengths
 
 _Axis = Union[str, tuple["_Axis", ...]]
 _Axes = tuple[_Axis, ...]
+
+
+def _parse_pattern(*, pattern: str, in_shape: tuple[int, ...]) -> tuple[_Axes, _Axes]:
+    """Parses an einops-style pattern into left and right axes, expanding ellipsis if present.
+
+    If '...' is used, it is replaced with dummy axis names (e.g., '_ellipsis_0', ...),
+    inferred from the input shape. Ellipsis must appear on both sides and cannot be inside
+    parentheses.
+
+    Args:
+        pattern: Pattern string of the form 'lhs -> rhs'.
+        in_shape: Shape of the input tensor, used to resolve ellipsis dimensions.
+
+    Returns:
+        A tuple (lhs_axes, rhs_axes), each as a nested structure of axis names.
+
+    Raises:
+        ValueError: For malformed patterns, invalid ellipsis usage, or shape mismatch.
+    """
+    arrow = "->"
+    if arrow not in pattern:
+        raise ValueError(f"{pattern=} doesn't have ->.")
+
+    lhs, rhs = pattern.split("->")
+    lhs = lhs.strip()
+    rhs = rhs.strip()
+    lhs_axes = _parse_axes(lhs)
+    rhs_axes = _parse_axes(rhs)
+    lhs_axes, rhs_axes = _resolve_ellipsis(in_shape, lhs=lhs_axes, rhs=rhs_axes)
+    return lhs_axes, rhs_axes
+
+
+# Tokens in the pattern must follow Python identifier rules.
+_IDENTIFIER = r"[_a-z][_a-z0-9]*"
+# Splitting is based on whether the token is
+# * A Python identifier (axis names).
+# * Enclosed in (): indicating a group. Nested (()) and partial (() not allowed.
+# * The number 1: all "1", " 1 ", " 1", "1 " are valid.
+_COMPOSITE_DIM = r"\([^()]*\)"
+_ONE = r"(?<=\s)1(?=\s)|^1(?=\s|$)|(?<=\s)1$"
+_ELLIPSIS = r"\.\.\."
+_TOKEN_RE = rf"{_ONE}|{_ELLIPSIS}|{_IDENTIFIER}|{_COMPOSITE_DIM}"
 
 
 def _parse_axes(axes: str) -> _Axes:
@@ -289,19 +332,11 @@ def _parse_axes(axes: str) -> _Axes:
     Raises:
         ValueError: On invalid tokens, unmatched characters, or invalid group structure.
     """
-    # Tokens in the pattern must follow Python identifier rules.
-    identifier = r"[_a-z][_a-z0-9]*"
     # Inside a group, tokens must be Python identifiers only.
-    group_axis_name_re = re.compile(rf"^{identifier}$")
+    group_axis_name_re = re.compile(rf"^{_IDENTIFIER}$|^{_ELLIPSIS}$")
     # In general, tokens must be either Python identifiers or The number 1 (used for expand_dims).
-    axis_name_re = re.compile(rf"^1$|^{identifier}$")
-    # Splitting is based on whether the token is
-    # * A Python identifier (axis names).
-    # * Enclosed in (): indicating a group. Nested (()) and partial (() not allowed.
-    # * The number 1: all "1", " 1 ", " 1", "1 " are valid.
-    composite_dim = r"\([^()]*\)"
-    one = r"(?<=\s)1(?=\s)|^1(?=\s|$)|(?<=\s)1$"
-    split_re = re.compile(rf"{one}|{identifier}|{composite_dim}")
+    axis_name_re = re.compile(rf"^1$|^{_IDENTIFIER}$|^{_ELLIPSIS}$")
+    split_re = re.compile(_TOKEN_RE)
 
     # Extract tokens like: ['b', 't', '(g k)', 'h']
     tokens = split_re.findall(axes)
@@ -320,14 +355,14 @@ def _parse_axes(axes: str) -> _Axes:
     def _validate_token(name: str) -> str:
         if not axis_name_re.fullmatch(name):
             raise ValueError(
-                f"Invalid axis name: '{name}'. Must match Python {identifier=} or be '1'."
+                f"Invalid axis name: '{name}'. Must match Python {_IDENTIFIER=}, '1' or '...'."
             )
         _validate_duplicated(name)
         return name
 
     def _validate_group_token(name: str) -> str:
         if not group_axis_name_re.fullmatch(name):
-            raise ValueError(f"Invalid axis name: '{name}'. Must match Python {identifier=}.")
+            raise ValueError(f"Invalid axis name: '{name}'. Must match Python {_IDENTIFIER=}.")
         _validate_duplicated(name)
         return name
 
@@ -335,7 +370,7 @@ def _parse_axes(axes: str) -> _Axes:
     for tok in tokens:
         if tok.startswith("(") and tok.endswith(")"):
             inner = tok[1:-1].strip().split()
-            if len(inner) < 2:
+            if len(inner) < 2 and "..." not in tok:
                 raise ValueError(f"Group '{tok}' must contain at least two axes.")
             group = tuple(_validate_group_token(name) for name in inner)
             parsed.append(group)
@@ -345,8 +380,94 @@ def _parse_axes(axes: str) -> _Axes:
     return tuple(parsed)
 
 
+def _resolve_ellipsis(in_shape: tuple[int, ...], lhs: _Axes, rhs: _Axes) -> tuple[_Axes, _Axes]:
+    """Resolves ellipsis ("...") in parsed lhs and rhs axes into named dummy axes.
+
+    Ellipsis can appear either at the top level or inside a group.
+    Only a single ellipsis is allowed in each side. Both sides must contain ellipsis.
+    Ellipsis inside group is only allowed if the group itself is the entire axis (e.g. ('...',)).
+
+    Args:
+        in_shape: Shape of input tensor.
+        lhs: Parsed axes on the left-hand side.
+        rhs: Parsed axes on the right-hand side.
+
+    Returns:
+        Tuple of lhs and rhs with "..." replaced by inferred dummy axes.
+
+    Raises:
+        ValueError: If ellipsis is used incorrectly or shape doesn't match.
+    """
+    ellipsis = "..."
+
+    def find_ellipsis_index(axes: _Axes) -> tuple[int, bool, int]:
+        """Finds the position and context of an ellipsis ("...") in a parsed einops axis pattern.
+
+        Args:
+            axes: A parsed axis pattern (from _parse_axes), represented as a tuple of axis names or
+                grouped axes (tuples of axis names). Each element may be a string (axis name, "1",
+                or "...") or a group (e.g., ("h", "w")).
+
+        Returns:
+            A tuple (index, in_group, count):
+                - index: The index in `axes` where the ellipsis was found. If inside a group,
+                this is the index of the group.
+                - in_group: Whether the ellipsis appeared inside a group (e.g., ("h", "...", "w")).
+                - count: Number of ellipses found. Should be either 0 or 1.
+
+        Raises:
+            ValueError: If more than one ellipsis ("...") is present in the axis pattern.
+        """
+        num_ellipses = 0
+        idx, in_group, num_ellipses = -1, False, 0
+        for i, ax in enumerate(axes):
+            if ax == ellipsis:
+                num_ellipses += 1
+                idx, in_group = i, False
+            elif isinstance(ax, tuple) and any(a == ellipsis for a in ax):
+                num_ellipses += 1
+                idx, in_group = i, True
+        if num_ellipses > 1:
+            raise ValueError("Multiple ellipses '...' in a pattern are not allowed.")
+        return idx, in_group, num_ellipses
+
+    lhs_idx, lhs_group, lhs_num_ellipses = find_ellipsis_index(lhs)
+    if lhs_group:
+        raise ValueError("Only rhs is allowed to have ... inside a group.")
+    rhs_idx, rhs_group, rhs_num_ellipses = find_ellipsis_index(rhs)
+    if lhs_num_ellipses != rhs_num_ellipses:
+        raise ValueError("lhs and rhs contain '...' asymmetrically.")
+    if lhs_idx == -1:
+        return lhs, rhs
+
+    def count_explicit_axes(axes: _Axes) -> int:
+        count = lambda ax: 0 if ax == ellipsis else 1
+        return sum(count(ax) for ax in axes)
+
+    ndim = len(in_shape)
+    ndim_explicit = count_explicit_axes(lhs)
+    ndim_ellipsis = ndim - ndim_explicit
+    if ndim_ellipsis < 0:
+        raise ValueError(f"Too many axes in lhs pattern for input shape {in_shape}.")
+
+    ellipsis_axes = tuple(f"_ELLIPSIS_{i}" for i in range(ndim_ellipsis))
+
+    def replace(axes: _Axes, idx: int, is_group: bool) -> _Axes:
+        new_axes = list(axes)
+        if is_group:
+            group = list(new_axes[idx])
+            sub_idx = group.index(ellipsis)
+            new_group = group[:sub_idx] + list(ellipsis_axes) + group[sub_idx + 1 :]
+            new_axes[idx] = tuple(new_group)
+        else:
+            new_axes = new_axes[:idx] + list(ellipsis_axes) + new_axes[idx + 1 :]
+        return tuple(new_axes)
+
+    return replace(lhs, lhs_idx, lhs_group), replace(rhs, rhs_idx, rhs_group)
+
+
 def _get_input_reshape(
-    *, shape: tuple[int, ...], axes: _Axes, axes_lengths: dict[str, int]
+    *, shape: tuple[int, ...], lhs_axes: _Axes, axes_lengths: dict[str, int]
 ) -> dict[str, int]:
     """Computes the input shape to reshape into, based on left-side axes.
 
@@ -354,7 +475,7 @@ def _get_input_reshape(
 
     Args:
         shape: The shape of the input tensor.
-        axes: Parsed axis tokens from the left side of the pattern.
+        lhs_axes: Parsed axis tokens from the left side of the pattern.
         **axes_lengths: Optional size hints for composite dimensions, such as those inside
             parentheses (e.g., `k=2, g=3`). For example, if the pattern includes `(h k)` and you
             specify `k=2`, then `h` can be inferred from the tensor's shape. This information is
@@ -394,7 +515,7 @@ def _get_input_reshape(
         assert axis_name not in dim_size_map, "Parser already filtered it out."
         dim_size_map[axis_name] = dim_size
 
-    for axis_name, input_dim_size in zip(axes, shape):
+    for axis_name, input_dim_size in zip(lhs_axes, shape):
         if axis_name == "1":
             if input_dim_size != 1:
                 raise ValueError(f"Expected singleton dim, got shape={shape} at {axis_name=}.")
@@ -410,6 +531,13 @@ def _get_input_reshape(
     input_reshape = _to_input_reshape(dim_size_map)
     if math.prod(shape) != math.prod(input_reshape):
         raise ValueError(f"Incompatible shape reshape: {shape} -> {input_reshape}")
+
+    for k, v in axes_lengths.items():
+        if k in dim_size_map:
+            if dim_size_map[k] != v:
+                raise ValueError(
+                    f"Conflicting axis size for {k}: from tensor {dim_size_map[k]}, from user {v}."
+                )
     return dim_size_map
 
 
@@ -457,13 +585,13 @@ class _RearrangeRHSPlan(NamedTuple):
     output_shape: list[int]
 
 
-def _get_rearrange_shape(*, axes: _Axes, dim_size_map: dict[str, int]) -> _RearrangeRHSPlan:
+def _get_rearrange_shape(*, rhs_axes: _Axes, dim_size_map: dict[str, int]) -> _RearrangeRHSPlan:
     """Computes the final output shape and permutation order.
 
     Based on right-side axes, resolves reshaped dimensions and transpose permutation.
 
     Args:
-        axes: Parsed axis tokens from the right side of the pattern.
+        rhs_axes: Parsed axis tokens from the right side of the pattern.
         dim_size_map: Mapping from axis name to its size. See `_get_input_reshape()`.
 
     Returns:
@@ -487,7 +615,7 @@ def _get_rearrange_shape(*, axes: _Axes, dim_size_map: dict[str, int]) -> _Rearr
         perm.append(input_axes_map[axis_name])
         return dim_size_map[axis_name]
 
-    for axis_name in axes:
+    for axis_name in rhs_axes:
         if axis_name == "1":
             output_shape.append(1)
         elif isinstance(axis_name, str):
@@ -510,14 +638,14 @@ def _get_rearrange_shape(*, axes: _Axes, dim_size_map: dict[str, int]) -> _Rearr
 
 def _get_repeat_shape(
     *,
-    axes: _Axes,
+    rhs_axes: _Axes,
     dim_size_map: dict[str, int],
     axes_lengths: dict[str, int],
 ) -> _Plan:
     """Computes shapes for applying `jnp.tile` and the final output shape in `repeat`.
 
     Args:
-        axes: Parsed right-hand side axes from the repeat pattern.
+        rhs_axes: Parsed right-hand side axes from the repeat pattern.
         dim_size_map: Mapping from axis name to its size. See `_get_input_reshape()`.
         axes_lengths: Mapping of new (repeating) axis names to their intended sizes.
 
@@ -566,9 +694,9 @@ def _get_repeat_shape(
             dim = update_new_axis(axis_name)
         return dim
 
-    for axis_name in axes:
+    for axis_name in rhs_axes:
         if axis_name == "1":
-            raise ValueError("repeat does not support singleton axis '1'.")
+            output_shape.append(1)
         elif isinstance(axis_name, str):
             shape = update_and_shape(axis_name)
             output_shape.append(shape)
@@ -580,8 +708,7 @@ def _get_repeat_shape(
                 group_shape *= shape
             output_shape.append(group_shape)
 
-    if flat_axes != set(total_dim_size_map.keys()):
-        raise ValueError(
-            f"lhs+rhs axes {set(total_dim_size_map.keys())} must be same to rhs axes {flat_axes}."
-        )
+    lhs_flat_axes = set(total_dim_size_map.keys())
+    if flat_axes != lhs_flat_axes:
+        raise ValueError(f"lhs axes {lhs_flat_axes} must be same to rhs axes {flat_axes}.")
     return _Plan(input_reshape, tile, output_shape)

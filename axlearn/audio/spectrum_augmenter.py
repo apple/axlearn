@@ -12,6 +12,7 @@
 
 from typing import Optional
 
+import chex
 import jax
 import jax.numpy as jnp
 
@@ -119,7 +120,9 @@ class MaskSampler(BaseLayer):
             masks = masks * (jnp.arange(max_num_masks) < num_masks)[..., None]
 
         # Reduce over max_num_masks axis.
-        return jnp.max(masks, axis=1)
+        masks = jnp.max(masks, axis=1)
+        chex.assert_type(masks, jnp.bool)
+        return masks
 
 
 class SpectrumAugmenter(BaseLayer):
@@ -171,8 +174,8 @@ class SpectrumAugmenter(BaseLayer):
         )
 
         # [batch_size, 1, num_freq, 1].
-        freq_keep = 1 - freq_masks[:, None, :, None]
+        freq_keep = safe_not(freq_masks)[:, None, :, None]
         # [batch_size, num_frames, 1, 1].
-        time_keep = 1 - time_masks[:, :, None, None]
+        time_keep = safe_not(time_masks)[:, :, None, None]
 
         return inputs * freq_keep * time_keep

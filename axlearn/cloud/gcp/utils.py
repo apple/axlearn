@@ -174,7 +174,7 @@ def validate_region_matching(gcs_bucket_name: str, config_zone: str):
             logging.warning("Proceeding despite region mismatch as confirmed by user.")
     else:
         logging.info(
-            "Region match: GCS bucket region ({%s}) " "matches config region ({%s}).",
+            "Region match: GCS bucket region (%s) matches config region (%s).",
             gcs_bucket_region,
             config_region,
         )
