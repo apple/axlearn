@@ -17,6 +17,7 @@ import jax
 import math
 import numpy as np
 import jax.numpy as jnp
+from jax_neuronx.experimental import debug_callback
 
 from absl.testing import absltest, parameterized
 from axlearn.common.mixture_of_experts import TopKGatingGather, TopKGating, TopKGatingGatherBlockwise
@@ -40,27 +41,32 @@ class LayerTestCase(TestCase):
     def helper_fwd(self, cfg):
         cfg.instantiate()
         cfg.print_summary()
-        @partial(jax.jit, static_argnums=0)
-        def test_fwd_call(test_layer, test_state, test_inputs):
-            test_output, _ = self._fwd_call(test_layer, test_state, test_inputs)
+        # @debug_callback
+
+        @jax.jit
+        def test_fwd_call(test_state, test_inputs):
+            test_output, _ = self._fwd_call(cfg.test.layer, test_state, test_inputs)
             return test_output
 
-        @partial(jax.jit, static_argnums=0)
-        def golden_fwd_call(golden_layer, golden_state, golden_inputs):
-            golden_output, _ =  self._fwd_call(golden_layer, golden_state, golden_inputs)
+        @jax.jit
+        def golden_fwd_call(golden_state, golden_inputs):
+            golden_output, _ =  self._fwd_call(cfg.golden.layer, golden_state, golden_inputs)
             return golden_output
         
         with cfg.test.mesh:
-            test_output = test_fwd_call(cfg.test.layer, cfg.test.state, cfg.test.inputs)
-        with cfg.golden.mesh:
-            golden_output = golden_fwd_call(cfg.golden.layer, cfg.golden.state, cfg.golden.inputs)
+            test_output = test_fwd_call(cfg.test.state, cfg.test.inputs)
 
-        if cfg.conv_output != None:
-            test_output = cfg.conv_output(test_output)
-        
-        # Transfer results to CPU before comparison
-        self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output),
-                                  atol=cfg.test.atol, rtol=cfg.test.rtol)
+        if cfg.golden:
+            with cfg.golden.mesh:
+                golden_output = golden_fwd_call(cfg.golden.state, cfg.golden.inputs)
+
+            if cfg.conv_output != None:
+                test_output = cfg.conv_output(test_output)
+
+            # Transfer results to CPU before comparison
+            self.assertNestedAllClose(jax.device_get(test_output), jax.device_get(golden_output),
+                                    atol=cfg.test.atol, rtol=cfg.test.rtol)
+
 
     def helper_bwd(self, cfg: TestCaseConfig):
         cfg.instantiate()
@@ -184,8 +190,7 @@ class GatingTestCase(TestCase):
                 assert len(num_blocks_for_expert) == cfg.test.cfg.num_experts, f"Expected {cfg.test.cfg.num_experts} experts, but got {len(num_blocks_for_expert)}"
                 for expert_id, num_blocks in num_blocks_for_expert.items():
                     assert num_blocks == num_blocks_per_expert, f"Expert {expert_id} has {num_blocks} blocks, expected {num_blocks_per_expert}"
-        
-        
+
         # Validating token_position_to_id (O, G, N*B)
         token_position_to_id = token_position_to_id.reshape(O, G, N, cfg.test.cfg.block_size)
         in_range = np.where(((token_position_to_id >=0) & (token_position_to_id<=S)), True, False)
@@ -251,7 +256,7 @@ class TestLayerOnTrn(LayerTestCase):
         jax.config.update('jax_platform_name', 'neuron')
     
     @unittest.skip("test fwd skipped as fwd is part of fwd+bwd test")
-    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGatingGather, test_device="neuron", golden_device="cpu"))
+    @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     def test_fwd_blockwisegather_vs_gather(self, cfg):
         self.helper_fwd(cfg)
     
@@ -277,10 +282,10 @@ class TestDev150bUnit(LayerTestCase):
             n_experts=16,
             n_groups=1,
             top_k=4,
-            capacity_factor=2, 
+            capacity_factor=4,
             mesh_spec={"fsdp": -1, "model": 16},
-            batch=16,
-            seq=4096,
+            batch=8,
+            seq=8192,
             dtype=jnp.bfloat16,
         )[1]
     
@@ -288,7 +293,7 @@ class TestDev150bUnit(LayerTestCase):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     
-    @unittest.skip("skip gating")
+    @unittest.skip("skip gather")
     def test_fwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
@@ -297,7 +302,7 @@ class TestDev150bUnit(LayerTestCase):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise, golden=TopKGating, test_device="cpu", golden_device="cpu"))
     
-    @unittest.skip("skip gating")
+    @unittest.skip("skip gather")
     def test_fwdbwd_gather_vs_einsum(self):
         jax.config.update('jax_platform_name', 'cpu')
         self.helper_bwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu"))
@@ -334,10 +339,10 @@ class TestDev150bGating(GatingTestCase):
             n_experts=16,
             n_groups=1,
             top_k=4,
-            capacity_factor=2, 
+            capacity_factor=4,
             mesh_spec={"fsdp": -1, "model": 16},
-            batch=16,
-            seq=4096,
+            batch=8,
+            seq=8192,
             dtype=jnp.bfloat16,
         )[1]
     

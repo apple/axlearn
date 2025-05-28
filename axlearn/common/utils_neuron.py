@@ -171,7 +171,7 @@ class TestCaseConfig():
         self.maybe_set_outer_batch()
         if self.golden:
             self.init_layer(self.golden)
-        self.init_layer(self.test, state_to_copy=jax.device_get(self.golden.state) if self.golden and self.test.cfg == self.golden.cfg else None)
+        self.init_layer(self.test, state_to_copy=self.golden.state if self.golden else None)
         self.random_inputs_with_mesh()
 
     def maybe_set_outer_batch(self):
@@ -197,7 +197,6 @@ class TestCaseConfig():
                 if state_to_copy:
                     module_config.state = {}
                     for key, value in state_to_copy.items():
-                        # print(f"Transferring and sharding {key} to test devices...")
                         # First put on a single device
                         module_config.state[key] = jax.device_put(value, param_partition_specs[key])
                 else:
@@ -260,11 +259,11 @@ class GridSpaceBuilder:
     def build_toy_grid_space(self):
         return [
             self.create_test_config(
-                input_dim=3, hidden_dim=6, 
+                input_dim=3, hidden_dim=6,
                 n_experts=4, top_k=1, n_groups=1, capacity_factor=2, 
                 mesh_spec={}, 
                 batch=1, seq=8, dtype=jnp.float32, 
-                block_size=4
+                block_size=4,
             ),
             self.create_test_config(
                 input_dim=3, hidden_dim=6, 
@@ -507,6 +506,9 @@ def create_test_config(test, golden, test_device, golden_device, input_dim, hidd
         test_cfg.activation = ("nn.silu","linear")
         test_cfg.num_experts = n_experts
         test_cfg.num_groups = n_groups
+        # enabling nonorm gives us better check of the kernel logits, what's missing here is just add of residual
+        
+        test_cfg.structure = "nonorm"
         test_cfg.gating = get_gating_config(test, n_experts, top_k, capacity_factor, expert_capacity=None, block_size=block_size)
 
         if golden:
