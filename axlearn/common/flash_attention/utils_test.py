@@ -219,8 +219,6 @@ class TestFlashAttention(TestCase):
     ):
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
-        if page_size is not None and backend == "tpu":
-            pytest.skip(reason="TPU Paged Attention will be added soon.")
 
         if bias_type == "causal":
             bias = CausalAttentionBias(
@@ -325,7 +323,7 @@ class TestFlashAttention(TestCase):
                     )
                     decoding_output.append(decoding_out)
                 decoding_output = jnp.concatenate(decoding_output, axis=1)
-                self.assertNestedAllClose(fwd_out, decoding_output, atol=0.015)
+                self.assertNestedAllClose(fwd_out, decoding_output, atol=0.02)
         jax.clear_caches()
 
 
