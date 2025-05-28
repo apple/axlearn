@@ -13,10 +13,26 @@ from axlearn.cloud.gcp.bundler import CloudBuildBundler
 from axlearn.cloud.gcp.pathways_utils import (
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY,
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+    _PATHWAYS_PROXY_CONTAINER_NAME,
     _PATHWAYS_SERVER_IMAGE,
+    get_megascale_options,
+    get_xla_options,
 )
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
+from axlearn.common.compiler_options import default_xla_options, xla_flags_from_options
 from axlearn.common.test_utils import TestCase
+
+
+class SplitXLAMXLAFlagsTest(TestCase):
+    """Test the splitting of XLA and Megascale flags."""
+
+    def test_v6e_default_options_split_megascale_and_xla(self):
+        default_options = default_xla_options(
+            instance_type="tpu-v6e-512", num_slices=2, backend="tpu"
+        )
+        megascale_options = get_megascale_options(default_options)
+        xla_options = get_xla_options(default_options)
+        self.assertEqual(len(megascale_options) + len(xla_options), len(default_options))
 
 
 class PathwaysReplicatedJobTest(TestCase):
@@ -68,6 +84,20 @@ class PathwaysReplicatedJobTest(TestCase):
                 node_selector.get(_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY),
             )
 
+            # Check pathways-proxy container args for XLA flags.
+            proxy_container = None
+            for container in pod_spec["initContainers"]:
+                if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
+                    proxy_container = container
+                    break
+            self.assertIsNotNone(proxy_container, "Pathways proxy container not found.")
+
+            # pylint: disable-next=protected-access
+            xla_arg_flags = xla_flags_from_options(builder._xla_options).split()
+            self.assertTrue(xla_arg_flags, "XLA flags should be present")
+            for flag in xla_arg_flags:
+                self.assertIn(flag, proxy_container["args"])
+
     def test_build_pathways_worker_pod(self):
         with (
             self._job_config(
@@ -91,13 +121,20 @@ class PathwaysReplicatedJobTest(TestCase):
             self.assertEqual(1, len(host_alias))
             self.assertEqual(pod_spec.get("hostNetwork"), True)
             self.assertEqual(pod_spec.get("dnsPolicy"), "ClusterFirstWithHostNet")
-            container = pod_spec.get("containers")[0]
-            self.assertEqual(container["image"], _PATHWAYS_SERVER_IMAGE)
+            worker_container = pod_spec.get("containers")[0]
+            self.assertEqual(worker_container["image"], _PATHWAYS_SERVER_IMAGE)
             annotations = pod["metadata"]["annotations"]
             self.assertEqual(
                 "test-service-account@test-project.iam.gserviceaccount.com",
                 annotations.get("tpu-provisioner.cloud.google.com/node-service-account", None),
             )
+
+            # Check worker container args for Megascale (MXLA) flags.
+            # pylint: disable-next=protected-access
+            mxla_arg_flags = xla_flags_from_options(builder._mxla_options).split()
+            # MXLA flags are generally only present in multi-slice jobs.
+            for flag in mxla_arg_flags:
+                self.assertIn(flag, worker_container["args"])
 
     def test_replicated_job(self):
         with (
@@ -135,6 +172,65 @@ class PathwaysReplicatedJobTest(TestCase):
                     "80",
                     annotations.get("axlearn/replicatedjob-load-balancer-port", {}),
                 )
+
+    def test_pathways_xla_flags_processing(self):
+        """Tests processing of pathways_xla_flags, including overrides and new flags."""
+        flag_to_override_key = "xla_tpu_enable_latency_hiding_scheduler"
+        override_value_str = "false"
+        # This flag's default value for v5p is "true" (string). Change it to False (bool).
+        expected_override_value_parsed = False
+
+        new_xla_flag_key = "xla_a_brand_new_one"
+        new_xla_flag_value_str = "12345"
+        expected_new_xla_value_parsed = 12345
+
+        new_mxla_flag_key = "megascale_another_setting"
+        new_mxla_flag_value_str = "a_string_value"
+        expected_new_mxla_value_parsed = new_mxla_flag_value_str
+
+        pathways_xla_flags_input = [
+            f"{flag_to_override_key}={override_value_str}",
+            f"{new_xla_flag_key}={new_xla_flag_value_str}",
+            f"--{new_mxla_flag_key}={new_mxla_flag_value_str}",
+        ]
+
+        initial_default_options = default_xla_options(
+            instance_type="tpu-v5p-16", num_slices=1, backend="tpu"
+        )
+        # Ensure the flag we intend to override actually exists in the defaults.
+        self.assertIn(flag_to_override_key, initial_default_options)
+
+        with self._job_config(
+            CloudBuildBundler,
+            pathways_xla_flags=pathways_xla_flags_input,
+        ) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="test-inner-name",
+                command="test-inner-command",
+                output_dir="test-inner-output",
+                service_account="test-service-account",
+            )
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+            # pylint: disable=protected-access
+            actual_xla_options = builder._xla_options
+            actual_mxla_options = builder._mxla_options
+            # pylint: enable=protected-access
+
+            # Check overridden flag.
+            self.assertIn(flag_to_override_key, actual_xla_options)
+            self.assertEqual(
+                actual_xla_options[flag_to_override_key], expected_override_value_parsed
+            )
+
+            # Check new XLA flag.
+            self.assertIn(new_xla_flag_key, actual_xla_options)
+            self.assertEqual(actual_xla_options[new_xla_flag_key], expected_new_xla_value_parsed)
+
+            # Check new Megascale flag.
+            self.assertIn(new_mxla_flag_key, actual_mxla_options)
+            self.assertEqual(actual_mxla_options[new_mxla_flag_key], expected_new_mxla_value_parsed)
 
 
 class PathwaysMultiheadReplicatedJobTest(TestCase):
