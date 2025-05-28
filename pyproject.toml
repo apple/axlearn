@@ -155,7 +155,7 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.11.5",
+    "orbax-checkpoint==0.11.13",
 ]
 # Audio dependencies.
 audio = [
