@@ -112,6 +112,7 @@ def flash_attention_kernel(
             k = pl.load(k_ref, (slice_k, slice(None)))
         else:
             k = pl.load(k_ref, (slice(None), slice_k))
+        k = k.astype(q.dtype)
         qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32)
 
         assert qk.shape == (bq, bkv_compute)
@@ -625,8 +626,8 @@ def _flash_attention_dq_kernel(
     def run():
         q = q_ref[...] if q_layout == HEAD_DIM_MINOR else q_ref[...].T
         # We keep k and v possibly transposed, since they are RHS of dots.
-        k = k_ref[...]
-        v = v_ref[...]
+        k = k_ref[...].astype(q.dtype)
+        v = v_ref[...].astype(q.dtype)
         logsumexp = jnp.expand_dims(logsumexp_ref[0], -1)
         do = do_ref[...]
         di = jnp.expand_dims(di_ref[0], -1)
@@ -992,8 +993,8 @@ def _flash_attention_dkv_kernel(
                 return pl.load(ref, (slice_k, slice(None)))
             return pl.load(ref, (slice(None), slice_k)).T
 
-        k = _load_kv(k_ref, k_layout)
-        v = _load_kv(v_ref, v_layout)
+        k = _load_kv(k_ref, k_layout).astype(q.dtype)
+        v = _load_kv(v_ref, v_layout).astype(q.dtype)
         logsumexp = pl.load(logsumexp_ref, (pl.ds(1), slice(None)))
         do = do_ref[...]
         di = pl.load(di_ref, (pl.ds(1), slice(None)))

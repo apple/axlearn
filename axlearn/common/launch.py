@@ -19,6 +19,8 @@ num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
 # Set LIBTPU_INIT_ARGS before importing jax!
 tpu_flags_exc = None
 try:
+    # This does NOT work for Pathways. XLA flags are set on the pathways-proxy.
+    # Megascale flags have to be set on the pathways-workers as arguments.
     libtpu_init_options = compiler_options.default_xla_options(
         instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
     )
