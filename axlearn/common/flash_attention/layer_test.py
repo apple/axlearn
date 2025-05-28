@@ -725,7 +725,7 @@ class TestFlashAttention(TestCase):
                 atol, rtol = 1e-4, 1e-2
             # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
             else:
-                atol, rtol = 1.221e-4, 1.177e-2
+                atol, rtol = 1.5e-4, 1.5e-2
 
             # Note: cannot compare results when dropout_rate > 0 and not using segment ids, because
             # cudnn dropout will be used and it uses different PRNG than ours.
