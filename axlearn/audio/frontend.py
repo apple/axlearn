@@ -8,7 +8,6 @@
 
 import functools
 from collections.abc import Sequence
-from functools import partial
 from typing import Callable, Optional, Protocol
 
 import jax.numpy as jnp
@@ -114,7 +113,7 @@ def _log_mel_spectrogram(
     )
 
     def fn(fft: Tensor, *, dtype: jnp.dtype) -> Tensor:
-        # [batch_size, num_frames, fft_size] -> [batch_size, num_frames, fft_size // 2 + 1].
+        # [batch_size, num_frames, fft_size // 2 + 1].
         spectrogram = magnitude_spectrogram(fft, dtype=dtype)
         # Convert to log-mel. [batch, num_frames, num_filters].
         return linear_to_log_mel_spectrogram(
@@ -142,6 +141,14 @@ def _fft_dtype(input_dtype: jnp.dtype) -> jnp.dtype:
         return jnp.float64
     else:
         raise ValueError(f"{input_dtype=} is not supported.")
+
+
+def _cast_for_rfft(x: Tensor) -> Tensor:
+    # jnp.fft.rfft input must be float32 or float64.
+    if x.dtype in (jnp.float32, jnp.float64):
+        return x
+    else:
+        return x.astype(jnp.float32)
 
 
 class LogMelFrontend(BaseFrontend):
@@ -193,7 +200,7 @@ class LogMelFrontend(BaseFrontend):
         if cfg.fft is not None:
             self._fft = cfg.fft.set(n=fft_size).instantiate()
         else:
-            self._fft = partial(jnp.fft.fft, n=fft_size)
+            self._fft = lambda x: jnp.fft.rfft(_cast_for_rfft(x), n=fft_size)
 
         spectrogram = maybe_set_config(
             cfg.spectrogram,
