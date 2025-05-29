@@ -393,7 +393,10 @@ def infer_resources(cfg: ConfigBase) -> ResourceMap[int]:
 
     def visit_fn(_, value):
         if isinstance(value, AcceleratorConfig):
-            if value.instance_type.startswith("tpu-"):
+            if value.instance_type == "cpu":
+                # CPU quota is not enforced.
+                pass
+            elif value.instance_type.startswith("tpu-"):
                 resources = infer_tpu_resources(value.instance_type, value.num_replicas)
                 for resource, usage in resources.items():
                     total_resources[resource] += usage
