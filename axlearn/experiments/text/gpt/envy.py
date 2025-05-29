@@ -101,9 +101,9 @@ MAX_SEQUENCE_LENGTH = {
     "Switch-Large": 8192,
     "Switch-XXL": 8192,
     "Mistral-toy": 256,
-    "Mistral-8x7B": 4096,
-    "Mistral-8x20B": 4096,
-    "Mistral-16x10B": 4096,
+    "Mistral-8x7B": 8192,
+    "Mistral-8x20B": 8192,
+    "Mistral-16x10B": 8192,
 }
 
 _BASE_MODEL_HIDDEN_DIM = 768
@@ -599,17 +599,19 @@ def get_trainer_kwargs(
             num_heads = 32
             head_size = 128
             ffn_scale_factor=3.5
-        elif model_size in ["Mistral-16x10B", "Mistral-8x20B"]:
+        elif model_size == "Mistral-16x10B":
             head_size = 128
             num_heads = 48
-            if model_size == "Mistral-16x10B":
-                # 32 layers gets to 147B
-                ffn_scale_factor=2.5
-                ffn_sparse_top_k=4
-            elif model_size == "Mistral-8x20B":
-                # 60 layers gets to 150B
-                ffn_scale_factor=2.66
-                ffn_sparse_top_k=2
+            num_layers = int(os.getenv("AXLEARN_NUM_LAYERS", 32))
+            # 32 layers gets to 147B
+            ffn_scale_factor=2.5
+            ffn_sparse_top_k=4
+        elif model_size == "Mistral-8x20B":
+            head_size = 128
+            num_heads = 64
+            num_layers = int(os.getenv("AXLEARN_NUM_LAYERS", 44))
+            ffn_scale_factor=2
+            ffn_sparse_top_k=2
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=num_layers,
