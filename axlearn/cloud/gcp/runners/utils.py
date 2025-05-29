@@ -31,8 +31,7 @@ def should_recreate_job(
         A verdict of recreate or not.
     """
     if processor_type != "tpu":
-        # We only consider recreation for TPU only jobs.
-        # types.
+        # We only consider recreation for TPU jobs.
         return False
 
     if str(tier) != "0" and reservation is not None:
