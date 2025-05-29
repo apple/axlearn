@@ -6,6 +6,7 @@
 
 """Common utilities across backends."""
 
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Literal, NamedTuple, Optional
 
@@ -39,20 +40,37 @@ def build_mask(
         fully masked. num_q_blocks * block_q will be larger than q_seq_len if q_seq_len is not
         divisible by block_q. The same holds true for kv blocks.
     """
-    # Initialize the iteration map where True means the block is not empty.
-    num_q_blocks = pl.cdiv(q_seq_len, block_q)
-    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
-    block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
-    # Run a compile-time evaluation to get the mask array.
-    for i in range(0, q_seq_len, block_q):
-        for j in range(0, kv_seq_len, block_k):
-            rows = np.arange(i, i + block_q, dtype=np.int32)
-            cols = np.arange(j, j + block_k, dtype=np.int32)
-            with jax.ensure_compile_time_eval():
-                # All empty means skipping
-                if not mask_fn(rows[:, None], cols[None, :]).any():
-                    block_mask_map[i // block_q, j // block_k] = False
-    return block_mask_map
+
+    def worker():
+        num_q_blocks = pl.cdiv(q_seq_len, block_q)
+        num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
+        block_mask_map = np.ones(shape=(num_q_blocks, num_kv_blocks), dtype=np.bool_)
+        # Run a compile-time evaluation to get the mask array.
+        for i in range(0, q_seq_len, block_q):
+            for j in range(0, kv_seq_len, block_k):
+                rows = np.arange(i, i + block_q, dtype=np.int32)
+                cols = np.arange(j, j + block_k, dtype=np.int32)
+                with jax.ensure_compile_time_eval():
+                    # All empty means skipping.
+                    if not mask_fn(rows[:, None], cols[None, :]).any():
+                        block_mask_map[i // block_q, j // block_k] = False
+        return block_mask_map
+
+    # Since the block mask computation runs within shard_map, it may inherit sharding and mesh
+    # information from the shard_map context, causing some sharding/partition mismatch problem
+    # when we use jnp to compute the mask within `mask_fn`:
+    #
+    # File "/usr/local/lib/python3.10/dist-packages/jax/_src/sharding.py", line 61, in
+    # _common_shard_shape
+    # assert len(partitions) == len(global_shape), (len(partitions), len(global_shape))
+    # AssertionError: (1, 2)
+    #
+    # It's not possible to simply use numpy in `mask_fn` and avoid jnp, because `mask_fn` is also
+    # used in Pallas kernels. To workaround this, we create a new thread, which doesn't have any
+    # exisitng thread local context, so jax has the illusion that we're running at the outer-scope
+    # and we can safely perform any compile time evaluations.
+    with ThreadPoolExecutor(1) as pool:
+        return pool.submit(worker).result()
 
 
 class KVOffsetInfo(NamedTuple):
