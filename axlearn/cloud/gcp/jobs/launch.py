@@ -584,11 +584,13 @@ def _get_launcher_or_exit(
     try:
         flag_values.runner_name = _infer_runner_name(flag_values)
         launch_cfg.runner = _get_runner_or_exit(flag_values)
-    except Exception:  # pylint: disable=broad-except
+    except Exception as e:  # pylint: disable=broad-except
         if require_runner:
             raise
         logging.warning(
-            "Failed to infer runner name. Proceeding since require_runner=%s", require_runner
+            "Failed to infer runner name with error %s. Proceeding since require_runner=%s",
+            e,
+            require_runner,
         )
     return launch_cfg
 

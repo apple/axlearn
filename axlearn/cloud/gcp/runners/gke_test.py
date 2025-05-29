@@ -24,6 +24,7 @@ from axlearn.cloud.gcp.runners.gke import (
     GKERunnerJob,
     _infer_job_count,
     _infer_job_version,
+    _infer_processor_type,
     _infer_reservation,
 )
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
@@ -58,6 +59,7 @@ def _mock_replicated_jobs(
                                 if reservation != "spot"
                                 else {"cloud.google.com/gke-spot": "true"}
                             )
+                            | {"cloud.google.com/gke-tpu-accelerator": "tpu-v5p-slice"}
                         },
                         **job_version_label,
                     },
@@ -66,6 +68,29 @@ def _mock_replicated_jobs(
         }
         for reservation in reservations
     ]
+
+
+def _build_replicated_job(node_selector: dict[str, str]):
+    return {
+        "template": {
+            "spec": {
+                "template": {
+                    "spec": {"nodeSelector": node_selector},
+                },
+            },
+        }
+    }
+
+
+def _mock_hybrid_replicated_jobs(has_tpu: bool, has_cpu: bool):
+    replicated_jobs = []
+    if has_tpu:
+        replicated_jobs.append(
+            _build_replicated_job({"cloud.google.com/gke-tpu-accelerator": "tpu-v5p-slice"})
+        )
+    if has_cpu:
+        replicated_jobs.append(_build_replicated_job({"axlearn/nodepool_type": "workload"}))
+    return replicated_jobs
 
 
 # TODO(markblee): Consolidate {TPU,GPU}GKERunnerTests.
@@ -329,6 +354,29 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
 
     @parameterized.parameters(
         dict(
+            job_spec=dict(replicatedJobs=_mock_hybrid_replicated_jobs(has_tpu=True, has_cpu=True)),
+            expected="tpu",
+        ),
+        dict(
+            job_spec=dict(replicatedJobs=_mock_hybrid_replicated_jobs(has_tpu=True, has_cpu=False)),
+            expected="tpu",
+        ),
+        dict(
+            job_spec=dict(replicatedJobs=_mock_hybrid_replicated_jobs(has_tpu=False, has_cpu=True)),
+            expected="cpu",
+        ),
+        dict(
+            job_spec=dict(
+                replicatedJobs=_mock_hybrid_replicated_jobs(has_tpu=False, has_cpu=False)
+            ),
+            expected=None,
+        ),
+    )
+    def test_infer_processor_type(self, job_spec: dict, expected: Optional[str] = None):
+        self.assertEqual(_infer_processor_type(job_spec), expected)
+
+    @parameterized.parameters(
+        dict(
             spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"])),
             expected=None,
         ),
@@ -376,7 +424,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(type="COMPLETED", status="TRUE"),
                     ]
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.COMPLETED,
             ),
@@ -390,7 +438,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(type="FAILED", status="TRUE"),
                     ]
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.FAILED,
             ),
@@ -432,7 +480,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=1, ready=1, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.PENDING,
             ),
@@ -445,7 +493,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=1, ready=1, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
@@ -458,7 +506,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=1, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.UNKNOWN,
             ),
@@ -493,7 +541,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 tier=None,
                 job_version=None,
                 status=k8s.client.exceptions.ApiException(status=404),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.NOT_STARTED,
             ),
@@ -506,7 +554,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=0, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.PENDING,
             ),
@@ -519,7 +567,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                         dict(failed=0, ready=0, succeeded=0),
                     ],
                 ),
-                spec=None,
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=2,
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
