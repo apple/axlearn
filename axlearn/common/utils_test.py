@@ -1870,6 +1870,76 @@ class DeviceMeshTest(TestCase):
             device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
             self.assertEqual(expected or logical_mesh, device_mesh.shape)
 
+    @parameterized.parameters(
+        {"logical_mesh": (16, 4, 8)},
+        {"logical_mesh": (64, 8)},
+        # Test fallback to standard mesh.
+        {"logical_mesh": (16, 32)},
+        # Test a case where we infer -1 in ICI mesh.
+        {"logical_mesh": (8, -1, 4), "expected": (8, 16, 4)},
+        # Test a case where we infer -1 in DCN mesh.
+        {"logical_mesh": (-1, 16, 4), "expected": (8, 16, 4)},
+        # Test a basic hybrid mesh case.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 16, 4), dcn_mesh_shape=(8, 1, 1)),
+            "expected": (8, 16, 4),
+        },
+        # If expressed as a hybrid mesh, fail if DCN mesh is invalid rather than using fallback.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(4, 16, 4), dcn_mesh_shape=(2, 1, 1)),
+            "expected": ValueError("DCN mesh"),
+        },
+        # Test that ICI mesh should respect the number of devices.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(8, 1, 16), dcn_mesh_shape=(2, -1, 1)),
+            "expected": ValueError("Product of ICI"),
+        },
+        # Test that DCN mesh should respect the number of slices.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(4, 1, 16), dcn_mesh_shape=(2, 2, 1)),
+            "expected": ValueError("Product of DCN"),
+        },
+        # Test a case where we infer -1 in ICI mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 2, -1), dcn_mesh_shape=(8, 1, 1)),
+            "expected": (8, 2, 32),
+        },
+        # Test a case where we infer -1 in DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, 4, 16), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (8, 4, 16),
+        },
+        # Test a case where we infer -1 in both ICI and DCN mesh.
+        {
+            "logical_mesh": HybridMeshShape(ici_mesh_shape=(1, -1, 16), dcn_mesh_shape=(-1, 1, 1)),
+            "expected": (8, 4, 16),
+        },
+    )
+    def test_create_device_mesh_neuron(
+        self,
+        logical_mesh: Union[MeshShape, HybridMeshShape],
+        expected: Optional[Union[MeshShape, Exception]] = None,
+    ):
+        num_devices_per_process = 64
+        num_granules = 8
+        devices = [
+            DummyDevice(
+                platform="neuron",
+                device_kind="NC_v3d",
+                process_index=(num_devices_per_process * granule_index + ix)
+                // num_devices_per_process,
+            )
+            for ix in range(num_devices_per_process)
+            for granule_index in range(num_granules)
+        ]
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+        else:
+            # Check that the constructed mesh has the expected shape.
+            device_mesh = create_device_mesh(mesh_shape=logical_mesh, devices=devices)
+            self.assertEqual(expected or logical_mesh, device_mesh.shape)
+
 
 class InferMeshShapeTest(TestCase):
     """Tests infer_mesh_shape."""
