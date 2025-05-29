@@ -451,6 +451,9 @@ class TPUReplicatedJob(SingleReplicatedJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
+        env_vars["TPU_PREMAPPED_BUFFER_SIZE"] = "137438953472"
+        env_vars["TPU_PREMAPPED_BUFFER_TRANSFER_THRESHOLD_BYTES"] = "137438953472"
+
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
         # Set request memory by host machine type.
         machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
@@ -687,6 +690,19 @@ class TPUReplicatedJob(SingleReplicatedJob):
             ip=_METADATA_GOOGLE_INTERNAL_IP,
             hostnames=["metadata", "metadata.google.internal"],
         )
+
+        # Temporary for ensuring job restarts on same nodepools
+        # selector.update(
+        #     {"stoelinga-orbax-testing": "true"}
+        # )
+        # tolerations.append(
+        #     dict(
+        #         key="stoelinga-orbax-testing",
+        #         operator="Equal",
+        #         value="true",
+        #         effect="NoSchedule",
+        #     )
+        # )
 
         spec = dict(
             # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
