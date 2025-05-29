@@ -9,7 +9,11 @@ import pytest
 from absl.testing import parameterized
 
 from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
-from axlearn.common.flash_attention.common import BaseFlashAttention, ReferenceMHA
+from axlearn.common.flash_attention.common import (
+    BaseFlashAttention,
+    BasePagedAttention,
+    ReferenceMHA,
+)
 from axlearn.common.flash_attention.gpu_attention import CuDNNGPUFlashAttentionWithExplicitBias
 from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
 from axlearn.common.flash_attention.gpu_paged_attention import GPUPagedAttention
@@ -18,17 +22,21 @@ from axlearn.common.flash_attention.test_utils import (
     generate_paged_attention_data,
 )
 from axlearn.common.flash_attention.tpu_decoding import TPUDecoding
+from axlearn.common.flash_attention.tpu_paged_attention import TPUPagedAttention
 from axlearn.common.test_utils import TestCase, Tolerance
 
 if jax.default_backend() == "gpu":
     decoding_fns = [GPUDecoding, CuDNNGPUFlashAttentionWithExplicitBias]
+    paged_attn_decoding_fns = [GPUPagedAttention]
     dtypes = [jnp.float32, jnp.float16]
 elif jax.default_backend() == "tpu":
     decoding_fns = [TPUDecoding]
+    paged_attn_decoding_fns = [TPUPagedAttention]
     dtypes = [jnp.float32, jnp.bfloat16]
 elif jax.default_backend() == "cpu":
     # CPU emulation of pallas kernels.
     decoding_fns = [GPUDecoding, TPUDecoding]
+    paged_attn_decoding_fns = [GPUPagedAttention, TPUPagedAttention]
     dtypes = [jnp.float32]
 else:
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
@@ -73,6 +81,7 @@ class DecodingTest(TestCase):
         kv_head_factor=[1, 8],
         window_len=[-1, 127],
         page_size=[16],
+        decoding_fn=paged_attn_decoding_fns,
     )
     def test_paged_attention_against_ref(
         self,
@@ -86,11 +95,13 @@ class DecodingTest(TestCase):
         kv_head_factor: int,
         window_len: int,
         page_size: int,
+        decoding_fn: BasePagedAttention,
     ):
         if batch_size * seq_len * per_head_dim >= 262144 and input_dtype == jnp.float32:
             pytest.skip(reason="Shared Memory Explodes")
+        if decoding_fn == TPUPagedAttention and per_head_dim % 128 != 0:
+            pytest.skip(reason="TPU kernel requires head dim divides 128 for double buffering.")
 
-        decoding_fn = GPUPagedAttention
         softmax_scale = per_head_dim**-0.5
         mask_fn = causal_mask
         if window_len > 0:
