@@ -822,6 +822,12 @@ class BaseMultiheadLinear(DenseGeneralBaseLayer):
 class MultiheadInputLinear(BaseMultiheadLinear):
     """Multi-head input linear layer."""
 
+    @config_class
+    class Config(BaseMultiheadLinear.Config):
+        # Explicitly define MultiheadInputLinear.Config so that config parsing
+        # functions can distinguish it from MultiheadOutputLinear.Config.
+        pass
+
     @property
     def _einsum_expr(self):
         return "btd,dnh->btnh"
@@ -844,6 +850,12 @@ class MultiheadInputLinear(BaseMultiheadLinear):
 
 class MultiheadOutputLinear(BaseMultiheadLinear):
     """Multi-head output linear layer."""
+
+    @config_class
+    class Config(BaseMultiheadLinear.Config):
+        # Explicitly define MultiheadOutputLinear.Config so that config parsing
+        # functions can distinguish it from MultiheadInputLinear.Config.
+        pass
 
     @property
     def _einsum_expr(self):
