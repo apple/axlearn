@@ -91,6 +91,10 @@ class ScheduleTest(parameterized.TestCase):
             else:
                 self.assertEqual(0.001, value)
 
+    def test_segment_wise_errors(self):
+        with self.assertRaisesRegex(ValueError, "Unexpected length"):
+            schedule.segment_wise(segment_steps=[100, 100], segments=[0.1, 0.01])
+
     def test_decay_bias_correction(self):
         decay = 0.999
         s = schedule.decay_bias_correction(decay)

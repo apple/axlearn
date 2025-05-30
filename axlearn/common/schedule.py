@@ -268,7 +268,7 @@ def segment_wise(segments: list[Schedule], *, segment_steps: list[int]) -> Sched
             segment_steps is negative.
     """
     if len(segments) != len(segment_steps) + 1:
-        raise ValueError(f"Unexpected length: {len(segments)} != {len(segment_steps)} + 1")
+        raise ValueError(f"Unexpected length: {len(segments)=} != {len(segment_steps)=} + 1")
     if not all(num_steps >= 0 for num_steps in segment_steps):
         raise ValueError(f"segment_steps must be >= 0: {segment_steps}")
     segments = [as_schedule_fn(s) for s in segments]
