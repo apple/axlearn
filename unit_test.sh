@@ -7,9 +7,12 @@ fi
 
 source $VENV_NAME/bin/activate
 
+export TEST_LOG_DIR=${3:-"test_logs"}
+
 export USE_SHARDMAP_FFN=1
 
-TEST_ARTIFACTS_PATH="test_artifacts"
+TEST_ARTIFACTS_PATH=$TEST_LOG_DIR/artifacts
+
 mkdir -p "$TEST_ARTIFACTS_PATH"
 NEURON_DUMP_PATH=${TEST_ARTIFACTS_PATH}/neuron_dump
 HLO_DUMP_PATH=${TEST_ARTIFACTS_PATH}/hlo_dump
@@ -68,18 +71,23 @@ export TF_CPP_MIN_LOG_LEVEL=3
 # used by mixture_of_experts_neuron_test.py
 export TEST_SUITE=${2:-"presubmit"}
 set -ex
+
 if [ "$1" = "unit" ]; then
-    pytest -rsA --tb=short --junitxml=test_logs/$TEST_SUITE/unit.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnCpu
+    pytest -rsA --tb=short --junitxml=$TEST_LOG_DIR/$TEST_SUITE/unit.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnCpu
 elif [ "$1" = "integ" ]; then
-    pytest -rsA --tb=short --junitxml=test_logs/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
+    pytest -rsA --tb=short --junitxml=$TEST_LOG_DIR/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
 elif [ "$1" = "150b" ]; then
-    pytest -rsA --tb=short --junitxml=test_logs/$TEST_SUITE/150b.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150bUnit or TestDev150bGating or TestDev150bInteg"
+    # suite doesn't matter for this
+    pytest -rsA --tb=short --junitxml=$TEST_LOG_DIR/150b/unit_and_integ.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150bUnit or TestDev150bGating or TestDev150bInteg"
 elif [ "$1" = "150b_gather" ]; then
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_gather_vs_einsum or TestDev150bUnit and test_fwdbwd_gather_vs_einsum or TestDev150bInteg and test_fwd_gather_vs_einsum or TestDev150bInteg and test_fwdbwd_gather_vs_einsum'
 elif [ "$1" = "150b_blockwise" ]; then
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_blockwise_vs_einsum or TestDev150bUnit and test_fwdbwd_blockwise_vs_einsum or TestDev150bInteg and test_fwd_blockwise_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwise_vs_einsum'
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_blockwisev2_vs_einsum or TestDev150bUnit and test_fwdbwd_blockwisev2_vs_einsum or TestDev150bInteg and test_fwd_blockwisev2_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwisev2_vs_einsum'
 elif [ "$1" = "150b_blockwise_cpu" ]; then
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_blockwise_vs_einsum or TestDev150bUnit and test_fwdbwd_blockwise_vs_einsum'
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_blockwisev2_vs_einsum or TestDev150bUnit and test_fwdbwd_blockwisev2_vs_einsum'
 elif [ "$1" = "150b_blockwise_neuron" ]; then
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bInteg and test_fwd_blockwise_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwise_vs_einsum'
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bInteg and test_fwd_blockwisev2_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwisev2_vs_einsum'
 fi

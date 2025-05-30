@@ -43,7 +43,7 @@ COLLECTIVES=$ENV_DROP_DIR/aws-neuronx-collectives-*.deb
 TOOLS=$ENV_DROP_DIR/aws-neuronx-tools-*.deb
 DKMS=$ENV_DROP_DIR/aws-neuronx-dkms_*.deb
 
-sudo dpkg -i $RUNTIME $COLLECTIVES #$TOOLS #$DKMS
+sudo dpkg -i $RUNTIME $COLLECTIVES $TOOLS #$DKMS
 
 # sudo apt-get install -y linux-headers-$(uname -r) || true
 # sudo apt-get remove -y aws-neuronx-devtools || true

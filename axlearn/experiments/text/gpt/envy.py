@@ -50,7 +50,7 @@ from axlearn.common.attention import (
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
-from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh, TopKGatingGather, TopKGatingGatherBlockwise
+from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh, TopKGatingGather, TopKGatingGatherBlockwise, TopKGatingGatherBlockwiseV2
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
@@ -620,7 +620,7 @@ def get_trainer_kwargs(
                 num_heads=num_heads,
                 num_kv_heads=max(8, tp_degree),
                 num_experts=NUM_EXPERTS[model_size],
-                train_capacity_factor=ffn_sparse_top_k,
+                train_capacity_factor=int(os.getenv("AXLEARN_CAP_FACTOR", ffn_sparse_top_k)),
                 num_groups=1,
                 ffn_layer_types=ffn_layer_types,
                 ffn_sparse_top_k=ffn_sparse_top_k,
@@ -772,7 +772,13 @@ def model_config(
             MESH_AXIS_NAMES, MOE_OUTER_BATCH_AXIS_NAMES, mesh_shape
         )
 
-    gating_type = TopKGatingGatherBlockwise if int(os.getenv('AXLEARN_USE_BLOCKWISE', 1)) == 1 else TopKGatingGather
+    use_blockwise = int(os.getenv('AXLEARN_USE_BLOCKWISE', 1))
+    if use_blockwise == 1:
+        gating_type = TopKGatingGatherBlockwise
+    elif use_blockwise == 2:
+        gating_type = TopKGatingGatherBlockwiseV2
+    else:
+        gating_type = TopKGatingGather
     expert_config = TransformerFeedForwardMoE.default_config().set(
         outer_batch=outer_batch_size,
         num_experts=num_experts,

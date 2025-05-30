@@ -41,8 +41,8 @@ TEST_TOLS_FP32 = {
 }
 # BF16 test tolerances
 TEST_TOLS_BF16 = {
-    "atol": 5e-2,
-    "rtol": 1e-2,
+    "atol": 8e-3,
+    "rtol": 1e-3,
 }
 
 def get_mesh_dims_from_spec(mesh_spec):
@@ -345,8 +345,8 @@ class GridSpaceBuilder:
             # 8x20
             grid_space.append(
                 self.create_test_config(
-                    **kwargs, input_dim=6144, hidden_dim=16384, mesh_spec={"fsdp":-1, "model":16},
-                    n_experts=8, top_k=2, n_groups=1, capacity_factor=2, seq=4096
+                    **kwargs, input_dim=8192, hidden_dim=16384, mesh_spec={"fsdp":-1, "model":16},
+                    n_experts=8, top_k=2, n_groups=1, capacity_factor=2, seq=8192
                 )
             )
         return grid_space
@@ -446,12 +446,14 @@ class GridSpaceBuilder:
             self.create_test_config(**kwargs, n_experts=16, top_k=8, n_groups=1, capacity_factor=2, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
             # capf change
             self.create_test_config(**kwargs, n_experts=16, top_k=8, n_groups=1, capacity_factor=4, batch=16, seq=4096, mesh_spec={"fsdp":-1, "model":4}),
+
             # seqlen changes
-            self.create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=1, capacity_factor=2, batch=16, seq=256, mesh_spec={"fsdp":-1, "model":4}),
-            self.create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=1, capacity_factor=2, batch=16, seq=2048, mesh_spec={"fsdp":-1, "model":4}),
-            self.create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=8192, mesh_spec={"fsdp":-1, "model":4}),
-            self.create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=16*1024, mesh_spec={"fsdp":-1, "model":4}),
-            self.create_test_config(**kwargs, n_experts=16, top_k=4, n_groups=2, capacity_factor=2, batch=16, seq=32*1024, mesh_spec={"fsdp":-1, "model":4}),
+            # using 8x20b
+            self.create_test_config(dtype=jnp.bfloat16, input_dim=8192, hidden_dim=16384, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=256, mesh_spec={"fsdp":-1, "model":4}),
+            self.create_test_config(dtype=jnp.bfloat16, input_dim=8192, hidden_dim=16384, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=2048, mesh_spec={"fsdp":-1, "model":4}),
+            self.create_test_config(dtype=jnp.bfloat16, input_dim=8192, hidden_dim=16384, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=8192, mesh_spec={"fsdp":-1, "model":4}),
+            self.create_test_config(dtype=jnp.bfloat16, input_dim=8192, hidden_dim=16384, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=16*1024, mesh_spec={"fsdp":-1, "model":4}),
+            self.create_test_config(dtype=jnp.bfloat16, input_dim=8192, hidden_dim=16384, n_experts=8, top_k=2, n_groups=1, capacity_factor=2, batch=16, seq=32*1024, mesh_spec={"fsdp":-1, "model":4}),
 
             # tp8
             # self.create_test_config(**kwargs, n_experts=16, top_k=2, n_groups=2, capacity_factor=2, batch=8, seq=4096, mesh_spec={"fsdp":-1, "model":8}),
@@ -477,11 +479,11 @@ def get_gating_config(gating_cls, num_experts, top_k, train_capacity_factor, exp
     cfg.train_capacity_factor = train_capacity_factor
     cfg.expert_capacity = expert_capacity
     cfg.num_experts = num_experts
-    if block_size is not None and isinstance(cfg, TopKGatingGatherBlockwise):
+    if block_size is not None and isinstance(cfg, TopKGatingGatherBlockwise.Config):
         cfg.block_size = block_size
     return cfg
 
-def create_test_config(test, golden, test_device, golden_device, input_dim, hidden_dim, n_experts, top_k, n_groups, capacity_factor, mesh_spec, batch, seq, dtype, block_size=4, layer='moe'):
+def create_test_config(test, golden, test_device, golden_device, input_dim, hidden_dim, n_experts, top_k, n_groups, capacity_factor, mesh_spec, batch, seq, dtype, block_size=512, layer='moe'):
     """
     Ensure any new param added here also shows up in the name to prevent multiple tests from having same name.
     You will see an exception calling that out if it happens.

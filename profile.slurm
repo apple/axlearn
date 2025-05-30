@@ -1,4 +1,5 @@
 #!/bin/bash
+#SBATCH --job-name rh_profile
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task 127
 #SBATCH --output logs/%j_%x.out

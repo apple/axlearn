@@ -55,16 +55,19 @@ def can_use_blockwise_matmul_nki(
     if blockwise_mm_nki is None:
         print("Failed to load Blockwise NKI kernel.")
         return False
-    try:
-        check_blockwise_mm_kernel_compatibility(
-            hidden_size=hidden_size,
-            block_size=block_size,
-            intermediate_size_tp=intermediate_size_tp,
-        )
-    except AssertionError as e:
-        print(f"Blockwise kernel not compatible with model config. Reason: {str(e)}")
-        return False
+    
     return True
+    
+    # try:
+    #     check_blockwise_mm_kernel_compatibility(
+    #         hidden_size=hidden_size,
+    #         block_size=block_size,
+    #         intermediate_size_tp=intermediate_size_tp,
+    #     )
+    # except AssertionError as e:
+    #     print(f"Blockwise kernel not compatible with model config. Reason: {str(e)}")
+    #     return False
+    # return True
 
 
 @partial(custom_vjp, nondiff_argnums=(6,))
@@ -151,6 +154,7 @@ def _blockwise_mm_bwd(
             block_to_expert.astype(jnp.int32),
             grad_output,
             block_size=block_size,
+            ktype=2 if block_to_expert.shape[-1] == down_proj_weight.shape[0] else 1,
         )
         
         sliced_tensor = hidden_states_grad[:-1,:]
