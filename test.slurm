@@ -18,7 +18,7 @@ if [ $SUITE_ARG = "all" ]; then
         srun -l unit_test.sh unit $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/unit.log
         srun -l unit_test.sh integ $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/integ.log
         if [ "$suite" = "presubmit" ]; then
-            srun -l unit_test.sh 150b "none" $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/150b/unit_and_integ.log
+            srun -l unit_test.sh 150b $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/150b/unit_and_integ.log
         fi
     done
 else
@@ -27,6 +27,6 @@ else
     srun -l unit_test.sh unit $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/unit.log
     srun -l unit_test.sh integ $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/integ.log
     if [ "$SUITE_ARG" = "presubmit" ]; then
-        srun -l unit_test.sh 150b "none" $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/150b/unit_and_integ.log
+        srun -l unit_test.sh 150b $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/150b/unit_and_integ.log
     fi
 fi
