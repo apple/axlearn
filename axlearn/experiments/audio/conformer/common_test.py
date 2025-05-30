@@ -7,7 +7,7 @@ import os
 import pytest
 import seqio
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.audio.encoder_asr import SpeechFeatureLayer
 from axlearn.common.config import config_for_class
@@ -46,7 +46,7 @@ class ConfigTest(TestCase):
         # Dropping all text.
         dict(max_source_len=5, max_target_len=5, expect_count=0),
         # Dropping some speech and pad text.
-        dict(max_source_len=4, max_target_len=8, expect_count=4),
+        dict(max_source_len=4, max_target_len=8, expect_count=3),
     )
     @pytest.mark.skipif(not os.path.exists(_bpe_vocab_file), reason="Missing testdata.")
     def test_asr_input(self, max_source_len: int, max_target_len: int, expect_count: int):
@@ -63,7 +63,7 @@ class ConfigTest(TestCase):
         )
 
         def source():
-            speech_ds = fake_speech_source(is_training=False, num_examples=5)()
+            speech_ds = fake_speech_source(is_training=False, num_examples=5, max_len=5)()
             text_ds = fake_text_source(is_training=False, batch_size=5)()
             return tf.data.Dataset.zip((speech_ds, text_ds)).map(lambda s, t: {**s, **t})
 
@@ -98,3 +98,7 @@ class ConfigTest(TestCase):
                 tf.reduce_all(ex["target"]["input_ids"][1:] == ex["target_labels"][:-1])
             )
         self.assertEqual(expect_count, actual_count)
+
+
+if __name__ == "__main__":
+    absltest.main()
