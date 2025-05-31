@@ -23,6 +23,7 @@ from numpy.typing import ArrayLike
 from axlearn.audio import frontend_utils
 from axlearn.audio.frontend_utils import (
     WindowType,
+    cast_for_rfft,
     frame,
     frame_paddings,
     linear_to_log_mel_spectrogram,
@@ -393,15 +394,13 @@ def _ref_log_mel_spectrogram(
 
 
 class ShardedFftTest(TestCase):
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
     @set_threefry_partitionable(False)  # TODO(Luzy): update for threefry_partitionable True
-    def test_fft(self):
+    def test_fft(self, dtype):
         input_shape = (8, 800, 400)
         fft_size = 512
         inputs = jax.random.uniform(
-            jax.random.PRNGKey(123),
-            shape=input_shape,
-            minval=-32768.0,
-            maxval=32768.0,
+            jax.random.PRNGKey(123), shape=input_shape, minval=-32768.0, maxval=32768.0, dtype=dtype
         )
         with Mesh(
             mesh_utils.create_device_mesh((len(jax.devices()), 1)), ("data", "model")
@@ -414,7 +413,7 @@ class ShardedFftTest(TestCase):
             fft_fn = jax.jit(
                 sharded_fft(n=fft_size, partition_spec=PartitionSpec("data", None, None))
             )
-            ref_ffts = jax.jit(jnp.fft.rfft, static_argnames="n")(inputs, n=fft_size)
+            ref_ffts = jax.jit(jnp.fft.rfft, static_argnames="n")(cast_for_rfft(inputs), n=fft_size)
             test_ffts = fft_fn(inputs)
 
         assert_allclose(ref_ffts, test_ffts, rtol=1e-3)
