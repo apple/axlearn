@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "axlearn"
-version = "0.1.6"
+version = "0.1.7"
 description = "AXLearn"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,8 +23,8 @@ core = [
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.4.38",
-    "jaxlib==0.4.38",
+    "jax==0.5.3",
+    "jaxlib==0.5.3",
     "ml-dtypes==0.4.1",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
@@ -108,7 +108,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.4.38",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
@@ -133,7 +133,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==2.1.0",
-    "jax[cuda12]==0.4.38",
+    "jax[cuda12]==0.5.3",
     "nvidia-ml-py==12.560.30",
 ]
 # Open API inference.
