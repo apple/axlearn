@@ -453,6 +453,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
         env_vars["TPU_PREMAPPED_BUFFER_SIZE"] = "137438953472"
         env_vars["TPU_PREMAPPED_BUFFER_TRANSFER_THRESHOLD_BYTES"] = "137438953472"
+        env_vars["TPU_LIBRARY_PATH"] = "/root/libtpu.so"
 
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
         # Set request memory by host machine type.
