@@ -329,11 +329,12 @@ def _generate_trn2_custom_configs(
     ffn_layer_types = get_ffn_layer_types()
     if len(ffn_layer_types) == 1:
         target_config="model.decoder.transformer.layer.self_attention.attention.input_linear.input_linear"
-        mcm = ModuleConfigModifier.default_config().set(
-            target_config=target_config,
-            modification=GroupedQKVLinear.default_config(),
-        )
-        trn2_module_modifications.append(mcm)
+        if int(os.getenv("AXLEARN_USE_FUSED_QKV", "0")) == 0:
+            mcm = ModuleConfigModifier.default_config().set(
+                target_config=target_config,
+                modification=GroupedQKVLinear.default_config(),
+            )
+            trn2_module_modifications.append(mcm)
 
         trn2_partition_spec_modifications.append(
             PartitionSpecModifier.default_config().set(
@@ -590,6 +591,10 @@ def get_trainer_kwargs(
         neuron_mesh = mesh_shape_from_axes(fsdp=fsdp_degree, model=tp_degree, expert=ep_degree)
         num_layers=int(os.getenv("AXLEARN_NUM_LAYERS", 4))
         ffn_sparse_top_k=4
+        num_kv_heads = max(8, tp_degree)
+        if int(os.getenv("AXLEARN_NUM_KV_HEADS", -1)) != -1:
+            num_kv_heads = int(os.getenv("AXLEARN_NUM_KV_HEADS"))
+
         if model_size == "Mistral-toy":
             num_heads = 32
             head_size = 32
@@ -618,7 +623,7 @@ def get_trainer_kwargs(
                 hidden_dim=num_heads*head_size,
                 ffn_dim=scaled_hidden_dim(scale=ffn_scale_factor, round_up_to_multiples_of=128),
                 num_heads=num_heads,
-                num_kv_heads=max(8, tp_degree),
+                num_kv_heads=num_kv_heads,
                 num_experts=NUM_EXPERTS[model_size],
                 train_capacity_factor=int(os.getenv("AXLEARN_CAP_FACTOR", ffn_sparse_top_k)),
                 num_groups=1,

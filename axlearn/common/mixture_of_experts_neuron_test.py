@@ -396,29 +396,34 @@ class TestDev150bUnit(LayerTestCase):
 class TestDev150bInteg(TestDev150bUnit):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        jax.config.update('jax_platform_name', 'neuron')
         self.test_device = 'neuron'
         self.golden_device = 'cpu'
         self.golden = TopKGating
     
     def test_fwd_blockwise_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise))
 
     def test_fwd_blockwisev2_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwiseV2))
     
     @unittest.skip("skip gather")
     def test_fwd_gather_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather))
     
     def test_fwdbwd_blockwise_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise))
 
     def test_fwdbwd_blockwisev2_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwiseV2))
     
     @unittest.skip("skip gather")
     def test_fwdbwd_gather_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGather))    
 
 class TestDev150bGating(GatingTestCase):

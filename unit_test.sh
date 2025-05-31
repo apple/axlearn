@@ -78,7 +78,7 @@ elif [ "$1" = "integ" ]; then
     pytest -rsA --tb=short --junitxml=$TEST_LOG_DIR/$TEST_SUITE/integ.xml axlearn/common/mixture_of_experts_neuron_test.py::TestLayerOnTrn
 elif [ "$1" = "150b" ]; then
     # suite doesn't matter for this
-    pytest -rsA --tb=short --junitxml=$TEST_LOG_DIR/150b/unit_and_integ.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150bUnit or TestDev150bGating or TestDev150bInteg"
+    pytest -rsA --tb=short --junitxml=$TEST_LOG_DIR/150b/unit_and_integ.xml axlearn/common/mixture_of_experts_neuron_test.py -k "TestDev150bInteg or TestDev150bUnit or TestDev150bGating"
 elif [ "$1" = "150b_gather" ]; then
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnit and test_fwd_gather_vs_einsum or TestDev150bUnit and test_fwdbwd_gather_vs_einsum or TestDev150bInteg and test_fwd_gather_vs_einsum or TestDev150bInteg and test_fwdbwd_gather_vs_einsum'
 elif [ "$1" = "150b_blockwise" ]; then

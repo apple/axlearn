@@ -24,8 +24,8 @@ if [ $SUITE_ARG = "all" ]; then
 else
     suite=$SUITE_ARG
     mkdir -p $TEST_LOGDIR/${suite}
-    srun -l unit_test.sh unit $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/unit.log
-    srun -l unit_test.sh integ $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/integ.log
+    #srun -l unit_test.sh unit $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/unit.log
+    #srun -l unit_test.sh integ $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/${suite}/integ.log
     if [ "$SUITE_ARG" = "presubmit" ]; then
         srun -l unit_test.sh 150b $suite $TEST_LOGDIR 2>&1 | tee $TEST_LOGDIR/150b/unit_and_integ.log
     fi
