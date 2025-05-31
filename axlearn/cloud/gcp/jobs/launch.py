@@ -525,11 +525,11 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
         """Submits the command to bastion."""
         cfg: BastionManagedGKEJob.Config = self.config
         worker_log = f"{infer_cli_name()} gcp logs --name={cfg.name} --replica=0 --worker=0"
-        print(f"\nOnce started, view log outputs with:\n{worker_log}\n")
         job_spec = super().submit()
         print(
-            "\nView running pods with:\nkubectl get pods\n"
-            "\nNote that the job may take a few minutes to start."
+            "\nNote that the job may take a few minutes to start.\n"
+            f"\nOnce started, view log outputs with:\n{worker_log}\n"
+            "\nView running pods with:\nkubectl get pods"
         )
         return job_spec
 
