@@ -450,7 +450,9 @@ async def _async_deserialize(
         mb_256 = 256 * 1024 * 1024
         out_size = math.ceil(out_size / mb_256) * mb_256
 
-        layout = Layout(dll, jax.sharding.SingleDeviceSharding(device))
+        layout = Layout(
+            dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
+        )
         try:
             await h2d_limiter.wait_for_bytes(out_size)
             result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
