@@ -5,6 +5,14 @@ set -xe
 export NUM_REPLICAS=${NUM_REPLICAS:-4}
 export JOBSET_NAME=${JOBSET_NAME:-$USER}
 
+# The bundle step is needed if you run on cloudtop
+axlearn gcp bundle --name=$JOBSET_NAME \
+        --bundler_spec=allow_dirty=True \
+        --bundler_type=artifactregistry \
+        --bundler_spec=dockerfile=Dockerfile \
+        --bundler_spec=image=tpu \
+        --bundler_spec=target=tpu
+
 axlearn gcp launch run --cluster=bodaborg-v6e-256-tt-c \
         --runner_name gke_tpu_single \
         --name=$JOBSET_NAME \
