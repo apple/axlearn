@@ -245,6 +245,53 @@ def stepwise(sub: list[Schedule], start_step: list[int]) -> ScheduleFn:
     return fn
 
 
+def segment_wise(segments: list[Schedule], *, segment_steps: list[int]) -> ScheduleFn:
+    """A composite schedule consisting of multiple segments, each with its own schedule.
+
+    The step passed to sub-schedule always starts at 1, so that the values of each sub-schedule do
+    not depend on other sub-schedules.
+
+    Args:
+        segments: a sequence of N sub-schedules.
+        segment_steps: a sequence of N - 1 integers. segment_steps[i] represents the number of steps
+            of segments[i]. Assuming that segments[N-1] = inf, segment[k] will be used for step
+            [1 + sum(segment_steps[:k]), sum(segment_steps[:k + 1])].
+
+    Returns:
+        A composite schedule, s.t.
+        * If step <= 0 or step > sum(segment_steps), the schedule returns 0;
+        * If 1 + sum(segment_steps[:k]) <= step <= sum(segment_steps[:k + 1]), the schedule returns
+          segments[k](step - sum(segment_steps[:k]));
+
+    Raises:
+        ValueError: If segments or segment_steps have incompatible lengths, or if any element of
+            segment_steps is negative.
+    """
+    if len(segments) != len(segment_steps) + 1:
+        raise ValueError(f"Unexpected length: {len(segments)=} != {len(segment_steps)=} + 1")
+    if not all(num_steps >= 0 for num_steps in segment_steps):
+        raise ValueError(f"segment_steps must be >= 0: {segment_steps}")
+    segments = [as_schedule_fn(s) for s in segments]
+
+    # segment[k] is used for steps in range [segment_offsets[k] + 1, segment_offsets[k + 1]].
+    segment_offsets = [0]
+    for num_steps in segment_steps:
+        segment_offsets.append(segment_offsets[-1] + num_steps)
+
+    def fn(step: Tensor) -> Tensor:
+        values = [s(jnp.maximum(1, step - segment_offsets[k])) for k, s in enumerate(segments)]
+        activations = [
+            jnp.logical_and(
+                jax.lax.le(segment_offsets[k] + 1, step),
+                jax.lax.le(step, segment_offsets[k + 1]) if k + 1 < len(segment_offsets) else True,
+            )
+            for k in range(len(segments))
+        ]
+        return sum(value * activation for value, activation in zip(values, activations))
+
+    return fn
+
+
 def cosine_with_linear_warmup(
     peak_lr: float,
     *,
@@ -269,9 +316,9 @@ def cosine_with_linear_warmup(
     Returns:
         A composite schedule.
     """
-    sub, start_step = [], []
+    segments, segment_steps = [], []
     if warmup_steps > 0:
-        sub.append(
+        segments.append(
             config_for_function(polynomial).set(
                 begin_step=0,
                 begin_value=begin_value,
@@ -279,9 +326,9 @@ def cosine_with_linear_warmup(
                 end_value=peak_lr,
             )
         )
-        start_step.append(warmup_steps)
+        segment_steps.append(warmup_steps)
     if decay_begin_step is not None and decay_begin_step > warmup_steps:
-        sub.append(
+        segments.append(
             config_for_function(polynomial).set(
                 begin_step=0,
                 begin_value=peak_lr,
@@ -289,18 +336,16 @@ def cosine_with_linear_warmup(
                 end_value=peak_lr,
             )
         )
-        start_step.append(decay_begin_step)
-    sub.append(
+        segment_steps.append(decay_begin_step - warmup_steps)
+    cosine_decay_steps = max_step - sum(segment_steps or [])
+    segments.append(
         config_for_function(cosine_decay_schedule).set(
             init_value=peak_lr,
-            decay_steps=max_step - start_step[-1] if start_step else max_step,
+            decay_steps=cosine_decay_steps,
             alpha=alpha,
         )
     )
-    return stepwise(
-        sub=sub,
-        start_step=start_step,
-    )
+    return segment_wise(segments=segments, segment_steps=segment_steps)
 
 
 def constant_with_linear_warmup(
@@ -319,8 +364,8 @@ def constant_with_linear_warmup(
     Returns:
         A composite schedule.
     """
-    return stepwise(
-        sub=[
+    return segment_wise(
+        segments=[
             config_for_function(polynomial).set(
                 begin_step=0,
                 begin_value=begin_value,
@@ -331,7 +376,7 @@ def constant_with_linear_warmup(
                 value=peak_lr,
             ),
         ],
-        start_step=[warmup_steps],
+        segment_steps=[warmup_steps],
     )
 
 
@@ -356,8 +401,8 @@ def linear_schedule_with_warmup(
     Returns:
         A composite schedule.
     """
-    return stepwise(
-        sub=[
+    return segment_wise(
+        segments=[
             config_for_function(polynomial).set(
                 begin_step=0, begin_value=begin_value, end_step=warmup_steps, end_value=peak_lr
             ),
@@ -368,7 +413,7 @@ def linear_schedule_with_warmup(
                 end_value=end_value,
             ),
         ],
-        start_step=[warmup_steps],
+        segment_steps=[warmup_steps],
     )
 
 

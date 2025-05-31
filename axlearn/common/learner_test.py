@@ -42,7 +42,6 @@ from axlearn.common.optimizers import (
     adamw_optimizer,
     chain,
     clip_by_global_norm,
-    optax,
     sgd_optimizer,
 )
 from axlearn.common.quantized_dot_general.layers import (
@@ -105,10 +104,7 @@ class LearnerTest(TestCase):
     def test_forward_and_backward(self, ema_decay):
         """Demonstrates how API users should use the API while ensuring that it works correctly."""
         # Init a learner.
-        learning_rate = config_for_function(schedule.stepwise).set(
-            sub=[0.1, 0.01, 0.001],
-            start_step=[100, 200],
-        )
+        learning_rate = config_for_function(schedule.constant_schedule).set(value=0.1)
         optimizer_cfg = config_for_function(adam_optimizer).set(
             learning_rate=learning_rate, b1=0.9, b2=0.99, eps=1e-5, l2_regularizer_weight=1.0
         )
@@ -180,10 +176,7 @@ class LearnerTest(TestCase):
 
     @parameterized.product(ema_decay=(None, 0.9), method=("update", "forward_and_backward"))
     def test_learner(self, ema_decay: Optional[float], method: str):
-        learning_rate = config_for_function(schedule.stepwise).set(
-            sub=[0.1, 0.01, 0.001],
-            start_step=[100, 200],
-        )
+        learning_rate = config_for_function(schedule.constant_schedule).set(value=0.1)
         learning_rate_fn = schedule.as_schedule_fn(learning_rate)
         weight_decay = 1e-4
         step = 1
@@ -357,10 +350,7 @@ class LearnerTest(TestCase):
         ("all_updates_c", [(".*c", UpdateType.ALL_UPDATES)]),
     )
     def test_update_rules(self, update_rules):
-        learning_rate = config_for_function(schedule.stepwise).set(
-            sub=[0.1, 0.01, 0.001],
-            start_step=[100, 200],
-        )
+        learning_rate = config_for_function(schedule.constant_schedule).set(value=0.1)
         learning_rate_fn = schedule.as_schedule_fn(learning_rate)
         weight_decay = 1e-4
         step = 0
@@ -1531,10 +1521,7 @@ class CompositeLearnerTest(TestCase):
         if jax.default_backend() != "gpu":
             self.skipTest("Need H100 for this test.")
         # Arbitrary values that don't matter.
-        learning_rate = config_for_function(schedule.stepwise).set(
-            sub=[0.1, 0.01, 0.001],
-            start_step=[100, 200],
-        )
+        learning_rate = config_for_function(schedule.constant_schedule).set(value=0.1)
         transformation = config_for_function(chain).set(
             args=(
                 config_for_function(clip_by_global_norm),
