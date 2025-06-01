@@ -13,7 +13,7 @@ axlearn gcp bundle --name=$JOBSET_NAME \
         --bundler_spec=image=tpu \
         --bundler_spec=target=tpu
 
-axlearn gcp launch run --cluster=bodaborg-v6e-256-tt-c \
+axlearn gcp launch run --cluster=bodaborg-v6e-256-tt-c-new-2 \
         --runner_name gke_tpu_single \
         --name=$JOBSET_NAME \
         --queue=multislice-queue \
