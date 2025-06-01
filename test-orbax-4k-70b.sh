@@ -4,6 +4,7 @@ set -xe
 
 export NUM_REPLICAS=${NUM_REPLICAS:-4}
 export JOBSET_NAME=${JOBSET_NAME:-$USER}
+export BASTION_TIER=disabled
 
 # The bundle step is needed if you run on cloudtop
 axlearn gcp bundle --name=$JOBSET_NAME \
