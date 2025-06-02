@@ -1,11 +1,13 @@
 #!/bin/bash
 #SBATCH --cpus-per-task 127
+#SBATCH --switches 1
 #SBATCH --output logs/%j_%x.out
+#SBATCH --nodes 8
 
 export AXLEARN_REMAT_LAYER=selective
 export AXLEARN_MODEL_NAME="envy-Mistral-8x20B"
 export AXLEARN_TP_DEGREE=16
-export AXLEARN_TRAIN_BATCH_SIZE=$((16 * SLURM_NNODES))
+export AXLEARN_TRAIN_BATCH_SIZE=$((8 * SLURM_NNODES))
 export AXLEARN_USE_BLOCKWISE=1
 
 # set the env to use here
@@ -19,7 +21,7 @@ export VENV_NAME=jaxmoe
 
 # Setting below two flags profiles on 3rd step and exits
 # export AXLEARN_PROFILE_MODE="tracerun"
-# export PROFILE_JOB_NAME="4l_150b_bs16_4k_selkernelremat_repeated_1n"
+# export PROFILE_JOB_NAME="4l_8x20b_bs8_8k_selectiveremat_repeated_8n"
 
 # Set to disable kernel, runs into compiler error for 150b at least
 # export AXLEARN_USE_BLOCKWISE_MLP_KERNEL=0
