@@ -14,13 +14,14 @@ export AXLEARN_TRAIN_BATCH_SIZE=$((16 * SLURM_NNODES))
 export AXLEARN_CAP_FACTOR=2
 export AXLEARN_USE_BLOCKWISE=1
 export AXLEARN_REPEATED=1
-export AXLEARN_NUM_KV_HEADS=8
-export AXLEARN_USE_FUSED_QKV=1
+export AXLEARN_NUM_KV_HEADS=16
+export AXLEARN_SHUFFLE_FILES=0
 export DATA_SEED=42
-export CUSTOM_TAG_experiment=convergence
+
 export JAX_COMPILATION_CACHE_DIR="cache/"
 mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
+export CUSTOM_TAG_experiment=convergence
 export RENAME_JOB=true
 export RENAME_JOB_PREFIX=rh
 
