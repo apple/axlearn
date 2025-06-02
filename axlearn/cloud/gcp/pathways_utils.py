@@ -34,7 +34,6 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 # The specific value is not important, as long as clients and servers use the same port.
 _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
-# Oldest available is jax-0.5.1, although axlearn is using jax-0.4.38.
 # Verified the backwards compatibility works.
 _PATHWAYS_IMAGE_TAG = "jax-0.5.3"
 # The docker image used by pathways proxy container.
