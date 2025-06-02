@@ -75,6 +75,35 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
     return None
 
 
+def _infer_processor_type(jobset_spec: dict) -> Optional[str]:
+    """Infers processor_type(e.g cpu, tpu) given a jobset spec."""
+    try:
+        has_tpu = False
+        has_cpu = False
+        for job in jobset_spec["replicatedJobs"]:
+            node_selector = job["template"]["spec"]["template"]["spec"]["nodeSelector"]
+            # Check node selector to decide whether it is a TPU or CPU job.
+            # Note that the replicated job builder is expected to set these node selector.
+            # So that this function is able to infer processor type for jobs.
+
+            # This node pool selector is set by a GKE webhook for Jobsets automatically.
+            tpu_type = node_selector.get("cloud.google.com/gke-tpu-accelerator", None)
+            has_tpu = has_tpu or tpu_type is not None
+
+            # This selector is set by CPU replicated job builder.
+            node_pool_type = node_selector.get("axlearn/nodepool_type", None)
+            has_cpu = has_cpu or node_pool_type == "workload"
+
+        if has_tpu:
+            # In a hybrid job, we considered it as "TPU"
+            return "tpu"
+        elif has_cpu:
+            return "cpu"
+    except (TypeError, KeyError):
+        logging.warning("Failed to infer processor type.")
+    return None
+
+
 # TODO(markblee): Move this to the builder.
 def _infer_job_version(jobset_spec: dict) -> Optional[int]:
     """Infers job version given a jobset spec."""
@@ -250,7 +279,8 @@ class GKERunnerJob(BaseRunnerJob):
 
             tier = os.environ.get("BASTION_TIER", 0)
             reservation = _infer_reservation(resp["spec"])
-            if runner_utils.should_recreate_job(tier, reservation):
+            processor_type = _infer_processor_type(resp["spec"])
+            if runner_utils.should_recreate_job(tier, reservation, processor_type=processor_type):
                 return GKERunnerJob.Status.RESCHEDULED
 
             expected_job_version = os.environ.get(BASTION_JOB_VERSION_ENV_VAR, None)
@@ -306,7 +336,12 @@ class GKERunnerJob(BaseRunnerJob):
                 if retryable_failure:
                     logging.info("One or more child jobs failed, waiting for jobset to retry.")
                 # Take this opportunity to reschedule if needed.
-                if runner_utils.should_recreate_job(tier, reservation, is_pending=True):
+                if runner_utils.should_recreate_job(
+                    tier,
+                    reservation,
+                    processor_type=processor_type,
+                    is_pending=True,
+                ):
                     return GKERunnerJob.Status.RESCHEDULED
                 return GKERunnerJob.Status.PENDING
 

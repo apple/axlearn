@@ -418,6 +418,7 @@ def fake_classification_source_instruct_lm(
 def fake_speech_source(
     *,
     is_training: bool,
+    max_len: int = 100,
     num_examples: int = 100,
     speech_key: str = "speech",
     shuffle_buffer_size: Optional[int] = None,
@@ -426,7 +427,9 @@ def fake_speech_source(
 
     Args:
         is_training: A boolean indicating whether it is in the training mode.
+        max_len: Maximum sequence length (in samples) for generated speech data.
         num_examples: Integer of number of examples in the dataset.
+        speech_key: Key name for the audio field in each example dict.
         shuffle_buffer_size: Shuffle buffer size used for training.
 
     Returns:
@@ -441,7 +444,7 @@ def fake_speech_source(
                     jax.random.PRNGKey(ix),
                     minval=-(2**15),
                     maxval=2**15,
-                    shape=[ix % 100 + 1],
+                    shape=[min(max_len // 2 + ix, max_len)],
                 ),
             }
             for ix in range(num_examples)

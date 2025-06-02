@@ -283,10 +283,7 @@ class OverrideInplaceUpdateTransformationTest(test_utils.TestCase):
     """Tests for `OverrideInplaceUpdateTransformation`."""
 
     def test_override_inplace_update_transformation(self):
-        learning_rate = config_for_function(schedule.stepwise).set(
-            sub=[0.1, 0.01, 0.001],
-            start_step=[100, 200],
-        )
+        learning_rate = config_for_function(schedule.constant_schedule).set(value=0.1)
         transformation = config_for_function(optimizers.adamw_optimizer).set(
             learning_rate=learning_rate, b1=0.9, b2=0.95, eps=1e-7
         )

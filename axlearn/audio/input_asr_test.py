@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 import seqio
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.audio import input_asr
 from axlearn.common import input_fake, input_tf_data
@@ -28,16 +28,16 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             max_len=5,
             expected=[
                 {
-                    "inputs": tf.constant([-29515.0, 0, 0, 0, 0]),
-                    "paddings": tf.constant([0, 1, 1, 1, 1]),
-                },
-                {
-                    "inputs": tf.constant([14620.0, -21206.0, 0, 0, 0]),
+                    "inputs": tf.constant([-29515.0, -18256.0, 0, 0, 0]),
                     "paddings": tf.constant([0, 0, 1, 1, 1]),
                 },
                 {
-                    "inputs": tf.constant([-3954.0, -15555.0, 18074.0, 0, 0]),
+                    "inputs": tf.constant([14620.0, -21206.0, -4254.0, 0, 0]),
                     "paddings": tf.constant([0, 0, 0, 1, 1]),
+                },
+                {
+                    "inputs": tf.constant([-3954.0, -15555.0, 18074.0, 22466.0, 0]),
+                    "paddings": tf.constant([0, 0, 0, 0, 1]),
                 },
             ],
         ),
@@ -45,8 +45,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             # Test a basic case with filtering.
             max_len=2,
             expected=[
-                {"inputs": tf.constant([-29515.0, 0]), "paddings": tf.constant([0, 1])},
-                {"inputs": tf.constant([14620.0, -21206.0]), "paddings": tf.constant([0, 0])},
+                {"inputs": tf.constant([-29515.0, -18256.0]), "paddings": tf.constant([0, 0])},
             ],
         ),
         dict(
@@ -55,8 +54,8 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             truncate=True,
             expected=[
                 {
-                    "inputs": tf.constant([-29515.0, 0]),
-                    "paddings": tf.constant([0, 1]),
+                    "inputs": tf.constant([-29515.0, -18256.0]),
+                    "paddings": tf.constant([0, 0]),
                 },
                 {
                     "inputs": tf.constant([14620.0, -21206.0]),
@@ -74,16 +73,16 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             scale=2**15,
             expected=[
                 {
-                    "inputs": tf.constant([-0.9007263, 0.0, 0.0, 0.0, 0.0]),
-                    "paddings": tf.constant([0, 1, 1, 1, 1]),
-                },
-                {
-                    "inputs": tf.constant([0.446167, -0.64715576, 0.0, 0.0, 0.0]),
+                    "inputs": tf.constant([-0.9007263, -0.5571289, 0.0, 0.0, 0.0]),
                     "paddings": tf.constant([0, 0, 1, 1, 1]),
                 },
                 {
-                    "inputs": tf.constant([-0.1206665, -0.47470093, 0.5515747, 0.0, 0.0]),
+                    "inputs": tf.constant([0.446167, -0.64715576, -0.12982178, 0.0, 0.0]),
                     "paddings": tf.constant([0, 0, 0, 1, 1]),
+                },
+                {
+                    "inputs": tf.constant([-0.1206665, -0.47470093, 0.5515747, 0.6856079, 0.0]),
+                    "paddings": tf.constant([0, 0, 0, 0, 1]),
                 },
             ],
         ),
@@ -94,11 +93,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
             input_key="input_speech",
             expected=[
                 {
-                    "inputs": tf.constant([-0.9007263, 0.0]),
-                    "paddings": tf.constant([0, 1]),
-                },
-                {
-                    "inputs": tf.constant([0.446167, -0.64715576]),
+                    "inputs": tf.constant([-0.9007263, -0.5571289]),
                     "paddings": tf.constant([0, 0]),
                 },
             ],
@@ -108,7 +103,7 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
     def test_speech_input(
         self,
         max_len: int,
-        expected: dict[str, Any],
+        expected: list[dict[str, Any]],
         truncate: bool = False,
         input_key: str = "speech",
         scale: Optional[float] = None,
@@ -122,12 +117,15 @@ class SpeechInputTest(TestCase, tf.test.TestCase):
         # Use a fake speech source with only speech inputs.
         source = input_tf_data.with_processor(
             config_for_function(input_fake.fake_speech_source).set(
-                speech_key=input_key, num_examples=10
+                speech_key=input_key, num_examples=10, max_len=5
             ),
             processor=config_for_function(input_tf_data.select_fields).set(fields=[input_key]),
             is_training=False,
         )
         actual = list(processor(source()).take(3))
+        expected = [
+            dict(inputs=d["inputs"], paddings=tf.cast(d["paddings"], tf.bool)) for d in expected
+        ]
         tf.nest.map_structure(self.assertAllClose, expected, actual)
 
 
@@ -481,3 +479,7 @@ class FilterTest(parameterized.TestCase, tf.test.TestCase):
             {k: tf.constant(v, dtype=tf.int32) for k, v in expect.items()} for expect in expected
         ]
         tf.nest.map_structure(self.assertAllEqual, expected, actual)
+
+
+if __name__ == "__main__":
+    absltest.main()

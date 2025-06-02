@@ -822,7 +822,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         ref_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
         # In recent transformers API, PE's `_init_weight` is called recursively by parent module.
         # Since we only initialize the PE layer here, we need to manually call it.
-        ref_layer._init_weight()  # pylint: disable=protected-access
+        ref_layer._init_weight()  # pylint: disable=protected-access, no-value-for-parameter
         ref_output = ref_layer(as_torch_tensor(token_ids).shape)
         # Set up the RoPE AXLearn configs.
         test_layer = (
@@ -1321,6 +1321,14 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
 
 class MultiheadLinearInitTest(TestCase):
     """Tests MultiheadLinear initialization."""
+
+    def test_unique_config_classes(self):
+        self.assertFalse(
+            isinstance(MultiheadInputLinear.default_config(), MultiheadOutputLinear.Config)
+        )
+        self.assertFalse(
+            isinstance(MultiheadOutputLinear.default_config(), MultiheadInputLinear.Config)
+        )
 
     @parameterized.parameters(
         (
