@@ -236,6 +236,13 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
         self.assertTrue(mock_bundler.bundle.called)
         self.assertIsNotNone(job_spec)
 
+    def test_submit_job_with_duplicate_running_job(self):
+        cfg = BastionDirectory.default_config().set(root_dir="temp_dir")
+        job = cfg.instantiate()
+        with mock.patch("axlearn.cloud.common.bastion.exists", return_value=True):
+            with self.assertRaises(ValueError):
+                job.submit_job("job_name", job_spec_file="job_spec_file")
+
     def test_run(self):
         # Test with invalid project id.
         project_id = "test_project"
