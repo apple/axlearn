@@ -12,7 +12,8 @@ if [ -z "$SLURM_JOB_NODELIST" ]; then
 fi
 
 num_nodes=$(echo "$nodes" | wc -l)
-devices_per_node=64
+LNC=${LNC:=2}
+devices_per_node=$((128 / $LNC))
 MASTER_ADDR=$(echo "$nodes" | head -n 1)
 MASTER_PORT=41000
 JAX_COORDINATOR_PORT=41001
@@ -23,7 +24,7 @@ export NEURON_PJRT_PROCESS_INDEX=$SLURM_NODEID
 # Print nodenames for debug
 hostname
 
-JOB_ID=${SLURM_JOB_ID}
+JOB_ID=${JOB_ID:=$SLURM_JOB_ID}
 ARTIFACTS_PATH="artifacts"
 TEST_ARTIFACTS_PATH="${ARTIFACTS_PATH}/${JOB_ID}"
 if [ "$1" != "profile" ]; then
@@ -73,7 +74,7 @@ export NEURON_RT_DBG_DMA_PACKETIZATION_SIZE=104857
 export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=1
 export NEURON_RT_IO_RING_CACHE_SIZE=0
 export NEURON_RT_ENABLE_MEMORY_METRICS=0
-export NEURON_RT_VIRTUAL_CORE_SIZE=2
+export NEURON_RT_VIRTUAL_CORE_SIZE=$LNC
 export NEURON_RT_RESET_CORES=1
 export NEURON_RT_LOG_LEVEL="WARNING"
 export NEURON_RT_ENABLE_INTERNODE_EXECUTION_BARRIER=1
@@ -91,7 +92,7 @@ export OFI_NCCL_MR_CACHE_DISABLE=1
 export NEURON_CC_FLAGS="--framework=XLA"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-max-instruction-limit=20000000"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --target=trn2"
-export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-num-neuroncores-per-sengine=2"
+export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --internal-num-neuroncores-per-sengine=${LNC}"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --model-type transformer"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --no-internal-hlo-remat"
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --enable-mixed-precision-accumulation"
@@ -121,7 +122,8 @@ if [ "$AXLEARN_PROFILE_MODE" = "tracerun" ] || [ "$FOR_PROFILE" = "1" ]; then
 		export NEURON_RT_INSPECT_DEVICE_PROFILE=1
 		export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
 		# export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
-		# export NEURON_RT_PROFILE_BUF_DMA_MB=1024
+		export NEURON_RT_PROFILE_BUF_NOTIFICATION_TYPE_TRACE_MB=256
+		export NEURON_RT_PROFILE_BUF_DMA_MB=192
 	else
 		echo ""
 	fi
@@ -213,31 +215,30 @@ profile() {
 	export NEURON_RT_ENABLE_DGE_NOTIFICATIONS=0
 	# export NEURON_RT_PROFILE_BUF_DMA_MB=256
 	export NEURON_RT_ASYNC_EXEC_MAX_INFLIGHT_REQUESTS=0
-	export NEURON_RT_VIRTUAL_CORE_SIZE=2
+	export NEURON_RT_VIRTUAL_CORE_SIZE=$LNC
 	# export NEURON_RT_INSPECT_ON_FAIL=1
 	# export NEURON_RT_PROFILE_BUF_INFER_STATUS_MB=4
-	neuron-profile capture -r 64 --num-exec 3 \
+	/opt/aws/neuron/bin/neuron-profile capture -r 64 --num-exec 3 \
 		--collectives-worker-count $((64* $SLURM_JOB_NUM_NODES)) \
 		--collectives-worker-start-id $((64 * $SLURM_PROCID)) \
 		-i 0 \
 		-n $neff_path \
 		-s $profile_dir/profile.ntff
-
-	echo "Done profiling"
-	cp $profile_dir/profile_rank_0_exec_3.ntff $upload_dir
-	cp $log_dir/$job_id*.out $upload_dir
-	cd $(dirname $neff_path)
-	cp file.neff $upload_dir
-	cp log-neuron-cc.txt $upload_dir
-	cp file.code $upload_dir
-	set +e
-	tar -cvf penguin-text.tar penguin-sg*
-	cp penguin-text.tar $upload_dir
-	set -e
-	cd $job_dir/hlo_dump
-	tar -cvf hlo_dump.tar *
-	cp hlo_dump.tar $upload_dir
 	if [ $SLURM_PROCID -eq 0 ]; then
+		echo "Done profiling"
+		cp $profile_dir/profile_rank_0_exec_3.ntff $upload_dir
+		cp $log_dir/$job_id*.out $upload_dir
+		cd $(dirname $neff_path)
+		cp file.neff $upload_dir
+		cp log-neuron-cc.txt $upload_dir
+		cp file.code $upload_dir
+		set +e
+		tar -cvf penguin-text.tar penguin-sg*
+		cp penguin-text.tar $upload_dir
+		set -e
+		cd $job_dir/hlo_dump
+		tar -cvf hlo_dump.tar *
+		cp hlo_dump.tar $upload_dir
 		set +x
 		aws s3 sync --no-progress $upload_dir $s3_profile_path
 		echo "Profile uploaded to $s3_profile_path"
