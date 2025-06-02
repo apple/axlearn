@@ -256,9 +256,13 @@ def tfds_dataset(
     if is_training:
         if train_shuffle_buffer_size is None:
             raise ValueError("train_shuffle_buffer_size is required when is_training=True")
-        shuffle_files = (
-            train_shuffle_buffer_size > 0 if train_shuffle_files is None else train_shuffle_files
-        )
+        import os
+        if os.getenv("AXLEARN_SHUFFLE_FILES", "1") == "1":
+            shuffle_files = (
+                train_shuffle_buffer_size > 0 if train_shuffle_files is None else train_shuffle_files
+            )
+        else:
+            shuffle_files = False
         shuffle_buffer_size = train_shuffle_buffer_size
     else:
         # Disable shuffling.
