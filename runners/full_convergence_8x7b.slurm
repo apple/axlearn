@@ -1,25 +1,24 @@
 #!/bin/bash
 #SBATCH --cpus-per-task 127
-#SBATCH --job-name rh_16x10b_convergence
+#SBATCH --job-name rh_8x7b_convergence_bf16
 #SBATCH --output logs/%j_%x.out
 #SBATCH --nodes 8
 #SBATCH --switches 1
 
-export AXLEARN_REMAT_LAYER=selective
+export AXLEARN_REMAT_LAYER=selkernel
 export VENV_NAME=jaxmoe
-export AXLEARN_MODEL_NAME="envy-Mistral-16x10B"
+export AXLEARN_MODEL_NAME="envy-Mistral-8x7B"
 # export JOB_ID="16x10b_convergence"
-export AXLEARN_TP_DEGREE=16
-export AXLEARN_TRAIN_BATCH_SIZE=$((8 * SLURM_NNODES))
-export AXLEARN_CAP_FACTOR=2
+export AXLEARN_TP_DEGREE=4
+export AXLEARN_TRAIN_BATCH_SIZE=$((16 * SLURM_NNODES))
 export AXLEARN_USE_BLOCKWISE=1
 export AXLEARN_REPEATED=1
-export AXLEARN_NUM_KV_HEADS=16
+export AXLEARN_NUM_KV_HEADS=8
 export AXLEARN_SHUFFLE_FILES=0
 export DATA_SEED=42
-
-# export NEURON_ALL_REDUCE_UPCASTER=1
-# export NEURON_PROMOTE_TP_REDUCE=1
+export SAVE_EVERY_N_STEPS=200
+#export NEURON_ALL_REDUCE_UPCASTER=1
+#export NEURON_PROMOTE_TP_REDUCE=1
 
 export JAX_COMPILATION_CACHE_DIR="cache/"
 mkdir -p ${JAX_COMPILATION_CACHE_DIR}
