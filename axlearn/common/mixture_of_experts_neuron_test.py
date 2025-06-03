@@ -341,6 +341,7 @@ class TestLayerOnTrn(LayerTestCase):
     def test_fwdbwd_blockwisegather_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
 
+    @unittest.skip("skip till change merged to compiler")
     @parameterized.named_parameters(get_training_configs(test_suite=TEST_SUITE, test=TopKGatingGatherBlockwiseV2, golden=TopKGating, test_device="neuron", golden_device="cpu"))
     def test_fwdbwd_blockwisev2_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
@@ -375,7 +376,7 @@ class TestDev150bUnit(LayerTestCase):
 
     def test_fwd_blockwise_vs_einsum(self):
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise))
-    
+
     def test_fwd_blockwisev2_vs_einsum(self):
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwiseV2))
 
@@ -385,7 +386,7 @@ class TestDev150bUnit(LayerTestCase):
     
     def test_fwdbwd_blockwise_vs_einsum(self):
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise))
-
+    
     def test_fwdbwd_blockwisev2_vs_einsum(self):
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwiseV2))
     
@@ -404,6 +405,7 @@ class TestDev150bInteg(TestDev150bUnit):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise))
 
+    @unittest.skip("skip till change merged to compiler")
     def test_fwd_blockwisev2_vs_einsum(self):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwiseV2))
@@ -417,6 +419,7 @@ class TestDev150bInteg(TestDev150bUnit):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwise))
 
+    @unittest.skip("skip till change merged to compiler")
     def test_fwdbwd_blockwisev2_vs_einsum(self):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGatherBlockwiseV2))
