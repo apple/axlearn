@@ -282,6 +282,77 @@ class SerializerTest(parameterized.TestCase):
             manager.serialize(arrays, tensorstore_specs, on_commit_callback=lambda: None)
             manager.wait_until_finished()
 
+    @parameterized.product(
+        arrays=[[jnp.arange(0, 1024 * 1024)]],
+        max_concurrent_gb=[1],
+        load_to_pinned_host=[True, False],
+    )
+    @pytest.mark.skipif(
+        jax.device_count() != 8 or jax.process_count() != 1 or jax.default_backend() == "cpu",
+        reason="Skip preloading check if device is CPU "
+        "since CPU does not support pinned host memory kind.",
+    )
+    def test_deserialize(
+        self,
+        arrays: list[list[int]],
+        max_concurrent_gb: int,
+        load_to_pinned_host: bool,
+    ):
+        devices = mesh_utils.create_device_mesh((8,))
+        sharding = PositionalSharding(devices)
+        data = [jax.device_put(arr, sharding) for arr in arrays]
+
+        # create a temporary tensorstore spec for the arrays
+        @contextmanager
+        def get_tensorstore_spec_for_deserialization(arrays: list[jax.Array]):
+            tempdir = tempfile.TemporaryDirectory()
+            create_spec = lambda arr: {
+                "driver": "zarr",
+                "kvstore": {
+                    "driver": "file",
+                    "path": tempdir.name,
+                },
+                "dtype": str(arr.dtype),
+                "create": True,
+                "delete_existing": True,
+            }
+
+            try:
+                yield [create_spec(arr) for arr in arrays]
+            finally:
+                tempdir.cleanup()
+
+        manager = BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=max_concurrent_gb)
+
+        # Write the data to local files
+        with get_tensorstore_spec_for_deserialization(data) as tensorstore_spec:
+            manager.serialize(
+                data,
+                tensorstore_spec,
+                on_commit_callback=lambda: None,
+            )
+
+            # Deserialize the data
+            load_sharding = [
+                sharding.with_memory_kind("pinned_host") if load_to_pinned_host else sharding
+            ]
+            deserialized_data = manager.deserialize(
+                load_sharding,
+                tensorstore_spec,
+            )
+
+        # Verify the deserialized data matches the original data
+        self.assertEqual(len(data), len(deserialized_data))
+        for arr, d_arr in zip(data, deserialized_data):
+            self.assertEqual(arr.shape, d_arr.shape)
+            self.assertEqual(arr.dtype, d_arr.dtype)
+            # Check that the data matches
+            np.testing.assert_array_equal(arr, d_arr)
+
+            if load_to_pinned_host:
+                # Verify that the data is loaded to pinned host memory
+                self.assertTrue(d_arr.sharding.memory_kind == "pinned_host")
+
     def test_max_concurrency(self):
         with self.assertRaisesRegex(ValueError, "strictly positive"):
             BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=0)
