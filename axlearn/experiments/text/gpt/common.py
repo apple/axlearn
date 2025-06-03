@@ -712,7 +712,7 @@ def get_trainer_config_fn(
             cfg.evalers[name] = evaler_cfg
 
         # Summaries and checkpoints.
-        calculated_save_every_n_steps = save_every_n_steps or min(eval_every_n_steps, 5_000)
+        calculated_save_every_n_steps = save_every_n_steps or min(eval_every_n_steps, 500)
 
         if not checkpointer:
             cfg.checkpointer.save_policy = config_for_function(every_n_steps_and_last_policy).set(
