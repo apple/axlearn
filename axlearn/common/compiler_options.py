@@ -311,9 +311,10 @@ def infer_xla_performance_flags(
             xla_tpu_enable_reduce_scatter_offload_tracing="true",
             xla_tpu_enable_all_reduce_offload_tracing="true",
         )
-        # 64x4 and 32x8 are non-native mesh shapes, which means the available bandwidth is half
-        # of that compared to the native mesh shape. Specify the latency modifier so that the
-        # latency hiding scheduler can model the actual latency better.
+        # 64x4 and 32x8 are non-native mesh shapes for v6e-256. The only native native for v6e-256
+        # is 16x16 (or 256). The available bandwidth of non-native mesh shapes is half of that
+        # compared to the native mesh shape. Specify the latency modifier so that the latency
+        # hiding scheduler can model the actual latency better.
         if math.prod(current_configuration.values()) == 256:
             flags.update(xla_tpu_sparse_core_all_gather_latency_multiplier="2")
         logging.log_first_n(
