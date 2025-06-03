@@ -41,7 +41,7 @@ from axlearn.common.param_init import (
     FanAxes,
     WeightInitializer,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
+from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import safe_not
 
 
@@ -375,7 +375,6 @@ class BaseLayerTest(TestCase):
                 self.assertNestedAllClose(jnp.zeros_like(orig_value), noisy_value)
 
     @parameterized.parameters(False, True)
-    @set_threefry_partitionable(True)  # TODO(mhopkins): remove during jax 0.5.0+ upgrade
     def test_tensor_stats(self, inline_child_summaries: bool):
         test_layer: TestLayer = (
             TestLayer.default_config()
