@@ -6,7 +6,7 @@
 
 # #SBATCH --switches 1
 export AXLEARN_NUM_LAYERS=$((4 * SLURM_NNODES))
-export AXLEARN_REMAT_LAYER=selective
+export AXLEARN_REMAT_LAYER=true
 export VENV_NAME=jaxmoe
 export AXLEARN_MODEL_NAME="envy-Mistral-16x10B"
 # export JOB_ID="16x10b_convergence"
@@ -18,6 +18,9 @@ export AXLEARN_REPEATED=1
 export AXLEARN_NUM_KV_HEADS=16
 export AXLEARN_SHUFFLE_FILES=0
 export DATA_SEED=42
+
+# export NEURON_ALL_REDUCE_UPCASTER=1
+# export NEURON_PROMOTE_TP_REDUCE=1
 
 export JAX_COMPILATION_CACHE_DIR="cache/"
 mkdir -p ${JAX_COMPILATION_CACHE_DIR}
