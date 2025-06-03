@@ -263,6 +263,7 @@ def tfds_dataset(
             )
         else:
             shuffle_files = False
+            shuffle_buffer_size = 0
         shuffle_buffer_size = train_shuffle_buffer_size
     else:
         # Disable shuffling.
