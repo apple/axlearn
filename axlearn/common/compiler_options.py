@@ -290,15 +290,15 @@ def infer_xla_performance_flags(
     # Therefore, we enable them selectively on mesh shapes that have model parallelism and are
     # verified to have improved performance with sparse core offloading.
     # TODO(hanzhi-zhou): Check if these flags also improve performance on fsdp=16, model=16.
-    tested_configurations = []
+    mesh_configurations_for_sparse_core_offloading = []
     for a, b in [(32, 8), (64, 4), (16, 8)]:
-        tested_configurations.append(dict(fsdp=a, track=b))
-        tested_configurations.append(dict(fsdp=a, model=b))
+        mesh_configurations_for_sparse_core_offloading.append(dict(fsdp=a, track=b))
+        mesh_configurations_for_sparse_core_offloading.append(dict(fsdp=a, model=b))
     current_configuration = {}
     for name, size in zip(mesh_axis_names, mesh_shape):
         if name in ("fsdp", "track", "model") and size != 1:
             current_configuration[name] = size
-    if current_configuration in tested_configurations:
+    if current_configuration in mesh_configurations_for_sparse_core_offloading:
         flags = dict(
             # Must disable continuation fusion to enable sparse core offloading.
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
