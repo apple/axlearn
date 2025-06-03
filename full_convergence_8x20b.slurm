@@ -5,7 +5,7 @@
 #SBATCH --nodes 8
 #SBATCH --switches 1
 
-export AXLEARN_REMAT_LAYER=true
+export AXLEARN_REMAT_LAYER=selective
 export VENV_NAME=jaxmoe
 export AXLEARN_MODEL_NAME="envy-Mistral-8x20B"
 # export JOB_ID="16x10b_convergence"

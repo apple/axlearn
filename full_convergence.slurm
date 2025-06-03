@@ -1,12 +1,11 @@
 #!/bin/bash
 #SBATCH --cpus-per-task 127
-#SBATCH --job-name rh_16x10b_convergence_gpu
+#SBATCH --job-name rh_16x10b_convergence
 #SBATCH --output logs/%j_%x.out
 #SBATCH --nodes 8
+#SBATCH --switches 1
 
-# #SBATCH --switches 1
-export AXLEARN_NUM_LAYERS=$((4 * SLURM_NNODES))
-export AXLEARN_REMAT_LAYER=true
+export AXLEARN_REMAT_LAYER=selective
 export VENV_NAME=jaxmoe
 export AXLEARN_MODEL_NAME="envy-Mistral-16x10B"
 # export JOB_ID="16x10b_convergence"
