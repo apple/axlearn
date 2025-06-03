@@ -6,7 +6,6 @@ from functools import partial
 from typing import Callable, Union
 
 import jax
-import jax.test_util
 import numpy as np
 import pytest
 from absl.testing import parameterized
