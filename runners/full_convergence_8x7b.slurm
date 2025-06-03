@@ -1,16 +1,16 @@
 #!/bin/bash
 #SBATCH --cpus-per-task 127
-#SBATCH --job-name rh_8x7b_convergence_bf16
+#SBATCH --job-name 8x7b_convergence_bf16
 #SBATCH --output logs/%j_%x.out
 #SBATCH --nodes 8
 #SBATCH --switches 1
 
-export AXLEARN_REMAT_LAYER=selkernel
+export AXLEARN_REMAT_LAYER=selective
 export VENV_NAME=jaxmoe
 export AXLEARN_MODEL_NAME="envy-Mistral-8x7B"
 # export JOB_ID="16x10b_convergence"
-export AXLEARN_TP_DEGREE=4
-export AXLEARN_TRAIN_BATCH_SIZE=$((16 * SLURM_NNODES))
+export AXLEARN_TP_DEGREE=16
+export AXLEARN_TRAIN_BATCH_SIZE=$((8 * SLURM_NNODES))
 export AXLEARN_USE_BLOCKWISE=1
 export AXLEARN_REPEATED=1
 export AXLEARN_NUM_KV_HEADS=8

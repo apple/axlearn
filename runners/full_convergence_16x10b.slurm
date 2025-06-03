@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --cpus-per-task 127
-#SBATCH --job-name rh_16x10b_convergence_gpu
+#SBATCH --job-name 16x10b_convergence_gpu
 #SBATCH --output logs/%j_%x.out
 #SBATCH --nodes 8
 #SBATCH --switches 1

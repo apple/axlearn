@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --cpus-per-task 127
-#SBATCH --job-name rh_8x20b_convergence_bf16
+#SBATCH --job-name 8x20b_convergence_bf16
 #SBATCH --output logs/%j_%x.out
 #SBATCH --nodes 8
 #SBATCH --switches 1
