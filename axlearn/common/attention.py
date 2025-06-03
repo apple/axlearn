@@ -1957,8 +1957,14 @@ class MultiheadAttention(BaseLayer):
                     kv_state = KVState(k_proj, v_proj, key_positions)
             else:
                 # KV sharing branch.
-                k_proj, v_proj, key_positions = kv_state
-                kv_state = KVState(*kv_state)
+                #
+                # When we call `i_proj` above, we already pass `kv_state` to it,
+                # so that i_proj will use shared KV and update it.
+                #
+                # Here we pack the `k_proj` and `v_proj` (possibly updated by i_proj),
+                # and the same `key_positions`, into `kv_state`.
+                key_positions = kv_state.key_positions
+                kv_state = KVState(k_proj, v_proj, key_positions)
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
 

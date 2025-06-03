@@ -1393,7 +1393,7 @@ class BastionDirectory(Configurable):
             raise ValueError(f"{job_name} is not a valid job name.")
         dst = os.path.join(self.active_job_dir, job_name)
         if exists(dst):
-            logging.info("\n\nNote: Job is already running. To restart it, cancel the job first.\n")
+            raise ValueError(f"Job {job_name} already exists.")
         else:
             # Upload the job for bastion to pickup.
             copy(job_spec_file, dst)

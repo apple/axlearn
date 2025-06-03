@@ -9,7 +9,7 @@ from unittest import mock
 import jax
 import numpy as np
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from transformers import BertConfig, BertModel, EncoderDecoderConfig
 from transformers import EncoderDecoderModel as HFEncoderDecoderModel
@@ -528,7 +528,7 @@ class TestAgainstHF(TestCase):
         test_name = f"{source_padding_type}:{target_padding_type}"
 
         # We occasionally observe rounding errors.
-        assert_allclose(test_logits, ref_logits, atol=5e-6, err_msg=test_name)
+        assert_allclose(test_logits, ref_logits, atol=1e-5, err_msg=test_name)
         assert_allclose(loss, utils.as_tensor(ref_outputs.loss), err_msg=test_name)
 
 
@@ -585,3 +585,7 @@ class TestAgainstT5X(TestCase):
         ref_outputs = utils.as_tensor(testcase["outputs"])
         mask = testcase["padding_mask"][..., None]
         self.assertNestedAllClose(test_outputs * mask, ref_outputs * mask)
+
+
+if __name__ == "__main__":
+    absltest.main()

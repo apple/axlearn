@@ -41,6 +41,7 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common import attention, attention_bias, test_utils, utils
 from axlearn.common.attention import (
+    BaseQKVLinear,
     BaseStackedTransformerLayer,
     BaseTransformerLayer,
     BottleNeckAdapterTransformerLayer,
@@ -1869,6 +1870,26 @@ def _convert_to_qkv_linear(
     return test_state
 
 
+class TestQLinearWithKvUpdate(QLinear):
+    """QLinear that adjusts the external KV for testing purposes."""
+
+    def forward(
+        self,
+        query: Tensor,
+        *,
+        kv_state: KVState,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
+    ) -> BaseQKVLinear.Output:
+        query, key, value = super().forward(
+            query, kv_state=kv_state, key=key, value=value, query_positions=query_positions
+        )
+        key = key + 1.0
+        value = value - 1.0
+        return BaseQKVLinear.Output(query, key, value)
+
+
 class MultiheadAttentionTest(TestCase):
     """Tests MultiheadAttention, GroupedQueryAttention, and associated layers."""
 
@@ -2474,7 +2495,7 @@ class MultiheadAttentionTest(TestCase):
         key = value = kv_state = None
         if attention_cfg.klass == attention.GroupedQueryAttention:
             pass
-        elif attention_cfg.input_linear.klass == QLinear:
+        elif attention_cfg.input_linear.klass in (QLinear, TestQLinearWithKvUpdate):
             kv_state = KVState(
                 k_proj=jax.random.normal(
                     jax.random.PRNGKey(124), [batch_size, tgt_len, num_heads, head_dim], dtype=dtype
@@ -2488,7 +2509,7 @@ class MultiheadAttentionTest(TestCase):
             # Make key and value distinct from query. Otherwise, it is equivalent
             # to the query only case.
             key = value = query + 0.1
-        return_aux = {"probs"}
+        return_aux = {"probs", "kv_state"}
         inputs = dict(
             query=query,
             key=key,
@@ -2543,12 +2564,18 @@ class MultiheadAttentionTest(TestCase):
         if cfg.kv_cache is None or cfg.kv_cache.klass == KVCache:
             decoder_probs = jnp.concatenate(decoder_probs, axis=2)
             assert_allclose(decoder_probs, forward_outputs.probs, atol=1e-6)
+            self.assertNestedAllClose(
+                extend_step_outputs.kv_state.k_proj, forward_outputs.kv_state.k_proj, atol=1e-6
+            )
+            self.assertNestedAllClose(
+                extend_step_outputs.kv_state.v_proj, forward_outputs.kv_state.v_proj, atol=1e-6
+            )
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
-        input_linear=(QKVLinear, RoFormerQKVLinear, QLinear),
+        input_linear=(QKVLinear, RoFormerQKVLinear, QLinear, TestQLinearWithKvUpdate),
         bias=(True, False),
         causal_type=("causal", "sliding_window"),
         extend_step_len=(1, 4),
@@ -2563,8 +2590,8 @@ class MultiheadAttentionTest(TestCase):
         causal_type: str,
         extend_step_len: int,
     ):
-        if input_linear == QLinear and causal_type == "sliding_window":
-            pytest.skip("QLinear doesn't support sliding window mask.")
+        if input_linear in (QLinear, TestQLinearWithKvUpdate) and causal_type == "sliding_window":
+            pytest.skip("QLinear variants don't support sliding window mask.")
         model_dim = 16
         num_heads = 4
         if input_linear == attention.RoFormerQKVLinear:

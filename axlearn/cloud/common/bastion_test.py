@@ -1890,14 +1890,16 @@ class BastionDirectoryTest(parameterized.TestCase):
         else:
             ctx = self.assertRaisesRegex(ValueError, "not a valid job name")
         with ctx, patch_tfio as mock_tfio:
-            bastion_dir.submit_job(job_name, job_spec_file=job_spec_file)
             if not spec_exists:
+                bastion_dir.submit_job(job_name, job_spec_file=job_spec_file)
                 mock_tfio["copy"].assert_called_with(
                     job_spec_file,
                     os.path.join(bastion_dir.active_job_dir, job_name),
                 )
             else:
-                mock_tfio["copy"].assert_not_called()
+                with self.assertRaises(ValueError):
+                    bastion_dir.submit_job(job_name, job_spec_file=job_spec_file)
+                    mock_tfio["copy"].assert_not_called()
 
     @parameterized.product(
         spec_exists=[True, False],
