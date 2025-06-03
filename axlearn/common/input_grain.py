@@ -756,9 +756,4 @@ class Input(input_base.Input):
         else:
             example = next(ds.__iter__())  # pylint: disable=unnecessary-dunder-call
 
-        def shape_dtype(x):
-            if not hasattr(x, "shape") or not hasattr(x, "dtype"):
-                raise ValueError(f"element_spec() requires Tensor-like leaves, got: {x}.")
-            return jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype)
-
-        return jax.tree.map(shape_dtype, example)
+        return self._validate_and_dispatch_element_spec(example)

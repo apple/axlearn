@@ -1218,13 +1218,11 @@ class Input(input_base.Input):
 
     def element_spec(self) -> Nested[jax.ShapeDtypeStruct]:
         """Returns the tfds element spec."""
-
-        return jax.tree.map(
-            lambda tf_spec: jax.ShapeDtypeStruct(
-                shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
-            ),
+        element_spec = jax.tree.map(
+            lambda tf_spec: jax.ShapeDtypeStruct(tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype),
             self.dataset().element_spec,
         )
+        return self._validate_and_dispatch_element_spec(element_spec)
 
 
 def disable_shuffle_recursively(cfg: Input.Config):

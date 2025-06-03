@@ -3,7 +3,7 @@
 """Tests base Input interface."""
 
 from functools import partial
-from typing import Callable, Union
+from typing import Callable, Optional, Union
 
 import jax
 import numpy as np
@@ -13,6 +13,7 @@ from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
 from axlearn.common.input_base import Input, PathAndRank, partition_by_path_rank
+from axlearn.common.input_dispatch import BaseInputDispatcher, InputDispatcher
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import Nested, PartitionSpec, Tensor, tree_paths
 
@@ -183,3 +184,62 @@ class InputTest(TestCase):
                     "target_num_bytes": PartitionSpec("data"),
                 },
             )
+
+    @parameterized.parameters(
+        dict(
+            dispatcher=None,
+            # No change without dispatcher.
+            expected={
+                "x": jax.ShapeDtypeStruct((4, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((4,), dtype=jnp.int32),
+            },
+        ),
+        dict(
+            dispatcher=None,
+            # No change with SpmdInputDispatcher (it directly maps logical to logical).
+            expected={
+                "x": jax.ShapeDtypeStruct((4, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((4,), dtype=jnp.int32),
+            },
+        ),
+        dict(
+            dispatcher=InputDispatcher,
+            # InputDispatcher pads to the feed physical shape.
+            expected={
+                "x": jax.ShapeDtypeStruct((8, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((8,), dtype=jnp.int32),
+            },
+        ),
+    )
+    @pytest.mark.for_8_devices
+    def test_element_spec(
+        self,
+        dispatcher: Optional[type[BaseInputDispatcher]],
+        expected: Nested[jax.ShapeDtypeStruct],
+    ):
+        # pylint: disable=protected-access
+        input_cfg: Input.Config = Input.default_config().set(
+            name="test",
+            partition_spec=PartitionSpec("data"),
+        )
+        if dispatcher is not None:
+            input_cfg.input_dispatcher = dispatcher.default_config().set(
+                global_logical_batch_size=4,
+            )
+
+        with jax.make_mesh((4, 2), ("data", "model")):
+            ds: Input = input_cfg.instantiate(parent=None)
+
+            element_spec = {
+                "x": jax.ShapeDtypeStruct((4, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((4,), dtype=jnp.int32),
+            }
+            self.assertNestedEqual(expected, ds._validate_and_dispatch_element_spec(element_spec))
+
+        # Check that we raise for invalid specs.
+        with self.assertRaisesRegex(ValueError, "batch dim"):
+            element_spec = {
+                "x": jax.ShapeDtypeStruct((2, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((4,), dtype=jnp.int32),
+            }
+            ds._validate_and_dispatch_element_spec(element_spec)
