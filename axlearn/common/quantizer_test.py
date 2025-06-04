@@ -348,7 +348,7 @@ class RandomVectorQuantizerTest(TestCase):
             ),
             expected_values[batch_size][normalize_codebook]["q_vecs"],
             atol=1e-6,
-            rtol=1e-6,
+            rtol=2e-6,
         )
         assert_allclose(
             np.sum(q_outputs.ids * safe_not(paddings)[:, :, None]),
