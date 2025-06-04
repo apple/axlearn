@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Defines SpmdTrainer, a trainer that supports partitioning of computation and data with GSPMD."""
-
+import hashlib
 import contextlib
 import itertools
 import math
@@ -605,8 +605,25 @@ class SpmdTrainer(Module):
                     try:
                         input_batch = next(input_iterator)
                         self._maybe_record_event(measurement.Event.END_DATA_LOADING)
+                        if num_steps < 3:
+                            input_ids = input_batch["input_ids"]
+                            input_hash = hashlib.sha256(input_ids).hexdigest()
+                            target_labels = input_batch["target_labels"]
+                            target_hash = hashlib.sha256(target_labels).hexdigest()
+                            logging.log_first_n(
+                                logging.INFO, "input_batch=%s", 3, (input_batch["input_ids"], input_batch["target_labels"]),
+                            )
+                        else:
+                            input_hash = target_hash = None
+
                         logging.log_first_n(
                             logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
+                        )
+                        logging.log_first_n(
+                            logging.INFO, "input_hash=%s", 3, input_hash
+                        )
+                        logging.log_first_n(
+                            logging.INFO, "target_hash=%s", 3, target_hash
                         )
 
                         # Stop or start tracing if necessary.
@@ -1098,7 +1115,7 @@ class SpmdTrainer(Module):
             # Run the compiled function.
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
-        if self.step % 100 == 0 or 0 <= self.step <= 5:
+        if self.step % 1 == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],

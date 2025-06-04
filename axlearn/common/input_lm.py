@@ -229,7 +229,8 @@ def text_to_lm_training_input(
         # Unbatch to yield one training example per iteration.
         ds = ds.unbatch()
         # Shuffle so that read order is not dominated by document order.
-        if shuffle_buffer_size > 0:
+        import os
+        if int(os.getenv("AXLEARN_SHUFFLE_FILES", "1")) == 1 and shuffle_buffer_size > 0:
             ds = ds.shuffle(shuffle_buffer_size, reshuffle_each_iteration=True)
         return ds
 
