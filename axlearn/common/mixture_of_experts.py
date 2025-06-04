@@ -1855,7 +1855,8 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
 
         x = with_sharding_constraint(x, PartitionSpec(("data", "fsdp"), "expert", None))
         with jax.named_scope("router"):
-            logits = jnp.einsum("ogsm,me->ogse", x, self.parameters["gate_weight"])
+            x_fp32 = x.astype(jnp.float32)
+            logits = jnp.einsum("ogsm,me->ogse", x_fp32, self.parameters["gate_weight"])
 
         # Perform gating based on logits. Casting to float32 precision is usually needed for
         # stable performance.

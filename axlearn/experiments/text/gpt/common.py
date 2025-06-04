@@ -725,7 +725,10 @@ def get_trainer_config_fn(
         cfg.model = model_cfg
         cfg.learner = learner_cfg
         cfg.max_step = max_step
-        cfg.train_dtype = STEP_DTYPE
+        if os.getenv("AXLEARN_TRAIN_DTYPE", "bfloat16") == "float32":
+            cfg.train_dtype = jnp.float32
+        else:
+            cfg.train_dtype = STEP_DTYPE
         cfg.input = input_tf_data.Input.default_config().set(
             is_training=True,
             source=train_input_source,

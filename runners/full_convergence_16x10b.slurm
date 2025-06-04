@@ -8,7 +8,7 @@
 export AXLEARN_REMAT_LAYER=selective
 export VENV_NAME=jaxmoe
 export AXLEARN_MODEL_NAME="envy-Mistral-16x10B"
-export JOB_ID="16x10b_convergence_nofused"
+# export JOB_ID="16x10b_convergence_nofused"
 export AXLEARN_TP_DEGREE=16
 export AXLEARN_TRAIN_BATCH_SIZE=$((8 * SLURM_NNODES))
 export AXLEARN_CAP_FACTOR=2

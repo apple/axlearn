@@ -242,6 +242,7 @@ def callback_modify_trainer_kwargs_env_vars(trainer_kwargs):
 
     if SAVE_EVERY_N_STEPS := os.getenv("SAVE_EVERY_N_STEPS"):
         trainer_kwargs["save_every_n_steps"] = int(SAVE_EVERY_N_STEPS)
+
     if EVAL_EVERY_N_STEPS := os.getenv("EVAL_EVERY_N_STEPS"):
         trainer_kwargs["eval_every_n_steps"] = int(EVAL_EVERY_N_STEPS)
 
@@ -265,9 +266,9 @@ def common_trainer_kwargs() -> dict[str, Any]:
             "alpha": 1 / 200.0,
             "weight_decay": 3.16e-4,
         },
-        "save_every_n_steps": 5000,
-        "keep_every_n_steps": 5000,
-        "eval_every_n_steps": 25_000,
+        "save_every_n_steps": 250000,
+        "keep_every_n_steps": 250000,
+        "eval_every_n_steps": 250_000,
         "mesh_shape": mesh_shape_from_axes(data=-1),
     }
 
@@ -594,13 +595,13 @@ def get_trainer_kwargs(
         num_kv_heads = max(8, tp_degree)
         if int(os.getenv("AXLEARN_NUM_KV_HEADS", -1)) != -1:
             num_kv_heads = int(os.getenv("AXLEARN_NUM_KV_HEADS"))
-
         if model_size == "Mistral-toy":
             num_heads = 32
             head_size = 32
             ffn_scale_factor=3.5
         elif model_size == "Mistral-8x7B":
             # 32 layers gets to 47B
+            num_layers = int(os.getenv("AXLEARN_NUM_LAYERS", 32))
             num_heads = 32
             head_size = 128
             ffn_scale_factor=3.5
@@ -863,6 +864,7 @@ def trainer_configs(
             ),
             **kwargs,
         )
+
         # Only Switch-Base model size is runnable on a single node mode.
         if model_size == "Switch-Base":
 
