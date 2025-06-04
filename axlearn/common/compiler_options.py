@@ -56,7 +56,7 @@ def default_xla_options(
             # cause the step time to be double. You should increase this
             # further if you see "Allocator failed to allocate". A feature
             # to dynamically allocate may come later: b/380514965
-            megascale_grpc_premap_memory_bytes=17179869184,
+            megascale_grpc_premap_memory_bytes=137438953472,
             # Flag controlling the maximum number of overlapping host offloadings.
             xla_tpu_host_transfer_overlap_limit=24,
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
