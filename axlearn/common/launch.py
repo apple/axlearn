@@ -114,6 +114,12 @@ def setup():
         logging.info("LIBTPU_INIT_ARGS='%s'", os.environ["LIBTPU_INIT_ARGS"])
 
     with _init_context():
+        # Jax config needs to be set for both pathways and Jax.
+        # Use a GSPMD-friendly PRNG implementation.
+        jax.config.update("jax_default_prng_impl", "rbg")
+        # This allows replicated jax.Arrays to be used for computation on the host.
+        jax.config.update("jax_spmd_mode", "allow_all")
+
         if FLAGS.jax_backend == "proxy":
             # pylint: disable-next=import-error,import-outside-toplevel
             import pathwaysutils  # pytype: disable=import-error
