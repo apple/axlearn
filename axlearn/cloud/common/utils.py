@@ -292,7 +292,7 @@ def merge(base: dict, overrides: dict):
     return base
 
 
-def to_bool(value: any) -> bool:
+def to_bool(value) -> bool:
     """Converts a string representation of truth to a bool."""
     if isinstance(value, bool):
         return value
