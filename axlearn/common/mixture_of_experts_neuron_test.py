@@ -429,7 +429,7 @@ class TestDev150bInteg(TestDev150bUnit):
         jax.config.update('jax_platform_name', 'neuron')
         self.helper_bwd(self.create_cfg(test=TopKGatingGather))    
 
-class TestDev150bGating(GatingTestCase):
+class TestDev150bGatingUnit(GatingTestCase):
     def create_cfg(self, test, golden, test_device, golden_device="cpu", layer="gating"):
         return create_test_config(
             layer=layer,
@@ -450,31 +450,44 @@ class TestDev150bGating(GatingTestCase):
         )[1]
     
     def test_unit_fwd_blockwise(self):
-        jax.config.update('jax_platform_name', 'cpu')
         self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwise, golden=None, test_device="cpu", layer="gating"))
 
-    def test_integ_fwd_blockwise(self):
-        jax.config.update('jax_platform_name', 'neuron')
-        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwise, golden=None, test_device="neuron", layer="gating"))
-    
     def test_unit_fwd_blockwisev2(self):
-        jax.config.update('jax_platform_name', 'cpu')
         self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwiseV2, golden=None, test_device="cpu", layer="gating"))
-
-    def test_integ_fwd_blockwisev2(self):
-        jax.config.update('jax_platform_name', 'neuron')
-        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwiseV2, golden=None, test_device="neuron", layer="gating"))
 
     @unittest.skip("skip gather")
     def test_unit_fwd_gather(self):
-        jax.config.update('jax_platform_name', 'cpu')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="cpu", golden_device="cpu", layer="gating"))
+
+class TestDev150bGatingInteg(GatingTestCase):
+    def create_cfg(self, test, golden, test_device, golden_device="cpu", layer="gating"):
+        return create_test_config(
+            layer=layer,
+            test=test,
+            golden=golden,
+            golden_device=golden_device,
+            test_device=test_device,
+            input_dim=8192,
+            hidden_dim=16384,
+            n_experts=8,
+            n_groups=1,
+            top_k=2,
+            capacity_factor=2,
+            mesh_spec={"fsdp": -1, "model": 16},
+            batch=8,
+            seq=8192,
+            dtype=jnp.bfloat16,
+        )[1]
+    
+    def test_integ_fwd_blockwise(self):
+        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwise, golden=None, test_device="neuron", layer="gating"))
+    
+    def test_integ_fwd_blockwisev2(self):
+        self.helper_blockwise_gating(self.create_cfg(test=TopKGatingGatherBlockwiseV2, golden=None, test_device="neuron", layer="gating"))
 
     @unittest.skip("skip gather")
     def test_integ_fwd_gather(self):
-        jax.config.update('jax_platform_name', 'neuron')
         self.helper_fwd(self.create_cfg(test=TopKGatingGather, golden=TopKGating, test_device="neuron", golden_device="cpu", layer="gating"))
-
 
 if __name__ == "__main__":
     absltest.main()
