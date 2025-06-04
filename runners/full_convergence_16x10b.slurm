@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --cpus-per-task 127
-#SBATCH --job-name 16x10b_convergence_gpu
+#SBATCH --job-name 16x10b_convergence
 #SBATCH --output logs/%j_%x.out
 #SBATCH --nodes 8
 #SBATCH --switches 1
@@ -15,9 +15,7 @@ export AXLEARN_CAP_FACTOR=2
 export AXLEARN_USE_BLOCKWISE=1
 export AXLEARN_REPEATED=1
 export AXLEARN_NUM_KV_HEADS=16
-export AXLEARN_SHUFFLE_FILES=0
 export DATA_SEED=42
-export SAVE_EVERY_N_STEPS=500
 
 #export NEURON_ALL_REDUCE_UPCASTER=1
 #export NEURON_PROMOTE_TP_REDUCE=1
