@@ -1,12 +1,22 @@
+# Copyright © 2023 Apple Inc.
+#
+# huggingface/transformers:
+# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/fairseq:
+# Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
+# Licensed under the MIT license.
+
 """Generic text input processing utilities.
 
 Note that while tfds is used, Hugging Face datasets can be loaded using `huggingface:` prefix.
 See: https://www.tensorflow.org/datasets/community_catalog/huggingface
 """
-
 import functools
 import random
-from typing import Callable, Dict, List, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Callable, Optional, Union
 
 import nltk
 import numpy as np
@@ -21,7 +31,7 @@ from tensorflow.python.ops import string_ops
 from tensorflow_text.python.ops.bert_tokenizer import AccentPreservingBasicTokenizer
 
 from axlearn.common import input_tf_data
-from axlearn.common.config import InstantiableConfig, maybe_instantiate
+from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.input_tf_data import DatasetToDatasetFn
 from axlearn.common.utils import Tensor
 
@@ -30,7 +40,7 @@ TOKEN_TYPE_IDS = "token_type_ids"
 TARGET_LABELS = "target_labels"
 
 
-def perplexity(targets: Sequence[str], scores: Sequence[int]) -> Dict[str, seqio.metrics.Scalar]:
+def perplexity(targets: Sequence[str], scores: Sequence[int]) -> dict[str, seqio.metrics.Scalar]:
     """Computes perplexity metric.
 
     Reference: https://github.com/google/seqio#score-metrics
@@ -92,14 +102,14 @@ def strip_accents(
 
     assert normalization_form in ("NFD", "NFKD")
 
-    def example_fn(example: Dict[str, str]) -> Dict[str, str]:
+    def example_fn(example: dict[str, str]) -> dict[str, str]:
         for field in fields:
             normalized_utf8 = tf_text.normalize_utf8(
                 example[field], normalization_form=normalization_form
             )
-            # pylint: disable-next=line-too-long
             # Reference:
             # https://github.com/tensorflow/text/blob/4887f2034678bbac662040eeff6ec22d69724361/tensorflow_text/python/ops/bert_tokenizer.py#LL151C55-L151C69.
+            # pylint: disable-next=line-too-long
             # \p{Mn} is "a character intended to be combined with another character without taking up extra space".
             accent_removed = string_ops.regex_replace(normalized_utf8, r"\p{Mn}", "")
             example[field] = accent_removed
@@ -109,7 +119,7 @@ def strip_accents(
 
 
 def tokenize(
-    output_features: Union[InstantiableConfig, seqio.preprocessors.OutputFeaturesType],
+    output_features: ConfigOr[seqio.preprocessors.OutputFeaturesType],
     copy_pretokenized: bool = True,
     with_eos: bool = False,
 ) -> input_tf_data.DatasetToDatasetFn:
@@ -143,6 +153,9 @@ def add_token_type_ids(
 
     This processor is usually used after `tokenize`.
     The last dimension should contain the input IDs.
+    Note sequences should either be 1D `tf.Tensor`s or `tf.RaggedTensor`s containing the input IDs
+    for single examples, or 2D `tf.Tensor`s or `tf.RaggedTensor`s containing the input IDs for
+    multiple examples, where the first dim is the batch dimension and second dim is the input IDs.
 
     Assume final concatenated sequences always start and end with BOS/EOS, and sub-sequences
     are separated by a single separator token.
@@ -156,7 +169,7 @@ def add_token_type_ids(
 
     Args:
         input_key: Field name(s) of one or multiple tokenized sequences to be added
-            token type IDs, where each field is a tf.RaggedTensor.
+            token type IDs.
         output_key: Name of the field that contains token type IDs to be outputted.
 
     Returns:
@@ -165,22 +178,33 @@ def add_token_type_ids(
     if isinstance(input_key, str):
         input_key = [input_key]
 
-    def example_fn(example: Dict[str, Union[tf.Tensor, tf.RaggedTensor]]) -> Dict[str, tf.Tensor]:
+    def example_fn(
+        example: dict[str, Union[tf.Tensor, tf.RaggedTensor]]
+    ) -> dict[str, Union[tf.Tensor, tf.RaggedTensor]]:
         token_type_ids = []
         for i, key in enumerate(input_key):
             t = example[key]
-            if isinstance(t, tf.RaggedTensor):
-                shape = t.bounding_shape()
-            else:
-                shape = tf.shape(t)
-            seq_len = shape[-1]
+            # In either branch, the total number of tokens with token type ID i is
+            #   int(i == 0) + seq_len + 1.
             # For i == 0, the first +1 is to account for the BOS token, the last +1 is to account
             # for SEP if there are multiple sequences or EOS if there is only one sequence.
             # For 1 <= i < len(input_key) - 1, the +1 is to account for the SEP token.
             # For i == len(input_key) - 1, the +1 is to account for the EOS token.
-            # pylint: disable-next=no-value-for-parameter,unexpected-keyword-arg
-            shape_out = tf.concat([shape[:-1], [int(i == 0) + seq_len + 1]], axis=-1)
-            token_type_ids.append(tf.fill(shape_out, i))
+            if isinstance(t, tf.RaggedTensor):
+                # seq_len is a 1D tensor indicating the length of each sequence.
+                seq_len = t.row_lengths()
+                shape_out = int(i == 0) + seq_len + 1
+                total_num_elements = tf.math.reduce_sum(shape_out)
+                out = tf.RaggedTensor.from_row_lengths(tf.fill((total_num_elements,), i), shape_out)
+            else:
+                shape = tf.shape(t)
+                # seq_len is a scalar indicating the length of each sequence.
+                seq_len = shape[-1]
+                # pylint: disable-next=no-value-for-parameter,unexpected-keyword-arg
+                shape_out = tf.concat([shape[:-1], [int(i == 0) + seq_len + 1]], axis=-1)
+                out = tf.fill(shape_out, i)
+            token_type_ids.append(out)
+
         # pylint: disable-next=no-value-for-parameter,unexpected-keyword-arg
         example[output_key] = tf.concat(token_type_ids, axis=-1)
         return example
@@ -278,7 +302,7 @@ def pack_strings(
     return padded_packed_strings
 
 
-def unpack_strings(strings_byte_array: Tensor) -> List[str]:
+def unpack_strings(strings_byte_array: Tensor) -> list[str]:
     """Python logic to extract strings from a utf-8 byte array upcast to int32
         and padded with STRINGS_BYTE_ARRAY_PAD_VALUE.
 
@@ -343,7 +367,7 @@ def roberta_normalize(
     if isinstance(input_key, str):
         input_key = [input_key]
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         for key in input_key:
             text = example[key]
             if not cased:
@@ -359,7 +383,7 @@ def bert_normalize_mapper(
     cased: bool = True,
     input_key: Union[str, Sequence[str]] = "text",
     reduce_axis: Optional[int] = None,
-) -> Callable[[Dict[str, Union[str, tf.Tensor]]], Dict[str, tf.Tensor]]:
+) -> Callable[[dict[str, Union[str, tf.Tensor]]], dict[str, tf.Tensor]]:
     """Constructs a mapper for `bert_normalize`.
 
     This is kept as a separate function so we can use it in non-tf-dataset mappers,
@@ -378,7 +402,7 @@ def bert_normalize_mapper(
     if isinstance(input_key, str):
         input_key = [input_key]
 
-    def process_example_fn(example: Dict[str, Union[str, tf.Tensor]]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, Union[str, tf.Tensor]]) -> dict[str, tf.Tensor]:
         for key in input_key:
             text = example[key]  # Note: TF uses utf-8 encoding by default.
             # Replace 0x0, 0xFFFD, and non-spacing marks, following original BERT implementation.
@@ -386,7 +410,7 @@ def bert_normalize_mapper(
             # https://github.com/google-research/bert/blob/eedf5716ce1268e56f0a50264a88cafad334ac61/tokenization.py#L291
             # https://github.com/google-research/bert/blob/eedf5716ce1268e56f0a50264a88cafad334ac61/tokenization.py#L226
             # pylint: disable-next=anomalous-backslash-in-string
-            text = tf.strings.regex_replace(text, "[\\0\\x{FFFD}\p{Mn}]+", "")
+            text = tf.strings.regex_replace(text, "[\\0\\x{FFFD}\\p{Mn}]+", "")
             tokens = basic_tokenizer.tokenize(text)
             if reduce_axis is None:
                 tokens = tokens.flat_values
@@ -432,7 +456,7 @@ def bert_normalize(
 def split_sentences(
     input_key: str = "text",
     max_sentences_per_example: Optional[int] = None,
-    passthrough_keys: Optional[List[str]] = None,
+    passthrough_keys: Optional[list[str]] = None,
 ) -> input_tf_data.DatasetToDatasetFn:
     """Splits the input documents into sentences, and appends an empty sentence at document
     boundaries.
@@ -463,7 +487,7 @@ def split_sentences(
         # Return a np.array so tf doesn't flatten into one string.
         return np.array(sentences), len(sentences)
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         sentences, shape = tf.py_function(
             sentence_tokenize, [example[input_key]], (tf.string, tf.int32)
         )
@@ -492,7 +516,7 @@ def random_chunking(max_len: int, input_key: str = INPUT_IDS) -> input_tf_data.D
         `input_key` mapping to the randomly-selected chunk of token IDs.
     """
 
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         input_ids = example[input_key]
         size = tf.size(input_ids)
         max_offset = tf.maximum(0, size - max_len)
@@ -518,7 +542,7 @@ def join_string_features(
         features and separator and adds to the example as example[key].
     """
 
-    def example_fn(example: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def example_fn(example: dict[str, Tensor]) -> dict[str, Tensor]:
         example[key] = tf.strings.join(
             [example[feature] for feature in features], separator=separator
         )

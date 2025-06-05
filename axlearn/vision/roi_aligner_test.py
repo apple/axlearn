@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests ROI Align layer."""
 import jax
 import numpy as np

@@ -1,8 +1,17 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# kdexd/virtex:
+# Copyright (c) 2020, Karan Desai.
+# Licensed under the MIT license.
+
 """VirTex model implementation.
 
 https://arxiv.org/abs/2006.06666
 """
-from typing import Dict, Optional, Union
+
+from typing import Optional, Union
 
 import jax
 from jax import numpy as jnp
@@ -16,12 +25,16 @@ from axlearn.common.decoding import BeamSearchOutputs
 from axlearn.common.layers import Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context
-from axlearn.common.utils import NestedTensor, get_recursively, tree_paths
+from axlearn.common.utils import (
+    NestedTensor,
+    Tensor,
+    get_recursively,
+    tree_paths,
+    validate_contains_paths,
+)
 from axlearn.common.vision_transformer import VisionTransformer as ViTModel
 from axlearn.common.vision_transformer import named_model_configs as vit_named_model_configs
 from axlearn.vision.resnet import ResNet
-
-Tensor = jnp.ndarray
 
 
 class ImageBackboneModelMixin(Module):
@@ -199,7 +212,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
 
     def forward(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         return_aux: bool = False,
     ) -> Tensor:
         """
@@ -211,12 +224,12 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
                     should be +1 of the maximum sequence length.
                     Shape: [batch, max_sequence_length]. Values should be in the range
                     [0, vocab_size].
-            return_aux: Whether to return auxilliary outputs, which includes
+            return_aux: Whether to return auxiliary outputs, which includes
                 visual backbone features and text decoder logits (and hidden state
                 if the decoder is a transformer).
 
         Returns:
-            (loss, Dict): The loss and dictionary of auxilliary outputs (if `return_aux=True`).
+            (loss, Dict): The loss and dictionary of auxiliary outputs (if `return_aux=True`).
                 If `return_aux=False`, an empty dictionary will be returned.
         """
         image = input_batch["image"]
@@ -226,8 +239,9 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
 
         # Decode caption.
         decoder_ids, decoder_labels = caption_tokens[:, :-1], caption_tokens[:, 1:]
-        predictions: Dict[str, Tensor] = self.textual(
-            decoder_ids, cross_attention_data=projected_visual_features
+        predictions: dict[str, Tensor] = self.textual(
+            input_batch=dict(input_ids=decoder_ids),
+            cross_attention_data=projected_visual_features,
         )
         metrics = self._metrics(predictions["logits"], decoder_labels)
 
@@ -258,9 +272,9 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         projected_visual_features = self.embed_image(image)
         with child_context("beam_search_decode", module=self.textual):
             output: BeamSearchOutputs = self.textual.beam_search_decode(
+                input_batch=dict(prefix=prefix),
                 max_sequence_length=max_sequence_length,
                 num_decodes=num_decodes,
-                prefix=prefix,
                 cross_attention_data=projected_visual_features,
             )
         return output
@@ -286,6 +300,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         Returns:
             The beam search outputs.
         """
+        validate_contains_paths(input_batch, paths=["image", "prefix"])
         return self.caption(
             image=input_batch["image"],
             prefix=input_batch["prefix"],
@@ -314,7 +329,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         projected_visual_features = self.visual_projection(visual_features)
         return projected_visual_features
 
-    def _metrics(self, logits: Tensor, targets: Tensor) -> Dict[str, Tensor]:
+    def _metrics(self, logits: Tensor, targets: Tensor) -> dict[str, Tensor]:
         cfg = self.config
 
         live_targets = (targets != cfg.textual.pad_token_id).astype(jnp.float32)

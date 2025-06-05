@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/detectron2:
+# Copyright 2019-2020, detectron2 contributors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An AXLearn implementation of ViTDet transformer layers.
 
 ViTDet References:
@@ -5,7 +13,8 @@ ViTDet References:
 """
 import copy
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any, Optional
 
 import jax.nn
 from jax import numpy as jnp
@@ -162,9 +171,9 @@ def _set_model_config(
     model_dim: int,
     num_heads: int,
     feed_forward_dim: Optional[int] = None,
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
-    stride: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
+    stride: Optional[tuple[int, int]] = None,
     global_feature_extraction: str = "gap",
     dtype: jnp.dtype = jnp.float32,
     dropout_rate: float = 0.0,
@@ -243,9 +252,9 @@ def build_vitdet_model_config(**kwargs):
 
 def named_model_configs(
     *,
-    extra_settings: Optional[Dict[str, Any]] = None,
-    include_models: Optional[List[str]] = None,  # If set, only get models configs in the list.
-) -> Dict[str, InstantiableConfig]:
+    extra_settings: Optional[dict[str, Any]] = None,
+    include_models: Optional[list[str]] = None,  # If set, only get models configs in the list.
+) -> dict[str, InstantiableConfig]:
     # Avoid modifying `_NAMED_VITDET_MODELS` in place.
     models = copy.deepcopy(_NAMED_VITDET_MODELS)
     config_map = {}

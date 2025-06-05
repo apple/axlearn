@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google/praxis:
+# Copyright 2022 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
+# facebookresearch/fairseq:
+# Copyright (c) Facebook, Inc. and its affiliates.
+# Licensed under the MIT license.
+
 """Vector quantization layer and metrics.
 
 Reference:
@@ -15,32 +27,27 @@ https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/p
 https://github.com/facebookresearch/fairseq/blob/d871f6169f8185837d1c11fb28da56abfd83841c/fairseq/modules/gumbel_vector_quantizer.py
 """
 from enum import Enum, unique
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import NamedTuple, Optional
 
+import chex
 import jax.nn
 import jax.numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Linear, MultiLinear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import InvocationContext, Module, current_context
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import (
-    ConstantInitializer,
     DefaultInitializer,
     FanAxes,
     GaussianInitializer,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.schedule import as_schedule_fn
-from axlearn.common.utils import NestedTensor, Tensor
+from axlearn.common.utils import Nested, NestedTensor, Tensor, safe_not
 
 _einsum_dims = "abcdefwxyz"
 
@@ -55,16 +62,16 @@ def compute_code_histogram(onehots: Tensor, paddings: Tensor) -> Tensor:
     Returns:
         Histogram of the quantized codes of shape [num_codebooks, codebook_size].
     """
-    onehots = onehots * (1 - paddings)[..., None, None]
+    onehots = onehots * safe_not(paddings)[..., None, None]
     # [num_codebooks, codebook_size].
     histogram = jnp.sum(onehots, axis=tuple(range(onehots.ndim - 2)))
     return histogram
 
 
-def compute_code_pplx(onehots: Tensor, paddings: Tensor) -> Tuple[Tensor, Tensor]:
+def compute_code_pplx(onehots: Tensor, paddings: Tensor) -> tuple[Tensor, Tensor]:
     """Computes pplx and entropy of the quantized codes distribution."""
     histogram = compute_code_histogram(onehots, paddings)
-    normalizer = jnp.sum(1 - paddings)
+    normalizer = jnp.sum(safe_not(paddings))
     # [num_codebooks, codebook_size].
     probs = histogram / jnp.maximum(normalizer, 1.0)
     log_probs = jnp.log(jnp.maximum(1.0e-30, probs))
@@ -99,8 +106,6 @@ class BaseQuantizer(BaseLayer):
     class Output(NamedTuple):
         # [..., num_codebooks].
         ids: Tensor
-        # [..., num_codebooks, codebook_size].
-        onehots: Tensor
         # [..., num_codebooks, codebook_dim].
         quantized_vectors: Tensor
         # Scalar of quantizer loss.
@@ -115,7 +120,7 @@ class BaseQuantizer(BaseLayer):
         cfg.param_init = REQUIRED
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             codebook=ParameterSpec(
@@ -133,33 +138,55 @@ class BaseQuantizer(BaseLayer):
 
         Returns:
             BaseQuantizer.Output.
+            * ids: Tensor [..., num_codebooks].
+            * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
         """
         raise NotImplementedError(type(self))
+
+    def lookup(self, ids: Tensor) -> Output:
+        """Codebook look up with ids.
+
+        Args:
+            ids: integer tensor of shape [..., num_codebooks] with values
+                in range [0, codebook_size).
+
+        Returns:
+            BaseQuantizer.Output
+            * ids: Tensor [..., num_codebooks].
+            * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
+
+        Raises:
+            NotImplementedError: if ids.ndim > 11.
+        """
+        return _lookup(ids=ids, codebook=self.parameters["codebook"])
 
 
 def _lookup(*, ids: Tensor, codebook: Tensor) -> BaseQuantizer.Output:
     """Codebook look up with ids.
 
     Args:
-        ids: integer tensor of shape [batch_size, seq_len, num_codebooks] with values
+        ids: integer tensor of shape [..., num_codebooks] with values
             in range [0, codebook_size).
         codebook: Tensor of shape [codebook_size, num_codebooks, codebook_dim].
 
     Returns:
-        BaseQuantizer.Output.
+        BaseQuantizer.Output
+        * ids: Tensor [..., num_codebooks].
+        * quantized_vectors: Tensor [..., num_codebooks, codebook_dim].
 
     Raises:
         NotImplementedError: if ids.ndim > 11.
     """
     if ids.ndim - 1 > len(_einsum_dims):
         raise NotImplementedError(ids.shape)
-    # [..., num_codebooks, vocab_size].
-    onehots = jax.nn.one_hot(ids, num_classes=codebook.shape[0], axis=-1, dtype=codebook.dtype)
-    batch_dims = _einsum_dims[: onehots.ndim - 2]
-    quantized_vectors = jnp.einsum(f"{batch_dims}gv,vgh->{batch_dims}gh", onehots, codebook)
+
+    # [..., num_codebooks]
+    g_index = jnp.expand_dims(jnp.arange(ids.shape[-1]), axis=tuple(range(ids.ndim - 1)))
+    # codebook: [codebook_size, num_codebooks, codebook_dim], ids: [..., num_codebooks]
+    # -> [..., num_codebooks, codebook_dim]
+    quantized_vectors = codebook[ids, g_index]
     return BaseQuantizer.Output(
         ids=ids,
-        onehots=onehots,
         quantized_vectors=quantized_vectors,
     )
 
@@ -228,21 +255,24 @@ def _apply_paddings(*, outputs: BaseQuantizer.Output, paddings: Tensor) -> BaseQ
     Returns:
         padded_outputs: BaseQuantizer.Output.
     """
+    chex.assert_type(paddings, jnp.bool)
     # ids are padded with -1.
-    ids = outputs.ids * (1 - paddings)[:, :, None] + (-1) * paddings[:, :, None]
-    onehots = outputs.onehots * (1 - paddings)[:, :, None, None]
-    quantized_vectors = outputs.quantized_vectors * (1 - paddings)[:, :, None, None]
+    ids_paddings = paddings[:, :, None]
+    ids = outputs.ids * (1 - ids_paddings) + (-1) * ids_paddings
+    quantized_vectors = outputs.quantized_vectors * safe_not(paddings)[:, :, None, None]
     return BaseQuantizer.Output(
         ids=ids,
-        onehots=onehots,
         quantized_vectors=quantized_vectors,
         loss=outputs.loss,
     )
 
 
-def _add_codebook_summaries(
-    *, context: InvocationContext, outputs: BaseQuantizer.Output, paddings: Tensor
-):
+def _ids_to_onehots(ids: Tensor, *, codebook_size: int, dtype: jnp.dtype) -> Tensor:
+    # [..., num_codebooks, codebook_size].
+    return jax.nn.one_hot(ids, num_classes=codebook_size, axis=-1, dtype=dtype)
+
+
+def _add_codebook_summaries(*, context: InvocationContext, onehots: Tensor, paddings: Tensor):
     """Helper function to compute codebook distribution statistics and add to summaries.
 
     The statistics are from all frames, not only on those masked frames in self-supervised training.
@@ -250,14 +280,14 @@ def _add_codebook_summaries(
 
     Args:
         context: Module invocation context to add summaries to.
-        outputs: BaseQuantizer.Output.
+        onehots: onehot of BaseQuantizer.Output.ids.
         paddings: 0/1 tensor of shape [batch_size, seq_len], where 0 is valid position.
     """
-    coverage = compute_code_coverage(onehots=outputs.onehots, paddings=paddings)
-    pplx, entropy = compute_code_pplx(onehots=outputs.onehots, paddings=paddings)
+    coverage = compute_code_coverage(onehots=onehots, paddings=paddings)
+    pplx, entropy = compute_code_pplx(onehots=onehots, paddings=paddings)
     batch_size = paddings.shape[0]
 
-    num_frames = jnp.sum(1 - paddings)
+    num_frames = jnp.sum(safe_not(paddings))
     context.add_summary(
         "codebook/num_frames",
         WeightedScalar(num_frames.astype(jnp.float32) / batch_size, batch_size),
@@ -303,7 +333,7 @@ class RandomVectorQuantizer(BaseQuantizer):
         # Sect 3.1 https://arxiv.org/pdf/2202.01855.pdf.
         # Codebook uses standard Gaussian initialization.
         cfg.param_init = DefaultInitializer.default_config().set(
-            init_by_param_name={".*codebook$": config_for_class(GaussianInitializer).set(std=1.0)}
+            init_by_param_name={".*codebook$": GaussianInitializer.default_config().set(std=1.0)}
         )
         return cfg
 
@@ -319,7 +349,7 @@ class RandomVectorQuantizer(BaseQuantizer):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         params = super().initialize_parameters_recursively(prng_key=prng_key, prebuilt=prebuilt)
         # In RandomVectorQuantizer, we freeze codebook throughout training. So we can
@@ -362,18 +392,17 @@ class RandomVectorQuantizer(BaseQuantizer):
         q_outputs = _apply_paddings(outputs=q_outputs, paddings=paddings)
         # Best-rq freezes the codebook.
         ids = jax.lax.stop_gradient(q_outputs.ids)
-        onehots = jax.lax.stop_gradient(q_outputs.onehots)
         quantized_vectors = jax.lax.stop_gradient(q_outputs.quantized_vectors)
 
         outputs = self.Output(
             # [batch_size, seq_len, num_codebooks].
             ids=ids,
-            # [batch_size, seq_len, num_codebooks, codebook_size].
-            onehots=onehots,
             # [batch_size, seq_len, num_codebooks, codebook_dim].
             quantized_vectors=quantized_vectors,
         )
-        _add_codebook_summaries(context=current_context(), outputs=outputs, paddings=paddings)
+
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
+        _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
 
@@ -390,25 +419,25 @@ class KmeansVectorQuantizer(BaseQuantizer):
     https://arxiv.org/pdf/1910.05453.pdf.
     https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/praxis/layers/quantizer.py#L342
     Current implementation does not apply inputs or codebook normalization.
-    # ToDo(zhiyunlu): support l2 normalization.
     """
 
     @config_class
     class Config(BaseQuantizer.Config):
         # Scale of the commitment loss.
         beta: Required[float] = REQUIRED
+        normalize_codebook: bool = False
+        normalize_inputs: bool = False
 
     @classmethod
     def default_config(cls) -> Config:
         cfg: KmeansVectorQuantizer.Config = super().default_config()
-        # Fairseq uses Gaussian initialization with std=0.01.
-        # https://github.com/facebookresearch/fairseq/blob/d871f6169f8185837d1c11fb28da56abfd83841c/fairseq/modules/kmeans_vector_quantizer.py#L42
-        # Praxis uses uniform initialization with fan_in.
-        # https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/praxis/layers/quantizer.py#L378
+        # The original VQ-VAE implementation initializes codebook by uniform(1/sqrt(dim)).
+        # https://github.com/google-deepmind/sonnet/blob/cd5b5fa48e15e4d020f744968f5209949ebe750f/sonnet/python/modules/nets/vqvae.py#L62C24-L64
+        # Note: fan_out of the codebook is `num_codebooks * codebook_dim`.
         cfg.param_init = DefaultInitializer.default_config().set(
             init_by_param_name={
                 ".*codebook$": WeightInitializer.default_config().set(
-                    scale=1.0, fan="fan_in", distribution="uniform"
+                    scale=1.0, fan="fan_out", distribution="uniform"
                 )
             }
         )
@@ -457,8 +486,18 @@ class KmeansVectorQuantizer(BaseQuantizer):
         quantized_inputs = quantize_by_nearest_neighbor(
             inputs=inputs_by_group,
             codebook=self.parameters["codebook"],
-            metric=SimilarityMetric.L2_DISTANCE,
+            metric=(
+                SimilarityMetric.DOT_PRODUCT
+                if cfg.normalize_codebook
+                else SimilarityMetric.L2_DISTANCE
+            ),
         )
+        if cfg.normalize_inputs:
+            inputs_by_group = l2_normalize(inputs_by_group, axis=-1, eps=1e-12)
+        if cfg.normalize_codebook:
+            self.parameters["codebook"] = l2_normalize(
+                self.parameters["codebook"], axis=-1, eps=1e-12
+            )
         quantized_inputs = _apply_paddings(outputs=quantized_inputs, paddings=paddings)
 
         # [batch_size, seq_len, input_dim].
@@ -466,17 +505,28 @@ class KmeansVectorQuantizer(BaseQuantizer):
 
         # Compute mean squared errors between q_vecs and inputs on non-padded frames.
         # Number of valid frames * input_dim.
-        num_frames = jnp.sum(1 - paddings)
+        num_frames = jnp.sum(safe_not(paddings))
         denominator = jnp.maximum(num_frames * input_dim, 1)
         # Eq.3 of VQ-VAE paper https://arxiv.org/pdf/1711.00937.pdf.
         # The codebook is optimized by kmeans_loss only.
+        inputs_to_loss = (
+            jnp.reshape(inputs_by_group, [batch_size, seq_len, -1])
+            if cfg.normalize_inputs
+            else inputs
+        )
         kmeans_loss = (
-            jnp.sum((q_vecs - jax.lax.stop_gradient(inputs)) ** 2 * (1 - paddings)[:, :, None])
+            jnp.sum(
+                (q_vecs - jax.lax.stop_gradient(inputs_to_loss)) ** 2
+                * safe_not(paddings)[:, :, None]
+            )
             / denominator
         )
         # The inputs receive gradients from commitment_loss.
         commitment_loss = (
-            jnp.sum((inputs - jax.lax.stop_gradient(q_vecs)) ** 2 * (1 - paddings)[:, :, None])
+            jnp.sum(
+                (inputs_to_loss - jax.lax.stop_gradient(q_vecs)) ** 2
+                * safe_not(paddings)[:, :, None]
+            )
             / denominator
         )
         total_loss = kmeans_loss + cfg.beta * commitment_loss
@@ -488,20 +538,19 @@ class KmeansVectorQuantizer(BaseQuantizer):
         # Note that gradient on quantized_vectors is not propagated to the codebook.
         quantized_vectors = inputs + jax.lax.stop_gradient(q_vecs - inputs)
         # We need this to stop gradients on the padded inputs.
-        quantized_vectors = quantized_vectors * (1 - paddings)[:, :, None]
+        quantized_vectors = quantized_vectors * safe_not(paddings)[:, :, None]
 
         outputs = self.Output(
             # [batch_size, seq_len, num_codebooks].
             ids=quantized_inputs.ids,
-            # [batch_size, seq_len, num_codebooks, vocab_size].
-            onehots=quantized_inputs.onehots,
             # [batch_size, seq_len, num_codebooks, codebook_dim].
             quantized_vectors=jnp.reshape(
                 quantized_vectors, [batch_size, seq_len, cfg.num_codebooks, cfg.codebook_dim]
             ),
             loss=total_loss,
         )
-        _add_codebook_summaries(context=current_context(), outputs=outputs, paddings=paddings)
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
+        _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
 
@@ -546,20 +595,20 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
         )
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         params = super()._create_layer_parameter_specs()
         params["step"] = ParameterSpec(
             shape=[],
             dtype=jnp.float32,
             mesh_axes=(None,),
-            initializer=ConstantInitializer(0.0),
+            initializer=constant_initializer(0.0),
             weight_decay_scale=0,
         )
         return params
 
     def forward(
         self, inputs: Tensor, *, paddings: Tensor
-    ) -> Tuple[BaseQuantizer.Output, Dict[str, Tensor]]:
+    ) -> tuple[BaseQuantizer.Output, dict[str, Tensor]]:
         """Quantization using Gumbel softmax trick.
 
         The code is selected based on the largest index of inputs. Inputs Gradients is computed
@@ -588,16 +637,15 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
         ids = jnp.argmax(logits, axis=-1)
 
         if not self.is_training:
-            outputs = _lookup(ids=ids, codebook=self.parameters["codebook"])
+            outputs = self.lookup(ids=ids)
             outputs = _apply_paddings(outputs=outputs, paddings=paddings)
         else:
             # [batch_size, seq_len, 1].
-            mask = (1 - paddings)[:, :, None]
-            ids = ids * mask + (-1) * (1 - mask)
+            mask = safe_not(paddings)[:, :, None]
+            ids = ids * mask + (-1) * safe_not(mask)
+            # TODO(dhwang2): optimize memory by scan for long context training.
             # [batch_size, seq_len, num_codebooks, vocab_size].
-            onehots = jax.nn.one_hot(
-                ids, num_classes=cfg.codebook_size, axis=-1, dtype=inputs.dtype
-            )
+            onehots = _ids_to_onehots(ids, codebook_size=cfg.codebook_size, dtype=inputs.dtype)
             # We need this to stop gradients on the padded frames.
             onehots = onehots * mask[:, :, :, None]
             # [batch_size, seq_len, num_codebooks, vocab_size].
@@ -614,13 +662,12 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
             outputs = self.Output(
                 # [batch_size, seq_len, num_codebooks].
                 ids=ids,
-                # [batch_size, seq_len, num_codebooks, vocab_size].
-                onehots=onehots,
                 # [batch_size, seq_len, num_codebooks, codebook_dim].
                 quantized_vectors=quantized_vectors,
             )
 
-        _add_codebook_summaries(context=current_context(), outputs=outputs, paddings=paddings)
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
+        _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         if self.is_training:
             self.add_module_output("probs", y_soft)
             self.add_summary("codebook/temperature_schedule_step", self.parameters["step"])

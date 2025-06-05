@@ -1,8 +1,10 @@
+# Copyright © 2023 Apple Inc.
+
 """GLUE metric calculators.
 
 https://arxiv.org/abs/1804.07461
 """
-from typing import Dict, Optional, Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -56,7 +58,7 @@ class GLUEMetricAccumulator(Configurable):
         self._gt.append(target_labels)
         self._mask.append(mask)
 
-    def summaries(self) -> Dict[str, WeightedScalar]:
+    def summaries(self) -> dict[str, WeightedScalar]:
         preds = jnp.hstack(self._preds)
         gt = jnp.hstack(self._gt)
         mask = jnp.hstack(self._mask)
@@ -75,9 +77,9 @@ class GLUEMetricCalculator(ModelSummaryAccumulator):
     def _forward_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         input_batch: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Calls `self._model` and returns summaries."""
         cfg = self.config
         next_key, forward_prng = jax.random.split(prng_key)
@@ -126,7 +128,7 @@ def glue_metrics(
     target_labels: Tensor,
     preds: Tensor,
     mask: Tensor,
-) -> Dict[str, WeightedScalar]:
+) -> dict[str, WeightedScalar]:
     """Computes the corresponding metrics for tasks.
 
     Args:

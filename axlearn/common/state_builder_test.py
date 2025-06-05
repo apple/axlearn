@@ -1,8 +1,12 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests state builders."""
+
 # pylint: disable=no-self-use,too-many-lines
 import os
+import tempfile
 from copy import deepcopy
-from typing import Any, List, Optional, Tuple, Type
+from typing import Any, Dict, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -24,8 +28,10 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
+from axlearn.common.convolution import Conv2D
+from axlearn.common.input_base import Input
 from axlearn.common.input_fake import FakeLmInput
-from axlearn.common.layers import Conv2D, Linear
+from axlearn.common.layers import Linear
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import torch_to_axlearn
@@ -33,6 +39,7 @@ from axlearn.common.repeat import Repeat
 from axlearn.common.state_builder import (
     _BUILDERS,
     BaseConv2DStateBuilder,
+    BaseConverterFromPretrainedModel,
     Builder,
     ChainBuilder,
     ChainConverter,
@@ -45,14 +52,18 @@ from axlearn.common.state_builder import (
     MergeStateConverter,
     MergeStateSelection,
     ModelStateScopeConverter,
+    OrbaxStateBuilder,
     PosEmbeddingConverter,
     RestoreAndConvertBuilder,
+    TensorStoreStateStorage,
+    TensorStoreStateStorageBuilder,
+    build_step_dir,
     clone_tree,
     get_builder,
     traverse_and_set_target_state_parameters,
 )
-from axlearn.common.test_utils import TestCase, mock_trainer_config
-from axlearn.common.trainer import SpmdTrainer, _TrainerState
+from axlearn.common.test_utils import TestCase, is_supported_mesh_shape, mock_trainer_config
+from axlearn.common.trainer import SpmdTrainer, TrainerState
 from axlearn.common.utils import (
     NestedTensor,
     PartitionSpec,
@@ -139,7 +150,7 @@ class ConverterTest(TestCase):
             def target_state_type(self) -> Builder.StateType:
                 return Builder.StateType.TENSORS
 
-            def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+            def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
                 target.step += 1
                 return target, self.config.id
 
@@ -183,16 +194,16 @@ class GetBuilderTest(TestCase):
 
     # Parameterize the tests so we can run in parallel.
     @parameterized.parameters(_BUILDERS)
-    def test_get_builder(self, builder_cls: Type[Builder]):
+    def test_get_builder(self, builder_cls: type[Builder]):
         self._test_get_builder(builder_cls)
 
-    def _get_builder(self, builder_cls: Type[Builder], spec: str):
+    def _get_builder(self, builder_cls: type[Builder], spec: str):
         if builder_cls.SPEC_PREFIX == "hf_pretrained:":
             # HF builder requires source and target scopes.
             spec = spec + "::"
         return get_builder(spec=f"{builder_cls.SPEC_PREFIX}{spec}")
 
-    def _test_get_builder(self, builder_cls: Type[Builder]):
+    def _test_get_builder(self, builder_cls: type[Builder]):
         spec = "test_spec"
         default_cfg = builder_cls.default_config()
         builder = self._get_builder(builder_cls, spec)
@@ -229,7 +240,7 @@ class ChainBuilderTest(TestCase):
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
-        init_trainer_state = _TrainerState(
+        init_trainer_state = TrainerState(
             prng_key=prng_key,
             model=model.initialize_parameters_recursively(prng_key=prng_key),
             learner=None,
@@ -265,7 +276,7 @@ class ChainBuilderTest(TestCase):
             .instantiate(parent=None)
         )
         prng_key = jax.random.PRNGKey(0)
-        init_trainer_state = _TrainerState(
+        init_trainer_state = TrainerState(
             prng_key=prng_key,
             model=model.initialize_parameters_recursively(prng_key=prng_key),
             learner=None,
@@ -301,7 +312,7 @@ class PosEmbeddingConverterTest(TestCase):
 
     def _mock_bert_trainer_config_and_state(
         self, max_len: int = 512, hidden_dim: int = 32
-    ) -> Tuple[SpmdTrainer.Config, Builder.State]:
+    ) -> tuple[SpmdTrainer.Config, Builder.State]:
         trainer_config = self._mock_bert_trainer_config(max_len=max_len, hidden_dim=hidden_dim)
         trainer = trainer_config.instantiate(parent=None)
         trainer.init(prng_key=jax.random.PRNGKey(0))
@@ -490,21 +501,28 @@ class DummyNestedLayer(BaseLayer):
 
         layer: InstantiableConfig = Linear.default_config().set(input_dim=5, output_dim=2)
         path: Required[str] = REQUIRED
+        path2: Optional[str] = None
 
     def __init__(self, cfg: BaseModel.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if "/" not in cfg.path:
-            self._add_child(cfg.path, cfg.layer)
-        else:
-            name, path = cfg.path.split("/", maxsplit=1)
-            self._add_child(
-                name,
-                DummyNestedLayer.default_config().set(
-                    layer=cfg.layer,
-                    path=path,
-                ),
-            )
+
+        def add_nested_child(path):
+            if "/" not in path:
+                self._add_child(path, cfg.layer)
+            else:
+                name, sub_path = path.split("/", maxsplit=1)
+                self._add_child(
+                    name,
+                    DummyNestedLayer.default_config().set(
+                        layer=cfg.layer,
+                        path=sub_path,
+                    ),
+                )
+
+        add_nested_child(cfg.path)
+        if cfg.path2 is not None:
+            add_nested_child(cfg.path2)
 
 
 class DummyNestedModel(BaseModel):
@@ -516,6 +534,7 @@ class DummyNestedModel(BaseModel):
 
         layer: InstantiableConfig = Linear.default_config().set(input_dim=5, output_dim=2)
         path: Required[str] = REQUIRED
+        path2: Optional[str] = None
 
     def __init__(self, cfg: BaseModel.Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -524,11 +543,12 @@ class DummyNestedModel(BaseModel):
             "model",
             DummyNestedLayer.default_config().set(
                 path=cfg.path,
+                path2=cfg.path2,
                 layer=cfg.layer,
             ),
         )
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         raise NotImplementedError(type(self))
 
 
@@ -543,15 +563,15 @@ def _mock_state(trainer_cfg, seed: int = 0) -> Builder.State:
     return state
 
 
-class _FakeMultimodalImageInput(Module):
+class _FakeMultimodalImageInput(Input):
     """A fake multimodal image input."""
 
     @config_class
-    class Config(Module.Config):
+    class Config(Input.Config):
         """Configures _FakeMultimodalImageInput."""
 
         is_training: Required[bool] = REQUIRED
-        input_size: Required[List[int]] = REQUIRED
+        input_size: Required[list[int]] = REQUIRED
         batch_size: Required[int] = REQUIRED
 
     def __iter__(self):
@@ -565,7 +585,7 @@ class _FakeMultimodalImageInput(Module):
         yield data
 
     def dataset(self):
-        return self.__iter__()
+        return self.__iter__()  # pylint: disable=unnecessary-dunder-call
 
 
 class TestConv2DStateBuilders(TestCase):
@@ -646,7 +666,7 @@ class TestConv2DStateBuilders(TestCase):
 
     def _run_builder(
         self,
-        builder_cls: Type[BaseConv2DStateBuilder],
+        builder_cls: type[BaseConv2DStateBuilder],
         *,
         source_cfg,
         conv_path: str,
@@ -683,11 +703,11 @@ class TestConv2DStateBuilders(TestCase):
 
     def _dummy_model_config(
         self,
-        patch_size: Tuple[int, ...],
-        input_size: Tuple[int, ...],
+        patch_size: tuple[int, ...],
+        input_size: tuple[int, ...],
         output_dim: int,
         conv_path: str,
-        conv_cls: Type[BaseLayer],
+        conv_cls: type[BaseLayer],
     ):
         return DummyNestedModel.default_config().set(
             layer=conv_cls.default_config().set(
@@ -703,8 +723,8 @@ class TestConv2DStateBuilders(TestCase):
 
     def _mock_image_config(
         self,
-        patch_size: Tuple[int, ...],
-        input_size: Tuple[int, ...],
+        patch_size: tuple[int, ...],
+        input_size: tuple[int, ...],
         output_dim: int,
         conv_path: str,
         batch_size: int = 8,
@@ -724,13 +744,27 @@ class TestConv2DStateBuilders(TestCase):
         return mock_trainer_config(input_config=input_cfg, model_config=model_cfg)
 
 
+class BaseConverterFromPretrainedModelTest(TestCase):
+    """Sanity checks for BaseConverterFromPretrainedModel."""
+
+    def test_mesh_shape(self):
+        mock_trainer_cfg, mock_state = _create_dummy_state(jax.random.PRNGKey(1))
+        cfg = BaseConverterFromPretrainedModel.default_config().set(
+            source_trainer_config=mock_trainer_cfg,
+            mesh_shape=(-1, 1),
+        )
+        # Ensure that we're able to instantiate mock_trainer_cfg with -1 in the mesh.
+        converter = cfg.set(name="test_converter").instantiate(parent=None)
+        converter.target_to_source(mock_state)
+
+
 class DiffusersPretrainedBuilderTest(TestCase):
     """Tests FlaxPretrainedBuilder for a diffusers model."""
 
-    def _init_state(self, model, prng_key: jax.random.KeyArray):
+    def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
-        return _TrainerState(
+        return TrainerState(
             prng_key=prng_key,
             model=model_params,
             learner=None,
@@ -744,7 +778,7 @@ class DiffusersPretrainedBuilderTest(TestCase):
             pytest.skip(reason="Missing testdata.")
 
         # pylint: disable-next=import-outside-toplevel,import-error
-        from diffusers.models.vae_flax import FlaxAutoencoderKL
+        from diffusers.models.vae_flax import FlaxAutoencoderKL  # pytype: disable=import-error
 
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             # Set up a minimal sized diffusers model.
@@ -771,12 +805,12 @@ class DiffusersPretrainedBuilderTest(TestCase):
 
             model = autoencoder_cfg.instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
             )
-            trainer_state_partition_specs = jax.tree_util.tree_map(
+            trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, trainer_state_specs
             )
 
@@ -838,10 +872,10 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
     """Tests HuggingFacePreTrainedBuilder."""
 
     # TODO(bwzhang@) add a HF builder test by setting a temporary path for downloading the models.
-    def _init_state(self, model, prng_key: jax.random.KeyArray):
+    def _init_state(self, model, prng_key: Tensor):
         prng_key, init_key = jax.random.split(prng_key)
         model_params = model.initialize_parameters_recursively(init_key)
-        return _TrainerState(
+        return TrainerState(
             prng_key=prng_key,
             model=model_params,
             learner=None,
@@ -851,12 +885,12 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
         with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
             model = DummyModel.default_config().set(name="model").instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
             )
-            trainer_state_partition_specs = jax.tree_util.tree_map(
+            trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, trainer_state_specs
             )
 
@@ -912,12 +946,12 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             model_cfg = DummyModel.default_config().set(child=repeat_cfg)
             model = model_cfg.set(name="model").instantiate(parent=None)
             prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = _TrainerState(
+            trainer_state_specs = TrainerState(
                 prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=model.create_parameter_specs_recursively(),
                 learner=None,
             )
-            trainer_state_partition_specs = jax.tree_util.tree_map(
+            trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, trainer_state_specs
             )
 
@@ -940,7 +974,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             ref_repeat = torch.nn.Linear(in_features=2, out_features=3, bias=True)
             ref_repeat_params = torch_to_axlearn(ref_repeat)
             # Tile the params across repeat dim.
-            ref_repeat_params = jax.tree_map(
+            ref_repeat_params = jax.tree.map(
                 lambda x: jnp.tile(x, [repeat_cfg.num_layers] + [1] * x.ndim), ref_repeat_params
             )
 
@@ -956,29 +990,39 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             )
             self.assertNestedAllClose(new_trainer_state, ref_params)
 
-    def test_converter(self):
+    @parameterized.parameters(
+        [
+            None,
+            torch.nn.Linear,
+            config_for_function(
+                lambda: Linear.default_config()
+                .set(input_dim=5, output_dim=2, name="test")
+                .instantiate(parent=None)
+            ),
+        ]
+    )
+    def test_converter(self, dst_layer):
         x = torch.nn.Linear(in_features=5, out_features=2)
 
         def dummy_layer():
             return x
 
-        def dummy_converter(layer):
-            self.assertIs(layer, x)
-            return as_tensor(layer.weight.transpose(0, 1))
-
-        builder = (
-            HuggingFacePreTrainedBuilder.default_config()
-            .set(
-                name="test",
-                hf_layer_config=config_for_function(dummy_layer),
-                converter=config_for_function(lambda: dummy_converter),
-            )
-            .instantiate(parent=None)
+        cfg = HuggingFacePreTrainedBuilder.default_config().set(
+            name="test",
+            hf_layer_config=config_for_function(dummy_layer),
         )
+        if dst_layer is not None:
+            cfg.converter.dst_layer = dst_layer
 
-        init_state = _TrainerState(model=jnp.zeros([5, 2]), prng_key=None, learner=None)
+        builder = cfg.instantiate(parent=None)
+        init_state = TrainerState(
+            model=dict(weight=jnp.zeros([5, 2]), bias=jnp.zeros([2])), prng_key=None, learner=None
+        )
         output = builder(Builder.State(step=0, trainer_state=init_state, built_keys=set()))
-        self.assertNestedAllClose(as_tensor(x.weight.transpose(0, 1)), output.trainer_state.model)
+        self.assertNestedAllClose(
+            dict(weight=as_tensor(x.weight.transpose(0, 1)), bias=x.bias),
+            output.trainer_state.model,
+        )
 
 
 def _create_dummy_state(prng_key, model_config=DummyModel.default_config(), use_ema=False):
@@ -1000,18 +1044,11 @@ def _create_dummy_state(prng_key, model_config=DummyModel.default_config(), use_
 
         return fn
 
+    trainer_state = trainer.trainer_state
     if use_ema:
-        trainer_state = trainer.trainer_state
-        new_learner_ema = trainer_state.learner.ema._replace(
-            ema=jax.tree_util.tree_map(
-                lambda p: -jnp.ones_like(p), trainer.trainer_state.learner.ema.ema
-            )
+        trainer_state.learner["ema"] = trainer_state.learner["ema"]._replace(
+            ema=jax.tree.map(lambda p: -jnp.ones_like(p), trainer.trainer_state.learner["ema"].ema)
         )
-        new_learner = trainer_state.learner._replace(ema=new_learner_ema)
-        trainer_state = trainer_state._replace(learner=new_learner)
-    else:
-        trainer_state = trainer.trainer_state
-
     return config_for_function(trainer_cfg_fn), Builder.State(
         step=0, trainer_state=trainer_state, built_keys=set()
     )
@@ -1139,6 +1176,139 @@ class ModelStateScopeConverterTest(TestCase):
             target_state.trainer_state.model["linear2"]["bias"],
         )
 
+    def _create_fake_state_and_convert(self, scope_mapping: Dict[str, str]):
+        # Create fake source_state and target_state with nested layers.
+        source_cfg, source_state = _create_dummy_state(
+            jax.random.PRNGKey(0),
+            DummyNestedModel.default_config().set(path="linear", path2="linear2"),
+        )
+        _, target_state = _create_dummy_state(
+            jax.random.PRNGKey(1),
+            DummyModel.default_config().set(
+                child=DummyNestedLayer.default_config().set(path="linear")
+            ),
+        )
+
+        converter = (
+            ModelStateScopeConverter.default_config()
+            .set(
+                name="test",
+                source_trainer_config=source_cfg,
+                scope=scope_mapping,
+            )
+            .instantiate(parent=None)
+        )
+        converted_state = converter.source_to_target(source_state, target_state)
+        return source_state, converted_state
+
+    @parameterized.parameters(
+        {"scope_mapping": {"linear": "model/linear", "child": "model"}},
+        {"scope_mapping": {"linear/bias": "model/linear/bias", "child": "model"}},
+        {
+            "scope_mapping": {
+                "linear/bias": "model/linear/bias",
+                "child/linear": "model/linear",
+                "child": "model",
+            }
+        },
+        {
+            "scope_mapping": {
+                "linear/bias": "model/linear/bias",
+                "child": "model",
+                "child/linear": "model/linear",
+            }
+        },
+    )
+    def test_duplicate_source_scopes_leaf_first(self, scope_mapping):
+        # Map leaf first.
+        # Create fake source_state and target_state with nested layers and perform conversion.
+        source_state, converted_state = self._create_fake_state_and_convert(scope_mapping)
+
+        self.assertNestedAllClose(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+        self.assertNestedAllClose(
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+        # converted_state's "linear/bias" is donated.
+        self.assertIs(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+        # converted_state's "child" is a copy and has different memory.
+        self.assertIsNot(
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+
+    @parameterized.parameters(
+        {"scope_mapping": {"child/linear": "model/linear", "linear": "model/linear"}},
+        {"scope_mapping": {"child/linear": "model/linear", "linear/bias": "model/linear/bias"}},
+        {"scope_mapping": {"child": "model", "linear/bias": "model/linear/bias"}},
+    )
+    def test_duplicate_source_scopes_leaf_last(self, scope_mapping):
+        # Map leaf at last.
+
+        # Create fake source_state and target_state with nested layers and perform conversion.
+        source_state, converted_state = self._create_fake_state_and_convert(scope_mapping)
+
+        self.assertNestedAllClose(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+        self.assertNestedAllClose(
+            converted_state.trainer_state.model["child"]["linear"],
+            source_state.trainer_state.model["model"]["linear"],
+        )
+        # source_state's "model" is donated to coverted_state's "child".
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["weight"],
+            source_state.trainer_state.model["model"]["linear"]["weight"],
+        )
+        # converted_state's "linear/bias" is a copy and has different memory.
+        self.assertIsNot(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+
+    def test_duplicate_source_scopes_edge_case(self):
+        # Create fake source_state and target_state with nested layers and perform conversion.
+        scope_mapping = {"linear": "model/linear", "child/linear": "model/linear2"}
+        source_state, converted_state = self._create_fake_state_and_convert(scope_mapping)
+
+        self.assertNestedAllClose(
+            converted_state.trainer_state.model["linear"],
+            source_state.trainer_state.model["model"]["linear"],
+        )
+        self.assertNestedAllClose(
+            converted_state.trainer_state.model["child"]["linear"],
+            source_state.trainer_state.model["model"]["linear2"],
+        )
+        # converted_state's "linear" is donated.
+        self.assertIs(
+            converted_state.trainer_state.model["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear"]["bias"],
+        )
+        self.assertIs(
+            converted_state.trainer_state.model["linear"]["weight"],
+            source_state.trainer_state.model["model"]["linear"]["weight"],
+        )
+        # converted_state's "child/linear" is also donated.
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["bias"],
+            source_state.trainer_state.model["model"]["linear2"]["bias"],
+        )
+        self.assertIs(
+            converted_state.trainer_state.model["child"]["linear"]["weight"],
+            source_state.trainer_state.model["model"]["linear2"]["weight"],
+        )
+
     @parameterized.parameters(None, "FAKE")
     def test_source_data_dir(self, source_data_dir):
         source_cfg, source_state = _create_dummy_state(jax.random.PRNGKey(0))
@@ -1158,13 +1328,14 @@ class ModelStateScopeConverterTest(TestCase):
 class EmaParamsConverterTest(TestCase):
     """Tests EmaParamsConverter."""
 
-    @parameterized.parameters(True, False)
+    @parameterized.parameters(["with_target_ema", "with_learner_no_ema", "with_no_learner"])
     def test_ema_params_converter(self, target_ema):
         _, source_state = _create_dummy_state(jax.random.PRNGKey(0), use_ema=True)
         target_state = clone_tree(source_state)
-        if not target_ema:
-            # Removes target_state learner state.
+        if target_ema == "with_no_learner":
             target_state.trainer_state = target_state.trainer_state._replace(learner=None)
+        elif target_ema == "with_learner_no_ema":
+            del target_state.trainer_state.learner["ema"]
 
         converter = (
             EmaParamsConverter.default_config()
@@ -1174,18 +1345,15 @@ class EmaParamsConverterTest(TestCase):
             .instantiate(parent=None)
         )
         convert_state, _ = converter.target_to_source(target_state)
-        # Test that model and optimizer are empty.
-        self.assertNestedAllClose(
-            convert_state.trainer_state.learner.optimizer,
-            optax.EmptyState(),
-        )
+        # Test that model is empty.
         self.assertNestedAllClose(
             convert_state.trainer_state.model,
             optax.EmptyState(),
         )
+        self.assertEqual(["ema"], list(convert_state.trainer_state.learner.keys()))
         # Target model is copied to convert state ema.
         self.assertNestedAllClose(
-            convert_state.trainer_state.learner.ema.ema,
+            convert_state.trainer_state.learner["ema"].ema,
             target_state.trainer_state.model,
         )
 
@@ -1193,14 +1361,96 @@ class EmaParamsConverterTest(TestCase):
 
         self.assertNestedAllClose(
             output_state.trainer_state.model,
-            source_state.trainer_state.learner.ema.ema,
+            source_state.trainer_state.learner["ema"].ema,
         )
 
-        if target_ema:
+        if target_ema == "with_target_ema":
             self.assertNestedAllClose(
-                output_state.trainer_state.learner.ema,
-                source_state.trainer_state.learner.ema,
+                output_state.trainer_state.learner["ema"],
+                source_state.trainer_state.learner["ema"],
             )
+
+
+def _mesh(mesh_shape: Sequence[int]):
+    devices = mesh_utils.create_device_mesh(mesh_shape)
+    return jax.sharding.Mesh(devices, ("data", "model"))
+
+
+def _make_state(float_dtype):
+    return dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=float_dtype))
+
+
+class TensorStoreStateStorageBuilderTest(TestCase):
+    """Tests TensorStoreStateStorageBuilder."""
+
+    def test_build(self):
+        mesh_shape = (1, 1)
+        if not is_supported_mesh_shape(mesh_shape):
+            return
+
+        with tempfile.TemporaryDirectory() as root_dir, _mesh(mesh_shape):
+            state = _make_state(float_dtype=jnp.float32)
+            storage = TensorStoreStateStorage.default_config().instantiate()
+
+            step = 1000
+            # Save ckpt.
+            final_dir = build_step_dir(root_dir, step=step)
+            storage.save_to_dir(step=step, state=state, ckpt_dir=final_dir)
+            storage.wait_until_finished()
+
+            # Build with dir.
+            builder_state = Builder.State(step=step, trainer_state=state, built_keys=set())
+            builder_state = (
+                TensorStoreStateStorageBuilder.default_config()
+                .set(name="tsssb", dir=final_dir)
+                .instantiate(parent=None)(builder_state)
+            )
+            self.assertNestedEqual(state, builder_state.trainer_state)
+
+            # Build with base_dir and step.
+            builder_state = Builder.State(step=step, trainer_state=state, built_keys=set())
+            builder_state = (
+                TensorStoreStateStorageBuilder.default_config()
+                .set(name="tsssb", base_dir=root_dir, step=step)
+                .instantiate(parent=None)(builder_state)
+            )
+            self.assertNestedEqual(state, builder_state.trainer_state)
+
+            with self.assertRaises(ValueError):
+                TensorStoreStateStorageBuilder.default_config().set(
+                    name="tsssb", dir=final_dir, base_dir=root_dir, step=step
+                ).instantiate(parent=None)
+
+
+class OrbaxStateBuilderTest(TestCase):
+    """Tests OrbaxStateBuilder."""
+
+    def test_build(self):
+        mesh_shape = (1, 1)
+        if not is_supported_mesh_shape(mesh_shape):
+            return
+
+        # pylint: disable-next=import-outside-toplevel
+        from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
+
+        with tempfile.TemporaryDirectory() as root_dir, _mesh(mesh_shape):
+            state = _make_state(float_dtype=jnp.float32)
+            step = 1000
+            checkpointer = (
+                OrbaxCheckpointer.default_config()
+                .set(dir=root_dir, name="orbax")
+                .instantiate(parent=None)
+            )
+            checkpointer.save(step=step, state=state)
+            checkpointer.wait_until_finished()
+
+            builder_state = Builder.State(step=step, trainer_state=state, built_keys=set())
+            builder_state = (
+                OrbaxStateBuilder.default_config()
+                .set(name="osb", base_dir=root_dir, step=step)
+                .instantiate(parent=None)(builder_state)
+            )
+            self.assertNestedEqual(state, builder_state.trainer_state)
 
 
 if __name__ == "__main__":

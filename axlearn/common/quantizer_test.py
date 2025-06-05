@@ -1,16 +1,25 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google/praxis:
+# Copyright 2022 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests quantization layers and metrics."""
-# pylint: disable=no-self-use
-from typing import List
+
+# pylint: disable=no-self-use,wrong-import-position,missing-module-docstring
+import os
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
 from absl.testing import absltest, parameterized
-from fairseq.modules import GumbelVectorQuantizer as fairseq_gumbel_vq
+
+# pylint: disable-next=protected-access
+from jax._src import prng as prng_interal
 
 from axlearn.common import schedule
-from axlearn.common.config import config_for_class
 from axlearn.common.module import functional as F
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import ConstantInitializer, DefaultInitializer
@@ -20,12 +29,20 @@ from axlearn.common.quantizer import (
     KmeansVectorQuantizer,
     RandomVectorQuantizer,
     SimilarityMetric,
+    _ids_to_onehots,
     compute_code_coverage,
     compute_code_pplx,
     quantize_by_nearest_neighbor,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose, prng_impl
-from axlearn.common.utils import shapes
+from axlearn.common.test_utils import (
+    TestCase,
+    assert_allclose,
+    prng_impl,
+    set_threefry_partitionable,
+)
+from axlearn.common.utils import Tensor, safe_not, shapes
+
+testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 
 _CODE_BOOK = jnp.array(
     [
@@ -37,10 +54,10 @@ _CODE_BOOK = jnp.array(
 )
 
 
-def _create_prngkeyarray(key_data: List[int]) -> jax.random.KeyArray:
-    # pylint: disable-next=protected-access
-    return jax._src.prng.PRNGKeyArrayImpl(
-        impl=jax.random.default_prng_impl(), key_data=jnp.array(key_data, dtype=jnp.uint32)
+def _create_prngkeyarray(key_data: list[int]) -> Tensor:
+    return jax.random.wrap_key_data(
+        jnp.array(key_data, dtype=jnp.uint32),
+        impl=prng_interal.threefry_prng_impl,
     )
 
 
@@ -66,7 +83,7 @@ class HelpersTest(TestCase):
             np.random.rand(batch_size, seq_len, num_groups, codebook_dim).astype(np.float32)
             + input_mean
         )
-        paddings = jnp.zeros([batch_size, seq_len])
+        paddings = jnp.zeros([batch_size, seq_len], jnp.bool)
         if metric not in (SimilarityMetric.L2_DISTANCE, SimilarityMetric.DOT_PRODUCT):
             with self.assertRaisesRegex(ValueError, "Expect DOT_PRODUCT metric"):
                 quantize_by_nearest_neighbor(inputs=inputs, codebook=codebook, metric=metric)
@@ -75,12 +92,13 @@ class HelpersTest(TestCase):
                 inputs=inputs, codebook=codebook, metric=metric
             )
             # Compute codebook metrics.
-            coverage = compute_code_coverage(onehots=q_outputs.onehots, paddings=paddings)
-            pplx, entropy = compute_code_pplx(onehots=q_outputs.onehots, paddings=paddings)
+            onehots = _ids_to_onehots(q_outputs.ids, codebook_size=vocab_size, dtype=jnp.int32)
+            coverage = compute_code_coverage(onehots=onehots, paddings=paddings)
+            pplx, entropy = compute_code_pplx(onehots=onehots, paddings=paddings)
 
             # Check shapes.
             self.assertEqual(q_outputs.ids.shape, (batch_size, seq_len, num_groups))
-            self.assertEqual(q_outputs.onehots.shape, (batch_size, seq_len, num_groups, vocab_size))
+            self.assertEqual(onehots.shape, (batch_size, seq_len, num_groups, vocab_size))
             self.assertEqual(
                 q_outputs.quantized_vectors.shape, (batch_size, seq_len, num_groups, codebook_dim)
             )
@@ -105,7 +123,7 @@ class HelpersTest(TestCase):
             )
             assert_allclose(
                 expected_outputs[num_groups][input_mean][1],
-                np.sum(q_outputs.ids * (1 - paddings[:, :, None])),
+                np.sum(q_outputs.ids * safe_not(paddings)[:, :, None]),
                 rtol=1e-06,
                 atol=1e-06,
             )
@@ -128,7 +146,7 @@ class HelpersTest(TestCase):
                 [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [0, 0]],
             ]
         )
-        paddings = jnp.array([[0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]])
+        paddings = jnp.array([[0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]], jnp.bool)
 
         pplx, entropy = compute_code_pplx(
             onehots=jax.nn.one_hot(codes, num_classes=vocab_size, axis=-1), paddings=paddings
@@ -149,7 +167,7 @@ class HelpersTest(TestCase):
                 num_codebooks=num_groups,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        ".*codebook$": config_for_class(ConstantInitializer).set(value=0.0),
+                        ".*codebook$": ConstantInitializer.default_config().set(value=0.0),
                     }
                 ),
             )
@@ -170,6 +188,7 @@ class RandomVectorQuantizerTest(TestCase):
         (4, 7, 16, 256, 20, 8, True, False),
         (4, 7, 16, 256, 20, 8, False, False),
     )
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_forward(
         self,
         batch_size,
@@ -303,12 +322,12 @@ class RandomVectorQuantizerTest(TestCase):
             np.sum(layer_params["codebook"] ** 2),
             expected_values[batch_size][normalize_codebook]["codebook"],
             atol=1e-6,
-            rtol=1e-6,
+            rtol=2e-6,
         )
 
         np.random.seed(2022)
         inputs = np.random.rand(batch_size, seq_len, input_dim).astype(np.float32)
-        paddings = np.zeros((batch_size, seq_len)).astype(np.float32)
+        paddings = np.zeros((batch_size, seq_len)).astype(np.bool_)
         q_outputs, output_collections = F(
             layer,
             inputs=dict(inputs=inputs, paddings=paddings),
@@ -321,7 +340,6 @@ class RandomVectorQuantizerTest(TestCase):
             q_outputs.quantized_vectors.shape,
         )
         self.assertEqual((batch_size, seq_len, num_groups), q_outputs.ids.shape)
-        self.assertEqual((batch_size, seq_len, num_groups, vocab_size), q_outputs.onehots.shape)
         assert_allclose(
             np.sum(
                 jnp.reshape(
@@ -330,23 +348,17 @@ class RandomVectorQuantizerTest(TestCase):
             ),
             expected_values[batch_size][normalize_codebook]["q_vecs"],
             atol=1e-6,
-            rtol=1e-6,
+            rtol=2e-6,
         )
         assert_allclose(
-            np.sum(q_outputs.ids * (1 - paddings[:, :, None])),
+            np.sum(q_outputs.ids * safe_not(paddings)[:, :, None]),
             expected_values[batch_size][normalize_codebook]["ids"],
-            atol=1e-6,
-            rtol=1e-6,
-        )
-        assert_allclose(
-            np.sum(q_outputs.onehots),
-            expected_values[batch_size][normalize_codebook]["onehots"],
             atol=1e-6,
             rtol=1e-6,
         )
         self.assertEqual(
             output_collections.summaries["codebook/num_frames"].mean,
-            jnp.sum(1 - paddings) / batch_size,
+            jnp.sum(safe_not(paddings)) / batch_size,
         )
         assert_allclose(
             output_collections.summaries["codebook/coverage"].mean,
@@ -398,15 +410,49 @@ class RandomVectorQuantizerTest(TestCase):
                 + o_col.summaries["codebook/entropy"].mean
             )
 
-        np.random.seed(2000)
-        inputs = np.random.rand(batch_size, seq_len, input_dim).astype(np.float32)
-        paddings = np.zeros((batch_size, seq_len)).astype(np.float32)
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), (batch_size, seq_len, input_dim))
+        paddings = jnp.zeros((batch_size, seq_len), jnp.bool)
 
         _, (grad_params, grad_inputs) = jax.value_and_grad(_loss, argnums=(0, 1), has_aux=False)(
             layer_params, jnp.asarray(inputs), jnp.asarray(paddings)
         )
-        self.assertNestedAllClose(grad_params, jax.tree_util.tree_map(jnp.zeros_like, layer_params))
+        self.assertNestedAllClose(grad_params, jax.tree.map(jnp.zeros_like, layer_params))
         assert_allclose(grad_inputs, jnp.zeros_like(inputs), atol=1e-6, rtol=1e-6)
+
+    def test_lookup(self):
+        batch_size, seq_len, input_dim = 2, 4, 20
+        dim_from_all_codebooks, vocab_size, num_groups = 32, 4, 2
+        cfg = RandomVectorQuantizer.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            codebook_dim=dim_from_all_codebooks // num_groups,
+            codebook_size=vocab_size,
+            num_codebooks=num_groups,
+        )
+        layer: RandomVectorQuantizer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(1))
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), (batch_size, seq_len, input_dim))
+        paddings = jnp.zeros((batch_size, seq_len), jnp.bool)
+        outputs, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, paddings=paddings),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(10),
+            state=layer_params,
+        )
+        self.assertEqual((batch_size, seq_len, num_groups), outputs.ids.shape)
+        self.assertEqual(jnp.int32, outputs.ids.dtype)
+
+        lookup_outputs, _ = F(
+            layer,
+            inputs=dict(ids=outputs.ids),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(10),
+            state=layer_params,
+            method="lookup",
+        )
+        quantized_vectors = lookup_outputs.quantized_vectors * safe_not(paddings)[:, :, None, None]
+        self.assertNestedAllClose(quantized_vectors, outputs.quantized_vectors)
 
 
 class KmeansVectorQuantizerTest(TestCase):
@@ -437,7 +483,7 @@ class KmeansVectorQuantizerTest(TestCase):
             + input_mean
         )
         paddings = jnp.arange(seq_len)[None, :] >= jnp.array([2, 3])[:, None]
-        inputs = inputs * (1 - paddings)[:, :, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
         outputs, output_collections = F(
             layer,
             inputs=dict(inputs=inputs, paddings=paddings),
@@ -461,7 +507,7 @@ class KmeansVectorQuantizerTest(TestCase):
             outputs.quantized_vectors.shape,
         )
         self.assertEqual((batch_size, seq_len, num_groups), outputs.ids.shape)
-        self.assertEqual((batch_size, seq_len, num_groups, vocab_size), outputs.onehots.shape)
+        self.assertEqual(jnp.int32, outputs.ids.dtype)
 
         assert_allclose(
             expected_outputs[num_groups][input_mean][0],
@@ -471,7 +517,7 @@ class KmeansVectorQuantizerTest(TestCase):
         )
         assert_allclose(
             expected_outputs[num_groups][input_mean][1],
-            np.sum(outputs.ids * (1 - paddings[:, :, None])),
+            np.sum(outputs.ids * safe_not(paddings)[:, :, None]),
             atol=1e-6,
             rtol=1e-6,
         )
@@ -523,6 +569,66 @@ class KmeansVectorQuantizerTest(TestCase):
             rtol=1e-6,
         )
 
+    @parameterized.product(norm_inputs=(False, True), norm_codebook=(False, True))
+    def test_forward_with_normalization(self, norm_inputs, norm_codebook):
+        num_groups = 2
+        vocab_size, dim_from_all_codebooks = 4, 4
+        codebook_dim = dim_from_all_codebooks // num_groups
+        layer: KmeansVectorQuantizer = (
+            KmeansVectorQuantizer.default_config()
+            .set(
+                name="test",
+                codebook_dim=codebook_dim,
+                codebook_size=vocab_size,
+                num_codebooks=num_groups,
+                beta=0.1,
+                normalize_inputs=norm_inputs,
+                normalize_codebook=norm_codebook,
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        # [vocab_size, num_codebooks, codebook_dim].
+        layer_params["codebook"] = jnp.reshape(_CODE_BOOK, [vocab_size, num_groups, codebook_dim])
+        batch_size, seq_len = 2, 4
+        inputs = jax.random.uniform(
+            jax.random.PRNGKey(1), shape=(batch_size, seq_len, dim_from_all_codebooks)
+        )
+        paddings = jnp.arange(seq_len)[None, :] >= jnp.array([2, 3])[:, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
+        F(
+            layer,
+            inputs=dict(inputs=inputs, paddings=paddings),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(1),
+            state=layer_params,
+            drop_output_collections=[],
+        )
+        # TODO(xianzhi): add tests against reference code and tests for backward pass.
+
+    def test_codebook_init(self):
+        num_groups = 2
+        vocab_size, dim_from_all_codebooks = 256, 512
+        codebook_dim = dim_from_all_codebooks // num_groups
+        layer: KmeansVectorQuantizer = (
+            KmeansVectorQuantizer.default_config()
+            .set(
+                name="test",
+                codebook_dim=codebook_dim,
+                codebook_size=vocab_size,
+                num_codebooks=num_groups,
+                beta=0.1,
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        codebook = layer_params["codebook"]
+        self.assertEqual(codebook.shape, (vocab_size, num_groups, codebook_dim))
+        fan_out_axis = (1, 2)  # [num_groups, codebook_dim]
+        inverse_scale = jnp.sqrt(num_groups * codebook_dim)
+        assert_allclose(jnp.mean(codebook, axis=fan_out_axis), 0.0, atol=0.05)
+        assert_allclose(jnp.std(codebook, axis=fan_out_axis) * inverse_scale, 1.0, atol=0.1)
+
     def test_backward(self):
         batch_size, seq_len = 4, 6
         dim_from_all_codebooks, vocab_size, num_groups = 15, 4, 3
@@ -559,7 +665,7 @@ class KmeansVectorQuantizerTest(TestCase):
         np.random.seed(2000)
         inputs = np.random.rand(batch_size, seq_len, dim_from_all_codebooks).astype(np.float32)
         paddings = np.arange(seq_len)[None, :] >= np.array([5, 6, 3, 4])[:, None]
-        inputs = inputs * (1 - paddings)[:, :, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
 
         (_, outputs), (grad_params, grad_inputs) = jax.value_and_grad(
             _loss, argnums=(0, 1), has_aux=True
@@ -572,20 +678,14 @@ class KmeansVectorQuantizerTest(TestCase):
             rtol=1e-6,
         )
         assert_allclose(
-            outputs.onehots * paddings[:, :, None, None],
-            jnp.zeros_like(outputs.onehots),
-            atol=1e-6,
-            rtol=1e-6,
-        )
-        assert_allclose(
             outputs.quantized_vectors * paddings[:, :, None, None],
             jnp.zeros_like(outputs.quantized_vectors),
             atol=1e-6,
             rtol=1e-6,
         )
 
-        num_frames = jnp.sum(1 - paddings)
-        mask = (1 - paddings)[:, :, None]
+        num_frames = jnp.sum(safe_not(paddings))
+        mask = safe_not(paddings)[:, :, None]
         reshape_quantized_vectors = jnp.reshape(
             outputs.quantized_vectors, [batch_size, seq_len, -1]
         )
@@ -605,8 +705,57 @@ class KmeansVectorQuantizerTest(TestCase):
         # [batch_size, seq_len, num_groups, dim].
         # Gradient w.r.t codebook comes from kmeans_loss.
         grad_kmeans = -jnp.reshape(grad_l2_loss, [batch_size, seq_len, num_groups, codebook_dim])
-        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_kmeans, outputs.onehots)
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=vocab_size, dtype=grad_kmeans.dtype)
+        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_kmeans, onehots)
         self.assertNestedAllClose(grad_params, dict(codebook=expected_grad_codebook))
+
+    def test_lookup(self):
+        num_groups, input_mean = 2, -0.5
+        vocab_size, dim_from_all_codebooks = 4, 4
+        codebook_dim = dim_from_all_codebooks // num_groups
+        layer: KmeansVectorQuantizer = (
+            KmeansVectorQuantizer.default_config()
+            .set(
+                name="test",
+                codebook_dim=codebook_dim,
+                codebook_size=vocab_size,
+                num_codebooks=num_groups,
+                beta=0.1,
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        # [vocab_size, num_codebooks, codebook_dim].
+        layer_params["codebook"] = jnp.reshape(_CODE_BOOK, [vocab_size, num_groups, codebook_dim])
+        batch_size, seq_len = 2, 4
+        np.random.seed(2021)
+        inputs = (
+            np.random.rand(batch_size, seq_len, dim_from_all_codebooks).astype(np.float32)
+            + input_mean
+        )
+        paddings = jnp.arange(seq_len)[None, :] >= jnp.array([2, 3])[:, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
+        outputs, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, paddings=paddings),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(1),
+            state=layer_params,
+            drop_output_collections=[],
+        )
+        self.assertEqual((batch_size, seq_len, num_groups), outputs.ids.shape)
+        self.assertEqual(jnp.int32, outputs.ids.dtype)
+
+        lookup_outputs, _ = F(
+            layer,
+            inputs=dict(ids=outputs.ids),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(10),
+            state=layer_params,
+            method="lookup",
+        )
+        quantized_vectors = lookup_outputs.quantized_vectors * safe_not(paddings)[:, :, None, None]
+        self.assertNestedAllClose(quantized_vectors, outputs.quantized_vectors)
 
 
 class GumbelSoftmaxVectorQuantizerTest(TestCase):
@@ -639,10 +788,8 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
         batch_size, seq_len = 2, 4
         np.random.seed(2021)
         inputs = np.random.rand(batch_size, seq_len, input_dim).astype(np.float32)
-        paddings = np.array(
-            np.arange(seq_len)[None, :] >= np.array([2, 3])[:, None], dtype=np.float32
-        )
-        inputs = inputs * (1 - paddings)[:, :, None]
+        paddings = np.arange(seq_len)[None, :] >= np.array([2, 3])[:, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
 
         outputs, output_collections = F(
             layer,
@@ -655,12 +802,6 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
         assert_allclose(
             outputs.ids * paddings[:, :, None],
             jnp.full_like(outputs.ids, fill_value=-1) * paddings[:, :, None],
-            atol=1e-6,
-            rtol=1e-6,
-        )
-        assert_allclose(
-            outputs.onehots * paddings[:, :, None, None],
-            jnp.zeros_like(outputs.onehots),
             atol=1e-6,
             rtol=1e-6,
         )
@@ -700,52 +841,20 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
             )
             .instantiate(parent=None)
         )
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
         batch_size, seq_len = 2, 4
-        np.random.seed(2021)
-        inputs = np.random.rand(batch_size, seq_len, input_dim).astype(np.float32)
-        paddings = np.zeros([batch_size, seq_len])
+        testcase = jnp.load(
+            os.path.join(testdata_dir, __name__, "test_forward_against_fairseq.npy"),
+            allow_pickle=True,
+        ).item()
+        ref_outputs = testcase["outputs"]
+        paddings = testcase["paddings"].astype(jnp.bool)
         outputs, output_collections = F(
             layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
+            inputs=dict(inputs=testcase["inputs"], paddings=paddings),
             is_training=False,
             prng_key=jax.random.PRNGKey(1),
-            state=layer_params,
+            state=testcase["params"],
         )
-        ref_layer = fairseq_gumbel_vq(
-            dim=input_dim,
-            num_vars=vocab_size,
-            temp=(constant_temperature, 0.5, 0.999995),
-            groups=num_groups,
-            combine_groups=False,
-            vq_dim=dim_from_all_codebooks,
-            time_first=True,
-            activation=None,
-        )
-        for name, param in ref_layer.named_parameters():
-            # Set ref_layer weight matrices.
-            if name == "weight_proj.weight":
-                # [input_dim, num_codebooks, vocab_size] -> [num_codebooks * vocab_size, input_dim].
-                weight_proj = jnp.transpose(
-                    jnp.reshape(
-                        layer_params["input_proj"]["weight"], [input_dim, num_groups * vocab_size]
-                    ),
-                    [1, 0],
-                )
-                weight_proj = np.asarray(weight_proj)
-                param.data = torch.nn.parameter.Parameter(torch.tensor(weight_proj))
-            if name == "vars":
-                # [vocab_size, num_codebooks, dim] -> [num_codebooks, vocab_size, dim]
-                # -> [1, vocab_size * num_groups, dim]
-                codebook = jnp.reshape(
-                    jnp.transpose(layer_params["codebook"], [1, 0, 2]),
-                    [1, vocab_size * num_groups, codebook_dim],
-                )
-                codebook = np.asarray(codebook)
-                param.data = torch.nn.parameter.Parameter(torch.tensor(codebook))
-
-        ref_layer.eval()
-        ref_outputs = ref_layer(torch.tensor(inputs), produce_targets=True)
         assert_allclose(
             ref_outputs["code_perplexity"],
             output_collections.summaries["codebook/pplx"].mean * num_groups,
@@ -762,7 +871,7 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
         )
         assert_allclose(
             ref_outputs["targets"].detach().numpy(),
-            outputs.ids * (1 - paddings[:, :, None]),
+            outputs.ids * safe_not(paddings)[:, :, None],
             atol=1e-6,
             rtol=1e-6,
         )
@@ -802,7 +911,7 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
         np.random.seed(2000)
         inputs = np.random.rand(batch_size, seq_len, input_dim).astype(np.float32)
         paddings = np.arange(seq_len)[None, :] >= np.array([5, 6, 3, 4])[:, None]
-        inputs = inputs * (1 - paddings)[:, :, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
 
         (_, (outputs, side_outputs)), (grad_params, grad_inputs) = jax.value_and_grad(
             _loss, argnums=(0, 1), has_aux=True
@@ -814,7 +923,7 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
         # Computes gradient w.r.t inputs using Gumbel softmax trick and chain rule.
         grad_onehots = jnp.einsum(
             "btgh,vgh->btgv",
-            grad_q_vecs * (1 - paddings)[:, :, None, None],
+            grad_q_vecs * safe_not(paddings)[:, :, None, None],
             layer_params["codebook"],
         )
         # [batch_size, seq_len, num_groups, vocab_size, vocab_size].
@@ -833,8 +942,61 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
 
         # [batch_size, seq_len, num_groups, dim].
         # Gradient w.r.t codebook.
-        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_q_vecs, outputs.onehots)
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=vocab_size, dtype=grad_q_vecs.dtype)
+        expected_grad_codebook = jnp.einsum("btgh,btgv->vgh", grad_q_vecs, onehots)
         assert_allclose(grad_params["codebook"], expected_grad_codebook, atol=1e-6, rtol=1e-6)
+
+    def test_lookup(self):
+        dim_from_all_codebooks, vocab_size, num_groups = 15, 5, 3
+        input_dim = 10
+        step = 5
+        begin_step, begin_value, end_step, end_value = 0, 21, 10, 1
+        codebook_dim = dim_from_all_codebooks // num_groups
+        layer: GumbelSoftmaxVectorQuantizer = (
+            GumbelSoftmaxVectorQuantizer.default_config()
+            .set(
+                name="test",
+                input_dim=input_dim,
+                codebook_dim=codebook_dim,
+                codebook_size=vocab_size,
+                num_codebooks=num_groups,
+                temperature_schedule=schedule.polynomial(
+                    begin_step=begin_step,
+                    begin_value=begin_value,
+                    end_step=end_step,
+                    end_value=end_value,
+                ),
+            )
+            .instantiate(parent=None)
+        )
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        layer_params["step"] = step
+        batch_size, seq_len = 2, 4
+        np.random.seed(2021)
+        inputs = np.random.rand(batch_size, seq_len, input_dim).astype(np.float32)
+        paddings = np.arange(seq_len)[None, :] >= np.array([2, 3])[:, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
+        outputs, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, paddings=paddings),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(1),
+            state=layer_params,
+            drop_output_collections=[],
+        )
+        self.assertEqual((batch_size, seq_len, num_groups), outputs.ids.shape)
+        self.assertEqual(jnp.int32, outputs.ids.dtype)
+
+        lookup_outputs, _ = F(
+            layer,
+            inputs=dict(ids=outputs.ids),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(10),
+            state=layer_params,
+            method="lookup",
+        )
+        quantized_vectors = lookup_outputs.quantized_vectors * safe_not(paddings)[:, :, None, None]
+        self.assertNestedAllClose(quantized_vectors, outputs.quantized_vectors)
 
 
 if __name__ == "__main__":

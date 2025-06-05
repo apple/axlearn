@@ -1,6 +1,9 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests VirTex implementations."""
+
 # pylint: disable=no-self-use
-from typing import Sequence
+from collections.abc import Sequence
 
 import jax.numpy as jnp
 import jax.random
@@ -52,11 +55,11 @@ class VirTexTest(parameterized.TestCase):
         cfg.textual.eos_token_id = eos_token_id
 
     def _base_aux_outputs_test(self, cfg):
-        """Verify that approriate auxilliary outputs are returned.
+        """Verify that appropriate auxiliary outputs are returned.
 
         Implicitly this also tests the forward pass executes without error.
 
-        The auxilliary outputs for VirTex include:
+        The auxiliary outputs for VirTex include:
             - 'visual_features': Outputs of the visual backbone.
         """
         model: VirTexModel = cfg.set(name="test_intermediate_features").instantiate(parent=None)

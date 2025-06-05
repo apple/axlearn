@@ -1,36 +1,45 @@
+# Copyright © 2023 Apple Inc.
+
 # pylint: disable=too-many-lines
 """A library to build trainer states, e.g., from checkpoints of other models."""
+
 import copy
 import enum
 import functools
 import re
+from collections.abc import Mapping, Sequence
 from importlib import import_module
 from tempfile import mkdtemp
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple, Type, Union
+from typing import Any, Optional, Union
 
 import jax
 import optax
 from absl import logging
 from chex import dataclass  # tree_map-friendly dataclass
 from jax import numpy as jnp
+from jax._src.tree_util import KeyEntry
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.checkpointer import (
     CheckpointValidationType,
+    StateStorage,
     TensorStoreStateStorage,
+    build_step_dir,
     check_state_structure,
     parse_step_from_dir,
 )
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
-from axlearn.common.learner import LearnerState
+from axlearn.common.input_fake import EmptyInput
 from axlearn.common.module import Module
 from axlearn.common.optimizer_base import OptStateSpec
 from axlearn.common.optimizers import ParamEmaState
@@ -39,9 +48,11 @@ from axlearn.common.utils import (
     NestedTensorSpec,
     PartitionSpec,
     Tensor,
+    _key_entry_to_str,
     check_param_shape_alignment,
     flatten_items,
     get_data_dir,
+    infer_mesh_shape,
     set_data_dir,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
@@ -65,7 +76,7 @@ class Builder(Module):
         # The trainer state. A nested structure with Tensors or TensorSpec as leaf nodes.
         trainer_state: Union[NestedTensor, NestedTensorSpec]
         # A set of paths in `trainer_state` that have been built by this builder.
-        built_keys: Set[str]
+        built_keys: set[str]
 
     def input_state_type(self) -> StateType:
         raise NotImplementedError(type(self))
@@ -149,7 +160,7 @@ class Converter(Module):
         """
         raise NotImplementedError(type(self))
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Converts a target (e.g. new) state to a source (e.g. legacy) state.
         This should be called before `source_to_target`.
 
@@ -200,7 +211,7 @@ class ChainConverter(Converter):
                 ), converter.target_state_type()
         return Builder.StateType.TENSOR_SPECS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Converts a target state by applying a sequence of converters.
 
         Args:
@@ -254,7 +265,7 @@ class MergeStateConverter(Converter):
 
     @config_class
     class Config(Converter.Config):
-        selection_regexes: List[Tuple[str, Union[str, MergeStateSelection]]] = []
+        selection_regexes: list[tuple[str, Union[str, MergeStateSelection]]] = []
 
     def __init__(self, cfg: "MergeStateConverter.Config", *, parent: Optional[Module] = None):
         super().__init__(cfg, parent=parent)
@@ -275,12 +286,12 @@ class MergeStateConverter(Converter):
     def target_state_type(self) -> Builder.StateType:
         return Builder.StateType.TENSORS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Builder.State]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Builder.State]:
         return target, clone_tree(target)
 
     def source_to_target(self, source: Builder.State, aux: Builder.State) -> Builder.State:
         """Source is newly loaded state, aux is original state."""
-        new_trainer_state = jax.tree_map(
+        new_trainer_state = jax.tree.map(
             self._selector,
             utils.tree_paths(aux.trainer_state),
             aux.trainer_state,
@@ -310,7 +321,7 @@ class RestoreAndConvertBuilder(Builder):
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
         cfg = cls.default_config()
-        cfg.builder = cfg.builder.cls.spec_to_config(spec)
+        cfg.builder = cfg.builder.klass.spec_to_config(spec)
         return cfg
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
@@ -324,12 +335,12 @@ class RestoreAndConvertBuilder(Builder):
 
     def __call__(self, state: Builder.State) -> Builder.State:
         input_state = state.trainer_state
-        input_keys = set(key for key, _ in flatten_items(input_state))
+        input_keys = {key for key, _ in flatten_items(input_state)}
         source_state, aux = self.converter.target_to_source(state)
         restored_state = self.builder(source_state)
         converted_state = self.converter.source_to_target(restored_state, aux)
         output_state = converted_state.trainer_state
-        output_keys = set(key for key, _ in flatten_items(output_state))
+        output_keys = {key for key, _ in flatten_items(output_state)}
         assert input_keys == output_keys, (
             f"input-only keys: {input_keys - output_keys} "
             f"output-only keys: {output_keys - input_keys}"
@@ -357,27 +368,62 @@ def clone_tree(in_tree: NestedTensor) -> NestedTensor:
     # Tensors are not pickleable, so deepcopy isn't possible.
     # They should be immutable and exist beyond the lifetime of this fn, however,
     # so we copy by reference.
-    return jax.tree_util.tree_map(
-        lambda x: x if isinstance(x, Tensor) else copy.deepcopy(x), in_tree
-    )
+    return jax.tree.map(lambda x: x if isinstance(x, Tensor) else copy.deepcopy(x), in_tree)
 
 
-class TensorStoreStateStorageBuilder(Builder):
+# pylint: disable-next=abstract-method
+class BaseStateStorageBuilder(Builder):
+    """Builds state by restoring from a checkpoint."""
+
+    @config_class
+    class Config(Builder.Config):
+        """Configures BaseStateStorageBuilder.
+
+        Attributes:
+            base_dir: Base directory that contains checkpoints of a trainer, usually containing
+                subdirs, one for each checkpointed step.
+            step: Step number to load. Required if `base_dir` is specified.
+            validation: Checkpoint validation type.
+            concurrent_gb: Memory limit of the in-flight reads.
+        """
+
+        base_dir: Optional[str] = None
+        step: Optional[int] = None
+        validation: CheckpointValidationType = CheckpointValidationType.EXACT
+        concurrent_gb: int = 32
+
+    def input_state_type(self) -> Builder.StateType:
+        return Builder.StateType.TENSOR_SPECS
+
+
+class TensorStoreStateStorageBuilder(BaseStateStorageBuilder):
     """Builds state by restoring from TensorStoreStateStorage."""
 
     SPEC_PREFIX = "tensor_store_state_storage:"
 
     @config_class
-    class Config(Builder.Config):
-        dir: Required[str] = REQUIRED
-        validation: CheckpointValidationType = CheckpointValidationType.EXACT
+    class Config(BaseStateStorageBuilder.Config):
+        """Configures TensorStoreStateStorageBuilder.
+
+        Attributes:
+            dir: Full checkpoint path that contains a checkpoint of a single step.
+                This is supported for backward compatibility purposes.
+                It's recommended to use `base_dir` and `step` if possible.
+            storage: Config for the underlying storage used during checkpoint loading. Defaults
+                to `TensorStoreStateStorage`.
+        """
+
+        dir: Optional[str] = None
+        storage: StateStorage.Config = TensorStoreStateStorage.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        if not (cfg.dir is None) ^ (cfg.base_dir is None and cfg.step is None):
+            raise ValueError("Error in config. You must either specify dir or base_dir and step.")
 
     @classmethod
     def spec_to_config(cls, spec: str) -> Config:
         return cls.default_config().set(dir=spec)
-
-    def input_state_type(self) -> Builder.StateType:
-        return Builder.StateType.TENSOR_SPECS
 
     def __call__(self, state: Builder.State) -> Builder.State:
         """Restores state from TensorStoreStateStorage.
@@ -388,16 +434,22 @@ class TensorStoreStateStorageBuilder(Builder):
         Returns:
             The restored state.
         """
-        cfg = self.config
-        storage = TensorStoreStateStorage.default_config().instantiate()
-        step = parse_step_from_dir(cfg.dir)
+        cfg: TensorStoreStateStorageBuilder.Config = self.config
+        if cfg.base_dir:
+            ckpt_dir = build_step_dir(cfg.base_dir, step=cfg.step)
+            step = cfg.step
+        else:
+            ckpt_dir = cfg.dir
+            step = parse_step_from_dir(cfg.dir)
+        cfg.storage.max_concurrent_restore_gb = cfg.concurrent_gb
+        storage = cfg.storage.instantiate()
         restored_state = storage.restore_from_dir(
             step=step,
             state=state.trainer_state,
-            ckpt_dir=cfg.dir,
+            ckpt_dir=ckpt_dir,
             validation=cfg.validation,
         )
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=step, trainer_state=restored_state, built_keys=built_keys)
 
 
@@ -412,26 +464,35 @@ class BaseConverterFromPretrainedModel(Converter):
     @config_class
     class Config(Converter.Config):
         # A config that instantiates to a TrainerConfigFn that defines the source pretrained model.
-        source_trainer_config: Required[InstantiableConfig] = REQUIRED
+        source_trainer_config: Required[InstantiableConfig[TrainerConfigFn]] = REQUIRED
         source_data_dir: Optional[str] = None
         mesh_axis_names: Optional[Sequence[str]] = None
         mesh_shape: Optional[Sequence[int]] = None
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Produces state specs compatible with the pretrained checkpoint to be restored."""
         cfg = self.config
         # Initialize the model and learner states for the pretrained model.
         # pytype: disable=attribute-error
         cfg_fn: TrainerConfigFn = cfg.source_trainer_config.instantiate()
+
         with set_data_dir(cfg.source_data_dir or get_data_dir()):
             trainer_cfg = cfg_fn()
+            logging.info(
+                "Initialize model and learner states for the pretrained model: %s", trainer_cfg.name
+            )
             trainer_cfg.dir = mkdtemp()
             trainer_cfg.mesh_axis_names = (
                 cfg.mesh_axis_names or trainer_cfg.mesh_axis_names or ("data", "model")
             )
-            trainer_cfg.mesh_shape = (
+            trainer_cfg.mesh_shape = infer_mesh_shape(
                 cfg.mesh_shape or trainer_cfg.mesh_shape or (len(jax.devices()), 1)
             )
+            # Reset datasets and evalers for the pretrained model config.
+            # This input is not used. Set global_batch_size to 0 by default.
+            trainer_cfg.input = EmptyInput.default_config().set(global_batch_size=0)
+            trainer_cfg.evalers = {}
+
             trainer = trainer_cfg.instantiate(parent=None)
             # pytype: enable=attribute-error
             source = Builder.State(
@@ -455,30 +516,25 @@ class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
 
     def source_to_target(self, source: Builder.State, aux: Any) -> Builder.State:
         """Produces state compatible with the new classification head."""
-        restored_state = jax.tree_util.tree_map(
+        restored_model = jax.tree.map(
             lambda s, t: self._swap_heads(s, t) if self._is_bert_lm_head(s) else s,
-            source.trainer_state,
-            aux.trainer_state,
-            is_leaf=self._is_leaf,
+            source.trainer_state.model,
+            aux.trainer_state.model,
         )
+        restored_state = source.trainer_state._replace(model=restored_model)
         # Reset old optimizer state following fairseq, e.g:
         # https://github.com/facebookresearch/fairseq/blob/acd9a53607d1e5c64604e88fc9601d0ee56fd6f1/examples/roberta/config/finetuning/cola.yaml#L21
         # https://github.com/facebookresearch/fairseq/blob/10b797a44f1d724465cd66ce1bb92d6b8fa052eb/fairseq/trainer.py#L587
         restored_state = restored_state._replace(learner=aux.trainer_state.learner)
-        built_keys = source.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = source.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
-    def _is_leaf(self, state) -> bool:
-        # We do not recurse into the learner state, since the arity of the optimizer tuple
-        # could be different. We will replace the learner state with aux learner state anyways.
-        return self._is_bert_lm_head(state) or isinstance(state, LearnerState)
-
     # pylint: disable-next=no-self-use
-    def _is_bert_lm_head(self, state: Dict[str, Any]) -> bool:
+    def _is_bert_lm_head(self, state: dict[str, Any]) -> bool:
         return is_dict(state, "head") and is_dict(state["head"], ["transform", "output_bias"])
 
     # pylint: disable-next=no-self-use
-    def _swap_heads(self, source: Dict[str, Any], target: Dict[str, Any]) -> Dict[str, Any]:
+    def _swap_heads(self, source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
         out = clone_tree(source)
         out["head"] = target["head"]
         return out
@@ -486,11 +542,11 @@ class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
 
 def traverse_and_set_target_state_parameters(
     *,
-    target_state: Dict[str, Any],
-    target_scope: List[str],
-    source_params: Dict[str, Any],
-    source_scope: List[str],
-) -> Dict[str, Any]:
+    target_state: dict[str, Any],
+    target_scope: list[str],
+    source_params: dict[str, Any],
+    source_scope: list[str],
+) -> dict[str, Any]:
     """Traverse the target model state and source params and set the new parameters.
 
     The function traverses the target state based on ``target_scope``.
@@ -527,7 +583,7 @@ def traverse_and_set_target_state_parameters(
                 data_callback=lambda index: src[index],
             )
 
-        target_state = jax.tree_util.tree_map(_to_target_sharding, source_params, target_state)
+        target_state = jax.tree.map(_to_target_sharding, source_params, target_state)
     else:
         scope = target_scope.pop(0)  # The item should be popped from the bottom of the list.
         target_state[scope] = traverse_and_set_target_state_parameters(
@@ -542,7 +598,7 @@ def traverse_and_set_target_state_parameters(
 class FlaxPretrainedBuilder(Builder):
     """Builds (partial) model state from supplied flax states.
 
-    The function reads model parameters from cofigured state supplier, and
+    The function reads model parameters from configured state supplier, and
     sets the corresponding model state to these parameters.
 
     In the following context, the target refers to the model state.
@@ -572,9 +628,6 @@ class FlaxPretrainedBuilder(Builder):
         return Builder.StateType.TENSORS
 
     def __call__(self, state: Builder.State) -> Builder.State:
-        # pylint: disable-next=import-outside-toplevel
-        from flax.core.frozen_dict import FrozenDict, unfreeze
-
         cfg = self.config
         source_params = cfg.flax_state_supplier_config.instantiate()
 
@@ -590,9 +643,6 @@ class FlaxPretrainedBuilder(Builder):
                 parent_state = parent_state[scope]
             target_flax_state = parent_state[cfg.target_scope[-1]]["params"]
 
-        if isinstance(target_flax_state, FrozenDict):
-            target_flax_state = unfreeze(target_flax_state)
-
         restored_target_state = traverse_and_set_target_state_parameters(
             target_state=target_flax_state,
             target_scope=[],
@@ -607,26 +657,26 @@ class FlaxPretrainedBuilder(Builder):
 
         if len(cfg.target_scope) == 0:
             new_trainer_state = state.trainer_state._replace(
-                model=FrozenDict({"params": restored_target_state})
+                model={"params": restored_target_state}
             )
         else:
-            parent_state[cfg.target_scope[-1]] = FrozenDict({"params": restored_target_state})
+            parent_state[cfg.target_scope[-1]] = {"params": restored_target_state}
             new_trainer_state = state.trainer_state
 
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(new_trainer_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(new_trainer_state)})
         return Builder.State(step=0, trainer_state=new_trainer_state, built_keys=built_keys)
 
 
 def torch_to_axlearn_converter(
     module: str = "axlearn.common.param_converter",
-    dst_layer: Optional[Union[BaseLayer, Type]] = None,
+    dst_layer: Optional[ConfigOr[Union[BaseLayer, type]]] = None,
 ):
     """See HuggingFacePreTrainedBuilder.converter."""
     # Lazily import to avoid introducing a dependency otherwise.
     # TODO(bwzhang@): The fairseq layer is not supported in TPU.
     # pylint: disable-next=import-outside-toplevel
     torch_to_axlearn = import_module(module).torch_to_axlearn
-    return functools.partial(torch_to_axlearn, dst_layer=dst_layer)
+    return functools.partial(torch_to_axlearn, dst_layer=maybe_instantiate(dst_layer))
 
 
 class HuggingFacePreTrainedBuilder(Builder):
@@ -737,7 +787,7 @@ class HuggingFacePreTrainedBuilder(Builder):
         # might be set to HF model's parameters.
         restored_state = state.trainer_state._replace(model=restored_model_state)
 
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=0, trainer_state=restored_state, built_keys=built_keys)
 
 
@@ -766,7 +816,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
     def target_state_type(self) -> Builder.StateType:
         return Builder.StateType.TENSOR_SPECS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Produces state compatible with the pretrained checkpoint to be restored."""
         source, aux = super().target_to_source(target)
         source_model = source.trainer_state.model
@@ -780,7 +830,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
         # Prune model and reset learner and prng_key.
         pruned_trainer_state = source.trainer_state._replace(
             model=pruned_model,
-            learner=LearnerState(optimizer={}, ema={}),
+            learner={},
             prng_key={},
         )
         logging.info(
@@ -790,10 +840,39 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
         return source, aux
 
     def source_to_target(self, source: Builder.State, aux: Any) -> Builder.State:
-        """Load model state from source to target."""
+        """Load model state from source to target.
+
+        Note: If a Tensor from `source` is included by multiple source scopes, makes deep copy of
+              the Tensor so that the target Tensors do not refer to the same underlying Tensor.
+        """
         restored_state = clone_tree(aux.trainer_state)
+
+        copied_leaf_paths = set()
+
+        def _copy_leaf(
+            path: tuple[KeyEntry], leaf: Tensor, source_scope: str, separator: str = "/"
+        ) -> Tensor:
+            path = separator.join(_key_entry_to_str(k) for k in path)
+            if path:
+                # If path is not empty, concatenate with source_scope.
+                path = f"{source_scope}{separator}{path}"
+            else:
+                # If path is empty, it means source_scope is leaf.
+                path = source_scope
+            if path in copied_leaf_paths:
+                return leaf.copy()
+            copied_leaf_paths.add(path)
+            return leaf
+
         for target_scope, source_scope in self.scopes.items():
-            source_model = utils.get_recursively(source.trainer_state.model, source_scope)
+            orig_source_model = utils.get_recursively(source.trainer_state.model, source_scope)
+            source_model = jax.tree.map_with_path(
+                lambda path, leaf, source_scope=source_scope: _copy_leaf(
+                    path, leaf, source_scope=source_scope
+                ),
+                orig_source_model,
+            )
+
             if target_scope:
                 if "/" in target_scope:
                     target_path, last_scope = target_scope.rsplit("/", 1)
@@ -805,7 +884,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
 
         logging.info("restored_state=%s", sorted(key for key, _ in flatten_items(restored_state)))
         built_keys = source.built_keys.union(
-            set(key for key, value in flatten_items(restored_state) if isinstance(value, Tensor))
+            {key for key, value in flatten_items(restored_state) if isinstance(value, Tensor)}
         )
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
@@ -840,24 +919,24 @@ class PosEmbeddingConverter(BaseConverterFromPretrainedModel):
                 return self._derive_compat_source_pos_emb(src, tgt)
             return src if isinstance(src, Tensor) else tgt
 
-        restored_state = jax.tree_util.tree_map(
+        restored_state = jax.tree.map(
             restored_state,
             source.trainer_state,
             aux.trainer_state,
             is_leaf=self._is_pos_emb,
         )
         restored_state = restored_state._replace(learner=aux.trainer_state.learner)
-        built_keys = source.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = source.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
     # pylint: disable-next=no-self-use
-    def _is_pos_emb(self, state: Dict[str, Any]) -> bool:
+    def _is_pos_emb(self, state: dict[str, Any]) -> bool:
         return is_dict(state, "pos_emb") and is_dict(state["pos_emb"], ["weight"])
 
     # pylint: disable-next=no-self-use
     def _derive_compat_source_pos_emb(
         self, source: NestedTensor, target: NestedTensor
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         cfg = self.config
         source_weight = source["pos_emb"]["weight"]
         target_weight = target["pos_emb"]["weight"]
@@ -935,7 +1014,7 @@ class EmaParamsConverter(Converter):
     def target_state_type(self) -> Builder.StateType:
         return Builder.StateType.TENSOR_SPECS
 
-    def target_to_source(self, target: Builder.State) -> Tuple[Builder.State, Any]:
+    def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
         """Builds a source that contains ema state the same as target.model.
 
         The source model and optimizer state are empty trees.
@@ -945,12 +1024,12 @@ class EmaParamsConverter(Converter):
             ema=clone_tree(target.trainer_state.model),
         )
         source_trainer_state = target.trainer_state._replace(
-            # Empty optimizer.
-            learner=LearnerState(optimizer=optax.EmptyState(), ema=ema_state),
+            # Only keep ema state.
+            learner=dict(ema=ema_state),
             # Empty model.
             model={},
         )
-        built_keys = set(key for key, _ in flatten_items(source_trainer_state))
+        built_keys = {key for key, _ in flatten_items(source_trainer_state)}
         source = Builder.State(
             step=target.step,
             trainer_state=source_trainer_state,
@@ -962,21 +1041,20 @@ class EmaParamsConverter(Converter):
         """Copies the source ema weight into target model and ema if target has a non-empty ema."""
         # Load model weight from learner ema.
         restored_state = aux.trainer_state._replace(
-            model=source.trainer_state.learner.ema.ema,
+            model=source.trainer_state.learner["ema"].ema,
             prng_key=source.trainer_state.prng_key,
         )
         if (
             aux.trainer_state.learner is not None
-            and aux.trainer_state.learner.ema.ema is not optax.EmptyState()
+            and "ema" in aux.trainer_state.learner
+            and aux.trainer_state.learner["ema"].ema is not optax.EmptyState()
         ):
             # Load ema weight to target ema.
-            restored_ema = restored_state.learner.ema._replace(
-                ema=source.trainer_state.learner.ema.ema,
+            restored_state.learner["ema"] = restored_state.learner["ema"]._replace(
+                ema=source.trainer_state.learner["ema"].ema,
             )
-            restored_learner = restored_state.learner._replace(ema=restored_ema)
-            restored_state = restored_state._replace(learner=restored_learner)
 
-        built_keys = aux.built_keys.union(set(key for key, _ in flatten_items(restored_state)))
+        built_keys = aux.built_keys.union({key for key, _ in flatten_items(restored_state)})
         return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
 
 
@@ -992,12 +1070,11 @@ class PruneEmaStateBuilder(Builder):
 
     def __call__(self, state: Builder.State) -> Builder.State:
         # Remove learner ema state.
+        del state.trainer_state.learner["ema"]
         prune_state = state.trainer_state._replace(
-            learner=LearnerState(
-                optimizer=state.trainer_state.learner.optimizer, ema=optax.EmptyState()
-            ),
+            learner=state.trainer_state.learner,
         )
-        built_keys = state.built_keys.union(set(key for key, _ in flatten_items(prune_state)))
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(prune_state)})
         return Builder.State(
             step=state.step,
             trainer_state=prune_state,
@@ -1035,7 +1112,7 @@ class SimpleWeightModifierBuilder(Builder):
             else:
                 return x
 
-        modified_trainer_state = jax.tree_util.tree_map(
+        modified_trainer_state = jax.tree.map(
             maybe_modify,
             state.trainer_state,
             is_leaf=self._should_modify,
@@ -1147,7 +1224,7 @@ class UnknownBuilderError(NotImplementedError):
     pass
 
 
-def get_builder_config(spec: Union[str, Builder], builders: List[Type[Builder]]) -> Builder.Config:
+def get_builder_config(spec: Union[str, Builder], builders: list[type[Builder]]) -> Builder.Config:
     """Match the spec against a list of Builders.
 
     Args:
@@ -1174,3 +1251,33 @@ def get_builder(spec: Union[str, Builder]) -> Builder:
     builder_cfg = get_builder_config(spec, builders=_BUILDERS)
     builder = builder_cfg.set(name="builder").instantiate(parent=None)
     return builder
+
+
+class OrbaxStateBuilder(BaseStateStorageBuilder):
+    """Build trainer state from Orbax checkpoints."""
+
+    SPEC_PREFIX = "orbax_state_builder:"
+
+    def __init__(self, cfg: BaseStateStorageBuilder.Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        if cfg.base_dir is None or cfg.step is None:
+            raise ValueError("OrbaxStateBuilder requires base_dir and step to be specified.")
+
+    def __call__(self, state: BaseStateStorageBuilder.State) -> BaseStateStorageBuilder.State:
+        cfg: OrbaxStateBuilder.Config = self.config
+        # Use lazy-import to avoid global dependency on Orbax.
+        # pylint: disable-next=import-outside-toplevel
+        from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
+
+        reader_cfg: OrbaxCheckpointer.Config = OrbaxCheckpointer.default_config()
+        reader_cfg.name = cfg.name + "-reader"
+        reader_cfg.validation_type = cfg.validation
+        reader_cfg.dir = cfg.base_dir
+        reader_cfg.max_concurrent_restore_gb = cfg.concurrent_gb
+        ckpt_reader: OrbaxCheckpointer = reader_cfg.instantiate(parent=self)
+        step, restored_state = ckpt_reader.restore(step=cfg.step, state=state.trainer_state)
+        assert step == cfg.step
+        built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
+        return BaseStateStorageBuilder.State(
+            step=step, trainer_state=restored_state, built_keys=built_keys
+        )

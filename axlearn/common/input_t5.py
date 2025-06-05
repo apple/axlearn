@@ -1,10 +1,21 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/google-research:
+# Copyright 2022 The Google Research Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google-research/text-to-text-transfer-transformer:
+# Copyright 2021 The T5 Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Input processing as seen in T5.
 
 References:
 https://github.com/google-research/google-research/blob/77e1f14f3f7af7dc91dcdba7402ebc46c55ac2a6/primer/t5_tasks.py#L20
 """
 import functools
-from typing import Dict, Tuple
 
 import seqio
 import tensorflow as tf
@@ -49,7 +60,7 @@ def select_random_chunk(
     """
 
     @seqio.map_over_dataset
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         tokens = example[input_key]
         n_tokens = tf.shape(tokens)[0]
         num_segments = tf.cast(
@@ -115,7 +126,7 @@ def reduce_concat_tokens(
     """
 
     @seqio.map_over_dataset
-    def process_example_fn(x: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(x: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         tokens = tf.reshape(x[input_key], [-1])
         # Gather all non-padding tokens.
         # Note that this assumes no padding tokens in the sequence prior to padded_batch.
@@ -139,7 +150,7 @@ def random_spans_helper(
     mean_noise_span_length: float,
     source_sentinel_length: int = 1,
     target_sentinel_length: int = 1,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Computes input lengths to avoid padding in `random_spans_noise_mask`.
 
     During span corruption, some tokens in the input are replaced by sentinel tokens. This function
@@ -161,7 +172,7 @@ def random_spans_helper(
         the original input. `target_length` represents the length of target after noising.
     """
 
-    def _noised_source_target_lengths(input_length: int) -> Tuple[int, int]:
+    def _noised_source_target_lengths(input_length: int) -> tuple[int, int]:
         """Calculates the length of noised source and target."""
         num_noise_tokens = int(round(float(input_length) * noise_density))
         num_nonnoise_tokens = input_length - num_noise_tokens
@@ -221,8 +232,8 @@ def split_tokens(
 
     @seqio.map_over_dataset
     def split_tokens_example(
-        x: Dict[str, tf.Tensor]
-    ) -> Tuple[Dict[str, tf.Tensor], Dict[str, tf.Tensor]]:
+        x: dict[str, tf.Tensor]
+    ) -> tuple[dict[str, tf.Tensor], dict[str, tf.Tensor]]:
         """Split one token sequence into multiple sequences."""
         tokens = x[input_key]
         n_tokens = tf.shape(tokens)[0]
@@ -263,8 +274,8 @@ def split_tokens(
         return outputs, orig_lengths
 
     def strip_padding(
-        inputs: Dict[str, tf.Tensor], orig_lengths: Dict[str, tf.Tensor]
-    ) -> Dict[str, tf.Tensor]:
+        inputs: dict[str, tf.Tensor], orig_lengths: dict[str, tf.Tensor]
+    ) -> dict[str, tf.Tensor]:
         output = {}
         for k, v in inputs.items():
             output[k] = v[: orig_lengths[k]]
@@ -477,7 +488,7 @@ def apply_t5_mask(
     vocab = vocab_cfg.instantiate()
 
     @seqio.map_over_dataset
-    def process_example_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_example_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         source_ids = example[source_key]
         seq_len = tf.shape(source_ids)[0]
         noise_mask = random_spans_noise_mask(
@@ -503,21 +514,23 @@ def map_prefix_to_value(is_training: bool, value: int = 0) -> input_tf_data.Data
     """
 
     @seqio.map_over_dataset
-    def process_eval_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_eval_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         example["prefix"] = tf.constant([value])
         return example
 
     @seqio.map_over_dataset
-    def process_train_fn(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+    def process_train_fn(example: dict[str, tf.Tensor]) -> dict[str, tf.Tensor]:
         # Handle packed inputs by replacing at segment starts.
-        if "target_positions" in example:
-            target_ids = example["target_ids"]
-            target_positions = example["target_positions"]
-            example["target_ids"] = tf.where(target_positions == 0, value, target_ids)
+        if "positions" in example["target"]:
+            target_ids = example["target"]["input_ids"]
+            target_positions = example["target"]["positions"]
+            example["target"]["input_ids"] = tf.where(target_positions == 0, value, target_ids)
 
         # Handle padded inputs by replacing at index 0.
         else:
-            example["target_ids"] = tf.concat([[value], example["target_ids"][1:]], 0)
+            example["target"]["input_ids"] = tf.concat(
+                [[value], example["target"]["input_ids"][1:]], 0
+            )
         return example
 
     return process_train_fn if is_training else process_eval_fn

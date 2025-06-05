@@ -1,4 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests encoder layers."""
+
 # pylint: disable=no-self-use
 from typing import Optional
 
@@ -20,11 +23,10 @@ from axlearn.common.bert import (
     BertSequenceClassificationHead,
     bert_embedding_config,
     bert_transformer_config,
-    set_layer_norm_eps_recursively,
 )
 from axlearn.common.bert_test import bert_encoder_config_from_hf
 from axlearn.common.encoder import CausalEncoder, Encoder, EncoderModel
-from axlearn.common.layers import BaseClassificationHead
+from axlearn.common.layers import BaseClassificationHead, set_layer_norm_eps_recursively
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
@@ -158,9 +160,11 @@ class TestEncoder(TestCase):
                 prng_key=jax.random.PRNGKey(123),
                 state=parameters_from_torch_layer(self.hf_encoder)["encoder"]["emb"],
                 inputs=dict(
-                    inputs=source_ids,
-                    token_type_ids=source_type_ids,
-                    positions=source_positions,
+                    input_batch=dict(
+                        inputs=source_ids,
+                        token_type_ids=source_type_ids,
+                        positions=source_positions,
+                    ),
                 ),
             )
             ref_outputs = self.hf_encoder.embeddings(
@@ -391,6 +395,68 @@ class TestEncoderModel(TestCase):
         else:
             self.assertIn("logits", test_outputs)
             self.assertEqual(test_outputs["logits"].shape, (batch_size, head.num_classes))
+
+    def test_encoder_model_with_soft_labels_passed(self):
+        batch_size = 4
+        seq_len = 16
+        vocab_size = 1000
+        hidden_dim = 64
+        num_classes = 2
+        head = BertSequenceClassificationHead.default_config().set(num_classes=num_classes)
+        config = EncoderModel.default_config().set(
+            dim=64,
+            vocab_size=vocab_size,
+            head=head,
+        )
+        config.encoder.set(
+            pad_token_id=0,
+            transformer=TransformerLayer.default_config().set(
+                self_attention=TransformerAttentionLayer.default_config().set(
+                    attention=MultiheadAttention.default_config().set(num_heads=1)
+                ),
+                feed_forward=TransformerFeedForwardLayer.default_config().set(
+                    hidden_dim=hidden_dim
+                ),
+            ),
+        )
+        encoder_model: EncoderModel = config.set(name="test").instantiate(parent=None)
+        params = encoder_model.initialize_parameters_recursively(jax.random.PRNGKey(1))
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(111), [batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(123), [batch_size], minval=0, maxval=1
+        )
+
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+        output, _ = F(
+            encoder_model,
+            inputs=[input_batch],
+            state=params,
+            is_training=False,
+            method="forward",
+            prng_key=jax.random.PRNGKey(1),
+        )
+
+        soft_labels = jax.random.uniform(
+            jax.random.PRNGKey(42),
+            [batch_size, num_classes],
+            minval=-1,
+            maxval=1,
+        )
+        input_batch_with_soft_labels = dict(
+            input_ids=input_ids, target_labels=target_labels, soft_labels=soft_labels
+        )
+        output_with_soft_labels, _ = F(
+            encoder_model,
+            inputs=[input_batch_with_soft_labels],
+            state=params,
+            is_training=False,
+            method="forward",
+            prng_key=jax.random.PRNGKey(1),
+        )
+
+        self.assertNotAlmostEqual(output[0].item(), output_with_soft_labels[0].item())
 
 
 if __name__ == "__main__":

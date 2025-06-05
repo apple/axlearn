@@ -1,8 +1,29 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/bert:
+# Copyright 2018 The Google AI Language Team Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/fairseq:
+# Copyright (c) Facebook, Inc. and its affiliates.
+# Licensed under the MIT license.
+#
+# huggingface/transformers:
+# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
+# Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/tensorflow:
+# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """BERT layer implementations.
 
 https://arxiv.org/abs/1810.04805
 """
-from typing import Dict, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 
@@ -14,7 +35,7 @@ from axlearn.common.attention import (
     scaled_hidden_dim,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import REQUIRED, ConfigBase, InstantiableConfig, Required, config_class
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.encoder import Encoder, EncoderModel
 from axlearn.common.layers import (
@@ -25,14 +46,15 @@ from axlearn.common.layers import (
     Linear,
     RedirectToSharedModule,
     get_activation_fn,
+    set_layer_norm_eps_recursively,
 )
 from axlearn.common.loss import mean_squared_error
 from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
-    ConstantInitializer,
     DefaultInitializer,
     WeightInitializer,
+    constant_initializer,
 )
 from axlearn.common.utils import NestedTensor, Tensor
 
@@ -124,19 +146,22 @@ class BertLMHead(BaseClassificationHead):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        self._add_child("inner_head", cfg.inner_head.set(dim=cfg.input_dim))
+        if hasattr(cfg.inner_head, "input_dim"):
+            self._add_child("inner_head", cfg.inner_head.set(input_dim=cfg.input_dim))
+        else:
+            self._add_child("inner_head", cfg.inner_head.set(dim=cfg.input_dim))
         self._add_child(
             "transform", cfg.transform.set(input_dim=cfg.input_dim, output_dim=cfg.input_dim)
         )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return dict(
             # Output layer weights are shared with encoder, but bias is a separate parameter.
             output_bias=ParameterSpec(
                 shape=[cfg.num_classes],
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(0.0),
+                initializer=constant_initializer(0.0),
             ),
         )
 
@@ -322,28 +347,6 @@ class BertModel(EncoderModel):
         return cfg
 
 
-def set_layer_norm_eps_recursively(cfg: ConfigBase, eps: float, set_only_if_none: bool = False):
-    """Sets LayerNorm.Config.eps recursively.
-
-    Args:
-        cfg: The root config under which to look for LayerNorm.Config.
-        eps: The target value.
-        set_only_if_none: Override LayerNorm.Config.eps to `eps` only if the original is None.
-    """
-
-    def is_layer_norm_config(cfg):
-        return isinstance(cfg, LayerNorm.Config)
-
-    def visit_fn(_, value):
-        if is_layer_norm_config(value) and (not set_only_if_none or value.eps is None):
-            value.eps = eps
-
-    def enter_fn(_, value, default_kv):
-        return None if is_layer_norm_config(value) else default_kv
-
-    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
-
-
 def bert_embedding_config(
     *,
     max_position_embeddings: Optional[int] = 512,
@@ -436,7 +439,11 @@ def bert_transformer_config(
         The stack config.
     """
     base_cfg = base_cfg.clone() if base_cfg else StackedTransformerLayer.default_config()
-    layer_norm_epsilon = bert_layer_norm_epsilon(dtype=base_cfg.dtype)
+    layer_norm_epsilon = (
+        layer_norm_epsilon
+        if layer_norm_epsilon is not None
+        else bert_layer_norm_epsilon(dtype=base_cfg.dtype)
+    )
 
     layer_cfg = TransformerLayer.default_config()
     # Feed-forward transformer layer config.

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """CyCLIP implementation.
 
 Ref: https://github.com/goel-shashank/CyCLIP/blob/main/src/train.py

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests BERT layers."""
 from contextlib import nullcontext
 from typing import Optional
@@ -10,13 +12,15 @@ from absl.testing import absltest, parameterized
 from transformers.models.bert import modeling_bert as hf_bert
 
 from axlearn.common import bert, utils
-from axlearn.common.attention import NEG_INF, BaseStackedTransformerLayer
+from axlearn.common.attention import BaseStackedTransformerLayer
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.layers import (
     BinaryClassificationMetric,
     Dropout,
     Embedding,
     LayerNorm,
     set_dropout_rate_recursively,
+    set_layer_norm_eps_recursively,
 )
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
@@ -65,10 +69,7 @@ def dummy_inputs_for_mlm(
     np.putmask(input_ids, attention_mask, padding_input_id)
     # hf expects the opposite masking scheme as we do:
     # A float value of 0. represents padding and 1. represents non-padding.
-    attention_mask = np.logical_not(attention_mask)
-    hf_attention_mask = np.logical_and(
-        attention_mask[:, None, :], attention_mask[:, :, None]
-    ).astype(jnp.float32)
+    hf_attention_mask = np.logical_not(attention_mask)
 
     test_inputs = dict(
         input_ids=input_ids,
@@ -108,7 +109,7 @@ def bert_encoder_config_from_hf(
         ),
         pad_token_id=0,
     )
-    bert.set_layer_norm_eps_recursively(encoder_cfg, layer_norm_epsilon or hf_cfg.layer_norm_eps)
+    set_layer_norm_eps_recursively(encoder_cfg, layer_norm_epsilon or hf_cfg.layer_norm_eps)
     return encoder_cfg
 
 
@@ -674,6 +675,14 @@ class BertTest(TestCase):
             assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
 
     # pylint: enable=duplicate-code
+    def test_respect_custom_layer_norm_eps(self):
+        expected_eps = 1e-6
+        self.assertNotEqual(expected_eps, bert.bert_layer_norm_epsilon())
+        transformer_cfg = bert.bert_transformer_config(
+            num_layers=1, num_heads=2, layer_norm_epsilon=expected_eps
+        )
+        self.assertEqual(transformer_cfg.layer.self_attention.norm.eps, expected_eps)
+        self.assertEqual(transformer_cfg.layer.feed_forward.norm.eps, expected_eps)
 
 
 if __name__ == "__main__":

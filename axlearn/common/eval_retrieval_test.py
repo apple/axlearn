@@ -1,7 +1,9 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests retrieval evaluation pipeline."""
 # pylint: disable=no-self-use
 import tempfile
-from typing import Dict, List, Union
+from typing import Union
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +11,7 @@ import numpy as np
 from absl.testing import parameterized
 from jax.experimental.pjit import pjit
 
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.eval_retrieval import (
     CLIPRetrievalMetricCalculator,
     CxcImageRetrievalMetricCalculator,
@@ -55,7 +57,7 @@ def _compute_metrics(
     *,
     data_generator,
     calculator_cfg,
-) -> Dict:
+) -> dict:
     """Computes zero-shot classification metrics.
 
     Args:
@@ -78,7 +80,7 @@ def _compute_metrics(
         jax.experimental.mesh_utils.create_device_mesh((1, 1)), ("data", "model")
     ):
         model = DummyRetrievalModel.default_config().set(name="model").instantiate(parent=None)
-        model_param_partition_specs = jax.tree_util.tree_map(
+        model_param_partition_specs = jax.tree.map(
             lambda spec: spec.mesh_axes, model.create_parameter_specs_recursively()
         )
         calculator = calculator_cfg.set(name="calculator").instantiate(
@@ -119,7 +121,7 @@ class CLIPRetrievalMetricCalculatorTest(TestCase, parameterized.TestCase):
         },
     )
     def test_clip_retrieval_metric_calculator(
-        self, top_k: Union[int, List[int]], expected_metrics: Dict[str, float]
+        self, top_k: Union[int, list[int]], expected_metrics: dict[str, float]
     ):
         text_embeddings = jnp.asarray(
             [
@@ -238,7 +240,7 @@ class EmbeddingRetrievalMetricCalculatorTest(TestCase, parameterized.TestCase):
                 }
 
         calculator_cfg = EmbeddingRetrievalMetricCalculator.default_config().set(
-            metrics=["MAP@1", "MAP@2", "accuracy@1"],
+            metrics=["MAP@1", "MAP@2", "accuracy@1", "recall@1"],
             categories_names=("cat", "dog"),
             max_query_chunk_size=max_query_chunk_size,
         )
@@ -259,6 +261,10 @@ class EmbeddingRetrievalMetricCalculatorTest(TestCase, parameterized.TestCase):
             "accuracy@1_cat": (1.0 + 0.0) / 2,
             "accuracy@1_dog": 0.0,
             "accuracy@1_avg_category": ((1.0 + 0.0) / 2 + 0.0) / 2,
+            "recall@1": (1.0 + 0.0 + 0.0) / 3,
+            "recall@1_cat": (1.0 + 0.0) / 2,
+            "recall@1_dog": 0.0,
+            "recall@1_avg_category": ((1.0 + 0.0) / 2 + 0.0) / 2,
             "num_valid": 3,
         }
         self.assertNestedAllClose(summaries, expected_metrics)

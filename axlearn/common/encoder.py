@@ -1,6 +1,9 @@
+# Copyright © 2023 Apple Inc.
+
 """Encoder layers."""
+
 import math
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +21,7 @@ from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import BaseClassificationHead, set_dropout_rate_recursively
 from axlearn.common.module import Module, Tensor, child_context
-from axlearn.common.utils import NestedTensor
+from axlearn.common.utils import NestedTensor, TensorSpec
 
 
 class Encoder(BaseLayer):
@@ -55,6 +58,7 @@ class Encoder(BaseLayer):
             self._add_child("output", cfg.output.set(input_dim=cfg.dim))
         self._add_child("attention_mask", cfg.attention_mask)
 
+    # TODO(markblee): Generalize to support input_batch, similar to Decoder.
     def forward(
         self,
         input_ids: Tensor,
@@ -79,7 +83,9 @@ class Encoder(BaseLayer):
             A Tensor of shape [batch_size, seq_len, hidden_dim].
         """
         # [batch_size, seq_len, hidden_dim].
-        x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        )
         # [batch_size, num_heads, seq_len, seq_len].
         attention_logit_biases = self.compute_attention_logit_biases(
             input_ids, segment_ids=input_segment_ids, positions=positions
@@ -165,17 +171,20 @@ class CausalEncoder(Encoder):
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
+        cfg: CausalEncoder.Config = self.config
+        init_state, _ = self.transformer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=jnp.float32),
+        )
         return dict(
-            transformer_state=self.transformer.init_states(
-                target_batch_size=batch_size, target_max_len=max_sequence_length
-            ),
+            transformer_state=init_state,
             input_ids=jnp.full(
-                (batch_size, max_sequence_length), self.config.pad_token_id, dtype=jnp.int32
+                (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
             ),
             time_step=jnp.zeros(batch_size, dtype=jnp.int32),
         )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         param_specs = {}
         if cfg.num_cls_tokens > 0:
@@ -184,7 +193,7 @@ class CausalEncoder(Encoder):
             param_specs["cls_token"] = ParameterSpec(
                 shape=(1, cfg.num_cls_tokens, cfg.dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.GaussianInitializer(1.0 / math.sqrt(cfg.dim)),
+                initializer=param_init.gaussian_initializer(std=1.0 / math.sqrt(cfg.dim)),
             )
         return param_specs
 
@@ -225,7 +234,9 @@ class CausalEncoder(Encoder):
         batch_size, max_seq_len = input_ids.shape
 
         # [batch_size, seq_len, hidden_dim].
-        x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        )
 
         # Append optional cls tokens as used in CoCa.
         if cfg.num_cls_tokens > 0:
@@ -273,11 +284,13 @@ class CausalEncoder(Encoder):
         time_step: Tensor,
         input_ids: Tensor,
         token_type_ids: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         # Note: this follows `Decoder.prefill_states` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
-        x = self.emb(input_ids, token_type_ids=token_type_ids, positions=None)
-        transformer_state, x = self.transformer.prefill_states(
+        x = self.emb(
+            input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=None)
+        )
+        transformer_state, x = self.transformer.init_states(
             time_step=time_step,
             data=x,
             self_attention_logit_biases=self.compute_attention_logit_biases(input_ids),
@@ -292,7 +305,7 @@ class CausalEncoder(Encoder):
         cached_states: NestedTensor,
         input_ids: Tensor,
         token_type_ids: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
         # Note: this follows `Decoder.extend_step` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
@@ -322,7 +335,11 @@ class CausalEncoder(Encoder):
 
         # [B, 1, D].
         x = self.emb(
-            input_ids, positions=jnp.expand_dims(time_step, 1), token_type_ids=token_type_ids
+            input_batch=dict(
+                inputs=input_ids,
+                positions=jnp.expand_dims(time_step, 1),
+                token_type_ids=token_type_ids,
+            )
         )
         updated_transformer_state, transformer_data = self.transformer.extend_step(
             cached_states=cached_states["transformer_state"],
@@ -367,9 +384,9 @@ class EncoderModel(BaseModel):
 
     def forward(
         self,
-        input_batch: Dict[str, Tensor],
+        input_batch: dict[str, Tensor],
         return_aux: bool = False,
-    ) -> Tuple[Tensor, NestedTensor]:
+    ) -> tuple[Tensor, NestedTensor]:
         """Produces prediction scores from the input tokens and types.
 
         Args:
@@ -383,6 +400,9 @@ class EncoderModel(BaseModel):
                     representing different parts of the input.
                     Values should be in the range [0, type_vocab_size).
                     If unspecified and type embedding is used, defaults to 0 for all positions.
+                soft_labels: An optional Tensor of labels that are already smoothed/in one-hot
+                    form. If provided, target_labels are typically used for inferring the mask
+                    during loss calculation.
             return_aux: whether to return auxiliary outputs.
 
         Returns:
@@ -393,14 +413,19 @@ class EncoderModel(BaseModel):
             if return_aux is True, or an empty dict otherwise.
         """
         target_labels: Tensor = input_batch["target_labels"]
+        soft_labels = input_batch.get("soft_labels", None)
         predictions = self.predict(input_batch)
         loss = None
         if "head" in self.children:
             with child_context("head_loss", module=self.head):
-                loss = self.head.loss(logits=predictions["logits"], target_labels=target_labels)
+                loss = self.head.loss(
+                    logits=predictions["logits"],
+                    target_labels=target_labels,
+                    soft_labels=soft_labels,
+                )
         return loss, predictions if return_aux else {}
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Outputs predictions for the given inputs.
 
         Args:

@@ -1,8 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/tpu:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An AXLearn implementation of RetinaNet.
 
 Reference: https://arxiv.org/abs/1708.02002.
 """
-from typing import Dict, Tuple
 
 import jax
 import numpy as np
@@ -16,9 +23,10 @@ from axlearn.common.config import (
     config_class,
     config_for_class,
 )
-from axlearn.common.layers import BatchNorm, Conv2D, get_activation_fn
+from axlearn.common.convolution import Conv2D
+from axlearn.common.layers import BatchNorm, get_activation_fn
 from axlearn.common.loss import ReductionMethod, focal_loss, huber_loss
-from axlearn.common.module import Module, NestedTensor, Tensor, child_context
+from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import (
     PARAM_REGEXP_BIAS,
     PARAM_REGEXP_WEIGHT,
@@ -26,6 +34,7 @@ from axlearn.common.param_init import (
     DefaultInitializer,
     WeightInitializer,
 )
+from axlearn.common.utils import NestedTensor, Tensor, safe_not
 from axlearn.vision.anchor import AnchorGenerator, AnchorLabeler
 from axlearn.vision.box_coder import BoxCoder
 from axlearn.vision.detection_generator import MultilevelDetectionGenerator
@@ -112,7 +121,7 @@ class RetinaNetHead(BaseLayer):
         )
         classifier_cfg.param_init = DefaultInitializer.default_config().set(
             init_by_param_name={
-                PARAM_REGEXP_BIAS: config_for_class(ConstantInitializer).set(
+                PARAM_REGEXP_BIAS: ConstantInitializer.default_config().set(
                     value=-np.log((1 - 0.01) / 0.01),
                 ),
                 PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(
@@ -141,7 +150,7 @@ class RetinaNetHead(BaseLayer):
             box_regressor_cfg,
         )
 
-    def forward(self, inputs: Dict[int, Tensor]) -> Dict[str, Dict[int, Tensor]]:
+    def forward(self, inputs: dict[int, Tensor]) -> dict[str, dict[int, Tensor]]:
         """RetinaNet head forward pass.
 
         Args:
@@ -201,7 +210,7 @@ class RetinaNetMetric(BaseLayer):
         per_category_metrics: bool = False
 
     # pylint: disable-next=no-self-use
-    def _compute_sample_weights(self, labels: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def _compute_sample_weights(self, labels: dict[str, Tensor]) -> dict[str, Tensor]:
         """Updates sample cls and box sample weights.
 
         Args:
@@ -245,10 +254,10 @@ class RetinaNetMetric(BaseLayer):
     def _compute_losses(
         self,
         *,
-        outputs: Dict[str, Tensor],
-        labels: Dict[str, Tensor],
-        sample_weights: Dict[str, Tensor],
-    ) -> Dict[str, Tensor]:
+        outputs: dict[str, Tensor],
+        labels: dict[str, Tensor],
+        sample_weights: dict[str, Tensor],
+    ) -> dict[str, Tensor]:
         """Computes losses.
 
         Args:
@@ -277,9 +286,11 @@ class RetinaNetMetric(BaseLayer):
             targets=y_true_cls_multi_hot,
             alpha=cfg.focal_loss_alpha,
             gamma=cfg.focal_loss_gamma,
-            sample_weight=sample_weights["cls"]
-            if sample_weights["cls"].ndim == y_pred_cls.ndim
-            else jnp.expand_dims(sample_weights["cls"], axis=-1),
+            sample_weight=(
+                sample_weights["cls"]
+                if sample_weights["cls"].ndim == y_pred_cls.ndim
+                else jnp.expand_dims(sample_weights["cls"], axis=-1)
+            ),
         )
         box_huber_loss = huber_loss(
             predictions=y_pred_box,
@@ -292,7 +303,7 @@ class RetinaNetMetric(BaseLayer):
 
         return dict(cls=cls_loss, box_huber=box_huber_loss)
 
-    def forward(self, outputs: Dict[str, Tensor], labels: Dict[str, Tensor]) -> Tensor:
+    def forward(self, outputs: dict[str, Tensor], labels: dict[str, Tensor]) -> Tensor:
         """Computes RetinaNet metrics.
 
         Args:
@@ -385,7 +396,7 @@ class RetinaNetModel(BaseLayer):
         }
         return anchor_boxes
 
-    def _predict_raw(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def _predict_raw(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
         # Generate a dict of {level: feature} represents endpoints from backbone.
         x = self.backbone(input_batch["image"])
         # Generate a dict of {level: feature} represents multi-scale feature pyramid.
@@ -394,7 +405,7 @@ class RetinaNetModel(BaseLayer):
         outputs = self.head(x)
         return outputs
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Runs prediction on images and returns post-processed results.
 
         This method is used for inference and evaluation.
@@ -431,7 +442,7 @@ class RetinaNetModel(BaseLayer):
         )
         return processed_outputs
 
-    def forward(self, input_batch: Dict[str, Tensor]) -> Tuple[float, NestedTensor]:
+    def forward(self, input_batch: dict[str, Tensor]) -> tuple[float, NestedTensor]:
         """Runs forward pass and returns total loss.
 
         Args:
@@ -488,8 +499,8 @@ class RetinaNetModel(BaseLayer):
                 ),
                 "box_targets": anchor_labels.groundtruth_boxes,
                 "class_targets": anchor_labels.groundtruth_classes,
-                "box_weights": ~anchor_labels.box_paddings,
-                "class_weights": ~anchor_labels.class_paddings,
+                "box_weights": safe_not(anchor_labels.box_paddings),
+                "class_weights": safe_not(anchor_labels.class_paddings),
                 # TODO(pdufter) move self._generate_anchors to anchor_labeler and only pass
                 # anchor_labels to metrics
                 "anchor_boxes_tiled": self._generate_anchors(

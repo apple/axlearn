@@ -1,17 +1,32 @@
+# Copyright © 2023 Apple Inc.
+
 """Evaler and base metric calculators."""
+
+import functools
+import graphlib
 import os.path
+import re
 import time
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Union
 
 import jax
 from absl import logging
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
+from jax.sharding import PartitionSpec
 
-from axlearn.common import summary_writer, utils
+from axlearn.common import input_base, struct, summary_writer, utils
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    config_class,
+    config_for_function,
+    maybe_set_config,
+)
 from axlearn.common.inference_output import BaseOutputWriter
 from axlearn.common.metrics import MetricAccumulator, WeightedScalar
 from axlearn.common.module import Module, OutputCollection
@@ -79,13 +94,11 @@ class BaseMetricCalculator(Module):
         super().__init__(cfg, parent=parent)
         self._model = model
         self._model_param_partition_specs = model_param_partition_specs
-        mesh = jax.experimental.maps.thread_resources.env.physical_mesh
+        mesh = jax._src.mesh.thread_resources.env.physical_mesh
         if mesh.empty:
             raise RuntimeError("MetricCalculator should be created within the context of a mesh")
 
-    def init_state(
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
-    ) -> NestedTensor:
+    def init_state(self, *, prng_key: Tensor, model_params: NestedTensor) -> NestedTensor:
         """Initializes the state.
 
         Will be called at the beginning of an evaluation step.
@@ -105,7 +118,7 @@ class BaseMetricCalculator(Module):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Handles an input batch.
 
         Will be called repeatedly during an evaluation step, once per evaluation input batch.
@@ -134,8 +147,8 @@ class BaseMetricCalculator(Module):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[NestedTensor],
-    ) -> Dict[str, WeightedScalar]:
+        all_forward_outputs: list[NestedTensor],
+    ) -> dict[str, WeightedScalar]:
         """Computes summaries.
 
         Will be called at the end of an evaluation step.
@@ -176,11 +189,11 @@ class BaseMetricCalculator(Module):
             in_shardings=(
                 self._model_param_partition_specs,  # model_params.
                 None,  # replicated_inputs (e.g., prng_key).
-                utils.input_partition_spec(),  # per_example_inputs.
+                self._input_partition_spec(),  # per_example_inputs.
             ),
             out_shardings=dict(
                 replicated=None,
-                per_example=utils.input_partition_spec(),
+                per_example=self._input_partition_spec(),
             ),
         )
 
@@ -192,11 +205,11 @@ class BaseMetricCalculator(Module):
         self,
         *,
         method: str,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         input_batch: NestedTensor,
         **kwargs,
-    ) -> Tuple[NestedTensor, OutputCollection]:
+    ) -> tuple[NestedTensor, OutputCollection]:
         """Computes self._model.method(input_batch).
 
         Should be called inside pjit().
@@ -212,8 +225,10 @@ class BaseMetricCalculator(Module):
             (outputs, output_collection), where `outputs` are the return value of
             self._model.method(...).
         """
+        # Shard and (possibly) dispatch the input batch.
+        input_batch = self._dispatch_global_batch(input_batch)
         model_inputs = dict(
-            input_batch=self._eval_cast(utils.shard_input_batch(input_batch)),
+            input_batch=self._eval_cast(input_batch),
             **kwargs,
         )
         # Run model forward pass to compute outputs.
@@ -226,8 +241,24 @@ class BaseMetricCalculator(Module):
             is_training=False,
         )
 
+    def _input_partition_spec(self) -> PartitionSpec:
+        module = self.parent
+        while module is not None and not isinstance(module, SpmdEvaler):
+            module = module.parent
+        if module is not None and hasattr(module.input, "partition_spec"):
+            return module.input.partition_spec
+        return utils.input_partition_spec()
+
+    def _dispatch_global_batch(self, input_batch: NestedTensor) -> NestedTensor:
+        module = self.parent
+        while module is not None and not isinstance(module, SpmdEvaler):
+            module = module.parent
+        if module is not None and hasattr(module.input, "dispatch_global_batch"):
+            input_batch = module.input.dispatch_global_batch(input_batch)
+        return input_batch
+
     def formatted_metric_name(self, metric_name):
-        """Prepand the prefix to the metric_name."""
+        """Prepend the prefix to the metric_name."""
         if self.config.prefix is not None:
             return f"{self.config.prefix}/{metric_name}"
         else:
@@ -247,7 +278,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         # Model method to call.
         model_method: str = "forward"
         # kwargs passed to model_method along with input batch.
-        model_method_kwargs: Dict[str, Any] = {}
+        model_method_kwargs: dict[str, Any] = {}
         # The metric accumulator.
         metric_accumulator: InstantiableConfig = MetricAccumulator.default_config()
 
@@ -265,9 +296,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         self._metric_accumulator = None
         self._jit_forward = self._pjit(self._forward_in_pjit)
 
-    def init_state(
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
-    ) -> NestedTensor:
+    def init_state(self, *, prng_key: Tensor, model_params: NestedTensor) -> NestedTensor:
         cfg = self.config
         self._metric_accumulator = cfg.metric_accumulator.instantiate()
         return dict(prng_key=prng_key)
@@ -278,7 +307,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         outputs = self._jit_forward(model_params, state["prng_key"], input_batch)
         self._process_summaries(outputs["replicated"]["summaries"])
         return dict(
@@ -288,9 +317,9 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
     def _forward_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         input_batch: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Calls `self._model` and returns summaries."""
         cfg = self.config
         next_key, forward_prng = jax.random.split(prng_key)
@@ -315,7 +344,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         del model_outputs
         return {}
 
-    def _process_summaries(self, summaries: Dict[str, Any]):
+    def _process_summaries(self, summaries: dict[str, Any]):
         self._metric_accumulator.update(summaries)
 
     def get_summaries(
@@ -323,21 +352,44 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[NestedTensor],
-    ) -> Dict[str, WeightedScalar]:
+        all_forward_outputs: list[NestedTensor],
+    ) -> dict[str, WeightedScalar]:
         return self._metric_accumulator.summaries()
 
 
 class CompositeMetricCalculator(BaseMetricCalculator):
-    """Runs multiple metric calculators over evaluation batches."""
+    """Runs multiple metric calculators over evaluation batches.
+
+    This calculator supports propagating outputs from certain (sub)calculators to others via
+    `dependencies`. Propagated outputs appear as new keys in the input batch to the receiving
+    calculator. It is up to the caller to ensure that calculators receiving augmented inputs
+    actually read the new keys.
+    """
+
+    class Dependency(struct.PyTreeNode):
+        # Source calculator name.
+        src: str
+        # Destination calculator name.
+        dst: str
+        # Destination input batch key. If None, defaults to `src`.
+        dst_key: Optional[str] = None
 
     @config_class
     class Config(BaseMetricCalculator.Config):
         """Configures CompositeMetricCalculator."""
 
-        # A mapping of a unique name to a metric calculator.
-        # Names must be valid module names.
+        # A mapping from unique names to metric calculators. Names must be valid module names.
+        # If `dependencies` is left unspecified, calculators will be invoked in the given order.
         metric_calculators: Required[Mapping[str, BaseMetricCalculator.Config]] = REQUIRED
+        # Optionally specify outputs to be routed from one calculator to another.
+        # Dependencies are specified as (src_calculator, dst_calculator, dst_key), indicating that
+        # the outputs from `src_calculator` will be provided as inputs to `dst_calculator` as
+        # `input_batch[dst_key]`.
+        # The routes must form a DAG, and calculators will be invoked in the topologically sorted
+        # order. `dst_calculator` can be a regex, to be full-matched against
+        # `cfg.metric_calculators`. To avoid confusion about which `src` produces which `dst_key`,
+        # each `src` is required to produce a disjoint set of `dst_key`s.
+        dependencies: Optional[Sequence["CompositeMetricCalculator.Dependency"]] = None
 
     def __init__(
         self,
@@ -350,22 +402,65 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         super().__init__(
             cfg, parent=parent, model=model, model_param_partition_specs=model_param_partition_specs
         )
+        # Maps dst to (one or more) src calculators, forming a DAG.
+        self._calculator_dag: dict[str, set[str]] = defaultdict(set)
+        # Each edge (src, dst) corresponds to a dst_key.
+        self._edge_names: dict[tuple[str, str], str] = {}
+        # Maps dst_key to src.
+        dst_key_src: dict[str, str] = {}
 
-        for name, calculator_cfg in cfg.metric_calculators.items():
-            self._add_child(
+        # Given `dependencies` in the form of (src, dst), build the DAG.
+        for src, dst, dst_key in self._dependencies():
+            if src in self._calculator_dag[dst]:
+                raise ValueError(f"Encountered duplicate edge ({src}, {dst}).")
+            self._calculator_dag[dst].add(src)
+            self._edge_names[(src, dst)] = dst_key
+
+            # Make sure we don't have duplicate keys across different src.
+            if dst_key_src.get(dst_key, src) != src:
+                raise ValueError(f"Both {dst_key_src[dst_key]} and {src} produce key {dst_key}.")
+            dst_key_src[dst_key] = src
+
+        # Calculators not in `dependencies` appear as nodes with no dependencies.
+        for name in cfg.metric_calculators:
+            if name not in self._calculator_dag:
+                self._calculator_dag[name] = set()
+
+        # Instantiate calculators in topologically sorted order.
+        # Raises graphlib.CycleError if a cycle is detected.
+        self._calculators: dict[str, BaseMetricCalculator] = {}
+        for name in graphlib.TopologicalSorter(self._calculator_dag).static_order():
+            if name not in cfg.metric_calculators:
+                raise ValueError(f"Encountered unknown calculator name {name}.")
+            self._calculators[name] = self._add_child(
                 name,
-                calculator_cfg,
+                cfg.metric_calculators[name],
                 model=model,
                 model_param_partition_specs=model_param_partition_specs,
             )
+        assert len(self._calculators) == len(cfg.metric_calculators)
 
-    def init_state(
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
-    ) -> NestedTensor:
+    def _dependencies(self):
+        """Expands regex patterns from `cfg.dependencies` and yields concrete tuples of
+        (src_calculator_name, dst_calculator_name, dst_key).
+        """
+        cfg: CompositeMetricCalculator.Config = self.config
+
+        @functools.cache
+        def resolve_name(pattern: str) -> Sequence[str]:
+            matches = []
+            for name in cfg.metric_calculators:
+                if re.fullmatch(pattern, name):
+                    matches.append(name)
+            return matches
+
+        for dep in cfg.dependencies or []:
+            yield from ((dep.src, dst, dep.dst_key or dep.src) for dst in resolve_name(dep.dst))
+
+    def init_state(self, *, prng_key: Tensor, model_params: NestedTensor) -> NestedTensor:
         states = {}
-        for name, calculator in self.children.items():
+        for name, calculator in self._calculators.items():
             states[name] = calculator.init_state(prng_key=prng_key, model_params=model_params)
-
         return states
 
     def forward(
@@ -374,11 +469,24 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         composite_outputs = dict(output={}, state={})
-        for name, calculator in self.children.items():
+
+        for name, calculator in self._calculators.items():
+            # Augment the current calculator's input batch by retrieving outputs of its source
+            # calculator(s). Since self._calculators is topologically sorted, the outputs should
+            # have already been computed.
+            input_batch_i = {**input_batch}
+            for src in self._calculator_dag[name]:
+                assert (src, name) in self._edge_names, "Each edge must have an associated key."
+                assert src in composite_outputs["output"], "Source calculator must have run before."
+                key = self._edge_names[(src, name)]
+                if key in input_batch_i:
+                    raise ValueError(f"Input batch for calculator {name} already has key {key}.")
+                input_batch_i[key] = composite_outputs["output"][src]
+
             forward_outputs = calculator.forward(
-                input_batch,
+                input_batch_i,
                 model_params=model_params,
                 state=state[name],
             )
@@ -392,15 +500,15 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[NestedTensor],
-    ) -> Dict[str, WeightedScalar]:
-        all_forward_outputs_grouped_by_name: Dict[str, List[NestedTensor]] = defaultdict(list)
+        all_forward_outputs: list[NestedTensor],
+    ) -> dict[str, WeightedScalar]:
+        all_forward_outputs_grouped_by_name: dict[str, list[NestedTensor]] = defaultdict(list)
         for d in all_forward_outputs:
-            for name in self.children:
+            for name in self._calculators:
                 all_forward_outputs_grouped_by_name[name].append(d[name])
 
         composite_summaries = {}
-        for calculator_name, calculator in self.children.items():
+        for calculator_name, calculator in self._calculators.items():
             summaries = calculator.get_summaries(
                 model_params=model_params,
                 state=state[calculator_name],
@@ -412,6 +520,45 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         return composite_summaries
 
 
+class EvalPolicy(Protocol):
+    """Decides whether evaler should run eval at the given step."""
+
+    def __call__(self, *, step: int, train_summaries: dict[str, Any]) -> bool:
+        """Implements the policy.
+
+        Args:
+            step: Current step.
+            train_summaries: A collection of summaries from the most recent train step. Can be an
+                empty dict, e.g. if no summaries exist.
+
+        Returns:
+            True iff we should eval at the current step.
+        """
+        raise NotImplementedError(type(self))
+
+
+def every_n_steps_policy(
+    n: int = 1, *, min_step: int = 1, max_step: Optional[int] = None
+) -> EvalPolicy:
+    """Evals every n steps, but not before `min_step`."""
+
+    if max_step is not None and max_step < min_step:
+        raise ValueError(f"max_step {max_step} cannot be smaller than min_step {min_step}.")
+
+    def fn(*, step: int, train_summaries: dict[str, Any]) -> bool:
+        del train_summaries
+        if step < min_step:
+            logging.info(
+                "Skipping eval, as step (%s) < min_step (%s).",
+                step,
+                min_step,
+            )
+            return False
+        return step % n == 0 or (max_step is not None and step >= max_step)
+
+    return fn
+
+
 class SpmdEvaler(Module):
     """An evaler implementation that supports partitioning of computation and data with GSPMD."""
 
@@ -420,13 +567,11 @@ class SpmdEvaler(Module):
         """Configures SpmdEvaler."""
 
         # The input source.
-        input: Required[InstantiableConfig] = REQUIRED
+        input: Required[input_base.Input.Config] = REQUIRED
         # A summary writer to log tagged summary values.
         summary_writer: InstantiableConfig = summary_writer.SummaryWriter.default_config()
-        # Run this evaler every N training steps.
-        run_every_n_steps: int = 1
-        # Do no run eval before the given step.
-        min_step: int = 1
+        # Run this evaler according to this policy.
+        eval_policy: InstantiableConfig = config_for_function(every_n_steps_policy)
         # Which evaluation iters to trace with the profiler each time the evaler is run.
         # Each trace will cover one full evaluation batch.
         # Traces will run for at most 3 unique steps.
@@ -456,7 +601,9 @@ class SpmdEvaler(Module):
         if cfg.eval_dtype is not None:
             utils.validate_float_dtype(cfg.eval_dtype)
 
-        self._add_child("input", cfg.input.set(is_training=False))
+        self.input: input_base.Input = self._add_child(  # pytype: disable=annotation-type-mismatch
+            "input", maybe_set_config(cfg.input, is_training=False)
+        )
         self._add_child(
             "metric_calculator",
             cfg.metric_calculator.set(eval_dtype=cfg.eval_dtype),
@@ -468,15 +615,18 @@ class SpmdEvaler(Module):
             self._add_child("output_writer", cfg.output_writer)
 
         self._trace_steps = set()
+        self._eval_policy: EvalPolicy = cfg.eval_policy.instantiate()
 
     def eval_step(
         self,
         step: int,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
         return_aux: bool = False,
-    ) -> Tuple[jax.random.KeyArray, Optional[Dict[str, Any]], Optional[List[NestedTensor]]]:
+        train_summaries: Optional[NestedTensor] = None,
+        force_run: bool = False,
+    ) -> tuple[Tensor, Optional[dict[str, Any]], Optional[list[NestedTensor]]]:
         """Runs eval for the given step.
 
         Args:
@@ -484,6 +634,9 @@ class SpmdEvaler(Module):
             prng_key: PRNG key.
             model_params: Model parameters.
             return_aux: Boolean to determine whether outputs are returned.
+            train_summaries: Summaries from the most recent training step. Can be used in the
+                `evaler_policy`.
+            force_run: If True, force run the eval for the given step.
 
         Returns:
             A tuple (prng_key, summaries, outputs), where
@@ -496,15 +649,9 @@ class SpmdEvaler(Module):
         """
         cfg = self.config
 
-        if step % cfg.run_every_n_steps != 0:
-            return prng_key, None, None
-
-        if step < cfg.min_step:
-            logging.info(
-                "Skipping eval, as step (%s) < cfg.min_step (%s).",
-                step,
-                cfg.min_step,
-            )
+        if not force_run and not self._eval_policy(
+            step=step, train_summaries=(train_summaries or {})
+        ):
             return prng_key, None, None
 
         self.vlog(
@@ -523,14 +670,15 @@ class SpmdEvaler(Module):
 
         forward_outputs = None
         stop_trace_iter = None
-        for batch_ix, input_batch in enumerate(self.input):
+        eval_input_iter = iter(self.input.dataset())
+        for batch_ix, input_batch in enumerate(self.input.batches(eval_input_iter)):
             logging.log_first_n(logging.INFO, "Evaler input_batch=%s", 3, utils.shapes(input_batch))
 
             if batch_ix == stop_trace_iter:
                 assert (
                     forward_outputs is not None
                 ), "output was None at the end of a trace, not expected."
-                jax.tree_util.tree_map(lambda x: x.block_until_ready(), forward_outputs)
+                jax.tree.map(lambda x: x.block_until_ready(), forward_outputs)
                 jax.profiler.stop_trace()
                 self.vlog(2, "Stopped profiler tracing for evaler %s.", cfg.name)
                 stop_trace_iter = None
@@ -554,7 +702,10 @@ class SpmdEvaler(Module):
 
             with jax.profiler.StepTraceAnnotation(cfg.name, step_num=step):
                 with jax.profiler.TraceAnnotation(f"{cfg.name}.forward"):
-                    global_input_batch = utils.host_to_global_device_array(input_batch)
+                    global_input_batch = utils.host_to_global_device_array(
+                        input_batch,
+                        partition=self.input.partition_spec,
+                    )
                     forward_outputs = self.metric_calculator.forward(
                         global_input_batch,
                         model_params=model_params,
@@ -635,7 +786,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         self._metric_accumulator: MetricAccumulator = None
 
     def init_state(  # pylint: disable=duplicate-code
-        self, *, prng_key: jax.random.KeyArray, model_params: NestedTensor
+        self, *, prng_key: Tensor, model_params: NestedTensor
     ) -> NestedTensor:
         self._metric_accumulator = MetricAccumulator.default_config().instantiate()
         return dict(prng_key=prng_key)
@@ -646,7 +797,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Calls predict method of the model and returns input_batch and per-batch model outputs.
 
         Will be called repeatedly during an evaluation step, once per evaluation input batch.
@@ -677,9 +828,9 @@ class GlobalMetricCalculator(BaseMetricCalculator):
     def _predict_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         input_batch: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Core function that calls model's predict() method for each batch and will be pjit-ed."""
         predict_key, next_key = jax.random.split(prng_key)
         cfg = self.config
@@ -696,7 +847,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
             per_example=model_outputs,
         )
 
-    def _calculate_metrics(self, outputs: PredictionOutputs) -> Dict[str, Tensor]:
+    def _calculate_metrics(self, outputs: PredictionOutputs) -> dict[str, Tensor]:
         """Calculates metrics from ``concatenated_outputs`` of the whole evaluation set.
 
         Args:
@@ -712,24 +863,26 @@ class GlobalMetricCalculator(BaseMetricCalculator):
     def _compute_metrics_in_pjit(
         self,
         model_params: NestedTensor,
-        prng_key: jax.random.KeyArray,
-        outputs: List[PredictionOutputs],
-    ) -> Dict[str, NestedTensor]:
+        prng_key: Tensor,
+        outputs: list[PredictionOutputs],
+    ) -> dict[str, NestedTensor]:
         """Computes metrics and returns them in "replicated"."""
         del model_params, prng_key
 
         # WARNING: Directly concatenating leads to incorrect XLA sharding.
         # A nested tree where each leaf tensor has shape [num_eval_batches, batch_size, ...]
-        stacked_outputs = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *outputs)
+        stacked_outputs = jax.tree.map(lambda *xs: jnp.stack(xs, axis=0), *outputs)
         # Each concatenated leaf tensor has shape [num_eval_batches * batch_size, ...] when all
         # other dimensions of the stacked output are positive. Otherwise, that concatenated leaf
         # node will be set as None.
-        concatenated_outputs = jax.tree_util.tree_map(
-            lambda xs: with_sharding_constraint(
-                jnp.reshape(xs, (-1, *xs.shape[2:])), input_partition_spec()
-            )
-            if all(dim > 0 for dim in xs.shape[2:])
-            else None,
+        concatenated_outputs = jax.tree.map(
+            lambda xs: (
+                with_sharding_constraint(
+                    jnp.reshape(xs, (-1, *xs.shape[2:])), input_partition_spec()
+                )
+                if all(dim > 0 for dim in xs.shape[2:])
+                else None
+            ),
             stacked_outputs,
         )
 
@@ -743,8 +896,8 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-        all_forward_outputs: List[PredictionOutputs],
-    ) -> Dict[str, Union[WeightedScalar, Tensor]]:
+        all_forward_outputs: list[PredictionOutputs],
+    ) -> dict[str, Union[WeightedScalar, Tensor]]:
         if self._use_jit_for_metric_calculation:
             metrics = self._jit_compute_metrics(
                 model_params,
@@ -754,7 +907,5 @@ class GlobalMetricCalculator(BaseMetricCalculator):
             return metrics
 
         outputs = replicate_to_local_data(all_forward_outputs)
-        concatenated_outputs = jax.tree_util.tree_map(
-            lambda *xs: jnp.concatenate(xs, axis=0), *outputs
-        )
+        concatenated_outputs = jax.tree.map(lambda *xs: jnp.concatenate(xs, axis=0), *outputs)
         return self._calculate_metrics(concatenated_outputs)

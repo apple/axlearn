@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# huggingface/transformers:
+# Copyright 2018 DPR Authors, The Hugging Face Team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Dense Passage Retrieval.
 
 Ref: https://arxiv.org/abs/2004.04906
@@ -34,6 +42,7 @@ def set_bert_dpr_encoder_config(
     pad_token_id: int = 0,
     feed_forward_act: str = "exact_gelu",
     output_norm: Optional[InstantiableConfig] = None,
+    remat: bool = False,
 ) -> TextEmbeddingStreamEncoder.Config:
     """Configure the Bert based DPR stream encoder.
 
@@ -48,6 +57,8 @@ def set_bert_dpr_encoder_config(
         pad_token_id: The token_id for the padded tokens.
         feed_forward_act: The nonlinear function used in the feedforward layer in transformer block.
         output_norm: The normalization applied on the output embeddings. Default is None.
+        remat: If True, use RepeatedTransformerLayer instead of StackedTransformerLayer and remat
+            spec to save memory.
 
     Returns:
         An instantiable Bert based DPR text encoder.
@@ -62,6 +73,7 @@ def set_bert_dpr_encoder_config(
         output_dim=model_dim,
         output_proj=None,
         output_norm=output_norm,
+        remat=remat,
     )
     text_encoder_cfg.text_encoder.encoder.transformer.layer.feed_forward.activation = (
         feed_forward_act

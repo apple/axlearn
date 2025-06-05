@@ -1,7 +1,10 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests text input processing."""
 # pylint: disable=no-self-use
 import os
-from typing import Dict, List, Mapping, Optional, Sequence, Union
+from collections.abc import Mapping, Sequence
+from typing import Optional, Union
 
 import numpy as np
 import pytest
@@ -16,7 +19,11 @@ from axlearn.common.config import InstantiableConfig, config_for_class, config_f
 from axlearn.common.input_text import TOKEN_TYPE_IDS, add_token_type_ids, strip_accents, tokenize
 from axlearn.common.vocabulary_bpe import BPEVocabulary
 
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
+_SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
+_BPE_DIR = os.path.join(tokenizers_dir, "bpe")
+_T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base")
+_OPT_VOCAB_FILE = os.path.join(_BPE_DIR, "opt.model")
 
 
 def count_batches(dataset, max_batches=100):
@@ -29,7 +36,7 @@ def count_batches(dataset, max_batches=100):
 
 
 def make_ds_fn(
-    is_training: bool, texts: List[str], repeat: int = 100
+    is_training: bool, texts: list[str], repeat: int = 100
 ) -> input_tf_data.BuildDatasetFn:
     del is_training
 
@@ -51,7 +58,7 @@ def make_ds_fn(
 
 
 def make_ragged_ds_fn(
-    is_training: bool, texts: List[Dict], repeat: int = 100
+    is_training: bool, texts: list[dict], repeat: int = 100
 ) -> input_tf_data.BuildDatasetFn:
     del is_training
 
@@ -74,8 +81,8 @@ def make_ragged_ds_fn(
 
 def make_seq2seq_ds_fn(
     is_training: bool,
-    sources: List[str],
-    targets: List[str],
+    sources: list[str],
+    targets: list[str],
     repeat: int = 100,
     source_key: str = "source",
     target_key: str = "target",
@@ -100,7 +107,7 @@ def make_seq2seq_ds_fn(
     return ds_fn
 
 
-def extract_text(example: Dict[str, tf.Tensor], input_key: str = "text") -> str:
+def extract_text(example: dict[str, tf.Tensor], input_key: str = "text") -> str:
     return bytes.decode(example[input_key].numpy(), "utf-8")
 
 
@@ -116,7 +123,7 @@ def assert_oneof(test_case: tf.test.TestCase, actual: tf.Tensor, candidates: Seq
     raise AssertionError(f"Expected {actual} to be equal to one of {candidates}")
 
 
-def extract_text_ragged(example: Dict[str, tf.Tensor], input_key: str = "text") -> List[List[str]]:
+def extract_text_ragged(example: dict[str, tf.Tensor], input_key: str = "text") -> list[list[str]]:
     result = []
     for item in example[input_key].numpy():
         sub_result = []
@@ -163,43 +170,49 @@ class StripAccentsTest(test_utils.TestCase):
 class AddTokenTypeIDTest(test_utils.TestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.sample_seq_1 = "what is ChatGPT?"
-        self.sample_seq_2 = "ChatGPT is a language model developed by OpenAI."
-        self.sample_seq_3 = "openai.com"
+        self.sample_queries = ["Where is Yosemite?", "Where is Zion?", "Where is Mt. Rainier?"]
+        self.sample_answers = [
+            "Central Sierra Nevada in California",
+            "Southwestern Utah near the town of Springdale",
+            "59 miles southeast of Seattle",
+        ]
+        self.sample_urls = ["en.wikipedia.org", "utah.com", "nps.gov"]
 
-    def create_source_ds(self) -> tf.data.Dataset:
+    def create_source_ds(self, num_examples: int) -> tf.data.Dataset:
+        assert 1 <= num_examples <= 3
+
         def gen():
             yield dict(
-                query=[self.sample_seq_1],
-                answer=[self.sample_seq_2],
-                url=[self.sample_seq_3],
+                query=self.sample_queries[:num_examples],
+                answer=self.sample_answers[:num_examples],
+                url=self.sample_urls[:num_examples],
             )
 
         ds = tf.data.Dataset.from_generator(
             gen,
             output_signature={
-                "query": tf.TensorSpec(shape=(1,), dtype=tf.string),
-                "answer": tf.TensorSpec(shape=(1,), dtype=tf.string),
-                "url": tf.TensorSpec(shape=(1,), dtype=tf.string),
+                "query": tf.TensorSpec(shape=(num_examples,), dtype=tf.string),
+                "answer": tf.TensorSpec(shape=(num_examples,), dtype=tf.string),
+                "url": tf.TensorSpec(shape=(num_examples,), dtype=tf.string),
             },
         )
         return ds
 
     @parameterized.parameters(
-        # For ragged tensors, query has 11 tokens, answer has 33 tokens, and url has 9 tokens.
+        # For ragged tensors, query has 8 tokens, answer has 5 tokens, and url has 6 tokens.
         {
             "input_key": "query",
-            "expected": [0] + [0] * 11 + [0],
+            "expected": [0] + [0] * 8 + [0],
             "is_ragged": True,
         },
         {
             "input_key": ["query", "answer"],
-            "expected": [0] + [0] * 11 + [0] + [1] * 33 + [1],
+            "expected": [0] + [0] * 8 + [0] + [1] * 5 + [1],
             "is_ragged": True,
         },
         {
             "input_key": ["query", "answer", "url"],
-            "expected": [0] + [0] * 11 + [0] + [1] * 33 + [1] + [2] * 9 + [2],
+            "expected": [0] + [0] * 8 + [0] + [1] * 5 + [1] + [2] * 6 + [2],
             "is_ragged": True,
         },
         # For non-ragged tensors, we truncate to 3 tokens per field.
@@ -216,17 +229,16 @@ class AddTokenTypeIDTest(test_utils.TestCase):
             "feature_lengths": dict(query=3, answer=3),
         },
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
-    def test_add_token_type_ids(
+    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
+    def test_add_token_type_ids_single_example(
         self,
         input_key: Union[str, Sequence[str]],
         expected: Sequence[int],
         is_ragged: bool,
         feature_lengths: Optional[Mapping[str, int]] = None,
     ):
-        ds = self.create_source_ds()
-        vocab_file = os.path.join(tokenizers_dir, "sentencepiece", "spm-test-small-256.model")
-        vocab = SentencePieceVocabulary(vocab_file)
+        ds = self.create_source_ds(num_examples=1)
+        vocab = SentencePieceVocabulary(_T5_VOCAB_FILE)
         keys = [input_key] if isinstance(input_key, str) else input_key
         ds = tokenize(
             output_features={
@@ -250,6 +262,76 @@ class AddTokenTypeIDTest(test_utils.TestCase):
             token_type_ids = batch[TOKEN_TYPE_IDS][0].numpy().tolist()
             self.assertEqual(token_type_ids, expected)
 
+    @parameterized.parameters(
+        # For ragged tensors, for each of the three example,
+        # query has 8 tokens, 5 tokens, 8 tokens respectively;
+        # answer has 5 tokens, 9 tokens, and 6 tokens respectively;
+        # url has 6 tokens, 7 tokens, 6 tokens respectively.
+        {
+            "input_key": ["query", "answer", "url"],
+            "expected": [
+                [0] + [0] * 8 + [0] + [1] * 5 + [1] + [2] * 6 + [2],
+                [0] + [0] * 5 + [0] + [1] * 9 + [1] + [2] * 7 + [2],
+                [0] + [0] * 8 + [0] + [1] * 6 + [1] + [2] * 6 + [2],
+            ],
+            "is_ragged": True,
+        },
+        # For non-ragged tensors, we truncate to 3 tokens per field.
+        {
+            "input_key": ["query", "answer"],
+            "expected": [
+                [0] + [0] * 3 + [0] + [1] * 3 + [1],
+                [0] + [0] * 3 + [0] + [1] * 3 + [1],
+                [0] + [0] * 3 + [0] + [1] * 3 + [1],
+            ],
+            "is_ragged": False,
+            "feature_lengths": dict(query=3, answer=3),
+        },
+    )
+    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
+    def test_add_token_type_ids_multiple_examples(
+        self,
+        input_key: Union[str, Sequence[str]],
+        expected: Sequence[int],
+        is_ragged: bool,
+        feature_lengths: Optional[Mapping[str, int]] = None,
+    ):
+        ds = self.create_source_ds(num_examples=3)
+        vocab = SentencePieceVocabulary(_T5_VOCAB_FILE)
+        keys = [input_key] if isinstance(input_key, str) else input_key
+        ds = tokenize(
+            output_features={
+                key: seqio.Feature(
+                    vocab,
+                    add_eos=False,
+                    dtype=tf.int32,
+                )
+                for key in keys
+            },
+            with_eos=False,
+        )(ds)
+        if not is_ragged:
+
+            def trim_and_pad_batch():
+                def example_fn(
+                    example: dict[str, Union[tf.Tensor, tf.RaggedTensor]]
+                ) -> dict[str, tf.Tensor]:
+                    # pytype: disable=attribute-error
+                    for k, v in feature_lengths.items():
+                        # pytype: enable=attribute-error
+                        example[k] = input_tf_data.trim_and_pad_tensor(example[k], max_len=v)
+                    return example
+
+                return seqio.map_over_dataset(example_fn)
+
+            ds = trim_and_pad_batch()(ds)
+        ds = add_token_type_ids(input_key=input_key)(ds)
+
+        for batch in ds:
+            for i, per_example_token_type_ids in enumerate(batch[TOKEN_TYPE_IDS]):
+                per_example_token_type_ids = per_example_token_type_ids.numpy().tolist()
+                self.assertEqual(per_example_token_type_ids, expected[i])
+
 
 class TokenizeExampleTest(test_utils.TestCase):
     def _test_tokenize_example(self, *, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
@@ -267,14 +349,14 @@ class TokenizeExampleTest(test_utils.TestCase):
     @parameterized.parameters(
         dict(
             vocab_cfg=config_for_class(BPEVocabulary).set(
-                sentencepiece_model_file=os.path.join(tokenizers_dir, "bpe/opt.model"),
+                sentencepiece_model_file=_OPT_VOCAB_FILE,
                 id_map={0: 1, 1: 0},
                 decode_as_control=(0, 2),
             ),
             newlines_replaced_with="\n",
         ),
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_OPT_VOCAB_FILE), reason="Missing testdata.")
     def test_tokenize_example(self, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
         self._test_tokenize_example(
             vocab_cfg=vocab_cfg, newlines_replaced_with=newlines_replaced_with
@@ -304,14 +386,14 @@ class NumBytesTest(test_utils.TestCase):
     @parameterized.parameters(
         dict(
             vocab_cfg=config_for_class(BPEVocabulary).set(
-                sentencepiece_model_file=os.path.join(tokenizers_dir, "bpe/opt.model"),
+                sentencepiece_model_file=_OPT_VOCAB_FILE,
                 id_map={0: 1, 1: 0},
                 decode_as_control=(0, 2),
             ),
             newlines_replaced_with="\n",
         ),
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_OPT_VOCAB_FILE), reason="Missing testdata.")
     def test_num_bytes(self, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
         self._test_num_bytes(vocab_cfg=vocab_cfg, newlines_replaced_with=newlines_replaced_with)
 
@@ -497,7 +579,7 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
             expected=["ah 博 推 zz HeLLo ! how Are yoU ?"],
         ),
     )
-    def test_normalize(self, normalizer: InstantiableConfig, expected: List[str]):
+    def test_normalize(self, normalizer: InstantiableConfig, expected: list[str]):
         texts = ["ah\u535A\u63A8zz \tHeLLo!how  \n Are yoU?  "]
         ds_fn = make_ds_fn(False, texts, repeat=1)
         process_fn = normalizer.set(input_key="text").instantiate()
@@ -538,7 +620,7 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
             ],
         ),
     )
-    def test_normalize_ragged_input(self, normalizer: InstantiableConfig, expected: List[str]):
+    def test_normalize_ragged_input(self, normalizer: InstantiableConfig, expected: list[str]):
         texts = [
             {
                 "text": [

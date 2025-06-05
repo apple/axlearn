@@ -1,6 +1,16 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/mvit:
+# Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Attention layers for ViT variant vision transformers."""
+
 import math
-from typing import Dict, NamedTuple, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import NamedTuple, Optional
 
 import jax.nn
 from jax import numpy as jnp
@@ -8,10 +18,13 @@ from jax import numpy as jnp
 from axlearn.common import param_init
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
+    KVState,
     MultiheadAttention,
     TransformerAttentionLayer,
+    apply_attention_logit_biases,
     softmax_with_biases,
 )
+from axlearn.common.attention_bias import make_segment_mask
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, config_class
 from axlearn.common.layers import get_stochastic_depth_linear_rate
@@ -70,8 +83,8 @@ def add_decomposed_rel_pos_emb(
     q: Tensor,
     rel_pos_emb_h: Tensor,
     rel_pos_emb_w: Tensor,
-    q_size: Tuple[int, int],
-    k_size: Tuple[int, int],
+    q_size: tuple[int, int],
+    k_size: tuple[int, int],
 ) -> Tensor:
     """Calculate decomposed Relative Positional Embeddings from :paper:`mvitv2`.
 
@@ -120,7 +133,7 @@ class WindowedAttention(MultiheadAttention):
         # Initialize the positional embedding as constant zero.
         use_pos_zero_init: bool = True
         # Input resolution for calculating the relative positional parameter size.
-        input_size: Tuple[int, int] = (64, 64)
+        input_size: tuple[int, int] = (64, 64)
         # Cap the absolute values of logits by tanh. Enabled by setting a positive value.
         atten_logit_cap: Optional[float] = 50.0
 
@@ -133,7 +146,7 @@ class WindowedAttention(MultiheadAttention):
                 f"key_dim ({cfg.key_dim}) == value_dim ({cfg.value_dim})"
             )
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = super()._create_layer_parameter_specs()
         if cfg.use_rel_pos_emb:
@@ -141,12 +154,12 @@ class WindowedAttention(MultiheadAttention):
                 params["rel_pos_emb_h"] = ParameterSpec(
                     shape=(2 * cfg.input_size[0] - 1, cfg.output_dim // cfg.num_heads),
                     mesh_axes=(None, "model"),
-                    initializer=param_init.ConstantInitializer(0.0),
+                    initializer=param_init.constant_initializer(0.0),
                 )
                 params["rel_pos_emb_w"] = ParameterSpec(
                     shape=(2 * cfg.input_size[1] - 1, cfg.output_dim // cfg.num_heads),
                     mesh_axes=(None, "model"),
-                    initializer=param_init.ConstantInitializer(0.0),
+                    initializer=param_init.constant_initializer(0.0),
                 )
         return params
 
@@ -157,6 +170,9 @@ class WindowedAttention(MultiheadAttention):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> MultiheadAttention.Output:
         """Computes self-windowed attention for the given query and attention logit biases.
 
@@ -167,6 +183,9 @@ class WindowedAttention(MultiheadAttention):
             key:   an optional Tensor of shape [batch, source_length, source_dim].
             value: an optional Tensor of shape [batch, source_length, source_dim].
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
+            segment_ids: See `On segment_ids` in MultiheadAttention's file comments.
+            query_positions: See ``positions`` in MultiheadAttention's file comments.
+            return_aux: See comments in MultiheadAttention.Output.
 
         Returns:
             An Output instance, where .data is of the same shape as query and .probs is of shape
@@ -175,19 +194,38 @@ class WindowedAttention(MultiheadAttention):
         Raises:
             ValueError: If key & value are an invalid combination.
         """
-
+        # Merge segment ids into attention_logit_biases.
+        if segment_ids is not None:
+            attention_logit_biases = apply_attention_logit_biases(
+                make_segment_mask(source_segments=segment_ids, target_segments=segment_ids),
+                attention_logit_biases,
+            )
         if key is not None or value is not None:
             raise ValueError("Both key and value must be None for WindowedAttention")
         cfg = self.config
         batch, height, width, _ = query.shape
         query = jnp.reshape(query, (batch, height * width, -1))
-        q_proj, k_proj, v_proj = self.i_proj(query, key=key, value=value)
+        q_proj, k_proj, v_proj = self.i_proj(
+            query, key=key, value=value, query_positions=query_positions
+        )
         q_proj = self._remat_name(q_proj, "q_proj")
         k_proj = self._remat_name(k_proj, "k_proj")
         v_proj = self._remat_name(v_proj, "v_proj")
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
         self.vlog(3, "atten.v_proj=%s", v_proj.sum())
+
+        # Scale query and key.
+        key_positions = jnp.arange(k_proj.shape[1])[None, :]
+        kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
+
+        q_proj, k_proj = self._scale_qk(
+            q_proj=q_proj,
+            k_proj=k_proj,
+            query_positions=query_positions,
+            key_positions=key_positions,
+        )
+
         logits = self._compute_logits(q_proj, k_proj)
 
         if cfg.use_rel_pos_emb:
@@ -208,14 +246,19 @@ class WindowedAttention(MultiheadAttention):
             attention_logit_biases = attention_logit_biases[:, None, :, :]
         probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases)
         probs = self.dropout(probs)
-        context = jnp.einsum("bnts,bsnh->btnh", probs, v_proj).astype(v_proj.dtype)
+        context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
-        return self.Output(data=outputs, probs=probs)
+        return_aux = return_aux or set()
+        return self.Output(
+            data=outputs,
+            probs=probs if "probs" in return_aux else None,
+            kv_state=kv_state if "kv_state" in return_aux else None,
+        )
 
 
 class WindowedSelfAttentionLayer(TransformerAttentionLayer):
@@ -237,6 +280,9 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
         target: Tensor,
         source: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
+        target_positions: Optional[Tensor] = None,
+        return_aux: Optional[set[str]] = None,
     ) -> TransformerAttentionLayer.Output:
         """Computes attention with target as query and source as key and value.
 
@@ -244,6 +290,9 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             target: a Tensor of shape [batch, target_length, target_dim].
             source: None, uses norm(target) as source for self-attention
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
+            segment_ids: See `On segment_ids` in MultiheadAttention's file comments.
+            target_positions: See ``positions`` in MultiheadAttention's file comments.
+            return_aux: See comments in TransformerAttentionLayer.Output.
 
         Returns:
             An Output instance, where .data is of the same shape as target and .probs is of shape
@@ -268,6 +317,9 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
                 key=source,
                 value=source,
                 attention_logit_biases=attention_logit_biases,
+                segment_ids=segment_ids,
+                query_positions=target_positions,
+                return_aux=return_aux,
             )
             x = atten_output.data
 
@@ -281,7 +333,7 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             data = skip_input + self.stochastic_depth(self.dropout(x))
         else:
             raise NotImplementedError(cfg.structure)
-        return self.Output(data=data, probs=atten_output.probs)
+        return self.Output(data=data, probs=atten_output.probs, kv_state=atten_output.kv_state)
 
 
 class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):
@@ -293,7 +345,7 @@ class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):
         window_size: int = 14
         # Input resolution for calculating the relative positional parameter size.
         # [image_size // patch_size, image_size // patch_size].
-        input_size: Tuple[int, int] = (64, 64)
+        input_size: tuple[int, int] = (64, 64)
         # Indexes for blocks using window attention.
         window_block_indexes: Sequence[int] = (
             list(range(0, 2)) + list(range(3, 5)) + list(range(6, 8)) + list(range(9, 11))
@@ -364,5 +416,5 @@ class StackedWindowedTransformerLayer(BaseStackedTransformerLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, MultiheadAttention.Output]:
+    ) -> tuple[NestedTensor, MultiheadAttention.Output]:
         raise NotImplementedError(type(self))

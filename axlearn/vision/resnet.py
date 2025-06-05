@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# pytorch/vision:
+# Copyright (c) Soumith Chintala 2016. All rights reserved.
+# Licensed under BSD 3-Clause License.
+#
+# tensorflow/tpu:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An AXLearn implementation for ResNet and ResNet-RS.
 
 ResNet reference:
@@ -12,7 +24,8 @@ https://github.com/tensorflow/tpu/blob/master/models/official/resnet/resnet_mode
 # pylint: disable=duplicate-code
 
 import math
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 import jax.nn
 from jax import numpy as jnp
@@ -20,17 +33,16 @@ from jax import numpy as jnp
 from axlearn.common import param_init
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.convolution import Conv2D
 from axlearn.common.layers import (
     BatchNorm,
-    Conv2D,
     SqueezeExcitation,
     StochasticDepth,
     get_activation_fn,
     get_stochastic_depth_linear_rate,
 )
 from axlearn.common.module import Module
-
-Tensor = jnp.ndarray
+from axlearn.common.utils import Tensor
 
 
 def batch_norm():
@@ -526,7 +538,7 @@ class ResNet(BaseLayer):
 
         # The ResNet block layers.
         self._endpoints_dims = {}
-        use_bottleneck = cfg.stage.block.cls == Bottleneck
+        use_bottleneck = cfg.stage.block.klass == Bottleneck
         for stage_i, num_blocks in enumerate(cfg.num_blocks_per_stage):
             if use_bottleneck:
                 output_dim = hidden_dim * 4 if stage_i == 0 else hidden_dim * 2
@@ -550,7 +562,7 @@ class ResNet(BaseLayer):
         # The embedding layer after global average pooling.
         self._endpoints_dims["embedding"] = hidden_dim
 
-    def forward(self, image: Tensor) -> Dict[str, Tensor]:
+    def forward(self, image: Tensor) -> dict[str, Tensor]:
         """Computes prediction on an input batch.
 
         Args:
@@ -573,7 +585,7 @@ class ResNet(BaseLayer):
         return endpoints
 
     @property
-    def endpoints_dims(self) -> Dict[str, int]:
+    def endpoints_dims(self) -> dict[str, int]:
         """A dict of {level: hidden_dim} specifies hidden dimension of intermediate features.
 
         2**level is the ratio between the input resolution and the current feature resolution,

@@ -1,9 +1,15 @@
+# Copyright © 2023 Apple Inc.
+
 """Defines BaseLayer, the base class for layer implementations."""
+
 import dataclasses
+import functools
 import math
-from typing import Any, Callable, Dict, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Union
 
 import jax
+import jax.ad_checkpoint
 from absl import logging
 from jax import numpy as jnp
 
@@ -12,11 +18,14 @@ from axlearn.common.config import ConfigOr, Configurable, config_class, maybe_in
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context, current_context, new_output_collection
 from axlearn.common.param_init import DefaultInitializer, FanAxes
+from axlearn.common.traceback_util import no_stack_summary
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     PartitionSpec,
     Tensor,
     TensorSpec,
+    check_jax_type,
     flatten_items,
     get_or_none,
 )
@@ -36,10 +45,10 @@ class FactorizationSpec:
 
 
 # NestedFactorizationSpec = Dict[str, Union[FactorizationSpec, "NestedFactorizationSpec"]]
-NestedFactorizationSpec = Dict[str, Union[FactorizationSpec, Any]]
+NestedFactorizationSpec = dict[str, Union[FactorizationSpec, Any]]
 
 
-# ParameterSpec is a dataclass so that jax.tree_util.tree_map does not expand it.
+# ParameterSpec is a dataclass so that jax.tree.map does not expand it.
 @dataclasses.dataclass
 class ParameterSpec(TensorSpec):
     """Specification of a layer parameter."""
@@ -59,6 +68,8 @@ class ParameterSpec(TensorSpec):
     initializer: Optional[param_init.Initializer] = None
     # Factorization spec for the parameter.
     factorization: Optional[FactorizationSpec] = None
+    # Fan axes information for the parameter.
+    fan_axes: Optional[FanAxes] = None
 
     # Per-parameter weight decay / l2 regularization scale.
     #
@@ -75,10 +86,30 @@ class ParameterSpec(TensorSpec):
     # Note that ParameterSpec.weight_decay_scale takes precedence over `per_param_scale`.
     weight_decay_scale: Optional[float] = None
 
+    def fans(self) -> dict[str, float]:
+        """Returns a dictionary with keys 'fan_in', 'fan_out', and 'fan_avg' containing
+        the fan values for this parameter.
 
-# When pytype supports recursive types, switch to:
-# Optional[Union[ParameterSpec, Dict[str, "NestedParameterSpec"]]]
-NestedParameterSpec = Optional[Union[ParameterSpec, Dict[str, Any]]]
+        The calculation is consistent with jax's initializers: Indices without
+        an explicit axis type specified are treated as both in and out axes.
+        Batch axes are ignored.
+        """
+        sizes = {}
+        for axis_type in self.fan_axes._fields:  # pylint: disable=protected-access
+            axes = getattr(self.fan_axes, axis_type)
+            if isinstance(axes, int):
+                axes = [axes]
+            sizes[axis_type] = math.prod(self.shape[axis] for axis in axes)
+        unbatched_size = math.prod(self.shape) / sizes["batch_axis"]
+        result = dict(
+            fan_in=unbatched_size / sizes["out_axis"], fan_out=unbatched_size / sizes["in_axis"]
+        )
+        result["fan_avg"] = (result["fan_in"] + result["fan_out"]) / 2
+        return result
+
+
+# For new code, use Nested[ParameterSpec].
+NestedParameterSpec = Optional[Union[ParameterSpec, dict[str, Any]]]
 
 
 @dataclasses.dataclass
@@ -95,9 +126,76 @@ class RematSpec:
 class ParameterNoise(Configurable):
     """An interface for applying parameter noise."""
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: Tensor, params: NestedTensor) -> NestedTensor:
         """To be implemented by subclasses."""
         raise NotImplementedError(self)
+
+
+class TensorStats(Module):
+    """An abstract Module to add summaries about the given Tensors."""
+
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        """Subclasses must implement this method."""
+        raise NotImplementedError(type(self))
+
+
+class CompositeTensorStats(TensorStats):
+    """A TensorStats consisting of multiple child TensorStats."""
+
+    @config_class
+    class Config(TensorStats.Config):
+        tensor_stats: dict[str, TensorStats.Config] = {}
+
+        # Whether to inline child summaries.
+        #
+        # Suppose tensor_stats = {"foo": TensorRMSNorm.default_config()},
+        # if inline_child_summaries=False, the summaries will be {"foo": {"rms_norm": norm}};
+        # if inline_child_summaries=True, the summaries will be {"rms_norm": norm}.
+        inline_child_summaries: bool = False
+
+    def __init__(self, cfg: Config, *, parent: Optional["Module"]):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        self._child_stats = {}
+        for child_stats_name, child_stats_cfg in cfg.tensor_stats.items():
+            self._child_stats[child_stats_name] = self._add_child(child_stats_name, child_stats_cfg)
+
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        cfg = self.config
+        for child_name, child_stats in self._child_stats.items():
+            output_collection = new_output_collection()
+            with child_context(child_name, output_collection=output_collection):
+                child_stats.add_stats(name, value)
+            if cfg.inline_child_summaries:
+                self.get_invocation_context().output_collection.summaries.update(
+                    output_collection.summaries
+                )
+            else:
+                self.get_invocation_context().output_collection.summaries[
+                    child_name
+                ] = output_collection.summaries
+
+
+class TensorRMSNorm(TensorStats):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("rms_norm", (value**2.0).mean().astype(jnp.float32) ** 0.5)
+
+
+class TensorMaxAbs(TensorStats):
+    def add_stats(self, name: str, value: Nested[Tensor]):
+        self.add_summary("max_abs", jnp.abs(value).max().astype(jnp.float32))
+
+
+class DefaultTensorStats(CompositeTensorStats):
+    """Default tensor stats that compute RMS norm and max value."""
+
+    @config_class
+    class Config(CompositeTensorStats.Config):
+        tensor_stats: dict[str, TensorStats.Config] = {
+            "norm": TensorRMSNorm.default_config(),
+            "max": TensorMaxAbs.default_config(),
+        }
+        inline_child_summaries: bool = True
 
 
 class BaseLayer(Module):
@@ -135,6 +233,17 @@ class BaseLayer(Module):
         # before applying the parent layer's noise (if any).
         param_noise: Optional[ParameterNoise.Config] = None
 
+        # If not None, adds stats about the tensors given in the `_add_tensor_stats` calls.
+        #
+        # The tensor_stats abstraction allows users to compute stats (e.g., mean, RMS norm, max abs)
+        # on tensors such as layer inputs/outputs and add them to summaries.
+        #
+        # The abstraction decouples which tensors to collect stats on, which will be controlled by
+        # the layer implementation via `_add_tensor_stats(name, value)` calls, vs. how to compute
+        # and report the stats, which will be controlled by `Config.tensor_stats` and configured
+        # on a per-experiment basis.
+        tensor_stats: Optional[TensorStats.Config] = None
+
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
         super().__init__(cfg, parent=parent)
         cfg: BaseLayer.Config = self.config
@@ -149,14 +258,94 @@ class BaseLayer(Module):
             self._param_noise = cfg.param_noise.instantiate()
         else:
             self._param_noise = None
+        if cfg.tensor_stats is not None:
+            self._add_child("tensor_stats", cfg.tensor_stats)
         self._remat_methods = []  # List[str]. Used for testing.
 
-    def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
+    def _methods_to_wrap_for_auto_child_context(self) -> dict[str, Callable]:
         return {
             method: method_fn
             for method, method_fn in super()._methods_to_wrap_for_auto_child_context().items()
             if not hasattr(BaseLayer, method)
         }
+
+    def _wrap_methods_with_auto_child_context(
+        self, methods: dict[str, Callable]
+    ) -> dict[str, Callable]:
+        cfg: Module.Config = self.config
+
+        if cfg.remat_spec is not None:
+            for method_name, method_fn in dict(methods).items():
+                methods[method_name] = self._maybe_wrap_with_remat(method_fn)
+
+        return super()._wrap_methods_with_auto_child_context(methods)
+
+    def _maybe_wrap_with_remat(self, method_fn: Callable) -> Callable:
+        """Maybe wrap `method_fn` with jax remat.
+
+        This is called from `BaseLayer._wrap_methods_with_auto_child_context`.
+
+        Args:
+            method_fn: A function that takes a module as its first argument.
+
+        Returns:
+            A possibly wrapped version of `method_fn`.
+        """
+        cfg: Module.Config = self.config
+        if getattr(method_fn, "_no_remat", False):
+            return method_fn
+
+        @no_stack_summary
+        @functools.wraps(method_fn)
+        def maybe_call_with_remat(module: Module, *args, **kwargs):
+            if current_context() is None or not module.is_training:
+                return method_fn(module, *args, **kwargs)
+
+            static_kwargs = {}
+            tracer_kwargs = {}
+            for k, v in kwargs.items():
+                if isinstance(v, Tensor):
+                    tracer_kwargs[k] = v
+                else:
+                    static_kwargs[k] = v
+            module.vlog(
+                3,
+                "BaseLayer.maybe_call_with_remat %s.%s: static_kwargs=%s",
+                module.path(),
+                method_fn,
+                set(static_kwargs.keys()),
+            )
+
+            # Remat always uses abstract tracers even if concrete information is available.
+            # This means that all inputs and outputs to a remat function need to be JAX types.
+            # We print a nice error if the inputs are not.
+            check_jax_type(
+                args=args,
+                kwargs=tracer_kwargs,
+                msg=f"Attempt to use remat on {module}.{method_fn} "
+                "failed. Consider decorating with @no_remat.",
+            )
+
+            def fn(*args, **kwargs):
+                """Unlike module.method, fn returns (outputs, output_collection)."""
+                output_collection = new_output_collection()
+                # We override output_collection to avoid leaking tracers.
+                with child_context("remat", module=module, output_collection=output_collection):
+                    outputs = method_fn(module, *args, **kwargs, **static_kwargs)
+                return outputs, output_collection
+
+            logging.info("Applying remat on %s.%s: %s", module.path(), method_fn, cfg.remat_spec)
+            # pylint: disable-next=protected-access
+            module._remat_methods.append(method_fn.__name__)
+            # Pass both outputs and output_collection through remat(...) to avoid leaking tracers.
+            outputs, output_collection = jax.checkpoint(
+                fn,
+                **{k: maybe_instantiate(v) for k, v in dataclasses.asdict(cfg.remat_spec).items()},
+            )(*args, **tracer_kwargs)
+            module.get_invocation_context().output_collection.update(output_collection)
+            return outputs
+
+        return maybe_call_with_remat
 
     def dtype(self):
         if self.config.dtype is not None:
@@ -172,43 +361,12 @@ class BaseLayer(Module):
         return self.parent.param_init()
 
     # pylint: disable-next=no-self-use
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         """Subclasses can override this method to add layer parameters."""
         return {}
 
-    def _call_thunk(self, *args, method_fn, **kwargs) -> Callable[[], Any]:
-        cfg: Module.Config = self.config
-        self.vlog(
-            3, "BaseLayer._call_thunk %s.%s: remat=%s", self.path(), method_fn, cfg.remat_spec
-        )
-
-        nullary = super()._call_thunk(*args, method_fn=method_fn, **kwargs)
-        if current_context() is None or cfg.remat_spec is None or not self.is_training:
-            return nullary
-
-        def nullary_with_remat():
-            def fn(*args, **kwargs):
-                """Unlike self.method, fn returns (outputs, output_collection)."""
-                output_collection = new_output_collection()
-                # We override output_collection to avoid leaking tracers.
-                with child_context("remat", module=self, output_collection=output_collection):
-                    outputs = method_fn(self, *args, **kwargs)
-                return outputs, output_collection
-
-            logging.info("Applying remat on %s.%s: %s", self.path(), method_fn, cfg.remat_spec)
-            self._remat_methods.append(method_fn.__name__)
-            # Pass both outputs and output_collection through remat(...) to avoid leaking tracers.
-            outputs, output_collection = jax.ad_checkpoint.remat(
-                fn,
-                **{k: maybe_instantiate(v) for k, v in dataclasses.asdict(cfg.remat_spec).items()},
-            )(*args, **kwargs)
-            self.get_invocation_context().output_collection.update(output_collection)
-            return outputs
-
-        return nullary_with_remat
-
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
-        specs: Dict[str, NestedParameterSpec] = {}
+        specs: dict[str, NestedParameterSpec] = {}
         param_specs = self._create_layer_parameter_specs()
         for name, param_spec in param_specs.items():
             partition_spec = param_spec.mesh_axes
@@ -220,21 +378,48 @@ class BaseLayer(Module):
                     f"partition_spec {partition_spec} must have the same length as "
                     f"shape {param_spec.shape})"
                 )
-            param_spec = dataclasses.replace(param_spec, mesh_axes=PartitionSpec(*partition_spec))
+            param_spec = dataclasses.replace(
+                param_spec,
+                mesh_axes=PartitionSpec(*partition_spec),
+                fan_axes=(
+                    param_spec.fan_axes
+                    if param_spec.fan_axes is not None
+                    else self._compute_fan_axes(name=name, parameter_spec=param_spec)
+                ),
+            )
             if param_spec.dtype is None:
                 param_spec = dataclasses.replace(param_spec, dtype=self.dtype())
             specs[name] = param_spec
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             assert name not in specs
             specs[name] = child.create_parameter_specs_recursively()
         return specs
 
     def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
+        """Initializes parameters with given ParameterSpecs for the prebuilt params.
+
+        Note that the returned tree contains Tensors for initialized parameters and None for the
+        prebuilt parameters. This ensures that the return value contain only JAX types and
+        therefore can be wrapped inside JAX function transformations.
+
+        Use `test_utils.initialize_parameters_with_prebuilt` in testing to get a merged tree of
+        prebuilt and initialized parameters.
+
+        Args:
+            prng_key: The random key.
+            prebuilt: A Nested tree with the same structure as the layer parameters, whose leaf
+                nodes are ParameterSpecs if the parameters are prebuilt, None if the parameters
+                should be initialized.
+
+        Returns:
+            A Nested Tree with Tensors (if initialized) and None (if prebuilt) as leaf nodes.
+        """
         params = {}
         param_specs = self._create_layer_parameter_specs()
         for name, spec in param_specs.items():
@@ -242,7 +427,9 @@ class BaseLayer(Module):
             prng_key, child_key = jax.random.split(prng_key)
             value = get_or_none(prebuilt, name)
             if value is not None:
-                params[name] = value
+                # Note that we cannot set `params[name]` to `value`, since `value` is an instance
+                # of ParameterSpec and not a JAX type.
+                params[name] = None
             else:
                 if spec.dtype is None:
                     spec.dtype = self.dtype()
@@ -254,6 +441,10 @@ class BaseLayer(Module):
                     parameter_spec=spec,
                 )
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             assert name not in params
             prng_key, child_key = jax.random.split(prng_key)
             params[name] = child.initialize_parameters_recursively(
@@ -262,13 +453,11 @@ class BaseLayer(Module):
             )
         return params
 
-    def _use_prebuilt_params(self, prebuilt: Optional[NestedTensor]) -> bool:
-        prebuilt_keys = set(
-            key for key, value in flatten_items(prebuilt) if isinstance(value, Tensor)
-        )
+    def _use_prebuilt_params(self, prebuilt: Optional[Nested[Optional[ParameterSpec]]]) -> bool:
+        prebuilt_keys = {key for key, value in flatten_items(prebuilt) if value is not None}
         if not prebuilt_keys:
             return False
-        param_keys = set(key for key, _ in flatten_items(self.create_parameter_specs_recursively()))
+        param_keys = {key for key, _ in flatten_items(self.create_parameter_specs_recursively())}
         if prebuilt_keys != param_keys:
             raise NotImplementedError(
                 f"Partial prebuilt params are not supported: {param_keys - prebuilt_keys}"
@@ -276,7 +465,7 @@ class BaseLayer(Module):
         return True
 
     def _initialize_parameter(
-        self, name: str, *, prng_key: jax.random.KeyArray, parameter_spec: ParameterSpec
+        self, name: str, *, prng_key: Tensor, parameter_spec: ParameterSpec
     ) -> Tensor:
         """Adds a parameter with the given name and shape.
 
@@ -298,12 +487,16 @@ class BaseLayer(Module):
             prng_key=prng_key,
             shape=parameter_spec.shape,
             dtype=parameter_spec.dtype,
-            axes=self._compute_fan_axes(name, parameter_spec),
+            axes=(
+                parameter_spec.fan_axes
+                if parameter_spec.fan_axes is not None
+                else self._compute_fan_axes(name=name, parameter_spec=parameter_spec)
+            ),
         )
         return param
 
     def apply_parameter_noise_recursively(
-        self, prng_key: jax.random.KeyArray, params: NestedTensor
+        self, prng_key: Tensor, params: NestedTensor
     ) -> NestedTensor:
         """Applies parameter noise recursively on `params`.
 
@@ -318,25 +511,29 @@ class BaseLayer(Module):
         cfg = self.config
         params = type(params)(**params)  # Make a copy of `params`.
         for name, child in self._children.items():
+            if not isinstance(child, BaseLayer):
+                # `child` is not a BaseLayer and does not have parameters, e.g., it can be an
+                # instance of TensorStats.
+                continue
             prng_key, child_key = jax.random.split(prng_key)
             params[name] = child.apply_parameter_noise_recursively(child_key, params[name])
         if cfg.param_noise is not None:
             params = self._param_noise.apply(prng_key, params)
         return params
 
-    # pylint: disable-next=no-self-use
     def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
         if not name.endswith("weight"):
             return None
-        if len(parameter_spec.shape) < 2:
+        if len(parameter_spec.shape) != 2:
             raise NotImplementedError(
-                "Default _compute_fan_axes requires weight parameters to have at least 2 axes "
-                f"shape({name}) = {parameter_spec.shape}"
+                f"{type(self)} uses the default _compute_fan_axes, which requires weight "
+                f"parameters to have exactly 2 axes: shape({name}) = {parameter_spec.shape}"
             )
         return FanAxes(in_axis=-2, out_axis=-1)
 
     def _remat_name(self, x: Tensor, name: str) -> Tensor:
-        """Tags 'x' with 'name' using a custom jax.core.Primitive, which is otherwise a no-op.
+        """Tags 'x' with 'name' using a custom jax.extend.core.Primitive, which
+        is otherwise a no-op.
 
         This is useful for custom activation rematerialization policies, as it allows
         us to filter on tagged points in the jaxpr.
@@ -354,10 +551,34 @@ class BaseLayer(Module):
     def parameters(self):
         return self.state
 
+    def _add_tensor_stats(self, name: str, value: Nested[Tensor]):
+        """Adds tensor stats about `value`.
+
+        Suppose `self.tensor_stats` adds some summaries about `value`, e.g.,
+            `self._add_tensor_stats("mean", jnp.mean(value))`.
+
+        The "mean" summary will show up under path f"{self.path()}/tensor_stats/{name}/mean".
+
+        Args:
+            name: The name for the `value`. E.g., "inputs".
+            value: A Tensor or a Nested[Tensor].
+        """
+        if "tensor_stats" in self.children:
+            output_collection = new_output_collection()
+            with child_context("tensor_stats", output_collection=output_collection):
+                with child_context(name, module=self.tensor_stats):
+                    self.tensor_stats.add_stats(name, value)
+            layer_summaries = self.get_invocation_context().output_collection.summaries
+            if "tensor_stats" not in layer_summaries:
+                layer_summaries["tensor_stats"] = {}
+            layer_summaries["tensor_stats"][name] = output_collection.summaries[name]
+
     def _add_activation_summary(
         self, *, name: str, activations: Tensor, activation_paddings: Optional[Tensor] = None
     ):
         """Add activation summaries.
+
+        TODO(ruoming): use cfg.tensor_stats to represent activation summaries.
 
         Args:
             name: Activation name.
@@ -394,3 +615,27 @@ class BaseLayer(Module):
         self.add_summary(f"activations/{name}_mean", WeightedScalar(activations_mean, weights))
         # Average of per hidden unit norm.
         self.add_summary(f"activations/{name}_norm", WeightedScalar(activations_norm_mean, weights))
+
+
+def no_remat(fn: Callable) -> Callable:
+    """Annotates fn so that remat will not be applied to it.
+
+    This can be used to prevent tracers from leaking into helper methods that depend
+    only on data available at compile time when using `remat_spec`. For example, the following
+    method cannot be used in a class that uses remat_spec without using @no_remat:
+
+    ```
+    def fn(self, st: str):
+        if st=='three':
+            return 3
+    ```
+
+    Args:
+        fn: The method to annotate.
+
+    Returns:
+        The input `fn` after having been annotated.
+    """
+    # pylint: disable=protected-access
+    fn._no_remat = True
+    return fn

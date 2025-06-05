@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests CLIP implementations."""
 # pylint: disable=no-self-use
 import jax
@@ -13,6 +15,7 @@ from axlearn.common.test_utils import assert_allclose
 from axlearn.common.text_encoder import TEXT_EMBEDDINGS
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import as_tensor
+from axlearn.vision import param_converter  # pylint: disable=unused-import
 from axlearn.vision.clip import (
     set_clip_model_config,
     set_text_encoder_config,
@@ -66,7 +69,7 @@ class TestCLIPEncoder(parameterized.TestCase):
         # A dummy weight for the output projection.
         layer_params["output_proj"] = dict(
             weight=jnp.array(np.random.random((model_dim, model_dim))).astype(jnp.float32),
-            bias=jnp.array(np.random.random((model_dim))).astype(jnp.float32),
+            bias=jnp.array(np.random.random(model_dim)).astype(jnp.float32),
         )
         target = (
             np.random.randint(low=0, high=255, size=[batch_size, 3, image_size, image_size]) / 128
@@ -140,7 +143,7 @@ class TestCLIPEncoder(parameterized.TestCase):
         # A dummy weight for the output projection.
         layer_params["output_proj"] = dict(
             weight=jnp.array(np.random.random((model_dim, model_dim))).astype(jnp.float32),
-            bias=jnp.array(np.random.random((model_dim))).astype(jnp.float32),
+            bias=jnp.array(np.random.random(model_dim)).astype(jnp.float32),
         )
 
         tokenized_text_hf, tokenized_text = generate_random_tokenized_text(
@@ -221,7 +224,7 @@ class TestCLIPModel(parameterized.TestCase):
         tokenized_text_generator_params,
     ):
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree_util.tree_map(lambda x: x.shape, layer_params)
+        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
         print(f"layer state={layer_param_shapes}")
         layer_params = parameters_from_torch_layer(ref)
         images = (

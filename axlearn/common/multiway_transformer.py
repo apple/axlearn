@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/unilm:
+# Copyright (c) Microsoft Corporation.
+# Licensed under The MIT License.
+
 # pylint: disable=duplicate-code
 """Multiway transformer layers.
 
@@ -5,7 +13,8 @@ References:
 https://arxiv.org/pdf/2111.02358.pdf
 https://github.com/microsoft/unilm/tree/master/vlmo
 """
-from typing import Dict, Optional, Tuple
+
+from typing import Optional, Union
 
 import numpy as np
 from jax import numpy as jnp
@@ -21,18 +30,13 @@ from axlearn.common.attention import (
     scaled_hidden_dim,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import Dropout, Embedding, LayerNorm, set_dropout_rate_recursively
 from axlearn.common.module import Module, NestedTensor, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, GaussianInitializer
 from axlearn.common.poolings import BasePoolingLayer, FirstNTokenPooling
+from axlearn.common.utils import Nested, TensorSpec
 from axlearn.common.vision_transformer import VisualEmbedding
 
 TEXT_MODALITY = 0
@@ -91,7 +95,8 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
-    ) -> Tuple[Optional[NestedTensor], Tensor]:
+        return_aux: Optional[set[str]] = None,
+    ) -> tuple[Optional[Nested[Tensor]], Optional[Tensor]]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
         Args:
@@ -104,6 +109,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
+            return_aux: See comments on BaseTransformerLayer.forward.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -114,27 +120,48 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         Raises:
             ValueError: If `mode` is unsupported.
         """
-
         cfg = self.config
-        self.vlog(3, "transformer.input=%s", data.sum())
+        if isinstance(data, Tensor):
+            self.vlog(3, "transformer.input=%s", data.sum())
+        self_attention_return_aux = set()
+        cross_attention_return_aux = set()
+        if return_aux:
+            if "self_attention_probs" in return_aux:
+                self_attention_return_aux.add("probs")
+            if "self_attention_kv_state" in return_aux:
+                self_attention_return_aux.add("kv_state")
+            if "cross_attention_probs" in return_aux:
+                cross_attention_return_aux.add("probs")
         if mode == ForwardMode.FORWARD:
-            self_atten_state, self_atten_outputs = None, self.self_attention(
-                target=data, attention_logit_biases=self_attention_logit_biases
+            self_atten_state, self_atten_outputs = (
+                None,
+                self.self_attention(
+                    target=data,
+                    attention_logit_biases=self_attention_logit_biases,
+                    return_aux=self_attention_return_aux,
+                ),
             )
         elif mode == ForwardMode.INIT_STATES:
-            self_atten_state, self_atten_outputs = self.self_attention.prefill_states(
+            self_atten_state, self_atten_outputs = self.self_attention.init_states(
                 time_step=cached_states["self_attention"],
                 target=data,
                 attention_logit_biases=self_attention_logit_biases,
+                return_aux=self_attention_return_aux,
             )
         elif mode == ForwardMode.EXTEND_STEP:
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,
                 attention_logit_biases=self_attention_logit_biases,
+                return_aux=self_attention_return_aux,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
+
+        if self_atten_outputs is None:
+            assert mode == ForwardMode.INIT_STATES
+            return dict(self_attention=self_atten_state), None
+
         data = self_atten_outputs.data
         self.vlog(3, "self_attention.output=%s", data.sum())
         if cross_attention_data is not None:
@@ -142,6 +169,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
                 target=data,
                 source=cross_attention_data,
                 attention_logit_biases=cross_attention_logit_biases,
+                return_aux=cross_attention_return_aux,
             )
             data = cross_atten_outputs.data
             cross_attention_probs = cross_atten_outputs.probs
@@ -166,6 +194,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         return dict(self_attention=self_atten_state), self.Output(
             data=data,
             self_attention_probs=self_atten_outputs.probs,
+            self_attention_kv_state=self_atten_outputs.kv_state,
             cross_attention_probs=cross_attention_probs,
         )
 
@@ -175,46 +204,29 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         data: Tensor,
         *,
         feed_forward_index: int = 0,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
+        **kwargs,
     ) -> Output:
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             data=data,
             feed_forward_index=feed_forward_index,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
         return output
 
-    def init_states(self, *, target_batch_size: int, target_max_len: int) -> NestedTensor:
-        return dict(
-            self_attention=self.self_attention.init_states(
-                target_batch_size=target_batch_size, target_max_len=target_max_len
-            )
-        )
-
-    # pylint: disable-next=arguments-differ
-    def prefill_states(
+    def init_states(
         self,
-        *,
-        time_step: Tensor,
-        data: Tensor,
+        time_step: Optional[Tensor],
+        data: Union[Tensor, TensorSpec],
         feed_forward_index: int = 0,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, Output]:
+        **kwargs,
+    ) -> tuple[Nested[Tensor], Optional[Output]]:
         return self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(self_attention=time_step),
             data=data,
             feed_forward_index=feed_forward_index,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
     # pylint: disable-next=arguments-differ
@@ -224,18 +236,14 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         data: Tensor,
         *,
         feed_forward_index: int = 0,
-        self_attention_logit_biases: Optional[Tensor] = None,
-        cross_attention_data: Optional[Tensor] = None,
-        cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, Output]:
+        **kwargs,
+    ) -> tuple[NestedTensor, Output]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             cached_states=cached_states,
             data=data,
             feed_forward_index=feed_forward_index,
-            self_attention_logit_biases=self_attention_logit_biases,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
+            **kwargs,
         )
 
 
@@ -263,7 +271,7 @@ class MultiModalEncoder(BaseLayer):
         visual_pos_emb: InstantiableConfig = LearnedPositionalEmbedding.default_config()
         # Text embedding.
         text_embed: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config()
-        # The modality type specifc embedding config.
+        # The modality type specific embedding config.
         modality_emb: InstantiableConfig = Embedding.default_config()
         # Input dropout config.
         input_dropout: InstantiableConfig = Dropout.default_config().set(rate=0.1)
@@ -288,7 +296,7 @@ class MultiModalEncoder(BaseLayer):
             }
         )
         # pylint: disable=no-member
-        cfg.visual_pos_emb.param_init = config_for_class(GaussianInitializer).set(std=0.02)
+        cfg.visual_pos_emb.param_init = GaussianInitializer.default_config().set(std=0.02)
         transformer_layer_cfg = cfg.transformer.layer
         transformer_layer_cfg.feed_forward.activation = "nn.gelu"
         transformer_layer_cfg.feed_forward.norm = layer_norm_config()
@@ -297,20 +305,20 @@ class MultiModalEncoder(BaseLayer):
         # pylint: enable=no-member
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         param_specs = {}
         if cfg.num_cls_tokens:
             param_specs["cls_token"] = ParameterSpec(
                 shape=(1, cfg.num_cls_tokens, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.ConstantInitializer(0.0),
+                initializer=param_init.constant_initializer(0.0),
             )
         if cfg.use_mask_tokens:
             param_specs["mask_token"] = ParameterSpec(
                 shape=(1, 1, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.ConstantInitializer(0.0),
+                initializer=param_init.constant_initializer(0.0),
             )
         return param_specs
 
@@ -343,7 +351,7 @@ class MultiModalEncoder(BaseLayer):
                 position for the pachified image.
 
         Returns:
-            A float Tensor of shape (batch, legnth, output_dim) representing the visual embedding.
+            A float Tensor of shape (batch, length, output_dim) representing the visual embedding.
         """
         cfg = self.config
         batch_size = data.shape[0]
@@ -364,14 +372,14 @@ class MultiModalEncoder(BaseLayer):
 
     def get_text_embed(self, data: Tensor, modality: int) -> Tensor:
         # Same text embeddings as Bert.
-        x = self.text_embed(inputs=data)
+        x = self.text_embed(input_batch=dict(inputs=data))
         # Add modality type embedding.
         x = x + self.modality_emb(jnp.full(x.shape[:2], modality))
         return x
 
     def forward(
-        self, inputs: Dict[int, Tensor], is_masked: Optional[Tensor] = None
-    ) -> Dict[int, Tensor]:
+        self, inputs: dict[int, Tensor], is_masked: Optional[Tensor] = None
+    ) -> dict[int, Tensor]:
         """Compute prediction on the multimodal inputs.
 
         Args:
@@ -380,7 +388,7 @@ class MultiModalEncoder(BaseLayer):
                 1 or IMAGE_MODALITY: representing images in shape [batch, height, width, channels].
                 2 or TEXT_IMAGE_MODALITY: a dict that contains text-image multimodal data with the
                     same format as monomodal data.
-            is_masked: a boolen Tensor in shape (batch, length), representing masked positions for
+            is_masked: a boolean Tensor in shape (batch, length), representing masked positions for
                 the patchifie input sequence.
 
         Returns:
@@ -428,9 +436,9 @@ def _set_model_config(
     text_vocab_size: int,
     max_text_len: int,
     feed_forward_dim: Optional[int] = None,
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
-    stride: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
+    stride: Optional[tuple[int, int]] = None,
     num_cls_tokens: int = 1,
     dtype: jnp.dtype = jnp.float32,
     dropout_rate: float = 0.0,

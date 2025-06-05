@@ -1,10 +1,17 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/lora:
+# Copyright (c) Microsoft Corporation.
+
 """Low-Rank Adaptation (LoRA) for Large Language Models.
 
 RefA: original LoRA paper https://arxiv.org/abs/2106.09685
 RefB: generalized LoRA https://arxiv.org/pdf/2110.04366
 RefC: Pytorch implementation https://github.com/microsoft/lora
 """
-from typing import Dict, Optional
+from typing import Optional
 
 import jax.numpy as jnp
 
@@ -15,13 +22,7 @@ from axlearn.common.attention import (
     MultiheadOutputLinear,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module
 from axlearn.common.param_init import (
@@ -51,8 +52,7 @@ class _BaseLoraAdapter(BaseLayer):
         # It is required that rank > 0.
         rank: Required[int] = REQUIRED
 
-        # Value alpha/rank is used to scale the output of LoRA Adapter. When alpha is zero,
-        # the scaling is set to 1 (i.e., no output scaling).
+        # Value alpha/rank is used to scale the output of LoRA Adapter.
         alpha: Required[float] = REQUIRED
 
         # Drop out input for LoRA layer. This dropout rate can be set differently from
@@ -73,7 +73,7 @@ class _BaseLoraAdapter(BaseLayer):
     @property
     def scaling(self):
         cfg = self.config
-        if cfg.rank > 0 and cfg.alpha != 0:
+        if cfg.rank > 0:
             return cfg.alpha / cfg.rank
         else:
             return 1
@@ -119,7 +119,6 @@ class LoraLinearAdapter(_BaseLoraAdapter):
             cfg.lora_down.set(
                 input_dim=cfg.input_dim,
                 output_dim=cfg.rank,
-                param_partition_spec=[None, "model"],
                 bias=False,
             ),
         )
@@ -130,10 +129,9 @@ class LoraLinearAdapter(_BaseLoraAdapter):
             cfg.lora_up.set(
                 input_dim=cfg.rank,
                 output_dim=cfg.output_dim,
-                param_partition_spec=["model", None],
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
                 bias=False,
@@ -161,7 +159,7 @@ class LoraDownFusedLinear(BaseLayer):
         cfg.param_partition_spec = (None, None, "model")
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -206,7 +204,7 @@ class LoraUpFusedLinear(BaseLayer):
         cfg.param_partition_spec = (None, None, "model", None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -305,7 +303,7 @@ class LoraMultiheadOutputAdapter(_BaseLoraAdapter):
                 bias=False,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
             ),
@@ -332,7 +330,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
 
         # Whether to use LoRA for query, key, value projections.
         # Keys of enable_lora must be query, key, value.
-        enable_lora: Required[Dict[str, bool]] = REQUIRED
+        enable_lora: Required[dict[str, bool]] = REQUIRED
         num_heads: Required[int] = REQUIRED
 
     @classmethod
@@ -348,7 +346,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
         return cfg.output_dim // cfg.num_heads
 
     @property
-    def _num_enbaled(self):
+    def _num_enabled(self):
         cfg = self.config
         return sum(cfg.enable_lora.values())
 
@@ -356,7 +354,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
         super()._is_valid_config()
         # Check whether enable_lora is valid if exists.
         cfg = self.config
-        if set(cfg.enable_lora.keys()) != set(["query", "key", "value"]):
+        if set(cfg.enable_lora.keys()) != {"query", "key", "value"}:
             raise ValueError(
                 f"Keys of enable_lora must be query, key, value, saw: {cfg.enable_lora}."
             )
@@ -375,7 +373,7 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
             cfg.lora_down.set(
                 input_dim=cfg.input_dim,
                 output_dim=cfg.rank,
-                num_enabled=self._num_enbaled,
+                num_enabled=self._num_enabled,
             ),
         )
         self._add_child(
@@ -384,10 +382,10 @@ class LoraFusedQKVAdapter(_BaseLoraAdapter):
                 input_dim=cfg.rank,
                 num_heads=cfg.num_heads,
                 per_head_dim=self._per_head_dim,
-                num_enabled=self._num_enbaled,
+                num_enabled=self._num_enabled,
                 param_init=DefaultInitializer.default_config().set(
                     init_by_param_name={
-                        PARAM_REGEXP_WEIGHT: config_for_class(ConstantInitializer).set(value=0.0)
+                        PARAM_REGEXP_WEIGHT: ConstantInitializer.default_config().set(value=0.0)
                     }
                 ),
             ),
@@ -468,7 +466,7 @@ class LoraMultiheadOutputLinear(BaseLayer):
 
 
 class LoraFusedQKVLinear(BaseQKVLinear):
-    """LoRA's replacement of the FusedQKVLinear layer.
+    """Fused LoRA replacement for non-grouped QKVLinear layers.
 
     N.B. Only supports cases where (1) key and value are None; (2) query, key,
     and value all have the same shape; (3) model_dim = num_heads * per_head_dim.
@@ -478,8 +476,8 @@ class LoraFusedQKVLinear(BaseQKVLinear):
     class Config(BaseQKVLinear.Config):
         """Configures LoraFusedQKVLinear."""
 
-        # The original FusedQKVLinear layer config.
-        layer: FusedQKVLinear.Config = FusedQKVLinear.default_config()
+        # The original QKVLinear layer config.
+        layer: BaseQKVLinear.Config = FusedQKVLinear.default_config()
         # The adapter config for LoRA.
         adapter: LoraFusedQKVAdapter.Config = LoraFusedQKVAdapter.default_config()
 
@@ -497,16 +495,19 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         qkv_proj_cfg.value_dim = cfg.value_dim
         qkv_proj_cfg.num_heads = cfg.num_heads
         qkv_proj_cfg.per_head_dim = cfg.per_head_dim
-        qkv_proj_cfg.cache_dtype = cfg.cache_dtype
         self._add_child("layer", qkv_proj_cfg)
         self._add_child(
             "adapter",
             cfg.adapter.set(
                 input_dim=cfg.query_dim,
-                output_dim=cfg.query_dim,
+                output_dim=cfg.num_heads * cfg.per_head_dim,
                 num_heads=cfg.num_heads,
             ),
         )
+
+    @property
+    def num_kv_heads(self):
+        return self.layer.num_kv_heads
 
     def forward(
         self,
@@ -514,6 +515,8 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         *,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
+        kv_state: Optional[Tensor] = None,
+        query_positions: Optional[Tensor] = None,
     ) -> BaseQKVLinear.Output:
         cfg = self.config
         if key is None and value is None:
@@ -521,7 +524,9 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         else:
             raise ValueError("Key and value should be both None in LoraFusedQKVLinear.")
 
-        q_proj, k_proj, v_proj = self.layer(query, key=key, value=value)
+        q_proj, k_proj, v_proj = self.layer(
+            query, key=key, value=value, kv_state=kv_state, query_positions=query_positions
+        )
         adapter_outputs = self.adapter(inputs)
 
         index = 0

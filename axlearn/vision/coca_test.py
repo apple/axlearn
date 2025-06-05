@@ -1,4 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests CoCa implementations."""
+
 # pylint: disable=no-self-use
 from copy import deepcopy
 
@@ -164,7 +167,7 @@ class TestCoCaEncoder(parameterized.TestCase):
         # Parameters required by CLIP textual encoder.
         params["output_proj"] = params["contrastive_output_proj"]
         params["output_norm"] = params["contrastive_output_norm"]
-        params["text_encoder"]["encoder"] = params["text_encoder"]
+        params["text_encoder"]["encoder"] = dict(params["text_encoder"])
 
         coca_outputs, _ = F(
             coca_textual_encoder,
@@ -272,9 +275,9 @@ class TestCoCaModel(parameterized.TestCase):
         clip_params["textual_encoder"]["output_norm"] = coca_params["textual_encoder"][
             "contrastive_output_norm"
         ]
-        clip_params["textual_encoder"]["text_encoder"]["encoder"] = coca_params["textual_encoder"][
-            "text_encoder"
-        ]
+        clip_params["textual_encoder"]["text_encoder"]["encoder"] = dict(
+            coca_params["textual_encoder"]["text_encoder"]
+        )
         clip_params["fusion_network"] = coca_params["contrastive_fusion_network"]
 
         coca_outputs, _ = F(
@@ -551,7 +554,7 @@ class TestCoCaModel(parameterized.TestCase):
                 prng_key=jax.random.PRNGKey(456),
                 inputs=dict(
                     time_step=time_step,
-                    input_ids=tokenized_text,
+                    input_batch=dict(input_ids=tokenized_text),
                     cross_attention_data=cross_attention_data,
                 ),
                 method="prefill_states",

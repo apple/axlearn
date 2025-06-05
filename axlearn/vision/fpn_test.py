@@ -1,4 +1,6 @@
-"""Tests feature pyramind network implementations."""
+# Copyright © 2023 Apple Inc.
+
+"""Tests feature pyramid network implementations."""
 import jax.numpy as jnp
 import jax.random
 import numpy as np
@@ -397,8 +399,8 @@ class BiFPNTest(parameterized.TestCase):
         num_bifpn_layers = 3
         image_size = 640
 
-        max_input_level = max([int(l) for l in input_dims if l.isdigit()])
-        min_input_level = min([int(l) for l in input_dims if l.isdigit()])
+        max_input_level = max(int(l) for l in input_dims if l.isdigit())
+        min_input_level = min(int(l) for l in input_dims if l.isdigit())
         inputs = {}
         for level in range(min_input_level, max_input_level + 1):
             inputs[str(level)] = np.random.uniform(

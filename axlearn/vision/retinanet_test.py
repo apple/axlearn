@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2022 Google LLC. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests for RetinaNet components."""
 import jax.random
 import numpy as np
@@ -89,7 +97,7 @@ def _input_config(is_training: bool, batch_size: int, image_size: int):
     cfg.source.set(
         dataset_name="coco/2017",
         split="validation",
-        shuffle_buffer_size=100 if is_training else 0,
+        train_shuffle_buffer_size=100,
     )
     cfg.processor.set(image_size=(image_size, image_size))
     cfg.batcher.set(global_batch_size=batch_size)

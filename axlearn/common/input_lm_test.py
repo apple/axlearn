@@ -1,11 +1,15 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests language modeling inputs."""
 # pylint: disable=no-self-use,too-many-lines
 import os
-from typing import Any, Dict, List, Literal, Optional
+import tempfile
+from typing import Any, Literal, Optional
 
-import numpy as np
+import pytest
 import seqio
 import tensorflow as tf
+import tensorflow_datasets as tfds
 from absl.testing import absltest, parameterized
 
 from axlearn.common import input_tf_data, test_utils
@@ -14,6 +18,7 @@ from axlearn.common.input_fake import fake_source
 from axlearn.common.input_lm import (
     InputDataType,
     ModelType,
+    PackingMethodType,
     _trim_and_pack_with_segments,
     augment_text_from_inputs_targets_pretokenized,
     joint_truncation_for_seq2seq_lm_input,
@@ -37,64 +42,6 @@ class BaseLmInputTest(test_utils.TestCase):
 
     newlines_replaced_with = "<n>"
 
-    def _lm_training_processor_config(
-        self,
-        *,
-        vocab_cfg: InstantiableConfig,
-        max_len: int,
-        window_size: int,
-        max_padding_fraction: float,
-    ):
-        return config_for_function(text_to_lm_training_input).set(
-            vocab_cfg=vocab_cfg,
-            max_len=max_len,
-            replace_newlines_with=self.newlines_replaced_with,
-            window_size=window_size,
-            max_padding_fraction=max_padding_fraction,
-        )
-
-    def _test_fake_text_lm_training_data(
-        self, *, vocab_cfg: InstantiableConfig, expected_batches: List[Dict[str, Any]]
-    ):
-        batch_size, max_len = 3, 6
-        cfg = input_tf_data.Input.default_config().set(
-            name="test_input",
-            is_training=True,
-            source=config_for_function(make_ds_fn).set(
-                texts=[
-                    "hello world\n",
-                    "hello moon\n",
-                    "hello tiger\n",
-                    "hello dog\n",
-                    "hello cat\n",
-                ],
-            ),
-            processor=self._lm_training_processor_config(
-                vocab_cfg=vocab_cfg,
-                max_len=max_len,
-                window_size=10,
-                max_padding_fraction=0.5,
-            ),
-            batcher=config_for_function(input_tf_data.batch).set(
-                global_batch_size=batch_size,
-                prefetch_buffer_size=2,
-                pad_example_fn=input_tf_data.default_pad_example_fn,
-            ),
-        )
-        # Set TensorFlow seed.
-        tf.random.set_seed(123)
-        dataset = cfg.instantiate(parent=None)
-        for ix, batch in enumerate(dataset):
-            self.assertIsNotNone(batch)
-            if ix < len(expected_batches):
-                # Check for equality for provided batches.
-                batch = {k: v.tolist() for k, v in batch.items()}
-                print(batch)
-                self.assertNestedAllClose(expected_batches[ix], batch)
-            if ix >= 10 * len(expected_batches):
-                # Expect to be able to repeat forever.
-                break
-
     def _lm_eval_processor_config(
         self,
         *,
@@ -112,19 +59,18 @@ class BaseLmInputTest(test_utils.TestCase):
         )
 
     def _test_fake_text_lm_eval_data(
-        self, *, vocab_cfg: InstantiableConfig, expected_batches: List[Dict[str, Any]]
+        self,
+        *,
+        texts=list[str],
+        vocab_cfg: InstantiableConfig,
+        expected_batches: list[dict[str, Any]],
     ):
         batch_size, max_len = 3, 12
 
         cfg = input_tf_data.Input.default_config().set(
             name="test_input",
             is_training=False,
-            source=config_for_function(make_ds_fn).set(
-                texts=[
-                    "Lorem ipsum dolor sit amet, consectetur adipiscing elit\n",
-                    "sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
-                ]
-            ),
+            source=config_for_function(make_ds_fn).set(texts=texts),
             processor=self._lm_eval_processor_config(
                 vocab_cfg=vocab_cfg, max_len=max_len, stride=2
             ),
@@ -140,7 +86,6 @@ class BaseLmInputTest(test_utils.TestCase):
         dataset = cfg.instantiate(parent=None)
         for ix, batch in enumerate(dataset):
             batch = {k: v.tolist() for k, v in batch.items()}
-            print(batch)
             self.assertNestedAllClose(expected_batches[ix], batch)
             if ix > 0:
                 # Check the first two batches.
@@ -155,11 +100,22 @@ class LmTrainingInputTest(BaseLmInputTest):
         )
 
     @parameterized.parameters("Lorem ipsum dolor sit amet,", " consectetur adipiscing elit\n")
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_training_lm_processor_single_example(self, text: str):
         max_len = 32
-        processor = self._lm_training_processor_config(
-            vocab_cfg=self.vocab_cfg, max_len=max_len, window_size=3, max_padding_fraction=0.0
-        ).instantiate()
+        processor = (
+            config_for_function(text_to_lm_training_input)
+            .set(
+                vocab_cfg=self.vocab_cfg,
+                max_len=max_len,
+                window_size=3,
+                max_padding_fraction=0.0,
+                packing_method=PackingMethodType.EOS_DELIM_NO_MASK,
+            )
+            .instantiate()
+        )
         ds_fn = (
             config_for_function(make_ds_fn)
             .set(is_training=False, texts=[text] * 10, repeat=1)
@@ -178,60 +134,269 @@ class LmTrainingInputTest(BaseLmInputTest):
         # The inputs should be one-off the labels.
         self.assertNestedAllClose(target_labels[:-1], input_ids[1:])
 
-    def test_fake_text_lm_training_data(self):
-        expected_batches = [
+    @parameterized.parameters(
+        dict(
+            packing_method=PackingMethodType.EOS_DELIM_MASK,
+            expected_batches=[
+                {
+                    "input_ids": [
+                        [1, 21820, 296, 2, 29],
+                        [3155, 1, 21820, 8114, 2],
+                    ],
+                    "target_labels": [
+                        [21820, 296, 2, 29, 3155],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 1, 1, 1],
+                        [1, 2, 2, 2, 2],
+                    ],
+                    "input_positions": [
+                        [0, 1, 2, 3, 4],
+                        [0, 0, 1, 2, 3],
+                    ],
+                    "target_num_bytes": [18, 17],
+                },
+                {
+                    "input_ids": [
+                        [29, 3155, 1, 21820, 296],
+                        [2, 29, 3155, 0, 0],
+                    ],
+                    "target_labels": [
+                        [3155, 1, 21820, 296, 2],
+                        [29, 3155, 1, 0, 0],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 2, 2, 2],
+                        [1, 1, 1, 0, 0],
+                    ],
+                    "input_positions": [
+                        [0, 1, 0, 1, 2],
+                        [0, 1, 2, 0, 0],
+                    ],
+                    "target_num_bytes": [19, 3],
+                },
+            ],
+            max_padding_fraction=1.0,  # Always pad
+        ),
+        dict(
+            packing_method=PackingMethodType.EOS_DELIM_NO_MASK,
+            expected_batches=[
+                {
+                    "input_ids": [
+                        [1, 21820, 296, 2, 29],
+                        [3155, 1, 21820, 8114, 2],
+                    ],
+                    "target_labels": [
+                        [21820, 296, 2, 29, 3155],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "target_num_bytes": [18, 17],
+                },
+                {
+                    "input_ids": [
+                        [29, 3155, 1, 21820, 296],
+                        [2, 29, 3155, 0, 0],
+                    ],
+                    "target_labels": [
+                        [3155, 1, 21820, 296, 2],
+                        [29, 3155, 1, 0, 0],
+                    ],
+                    "target_num_bytes": [19, 3],
+                },
+            ],
+            max_padding_fraction=1.0,  # Always pad
+        ),
+        dict(
+            packing_method=PackingMethodType.EOS_DELIM_MASK,
+            expected_batches=[
+                {
+                    "input_ids": [
+                        [1, 21820, 296, 2, 29],
+                        [3155, 1, 21820, 8114, 2],
+                    ],
+                    "target_labels": [
+                        [21820, 296, 2, 29, 3155],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 1, 1, 1],
+                        [1, 2, 2, 2, 2],
+                    ],
+                    "input_positions": [
+                        [0, 1, 2, 3, 4],
+                        [0, 0, 1, 2, 3],
+                    ],
+                    "target_num_bytes": [18, 17],
+                },
+                {
+                    "input_ids": [
+                        [29, 3155, 1, 21820, 296],
+                        [1, 21820, 8114, 2, 29],
+                    ],
+                    "target_labels": [
+                        [3155, 1, 21820, 296, 2],
+                        [21820, 8114, 2, 29, 3155],
+                    ],
+                    "input_segment_ids": [
+                        [1, 1, 2, 2, 2],
+                        [1, 1, 1, 1, 1],
+                    ],
+                    "input_positions": [
+                        [0, 1, 0, 1, 2],
+                        [0, 1, 2, 3, 4],
+                    ],
+                    "target_num_bytes": [19, 17],
+                },
+            ],
+            max_padding_fraction=0.0,  # Do not pad
+        ),
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_fake_text_lm_training_data(
+        self,
+        packing_method: PackingMethodType,
+        expected_batches: list[dict[str, Any]],
+        max_padding_fraction: float,
+    ):
+        texts = [
+            "hello world\n",
+            "hello moon\n",
+        ]
+
+        # window_size > len(texts) to repeat the sentence. 18 tokens in total.
+        # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,
+        #      2,     29,  3155,     1, 21820,   296,     2,    29,  3155]
+        window_size = 3
+
+        # Pad the concatenated sequence to 20 tokens:
+        # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,    2
+        #     29,  3155,     1, 21820,   296,     2,    29,  3155,      0,    0]
+        #
+        # Or, trim the sequence to 15 tokens:
+        # [    1,  21820,   296,     2,    29,  3155,     1, 21820,  8114,    2
+        #     29,  3155,     1, 21820,   296]
+        batch_size, max_len = 2, 5
+
+        # Disable shuffling to make results interpretable.
+        shuffle_buffer_size = 0
+
+        # Test text_to_lm_training_input.
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=True,
+            source=config_for_function(make_ds_fn).set(texts=texts),
+            processor=config_for_function(text_to_lm_training_input).set(
+                vocab_cfg=self.vocab_cfg,
+                max_len=max_len,
+                replace_newlines_with=self.newlines_replaced_with,
+                window_size=window_size,
+                max_padding_fraction=max_padding_fraction,
+                shuffle_buffer_size=shuffle_buffer_size,
+                packing_method=packing_method,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+
+        # Set TensorFlow seed.
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for ix, batch in enumerate(dataset):
+            self.assertIsNotNone(batch)
+            if ix < len(expected_batches):
+                # Check for equality for provided batches.
+                batch = {k: v.tolist() for k, v in batch.items()}
+                self.assertNestedAllClose(expected_batches[ix], batch)
+            if ix >= 10 * len(expected_batches):
+                # Expect to be able to repeat forever.
+                break
+
+        # Test lm_text_preprocessor. Expect same results.
+        cfg = input_tf_data.Input.default_config().set(
+            name="test_input",
+            is_training=True,
+            source=config_for_function(make_ds_fn).set(
+                texts=texts,
+            ),
+            processor=config_for_function(lm_text_preprocessor).set(
+                vocab_cfg=self.vocab_cfg,
+                max_sequence_length=max_len,
+                replace_newlines_with=self.newlines_replaced_with,
+                window_size=window_size,
+                max_padding_fraction=max_padding_fraction,
+                shuffle_buffer_size=shuffle_buffer_size,
+                packing_method=packing_method,
+            ),
+            batcher=config_for_function(input_tf_data.batch).set(
+                global_batch_size=batch_size,
+                prefetch_buffer_size=2,
+                pad_example_fn=input_tf_data.default_pad_example_fn,
+            ),
+        )
+
+        # Reset TensorFlow seed.
+        tf.random.set_seed(123)
+        dataset = cfg.instantiate(parent=None)
+        for ix, batch in enumerate(dataset):
+            if ix >= len(expected_batches):
+                break
+            batch = {k: v.tolist() for k, v in batch.items()}
+            self.assertNestedAllClose(expected_batches[ix], batch)
+
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_fake_text_lm_training_data_eval(self):
+        # N.B. we do not typically expect users to run the training data pipeline in eval mode.
+        # Instead we expect them to prefer `text_to_lm_eval_input`.
+        texts = [
+            "hello world\n",
+            "hello moon\n",
+            "hello tiger\n",
+            "hello dog\n",
+            "hello cat\n",
+        ]
+        expected_first_and_last_batch = [
             {
                 "input_ids": [
                     [1, 21820, 296, 2, 29, 3155],
-                    [29, 3155, 1, 21820, 1782, 2],
-                    [1782, 2, 29, 3155, 1, 21820],
+                    [1, 21820, 8114, 2, 29, 3155],
+                    [1, 21820, 3, 17, 4424, 2],
                 ],
                 "target_labels": [
                     [21820, 296, 2, 29, 3155, 1],
-                    [3155, 1, 21820, 1782, 2, 29],
-                    [2, 29, 3155, 1, 21820, 1712],
+                    [21820, 8114, 2, 29, 3155, 1],
+                    [21820, 3, 17, 4424, 2, 29],
                 ],
-                "target_num_bytes": [19, 18, 18],
+                "target_num_bytes": [19, 18, 17],
             },
+            # Last batch should have some fully-padded examples.
             {
-                "input_ids": [
-                    [1, 21820, 296, 2, 29, 3155],
-                    [29, 3155, 1, 21820, 296, 2],
-                    [29, 3155, 1, 21820, 1712, 2],
-                ],
-                "target_labels": [
-                    [21820, 296, 2, 29, 3155, 1],
-                    [3155, 1, 21820, 296, 2, 29],
-                    [3155, 1, 21820, 1712, 2, 29],
-                ],
-                "target_num_bytes": [19, 20, 18],
+                "input_ids": [[1712, 2, 29, 3155, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]],
+                "target_labels": [[2, 29, 3155, 1, 0, 0], [0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]],
+                "target_num_bytes": [8, 0, 0],
             },
         ]
-        self._test_fake_text_lm_training_data(
-            vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
-        )
 
         # Test lm_text_preprocessor. Expect same results.
         batch_size, max_len = 3, 6
         cfg = input_tf_data.Input.default_config().set(
             name="test_input",
-            is_training=True,
-            source=config_for_function(make_ds_fn).set(
-                texts=[
-                    "hello world\n",
-                    "hello moon\n",
-                    "hello tiger\n",
-                    "hello dog\n",
-                    "hello cat\n",
-                ],
-            ),
+            is_training=False,
+            source=config_for_function(make_ds_fn).set(texts=texts),
             processor=config_for_function(lm_text_preprocessor).set(
                 vocab_cfg=self.vocab_cfg,
                 max_sequence_length=max_len,
                 replace_newlines_with=self.newlines_replaced_with,
                 window_size=10,
                 max_padding_fraction=0.5,
-                shuffle_buffer_size=1024,
+                shuffle_buffer_size=0,
             ),
             batcher=config_for_function(input_tf_data.batch).set(
                 global_batch_size=batch_size,
@@ -243,11 +408,12 @@ class LmTrainingInputTest(BaseLmInputTest):
         tf.random.set_seed(123)
         dataset = cfg.instantiate(parent=None)
         for ix, batch in enumerate(dataset):
-            if ix >= len(expected_batches):
-                break
             batch = {k: v.tolist() for k, v in batch.items()}
-            print(batch)
-            self.assertNestedAllClose(expected_batches[ix], batch)
+            # Compare the first and last batch.
+            if ix == 0:
+                self.assertNestedAllClose(expected_first_and_last_batch[0], batch)
+        # pylint: disable=undefined-loop-variable
+        self.assertNestedAllClose(expected_first_and_last_batch[1], batch)
 
     @parameterized.parameters(
         {
@@ -430,11 +596,14 @@ class LmTrainingInputTest(BaseLmInputTest):
             "joint_truncation": True,
         },
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_lm_from_seq2seq_text_preprocessor(
         self,
         input_data_type: InputDataType,
         max_len: int,
-        expected_inputs: Dict[str, List[List[int]]],
+        expected_inputs: dict[str, list[list[int]]],
         is_training: bool = True,
         source_key: str = "inputs_pretokenized",
         target_key: str = "targets_pretokenized",
@@ -501,7 +670,6 @@ class LmTrainingInputTest(BaseLmInputTest):
         tf.random.set_seed(123)
         dataset = cfg.instantiate(parent=None)
         for batch in dataset:
-            print(batch)
             for k in ["input_ids", "target_labels"]:
                 self.assertEqual(batch[k].tolist(), expected_inputs[k])
             break
@@ -651,7 +819,6 @@ class LmTrainingInputTest(BaseLmInputTest):
         tf.random.set_seed(123)
         dataset = cfg.instantiate(parent=None)
         for batch in dataset:
-            print(batch)
             standard_keys = ["prefix", "input_ids", "target_labels"]
 
             # Ensure standard keys equal expected.
@@ -665,6 +832,72 @@ class LmTrainingInputTest(BaseLmInputTest):
                     self.assertEqual(batch[k][0].tolist(), examples[0][k].numpy().tolist())
             break
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_preprocessing_dataset_with_decoder(self):
+        """Tests that lm_text_preprocessor works with a dataset that uses a custom decoder."""
+        texts = ["hello world\n", "hello moon\n", "hello tiger\n", "hello dog\n", "hello cat\n"]
+
+        def _test_builder_with_datadir(data_dir: str) -> tfds.core.DatasetBuilder:
+            class TestBuilder(tfds.core.GeneratorBasedBuilder):
+                """Test dataset builder."""
+
+                name = "temptext"
+                VERSION = tfds.core.Version("1.0.0")
+
+                def _info(self) -> tfds.core.DatasetInfo:
+                    return tfds.core.DatasetInfo(
+                        builder=self,
+                        description="test",
+                        features=tfds.features.FeaturesDict({"text": tf.string}),
+                    )
+
+                def _split_generators(self, _: tfds.download.DownloadManager):
+                    return {"train": self._generate_examples("train")}
+
+                def _generate_examples(self, _):
+                    for i, text in enumerate(texts):
+                        yield i, {"text": text}
+
+            return TestBuilder(data_dir=data_dir)
+
+        def append_foo(tensor: tf.Tensor) -> tf.Tensor:
+            return tf.constant(tf.strings.join([tensor, "foo"]), dtype=tf.string)
+
+        def tfds_custom_decoder() -> dict[str, tfds.decode.Decoder]:
+            @tfds.decode.make_decoder()
+            def replace_field_value(example: tf.Tensor, _: tfds.features.text_feature.Text):
+                return tf.py_function(append_foo, [example], tf.string)
+
+            # pylint: disable=no-value-for-parameter
+            return {"text": replace_field_value()}
+
+        shuffle_buffer_size, max_sequence_length, window_size = 8, 6, 10
+        with tempfile.TemporaryDirectory() as tmpdir:
+            builder = _test_builder_with_datadir(tmpdir)
+            builder.download_and_prepare()  # Downloads to tmpdir.
+            source = config_for_function(input_tf_data.tfds_dataset).set(
+                dataset_name=builder.name,
+                split="train",
+                is_training=True,
+                train_shuffle_buffer_size=shuffle_buffer_size,
+                data_dir=tmpdir,
+                decoders=config_for_function(tfds_custom_decoder),
+            )
+            preprocessor = config_for_function(lm_text_preprocessor).set(
+                vocab_cfg=self.vocab_cfg,
+                max_sequence_length=max_sequence_length,
+                replace_newlines_with=self.newlines_replaced_with,
+                window_size=window_size,
+                max_padding_fraction=0.5,
+                shuffle_buffer_size=shuffle_buffer_size,
+            )
+            dataset_fn = input_tf_data.with_processor(source=source, processor=preprocessor)
+            # The following will raise a ValueError if shape information is lost.
+            element: dict[str, tf.Tensor] = next(iter(dataset_fn()))
+            assert "input_ids" in element
+
 
 class LmEvalInputTest(BaseLmInputTest):
     @property
@@ -677,6 +910,9 @@ class LmEvalInputTest(BaseLmInputTest):
         ("How long is a piece of string?", "index"),
         ("On the 20th of June", "not_index"),
         ("Here we stand united", None),
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_eval_lm_processor_single_example(self, text, index_key):
         max_len = 12
@@ -706,7 +942,14 @@ class LmEvalInputTest(BaseLmInputTest):
             target_labels[: non_padded_length - 1], input_ids[1:non_padded_length]
         )
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_fake_text_lm_eval_data(self):
+        texts = [
+            "Lorem ipsum dolor sit amet, consectetur adipiscing elit\n",
+            "sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+        ]
         expected_batches = [
             {
                 "input_ids": [
@@ -736,7 +979,7 @@ class LmEvalInputTest(BaseLmInputTest):
             },
         ]
         self._test_fake_text_lm_eval_data(
-            vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
+            texts=texts, vocab_cfg=self.vocab_cfg, expected_batches=expected_batches
         )
 
 
@@ -754,22 +997,44 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 6,
             "expected_inputs": dict(
-                source_ids=[
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                ],
-                target_ids=[
-                    [1, 21820, 296, 0, 0, 0],
-                    [1, 21820, 8114, 0, 0, 0],
-                    [1, 21820, 3, 17, 4424, 0],
-                ],
-                target_labels=[
-                    [21820, 296, 1, -1, -1, -1],
-                    [21820, 8114, 1, -1, -1, -1],
-                    [21820, 3, 17, 4424, 1, -1],
-                ],
-                prefix=[[1], [1], [1]],
+                source=dict(
+                    input_ids=tf.constant(
+                        [
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0]]
+                    ),
+                ),
+                target=dict(
+                    input_ids=tf.constant(
+                        [
+                            [1, 21820, 296, 0, 0, 0],
+                            [1, 21820, 8114, 0, 0, 0],
+                            [1, 21820, 3, 17, 4424, 0],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 2, 0, 0, 0], [0, 1, 2, 0, 0, 0], [0, 1, 2, 3, 4, 0]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 0]]
+                    ),
+                ),
+                target_labels=tf.constant(
+                    [
+                        [21820, 296, 1, -1, -1, -1],
+                        [21820, 8114, 1, -1, -1, -1],
+                        [21820, 3, 17, 4424, 1, -1],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
             "source_key": "source_ids",
             "target_key": "target_labels",
@@ -780,22 +1045,36 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 4,
             "expected_inputs": dict(
-                source_ids=[
-                    [21820, 1, 0, 0],
-                    [21820, 1, 0, 0],
-                    [21820, 1, 0, 0],
-                ],
-                target_ids=[
-                    [1, 21820, 296, 0],
-                    [1, 21820, 8114, 0],
-                    [1, 21820, 3, 17],
-                ],
-                target_labels=[
-                    [21820, 296, 1, -1],
-                    [21820, 8114, 1, -1],
-                    [21820, 3, 17, 4424],
-                ],
-                prefix=[[1], [1], [1]],
+                source=dict(
+                    input_ids=tf.constant(
+                        [
+                            [21820, 1, 0, 0],
+                            [21820, 1, 0, 0],
+                            [21820, 1, 0, 0],
+                        ]
+                    ),
+                    positions=tf.constant([[0, 1, 0, 0], [0, 1, 0, 0], [0, 1, 0, 0]]),
+                    input_segment_ids=tf.constant([[1, 1, 0, 0], [1, 1, 0, 0], [1, 1, 0, 0]]),
+                ),
+                target=dict(
+                    input_ids=tf.constant(
+                        [
+                            [1, 21820, 296, 0],
+                            [1, 21820, 8114, 0],
+                            [1, 21820, 3, 17],
+                        ]
+                    ),
+                    positions=tf.constant([[0, 1, 2, 0], [0, 1, 2, 0], [0, 1, 2, 3]]),
+                    input_segment_ids=tf.constant([[1, 1, 1, 0], [1, 1, 1, 0], [1, 1, 1, 1]]),
+                ),
+                target_labels=tf.constant(
+                    [
+                        [21820, 296, 1, -1],
+                        [21820, 8114, 1, -1],
+                        [21820, 3, 17, 4424],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # Source truncation test. Note that truncated sources do not end in EOS.
@@ -804,10 +1083,18 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 1,
             "expected_inputs": dict(
-                source_ids=[[21820], [21820], [21820]],
-                target_ids=[[1], [1], [1]],
-                target_labels=[[21820], [21820], [21820]],
-                prefix=[[1], [1], [1]],
+                source=dict(
+                    input_ids=tf.constant([[21820], [21820], [21820]]),
+                    positions=tf.constant([[0], [0], [0]]),
+                    input_segment_ids=tf.constant([[1], [1], [1]]),
+                ),
+                target=dict(
+                    input_ids=tf.constant([[1], [1], [1]]),
+                    positions=tf.constant([[0], [0], [0]]),
+                    input_segment_ids=tf.constant([[1], [1], [1]]),
+                ),
+                target_labels=tf.constant([[21820], [21820], [21820]]),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # Prefix test.
@@ -816,22 +1103,44 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.ENCODER_DECODER,
             "max_len": 6,
             "expected_inputs": dict(
-                source_ids=[
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                    [21820, 1, 0, 0, 0, 0],
-                ],
-                target_ids=[
-                    [1, 1, 1, 21820, 296, 0],
-                    [1, 1, 1, 21820, 8114, 0],
-                    [1, 1, 1, 21820, 3, 17],
-                ],
-                target_labels=[
-                    [-1, -1, 21820, 296, 1, -1],
-                    [-1, -1, 21820, 8114, 1, -1],
-                    [-1, -1, 21820, 3, 17, 4424],
-                ],
-                prefix=[[1, 1, 1], [1, 1, 1], [1, 1, 1]],
+                source=dict(
+                    input_ids=tf.constant(
+                        [
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                            [21820, 1, 0, 0, 0, 0],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0]]
+                    ),
+                ),
+                target=dict(
+                    input_ids=tf.constant(
+                        [
+                            [1, 1, 1, 21820, 296, 0],
+                            [1, 1, 1, 21820, 8114, 0],
+                            [1, 1, 1, 21820, 3, 17],
+                        ]
+                    ),
+                    positions=tf.constant(
+                        [[0, 1, 2, 3, 4, 0], [0, 1, 2, 3, 4, 0], [0, 1, 2, 3, 4, 5]]
+                    ),
+                    input_segment_ids=tf.constant(
+                        [[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 1, 1]]
+                    ),
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, -1, 21820, 296, 1, -1],
+                        [-1, -1, 21820, 8114, 1, -1],
+                        [-1, -1, 21820, 3, 17, 4424],
+                    ]
+                ),
+                prefix=tf.constant([[1, 1, 1], [1, 1, 1], [1, 1, 1]]),
             ),
         },
         # Decoder-only.
@@ -840,17 +1149,35 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.DECODER_ONLY,
             "max_len": 7,
             "expected_inputs": dict(
-                input_ids=[
-                    [1, 21820, 21820, 296, 0, 0, 0],
-                    [1, 21820, 21820, 8114, 0, 0, 0],
-                    [1, 21820, 21820, 3, 17, 4424, 0],
-                ],
-                target_labels=[
-                    [-1, 21820, 296, 1, -1, -1, -1],
-                    [-1, 21820, 8114, 1, -1, -1, -1],
-                    [-1, 21820, 3, 17, 4424, 1, -1],
-                ],
-                prefix=[[1], [1], [1]],
+                input_ids=tf.constant(
+                    [
+                        [1, 21820, 21820, 296, 0, 0, 0],
+                        [1, 21820, 21820, 8114, 0, 0, 0],
+                        [1, 21820, 21820, 3, 17, 4424, 0],
+                    ]
+                ),
+                input_segment_ids=tf.constant(
+                    [
+                        [1, 1, 1, 1, 0, 0, 0],
+                        [1, 1, 1, 1, 0, 0, 0],
+                        [1, 1, 1, 1, 1, 1, 0],
+                    ]
+                ),
+                input_positions=tf.constant(
+                    [
+                        [0, 1, 2, 3, 0, 0, 0],
+                        [0, 1, 2, 3, 0, 0, 0],
+                        [0, 1, 2, 3, 4, 5, 0],
+                    ]
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, 21820, 296, 1, -1, -1, -1],
+                        [-1, 21820, 8114, 1, -1, -1, -1],
+                        [-1, 21820, 3, 17, 4424, 1, -1],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # is_training as True
@@ -859,17 +1186,35 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.DECODER_ONLY,
             "max_len": 6,
             "expected_inputs": dict(
-                input_ids=[
-                    [1, 21820, 21820, 296, 0, 0],
-                    [1, 21820, 21820, 8114, 0, 0],
-                    [1, 21820, 21820, 3, 17, 4424],
-                ],
-                target_labels=[
-                    [-1, 21820, 296, 1, -1, -1],
-                    [-1, 21820, 8114, 1, -1, -1],
-                    [-1, 21820, 3, 17, 4424, 1],
-                ],
-                prefix=[[1], [1], [1]],
+                input_ids=tf.constant(
+                    [
+                        [1, 21820, 21820, 296, 0, 0],
+                        [1, 21820, 21820, 8114, 0, 0],
+                        [1, 21820, 21820, 3, 17, 4424],
+                    ]
+                ),
+                input_segment_ids=tf.constant(
+                    [
+                        [1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 1, 1],
+                    ]
+                ),
+                input_positions=tf.constant(
+                    [
+                        [0, 1, 2, 3, 0, 0],
+                        [0, 1, 2, 3, 0, 0],
+                        [0, 1, 2, 3, 4, 5],
+                    ]
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, 21820, 296, 1, -1, -1],
+                        [-1, 21820, 8114, 1, -1, -1],
+                        [-1, 21820, 3, 17, 4424, 1],
+                    ]
+                ),
+                prefix=tf.constant([[1], [1], [1]]),
             ),
         },
         # Prefix test.
@@ -878,26 +1223,47 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "model_type": ModelType.DECODER_ONLY,
             "max_len": 7,
             "expected_inputs": dict(
-                input_ids=[
-                    [1, 1, 21820, 21820, 296, 0, 0],
-                    [1, 1, 21820, 21820, 8114, 0, 0],
-                    [1, 1, 21820, 21820, 3, 17, 4424],
-                ],
-                target_labels=[
-                    [-1, -1, 21820, 296, 1, -1, -1],
-                    [-1, -1, 21820, 8114, 1, -1, -1],
-                    [-1, -1, 21820, 3, 17, 4424, 1],
-                ],
-                prefix=[[1, 1], [1, 1], [1, 1]],
+                input_ids=tf.constant(
+                    [
+                        [1, 1, 21820, 21820, 296, 0, 0],
+                        [1, 1, 21820, 21820, 8114, 0, 0],
+                        [1, 1, 21820, 21820, 3, 17, 4424],
+                    ]
+                ),
+                input_segment_ids=tf.constant(
+                    [
+                        [1, 1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 1, 0, 0],
+                        [1, 1, 1, 1, 1, 1, 1],
+                    ]
+                ),
+                input_positions=tf.constant(
+                    [
+                        [0, 1, 2, 3, 4, 0, 0],
+                        [0, 1, 2, 3, 4, 0, 0],
+                        [0, 1, 2, 3, 4, 5, 6],
+                    ]
+                ),
+                target_labels=tf.constant(
+                    [
+                        [-1, -1, 21820, 296, 1, -1, -1],
+                        [-1, -1, 21820, 8114, 1, -1, -1],
+                        [-1, -1, 21820, 3, 17, 4424, 1],
+                    ]
+                ),
+                prefix=tf.constant([[1, 1], [1, 1], [1, 1]]),
             ),
         },
+    )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_fake_text2text_lm_input(
         self,
         is_training: bool,
         model_type: str,
         max_len: int,
-        expected_inputs: Dict[str, List[List[int]]],
+        expected_inputs: dict[str, list[list[int]]],
         source_key: str = "source",
         target_key: str = "target",
     ):
@@ -945,13 +1311,12 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
 
         dataset = cfg.instantiate(parent=None)
         for batch in dataset:
-            for key, value in expected_inputs.items():
-                np.testing.assert_array_equal(
-                    value,
-                    batch[key],
-                )
+            tf.nest.map_structure(self.assertAllEqual, expected_inputs, batch)
             break
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_original_keys(self):
         # Ensure that keys besides source_key, target_key are returned unchanged.
         processor_fn = text2text_lm_input(
@@ -971,14 +1336,18 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             next(iter(ds)),
             {
                 "prefix": tf.constant([123]),
-                "source_ids": tf.constant([1391, 1, 0]),
-                "source_segment_ids": tf.constant([1, 1, 0]),
-                "source_positions": tf.constant([0, 1, 0]),
+                "source": {
+                    "input_ids": tf.constant([1391, 1, 0]),
+                    "input_segment_ids": tf.constant([1, 1, 0]),
+                    "positions": tf.constant([0, 1, 0]),
+                },
+                "target": {
+                    # The 123 prefix from above is prepended.
+                    "input_ids": tf.constant([123, 2387, 0]),
+                    "input_segment_ids": tf.constant([1, 1, 0]),
+                    "positions": tf.constant([0, 1, 0]),
+                },
                 "target_labels": tf.constant([2387, 1, -1]),
-                # The 123 prefix from above is prepended.
-                "target_ids": tf.constant([123, 2387, 0]),
-                "target_segment_ids": tf.constant([1, 1, 0]),
-                "target_positions": tf.constant([0, 1, 0]),
             },
         )
 
@@ -1004,13 +1373,17 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": ["▁short", "▁source", "</s>", "▁short", "▁source", "</s>"],
-                    "source_positions": [0, 1, 2, 0, 1, 2],
-                    "source_segment_ids": [1, 1, 1, 2, 2, 2],
+                    "source": {
+                        "input_ids": ["▁short", "▁source", "</s>", "▁short", "▁source", "</s>"],
+                        "positions": [0, 1, 2, 0, 1, 2],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 2],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁short", "▁target", "</s>", "▁short", "▁target"],
+                        "positions": [0, 1, 2, 0, 1, 2],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 2],
+                    },
                     "target_labels": ["▁short", "▁target", "</s>", "▁short", "▁target", "</s>"],
-                    "target_ids": ["</s>", "▁short", "▁target", "</s>", "▁short", "▁target"],
-                    "target_positions": [0, 1, 2, 0, 1, 2],
-                    "target_segment_ids": [1, 1, 1, 2, 2, 2],
                 }
             ],
         },
@@ -1032,18 +1405,34 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": [
-                        "▁short",
-                        "▁source",
-                        "</s>",
-                        "▁source",
-                        "</s>",
-                        "<pad>",
-                        "<pad>",
-                        "<pad>",
-                    ],
-                    "source_positions": [0, 1, 2, 0, 1, 0, 0, 0],
-                    "source_segment_ids": [1, 1, 1, 2, 2, 0, 0, 0],
+                    "source": {
+                        "input_ids": [
+                            "▁short",
+                            "▁source",
+                            "</s>",
+                            "▁source",
+                            "</s>",
+                            "<pad>",
+                            "<pad>",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 0, 1, 0, 0, 0],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 0, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": [
+                            "</s>",
+                            "▁some",
+                            "▁longer",
+                            "▁target",
+                            "</s>",
+                            "▁short",
+                            "▁target",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 3, 0, 1, 2, 0],
+                        "input_segment_ids": [1, 1, 1, 1, 2, 2, 2, 0],
+                    },
                     "target_labels": [
                         "▁some",
                         "▁longer",
@@ -1054,18 +1443,6 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
                         "</s>",
                         -1,
                     ],
-                    "target_ids": [
-                        "</s>",
-                        "▁some",
-                        "▁longer",
-                        "▁target",
-                        "</s>",
-                        "▁short",
-                        "▁target",
-                        "<pad>",
-                    ],
-                    "target_positions": [0, 1, 2, 3, 0, 1, 2, 0],
-                    "target_segment_ids": [1, 1, 1, 1, 2, 2, 2, 0],
                 }
             ],
         },
@@ -1088,24 +1465,32 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "expected": [
                 # First example. Note: "target_*" are truncated, and have no EOS.
                 {
-                    "source_ids": ["▁short", "</s>"],
-                    "source_positions": [0, 1],
-                    "source_segment_ids": [1, 1],
+                    "source": {
+                        "input_ids": ["▁short", "</s>"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁some"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
                     "target_labels": ["▁some", "▁longer"],
-                    "target_ids": ["</s>", "▁some"],
-                    "target_positions": [0, 1],
-                    "target_segment_ids": [1, 1],
                 },
                 # Second example. Note: "target_*" are truncated, and have no EOS.
                 {
-                    "source_ids": ["▁source", "</s>"],
-                    "source_positions": [0, 1],
-                    "source_segment_ids": [1, 1],
-                    # Note: "target_*" are truncated.
+                    "source": {
+                        "input_ids": ["▁source", "</s>"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
+                    "target": {
+                        # Note: "target_*" are truncated.
+                        "input_ids": ["</s>", "▁short"],
+                        "positions": [0, 1],
+                        "input_segment_ids": [1, 1],
+                    },
                     "target_labels": ["▁short", "▁target"],
-                    "target_ids": ["</s>", "▁short"],
-                    "target_positions": [0, 1],
-                    "target_segment_ids": [1, 1],
                 },
             ],
         },
@@ -1127,17 +1512,32 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": [
-                        "▁short",
-                        "▁source",
-                        "</s>",
-                        "▁source",
-                        "</s>",
-                        "<pad>",
-                        "<pad>",
-                    ],
-                    "source_positions": [0, 1, 2, 0, 1, 0, 0],
-                    "source_segment_ids": [1, 1, 1, 2, 2, 0, 0],
+                    "source": {
+                        "input_ids": [
+                            "▁short",
+                            "▁source",
+                            "</s>",
+                            "▁source",
+                            "</s>",
+                            "<pad>",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 0, 1, 0, 0],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": [
+                            "</s>",
+                            "</s>",
+                            "▁target",
+                            "</s>",
+                            "</s>",
+                            "▁target",
+                            "<pad>",
+                        ],
+                        "positions": [0, 1, 2, 0, 1, 2, 0],
+                        "input_segment_ids": [1, 1, 1, 2, 2, 2, 0],
+                    },
                     "target_labels": [
                         -1,
                         "▁target",
@@ -1147,9 +1547,6 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
                         "</s>",
                         -1,
                     ],
-                    "target_ids": ["</s>", "</s>", "▁target", "</s>", "</s>", "▁target", "<pad>"],
-                    "target_positions": [0, 1, 2, 0, 1, 2, 0],
-                    "target_segment_ids": [1, 1, 1, 2, 2, 2, 0],
                 },
             ],
         },
@@ -1172,13 +1569,17 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             ],
             "expected": [
                 {
-                    "source_ids": ["▁some", "▁short", "▁source", "</s>", "▁source", "</s>"],
-                    "source_positions": [0, 1, 2, 3, 0, 1],
-                    "source_segment_ids": [1, 1, 1, 1, 2, 2],
+                    "source": {
+                        "input_ids": ["▁some", "▁short", "▁source", "</s>", "▁source", "</s>"],
+                        "positions": [0, 1, 2, 3, 0, 1],
+                        "input_segment_ids": [1, 1, 1, 1, 2, 2],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁target", "</s>", "▁target"],
+                        "positions": [0, 1, 0, 1],
+                        "input_segment_ids": [1, 1, 2, 2],
+                    },
                     "target_labels": ["▁target", "</s>", "▁target", "</s>"],
-                    "target_ids": ["</s>", "▁target", "</s>", "▁target"],
-                    "target_positions": [0, 1, 0, 1],
-                    "target_segment_ids": [1, 1, 2, 2],
                 },
             ],
         },
@@ -1202,23 +1603,31 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "expected": [
                 {
                     "prefix": tf.constant([1]),
-                    "source_ids": ["▁some", "▁short", "▁source", "</s>", "<pad>", "<pad>"],
-                    "source_positions": [0, 1, 2, 3, 0, 0],
-                    "source_segment_ids": [1, 1, 1, 1, 0, 0],
+                    "source": {
+                        "input_ids": ["▁some", "▁short", "▁source", "</s>", "<pad>", "<pad>"],
+                        "positions": [0, 1, 2, 3, 0, 0],
+                        "input_segment_ids": [1, 1, 1, 1, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁target", "<pad>", "<pad>"],
+                        "positions": [0, 1, 0, 0],
+                        "input_segment_ids": [1, 1, 0, 0],
+                    },
                     "target_labels": ["▁target", "</s>", -1, -1],
-                    "target_ids": ["</s>", "▁target", "<pad>", "<pad>"],
-                    "target_positions": [0, 1, 0, 0],
-                    "target_segment_ids": [1, 1, 0, 0],
                 },
                 {
                     "prefix": tf.constant([1]),
-                    "source_ids": ["▁source", "</s>", "<pad>", "<pad>", "<pad>", "<pad>"],
-                    "source_positions": [0, 1, 0, 0, 0, 0],
-                    "source_segment_ids": [1, 1, 0, 0, 0, 0],
+                    "source": {
+                        "input_ids": ["▁source", "</s>", "<pad>", "<pad>", "<pad>", "<pad>"],
+                        "positions": [0, 1, 0, 0, 0, 0],
+                        "input_segment_ids": [1, 1, 0, 0, 0, 0],
+                    },
+                    "target": {
+                        "input_ids": ["</s>", "▁target", "<pad>", "<pad>"],
+                        "positions": [0, 1, 0, 0],
+                        "input_segment_ids": [1, 1, 0, 0],
+                    },
                     "target_labels": ["▁target", "</s>", -1, -1],
-                    "target_ids": ["</s>", "▁target", "<pad>", "<pad>"],
-                    "target_positions": [0, 1, 0, 0],
-                    "target_segment_ids": [1, 1, 0, 0],
                 },
             ],
             "packing_mode": "pad",
@@ -1289,12 +1698,15 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
             "packing_mode": "pack",
         },
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_packing(
         self,
         *,
         model_type: ModelType,
-        inputs: List[Dict[str, Any]],
-        expected: List[Dict[str, Any]],
+        inputs: list[dict[str, Any]],
+        expected: list[dict[str, Any]],
         max_target_len: int,
         max_source_len: Optional[int] = None,
         packing_mode: Literal["pack", "pad", "none"] = "pack",
@@ -1323,20 +1735,20 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
         )
         ds = processor(source())
         self.assertEqual(len(expected), len(list(ds)))
+
+        def to_tensor(val: dict):
+            for k, v in val.items():
+                if isinstance(v, dict):
+                    to_tensor(v)
+                    continue
+                if v and isinstance(v, list) and any(isinstance(x, str) for x in v):
+                    # Detokenize.
+                    v = [vocab.tokenizer.piece_to_id(x) if isinstance(x, str) else x for x in v]
+                val[k] = tf.constant(v)
+
         for expect, actual in zip(expected, ds):
             # Convert pieces back to tf.Tensor of IDs.
-            for k, v in expect.items():
-                if k in ["input_ids", "source_ids", "target_ids", "target_labels"]:
-                    v = [vocab.tokenizer.piece_to_id(x) if isinstance(x, str) else x for x in v]
-                expect[k] = tf.constant(v)
-
-            for k, v in actual.items():
-                if k in ["input_ids", "source_ids", "target_ids", "target_labels"]:
-                    print(
-                        f"{k}: {[vocab.tokenizer.id_to_piece(int(x)) if x >= 0 else x for x in v]}"
-                    )
-                else:
-                    print(f"{k}: {v}")
+            to_tensor(expect)
             tf.nest.map_structure(self.assertAllEqual, expect, actual)
 
     @parameterized.parameters(
@@ -1376,8 +1788,8 @@ class Seq2SeqInputTest(parameterized.TestCase, tf.test.TestCase):
     def test_trim_and_pack_with_segments(
         self,
         *,
-        inputs: List[Dict[str, Any]],
-        expected: List[Dict[str, Any]],
+        inputs: list[dict[str, Any]],
+        expected: list[dict[str, Any]],
         max_target_len: int,
         max_source_len: Optional[int] = None,
     ):

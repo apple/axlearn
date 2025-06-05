@@ -1,13 +1,16 @@
-# pylint: disable=line-too-long
+# Copyright © 2023 Apple Inc.
+
 """Tests inference.py.
 
 Some tests are intended to be run on TPU.
 """
-# pylint: enable=line-too-long
+
 import itertools
 import os
 import tempfile
-from typing import Callable, Generator, List, Optional, Tuple, Union
+from collections.abc import Generator
+from typing import Callable, Optional, Union
+from unittest import mock
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +21,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
-from axlearn.common import layers, test_utils, utils, utils_spmd
+from axlearn.common import layers, test_utils, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import CheckpointValidationType, TensorStoreStateStorage
 from axlearn.common.config import Configurable, config_class, config_for_function
@@ -30,7 +33,7 @@ from axlearn.common.inference_pipeline import (
     pop_string_tensors,
 )
 from axlearn.common.input_tf_data import identity
-from axlearn.common.module import Module
+from axlearn.common.module import Module, child_context
 from axlearn.common.optimizers import ParamEmaState
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
@@ -44,7 +47,7 @@ from axlearn.common.state_builder import (
     RestoreAndConvertBuilder,
     TensorStoreStateStorageBuilder,
 )
-from axlearn.common.trainer import _TrainerState
+from axlearn.common.trainer import TrainerState
 from axlearn.common.utils import (
     DataPartitionType,
     NestedTensor,
@@ -105,7 +108,7 @@ class RangeWeightInitializer(Initializer, Configurable):
         self,
         name: str,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         shape: Shape,
         dtype: jnp.dtype,
         axes: Optional[FanAxes] = None,
@@ -144,12 +147,15 @@ class DummyModel(BaseModel):
         )
         self.predict_dtypes = []
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         y = self.predict(input_batch)
         return y.mean(), {}
 
     def predict(self, input_batch: NestedTensor) -> Tensor:
         x = input_batch["x"]
+        with child_context("input_stats", module=self):
+            self.add_module_output("x_mean", x.mean())
+            self.add_module_output("x_max", x.max())
         self.predict_dtypes.append(x.dtype)
         return self.linear(x)
 
@@ -161,27 +167,27 @@ class DummyModel(BaseModel):
 
 def is_supported(
     platform: str,
-    mesh_shape: Tuple[int, int],
+    mesh_shape: tuple[int, int],
     param_dtype: jnp.dtype,
     inference_dtype: Optional[jnp.dtype],
     global_batch_size: int,
     data_partition: DataPartitionType,
     use_ema: bool = False,
 ):
-    del param_dtype, inference_dtype, use_ema  # not used
+    del param_dtype, use_ema  # not used
+    # TODO(xuan-zou): jax 0.4.25 breaks bfloat16 on CPU due to high variance on
+    # the final result (up to 10% precision diff), will re-enable when fixed.
+    # NOTE: bfloat16 test on GPU is added and verified.
     return (
         test_utils.is_supported_platform(platform)
         and np.prod(mesh_shape) == jax.device_count()
         and (data_partition != DataPartitionType.FULL or global_batch_size >= jax.device_count())
+        and ((inference_dtype != jnp.bfloat16) or platform != "cpu")
     )
 
 
 class InferenceTest(test_utils.TestCase):
     """Inference tests."""
-
-    def setUp(self):
-        super().setUp()
-        utils_spmd.setup()
 
     @parameterized.parameters(
         (tf.constant("query"), "query"),
@@ -190,11 +196,12 @@ class InferenceTest(test_utils.TestCase):
         (tf.constant([1]), [1]),
         (jnp.array(1), 1),
         (jnp.array([1, 2, 3]), [1, 2, 3]),
+        (tf.constant(["豆豆"]), ["豆豆"]),
     )
     def test_jsonl_feature(
         self,
         value: Union[Tensor, tf.Tensor],
-        expectation: Union[int, float, bool, str, List[Union[int, float, bool, str]]],
+        expectation: Union[int, float, bool, str, list[Union[int, float, bool, str]]],
     ):
         self.assertEqual(_json_feature(value), expectation)
 
@@ -202,8 +209,8 @@ class InferenceTest(test_utils.TestCase):
     def _runner_config(
         self,
         *,
-        mesh_shape: Tuple[int, int],
-        mesh_axis_names: Tuple[str, str],
+        mesh_shape: tuple[int, int],
+        mesh_axis_names: tuple[str, str],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         data_partition: DataPartitionType,
@@ -234,11 +241,11 @@ class InferenceTest(test_utils.TestCase):
         self,
         *,
         root_dir: str,
-        mesh_shape: Tuple[int, int],
-        mesh_axis_names: Tuple[str, str],
-        prng_key: jax.random.KeyArray,
+        mesh_shape: tuple[int, int],
+        mesh_axis_names: tuple[str, str],
+        prng_key: Tensor,
         use_ema: bool = False,
-    ) -> Tuple[NestedTensor, str]:
+    ) -> tuple[NestedTensor, str]:
         devices = mesh_utils.create_device_mesh(mesh_shape)
         mesh = jax.sharding.Mesh(devices, mesh_axis_names)
         logging.info("Global mesh: %s", mesh)
@@ -262,14 +269,14 @@ class InferenceTest(test_utils.TestCase):
                         ema=ParamEmaState(
                             count=0,
                             # pylint: disable-next=unnecessary-lambda
-                            ema=jax.tree_util.tree_map(lambda p: jnp.ones_like(p), params),
+                            ema=jax.tree.map(lambda p: jnp.ones_like(p), params),
                         ),
                     )
                 else:
                     learner_state = dict(
                         x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32)
                     )
-                return _TrainerState(
+                return TrainerState(
                     prng_key=prng_key,
                     model=params,
                     learner=learner_state,
@@ -288,7 +295,7 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
-                ("cpu", "tpu"),  # platform,
+                ("cpu", "gpu", "tpu"),  # platform,
                 ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
                 (jnp.float32, jnp.bfloat16),  # param_dtype
                 (None, jnp.float32, jnp.bfloat16),  # inference_dtype
@@ -301,7 +308,7 @@ class InferenceTest(test_utils.TestCase):
     def test_runner(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -348,6 +355,8 @@ class InferenceTest(test_utils.TestCase):
         restored_state = inference_runner.inference_runner_state
         self.assertNestedEqual(restored_state.prng_key, prng_key)
         expected_model = state.learner["ema"].ema if use_ema else state.model
+        if inference_dtype is not None:
+            expected_model = utils.cast_floats(expected_model, to_dtype=inference_dtype)
         if param_dtype == jnp.float32 and local_run:
             # We check for model state equality only if restored dtype matches,
             # and if we are doing a local run (to avoid process gather on weights).
@@ -360,7 +369,9 @@ class InferenceTest(test_utils.TestCase):
             # Same path.
             self.assertEqual(value[0], restored_value[0])
             # Restored dtype matches param_dtype.
-            self.assertEqual(restored_value[1].dtype, param_dtype)
+            self.assertEqual(
+                restored_value[1].dtype, param_dtype if inference_dtype is None else inference_dtype
+            )
 
         # Now try to run inference.
         input_generator_fn = _build_input(global_batch_size, data_partition=data_partition)
@@ -394,7 +405,91 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
-                ("cpu", "tpu"),  # platform,
+                ("cpu", "gpu"),  # platform,
+                ((1, 1), (4, 1), (8, 1)),  # mesh_shape
+                (jnp.float32,),  # param_dtype
+                (jnp.float32,),  # inference_dtype
+                (16,),  # global_batch_size
+                (DataPartitionType.FULL,),  # data_partition
+            ),
+        )
+    )
+    def test_runner_module_outputs(
+        self,
+        platform: str,
+        mesh_shape: tuple[int, int],
+        param_dtype: jnp.dtype,
+        inference_dtype: Optional[jnp.dtype],
+        global_batch_size: int,
+        data_partition: DataPartitionType,
+    ):
+        logging.info(
+            "platform=%s mesh_shape=%s global_batch_size=%s data_partition=%s",
+            platform,
+            mesh_shape,
+            global_batch_size,
+            data_partition,
+        )
+        with tempfile.TemporaryDirectory() as local_tmp_dir:
+            prng_key = jax.random.PRNGKey(11)
+            local_run = jax.process_count() == 1
+            gs_dir = os.path.join(
+                "gs://axlearn-public/testdata/",
+                "inference_test",
+            )
+            root_dir = local_tmp_dir if local_run else gs_dir
+            mesh_axis_names = ("data", "model")
+            # Save ckpt.
+            _, ckpt_dir = self._build_ckpt(
+                prng_key=prng_key,
+                root_dir=root_dir,
+                mesh_shape=mesh_shape,
+                mesh_axis_names=mesh_axis_names,
+            )
+
+            cfg = self._runner_config(
+                mesh_shape=mesh_shape,
+                mesh_axis_names=mesh_axis_names,
+                param_dtype=param_dtype,
+                inference_dtype=inference_dtype,
+                ckpt_dir=ckpt_dir,
+                data_partition=data_partition,
+            )
+            inference_runner = cfg.set(name="test_inference_runner").instantiate(parent=None)
+
+        input_generator_fn = _build_input(global_batch_size, data_partition=data_partition)
+
+        # Run inference with module outputs.
+        module_outputs_path = "input_stats/x_mean"
+        method_runner = inference_runner.create_method_runner(
+            method="predict",
+            drop_module_outputs=lambda path: path not in module_outputs_path,
+        )
+        output = method_runner(next(input_generator_fn()))
+        module_outputs = utils.replicate_to_local_data(output.module_outputs)
+
+        # Check that only the expected module outputs are returned.
+        expected_module_outputs = {
+            "input_stats": {
+                "x_mean": utils.replicate_to_local_data(
+                    output.input_batch["x"].mean(),
+                )
+            }
+        }
+        self.assertNestedAllClose(module_outputs, expected_module_outputs)
+
+        # Run inference without module outputs (default behavior).
+        method_runner = inference_runner.create_method_runner(
+            method="predict",
+        )
+        output = method_runner(next(input_generator_fn()))
+        self.assertEqual(output.module_outputs, {})
+
+    @parameterized.parameters(
+        filter(
+            lambda params: is_supported(*params),
+            itertools.product(
+                ("cpu", "gpu", "tpu"),  # platform,
                 ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
                 (jnp.float32, jnp.bfloat16),  # param_dtype
                 (None, jnp.float32, jnp.bfloat16),  # inference_dtype
@@ -407,7 +502,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -542,7 +637,7 @@ class InferenceTest(test_utils.TestCase):
         filter(
             lambda params: is_supported(*params),
             itertools.product(
-                ("cpu", "tpu"),  # platform,
+                ("cpu", "gpu", "tpu"),  # platform,
                 ((1, 1), (4, 1), (2, 2), (8, 1), (4, 2)),  # mesh_shape
                 (jnp.float32,),  # param_dtype
                 (jnp.float32,),  # inference_dtype
@@ -554,7 +649,7 @@ class InferenceTest(test_utils.TestCase):
     def test_pipeline_with_string_tensors(
         self,
         platform: str,
-        mesh_shape: Tuple[int, int],
+        mesh_shape: tuple[int, int],
         param_dtype: jnp.dtype,
         inference_dtype: Optional[jnp.dtype],
         global_batch_size: int,
@@ -651,6 +746,83 @@ class InferenceTest(test_utils.TestCase):
                     self.assertEqual(
                         global_batch_size * NUM_BATCHES * jax.process_count(), num_examples
                     )
+
+    @parameterized.parameters(
+        filter(
+            lambda params: is_supported(*params),
+            itertools.product(
+                ("cpu", "gpu"),  # platform,
+                (
+                    (1, 1),
+                    (4, 1),
+                    (8, 1),
+                ),  # mesh_shape
+                (jnp.float32,),  # param_dtype
+                (jnp.float32,),  # inference_dtype
+                (16,),  # global_batch_size
+                (DataPartitionType.FULL,),  # data_partition
+            ),
+        )
+    )
+    def test_pipeline_summary_writer(
+        self,
+        platform: str,
+        mesh_shape: tuple[int, int],
+        param_dtype: jnp.dtype,
+        inference_dtype: Optional[jnp.dtype],
+        global_batch_size: int,
+        data_partition: DataPartitionType,
+    ):
+        del platform  # only used by is_supported_platform().
+        local_run = jax.process_count() == 1
+        mesh_axis_names = ("data", "model")
+
+        mock_summary_writer = mock.Mock(return_value=None)
+
+        with mock.patch(
+            "axlearn.common.summary_writer.SummaryWriter.Config.instantiate",
+            mock.MagicMock(return_value=mock_summary_writer),
+        ), tempfile.TemporaryDirectory() as local_tmp_dir:
+            root_dir = local_tmp_dir if local_run else "gs://axlearn-public/testdata/inference_test"
+            with set_data_dir(root_dir):
+                prng_key = jax.random.PRNGKey(11)
+                # Save ckpt.
+                _, ckpt_dir = self._build_ckpt(
+                    prng_key=prng_key,
+                    root_dir=root_dir,
+                    mesh_shape=mesh_shape,
+                    mesh_axis_names=mesh_axis_names,
+                )
+
+                cfg = InferencePipeline.default_config().set(name="pipeline")
+                cfg.model_method = "predict_batch"
+                cfg.input.set(
+                    is_training=False,
+                    source=config_for_function(_build_input).set(
+                        global_batch_size=global_batch_size, data_partition=DataPartitionType.FULL
+                    ),
+                    processor=config_for_function(identity),
+                    batcher=config_for_function(identity),
+                )
+                cfg.runner = self._runner_config(
+                    mesh_shape=mesh_shape,
+                    mesh_axis_names=mesh_axis_names,
+                    param_dtype=param_dtype,
+                    inference_dtype=inference_dtype,
+                    ckpt_dir=ckpt_dir,
+                    data_partition=data_partition,
+                )
+                output_path = (
+                    "{data_dir}/outputs/examples-{process_index:05d}-of-{process_count:05d}"
+                )
+                cfg.output_writer.sink.output_path = output_path
+                cfg.summary_writer.dir = os.path.join(local_tmp_dir, "summaries")
+                pipeline = cfg.instantiate(parent=None)
+                pipeline.run()
+
+                mock_summary_writer.assert_any_call(step=0, values=mock.ANY)
+                mock_summary_writer.assert_any_call(step=1, values=mock.ANY)
+                mock_summary_writer.assert_any_call(step=2, values=mock.ANY)
 
 
 if __name__ == "__main__":

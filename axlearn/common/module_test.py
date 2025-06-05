@@ -1,14 +1,23 @@
-"""Tests for module.py."""
-# pylint: disable=protected-access
-import threading
-from typing import List, Optional
+# Copyright © 2023 Apple Inc.
 
+"""Tests for module.py."""
+
+# pylint: disable=protected-access
+# type: ignore[attribute-error]
+import contextlib
+import threading
+from typing import Any, Callable, Optional, Union
+
+import chex
 import jax.random
 import numpy as np
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
+from axlearn.common import summary, test_utils
 from axlearn.common.config import REQUIRED, Required, config_class
+from axlearn.common.layers import Linear
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import (
     InvocationContext,
     Module,
@@ -20,7 +29,16 @@ from axlearn.common.module import (
     current_context,
 )
 from axlearn.common.module import functional as F
-from axlearn.common.module import install_context_stack, new_output_collection, set_current_context
+from axlearn.common.module import (
+    install_context_stack,
+    new_output_collection,
+    nowrap,
+    scan_in_context,
+    set_current_context,
+)
+from axlearn.common.summary import ImageSummary, Summary
+from axlearn.common.test_utils import TestWithTemporaryCWD
+from axlearn.common.utils import Nested, match_regex_rules
 
 
 class OutputCollectionTest(absltest.TestCase):
@@ -49,6 +67,26 @@ class OutputCollectionTest(absltest.TestCase):
         self.assertEqual({"x": 2, "y": 5}, c1.state_updates)
         self.assertEqual({"x": 3, "y": 6}, c1.module_outputs)
 
+    def test_module_add_summary_image(self):
+        val = jnp.ones((2, 5, 5, 4))  # 4 means RGBA
+
+        class _TestModule(Module):
+            def forward(self):
+                self.add_summary("img0", ImageSummary(val))
+
+        module = _TestModule.default_config().set(name="tmp").instantiate(parent=None)
+
+        # Test that it works under jit.
+        @jax.jit
+        def _test():
+            _, output_collection = F(
+                module, prng_key=jax.random.PRNGKey(0), state={}, inputs=[], is_training=True
+            )
+            return output_collection
+
+        output_collection = _test()
+        chex.assert_trees_all_equal(output_collection.summaries["img0"].value(), val)
+
 
 class TestModule(Module):
     pass
@@ -58,7 +96,32 @@ def new_test_module(name: str) -> TestModule:
     return TestModule.default_config().set(name=name).instantiate(parent=None)
 
 
-class InvocationContextTest(absltest.TestCase):
+class InvocationContextTest(test_utils.TestCase):
+    def test_set_state_update(self):
+        for levels in range(4):
+            context = InvocationContext(
+                name="root",
+                parent=None,
+                module=new_test_module("test"),
+                is_training=True,
+                prng_key=None,
+                state={},
+                output_collection=new_output_collection(),
+            )
+            descendant = context
+            for level in range(levels):
+                name = f"mod{level}"
+                descendant.module._add_child(name, TestModule.default_config())
+                descendant = descendant.add_child(name)
+            descendant.set_state_update((1, 2, 3))
+            self.assertEqual(descendant.get_state_updates(), (1, 2, 3))
+
+            descendant_state_update = context.output_collection.state_updates
+            for level in range(levels):
+                name = f"mod{level}"
+                descendant_state_update = descendant_state_update[name]
+            self.assertEqual(descendant_state_update, (1, 2, 3), msg=f"levels={levels}")
+
     def test_context_output_collection(self):
         context = InvocationContext(
             name="root",
@@ -105,6 +168,24 @@ class InvocationContextTest(absltest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be a root context"):
             with set_current_context(context2):
                 pass
+
+    def test_nested_context(self):
+        """Test calling `set_current_context(..., require_parent=False)."""
+        module1 = new_test_module("test1")
+        module2 = new_test_module("test2")
+        context1 = InvocationContext(
+            name="context1",
+            parent=None,  # root context
+            module=module1,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state={"x": 1},
+            output_collection=new_output_collection(),
+        )
+        context2 = context1.add_child("context2", module=module2, state={"x": 2})
+        context2.parent = None
+        with set_current_context(context2, require_parent=False) as ctx:
+            self.assertEqual(ctx.parent, None)
 
     def test_context_stack_mutlithread(self):
         module1 = new_test_module("root")
@@ -169,6 +250,76 @@ class InvocationContextTest(absltest.TestCase):
             context2 = context1.add_child("context2", module=module2, state={"x": 2})
             self.assertEqual(context2.prng_key, None)
 
+    class MySummary(summary.Summary):
+        val: str
+
+        def validate(self):
+            if self.val == "s":
+                raise ValueError("not allowed")
+
+    @parameterized.parameters(
+        [MySummary("s"), True],
+        [dict(a=3, b=MySummary("s")), True],
+        [dict(a=3, b=MySummary("t")), False],
+        [dict(a=MySummary("t"), b=MySummary("s")), True],
+        [dict(a=MySummary("t"), b=MySummary("r")), False],
+    )
+    def test_add_summary_validation(
+        self, value: Nested[Union[Summary, Tensor]], should_raise: bool
+    ):
+        """Tests validation in `add_summary("summary", value)`."""
+        module1 = new_test_module("test1")
+        ctx = InvocationContext(
+            name="context1",
+            parent=None,
+            module=module1,
+            prng_key=None,
+            is_training=True,
+            state={"x": 1},
+            output_collection=new_output_collection(),
+        )
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(set_current_context(ctx))
+            if should_raise:
+                stack.enter_context(self.assertRaises(ValueError))
+            ctx.add_summary("summary", value)
+
+    def test_functional(self):
+        """Tests the `Functional` class and `InvocationContext.functional()`."""
+        with test_utils.bind_layer(Linear.default_config().set(input_dim=5, output_dim=5)) as layer:
+
+            def fn(x: Tensor, y: Tensor) -> Tensor:
+                current_context().add_state_update("my_state", y)
+                return layer(x)
+
+            args = [jnp.ones(5)]
+            kwargs = dict(y=jnp.zeros(3))
+            new_fn = current_context().functional(fn)
+            old_ctx = current_context()
+            result, output_collection = new_fn(*args, **kwargs)
+            self.assertIs(current_context(), old_ctx)
+            self.assertNestedEqual(current_context().output_collection, new_output_collection())
+            # The below line would cause an output conflict error if we had called fn() instead of
+            # new_fn() on the line above. But it doesn't since new_fn() restores the context to its
+            # original state after the call.
+            result2 = fn(*args, **kwargs)
+            self.assertNestedEqual(result, result2)
+            self.assertNestedEqual(output_collection, current_context().output_collection)
+
+    def test_functional_with_method_call(self):
+        """Demonstrates usage of `InvocationContext.functional()` with a module method instead of an
+        anonymous function.
+        """
+        with test_utils.bind_layer(Linear.default_config().set(input_dim=5, output_dim=5)) as layer:
+            args = [jnp.ones(5)]
+            new_fn = current_context().functional(layer.forward)
+            old_ctx = current_context()
+            result, _ = new_fn(*args)
+            self.assertIs(current_context(), old_ctx)
+            result2 = layer.forward(*args)
+            self.assertNestedEqual(result, result2)
+
 
 class NestedModule(Module):
     """A nested module."""
@@ -188,11 +339,13 @@ class NestedModule(Module):
         cfg = self.config
         # It is ok to call another method of 'self' directly, if it is invoked only once in the
         # current context.
+        self.vprint(1, "input={x}", x=x)
         x = self.inc(x)
         if cfg.child is not None:
             # Can also call children directly, if each child is invoked only once.
             x = self.child1(x)
             x = self.child2(x)
+        self.vprint(1, "output={x}", x=x)
         return x
 
     def invoke_grandchildren(self, x):
@@ -251,6 +404,10 @@ class ModuleConsumingSharedChild(Module):
         shared_module = self.get_shared_module("shared")
         return x * shared_module.state["weight"]
 
+    def invoke_shared(self, *args):
+        shared_module = self.get_shared_module("shared")
+        return shared_module.module(*args)
+
 
 class ModuleProvidingSharedChild(Module):
     """A module to provide a shared child."""
@@ -272,7 +429,10 @@ class ModuleProvidingSharedChild(Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.child1(x) + self.child2(x)
 
-    def get_descendant_shared_module(self, *, path: List[str], shared_module_name: str):
+    def invoke_shared(self, x: Tensor) -> Tensor:
+        return self.child1.invoke_shared(x) + self.child2.invoke_shared(x)
+
+    def get_descendant_shared_module(self, *, path: list[str], shared_module_name: str):
         # Note: this function assumes that inner nodes (non-leaves) of the module hierarchy are
         # `ModuleProvidingSharedChild`s.
         part, *path = path
@@ -285,9 +445,11 @@ class ModuleProvidingSharedChild(Module):
             )
 
 
-class ModuleTest(absltest.TestCase):
+class ModuleTest(TestWithTemporaryCWD):
     def test_parent_children(self):
-        cfg = NestedModule.default_config().set(name="root", child=NestedModule.default_config())
+        cfg = NestedModule.default_config().set(
+            name="root", child=NestedModule.default_config(), vlog=2
+        )
         root: NestedModule = cfg.instantiate(parent=None)
         self.assertIsInstance(root, NestedModule)
         self.assertEqual(root.path(), "root")
@@ -549,13 +711,13 @@ class ModuleTest(absltest.TestCase):
             prng_key=jax.random.PRNGKey(1),
             is_training=True,
             method="get_shared_module",
-            inputs=dict(shared_module_name="outer_shared"),
+            inputs=("outer_shared",),
         )
         self.assertIs(module.module, root.shared_child)
         self.assertEqual(module.state, root_state["shared_child"])
 
         # Test that we cannot access "inner_shared" from outside of "outer_shared".
-        with self.assertRaisesRegex(ValueError, "ancestor that shares 'inner_shared'"):
+        with self.assertRaisesRegex(ValueError, r"ancestor that shares .*'inner_shared'"):
             F(
                 root,
                 state=root_state,
@@ -573,7 +735,285 @@ class ModuleTest(absltest.TestCase):
                 prng_key=jax.random.PRNGKey(1),
                 is_training=True,
                 method="get_shared_module",
-                inputs=dict(shared_module_name="outer_shared"),
+                inputs=("outer_shared",),
+            )
+
+    def test_path_to_descendant_module(self):
+        class CompositeModule(Module):
+            @config_class
+            class Config(Module.Config):
+                child1: Module.Config = TestModule.default_config()
+                child2: Module.Config = TestModule.default_config()
+
+            def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
+                super().__init__(cfg, parent=parent)
+                self._add_child("child1", cfg.child1)
+                self._add_child("child2", cfg.child2)
+
+        module = CompositeModule.default_config().set(name="test").instantiate(parent=None)
+
+        with self.assertRaisesRegex(ValueError, "descendant"):
+            module.child2.path_to_descendant_module(module.child1)
+
+    def test_shared_module_auto_context(self):
+        """Tests that auto child context handling works with shared modules."""
+
+        class SharedModule(Module):
+            def forward(self, x: Tensor) -> Tensor:
+                self.add_summary("shared_input", x)
+                return x + self.state["weight"]
+
+        cfg = ModuleProvidingSharedChild.default_config().set(
+            name="root",
+            shared_child=SharedModule.default_config(),
+            child=ModuleConsumingSharedChild.default_config(),
+        )
+        module = cfg.instantiate(parent=None)
+        state = {
+            "shared_child": {"weight": jnp.ones([])},
+            "child1": {},
+            "child2": {},
+        }
+        outputs, output_collection = F(
+            module,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(x=jnp.zeros([])),
+            is_training=False,
+            method="invoke_shared",
+        )
+        # The shared child is invoked twice, once from each child of ModuleProvidingSharedChild.
+        # Each invocation adds 1.
+        self.assertEqual(2, outputs)
+        for child in ("child1", "child2"):
+            self.assertEqual(0, output_collection.summaries[child]["shared"]["shared_input"])
+
+    def test_post_init(self):
+        class InnerModule(Module):
+            """A dummy module wrapped by `OuterModule`."""
+
+            @config_class
+            class Config(Module.Config):
+                inner_a: Required[int] = REQUIRED
+
+            def inner_method(self):
+                return self.config.inner_a
+
+        class OuterModule(Module):
+            """A dummy module exposing `InnerModule` methods as part of its API."""
+
+            @config_class
+            class Config(Module.Config):
+                inner: Module.Config = InnerModule.default_config()
+                outer_a: Required[int] = REQUIRED
+
+            def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
+                super().__init__(cfg, parent=parent)
+                self._add_child("inner", cfg.inner)
+
+            def _wrapped_methods_for_auto_child_context(self) -> dict[str, Callable[..., Any]]:
+                """Override `_wrapped_methods_for_auto_child_context` rather than
+                `_methods_to_wrap_for_auto_child_context` to ensure that inner methods are bound to
+                self.inner.
+                """
+                # We should have access to `inner` at this point.
+                self.inner: Module
+                outer_methods = super()._wrapped_methods_for_auto_child_context()
+                inner_methods = self.inner._wrapped_methods_for_auto_child_context()
+                return {**outer_methods, **inner_methods}
+
+            def outer_method(self):
+                return self.config.outer_a
+
+        inner_cfg = InnerModule.default_config().set(inner_a=123)
+        outer_cfg = OuterModule.default_config().set(outer_a=456, inner=inner_cfg)
+
+        outer = outer_cfg.set(name="test").instantiate(parent=None)
+        # Outer method should have been wrapped.
+        self.assertEqual(outer_cfg.outer_a, outer.outer_method())
+        # Outer should also wrap the inner methods. We also ensure that `self.config` points to
+        # `InnerModule.Config` rather than `OuterModule.Config`.
+        self.assertEqual(inner_cfg.inner_a, outer.inner_method())
+
+    def test_nowrap(self):
+        class MyModule(Module):
+            def my_method1(self):
+                return 1
+
+            @nowrap
+            def my_method2(self):
+                return 2
+
+        cfg = MyModule.default_config()
+        layer = cfg.set(name="test").instantiate(parent=None)
+        wrapped_methods = layer._methods_to_wrap_for_auto_child_context()
+        self.assertIn("my_method1", wrapped_methods)
+        self.assertNotIn("my_method2", wrapped_methods)
+
+
+class ScanInContextTest(TestWithTemporaryCWD):
+    """Tests scan_in_context."""
+
+    def _invoke(self, *, num_iters, xs, **kwargs):
+        batch_size = 2
+
+        def fn(carry_i, x_i):
+            ctx = current_context()
+            assert ctx is not None
+            state_i = ctx.state
+            # Add a nested output for testing filtering.
+            ctx.add_module_output(
+                "nested",
+                dict(
+                    with_carry=dict(
+                        output=x_i + carry_i,
+                        with_state=dict(output=x_i + carry_i + state_i),
+                    ),
+                    output=x_i,
+                ),
+            )
+            ctx.add_summary("carry", WeightedScalar(carry_i.mean(), carry_i.size))
+            return carry_i + 1, x_i + carry_i + state_i
+
+        xs["xs"] = jnp.arange(num_iters, dtype=jnp.int32)[:, None] * jnp.ones(
+            batch_size, dtype=jnp.int32
+        )
+        return scan_in_context(fn, carry=jnp.zeros(1, dtype=jnp.int32), xs=xs, **kwargs)
+
+    @contextlib.contextmanager
+    def _dummy_context(self):
+        # Yields a dummy context.
+        context = InvocationContext(
+            name="root",
+            parent=None,
+            module=new_test_module("test"),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=jnp.arange(2, dtype=jnp.int32) * 10,
+            output_collection=new_output_collection(),
+        )
+        with set_current_context(context):
+            yield context
+
+    def test_context(self):
+        # Running outside of context should error.
+        with self.assertRaisesRegex(ValueError, "Expected current_context()"):
+            self._invoke(num_iters=3, xs={})
+
+    def test_basic(self):
+        num_iters = 3
+
+        # Invoke with inherited state. In this case, the same state is used each iter.
+        with self._dummy_context():
+            carry, ys = self._invoke(num_iters=num_iters, xs={})
+            self.assertNestedEqual(jnp.array([num_iters], dtype=carry.dtype), carry)
+            self.assertNestedEqual(
+                jnp.array([[0, 10], [2, 12], [4, 14]], dtype=carry.dtype),
+                ys,
+            )
+
+        # Invoke with explicit state. In this case, the state is unrolled.
+        with self._dummy_context():
+            carry, ys = self._invoke(
+                num_iters=num_iters,
+                xs={"state": jnp.ones([num_iters, 1], dtype=jnp.int32) * 10},
+            )
+            self.assertNestedEqual(jnp.array([num_iters], dtype=carry.dtype), carry)
+            self.assertNestedEqual(
+                jnp.array([[10, 10], [12, 12], [14, 14]], dtype=carry.dtype),
+                ys,
+            )
+
+    def test_drop_output(self):
+        num_iters = 3
+        child_name_prefix = "foo"
+
+        # By default, nothing is dropped.
+        with self._dummy_context() as ctx:
+            self._invoke(num_iters=num_iters, xs={}, child_name_prefix=child_name_prefix)
+            self.assertNestedEqual(
+                {
+                    "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
+                    "with_carry": {
+                        "output": jnp.array([[0, 0], [2, 2], [4, 4]]),
+                        "with_state": {"output": jnp.array([[0, 10], [2, 12], [4, 14]])},
+                    },
+                },
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
+            )
+            # Summary values are put in `{child_name_prefix}{i}`.
+            self.assertNestedEqual(
+                {
+                    f"{child_name_prefix}{i}": {"carry": WeightedScalar(i, 1)}
+                    for i in range(num_iters)
+                },
+                ctx.output_collection.summaries,
+            )
+
+        # Invoke with an output dropper that drops everything.
+        with self._dummy_context() as ctx:
+            self._invoke(
+                num_iters=num_iters,
+                xs={},
+                drop_output=lambda _: True,
+                child_name_prefix=child_name_prefix,
+            )
+            self.assertNestedEqual({}, ctx.output_collection.module_outputs)
+
+        # Invoke with an output dropper that matches specific paths.
+        with self._dummy_context() as ctx:
+            self._invoke(
+                num_iters=num_iters,
+                xs={},
+                drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_carry.*", True)]),
+                child_name_prefix=child_name_prefix,
+            )
+            self.assertNestedEqual(
+                {
+                    "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
+                },
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
+            )
+
+        # Invoke with an output dropper that matches specific paths.
+        with self._dummy_context() as ctx:
+            self._invoke(
+                num_iters=num_iters,
+                xs={},
+                drop_output=lambda path: match_regex_rules(path, rules=[(".*/with_state.*", True)]),
+                child_name_prefix=child_name_prefix,
+            )
+            self.assertNestedEqual(
+                {
+                    "output": jnp.array([[0, 0], [1, 1], [2, 2]]),
+                    "with_carry": {
+                        "output": jnp.array([[0, 0], [2, 2], [4, 4]]),
+                    },
+                },
+                ctx.output_collection.module_outputs[child_name_prefix]["nested"],
+            )
+
+    def test_remat(self):
+        num_iters = 3
+
+        with self._dummy_context():
+            ref_carry, ref_ys = self._invoke(num_iters=num_iters, xs={})
+
+        with self._dummy_context():
+            test_carry, test_ys = self._invoke(
+                num_iters=num_iters,
+                xs={},
+                remat_kwargs=dict(policy=jax.checkpoint_policies.everything_saveable),
+            )
+        self.assertNestedEqual(ref_carry, test_carry)
+        self.assertNestedEqual(ref_ys, test_ys)
+
+        # prevent_cse=True raises ValueError.
+        with self._dummy_context(), self.assertRaises(ValueError):
+            _ = self._invoke(
+                num_iters=num_iters,
+                xs={},
+                remat_kwargs=dict(prevent_cse=True),
             )
 
 

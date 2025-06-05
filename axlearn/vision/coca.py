@@ -1,10 +1,12 @@
+# Copyright © 2023 Apple Inc.
+
 # pylint: disable=too-many-lines
 """CoCa architecture implementation.
 
 Ref: https://arxiv.org/pdf/2205.01917.pdf
 """
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Optional, Union
 
 import jax.numpy as jnp
 
@@ -27,7 +29,7 @@ from axlearn.common.config import (
     Required,
     config_class,
 )
-from axlearn.common.decoder import DecodingMixin
+from axlearn.common.decoder import DecodingLayer
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.encoder import CausalEncoder
 from axlearn.common.layers import (
@@ -45,7 +47,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
 from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, StreamEncoder
 from axlearn.common.poolings import AttentionPooling, BasePoolingLayer, LastNTokenPooling
-from axlearn.common.utils import NestedTensor, Tensor
+from axlearn.common.utils import Nested, NestedTensor, Tensor, TensorSpec, validate_contains_paths
 from axlearn.common.vision_transformer import VisionTransformer, layer_norm_config
 from axlearn.vision.clip import CLIPFusionNetwork
 
@@ -186,7 +188,7 @@ class CoCaTextStreamEncoder(StreamEncoder):
         *,
         time_step: Tensor,
         input_ids: Tensor,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         states, encoder_output = self.text_encoder.prefill_states(
             time_step=time_step,
             input_ids=input_ids,
@@ -199,7 +201,7 @@ class CoCaTextStreamEncoder(StreamEncoder):
         *,
         cached_states: NestedTensor,
         input_ids: Tensor,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         updated_state, encoder_output = self.text_encoder.extend_step(
             cached_states=cached_states,
             input_ids=input_ids,
@@ -257,7 +259,7 @@ class CoCaImageStreamEncoder(StreamEncoder):
             cfg.contrastive_pooler.set(input_dim=hidden_dim, output_dim=hidden_dim),
         )
         if cfg.pooler_mode != "bottleneck":
-            # allows pooler dimension to be overriden
+            # allows pooler dimension to be overridden
             output_dim = cfg.caption_pooler.output_dim or hidden_dim
             self._add_child(
                 "caption_pooler",
@@ -355,8 +357,8 @@ def set_coca_vision_encoder_config(
     num_heads: int,
     contrastive_output_dim: int,  # The projection dim for the shared image-text space.
     feed_forward_dim: Union[int, FunctionConfigBase] = scaled_hidden_dim(scale=4),
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
     dropout_rate: float = 0.1,
     contrastive_pooler_config: BasePoolingLayer.Config = AttentionPooling.default_config(),
     caption_pooler_config: BasePoolingLayer.Config = AttentionPooling.default_config(),
@@ -382,10 +384,10 @@ def set_coca_vision_encoder_config(
     image_encoder_cfg.caption_pooler = caption_pooler_config.set(
         num_outputs=caption_pooler_num_outputs
     )
-    if caption_pooler_config.cls == AttentionPooling:
+    if caption_pooler_config.klass == AttentionPooling:
         image_encoder_cfg.caption_pooler.cross_attention.attention.num_heads = num_heads
     image_encoder_cfg.contrastive_pooler = contrastive_pooler_config.set(num_outputs=1)
-    if contrastive_pooler_config.cls == AttentionPooling:
+    if contrastive_pooler_config.klass == AttentionPooling:
         image_encoder_cfg.contrastive_pooler.cross_attention.attention.num_heads = num_heads
     image_encoder_cfg.pooler_mode = pooler_mode
     # Set up the Transformer.
@@ -534,7 +536,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
 
         lm_head: Optional[CoCaLMHead.Config] = CoCaLMHead.default_config()
 
-        dim: Required[int] = None
+        dim: Required[int] = REQUIRED
         pad_token_id: int = 0
 
     def __init__(self, cfg: Config, *, parent: Module):
@@ -547,7 +549,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         lm_head_cfg.norm.set(input_dim=cfg.dim)
         self._add_child("lm_head", lm_head_cfg)
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         """Forward function of CoCa captioning task.
 
         Args:
@@ -564,7 +566,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
                         [batch_size, num_sentences, seq_len]
 
         Returns:
-            loss: A Tensor represnting the loss
+            loss: A Tensor representing the loss
             A dictionary containing: TBA
 
         Raises:
@@ -626,7 +628,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         )  # pytype: disable=attribute-error
 
         # Compute prediction loss.
-        loss, _ = cross_entropy(logits, caption_labels, live_targets)
+        loss, _ = cross_entropy(logits, target_labels=caption_labels, live_targets=live_targets)
 
         # Add training metrics.
         token_accuracy = jnp.equal(jnp.argmax(logits, axis=-1), caption_labels)
@@ -658,11 +660,12 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
-        return dict(
-            transformer_state=self.transformer.init_states(
-                target_batch_size=batch_size, target_max_len=max_sequence_length
-            ),
+        cfg = self.config
+        init_state, _ = self.transformer.init_states(
+            time_step=None,
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=jnp.float32),
         )
+        return dict(transformer_state=init_state)
 
     def prefill_states(
         self,
@@ -672,9 +675,9 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         input_features: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
-        transformer_state, transformer_data = self.transformer.prefill_states(
+        transformer_state, transformer_data = self.transformer.init_states(
             time_step=time_step,
             data=input_features,
             self_attention_logit_biases=self.attention_mask(
@@ -696,7 +699,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         input_features: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
+    ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
         if not cfg.use_cross_attention:
             cross_attention_data = None
@@ -757,7 +760,7 @@ def set_captioning_cfg(
     captioning_cfg.pad_token_id = pad_token_id
     captioning_cfg.use_cross_attention = use_cross_attention
 
-    # Deocder config
+    # Decoder config
     if remat:
         decoder_cfg = RepeatedTransformerLayer.default_config()
     else:
@@ -791,10 +794,10 @@ def set_captioning_cfg(
     return captioning_cfg
 
 
-class CoCaModel(MultiStreamModel, DecodingMixin):
+class CoCaModel(MultiStreamModel):
     """A CoCa two stream model.
 
-    This class provides a customized predict funtion.
+    This class provides a customized predict function.
 
     The predict is called during the inference. As we only need to calculate the
         StreamEncoder outputs.
@@ -806,9 +809,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
     class Config(MultiStreamModel.Config):
         """Configures CoCaModel."""
 
-        # Required when running beacm_seach_decode, see details in `DecodingMixin`
+        # Required when running beam_search_decode.
         pad_token_id: Optional[int] = None
         eos_token_id: Optional[int] = None
+        decoding: DecodingLayer.Config = DecodingLayer.default_config()
 
     @classmethod
     def default_config(cls):
@@ -818,6 +822,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
+        cfg: CoCaModel.Config = self.config
+        self._decoding: DecodingLayer = cfg.decoding.set(
+            pad_token_id=cfg.pad_token_id, eos_token_id=cfg.eos_token_id
+        ).instantiate(decoder=self)
         self._share_with_descendants(
             self._stream_encoder["textual_encoder"].text_encoder.emb.token_emb,
             shared_module_name="shared_token_emb",
@@ -861,7 +869,7 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         return output["output_features"]
 
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
-        """See `DecodingMixin.init_states`."""
+        """See `BaseDecoder.init_states` for details."""
         textual_encoder_states = self._stream_encoder["textual_encoder"].init_states(
             batch_size=batch_size,
             max_sequence_length=max_sequence_length,
@@ -870,7 +878,6 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
             batch_size=batch_size,
             max_sequence_length=max_sequence_length,
         )
-
         return {
             "textual_encoder_transformer_state": textual_encoder_states["transformer_state"],
             "captioning_network_transformer_state": captioning_network_states["transformer_state"],
@@ -882,20 +889,38 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         self,
         *,
         time_step: Tensor,
-        input_ids: Tensor,
+        input_batch: Nested[Tensor],
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
-        """See `DecodingMixin.prefill_states`."""
+    ) -> tuple[NestedTensor, NestedTensor]:
+        """See `BaseDecoder.prefill_states` for details.
+
+        Args:
+            time_step: A Tensor of shape [batch_size]. See `BaseDecoder.prefill_states` for details.
+            input_batch: A dict containing at minimum:
+                * input_ids: An int Tensor of shape [batch_size, seq_len].
+                    Values should be in the range [0, vocab_size), where `vocab_size` is commonly
+                    configured in `textual_encoder`.
+            cross_attention_data: A float Tensor of shape [batch_size, source_len, hidden_dim].
+            cross_attention_logit_biases: A Tensor of shape [batch_size, target_len, source_len].
+                A -inf represents a disconnected position pair.
+
+        Returns:
+            See `BaseDecoder.prefill_states` for details.
+        """
+        validate_contains_paths(input_batch, paths=["input_ids"])
+        input_ids = input_batch["input_ids"]
+
         textual_encoder_state, textual_encoder_output = self._stream_encoder[
             "textual_encoder"
         ].prefill_states(
             time_step=time_step,
             input_ids=input_ids,
         )
-        captioning_network_state, captioning_network_output = self._fusion_network[
-            "captioning_fusion_network"
-        ].prefill_states(
+        (
+            captioning_network_state,
+            captioning_network_output,
+        ) = self._fusion_network["captioning_fusion_network"].prefill_states(
             time_step=time_step,
             input_ids=input_ids,
             input_features=textual_encoder_output["caption_features"],
@@ -917,8 +942,8 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         input_ids: Tensor,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
-    ) -> Tuple[NestedTensor, NestedTensor]:
-        """See `DecodingMixin.extend_step`."""
+    ) -> tuple[NestedTensor, NestedTensor]:
+        """See `BaseDecoder.extend_step` for details."""
         # This structure is shared with Decoder, but is necessary to repeat in extend_step.
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
@@ -929,9 +954,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
             "time_step": cached_states["time_step"],
         }
 
-        updated_textual_encoder_state, textual_encoder_output = self._stream_encoder[
-            "textual_encoder"
-        ].extend_step(
+        (
+            updated_textual_encoder_state,
+            textual_encoder_output,
+        ) = self._stream_encoder["textual_encoder"].extend_step(
             cached_states=encoder_cached_state,
             input_ids=input_ids,
         )
@@ -940,9 +966,10 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
             "transformer_state": cached_states["captioning_network_transformer_state"],
             "time_step": cached_states["time_step"],
         }
-        updated_captioning_network_state, captioning_network_output = self._fusion_network[
-            "captioning_fusion_network"
-        ].extend_step(
+        (
+            updated_captioning_network_state,
+            captioning_network_output,
+        ) = self._fusion_network["captioning_fusion_network"].extend_step(
             cached_states=captioning_cached_states,
             input_ids=updated_textual_encoder_state["input_ids"],
             input_features=textual_encoder_output["caption_features"],
@@ -964,6 +991,38 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
         }
 
         return updated_state, captioning_network_output
+
+    def beam_search_decode(
+        self,
+        *,
+        input_batch: Nested[Tensor],
+        max_sequence_length: int,
+        num_decodes: int,
+        **kwargs,
+    ):
+        """See configured `decoding` implementation for details."""
+        return self._decoding.beam_search_decode(
+            input_batch=input_batch,
+            max_sequence_length=max_sequence_length,
+            num_decodes=num_decodes,
+            **kwargs,
+        )
+
+    def sample_decode(
+        self,
+        *,
+        input_batch: Nested[Tensor],
+        max_sequence_length: int,
+        num_decodes: int,
+        **kwargs,
+    ):
+        """See configured `decoding` implementation for details."""
+        return self._decoding.sample_decode(
+            input_batch=input_batch,
+            max_sequence_length=max_sequence_length,
+            num_decodes=num_decodes,
+            **kwargs,
+        )
 
     def predict_caption(
         self,
@@ -1003,9 +1062,9 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
 
         if decode_method in ("beam_search_decode", "sample_decode"):
             output = getattr(self, decode_method)(
+                input_batch=input_batch,
                 max_sequence_length=max_sequence_length,
                 num_decodes=num_decodes,
-                prefix=input_batch["prefix"],
                 cross_attention_data=visual_features,
             )
         else:
@@ -1019,9 +1078,9 @@ class CoCaModel(MultiStreamModel, DecodingMixin):
 def set_coca_config(
     *,
     contrastive_output_dim,
-    text_encoder_cfg: Dict,
-    vision_encoder_cfg: Dict,
-    captioning_cfg: Dict,
+    text_encoder_cfg: dict,
+    vision_encoder_cfg: dict,
+    captioning_cfg: dict,
     pad_token_id: Optional[int] = None,
     eos_token_id: Optional[int] = None,
 ):

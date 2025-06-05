@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/t5x:
+# Copyright 2022 The T5X Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Functions for logit-to-logit transformations.
 
 The top-k and top-p implementations borrow heavily from T5X in using binary search over
@@ -7,7 +15,8 @@ values of `p`.
 
 Reference: <https://github.com/google-research/t5x/blob/79998013/t5x/binary_search.py>
 """
-from typing import Callable, Tuple
+from functools import partial
+from typing import Callable, Literal, Union
 
 import jax
 from jax import numpy as jnp
@@ -56,7 +65,7 @@ def scale_by(temperature: float, *, min_temperature: float = 1e-4) -> LogitsToLo
     return fn
 
 
-def top_p_logits(p: float) -> LogitsToLogitsFn:
+def top_p_logits(p: Union[float, Tensor]) -> LogitsToLogitsFn:
     """Build a function that returns logits suitably normalized for top-p sampling.
 
     The minimum number of logits so that the total probability mass >= p will be
@@ -70,42 +79,50 @@ def top_p_logits(p: float) -> LogitsToLogitsFn:
     Ref: <https://github.com/google-research/t5x/blob/79998013/t5x/binary_search.py#L227>
 
     Args:
-        p: The total cumulative probability to consider for sampling.
+        p: The total cumulative probability to consider for sampling as a scaler or a 1D tensor
+            with a leading batch dimension.
 
     Returns:
         A logits-to-logits function.
     """
-    assert 0.0 < p <= 1.0, "`p` must be in (0, 1]."
+    if isinstance(p, float) and not 0.0 < p <= 1.0:
+        raise ValueError("`p` must be in (0, 1].")
+    elif not isinstance(p, float) and p.ndim != 1:
+        raise ValueError("`p` must be a scalar or a 1D tensor.")
 
     def fn(logits: Tensor) -> Tensor:
         probs = jax.nn.softmax(logits, axis=-1)
         # Probs in a form suitable for efficient TPU reduction.
-        reduceable_probs = probs
-        reduce_axis = reduceable_probs.ndim - 1
-        if reduceable_probs.ndim > 1:
+        reducible_probs = probs
+        reduce_axis = reducible_probs.ndim - 1
+        if reducible_probs.ndim > 1:
             # As we will be doing many reductions over reduce_axis, transpose it to be
             # the penultimate dimension, so that these reductions happen within vector lanes.
             # (See ref. in docstring for more details).
-            reduceable_probs = jnp.swapaxes(reduceable_probs, -1, -2)
-            reduce_axis = reduceable_probs.ndim - 2
+            reducible_probs = jnp.swapaxes(reducible_probs, -1, -2)
+            reduce_axis = reducible_probs.ndim - 2
 
-        def predicate(float32_query: Tensor) -> Tensor:
+        def predicate(float32_query: Tensor, top_p: Union[float, Tensor]) -> Tensor:
             float32_query = jnp.expand_dims(float32_query, reduce_axis)
             # [..., 1, float32_query.shape[-1]]
             probability_mass = jnp.sum(
-                jnp.where(reduceable_probs >= float32_query, reduceable_probs, 0.0),
+                jnp.where(reducible_probs >= float32_query, reducible_probs, 0.0),
                 axis=reduce_axis,
             )
-            return probability_mass < p
+            if not isinstance(top_p, float):
+                top_p = top_p.reshape((top_p.shape[0], *(1,) * (probability_mass.ndim - 1)))
+            return probability_mass < top_p
 
         batched_shape = logits.shape[:-1]  # All but the last axis are batched.
-        threshold = _float32_binary_search(batched_shape, predicate=predicate)
+        threshold = _float32_binary_search(batched_shape, predicate=partial(predicate, top_p=p))
         return jnp.where(probs >= jnp.expand_dims(threshold, -1), logits, NEG_INF)
 
     return fn
 
 
-def top_k_logits(k: int) -> LogitsToLogitsFn:
+def top_k_logits(
+    k: int, *, break_ties: Literal["all", "smallest_index"] = "all"
+) -> LogitsToLogitsFn:
     """Build a function that returns logits suitably normalized for top-k sampling.
 
     The returned function does many reductions over the last axis of the input array.
@@ -117,28 +134,35 @@ def top_k_logits(k: int) -> LogitsToLogitsFn:
 
     Args:
         k: The maximum rank of logit to consider for sampling.
-            In the case of ties, we return all logits with the tied value (in total more than k).
+        break_ties: Configures top-k behavior in the case of ties:
+            * "all": Return all logits with the tied value (in total more than k).
+            * "smallest_index": Return the k tied values with smallest index.
+              Currently this only supports k = 1.
 
     Returns:
         A logits-to-logits function.
+
+    Raises:
+        ValueError: If break_ties is invalid.
+        NotImplementedError: If break_ties == "smallest_index" and k != 1.
     """
 
     def fn(logits: Tensor) -> Tensor:
         # Logits in a form suitable for efficient TPU reduction.
-        reduceable_logits = logits
-        reduce_axis = reduceable_logits.ndim - 1
-        if reduceable_logits.ndim > 1:
+        reducible_logits = logits
+        reduce_axis = reducible_logits.ndim - 1
+        if reducible_logits.ndim > 1:
             # As we will be doing many reductions over reduce_axis, transpose it to be
             # the penultimate dimension, so that these reductions happen within vector lanes.
             # (See ref. in docstring for more details).
-            reduceable_logits = jnp.swapaxes(reduceable_logits, -1, -2)
+            reducible_logits = jnp.swapaxes(reducible_logits, -1, -2)
             reduce_axis = logits.ndim - 2
 
         def predicate(float32_query: Tensor) -> Tensor:
             float32_query = -float32_query
             float32_query = jnp.expand_dims(float32_query, reduce_axis)
             # [..., 1, float32_query.shape[-1]]
-            count_number_gt = jnp.sum(reduceable_logits > float32_query, axis=reduce_axis)
+            count_number_gt = jnp.sum(reducible_logits > float32_query, axis=reduce_axis)
             return count_number_gt >= k
 
         batched_shape = logits.shape[:-1]  # All but the last axis are batched.
@@ -149,7 +173,25 @@ def top_k_logits(k: int) -> LogitsToLogitsFn:
         threshold = -1 * _float32_binary_search(batched_shape, predicate=predicate)
         return jnp.where(logits >= jnp.expand_dims(threshold, -1), logits, NEG_INF)
 
-    return fn
+    def smallest_index_fn(logits: Tensor) -> Tensor:
+        # Returns the maximum value with smallest index when there are ties for k = 1.
+        # Note this only supports for k = 1. We may consider to extend to k > 1 in
+        # the future, but the benefits may be limited as determinism is usually
+        # not required in those cases.
+        if k != 1:
+            raise NotImplementedError(f"Only k=1 supportes for {break_ties=}, but got {k}.")
+        # Note different from numpy.argmax, jnp.argmax doesn't mention it returns
+        # the first maximum value. We assume it follows np.argmax and have a unit
+        # test to check this.
+        mask = jax.nn.one_hot(jnp.argmax(logits, axis=-1), logits.shape[-1], axis=-1)
+        return jnp.where(mask, logits, NEG_INF)
+
+    if break_ties == "all":
+        return fn
+    elif break_ties == "smallest_index":
+        return smallest_index_fn
+    else:
+        raise ValueError(f"Unsupported {break_ties=}")
 
 
 def _monotonic_int32_to_float32_bit_mask(x: Tensor) -> Tensor:
@@ -175,7 +217,7 @@ def _monotonic_int32_to_float32_bit_mask(x: Tensor) -> Tensor:
 
 
 def _int32_binary_search(
-    batched_shape: Tuple[int], *, predicate: Callable[[Tensor], Tensor]
+    batched_shape: tuple[int], *, predicate: Callable[[Tensor], Tensor]
 ) -> Tensor:
     """Binary search to find the largest finite int32 value for which the predicate is False.
 
@@ -200,6 +242,7 @@ def _int32_binary_search(
     def loop_body(i: int, solution: Tensor) -> Tensor:
         # Loop over the non-sign bits.
         bit = jnp.int32(1 << 30 - i)
+        # pylint: disable-next=unsupported-binary-operation
         predicate_satisfied = predicate(solution | bit)
         solution = solution | jnp.where(predicate_satisfied, jnp.int32(0), bit)
         return solution
@@ -208,7 +251,7 @@ def _int32_binary_search(
 
 
 def _float32_binary_search(
-    batched_shape: Tuple[int], *, predicate: Callable[[Tensor], Tensor]
+    batched_shape: tuple[int], *, predicate: Callable[[Tensor], Tensor]
 ) -> Tensor:
     """Binary search to find the largest finite float32 value for which predicate is False.
 

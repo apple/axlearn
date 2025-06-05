@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Text encoder module."""
 from typing import Optional
 

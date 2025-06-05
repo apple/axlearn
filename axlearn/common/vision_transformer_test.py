@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests vision transformer layers."""
 # pylint: disable=no-member,no-self-use
 import jax

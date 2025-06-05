@@ -1,22 +1,14 @@
+# Copyright © 2023 Apple Inc.
+
 # pylint: disable=too-many-lines
 """Utilities to convert parameters from one library to another.
 
 For example, utilities to convert AXLearn parameters to/from torch modules live here.
 """
+
+from collections.abc import Iterable, Mapping, Sequence
 from math import ceil
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    Mapping,
-    Optional,
-    Protocol,
-    Sequence,
-    Tuple,
-    Type,
-    Union,
-    cast,
-)
+from typing import Any, Optional, Protocol, Union, cast
 
 import jax
 import numpy as np
@@ -29,6 +21,7 @@ from transformers.models.distilbert import modeling_distilbert as hf_distilbert
 from transformers.models.dpr import modeling_dpr as hf_dpr
 from transformers.models.encoder_decoder import modeling_encoder_decoder as hf_encoder_decoder
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
+from transformers.models.llama.modeling_llama import LlamaForCausalLM
 from transformers.models.mt5 import modeling_mt5 as hf_mt5
 from transformers.models.opt import modeling_opt as hf_opt
 from transformers.models.roberta import modeling_roberta as hf_roberta
@@ -40,6 +33,7 @@ from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common.attention import (
     BaseMultiheadLinear,
+    BaseStackedTransformerLayer,
     FusedQKVLinear,
     LearnedPositionalEmbedding,
     MultiheadAttention,
@@ -54,6 +48,7 @@ from axlearn.common.attention import (
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.bert import BertModel, BertPooler, BertSequenceClassificationHead
 from axlearn.common.causal_lm import Model as CausalLMModel
+from axlearn.common.convolution import Conv2D, Conv3D
 from axlearn.common.deberta import DeBERTaV2Encoder
 from axlearn.common.decoder import Decoder
 from axlearn.common.dit import (
@@ -66,14 +61,14 @@ from axlearn.common.dit import (
     TimeStepEmbedding,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
-from axlearn.common.encoder import EncoderModel
-from axlearn.common.layers import Conv2D, Embedding, LayerNorm, Linear, RMSNorm
+from axlearn.common.encoder import Encoder, EncoderModel
+from axlearn.common.layers import Embedding, LayerNorm, LayerNormStateless, Linear, RMSNorm
 from axlearn.common.t5 import T5Decoder, T5Encoder, T5EncoderDecoderModel
 from axlearn.common.text_encoder import TextEmbeddingEncoder
 from axlearn.common.utils import NestedTensor, Tensor, VDict, as_tensor
 from axlearn.huggingface import hf_text_encoder
 
-NestedTorchTensor = Union[torch.Tensor, Dict[str, Any]]
+NestedTorchTensor = Union[torch.Tensor, dict[str, Any]]
 
 
 class AXLearnToTorchFn(Protocol):
@@ -82,16 +77,16 @@ class AXLearnToTorchFn(Protocol):
 
 
 class TorchToAXLearnFn(Protocol):
-    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, Type]]):
+    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, type]]):
         ...
 
 
 # Mapping from (src_type, dst_type) to converter.
-_axlearn_to_torch_registry: Dict[Tuple[Type, Type], AXLearnToTorchFn] = {}
-_torch_to_axlearn_registry: Dict[Tuple[Type, Type], TorchToAXLearnFn] = {}
+_axlearn_to_torch_registry: dict[tuple[type, type], AXLearnToTorchFn] = {}
+_torch_to_axlearn_registry: dict[tuple[type, type], TorchToAXLearnFn] = {}
 
 
-def register_axlearn_to_torch(*, src: Sequence[Type], dst: Sequence[Type]):
+def register_axlearn_to_torch(*, src: Sequence[type], dst: Sequence[type]):
     """Registers a converter for converting axlearn layers to torch."""
 
     def decorator(fn: AXLearnToTorchFn):
@@ -105,7 +100,7 @@ def register_axlearn_to_torch(*, src: Sequence[Type], dst: Sequence[Type]):
     return decorator
 
 
-def register_torch_to_axlearn(*, src: Sequence[Type], dst: Sequence[Type] = (type(None),)):
+def register_torch_to_axlearn(*, src: Sequence[type], dst: Sequence[type] = (type(None),)):
     """Registers a converter for converting torch layers to axlearn."""
 
     def decorator(fn: TorchToAXLearnFn):
@@ -129,7 +124,7 @@ def as_torch_tensor(x: Union[np.ndarray, Tensor, NestedTorchTensor]) -> NestedTo
     if hasattr(x, "numpy"):
         return torch.as_tensor(x.numpy())
     if isinstance(x, (Mapping, Sequence)):
-        return jax.tree_util.tree_map(as_torch_tensor, x)
+        return jax.tree.map(as_torch_tensor, x)
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
@@ -138,7 +133,7 @@ def _parameters_from_attention(
     dst: Union[
         hf_bert.BertAttention, hf_roberta.RobertaAttention, hf_deberta_v2.DebertaV2Attention
     ],
-    key_mapping: Iterable[Tuple[str, str]] = (
+    key_mapping: Iterable[tuple[str, str]] = (
         ("q_proj", "query"),
         ("k_proj", "key"),
         ("v_proj", "value"),
@@ -150,11 +145,11 @@ def _parameters_from_attention(
     for src_proj, dst_proj in key_mapping:
         src_dense = src["i_proj"][src_proj]
         dst_dense = getattr(dst_self, dst_proj)
+        # pytype: disable=attribute-error
         dst_dense.weight.data = as_torch_tensor(
             src_dense["weight"].reshape(-1, all_head_dim)
-        ).transpose(
-            0, 1
-        )  # pytype: disable=attribute-error
+        ).transpose(0, 1)
+        # pytype: enable=attribute-error
         dst_dense.bias.data = as_torch_tensor(src_dense["bias"].reshape(all_head_dim))
 
     # Copy O. In Hugging Face, this dense layer is in *SelfOutput layer.
@@ -287,7 +282,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         ValueError: If conversion fails.
     """
 
-    def check_supported(*supported_layers: Type):
+    def check_supported(*supported_layers: type):
         if not isinstance(layer, supported_layers):
             raise NotImplementedError(
                 f"Conversion from {type(layer)} to {type(dst)} is not yet supported. "
@@ -301,11 +296,20 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             return
 
     if isinstance(dst, torch.nn.LayerNorm):
-        check_supported(LayerNorm)
-        dst.weight.data = as_torch_tensor(src["scale"])
-        dst.bias.data = as_torch_tensor(src["bias"])
+        check_supported(LayerNorm, LayerNormStateless)
+        if isinstance(layer, LayerNorm):
+            if not dst.elementwise_affine:
+                raise ValueError("elementwise_affine must be True for conversion from LayerNorm")
+            dst.weight.data = as_torch_tensor(src["scale"])
+            dst.bias.data = as_torch_tensor(src["bias"])
+        else:
+            if dst.elementwise_affine:
+                raise ValueError(
+                    "elementwise_affine must be False for conversion from LayerNormStateless"
+                )
+            # No parameter to set.
     elif isinstance(dst, torch.nn.Linear):
-        check_supported(Linear, MultiheadInputLinear)
+        check_supported(Linear, MultiheadInputLinear, BertSequenceClassificationHead)
         if isinstance(layer, MultiheadInputLinear):
             # Shape of src["weight"] is [model_dim, num_heads, per_head_dim].
             all_head_dim = src["weight"].shape[1] * src["weight"].shape[2]
@@ -314,6 +318,16 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             )  # pytype: disable=attribute-error
             if "bias" in src:
                 dst.bias.data = as_torch_tensor(src["bias"].reshape(all_head_dim))
+        elif isinstance(layer, BertSequenceClassificationHead):
+            # We only convert the linear layer of BertSequenceClassificationHead here. The pooler
+            # of BertSequenceClassificationHead is handled outside with BertModel conversion.
+            # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses (input,
+            # output).
+            dst.weight.data = as_torch_tensor(src["output"]["weight"]).transpose(
+                0, 1
+            )  # pytype: disable=attribute-error
+            if "bias" in src:
+                dst.bias.data = as_torch_tensor(src["output"]["bias"])
         else:
             # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses
             # (input, output).
@@ -341,6 +355,15 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             axlearn_to_torch(
                 getattr(layer, encoder_name), src[encoder_name], dst.stream_encoders[encoder_name]
             )
+    elif isinstance(dst, torch.nn.Conv3d):
+        check_supported(Conv3D)
+        # axlearn: (k0, k1, k2, input_dim, output_dim)
+        # torch: (output_dim, input_dim, k0, k1, k2)
+        dst.weight.data = as_torch_tensor(src["weight"]).permute(
+            (4, 3, 0, 1, 2)
+        )  # pytype: disable=attribute-error
+        if "bias" in src:
+            dst.bias.data = as_torch_tensor(src["bias"])
     elif isinstance(dst, torch.nn.Conv2d):
         check_supported(Conv2D)
         dst.weight.data = as_torch_tensor(src["weight"]).permute(
@@ -367,7 +390,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         type_emb_layer = getattr(layer, "type_emb", None)
         type_emb_params = src.get("type_emb", None)
         if type_emb_layer is None or type_emb_params is None:
-            if type_emb_layer is None != type_emb_params is None:
+            if (type_emb_layer is None) != (type_emb_params is None):
                 raise ValueError(
                     "Input layer and params must either both have type embeddings, or both not."
                 )
@@ -419,14 +442,25 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
                 assert isinstance(layer, RepeatedTransformerLayer)
                 axlearn_to_torch(
                     layer.repeat.layer,
-                    jax.tree_util.tree_map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
+                    jax.tree.map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
                     dst_layer,
                 )
     elif isinstance(dst, (hf_bert.BertPooler, hf_roberta.RobertaPooler)):
         check_supported(BertPooler)
         axlearn_to_torch(layer.linear, src["linear"], dst.dense)
         # Note: always use tanh as activation here.
-    elif isinstance(dst, (hf_bert.BertModel, hf_roberta.RobertaModel)):
+    elif isinstance(dst, hf_bert.BertModel):
+        check_supported(TextEmbeddingEncoder, BertModel)
+        axlearn_to_torch(layer.encoder.emb, src["encoder"]["emb"], dst.embeddings)
+        axlearn_to_torch(layer.encoder.transformer, src["encoder"]["transformer"], dst.encoder)
+        src_pooler = src.get("head", {}).get("pooler", None)
+        if (src_pooler is not None) != (dst.pooler is not None):
+            raise ValueError(
+                "Input layer and output layer must either both have pooler, or both not."
+            )
+        if src_pooler:
+            axlearn_to_torch(layer.head.pooler, src_pooler, dst.pooler)
+    elif isinstance(dst, hf_roberta.RobertaModel):
         check_supported(TextEmbeddingEncoder, BertModel)
         axlearn_to_torch(layer.encoder.emb, src["encoder"]["emb"], dst.embeddings)
         axlearn_to_torch(layer.encoder.transformer, src["encoder"]["transformer"], dst.encoder)
@@ -471,7 +505,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
                 assert isinstance(layer, RepeatedTransformerLayer)
                 axlearn_to_torch(
                     layer.repeat.layer,
-                    jax.tree_util.tree_map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
+                    jax.tree.map(lambda x, idx=i: x[idx], src["repeat"]["layer"]),
                     dst_layer,
                 )
     elif isinstance(dst, hf_deberta_v2.DebertaV2Attention):
@@ -495,6 +529,10 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
             )
 
         axlearn_to_torch(layer.norm, src["norm"], dst.output.LayerNorm)
+    elif isinstance(dst, hf_bert.BertForSequenceClassification):
+        check_supported(BertModel)
+        axlearn_to_torch(layer.head, src["head"], dst.classifier)
+        axlearn_to_torch(layer, src, dst.bert)
     elif isinstance(dst, hf_roberta.RobertaClassificationHead):
         check_supported(BertSequenceClassificationHead)
         axlearn_to_torch(layer.pooler.linear, src["pooler"]["linear"], dst.dense)
@@ -534,7 +572,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
         for i, t5_block in enumerate(dst.block):
             if isinstance(layer.transformer, RepeatedTransformerLayer):
                 transformer_layer = layer.transformer.repeat.layer
-                src_layer = jax.tree_util.tree_map(
+                src_layer = jax.tree.map(
                     lambda x, idx=i: x[idx], src["transformer"]["repeat"]["layer"]
                 )
             else:
@@ -628,7 +666,7 @@ def axlearn_to_torch(layer: BaseLayer, src: NestedTensor, dst: torch.nn.Module):
 
 # pylint: disable-next=too-many-branches,too-many-statements
 def torch_to_axlearn(
-    src: torch.nn.Module, *, dst_layer: Optional[Union[BaseLayer, Type]] = None
+    src: torch.nn.Module, *, dst_layer: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     """Extracts parameters from a torch module into a compatible format with AXLearn layers.
     See also `axlearn_to_torch` for the inverse.
@@ -650,7 +688,10 @@ def torch_to_axlearn(
             return as_tensor(convert_fn(src=src, dst=dst_layer))
 
     if isinstance(src, torch.nn.LayerNorm):
-        dst = dict(scale=src.weight, bias=src.bias)
+        if src.elementwise_affine:
+            dst = dict(scale=src.weight, bias=src.bias)
+        else:
+            dst = {}
     elif isinstance(src, torch.nn.Linear):
         # torch.nn.Linear.weight uses layout (output, input) while AXLearn uses (input, output).
         dst = dict(weight=src.weight.transpose(0, 1))
@@ -658,6 +699,12 @@ def torch_to_axlearn(
             dst["bias"] = src.bias
     elif isinstance(src, torch.nn.Embedding):
         dst = dict(weight=src.weight)
+    elif isinstance(src, torch.nn.Conv3d):
+        # torch.nn.Conv3d.weight uses layout (output, input, k0, k1, k2) while AXLearn uses
+        # (k0, k1, k2, input, output)
+        dst = dict(weight=src.weight.permute(2, 3, 4, 1, 0))
+        if src.bias is not None:
+            dst["bias"] = src.bias
     elif isinstance(src, torch.nn.Conv2d):
         # torch.nn.Conv2d.weight uses layout (output, input, H, W) while AXLearn uses
         # (H, W, input, output).
@@ -702,7 +749,9 @@ def torch_to_axlearn(
     elif isinstance(src, hf_encoder_decoder.EncoderDecoderModel):
         dst = _parameters_from_encoder_decoder_model(src)
     elif isinstance(src, hf_bert.BertModel):
-        dst = _parameters_from_bert_model(src)
+        dst = _parameters_from_bert_model(src, dst_layer=dst_layer)
+    elif isinstance(src, (hf_bert.BertEncoder, hf_roberta.RobertaEncoder)):
+        dst = _parameters_from_bert_encoder(src, dst_layer=dst_layer)
     elif isinstance(src, hf_roberta.RobertaModel):
         dst = _parameters_from_roberta_model(src)
     elif isinstance(src, hf_xlnet.XLNetRelativeAttention):
@@ -781,8 +830,8 @@ def _parameters_from_deberta_for_sequence_classification(
 ) -> NestedTensor:
     model = _parameters_from_deberta_model(src.deberta, dst_layer=dst_layer)
     pooler = _parameters_from_deberta_context_pooler(src.pooler)
-    classifer = torch_to_axlearn(src.classifier)
-    return dict(encoder=model["encoder"], head=dict(pooler=pooler, output=classifer))
+    classifier = torch_to_axlearn(src.classifier)
+    return dict(encoder=model["encoder"], head=dict(pooler=pooler, output=classifier))
 
 
 def _parameters_from_deberta_embeddings(
@@ -836,7 +885,7 @@ def _parameters_from_deberta_encoder(
         # we do not know the dst ahead of time.
         dst["transformer"]["repeat"] = VDict(
             # pylint: disable-next=no-value-for-parameter
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda *inputs: jnp.stack(inputs),
                 *[transformer_layers[i] for i in range(num_layers)],
             )
@@ -926,10 +975,14 @@ def _parameters_from_deberta_self_attention(
     params["dropout"] = {}
     params["pos_emb"] = {}
     params["pos_emb_dropout"] = {}
+    params["scale_key"] = {}
+    params["scale_query"] = {}
     if "pos_k_proj" not in params:
         params["pos_k_proj"] = {}
     if "pos_q_proj" not in params:
         params["pos_q_proj"] = {}
+    if "kv_cache" not in params:
+        params["kv_cache"] = {}
     return as_tensor(params)
 
 
@@ -1034,10 +1087,10 @@ def _parameters_from_opt_decoder(
     # By default, assume RepeatedTransformerLayer.
     if transformer is None:
         layers = [_parameters_from_opt_decoder_layer(layer) for layer in src.layers]
-        layers = jax.tree_util.tree_map(as_tensor, layers)
+        layers = jax.tree.map(as_tensor, layers)
         transformer = dict(
             repeat=dict(
-                layer=jax.tree_util.tree_map(lambda *inputs: jnp.stack(inputs), *layers),
+                layer=jax.tree.map(lambda *inputs: jnp.stack(inputs), *layers),
             ),
         )
 
@@ -1128,11 +1181,12 @@ def _parameters_from_attention_dense(
         )
         i_proj[dst_proj] = dense_params
     output_dense = output.dense
+    o_proj = torch_to_axlearn(output_dense)
     o_proj = dict(
-        weight=output_dense.weight.view(-1, num_heads, per_head_dim),
-        bias=output_dense.bias,
+        weight=o_proj["weight"].transpose().reshape(-1, num_heads, per_head_dim),
+        bias=o_proj["bias"],
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={}, kv_cache={})
 
 
 def _parameters_from_roberta_attention(src: hf_roberta.RobertaAttention):
@@ -1283,7 +1337,8 @@ def _parameters_from_gpt2_attention(
 ):
     # GPT2 attention weights are concat into one array, break out head and q/k/v dims.
     num_heads = src.num_heads
-    attention = {}
+    # Add empty state for the key/query scaling.
+    attention = {"scale_key": {}, "scale_query": {}}
     # Head projection.
     c_attn_w = src.c_attn.weight
     c_attn_b = src.c_attn.bias
@@ -1385,10 +1440,26 @@ def _parameters_from_bert_pooler(src: hf_bert.BertPooler):
     )
 
 
-def _parameters_from_bert_encoder(src: Union[hf_bert.BertEncoder, hf_roberta.RobertaEncoder]):
-    return {
-        f"layer{i}": _parameters_from_roberta_layer(module) for i, module in enumerate(src.layer)
+def _parameters_from_bert_encoder(
+    src: Union[hf_bert.BertEncoder, hf_roberta.RobertaEncoder],
+    dst_layer: Optional[BaseStackedTransformerLayer] = None,
+):
+    transformer_layers = {
+        i: _parameters_from_roberta_layer(module) for i, module in enumerate(src.layer)
     }
+    num_layers = len(transformer_layers)
+    if dst_layer is not None and isinstance(dst_layer, RepeatedTransformerLayer):
+        return dict(
+            repeat=VDict(
+                # pylint: disable-next=no-value-for-parameter
+                layer=jax.tree.map(
+                    lambda *inputs: jnp.stack(inputs),
+                    *[transformer_layers[i] for i in range(num_layers)],
+                )
+            )
+        )
+    else:
+        return {f"layer{i}": transformer_layers[i] for i in range(num_layers)}
 
 
 # Note: Hugging Face RoBERTa uses slightly different embeddings from BERT.
@@ -1402,10 +1473,12 @@ def _parameters_from_roberta_model(src: hf_roberta.RobertaModel):
     return params
 
 
-def _parameters_from_bert_model(src: hf_bert.BertModel):
+def _parameters_from_bert_model(src: hf_bert.BertModel, dst_layer: Optional[Encoder] = None):
     encoder = dict(
         emb=_parameters_from_bert_embeddings(src.embeddings),
-        transformer=_parameters_from_bert_encoder(src.encoder),
+        transformer=_parameters_from_bert_encoder(
+            src.encoder, dst_layer=dst_layer.transformer if dst_layer is not None else None
+        ),
         attention_mask={},
     )
     params = dict(encoder=encoder)
@@ -1492,13 +1565,13 @@ def _parameters_from_t5_attention(src: hf_t5.T5Attention, *, dst_layer: Transfor
     if isinstance(dst_layer.attention.i_proj, FusedQKVLinear):
         i_proj = VDict(
             qkv_proj=dict(
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[i_proj[proj_key] for proj_key in ("q_proj", "k_proj", "v_proj")],
                 )
             ),
         )
-    return dict(i_proj=i_proj, dropout={}, **o_proj)
+    return dict(i_proj=i_proj, dropout={}, **o_proj, scale_query={}, scale_key={}, kv_cache={})
 
 
 def _parameters_from_t5_self_attention(
@@ -1584,7 +1657,7 @@ def _parameters_from_t5_stack(src: hf_t5.T5Stack, *, dst_layer: Optional[BaseLay
     elif isinstance(dst_layer, RepeatedTransformerLayer):
         params = dict(
             repeat=VDict(
-                layer=jax.tree_util.tree_map(
+                layer=jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[
                         _parameters_from_t5_block(src.block[i], dst_layer=dst_layer.repeat.layer)
@@ -1679,6 +1752,9 @@ def _parameters_from_xlnet_attention(src: hf_xlnet.XLNetRelativeAttention):
             v_bias=src.r_r_bias,
             dropout={},
             relative_pos_emb={},
+            scale_query={},
+            scale_key={},
+            kv_cache={},
         ),
         norm=torch_to_axlearn(src.layer_norm),
         dropout={},
@@ -1736,7 +1812,7 @@ def _parameters_from_distilbert_attention_dense(
         weight=output_dense.weight.view(-1, num_heads, per_head_dim),
         bias=output_dense.bias,
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_query={}, scale_key={}, kv_cache={})
 
 
 def _parameters_from_distilbert_attention(src: hf_distilbert.Transformer):
@@ -2006,7 +2082,7 @@ def _parameters_from_t5x_attention(
     elif isinstance(dst_layer.attention.i_proj, FusedQKVLinear):
         dst["attention"]["i_proj"] = VDict(
             qkv_proj=dict(
-                jax.tree_util.tree_map(
+                jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[i_proj[proj_key] for proj_key in ("q_proj", "k_proj", "v_proj")],
                 )
@@ -2120,7 +2196,7 @@ def _parameters_from_t5x_decoder(src: NestedTensor, dst_layer: T5Decoder) -> Nes
     elif isinstance(dst_layer.transformer, RepeatedTransformerLayer):
         dst["transformer"]["repeat"] = VDict(
             # pylint: disable-next=no-value-for-parameter
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda *inputs: jnp.stack(inputs),
                 *[transformer_layers[i] for i in range(num_axlearn_decoder_layers)],
             ),
@@ -2184,7 +2260,7 @@ def _parameters_from_t5x_encoder(src: NestedTensor, dst_layer: T5Encoder) -> Nes
     elif isinstance(dst_layer.transformer, RepeatedTransformerLayer):
         dst["transformer"]["repeat"] = VDict(
             # pylint: disable-next=no-value-for-parameter
-            layer=jax.tree_util.tree_map(
+            layer=jax.tree.map(
                 lambda *inputs: jnp.stack(inputs),
                 *[transformer_layers[i] for i in range(num_axlearn_encoder_layers)],
             ),
@@ -2276,3 +2352,102 @@ def parameters_from_t5x_encoder_decoder(
             raise ValueError(f"Unsupported layer: {layer}")
 
     return as_tensor(dst)
+
+
+def _permute_q_k_for_rope(vector: torch.Tensor) -> torch.Tensor:
+    """Permutes q and k vector because transformers package has a different implementation of RoPE.
+
+    The revert operation of the following:
+    https://github.com/huggingface/transformers/blob/e42587f596181396e1c4b63660abf0c736b10dae/src/transformers/models/llama/convert_llama_weights_to_hf.py#L136
+    """
+    n, h, d = vector.shape
+    vector = vector.view(n, 2, h // 2, d).transpose(1, 2)
+    return vector.reshape(n, h, d)
+
+
+def parameters_from_llama_3(llama: LlamaForCausalLM, state: dict) -> dict:
+    """Converts llama weights from huggingface model to fuji state.
+
+    The following model are supported and tested:
+    - (fuji_model_name="fuji-1B-v3", llama_model_name="Llama-3.2-1B")
+    - (fuji_model_name="fuji-3B-v3", llama_model_name="Llama-3.2-3B")
+    - (fuji_model_name="fuji-8B-v3", llama_model_name="Llama-3.1-8B")
+    - (fuji_model_name="fuji-70B-v3", llama_model_name="Llama-3.1-70B")
+
+    Args:
+        llama: A Llama model with type LlamaForCausalLM.
+        state: The state of a fuji model.
+
+    Returns:
+        NestedTensor containing the same structure as state, but the weights are from llama.
+    """
+    # Copy the nested dict. No need to deep copy the data since it will be replaced.
+    state = jax.tree.map(lambda x: x, state)
+    if "lm_head" in state["decoder"]:
+        if id(llama.model.embed_tokens.weight) == id(llama.lm_head.weight):
+            raise ValueError("The embed_tokens and lm_head should not share weights.")
+        state["decoder"]["lm_head"]["weight"] = llama.lm_head.weight
+    elif id(llama.model.embed_tokens.weight) != id(llama.lm_head.weight):
+        raise ValueError("The embed_tokens and lm_head should share weights")
+
+    state["decoder"]["emb"]["token_emb"]["weight"] = llama.model.embed_tokens.weight
+    gate_proj = []
+    up_proj = []
+    down_proj = []
+    qkv = []
+    o = []
+    input_norm = []
+    post_attention_norm = []
+    o_shape = state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"][
+        "o_proj"
+    ]["weight"].shape
+    i_shape = state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"][
+        "i_proj"
+    ]["i_proj"]["qkv_proj"][
+        "weight"
+    ].shape  # (n_layers, d, n, h)
+
+    for layer in llama.model.layers:
+        gate_proj.append(layer.mlp.gate_proj.weight.transpose(0, 1))
+        up_proj.append(layer.mlp.up_proj.weight.transpose(0, 1))
+        down_proj.append(layer.mlp.down_proj.weight.transpose(0, 1))
+
+        vector = torch.concat(
+            [
+                _permute_q_k_for_rope(
+                    layer.self_attn.q_proj.weight.reshape(-1, i_shape[-1], i_shape[-3])
+                ),
+                _permute_q_k_for_rope(
+                    layer.self_attn.k_proj.weight.reshape(-1, i_shape[-1], i_shape[-3])
+                ),
+                layer.self_attn.v_proj.weight.reshape(-1, i_shape[-1], i_shape[-3]),
+            ],
+            dim=0,
+        ).permute(2, 0, 1)
+        qkv.append(vector)
+        o.append(layer.self_attn.o_proj.weight.reshape(-1, o_shape[-2], o_shape[-1]))
+        input_norm.append(layer.input_layernorm.weight)
+        post_attention_norm.append(layer.post_attention_layernorm.weight)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_0"][
+        "weight"
+    ] = torch.stack(gate_proj)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_1"][
+        "weight"
+    ] = torch.stack(up_proj)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear2"][
+        "weight"
+    ] = torch.stack(down_proj)
+    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"]["o_proj"][
+        "weight"
+    ] = torch.stack(o)
+    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"]["i_proj"][
+        "i_proj"
+    ]["qkv_proj"]["weight"] = torch.stack(qkv)
+    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["norm"][
+        "scale"
+    ] = torch.stack(input_norm)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["norm"][
+        "scale"
+    ] = torch.stack(post_attention_norm)
+    state["decoder"]["output_norm"]["scale"] = llama.model.norm.weight
+    return as_tensor(state)

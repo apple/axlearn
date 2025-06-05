@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/t5x:
+# Copyright 2022 The T5X Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests logit modifiers."""
 # pylint: disable=no-self-use
 import jax
@@ -56,6 +64,28 @@ class TestLogitsTransforms(TestCase):
                     # Should be including this value.
                     self.assertAlmostEqual(modified_eg[ix], eg[ix], delta=1e-6)
 
+    def test_top_p_modifier_batched_p(self):
+        """Test top_p_modifier with a tensor p."""
+        batch_size = 3
+        vocab_size = 13
+        p = jnp.array([1e-4, 0.1, 0.9])
+        logits = -jax.random.uniform(
+            jax.random.PRNGKey(1), shape=(batch_size, vocab_size), dtype=jnp.float32
+        )
+        top_p_modified_logits = top_p_logits(p)(logits)
+        for idx, (eg, modified_eg) in enumerate(zip(logits, top_p_modified_logits)):
+            probs = jax.nn.softmax(eg, axis=-1)
+            sorted_p, sorted_ix = jax.lax.top_k(probs, k=len(probs))
+            cumulative_prob = 0
+            for prob, ix in zip(sorted_p, sorted_ix):
+                if cumulative_prob >= p[idx]:
+                    # These were outside of the top-p mass, should be neg inf.
+                    self.assertAlmostEqual(modified_eg[ix], decoding.NEG_INF)
+                else:
+                    cumulative_prob += prob
+                    # Should be including this value.
+                    self.assertAlmostEqual(modified_eg[ix], eg[ix], delta=1e-6)
+
     @parameterized.parameters(1, 10, 17)
     def test_top_k_modifier(self, k: int):
         batch_size = 5
@@ -98,6 +128,30 @@ class TestLogitsTransforms(TestCase):
         self.assertNestedAllClose(
             top_k_modified_logits[:, -1:],
             jnp.full((batch_size, 1), decoding.NEG_INF),
+        )
+
+    @parameterized.product(
+        batch_size=[2, 8],
+        vocab_size=[512, 1024],
+        break_ties=["all", "smallest_index"],
+    )
+    def test_top_k_modifier_break_ties(self, batch_size, vocab_size, break_ties):
+        logits = jnp.concatenate(
+            (
+                jnp.full((batch_size, vocab_size - 1), -2 * jnp.pi),
+                jnp.full((batch_size, 1), -10.1),
+            ),
+            axis=-1,
+        )
+        top_k_modified_logits = top_k_logits(1, break_ties=break_ties)(logits)
+        num_returned_logits = vocab_size - 1 if break_ties == "all" else 1
+        self.assertNestedAllClose(
+            top_k_modified_logits[:, :num_returned_logits], logits[:, :num_returned_logits]
+        )
+        # Check that the rest of the array is neg inf.
+        self.assertNestedAllClose(
+            top_k_modified_logits[:, num_returned_logits:],
+            jnp.full((batch_size, vocab_size - num_returned_logits), decoding.NEG_INF),
         )
 
     @parameterized.parameters(1e-4, 0.1, 0.5, 0.99)

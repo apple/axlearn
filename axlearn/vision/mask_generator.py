@@ -1,10 +1,18 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/unilm:
+# Copyright (c) 2021 Microsoft.
+# Licensed under The MIT License.
+
 """A mask generator implementation.
 
 Code reference: https://github.com/microsoft/unilm/blob/master/beit2/masking_generator.py
 """
 import math
 import random
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
@@ -22,7 +30,7 @@ class MaskingGenerator:
     def __init__(
         self,
         *,
-        input_size: Tuple[int, int],
+        input_size: tuple[int, int],
         num_masking_patches: int,
         num_attempts: int = 10,
         min_mask_patches: int = 16,
@@ -34,7 +42,7 @@ class MaskingGenerator:
 
         Args:
             input_size: an int tuple that represents (height, width) of the patchified target.
-            num_masking_patches: the number of paches to be masked.
+            num_masking_patches: the number of patches to be masked.
             num_attempts: the max number of attempts for one mask generation trial.
             min_mask_patches: the min number of patches for one masking area.
             max_mask_patches: the max number of patches for one masking area. If None, sets to
@@ -75,7 +83,7 @@ class MaskingGenerator:
         )
         return repr_str
 
-    def get_shape(self) -> Tuple[int, ...]:
+    def get_shape(self) -> tuple[int, ...]:
         return self.height, self.width
 
     def _mask(self, mask, max_mask_patches) -> int:
@@ -120,7 +128,7 @@ class MaskingGenerator:
         mask = np.zeros(shape=self.get_shape(), dtype=np.int32)
         mask_count = 0
         # pylint: disable=no-else-break,unbalanced-tuple-unpacking
-        # Keeps selecting one new random area if mask_count does not reach num_masking_pathces.
+        # Keeps selecting one new random area if mask_count does not reach num_masking_patches.
         # TODO(xianzhi): consider consolidating the while and the if/else logics.
         while mask_count < self.num_masking_patches:
             max_mask_patches = self.num_masking_patches - mask_count

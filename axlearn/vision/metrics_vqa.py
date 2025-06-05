@@ -1,3 +1,16 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tylin/coco-caption:
+# Copyright (c) 2015, Xinlei Chen, Hao Fang, Tsung-Yi Lin, and Ramakrishna Vedantam.
+# All rights reserved.
+# Licensed under the BSD 2-Clause License.
+#
+# GT-Vision-Lab/VQA:
+# Copyright (c) 2014, Aishwarya Agrawal. All rights reserved.
+# Licensed under the BSD 2-Clause License.
+
 """Visual question answering accuracy between a prediction and ground truth answers.
 
 Original code VQA implementation:
@@ -74,7 +87,7 @@ Reference:
 
 """
 import re
-from typing import Callable, List
+from typing import Callable
 
 # fmt: off
 EN_VQA_CONTRACTIONS = {
@@ -130,8 +143,8 @@ EN_VQA_DIGITS = {
 
 EN_VQA_ARTICLES = {"a", "an", "the"}
 # pylint: disable=anomalous-backslash-in-string
-EN_VQA_PERIOD_STRIP = re.compile("(?!<=\d)(\.)(?!\d)")
-EN_VQA_COMMA_STRIP = re.compile("(\d)(\,)(\d)")
+EN_VQA_PERIOD_STRIP = re.compile(r"(?!<=\d)(\.)(?!\d)")
+EN_VQA_COMMA_STRIP = re.compile(r"(\d)(\,)(\d)")
 # pylint: enable=anomalous-backslash-in-string
 
 EN_VQA_PUNCT = [
@@ -144,7 +157,7 @@ EN_VQA_PUNCT = [
 
 def _en_normalizer(answer: str) -> str:
     def _process_punctuation(answer: str) -> str:
-        # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L130
+        # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L130
         normalized_answer = answer
         for p in EN_VQA_PUNCT:
             if (p + " " in answer or " " + p in answer) or (
@@ -157,7 +170,7 @@ def _en_normalizer(answer: str) -> str:
         return normalized_answer
 
     def _process_digit_article(answer: str) -> str:
-        # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L142
+        # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L142
         normalized_answer = []
         temp_text = answer.lower().split()
         for word in temp_text:
@@ -180,7 +193,7 @@ def _en_normalizer(answer: str) -> str:
 
 
 def _get_preprocessor() -> Callable[[str], str]:
-    # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L94
+    # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L94
     def _preprocessor(answer: str):
         answer = answer.replace("\n", " ")
         answer = answer.replace("\t", " ")
@@ -198,7 +211,7 @@ def _get_normalizer(lang: str) -> Callable[[str], str]:
         raise NotImplementedError(f"Normalizer for {lang} is not implemented.")
 
 
-def vqa_accuracy_score(*, answer: str, gt_answers: List[str], lang: str = "en") -> float:
+def vqa_accuracy_score(*, answer: str, gt_answers: list[str], lang: str = "en") -> float:
     """Computes visual question answering accuracy between a prediction and ground truth answers.
 
     This evaluation metrics compares a predicted answer to a set of 10 ground truth answers.
@@ -228,7 +241,7 @@ def vqa_accuracy_score(*, answer: str, gt_answers: List[str], lang: str = "en") 
     # If all human annotators agree and produce an identical answer, expectation is exact match.
     # References:
     # https://github.com/GT-Vision-Lab/VQA/issues/14
-    # https://github.com/GT-Vision-Lab/VQA/blob/master/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L98
+    # https://github.com/GT-Vision-Lab/VQA/blob/a013f0043c1e2cdc995922dfe257f7149aa9af06/PythonEvaluationTools/vqaEvaluation/vqaEval.py#L98
     normalizer = _get_normalizer(lang=lang)
     if len(set(gt_answers)) > 1:
         answer = normalizer(answer)

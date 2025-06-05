@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests ResNet."""
 import jax.random
 import numpy as np
@@ -50,7 +52,7 @@ class ResNetTest(parameterized.TestCase):
             is_training=is_training,
             prng_key=jax.random.PRNGKey(123),
             state=init_params,
-            inputs=dict(image=jax.tree_util.tree_map(jnp.asarray, inputs)),
+            inputs=dict(image=jax.tree.map(jnp.asarray, inputs)),
         )
         for level in range(2, 6):
             self.assertEqual(outputs[str(level)].shape[-1], model.endpoints_dims[str(level)])
@@ -75,7 +77,7 @@ class ResNetTest(parameterized.TestCase):
             is_training=is_training,
             prng_key=jax.random.PRNGKey(123),
             state=init_params,
-            inputs=dict(image=jax.tree_util.tree_map(jnp.asarray, inputs)),
+            inputs=dict(image=jax.tree.map(jnp.asarray, inputs)),
         )
         num_params = utils.count_model_params(init_params)
         logging.info("Model contains %s Million parameters.", num_params / 10.0**6)

@@ -1,6 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 # pylint: disable=no-self-use
 """Tests for eval_detection.py"""
-from typing import Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -34,7 +35,7 @@ class DummyModel(BaseModel):
         super().__init__(cfg, parent=parent)
         self.fake_results = next(iter(self.config.input_cfg.instantiate(parent=None)))
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
         if self.config.need_rescale_bboxes:
             image_scale = jnp.tile(input_batch["image_info"][:, 2:3, :], (1, 1, 2))
         else:
@@ -49,7 +50,7 @@ class DummyModel(BaseModel):
         }
         return outputs
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[float, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[float, NestedTensor]:
         del input_batch
         return 0.0, {}
 
@@ -62,7 +63,7 @@ class COCOMetricCalculatorTest(TestCase, parameterized.TestCase):
         cfg.source.set(
             dataset_name="coco/2017",
             split="validation",
-            shuffle_buffer_size=100 if is_training else 0,
+            train_shuffle_buffer_size=100,
         )
         cfg.processor.set(image_size=(image_size, image_size))
         cfg.batcher.set(global_batch_size=batch_size)
@@ -90,7 +91,7 @@ class COCOMetricCalculatorTest(TestCase, parameterized.TestCase):
                 .set(name="model", need_rescale_bboxes=need_rescale_bboxes, input_cfg=input_cfg)
                 .instantiate(parent=None)
             )
-            model_param_partition_specs = jax.tree_util.tree_map(
+            model_param_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, model.create_parameter_specs_recursively()
             )
             calculator: COCOMetricCalculator = (

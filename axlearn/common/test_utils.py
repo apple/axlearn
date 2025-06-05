@@ -1,41 +1,54 @@
-"""Utilites used for testing."""
+# Copyright © 2023 Apple Inc.
+
+"""Utilities used for testing."""
+
 import contextlib
 import copy
 import dataclasses
 import os
+import pathlib
+import re
 import tempfile
-from collections import OrderedDict
-from functools import partial
+from collections import OrderedDict, defaultdict
+from collections.abc import Iterator, Sequence
+from functools import partial, wraps
 from tempfile import mkdtemp
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, Union
+from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
 from unittest.mock import patch
 
 import jax
 import jax.random
 import numpy as np
+import optax
 from absl import logging
 from absl.testing import parameterized
 from jax import numpy as jnp
 
-from axlearn.common import decoding, optimizers, schedule, utils_spmd
-from axlearn.common.base_layer import BaseLayer
+from axlearn.common import optimizers, schedule, utils_spmd
+from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     InstantiableConfig,
     Required,
+    RequiredFieldValue,
     config_class,
     config_for_function,
 )
+from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
-from axlearn.common.logit_modifiers import LogitsToLogitsFn
+from axlearn.common.module import InvocationContext, Module, current_context
 from axlearn.common.module import functional as F
+from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
 from axlearn.common.param_init import FanAxes, Initializer, Shape
 from axlearn.common.trainer import SpmdTrainer
+from axlearn.common.update_transformation import Updates
 from axlearn.common.utils import (
+    Nested,
     NestedTensor,
     NestedTree,
     Tensor,
@@ -43,24 +56,14 @@ from axlearn.common.utils import (
     complete_partition_spec_tree,
     flatten_items,
     pop_data_dir,
+    prune_empty,
+    prune_tree,
     push_data_dir,
     set_data_dir,
+    shapes,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-# Instead of running setup() in TestCase.setUp(), we need to run it here, because setUp() runs
-# after parameterized.parameters(), so if we have
-#     @parameterized.parameters(
-#         {
-#             "data": jnp.array([[1.0, 0.8, 0, 0]], dtype=jnp.float32),
-#         }
-#     )
-# `data` will be of type jax.DeviceArray() instead of jax.Array() because we haven't called
-# jax.config.update("jax_array", True) yet.
-utils_spmd.setup()
-
-# See utils_spmd.py for where we set "jax_default_prng_impl".
-_default_prng_impl = "rbg"
 _PYTEST_OPT_REGISTERED = {}
 
 
@@ -93,9 +96,11 @@ def is_supported_platform(target_platform: str) -> bool:
     return supported
 
 
-def is_supported_mesh_shape(mesh_shape: Tuple[int, int]) -> bool:
+def is_supported_mesh_shape(
+    mesh_shape: Sequence[int], devices: Optional[list[jax.Device]] = None
+) -> bool:
     """Checks if a function intended for a mesh shape is compatible with the current device(s)."""
-    device_count = jax.device_count()
+    device_count = jax.device_count() if devices is None else len(devices)
     supported = device_count == np.prod(mesh_shape)
     if not supported:
         logging.info("Skipping mesh_shape=%s with device_count=%s", mesh_shape, device_count)
@@ -108,9 +113,31 @@ def as_local_tensor(x: Tensor) -> NestedTensor:
     raise NotImplementedError(f"{type(x)}: {x}")
 
 
+def clean_hlo(hlo: str) -> str:
+    """Returns a cleaned version of `hlo` with non-functional parts that may impact test reliability
+    removed.
+
+    Args:
+        hlo: The hlo to clean.
+
+    Returns:
+        A cleaned version of `hlo`.
+    """
+    # Matches an escaped string literal. E.g., "hello, world\"\\"
+    escaped_str = '"' + r"""([^"\\]|\\\\|\\")*""" + '"'
+    metadata_value = "(" + escaped_str + "|" + r"\d+" + ")"
+    pattern = r"metadata=\{(\w+=" + metadata_value + r"\s*)*\}"
+    return re.sub(pattern=pattern, repl="", string=hlo)
+
+
 class ParameterConversionFn(Protocol):
     def __call__(self, src: Any, *, dst_layer: BaseLayer) -> NestedTensor:
         """Converts parameters from `src` to parameters for `dst_layer`."""
+
+
+class Tolerance(NamedTuple):
+    rtol: float = 0.001
+    atol: float = 0.001
 
 
 class TestCase(parameterized.TestCase):
@@ -121,9 +148,16 @@ class TestCase(parameterized.TestCase):
         return "FAKE"
 
     def setUp(self):
+        super().setUp()
         push_data_dir(self.data_dir)
+        utils_spmd.setup(jax_backend=self._jax_backend())
+
+    def _jax_backend(self) -> str:
+        # Setup without distributed initialization by default.
+        return "cpu"
 
     def tearDown(self) -> None:
+        super().tearDown()
         self.assertEqual(pop_data_dir(), self.data_dir)
 
     def _compute_layer_outputs(
@@ -136,7 +170,7 @@ class TestCase(parameterized.TestCase):
         parameters_from_ref_layer: ParameterConversionFn,
         require_same_num_params: bool = True,
         require_same_tree_structure: bool = True,
-    ) -> Tuple[Any, Any]:
+    ) -> tuple[Any, Any]:
         layer_params = test_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
         total_num_layer_params = 0
         for name, param in flatten_items(layer_params):
@@ -166,8 +200,9 @@ class TestCase(parameterized.TestCase):
         )
         # Optionally, test that trees also have the same structure.
         if require_same_tree_structure:
-            ref_structure = jax.tree_util.tree_structure(params_from_ref)
-            test_structure = jax.tree_util.tree_structure(layer_params)
+            # Prune empty subtrees so we don't require empty dicts for layers with no params.
+            ref_structure = jax.tree_util.tree_structure(prune_empty(params_from_ref))
+            test_structure = jax.tree_util.tree_structure(prune_empty(layer_params))
             self.assertEqual(
                 ref_structure, test_structure, msg=f"\nRef: {ref_structure}\nTest: {test_structure}"
             )
@@ -204,7 +239,7 @@ class TestCase(parameterized.TestCase):
                 self.assertEqual(a_value.shape, b_value.shape, msg=f"{a_name}")
                 assert_allclose(a_value, b_value, atol=atol, rtol=rtol, err_msg=f"{a_name}")
             else:
-                self.assertAlmostEqual(a_value, b_value)
+                self.assertAlmostEqual(a_value, b_value, msg=f"{a_name}")
 
     def assertNestedEqual(self, a, b):
         a_kv = flatten_items(a)
@@ -219,11 +254,51 @@ class TestCase(parameterized.TestCase):
             if hasattr(a_value, "dtype"):
                 self.assertEqual(a_value.dtype, b_value.dtype)
 
+    def assertAllCloseWithOutliers(self, actual, desired, *, tolerance_map: dict[float, Tolerance]):
+        """Like np.testing.assert_allclose, but allows outlier percentiles to be specified.
 
+        `tolerance_map` is mapping of percentile values (between 0 and 1) to `Tolerance` objects.
+        Each entry defines the acceptable tolerance for a certain percentile of elements in the
+        difference `abs(actual - desired)`. The specified tolerance should be met within the given
+        percentile of total elements in `actual` or `desired`.
+
+        Example:
+        ```python
+        self.assertAllCloseWithOutliers(x, y, tolerance_map={
+            1.0: Tolerance(atol=0.2),
+            0.95: Tolerance(atol=0.05),
+        })
+        ```
+        This example asserts 100% elements of `abs(x - y)` should be within atol=0.2, and 95%
+        elements of `abs(x - y)` should be within atol=0.05.
+        """
+        assert len(tolerance_map) > 0
+        self.assertEqual(actual.shape, desired.shape)
+        self.assertEqual(actual.dtype, desired.dtype)
+        actual = actual.astype(np.float32)
+        desired = desired.astype(np.float32)
+        diff = np.abs(actual - desired)
+        for percentile, tol in tolerance_map.items():
+            percentile = 1 - percentile
+            tolerance = tol.atol + tol.rtol * np.abs(desired)
+            expected_num_ele = round(diff.size * percentile)
+            actual_num_ele = np.count_nonzero(diff > tolerance)
+            actual_percent = actual_num_ele / diff.size
+            self.assertLessEqual(
+                actual_num_ele,
+                expected_num_ele,
+                msg=f"Expected the number of elements over {tol} to be less than {percentile:.3%}"
+                f" of total elements (or {expected_num_ele}), but got {actual_percent:.3%} "
+                f"(or {actual_num_ele}). These differences are {diff[diff > tolerance]}. "
+                f"Max difference = {diff.max()}",
+            )
+
+
+# TODO(markblee): Move this to axlearn/experiments/test_utils.py, where it's used.
 class TrainerConfigTestCase(TestCase):
     """Base class for testing trainer configs."""
 
-    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[Dict[str, int]] = None):
+    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[dict[str, int]] = None):
         with jax.checking_leaks(), set_data_dir("FAKE"):
             if mesh_size is None:
                 mesh_size = {}
@@ -232,9 +307,20 @@ class TrainerConfigTestCase(TestCase):
             cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
             cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
             cfg.max_step = 3
+
+            # TODO(kelvin-zou): Remove this once bfloat16 bug on CPU is fixed.
+            if jax.devices()[0].platform == "cpu":
+                if cfg.train_dtype == jnp.bfloat16:
+                    cfg.train_dtype = jnp.float32
+                for evaler_cfg in cfg.evalers.values():
+                    if evaler_cfg.eval_dtype == jnp.bfloat16:
+                        evaler_cfg.eval_dtype = jnp.float32
+
             for evaler_cfg in cfg.evalers.values():
-                evaler_cfg.run_every_n_steps = 2
-                evaler_cfg.vlog = max(evaler_cfg.vlog, 3)
+                if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
+                    evaler_cfg.eval_policy.n = 2
+                evaler_cfg.vlog = max(evaler_cfg.vlog or 0, 3)
+
             if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
                 cfg.checkpointer.save_policy.n = 2
             logging.info("_test_with_trainer_config: %s", trainer_config)
@@ -250,6 +336,8 @@ class TrainerConfigTestCase(TestCase):
                 if state_spec is None:
                     continue
                 self.assertSequenceEqual(value.shape, state_spec.shape)
+                if state_spec.mesh_axes is None:
+                    state_spec.mesh_axes = [None] * len(value.shape)
                 self.assertLen(
                     state_spec.mesh_axes,
                     len(value.shape),
@@ -275,7 +363,7 @@ class DummyForwardModel(BaseModel):
     ``predict`` returns input_batch["aux"].
     """
 
-    def forward(self, input_batch: NestedTensor, **kwargs) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor, **kwargs) -> tuple[Tensor, NestedTensor]:
         del kwargs
         return jnp.zeros([], dtype=jnp.float32), input_batch.get("aux", {})
 
@@ -283,149 +371,23 @@ class DummyForwardModel(BaseModel):
         return self.forward(input_batch)[1]
 
 
-# forward() is not implemented.
-# pylint: disable-next=abstract-method
-class DummyDecodingModel(BaseModel):
-    """A dummy model whose `beam_search_decode` and `sample_decode` returns ids from
-    input_batch["predicted"]."""
-
-    @config_class
-    class Config(BaseModel.Config):
-        vocab_size: Required[int] = REQUIRED
-        # bos_id: Required[int] = REQUIRED
-        eos_id: Required[int] = REQUIRED
-
-    def _token_to_scores(
-        self,
-        predicted_sequences: Tensor,
-        num_decodes: int,
-        logits_modifier: Optional[LogitsToLogitsFn] = None,
-    ):
-        cfg = self.config
-
-        print(f"predicted_sequences={predicted_sequences}")
-        batch_size = predicted_sequences.shape[0]
-        vocab_size = cfg.vocab_size
-
-        # This fn aims to duplicate the input sequences.
-        def tokens_to_scores(
-            token_indices: Tensor, state_cache: NestedTensor  # pylint: disable=unused-argument
-        ) -> Tuple[Tensor, NestedTensor]:
-            cur_step = state_cache["cur_step"]
-            # Gets the golden token for the next time step.
-            # [batch_size, num_decodes]
-            # Adds EOS after predicted_sequences.shape[1] (all tokens would be equally likely).
-            cur_golden_token = jnp.take_along_axis(
-                predicted_sequences,
-                jnp.reshape(cur_step[:, 0] + 1, (batch_size, num_decodes)),
-                axis=1,
-            )
-            print(f"cur_golden_token={cur_golden_token}, vocab_size={vocab_size}")
-            # Convert tokens to the logits by the one hot operation.
-            # The golden token's logit will be 1000 and others' are zeros.
-            # [batch_size * num_decodes, vocab_size]
-            logits_for_tokens = jnp.reshape(
-                jax.nn.one_hot(cur_golden_token, vocab_size, axis=-1) * 1000,
-                (batch_size * num_decodes, vocab_size),
-            )
-            log_probs_for_tokens = jax.nn.log_softmax(logits_for_tokens)
-            # Update state in the cache.
-            new_cache = state_cache.copy()
-            new_cache["cur_step"] = cur_step + 1
-            # Apply logits_modifier.
-            if logits_modifier is not None:
-                log_probs_for_tokens = logits_modifier(log_probs_for_tokens)
-            return log_probs_for_tokens, new_cache
-
-        return tokens_to_scores
-
-    def beam_search_decode(
-        self,
-        input_batch: NestedTensor,
-        *,
-        num_decodes: int = 1,
-        max_len: int = 114,
-    ) -> decoding.BeamSearchOutputs:
-        cfg = self.config
-
-        if "beam_search_outputs" in input_batch:
-            return input_batch["beam_search_outputs"]
-
-        predicted_sequences = input_batch["predicted"]
-        batch_size = predicted_sequences.shape[0]
-
-        # Initializes the cache for the beam search.
-        init_cache = {}
-        init_cache["cur_step"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
-        inputs = jnp.zeros_like(predicted_sequences)
-        if "prefix" in input_batch:
-            inputs = inputs.at[:, : input_batch["prefix"].shape[1]].set(input_batch["prefix"])
-        return decoding.beam_search_decode(
-            inputs=inputs,
-            cache=init_cache,
-            tokens_to_scores=self._token_to_scores(predicted_sequences, num_decodes),
-            eos_id=cfg.eos_id,
-            num_decodes=num_decodes,
-            max_decode_len=max(max_len, predicted_sequences.shape[-1]),
-        )
-
-    def sample_decode(
-        self,
-        input_batch: NestedTensor,
-        *,
-        num_decodes: int,
-        max_len: int,
-        logits_modifier: LogitsToLogitsFn,
-    ) -> decoding.SampleOutputs:
-        cfg = self.config
-
-        if "sample_outputs" in input_batch:
-            return input_batch["sample_outputs"]
-
-        predicted_sequences = input_batch["predicted"]
-        batch_size = predicted_sequences.shape[0]
-
-        # Initializes the cache for the beam search.
-        init_cache = {}
-        init_cache["cur_step"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
-        inputs = jnp.zeros_like(predicted_sequences)
-        inputs = inputs.at[:, 0].set(cfg.eos_id)
-        return decoding.sample_decode(
-            inputs=inputs,
-            cache=init_cache,
-            tokens_to_scores=self._token_to_scores(
-                predicted_sequences,
-                num_decodes,
-                logits_modifier=logits_modifier,
-            ),
-            stop_decoding_condition=decoding.StopOnSubsequence([[cfg.eos_id]]),
-            num_decodes=num_decodes,
-            max_decode_len=max(max_len, predicted_sequences.shape[-1]),
-            prng_key=jax.random.PRNGKey(123),
-        )
-
-
 class TestWithTemporaryCWD(TestCase):
     """Run all tests in a temp directory to isolate from local env."""
 
     def run(self, result=None):
         temp_root = tempfile.TemporaryDirectory()
-        # Note that using "as" will only return the dir name.
-        with temp_root:
-            # pylint: disable-next=attribute-defined-outside-init
-            self._temp_root = temp_root
-            temp_root = os.path.realpath(self._temp_root.name)
-            os.chdir(temp_root)
+        # Note that using "with temp_root as ..." will only return the dir name.
+        # pylint: disable-next=attribute-defined-outside-init
+        self._temp_root = temp_root
+        with temp_root, temp_chdir(os.path.realpath(self._temp_root.name)):
             super().run(result)
 
 
 @contextlib.contextmanager
 def prng_impl(new_prng_impl: str):
-    old_prng_impl = _default_prng_impl
+    old_prng_impl = jax.config.jax_default_prng_impl
 
     def switch(value):
-        global _default_prng_impl  # pylint: disable=global-statement
-        _default_prng_impl = value
         jax.config.update("jax_default_prng_impl", value)
 
     switch(new_prng_impl)
@@ -433,7 +395,7 @@ def prng_impl(new_prng_impl: str):
     switch(old_prng_impl)
 
 
-# Use dataclass so that jax.tree_util.tree_map does not expand it.
+# Use dataclass so that jax.tree.map does not expand it.
 @dataclasses.dataclass
 class ParamInitSpec:
     shape: Optional[Sequence[int]]
@@ -447,8 +409,9 @@ class ThirdPartyInitializer(Initializer):
     """An stand-in initializer that indicates that initialization is delegated to a third party
     library, like HuggingFace."""
 
-    def __init__(self, library: str):
-        self._library = library
+    @config_class
+    class Config(Initializer.Config):
+        library: Required[str] = REQUIRED
 
     def debug_string(
         self,
@@ -456,12 +419,11 @@ class ThirdPartyInitializer(Initializer):
         shape: Optional[Shape] = None,
         axes: Optional[FanAxes] = None,
     ) -> str:
-        return f"delegated({self._library})"
+        return f"delegated({self.config.library})"
 
 
-# When pytype supports recursive types, switch to:
-# Optional[Union[ParamInitSpec, Dict[str, "NestedParamInitSpec"]]]
-NestedParamInitSpec = Optional[Union[ParamInitSpec, Dict[str, Any]]]
+# For new code, use Nested[ParamInitSpec].
+NestedParamInitSpec = Optional[Union[ParamInitSpec, dict[str, Any]]]
 
 
 def _cast_ordered_dict(params: NestedTensor):
@@ -471,7 +433,7 @@ def _cast_ordered_dict(params: NestedTensor):
 
 
 def _complete_param_init_spec_tree(
-    params: NestedTensor, param_init_specs: List[ParamInitSpec], delegates: Dict[str, ParamInitSpec]
+    params: NestedTensor, param_init_specs: list[ParamInitSpec], delegates: dict[str, ParamInitSpec]
 ):
     """Completes the param_init_specs by replacing certain param paths with proxy Initializers.
 
@@ -507,18 +469,18 @@ def _complete_param_init_spec_tree(
 
     # Complete the param_init_specs to match the params treedef.
     # Replace with Nones so that jax doesn't treat them as leaves.
-    params_with_nones = jax.tree_map(
+    params_with_nones = jax.tree.map(
         partial(replace_keys, mapping={k: None for k in delegates}), params, is_leaf=is_leaf
     )
     _, treedef = jax.tree_util.tree_flatten(params_with_nones)
     inits_with_nones = jax.tree_util.tree_unflatten(treedef, param_init_specs)
 
     # Replace the Nones with a delegate.
-    return jax.tree_map(partial(replace_keys, mapping=delegates), inits_with_nones, is_leaf=is_leaf)
+    return jax.tree.map(partial(replace_keys, mapping=delegates), inits_with_nones, is_leaf=is_leaf)
 
 
 def read_param_init_specs_recursively(
-    layer: BaseLayer, *, delegates: Optional[Dict[str, ParamInitSpec]] = None
+    layer: BaseLayer, *, delegates: Optional[dict[str, ParamInitSpec]] = None
 ) -> NestedParamInitSpec:
     """Given a layer, returns all nested parameter initialization specs.
 
@@ -535,8 +497,12 @@ def read_param_init_specs_recursively(
 
     # pylint: disable-next=unused-argument
     def patched_init(self, name, *, prng_key, parameter_spec):
-        # pylint: disable-next=protected-access
-        fan_axes = self._compute_fan_axes(name, parameter_spec)
+        fan_axes = (
+            parameter_spec.fan_axes
+            if parameter_spec.fan_axes is not None
+            # pylint: disable-next=protected-access
+            else self._compute_fan_axes(name, parameter_spec)
+        )
         all_param_init_specs.append(
             ParamInitSpec(
                 shape=parameter_spec.shape,
@@ -554,11 +520,11 @@ def read_param_init_specs_recursively(
 
     orig_vmap = jax.vmap
 
-    def patched_vmap(fn):
+    def patched_vmap(fn, **vmap_kwargs):
         def wrapped_fn(*args, **kwargs):
             return _cast_ordered_dict(fn(*args, **kwargs))
 
-        return orig_vmap(wrapped_fn)
+        return orig_vmap(wrapped_fn, **vmap_kwargs)
 
     patch_vmap = patch("jax.vmap", side_effect=patched_vmap, autospec=True)
 
@@ -569,12 +535,15 @@ def read_param_init_specs_recursively(
 
 def read_per_param_settings(
     module: Any, config_name: str, trainer_config: Optional[TrainerConfigFn] = None
-) -> Dict[str, NestedTensor]:
+) -> dict[str, dict[str, NestedTensor]]:
     """Extracts per-param settings for the given trainer config.
 
     Given a trainer config specified by `module` and `config_name`, initializes the trainer
     and intercepts calls to `register_per_param_settings` to extract `description` and `settings`
     for each call.
+
+    Learners that require realistic input to their `update()` function may not work with this
+    function. E.g., expects specific state updates, gradient shapes, a named forward pass.
 
     Args:
         module: training config module.
@@ -582,10 +551,10 @@ def read_per_param_settings(
         trainer_config: Optional, the pre-cached trainer config used in golden config test.
 
     Returns:
-        A dictionary of trees, where the key is the description of the `register_per_param_settings`
-        call, and the value is a tree of the same structure as the model parameter, and has
-        per-parameter settings, e.g., a float number representing weight decay scale of the
-        parameter.
+        A nested dict, where the key is the description of the `register_per_param_settings` call,
+        and the value is a dictionary. The value maps the learner path to a tree of
+        the same structure as the corresponding model parameters, which records the
+        per-parameter settings (such as the weight decay scales of each parameter).
         It can be empty if the trainer config does not call `register_per_param_settings`.
     """
     # Define patchers.
@@ -601,25 +570,33 @@ def read_per_param_settings(
         autospec=True,
     )
 
-    all_param_settings = {}
+    all_param_settings = defaultdict(dict)
 
     def patched_register_per_param_settings(
-        settings: NestedTree, *, description: str
+        settings: NestedTree, *, description: str, path: Optional[str] = None
     ) -> NestedTree:
-        if description in all_param_settings:
-            raise ValueError(
-                f"{description} already populated:\n"
-                f"Existing: {all_param_settings[description]}\n"
-                f"New: {settings}\n"
-            )
-        all_param_settings[description] = settings
+        # Prune MaskedNode subtrees. If a tree would be made empty by removal of its subtrees,
+        # it will also be pruned.
+        pruned_settings = prune_tree(
+            settings,
+            lambda _, v: isinstance(v, optax.MaskedNode) or (isinstance(v, dict) and not v),
+        )
+        if all_param_settings[description]:
+            logging.info("There are multiple per_param_settings of %s.", description)
+        # Use the path if provided, else a counter.
+        key = path or str(len(all_param_settings[description]))
+
+        all_param_settings[description][key] = pruned_settings
         return settings
 
-    with patch(
-        "axlearn.common.utils._register_per_param_settings",
-        side_effect=patched_register_per_param_settings,
-        autospec=True,
-    ), patch_init:
+    with (
+        patch(
+            "axlearn.common.utils._register_per_param_settings",
+            side_effect=patched_register_per_param_settings,
+            autospec=True,
+        ),
+        patch_init,
+    ):
         if trainer_config is not None:
             config_fn = trainer_config
         else:
@@ -633,7 +610,7 @@ def read_per_param_settings(
         model_specs = complete_partition_spec_tree(
             jax.tree_util.tree_structure(model_params), model_specs
         )
-        opt_params = jax.tree_util.tree_map(
+        opt_params = jax.tree.map(
             lambda param, spec: OptParam(
                 value=param,
                 # Disable factored second moment since we use a dummy weight value.
@@ -644,10 +621,10 @@ def read_per_param_settings(
             model_specs,
         )
         # Sets gradients to dummy values.
-        zero_grads = jax.tree_util.tree_map(lambda p: jnp.zeros(1), opt_param_values(opt_params))
+        zero_grads = jax.tree.map(lambda p: jnp.zeros(1), opt_param_values(opt_params))
         learner = trainer_cfg.learner.set(name="learner").instantiate(parent=None)
         learner_state = learner.init(opt_params)
-        zero_grads = jax.tree_util.tree_map(
+        zero_grads = jax.tree.map(
             lambda use_opt, g: g if use_opt else None,
             learner.should_update_with_optimizers(opt_params),
             zero_grads,
@@ -658,12 +635,13 @@ def read_per_param_settings(
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
             method="update",
-            inputs=dict(model_params=opt_params, gradients=zero_grads, state_updates={}),
+            inputs=[Updates(opt_params=opt_params, delta_updates=zero_grads, inplace_updates={})],
         )
 
     return all_param_settings
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     """Builds a dummy attention mask where non-padding tokens are followed by padding tokens.
 
@@ -686,12 +664,13 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     input_len = jax.random.randint(
         jax.random.PRNGKey(123), shape=(batch_size,), minval=0, maxval=max_seq_len
     )
-    return lower_diag[input_len]
+    return lower_diag[input_len].astype(jnp.bool)
 
 
+# TODO(markblee): Update to take prng_key explicitly.
 def dummy_segments_positions(
     batch: int, seq_len: int, *, num_segments: int
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Builds dummy segment IDs and corresponding positions.
 
     Example:
@@ -699,7 +678,7 @@ def dummy_segments_positions(
         seq_len: 4
         num_segments: 3
         output: (
-            [[0, 1, 1, 1], [1, 1, 2, 2]],  # segment_ids
+            [[1, 2, 2, 2], [1, 1, 2, 2]],  # segment_ids
             [[0, 0, 1, 2], [0, 1, 0, 1]],  # positions
         )
 
@@ -723,10 +702,11 @@ def dummy_segments_positions(
     # Generate dummy segment IDs of shape [batch, seq_len].
     segment_starts = jnp.pad(jnp.arange(seq_len - 1) < num_segments - 1, [[1, 0]])
     segment_starts = jnp.tile(segment_starts, [batch, 1])
-    segment_starts = jax.random.shuffle(
+    segment_starts = jax.random.permutation(
         jax.random.PRNGKey(401),
         segment_starts,
         axis=-1,
+        independent=True,
     )
     segment_ids = 1 + jnp.cumsum(segment_starts, axis=-1)
 
@@ -804,3 +784,184 @@ def mock_trainer_config(
         )
     )
     return cfg
+
+
+@contextlib.contextmanager
+def temp_chdir(new_cwd: Union[pathlib.Path, str]):
+    """Changes into a temp CWD only within the context."""
+    old_cwd = os.getcwd()
+    os.chdir(new_cwd)
+    try:
+        yield
+    finally:
+        os.chdir(old_cwd)
+
+
+L = TypeVar("L", bound=BaseLayer)
+M = TypeVar("M", bound=Module)
+
+
+@contextlib.contextmanager
+def bind_module(
+    module: ConfigOr[M],
+    *,
+    is_training: bool = True,
+    prng_key: Optional[jax.random.PRNGKey] = None,
+    state: Nested[Tensor],
+) -> Iterator[M]:
+    """Creates a context in which `module` has `state`.`
+
+    This lets you write tests that make calls to a module without needing to call `functional()`
+    yourself.
+
+    It is similar in spirit to FLAX's `module.bind()` although that works differently due to the
+    fact that FLAX state is only associated with an instance of a module, whereas AXLearn state is
+    global.
+
+    Example:
+        ```
+        cfg = MyModule.default_config()
+        with test_utils.bind_layer(cfg) as module:
+            result = module.do_something(some_args)
+        ```
+
+    Args:
+        module: The module to create a context for.
+        is_training: Tell the module it is in training or not.
+        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
+        state: The state to use.
+
+    Returns:
+        The initialized module.
+    """
+    if prng_key is None:
+        prng_key = jax.random.PRNGKey(0)
+
+    if isinstance(module, InstantiableConfig):
+        if isinstance(module, Module.Config) and isinstance(
+            getattr(module, "name", None), RequiredFieldValue
+        ):
+            setattr(module, "name", "tmp")
+        module = module.instantiate(parent=None)
+    ctx = InvocationContext(
+        name="root",
+        parent=None,
+        module=module,
+        is_training=is_training,
+        prng_key=prng_key,
+        state=state,
+        output_collection=new_output_collection(),
+    )
+    with set_current_context(ctx):
+        yield module
+
+
+@contextlib.contextmanager
+def bind_layer(
+    layer: ConfigOr[L],
+    *,
+    is_training: bool = True,
+    prng_key: Optional[jax.random.PRNGKey] = None,
+    state: Optional[Nested[Tensor]] = None,
+) -> Iterator[L]:
+    """Creates a context in which `layer` has state initialized using
+    `initialize_parameters_recursively`.
+
+    The only difference between this and `bind_module()` is this calls
+    `initialize_parameters_recursively`.
+
+    Example:
+        ```
+        cfg = Linear.default_config().set(input_dim=5, output_dim=7)
+        with test_utils.bind_layer(cfg) as layer:
+            result = layer(jnp.ones(5))
+        assert result.shape == (7,)
+        ```
+
+    Args:
+        layer: The layer to initialize.
+        is_training: Tell the layer it is in training or not.
+        prng_key: The PRNG key to use. If None, `jax.random.PRNGKey(0)`.
+        state: The state to use. If None, call `initialize_parameters_recursively()` to initialize
+               the state.
+
+    Returns:
+        The Initialized module.
+    """
+    if prng_key is None:
+        prng_key = jax.random.PRNGKey(0)
+
+    init_key, ctx_key = jax.random.split(prng_key)
+
+    with bind_module(layer, is_training=is_training, prng_key=ctx_key, state={}) as instance:
+        if state is None:
+            state = instance.initialize_parameters_recursively(prng_key=init_key)
+        current_context().state = state
+        yield instance
+
+
+def initialize_parameters_with_prebuilt(
+    layer: BaseLayer, *, prng_key: Tensor, prebuilt: Nested[Union[Tensor, ParameterSpec]]
+) -> Nested[Tensor]:
+    """Initializes parameters with given prebuilt parameters.
+
+    This is different from `BaseLayer.initialize_parameters_recursively` in two ways:
+    - `prebuilt` contains Tensors for prebuilt parameters, ParameterSpec otherwise;
+    - This function merges `prebuilt` into the returned tree.
+
+    Args:
+        layer: The `layer` for which to initialize parameters.
+        prng_key: The random key.
+        prebuilt: A Nested tree whose leaf nodes are Tensors if the parameters are prebuilt,
+            ParameterSpecs if the parameters should be initialized.
+
+    Returns:
+        A Nested Tree with Tensors as leaf nodes. The Tensors will come from `prebuilt` if
+        provided, otherwise initialized via `initialize_parameters_recursively`.
+    """
+    if prebuilt is None:
+        return layer.initialize_parameters_recursively(prng_key)
+    # A tree where a leaf is a ParameterSpec for a prebuilt param, None otherwise.
+    # This is used for `initialize_parameters_recursively`.
+    prebuilt_param_specs = jax.tree.map(
+        lambda value: (
+            ParameterSpec(
+                shape=value.shape,
+                dtype=value.dtype,
+                mesh_axes=value.sharding,
+            )
+            if isinstance(value, Tensor)
+            else None
+        ),
+        prebuilt,
+    )
+    logging.debug("prebuilt_param_specs: %s", shapes(prebuilt_param_specs))
+    initialized = layer.initialize_parameters_recursively(prng_key, prebuilt=prebuilt_param_specs)
+    # Merge `prebuilt` and `initialized`.
+    logging.info("prebuilt params: %s", shapes(prebuilt))
+    logging.info("initialized params: %s", shapes(initialized))
+    return jax.tree.map(
+        lambda prebuilt, initialized: (prebuilt if isinstance(prebuilt, Tensor) else initialized),
+        prebuilt,
+        initialized,
+    )
+
+
+# Starting from Jax 0.5.0, jax_threefry_partitionable is enabled by default.
+# https://docs.jax.dev/en/latest/changelog.html#jax-0-5-0-jan-17-2025
+# This is a breaking change and some unit tests which expect specific values
+# need to either change the expected numerical values, or toggle off this feature.
+# We add a knob to turn off this for easy backward compatibility,
+# and expect to update the unit tests by owners soon.
+def set_threefry_partitionable(on: bool = False):
+    """Helper decorator to enable/disable threefry_partitionable."""
+
+    def decorator_set(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            with jax.threefry_partitionable(on):
+                return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator_set

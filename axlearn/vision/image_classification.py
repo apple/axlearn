@@ -1,5 +1,6 @@
+# Copyright © 2023 Apple Inc.
+
 """Image classification models."""
-from typing import Dict, Tuple
 
 from jax import numpy as jnp
 
@@ -45,7 +46,7 @@ class ImageClassificationModel(BaseModel):
         cfg.dtype = jnp.float32
         return cfg
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
         """Compute prediction on an input batch.
 
         Args:
@@ -63,7 +64,7 @@ class ImageClassificationModel(BaseModel):
         endpoints["logits"] = x
         return endpoints
 
-    def forward(self, input_batch: Dict[str, Tensor]) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: dict[str, Tensor]) -> tuple[Tensor, NestedTensor]:
         # [batch].
         outputs = self.predict(input_batch)
         # Compute metrics.

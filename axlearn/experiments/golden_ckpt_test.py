@@ -1,11 +1,13 @@
+# Copyright © 2023 Apple Inc.
+
 """A unittest for checkpoint backwards-compatibility."""
 # pylint: disable=no-self-use
-
 import dataclasses
 import os.path
 import resource
 import shutil
-from typing import List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 import jax.random
 from absl import flags
@@ -38,7 +40,7 @@ def _update_golden_checkpoints():
 
 def named_parameters(
     trainer_configs: Sequence[TrainerConfigSpec],
-) -> List[Tuple[str, TrainerConfigSpec]]:
+) -> list[tuple[str, TrainerConfigSpec]]:
     return [(config_spec.name, config_spec) for config_spec in trainer_configs]
 
 
@@ -47,7 +49,7 @@ class GoldenCheckpointTest(TestCase):
 
     @property
     def root_module(self):
-        return "axlearn"
+        return "axlearn.experiments"
 
     def _test_golden_checkpoint(self, config_spec: TrainerConfigSpec):
         # Temporarily raises the soft limit of open files to the hard limit.
@@ -55,7 +57,7 @@ class GoldenCheckpointTest(TestCase):
         resource.setrlimit(resource.RLIMIT_NOFILE, (hard_limit, hard_limit))
 
         cfg_fn = get_named_trainer_config(
-            config_spec.name, config_module=config_spec.module, root_module=self.root_module
+            config_spec.name, config_module=f"{self.root_module}.{config_spec.module}"
         )
         cfg: SpmdTrainer.Config = cfg_fn()
         cfg.summary_writer = NoOpWriter.default_config()

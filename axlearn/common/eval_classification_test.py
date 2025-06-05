@@ -1,6 +1,8 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests classification eval pipeline."""
 # pylint: disable=no-self-use
-from typing import Dict, Iterable
+from collections.abc import Iterable
 
 import jax
 import jax.numpy as jnp
@@ -42,7 +44,7 @@ def _compute_metrics(
     *,
     data_generator: Iterable,
     calculator_cfg: PrecisionRecallMetricCalculator.Config,
-) -> Dict:
+) -> dict:
     """Computes classification metrics on the entire provided evaluation set.
 
     Args:
@@ -57,7 +59,7 @@ def _compute_metrics(
         jax.experimental.mesh_utils.create_device_mesh((1, 1)), ("data", "model")
     ):
         model = DummyClassificationModel.default_config().set(name="model").instantiate(parent=None)
-        model_param_partition_specs = jax.tree_util.tree_map(
+        model_param_partition_specs = jax.tree.map(
             lambda spec: spec.mesh_axes, model.create_parameter_specs_recursively()
         )
         calculator = calculator_cfg.set(name="calculator").instantiate(
@@ -217,7 +219,7 @@ class ClassificationMetricCalculatorTest(parameterized.TestCase):
         batch_size: int,
         precision_levels: float,
         recall_levels: float,
-        expected_metrics: Dict[str, float],
+        expected_metrics: dict[str, float],
     ):
         summaries = _compute_metrics(
             calculator_cfg=PrecisionRecallMetricCalculator.default_config().set(

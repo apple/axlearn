@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Input processing for reading comprehension.
 
 This module implements functions necessary to prepare reading comprehension datasets for training
@@ -6,7 +8,7 @@ and evaluation.
 import json
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import Dict, List, Tuple, Union
+from typing import Union
 
 import tensorflow as tf
 from seqio import map_over_dataset
@@ -25,7 +27,7 @@ class TokenizerForReadingComprehension(ABC):
     """
 
     @abstractmethod
-    def subtokenize(self, text: str) -> List[str]:
+    def subtokenize(self, text: str) -> list[str]:
         """Subtokenizes text.
 
         Takes text and produces a list of subtokens. The subtokenizer should not add special
@@ -39,7 +41,7 @@ class TokenizerForReadingComprehension(ABC):
         """
 
     @abstractmethod
-    def encode(self, subtokens: List[str]) -> List[int]:
+    def encode(self, subtokens: list[str]) -> list[int]:
         """Encodes subtokens into input IDs.
 
         Takes a list of subtokens (from the subtokenize() function) and converts each element into
@@ -52,7 +54,7 @@ class TokenizerForReadingComprehension(ABC):
             A list of input IDs corresponding to each element in the input subtokens list.
         """
 
-    def __call__(self, text: str) -> List[int]:
+    def __call__(self, text: str) -> list[int]:
         """Tokenizes text into input IDs.
 
         Same as calling encode(subtokenize(text)).
@@ -111,7 +113,7 @@ class HFTokenizerForReadingComprehension(TokenizerForReadingComprehension, Confi
             - self._tokenizer.num_special_tokens_to_add()
         )
 
-    def subtokenize(self, text: str) -> List[str]:
+    def subtokenize(self, text: str) -> list[str]:
         """Subtokenizes text.
 
         Args:
@@ -122,7 +124,7 @@ class HFTokenizerForReadingComprehension(TokenizerForReadingComprehension, Confi
         """
         return self._tokenizer.tokenize(text)
 
-    def encode(self, subtokens: List[str]) -> List[int]:
+    def encode(self, subtokens: list[str]) -> list[int]:
         """Encodes subtokens into input IDs.
 
         Args:
@@ -166,7 +168,7 @@ class HFTokenizerForReadingComprehension(TokenizerForReadingComprehension, Confi
 
 
 def build_example_dataset_fn(
-    examples: List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]],
+    examples: list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]],
 ) -> BuildDatasetFn:
     """Returns a BuildDatasetFn that generates reading comprehension examples from dictionaries.
 
@@ -241,7 +243,7 @@ def parse_examples_jsonl() -> DatasetToDatasetFn:
           indicating the starting string index of the answer in the context.
     """
 
-    def parse_line(input_line: tf.Tensor) -> Dict[str, tf.Tensor]:
+    def parse_line(input_line: tf.Tensor) -> dict[str, tf.Tensor]:
         dtypes = OrderedDict(
             context=tf.string,
             question=tf.string,
@@ -284,7 +286,7 @@ def parse_examples_jsonl() -> DatasetToDatasetFn:
 
 
 def examples_to_jsonl_dataset(
-    examples: List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]],
+    examples: list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]],
 ) -> BuildDatasetFn:
     """Returns a BuildDatasetFn that generates JSON lines from example dictionaries.
 
@@ -325,7 +327,7 @@ def convert_example_to_features(
     """Returns a DatasetToDatasetFn that converts a reading comprehension example to input features.
 
     This generic function prepares a reading comprehension example into multiple input features by
-    tokenizing and chunking the the example based off of the TokenizerForReadingComprehension, max
+    tokenizing and chunking the example based off of the TokenizerForReadingComprehension, max
     input length, and a given document stride. For documents that are longer than the max_length,
     the document is "chunked" into multiple model inputs such that there is a doc_stride amount of
     token overlap between the chunks of the context.
@@ -367,7 +369,7 @@ def convert_example_to_features(
         context: tf.Tensor,
         answer_texts: tf.Tensor,
         answer_start_positions: tf.Tensor,
-    ) -> List[tf.Tensor]:
+    ) -> list[tf.Tensor]:
         question = question.numpy().item().decode("utf-8")
         context = context.numpy().item().decode("utf-8")
         answer_texts = [s.decode("utf-8") for s in answer_texts.numpy().tolist()]
@@ -378,7 +380,7 @@ def convert_example_to_features(
         doc_tokens, char_to_doc_token_offset = _get_doc_tokens_and_char_offsets(context=context)
 
         # Use the subtokenize of the tokenizer to subtokenize each whitespace-delimited token into
-        # their respective subtokens. Additionally computes the subtoken indicies the answer span by
+        # their respective subtokens. Additionally computes the subtoken indices the answer span by
         # mapping from the original answer character indices to their subtoken indices.
         (
             doc_subtokens,
@@ -433,7 +435,7 @@ def convert_example_to_features(
 
         return [tf.convert_to_tensor(features[k]) for k in model_input_names]
 
-    def prepare_features(input_example: Dict[str, tf.Tensor]) -> Dict[str, List[tf.Tensor]]:
+    def prepare_features(input_example: dict[str, tf.Tensor]) -> dict[str, list[tf.Tensor]]:
         tokenized = tf.py_function(
             func=convert_example_to_features_fn,
             inp=(
@@ -455,7 +457,7 @@ def convert_example_to_features(
     return ConvertExampleToFeaturesFn()
 
 
-def _get_doc_tokens_and_char_offsets(context: str) -> Tuple[List[str], List[int]]:
+def _get_doc_tokens_and_char_offsets(context: str) -> tuple[list[str], list[int]]:
     """Splits the context into whitespace-delimited tokens and returns character offsets
 
     Helper function to split the context into whitespace-delimited tokens, and return both the
@@ -488,16 +490,16 @@ def _get_doc_tokens_and_char_offsets(context: str) -> Tuple[List[str], List[int]
 
 def _get_subtokens_and_answer_subtoken_indices(
     tokenizer: TokenizerForReadingComprehension,
-    doc_tokens: List[str],
-    char_to_doc_token_offset: List[int],
-    answer_start_positions: List[int],
-    answer_texts: List[str],
+    doc_tokens: list[str],
+    char_to_doc_token_offset: list[int],
+    answer_start_positions: list[int],
+    answer_texts: list[str],
     is_training: bool,
-) -> Tuple[List[str], int, int]:
+) -> tuple[list[str], int, int]:
     """Subtokenize and return the answer subtoken indices
 
     Use the subtokenize of the tokenizer to subtokenize each whitespace-delimited token into
-    their respective subtokens. Additionally computes the subtoken indicies the answer span by
+    their respective subtokens. Additionally computes the subtoken indices the answer span by
     mapping from the original answer character indices to their subtoken indices.
 
     Args:
@@ -507,7 +509,7 @@ def _get_subtokens_and_answer_subtoken_indices(
             the document tokens.
         answer_start_positions: A list containing an int value indicating the index of the start
             character of the answer in the context.
-        answer_texts: A list containing a string value indiciating the answer text in the context.
+        answer_texts: A list containing a string value indicating the answer text in the context.
         is_training: Indicate if these are training examples.
 
     Returns:
@@ -530,7 +532,7 @@ def _get_subtokens_and_answer_subtoken_indices(
             doc_subtokens.append(subtoken)
 
     if is_training and len(answer_start_positions) > 0:
-        # Compute the subtoken indicies the answer span by mapping from the original answer
+        # Compute the subtoken indices the answer span by mapping from the original answer
         # character indices to their context token indices, then to their subtoken indices.
         answer_token_start = char_to_doc_token_offset[answer_start_positions[0]]
         answer_token_end = char_to_doc_token_offset[
@@ -551,8 +553,8 @@ def _get_subtokens_and_answer_subtoken_indices(
 
 
 def _get_doc_subtoken_chunks(
-    doc_subtokens: List[str], max_doc_subtokens_per_chunk: int, doc_stride: int
-) -> List[List[int]]:
+    doc_subtokens: list[str], max_doc_subtokens_per_chunk: int, doc_stride: int
+) -> list[list[str]]:
     """Produce chunks of the context.
 
     Produce chunks of the context based off of the max_doc_subtokens_per_chunk and the
@@ -595,16 +597,16 @@ def _get_doc_subtoken_chunks(
 
 def _featurize_chunks(
     tokenizer: TokenizerForReadingComprehension,
-    model_input_names: List[str],
-    pre_chunk_tokens_ids: List[int],
-    doc_subtoken_chunks: List[List[str]],
+    model_input_names: list[str],
+    pre_chunk_tokens_ids: list[int],
+    doc_subtoken_chunks: list[list[str]],
     max_doc_subtokens_per_chunk: int,
     answer_subtoken_start: int,
     answer_subtoken_end: int,
     doc_stride: int,
     max_length: int,
     is_training: bool,
-) -> Dict[str, List]:
+) -> dict[str, list]:
     """Creates the model input features for each chunk.
 
     Args:

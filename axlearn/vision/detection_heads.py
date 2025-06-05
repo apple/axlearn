@@ -1,20 +1,28 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Object Detection prediction heads."""
 import itertools
+from collections.abc import Sequence
 from enum import Enum
-from typing import Dict, Sequence
 
-import chex
 from jax import numpy as jnp
 
+from axlearn.common import struct
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
-from axlearn.common.layers import BatchNorm, Conv2D, Linear, get_activation_fn
+from axlearn.common.convolution import Conv2D
+from axlearn.common.layers import BatchNorm, Linear, get_activation_fn
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 
 
-@chex.dataclass
-class Detections:
+class Detections(struct.PyTreeNode):
     """A data class for detections.
 
     boxes: A float tensor of shape [batch, num_boxes, num_classes * 4] containing encoded box
@@ -184,8 +192,7 @@ class RCNNDetectionHead(BaseLayer):
         return Detections(boxes=boxes, scores=scores)
 
 
-@chex.dataclass
-class BoxProposals:
+class BoxProposals(struct.PyTreeNode):
     """A data class for bounding box proposals.
 
     boxes: A dictionary of float tensors of shape [batch, height_i, width_i, num_anchors * 4]
@@ -195,8 +202,8 @@ class BoxProposals:
         containing proposal scores from different feature levels.  Keys indicate the feature levels.
     """
 
-    boxes: Dict[int, Tensor]
-    scores: Dict[int, Tensor]
+    boxes: dict[int, Tensor]
+    scores: dict[int, Tensor]
 
 
 class RPNHead(BaseLayer):
@@ -295,7 +302,7 @@ class RPNHead(BaseLayer):
             ),
         )
 
-    def forward(self, inputs: Dict[int, Tensor]) -> BoxProposals:
+    def forward(self, inputs: dict[int, Tensor]) -> BoxProposals:
         """Runs forward pass and returns proposals.
 
         Args:

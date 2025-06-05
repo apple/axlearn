@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests RNN layers."""
 # pylint: disable=no-self-use
 import jax.random
@@ -6,13 +8,12 @@ from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common.config import config_for_class
 from axlearn.common.layers import GroupNorm, LayerNorm
 from axlearn.common.module import functional as F
 from axlearn.common.param_init import GaussianInitializer
 from axlearn.common.rnn import LSTMCell, RepeatedRNNLayer, StackedRNNLayer
-from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import shapes
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
+from axlearn.common.utils import VDict, shapes
 
 
 class LSTMTest(TestCase):
@@ -24,6 +25,7 @@ class LSTMTest(TestCase):
         (None, 0.1, 6, 0.003402),
         (None, None, None, -0.055765),
     )
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_lstm_forward(self, norm_cfg, max_cell_value, hidden_dim, expected_output_mean):
         batch_size, seq_len, input_dim = 2, 5, 3
 
@@ -45,43 +47,43 @@ class LSTMTest(TestCase):
         else:
             self.assertIn("output_proj", layer_params)
 
-        # Create the initial step states.
-        init_step_states, _ = F(
+        # Create the initial states.
+        init_states, _ = F(
             layer,
             is_training=True,
             prng_key=jax.random.PRNGKey(0),  # not used.
             state=layer_params,
             inputs=dict(batch_size=batch_size),
-            method="init_step_states",
+            method="init_states",
         )
         if hidden_dim:
             self.assertEqual(
-                shapes(init_step_states),
+                shapes(init_states),
                 {"c": (batch_size, hidden_dim), "m": (batch_size, layer.output_dim)},
             )
         else:
             self.assertEqual(
-                shapes(init_step_states),
+                shapes(init_states),
                 {"c": (batch_size, layer.output_dim), "m": (batch_size, layer.output_dim)},
             )
 
         # Step through timesteps of `inputs` and put outputs in `all_step_outputs`.
         inputs = jax.random.normal(jax.random.PRNGKey(123), [seq_len, batch_size, input_dim])
         all_step_outputs = []
-        step_states = init_step_states
+        cached_states = init_states
         for timestep in range(seq_len):
-            (step_states, step_outputs), _ = F(
+            (cached_states, step_outputs), _ = F(
                 layer,
                 is_training=True,
                 prng_key=jax.random.PRNGKey(0),  # not used.
                 state=layer_params,
-                inputs=dict(inputs=inputs[timestep], step_states=step_states),
+                inputs=dict(cached_states=cached_states, data=inputs[timestep]),
                 method="extend_step",
             )
             self.assertSequenceEqual(step_outputs.shape, [batch_size, layer.output_dim])
-            self.assertEqual(shapes(step_states), shapes(init_step_states))
+            self.assertEqual(shapes(cached_states), shapes(init_states))
             if max_cell_value is not None:
-                self.assertGreaterEqual(max_cell_value, jnp.abs(step_states["c"]).max())
+                self.assertGreaterEqual(max_cell_value, jnp.abs(cached_states["c"]).max())
 
             all_step_outputs.append(step_outputs)
         all_step_outputs = jnp.stack(all_step_outputs)
@@ -119,7 +121,7 @@ class StackedRNNTest(TestCase):
                     hidden_dim=hidden_dim,
                     norm=norm_cfg,
                 ),
-                param_init=config_for_class(GaussianInitializer).set(std=10.0),
+                param_init=GaussianInitializer.default_config().set(std=10.0),
             )
             .instantiate(parent=None)
         )
@@ -137,19 +139,19 @@ class StackedRNNTest(TestCase):
             expected_param_shapes["norm"] = dict(scale=(num_layers, dim), bias=(num_layers, dim))
         self.assertEqual(dict(repeat=dict(layer=expected_param_shapes)), shapes(layer_params))
 
-        # Create the initial step states.
-        init_step_states, _ = F(
+        # Create the initial states.
+        init_states, _ = F(
             layer,
             is_training=True,
             prng_key=prng_key,  # not used.
             state=layer_params,
             inputs=dict(batch_size=batch_size),
-            method="init_step_states",
+            method="init_states",
         )
 
         if hidden_dim:
             self.assertEqual(
-                shapes(init_step_states),
+                shapes(init_states),
                 {
                     "c": (num_layers, batch_size, hidden_dim),
                     "m": (num_layers, batch_size, layer.output_dim),
@@ -157,7 +159,7 @@ class StackedRNNTest(TestCase):
             )
         else:
             self.assertEqual(
-                shapes(init_step_states),
+                shapes(init_states),
                 {
                     "c": (num_layers, batch_size, layer.output_dim),
                     "m": (num_layers, batch_size, layer.output_dim),
@@ -165,12 +167,12 @@ class StackedRNNTest(TestCase):
             )
 
         inputs = jax.random.normal(data_key, [seq_len, batch_size, input_dim]) * 100.0
-        final_step_states_list = []
+        final_states_list = []
         outputs = inputs
         for ll in range(num_layers):
-            layer_params_ll = jax.tree_util.tree_map(lambda param, i=ll: param[i], layer_params)[
-                "repeat"
-            ]["layer"]
+            layer_params_ll = jax.tree.map(lambda param, i=ll: param[i], layer_params)["repeat"][
+                "layer"
+            ]
             outputs, output_collections = F(
                 layer.repeat.layer,  # LSTMCell.
                 is_training=True,
@@ -181,15 +183,15 @@ class StackedRNNTest(TestCase):
             )
 
             self.assertSequenceEqual(outputs.shape, [seq_len, batch_size, layer.output_dim])
-            final_step_states_list.append(output_collections.module_outputs["final_step_states"])
+            final_states_list.append(output_collections.module_outputs["final_states"])
 
         # Stack the tree leaves.
-        tree_leaves = [jax.tree_util.tree_flatten(t)[0] for t in final_step_states_list]
-        tree_def = jax.tree_util.tree_structure(final_step_states_list[0])
-        final_step_states = jax.tree_util.tree_unflatten(
+        tree_leaves = [jax.tree_util.tree_flatten(t)[0] for t in final_states_list]
+        tree_def = jax.tree_util.tree_structure(final_states_list[0])
+        final_states = jax.tree_util.tree_unflatten(
             tree_def, [jnp.stack(leaf) for leaf in zip(*tree_leaves)]
         )
-        self.assertEqual(shapes(final_step_states), shapes(init_step_states))
+        self.assertEqual(shapes(final_states), shapes(init_states))
 
         forward_outputs, forward_collections = F(
             layer,
@@ -205,8 +207,8 @@ class StackedRNNTest(TestCase):
         assert_allclose(forward_outputs, outputs, atol=1e-6, rtol=1e-6)
         # States match layer by layer states.
         self.assertNestedAllClose(
-            forward_collections.module_outputs["final_step_states"],
-            final_step_states,
+            forward_collections.module_outputs["final_states"],
+            final_states,
             rtol=1e-6,
             atol=1e-6,
         )
@@ -237,7 +239,7 @@ class StackedRNNTest(TestCase):
                 name="test",
                 input_dim=input_dim,
                 layers=layer_cfgs,
-                param_init=config_for_class(GaussianInitializer).set(std=10.0),
+                param_init=GaussianInitializer.default_config().set(std=10.0),
             )
             .instantiate(parent=None)
         )
@@ -257,21 +259,21 @@ class StackedRNNTest(TestCase):
             expected_param_shapes[f"layer{i}"] = layer_shapes
         self.assertEqual(expected_param_shapes, shapes(layer_params))
 
-        # Create the initial step states.
-        init_step_states, _ = F(
+        # Create the initial states.
+        init_states, _ = F(
             layer,
             is_training=True,
             prng_key=prng_key,  # not used.
             state=layer_params,
             inputs=dict(batch_size=batch_size),
-            method="init_step_states",
+            method="init_states",
         )
 
-        self.assertEqual(len(init_step_states), num_layers)
+        self.assertEqual(len(init_states), num_layers)
         for i, layer_cfg in enumerate(layer_cfgs):
             if layer_cfg.hidden_dim:
                 self.assertEqual(
-                    shapes(init_step_states[i]),
+                    shapes(init_states[i]),
                     {
                         "c": (batch_size, layer_cfg.hidden_dim),
                         "m": (batch_size, output_dims[i]),
@@ -279,7 +281,7 @@ class StackedRNNTest(TestCase):
                 )
             else:
                 self.assertEqual(
-                    shapes(init_step_states[i]),
+                    shapes(init_states[i]),
                     {
                         "c": (batch_size, output_dims[i]),
                         "m": (batch_size, output_dims[i]),
@@ -287,7 +289,7 @@ class StackedRNNTest(TestCase):
                 )
 
         inputs = jax.random.normal(data_key, [seq_len, batch_size, input_dim]) * 100.0
-        final_step_states_list = []
+        final_states_list = []
         outputs = inputs
         for ll in range(num_layers):
             outputs, output_collections = F(
@@ -305,7 +307,7 @@ class StackedRNNTest(TestCase):
                 # pylint: disable-next=protected-access
                 [seq_len, batch_size, layer._layers[ll].output_dim],
             )
-            final_step_states_list.append(output_collections.module_outputs["final_step_states"])
+            final_states_list.append(output_collections.module_outputs["final_states"])
 
         forward_outputs, forward_collections = F(
             layer,
@@ -324,8 +326,8 @@ class StackedRNNTest(TestCase):
 
         for ll in range(num_layers):
             self.assertNestedAllClose(
-                forward_collections.module_outputs["final_step_states"][ll],
-                final_step_states_list[ll],
+                forward_collections.module_outputs["final_states"][ll],
+                final_states_list[ll],
                 rtol=1e-6,
                 atol=1e-6,
             )
@@ -380,7 +382,17 @@ class StackedRNNTest(TestCase):
         )
         init_key, data_key, prng_key = jax.random.split(jax.random.PRNGKey(567), num=3)
         stack_params = stack_layer.initialize_parameters_recursively(prng_key=init_key)
-        repeat_params = repeat_layer.initialize_parameters_recursively(prng_key=init_key)
+        # Convert `stack_params` to params for `repeat_layer`.
+        repeat_params = {
+            "repeat": VDict(
+                {
+                    "layer": jax.tree.map(
+                        lambda *xs: jnp.stack(xs),
+                        *stack_params.values(),
+                    )
+                }
+            )
+        }
         inputs = jax.random.normal(data_key, [seq_len, batch_size, input_dim]) * 100.0
         stack_outputs, stack_collections = F(
             stack_layer,
@@ -401,10 +413,10 @@ class StackedRNNTest(TestCase):
         logging.info("Outputs max=%s, min=%s.", repeat_outputs.max(), repeat_outputs.min())
         assert_allclose(repeat_outputs, stack_outputs, atol=1e-6, rtol=1e-6)
         for i in range(num_layers):
-            for k, v in repeat_collections.module_outputs["final_step_states"].items():
+            for k, v in repeat_collections.module_outputs["final_states"].items():
                 assert_allclose(
                     v[i],
-                    stack_collections.module_outputs["final_step_states"][i][k],
+                    stack_collections.module_outputs["final_states"][i][k],
                     atol=1e-6,
                     rtol=1e-6,
                 )

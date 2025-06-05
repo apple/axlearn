@@ -1,10 +1,24 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests basic layers."""
-# pylint: disable=no-self-use,too-many-lines,too-many-public-methods
+
+# pylint: disable=no-self-use
 import copy
 import itertools
 import math
+from collections.abc import Sequence
 from functools import partial
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Optional, Union
+from unittest import mock
 
 import jax.random
 import numpy as np
@@ -18,19 +32,13 @@ from sklearn.metrics import recall_score as sklearn_recall_score
 
 from axlearn.common import module, utils
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import config_class, config_for_class
+from axlearn.common.config import config_class
 from axlearn.common.decoder import Decoder
 from axlearn.common.layers import (
     BatchNorm,
     BinaryClassificationMetric,
     CategoricalHingeLossMetric,
     ClassificationMetric,
-    Conv1D,
-    Conv2D,
-    Conv2DTranspose,
-    Conv2DWith1DPadding,
-    Conv3D,
-    DepthwiseConv1D,
     DropToken,
     Embedding,
     GroupNorm,
@@ -39,21 +47,22 @@ from axlearn.common.layers import (
     LayerNormStateless,
     Linear,
     MaxPool2D,
+    MovingAverage,
     MultiLinear,
+    NormType,
     RedirectToSharedModule,
     RMSNorm,
     SeparableSpaceTimePositionalEmbedding,
     SqueezeExcitation,
-    StackOverTime,
     StochasticDepth,
     UnitNormLinear,
     VariationalNoise,
-    _compute_conv_output_1d_padding,
     _compute_moments_with_paddings,
     get_activation_fn,
     get_stochastic_depth_linear_rate,
     set_bias_recursively,
     set_dropout_rate_recursively,
+    set_layer_norm_eps_recursively,
     set_norm_recursively,
 )
 from axlearn.common.module import Module, Tensor, child_context
@@ -62,7 +71,7 @@ from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import ConstantInitializer, FanAxes
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.utils import as_tensor, flatten_items, shapes
+from axlearn.common.utils import as_tensor, flatten_items, safe_not, shapes
 
 
 def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
@@ -72,7 +81,6 @@ def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
         dst.copy_(src)
 
 
-# pylint: disable=too-many-public-methods
 class LayerTest(TestCase, tf.test.TestCase):
     @parameterized.parameters(
         "linear",
@@ -172,28 +180,105 @@ class LayerTest(TestCase, tf.test.TestCase):
     @parameterized.parameters(
         [
             dict(inputs_shape=[2, 3, 6]),
-            dict(inputs_shape=[2, 3, 9], paddings=jnp.array([[0, 1, 1], [0, 0, 0]])),
-            dict(inputs_shape=[3, 3, 4, 12], paddings=jnp.array([[1, 1, 1], [0, 0, 1], [0, 1, 1]])),
+            dict(inputs_shape=[2, 3, 9], paddings=jnp.array([[0, 1, 1], [0, 0, 0]], jnp.bool)),
+            dict(
+                inputs_shape=[3, 3, 4, 12],
+                paddings=jnp.array([[1, 1, 1], [0, 0, 1], [0, 1, 1]], jnp.bool),
+            ),
             dict(inputs_shape=[2, 3, 6], scale_params=jnp.array([0, 0, 1, 1, 2, 2])),
             dict(
                 inputs_shape=[2, 3, 4],
-                paddings=jnp.array([[0, 1, 1], [0, 0, 0]]),
+                paddings=jnp.array([[0, 1, 1], [0, 0, 0]], jnp.bool),
                 num_groups=2,
                 scale_params=jnp.array([1, 1, 5, 5]),
             ),
             dict(
                 inputs_shape=[3, 3, 7, 4],
-                paddings=jnp.array([[1, 1, 1], [0, 0, 1], [0, 1, 1]]),
+                paddings=jnp.array([[1, 1, 1], [0, 0, 1], [0, 1, 1]], jnp.bool),
                 num_groups=2,
                 scale_params=jnp.array([2, 2, 3, 3]),
+            ),
+            dict(
+                inputs_shape=[72, 3, 7, 8],
+                num_groups=2,
+                scale_params=jnp.array([2, 2, 2, 2, 3, 3, 3, 3]),
+                norm_type=NormType.LAYERNORM,
+                norm_axes=-1,
+            ),
+            dict(
+                inputs_shape=[3, 3, 4],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 6],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, 2, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[1, 2, -1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
+            ),
+            dict(
+                inputs_shape=[3, 3, 4, 16],
+                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                num_groups=2,
+                norm_type=NormType.RMSNORM,
+                norm_axes=[-1],
             ),
         ]
     )
     # pylint: disable-next=too-many-statements,too-many-branches
-    def test_group_norm(self, inputs_shape, *, paddings=None, num_groups=3, scale_params=None):
+    def test_group_norm(
+        self,
+        inputs_shape,
+        *,
+        paddings=None,
+        num_groups=3,
+        scale_params=None,
+        norm_type=NormType.LAYERNORM,
+        norm_axes=None,
+    ):
         batch_size = inputs_shape[0]
         dim = inputs_shape[-1]
-        cfg = GroupNorm.default_config().set(name="norm", input_dim=dim, num_groups=num_groups)
+        cfg = GroupNorm.default_config().set(
+            name="norm",
+            input_dim=dim,
+            num_groups=num_groups,
+            norm_type=norm_type,
+            norm_axes=norm_axes,
+        )
         layer = cfg.instantiate(parent=None)  # type: GroupNorm
 
         # Initialize layer parameters.
@@ -203,8 +288,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         if scale_params is not None:
             # Set scales.
             layer_params["scale"] = scale_params
-
-        self.assertEqual(dict(scale=(dim,), bias=(dim,)), shapes(layer_params))
 
         # Random inputs.
         prng_key, input_key = jax.random.split(prng_key)
@@ -220,58 +303,104 @@ class LayerTest(TestCase, tf.test.TestCase):
         )
         # forward() should not mutate "inputs" in-place.
         assert_allclose(inputs, orig_inputs)
-        reduction_axis = (1, -1) if len(inputs_shape) == 3 else (1, 2, -1)
+        inputs_by_group = jnp.reshape(inputs, inputs_shape[:-1] + [num_groups, dim // num_groups])
         outputs_by_group = jnp.reshape(outputs, inputs_shape[:-1] + [num_groups, dim // num_groups])
 
-        if paddings is None:
-            output_mean = outputs_by_group.mean(axis=reduction_axis, keepdims=True)
-            output_var = ((outputs_by_group - output_mean) ** 2).mean(axis=(1, -1), keepdims=True)
+        if norm_axes is None:
+            reduction_axis = list(range(1, inputs.ndim - 1)) + [-1]
         else:
-            expanded_paddings = (
-                paddings[:, :, None, None]
-                if len(outputs_by_group.shape) == 4
-                else paddings[:, :, None, None, None]
-            )
-            output_sum = jnp.sum(
-                outputs_by_group * (1 - expanded_paddings), axis=reduction_axis, keepdims=True
-            )
-            output_count = jnp.sum(
-                jnp.ones_like(outputs_by_group) * (1 - expanded_paddings),
-                axis=reduction_axis,
-                keepdims=True,
-            )
-            output_mean = output_sum / jnp.maximum(output_count, 1.0)
-            output_var = jnp.sum(
-                (outputs_by_group * (1 - expanded_paddings) - output_mean) ** 2,
-                axis=reduction_axis,
-                keepdims=True,
-            ) / jnp.maximum(output_count, 1.0)
+            reduction_axis = norm_axes
 
-        if len(inputs_shape) == 3:
-            self.assertEqual(output_mean.shape, (batch_size, 1, num_groups, 1))
-            self.assertEqual(output_var.shape, (batch_size, 1, num_groups, 1))
-        else:
-            self.assertEqual(output_mean.shape, (batch_size, 1, 1, num_groups, 1))
-            self.assertEqual(output_var.shape, (batch_size, 1, 1, num_groups, 1))
-        # The output group mean should be close to 0.
-        assert_allclose(output_mean, np.zeros_like(output_mean), rtol=1e-6, atol=1e-6)
-        if scale_params is None:
-            # The output variance should be close to 1.
-            expected_var = np.ones_like(output_var)
-        else:
-            # [num_groups].
-            expected_var = jnp.reshape(scale_params, [num_groups, dim // num_groups])[:, 0] ** 2
-            expected_var = jnp.tile(expected_var, [batch_size, 1])
-            if len(inputs_shape) == 3:
-                expected_var = jnp.expand_dims(expected_var, axis=(1, 3))
+        if norm_type == NormType.LAYERNORM:
+            self.assertEqual(dict(scale=(dim,), bias=(dim,)), shapes(layer_params))
+
+            if paddings is None:
+                output_mean = outputs_by_group.mean(axis=reduction_axis, keepdims=True)
+                output_var = ((outputs_by_group - output_mean) ** 2).mean(
+                    axis=reduction_axis, keepdims=True
+                )
             else:
-                expected_var = jnp.expand_dims(expected_var, axis=(1, 2, 4))
+                expanded_paddings = (
+                    paddings[:, :, None, None]
+                    if len(outputs_by_group.shape) == 4
+                    else paddings[:, :, None, None, None]
+                )
+                output_sum = jnp.sum(
+                    outputs_by_group * (1 - expanded_paddings), axis=reduction_axis, keepdims=True
+                )
+                output_count = jnp.sum(
+                    jnp.ones_like(outputs_by_group) * (1 - expanded_paddings),
+                    axis=reduction_axis,
+                    keepdims=True,
+                )
+                output_mean = output_sum / jnp.maximum(output_count, 1.0)
+                output_var = jnp.sum(
+                    (outputs_by_group * (1 - expanded_paddings) - output_mean) ** 2,
+                    axis=reduction_axis,
+                    keepdims=True,
+                ) / jnp.maximum(output_count, 1.0)
 
-        if paddings is not None:
-            expected_var = expected_var * (
-                jnp.sum(1 - expanded_paddings, axis=1, keepdims=True) > 0
+            mean_var_shape = inputs_by_group.mean(axis=reduction_axis, keepdims=True).shape
+            self.assertEqual(output_mean.shape, mean_var_shape)
+            self.assertEqual(output_var.shape, mean_var_shape)
+
+            # The output group mean should be close to 0.
+            assert_allclose(output_mean, np.zeros_like(output_mean), rtol=1e-5, atol=1e-5)
+
+            if scale_params is None:
+                # The output variance should be close to 1.
+                expected_var = np.ones_like(output_var)
+            else:
+                # [num_groups].
+                expected_var = jnp.reshape(scale_params, [num_groups, dim // num_groups])[:, 0] ** 2
+                expected_var = jnp.tile(expected_var, [batch_size, 1])
+                if len(inputs_shape) == 3:
+                    expected_var = jnp.expand_dims(expected_var, axis=(1, 3))
+                else:
+                    expected_var = jnp.expand_dims(expected_var, axis=(1, 2, 4))
+
+            if paddings is not None:
+                expected_var = expected_var * (
+                    jnp.sum(1 - expanded_paddings, axis=1, keepdims=True) > 0
+                )
+                assert_allclose(output_var - expected_var, 0, atol=1e-5, rtol=1e-5)
+        else:
+            self.assertEqual(
+                dict(
+                    scale=(dim,),
+                ),
+                shapes(layer_params),
             )
-        assert_allclose(output_var, expected_var, atol=1e-6, rtol=1e-6)
+            if paddings is None:
+                output_msquare = jnp.mean(outputs_by_group**2, axis=reduction_axis, keepdims=True)
+                output_norm = jnp.sqrt(
+                    (outputs_by_group**2).sum(axis=reduction_axis, keepdims=True)
+                )
+
+            else:
+                expanded_paddings = (
+                    paddings[:, :, None, None]
+                    if len(outputs_by_group.shape) == 4
+                    else paddings[:, :, None, None, None]
+                )
+                mask = 1 - expanded_paddings
+                square_sum = jnp.sum(
+                    outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True
+                )
+                square_count = jnp.sum(
+                    jnp.ones_like(outputs_by_group) * mask, axis=reduction_axis, keepdims=True
+                )
+                output_msquare = square_sum / jnp.maximum(square_count, 1.0)
+
+                output_norm = jnp.sqrt(
+                    (outputs_by_group**2).sum(axis=reduction_axis, keepdims=True)
+                )
+                assert_allclose(jnp.sqrt(square_sum), jnp.sqrt(square_count))
+
+            norm_shape = inputs_by_group.mean(axis=reduction_axis, keepdims=True).shape
+            self.assertEqual(output_msquare.shape, norm_shape)
+            self.assertEqual(output_norm.shape, norm_shape)
+            self.assertGreaterEqual(output_msquare.min(), 0)
 
     @parameterized.parameters(
         ((2, 10, 4, 3, 2), [1, 2, -1]),
@@ -382,6 +511,57 @@ class LayerTest(TestCase, tf.test.TestCase):
         # The output_norm should be close to 2 * sqrt(dim).
         assert_allclose(output_norm, np.ones_like(output_norm) * 2.0 * math.sqrt(dim))
 
+    @mock.patch("axlearn.common.utils.with_sharding_constraint")
+    def test_rms_norm_partition_specs_constraint(self, mock_with_sharding_constraint):
+        # Configure mock to return its input.
+        mock_with_sharding_constraint.side_effect = lambda x, *args: x
+
+        dim = 6
+        cfg = RMSNorm.default_config().set(
+            name="norm",
+            input_dim=dim,
+            input_partition_spec=("fsdp", "model", None),
+            output_partition_spec=("fsdp", None, None),
+        )
+        layer: RMSNorm = cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [2, 3, dim])
+
+        # Run forward pass.
+        outputs, _ = F(
+            layer,
+            inputs=(inputs,),
+            is_training=True,
+            state=layer_params,
+            prng_key=prng_key,
+        )
+
+        # Verify with_sharding_constraint calls.
+        calls = mock_with_sharding_constraint.call_args_list
+        # Should be called twice - once for input, once for output.
+        self.assertEqual(len(calls), 2)
+
+        # 1. Input tensor constraint.
+        input_spec = calls[0].args[1]
+        self.assertEqual(input_spec, ("fsdp", "model", None))
+        self.assertEqual(calls[0].args[0].shape, (2, 3, dim))
+        self.assertEqual(calls[0].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[0].args[0], inputs)
+
+        # 2. Output tensor constraint.
+        output_spec = calls[1].args[1]
+        self.assertEqual(output_spec, ("fsdp", None, None))
+        self.assertEqual(calls[1].args[0].shape, (2, 3, dim))
+        self.assertEqual(calls[1].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[1].args[0], outputs)
+
     def test_l2_norm(self):
         cfg = L2Norm.default_config().set(name="norm")
         layer: L2Norm = cfg.instantiate(parent=None)
@@ -410,8 +590,11 @@ class LayerTest(TestCase, tf.test.TestCase):
     @parameterized.parameters(
         [
             dict(inputs_shape=[2, 3, 6], paddings=None),
-            dict(inputs_shape=[2, 5, 6], paddings=jnp.array([[0, 0, 0, 0, 1], [0, 0, 1, 1, 1]])),
-            dict(inputs_shape=[2, 3, 6], paddings=jnp.array([[1, 1, 1], [1, 1, 1]])),
+            dict(
+                inputs_shape=[2, 5, 6],
+                paddings=jnp.array([[0, 0, 0, 0, 1], [0, 0, 1, 1, 1]], jnp.bool),
+            ),
+            dict(inputs_shape=[2, 3, 6], paddings=jnp.array([[1, 1, 1], [1, 1, 1]], jnp.bool)),
         ]
     )
     def test_batch_norm(self, inputs_shape, paddings):
@@ -457,13 +640,13 @@ class LayerTest(TestCase, tf.test.TestCase):
                 expected_var = np.ones_like(output_var)
                 if paddings is not None:
                     # var is 0 if there is no valid frame in the batch.
-                    expected_var *= jnp.sum(1 - paddings) > 0
+                    expected_var *= jnp.sum(safe_not(paddings)) > 0
                 assert_allclose(output_var, expected_var)
                 # Check parameter updates.
                 self.assertCountEqual(["moving_mean", "moving_variance"], param_updates.keys())
                 self.assertEqual((dim,), param_updates["moving_mean"].shape)
                 self.assertEqual((dim,), param_updates["moving_variance"].shape)
-                if paddings is None or jnp.sum(1 - paddings) > 0:
+                if paddings is None or jnp.sum(safe_not(paddings)) > 0:
                     self.assertNotAlmostEqual(
                         jnp.abs(param_updates["moving_mean"] - layer_params["moving_mean"]).max(),
                         0,
@@ -577,8 +760,8 @@ class LayerTest(TestCase, tf.test.TestCase):
     )
     def test_maxpool2d(
         self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
+        window: tuple[int, int],
+        strides: tuple[int, int],
     ):
         input_dim = 4
         cfg = MaxPool2D.default_config().set(
@@ -617,699 +800,6 @@ class LayerTest(TestCase, tf.test.TestCase):
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertAllEqual(outputs.shape, output_shape)
-
-    # Fails if tolerance is made smaller.
-    @parameterized.named_parameters(
-        {
-            "testcase_name": "1x1",
-            "window": (1, 1),
-            "strides": (1, 1),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "2x2_VALID",
-            "window": (2, 2),
-            "strides": (1, 1),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "2x2_SAME",
-            "window": (2, 2),
-            "strides": (1, 1),
-            "padding": "SAME",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "2x2_S2_VALID",
-            "window": (2, 2),
-            "strides": (2, 2),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3_VALID",
-            "window": (3, 3),
-            "strides": (1, 1),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3_SAME",
-            "window": (3, 3),
-            "strides": (1, 1),
-            "padding": "SAME",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3_S2_VALID",
-            "window": (3, 3),
-            "strides": (2, 2),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3_S2_PADDING1",
-            "window": (3, 3),
-            "strides": (2, 2),
-            "padding": (1, 1),
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3_GROUPS4",
-            "window": (3, 3),
-            "strides": (1, 1),
-            "padding": "SAME",
-            "num_input_dim_groups": 4,
-        },
-    )
-    def test_conv2d(
-        self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
-        num_input_dim_groups: int,
-    ):
-        input_dim, output_dim = 256, 128
-        if isinstance(padding, tuple):
-            conv_padding = ((padding[0], padding[0]), (padding[1], padding[1]))
-        else:
-            conv_padding = padding
-        cfg = Conv2D.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            output_dim=output_dim,
-            window=window,
-            strides=strides,
-            padding=conv_padding,
-            num_input_dim_groups=num_input_dim_groups,
-        )
-        layer: Conv2D = cfg.instantiate(parent=None)
-
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(
-                weight=(window[0], window[1], input_dim // num_input_dim_groups, output_dim),
-                bias=(output_dim,),
-            ),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
-        )
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 10, 7, input_dim])
-
-        # Compute layer outputs.
-        outputs, _ = F(
-            layer,
-            inputs=(inputs,),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
-        )
-
-        # Compute ref outputs.
-        ref_padding = padding.lower() if isinstance(padding, str) else padding
-        ref = torch.nn.Conv2d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-            groups=num_input_dim_groups,
-        )
-        # torch.nn.Linear.weight is of shape (output_dim, input_dim, kernel_size...).
-        _copy(layer_params["weight"].transpose(3, 2, 0, 1), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 3, 1, 2)))
-        # We currently don't match PyTorch as closely as we would like.
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 1), atol=4e-6)
-        # Tests output_shape.
-        output_shape = layer.output_shape(input_shape=inputs.shape)
-        self.assertAllEqual(outputs.shape, output_shape)
-
-    @parameterized.parameters(
-        ([0, 0, 0, 1], [0, 0, 0, 1], 1, "SAME"),
-        ([0, 0, 0, 0], [0, 0], 1, "VALID"),
-        ([0, 0, 0, 1], [0, 1], 1, "VALID"),
-        ([0, 0, 0, 0], [0], 2, "VALID"),
-        ([0, 0, 0, 1], [0], 2, "VALID"),
-        ([0, 0, 1, 1], [1], 2, "VALID"),
-        ([0, 0, 0, 0, 0], [0, 0], 2, "VALID"),
-        ([0, 0, 0, 0, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 0, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 1, 1, 1], [1, 1], 2, "VALID"),
-        ([0, 0, 0, 0, 0, 0], [0, 0], 2, "VALID"),
-        ([0, 0, 0, 0, 0, 1], [0, 0], 2, "VALID"),
-        ([0, 0, 0, 0, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 0, 1, 1, 1], [0, 1], 2, "VALID"),
-        ([0, 0, 1, 1, 1, 1], [1, 1], 2, "VALID"),
-    )
-    def test_conv_padding_lingvo(
-        self, input_paddings, expected_paddings, stride: int, padding_cfg: str
-    ):
-        """Tests _compute_conv_output_1d_padding() with SAME and VALID padding cfg."""
-        # This test is from lingvo
-        # https://github.com/tensorflow/lingvo/blob/master/lingvo/core/conv_layers_with_time_padding_test.py#L157.
-        window = 3
-        out_paddings = _compute_conv_output_1d_padding(
-            jnp.array([input_paddings]), window=window, stride=stride, conv_padding_cfg=padding_cfg
-        )
-
-        assert_allclose(out_paddings[0], expected_paddings)
-
-    @parameterized.parameters(
-        (3, 2, (1, 1)),
-        (5, 2, (1, 1)),
-        (5, 2, (2, 2)),
-    )
-    def test_conv_output_1d_padding(self, window: int, stride: int, padding_cfg: Tuple[int, int]):
-        """Tests _compute_conv_output_1d_padding() with explicit padding cfg."""
-        batch_size = 5
-        seq_len = 5
-        paddings = jnp.triu(jnp.ones((batch_size, seq_len)), k=1)
-        out_paddings = _compute_conv_output_1d_padding(
-            paddings, window=window, stride=stride, conv_padding_cfg=padding_cfg
-        )
-
-        # The reference is computed using 1d convolution.
-        # We first pad the padding sequence with 0 on the left, and 1 on the right.
-        paddings = jnp.pad(paddings, ((0, 0), (padding_cfg[0], 0)), constant_values=0)
-        paddings = jnp.pad(paddings, ((0, 0), (0, padding_cfg[1])), constant_values=1)
-        conv_paddings = jax.lax.conv_general_dilated(
-            lhs=jnp.expand_dims(paddings, -1),  # [batch, seq, 1]
-            rhs=jnp.ones([window, 1, 1], paddings.dtype),
-            window_strides=(stride,),
-            dimension_numbers=("NWC", "WIO", "NWC"),
-            padding="VALID",
-        )
-        ref_paddings = (jnp.squeeze(conv_paddings, axis=-1) > 0).astype(paddings.dtype)
-        self.assertAllEqual(out_paddings, ref_paddings)
-
-    @parameterized.named_parameters(
-        ("1x1", (1, 1), (1, 1), "VALID"),
-        ("2x2_VALID", (2, 2), (1, 1), "VALID"),
-        ("2x2_SAME", (2, 2), (1, 1), "SAME"),
-        ("2x2_S2_VALID", (2, 2), (2, 2), "VALID"),
-        ("3x3_VALID", (3, 3), (1, 1), "VALID"),
-        ("3x3_SAME", (3, 3), (1, 1), "SAME"),
-        ("3x3_S2_VALID", (3, 3), (2, 2), "VALID"),
-        ("3x3_S2_PADDING1", (3, 3), (2, 2), (1, 1)),
-    )
-    def test_conv2d_with_1d_padding(
-        self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
-    ):
-        """Tests that Conv2DWith1DPadding has consistent outputs under different padding lengths.
-
-        Generates a batch of input sequences. Pads the sequences under different lengths.
-        Checks that the outputs are the same.
-        """
-        input_dim, input_channel, output_dim = 4, 7, 6
-        if isinstance(padding, tuple):
-            conv_padding = ((padding[0], padding[0]), (padding[1], padding[1]))
-        else:
-            conv_padding = padding
-        cfg = Conv2DWith1DPadding.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            output_dim=output_dim,
-            window=window,
-            strides=strides,
-            padding=conv_padding,
-        )
-        layer: Conv2DWith1DPadding = cfg.instantiate(parent=None)
-
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(weight=(window[0], window[1], input_dim, output_dim), bias=(output_dim,)),
-            shapes(layer_params),
-        )
-        # Generate a batch of 10 input sequences.
-        batch_size, max_seq_len = 10, 10
-
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = (
-            jax.random.normal(input_key, [batch_size, max_seq_len, input_channel, input_dim]) * 100
-        )
-
-        # The 10 sequences have length 1 to 10.
-        paddings = jnp.triu(jnp.ones((batch_size, max_seq_len)), k=1)
-
-        # Compute layer outputs.
-        (ref_outputs, ref_paddings), _ = F(
-            layer,
-            inputs=dict(x=inputs, paddings=paddings),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
-        )
-        random_keys = jax.random.split(input_key, num=2 * max_seq_len)
-        for seq_len in range(1, max_seq_len):
-            # We create a new batch. The time axis of the new batch is of length seq_len.
-            permute_idx = jax.random.permutation(random_keys[2 * (seq_len - 1)], seq_len)
-            inputs_batch = jnp.take_along_axis(inputs, permute_idx[:, None, None, None], axis=0)[
-                :, :seq_len
-            ]
-            paddings_batch = jnp.take_along_axis(paddings, permute_idx[:, None], axis=0)[
-                :, :seq_len
-            ]
-
-            # Generate random data at padding positions.
-            random_data = (
-                jax.random.normal(
-                    random_keys[2 * seq_len - 1],
-                    [len(permute_idx), seq_len, input_channel, input_dim],
-                )
-                * 1000
-            )
-            inputs_new_batch = jnp.where(
-                paddings_batch[:, :, None, None], random_data, inputs_batch
-            )
-
-            (outputs_batch, output_paddings_batch), _ = F(
-                layer,
-                inputs=dict(x=inputs_new_batch, paddings=paddings_batch),
-                is_training=True,
-                state=layer_params,
-                prng_key=prng_key,
-            )
-            output_len = output_paddings_batch.shape[1]
-            if output_len > 0:
-                assert_allclose(
-                    outputs_batch,
-                    jnp.take_along_axis(ref_outputs, permute_idx[:, None, None, None], axis=0)[
-                        :, :output_len
-                    ],
-                )
-                self.assertAllEqual(
-                    output_paddings_batch,
-                    jnp.take_along_axis(ref_paddings, permute_idx[:, None], axis=0)[:, :output_len],
-                )
-
-    @parameterized.named_parameters(
-        {
-            "testcase_name": "2x2",
-            "window": (2, 2),
-            "strides": (1, 1),
-            "padding": "VALID",
-        },
-        {
-            "testcase_name": "2x2_S2",
-            "window": (2, 2),
-            "strides": (2, 2),
-            "padding": "VALID",
-        },
-        {
-            "testcase_name": "3x3_S2",
-            "window": (3, 3),
-            "strides": (2, 2),
-            "padding": "VALID",
-        },
-    )
-    def test_deconv2d(
-        self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
-    ):
-        input_dim, output_dim = 4, 8
-        if isinstance(padding, tuple):
-            deconv_padding = ((padding[0], padding[0]), (padding[1], padding[1]))
-        else:
-            deconv_padding = padding
-        cfg = Conv2DTranspose.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            output_dim=output_dim,
-            window=window,
-            strides=strides,
-            padding=deconv_padding,
-        )
-        layer: Conv2DTranspose = cfg.instantiate(parent=None)
-
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(
-                weight=(window[0], window[1], output_dim, input_dim),
-                bias=(output_dim,),
-            ),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
-        )
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 10, 7, input_dim])
-        # Compute layer outputs.
-        outputs, _ = F(
-            layer,
-            inputs=(inputs,),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
-        )
-
-        # Compute ref outputs.
-        if isinstance(padding, Tuple):
-            ref_padding = padding[0]
-        elif isinstance(padding, str):
-            ref_padding = padding.lower()
-            if ref_padding == "valid":
-                ref_padding = 0
-        else:
-            ref_padding = 0
-
-        ref = torch.nn.ConvTranspose2d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-        )
-        # torch.nn.Linear.weight is of shape (output_dim, input_dim, kernel_size...).
-        _copy(layer_params["weight"].transpose(3, 2, 0, 1), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 3, 1, 2)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 1))
-        # Tests output_shape.
-        output_shape = layer.output_shape(input_shape=inputs.shape)
-        self.assertAllEqual(outputs.shape, output_shape)
-
-    @parameterized.named_parameters(
-        {
-            "testcase_name": "1x1x1",
-            "window": (1, 1, 1),
-            "strides": (1, 1, 1),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "2x2x2_VALID",
-            "window": (2, 2, 2),
-            "strides": (1, 1, 1),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "2x2x2_SAME",
-            "window": (2, 2, 2),
-            "strides": (1, 1, 1),
-            "padding": "SAME",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "2x2x2_S2_VALID",
-            "window": (2, 2, 2),
-            "strides": (2, 2, 2),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3x3_VALID",
-            "window": (3, 3, 3),
-            "strides": (1, 1, 1),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3x3_SAME",
-            "window": (3, 3, 3),
-            "strides": (1, 1, 1),
-            "padding": "SAME",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3x3_S2_VALID",
-            "window": (3, 3, 3),
-            "strides": (2, 2, 2),
-            "padding": "VALID",
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3x3_S2_PADDING1",
-            "window": (3, 3, 3),
-            "strides": (2, 2, 2),
-            "padding": (1, 1, 1),
-            "num_input_dim_groups": 1,
-        },
-        {
-            "testcase_name": "3x3x3_GROUPS4",
-            "window": (3, 3, 3),
-            "strides": (1, 1, 1),
-            "padding": "SAME",
-            "num_input_dim_groups": 4,
-        },
-    )
-    def test_conv3d(
-        self,
-        window: Tuple[int, int],
-        strides: Tuple[int, int],
-        padding: Union[str, Tuple[int, int]],
-        num_input_dim_groups: int,
-    ):
-        input_dim, output_dim = 4, 8
-        if isinstance(padding, tuple):
-            conv_padding = (
-                (padding[0], padding[0]),
-                (padding[1], padding[1]),
-                (padding[2], padding[2]),
-            )
-        else:
-            conv_padding = padding
-        cfg = Conv3D.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            output_dim=output_dim,
-            window=window,
-            strides=strides,
-            padding=conv_padding,
-            num_input_dim_groups=num_input_dim_groups,
-        )
-        layer: Conv3D = cfg.instantiate(parent=None)
-
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        expected = dict(
-            weight=(window[0], window[1], window[2], input_dim // num_input_dim_groups, output_dim),
-            bias=(output_dim,),
-        )
-        self.assertEqual(
-            expected,
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
-        )
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-
-        batch_size = 2
-        inputs = jax.random.normal(input_key, [batch_size, 10, 7, 4, input_dim])
-
-        # Compute layer outputs.
-        outputs, _ = F(
-            layer,
-            inputs=(inputs,),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
-        )
-
-        # Compute ref outputs.
-        ref_padding = padding.lower() if isinstance(padding, str) else padding
-        ref = torch.nn.Conv3d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-            groups=num_input_dim_groups,
-        )
-
-        # weight.shape: (H, W, D, I, O)
-        # ref.weight.shape: (O, I, H, W, D)
-        _copy(layer_params["weight"].transpose(4, 3, 0, 1, 2), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 4, 1, 2, 3)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 4, 1))
-
-        # Tests output_shape.
-        output_shape = layer.output_shape(input_shape=inputs.shape)
-        self.assertAllEqual(outputs.shape, output_shape)
-
-    @parameterized.named_parameters(
-        ("w3s1_VALID", 3, 1, "VALID"),
-        ("w3s1_SAME", 3, 1, "SAME"),
-        ("w4s1_SAME", 4, 1, "SAME"),
-        ("w4s1_CAUSAL", 4, 1, (3, 0)),
-    )
-    def test_conv1d(
-        self,
-        window: int,
-        strides: int,
-        padding: Union[str, Tuple[int, int]],
-    ):
-        input_dim, output_dim = 4, 6
-        cfg = Conv1D.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            output_dim=output_dim,
-            window=window,
-            strides=strides,
-            padding=padding,
-        )
-        layer: Conv1D = cfg.instantiate(parent=None)
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(weight=(window, input_dim, output_dim), bias=(output_dim,)),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
-        )
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 7, input_dim])
-        # Compute layer outputs.
-        outputs, _ = F(
-            layer,
-            inputs=(inputs,),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
-        )
-
-        # Compute ref outputs.
-        if isinstance(padding, str):
-            ref_padding = padding.lower()
-            ref_inputs = inputs
-        else:
-            # torch.nn.Conv1d does not support asymmetric padding, so pad manually and use "valid".
-            ref_padding = "valid"
-            ref_inputs = jnp.pad(inputs, ((0, 0), padding, (0, 0)))
-        ref = torch.nn.Conv1d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            groups=1,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-        )
-        # torch.nn.Linear.weight is of shape (output_dim, input_dim, kernel_size...).
-        _copy(layer_params["weight"].transpose(2, 1, 0), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(ref_inputs.transpose(0, 2, 1)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 1))
-
-    @parameterized.named_parameters(
-        ("w3s1_VALID", 3, 1, "VALID"),
-        ("w3s1_SAME", 3, 1, "SAME"),
-        ("w4s1_SAME", 4, 1, "SAME"),
-        ("w4s1_CAUSAL", 4, 1, (3, 0)),
-    )
-    def test_depthwise_conv1d(
-        self,
-        window: int,
-        strides: int,
-        padding: Union[str, Tuple[int, int]],
-    ):
-        input_dim = 4
-        cfg = DepthwiseConv1D.default_config().set(
-            name="test",
-            input_dim=input_dim,
-            window=window,
-            strides=strides,
-            padding=padding,
-        )
-        layer: DepthwiseConv1D = cfg.instantiate(parent=None)
-
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(weight=(window, 1, input_dim), bias=(input_dim,)),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
-        )
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 7, input_dim])
-
-        # Compute layer outputs.
-        outputs, _ = F(
-            layer,
-            inputs=(inputs,),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
-        )
-
-        # Compute ref outputs.
-        if isinstance(padding, str):
-            ref_padding = padding.lower()
-            ref_inputs = inputs
-        else:
-            # torch.nn.Conv1d does not support asymmetric padding, so pad manually and use "valid".
-            ref_padding = "valid"
-            ref_inputs = jnp.pad(inputs, ((0, 0), padding, (0, 0)))
-        ref = torch.nn.Conv1d(
-            in_channels=input_dim,
-            out_channels=input_dim,
-            groups=input_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-        )
-        # torch.nn.Linear.weight is of shape (output_dim, input_dim, kernel_size...).
-        _copy(layer_params["weight"].transpose(2, 1, 0), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(ref_inputs.transpose(0, 2, 1)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 1))
 
     @parameterized.parameters(
         itertools.product(
@@ -1599,155 +1089,6 @@ class LayerTest(TestCase, tf.test.TestCase):
 
         assert_allclose(outputs.shape, [batch_size, len_tokens, dim])
 
-    @parameterized.parameters(
-        (
-            2,
-            (0, 0),
-            [[[1, 1, 2, 2], [3, 3, 4, 4]], [[7, 7, 8, 8], [0, 0, 0, 0]]],
-            [[0, 0], [0, 1]],
-        ),
-        (
-            3,
-            (0, 0),
-            [[[1, 1, 2, 2, 3, 3]], [[0, 0, 0, 0, 0, 0]]],
-            [[0], [1]],
-        ),
-        (
-            3,
-            (2, 0),
-            [[[0, 0, 0, 0, 1, 1], [2, 2, 3, 3, 4, 4]], [[0, 0, 0, 0, 7, 7], [0, 0, 0, 0, 0, 0]]],
-            [[0, 0], [0, 1]],
-        ),
-    )
-    def test_stack_over_time(self, stride, pad, expected_outputs, expected_output_paddings):
-        # Input shape [2, 5, 2].
-        inputs = jnp.array(
-            [[[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], [[7, 7], [8, 8], [0, 0], [0, 0], [0, 0]]],
-            dtype=jnp.float32,
-        )
-        paddings = jnp.array([[0, 0, 0, 0, 0], [0, 0, 1, 1, 1]])
-        layer: StackOverTime = (
-            StackOverTime.default_config()
-            .set(
-                name="test",
-                stride=stride,
-                padding=pad,
-            )
-            .instantiate(parent=None)
-        )
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-        (outputs, output_paddings), _ = F(
-            layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
-            is_training=False,
-            state=layer_params,
-            prng_key=jax.random.PRNGKey(5),
-        )
-        output_shape = layer.output_shape(input_shape=inputs.shape)
-        self.assertAllEqual(outputs.shape, output_shape)
-        self.assertAllClose(jnp.array(expected_outputs, dtype=jnp.float32), outputs)
-        self.assertAllClose(jnp.array(expected_output_paddings, dtype=jnp.int32), output_paddings)
-
-    def test_stack_over_time_data_change(self):
-        """Tests that the stacked outputs is masked with the output paddings."""
-        np.random.seed(500)
-        inputs = np.random.normal(size=[2, 21, 16])
-        paddings = np.ones([2, 21], dtype=np.float32)
-        paddings[0, :9] = 0
-        paddings[1, :14] = 0
-        inputs = inputs * (1 - paddings)[:, :, None]
-
-        layer: StackOverTime = (
-            StackOverTime.default_config()
-            .set(
-                name="test",
-                stride=2,
-            )
-            .instantiate(parent=None)
-        )
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-        (outputs, output_paddings), _ = F(
-            layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
-            is_training=False,
-            state=layer_params,
-            prng_key=jax.random.PRNGKey(5),
-        )
-        output_shape = layer.output_shape(input_shape=inputs.shape)
-        self.assertAllEqual(outputs.shape, output_shape)
-        self.assertAllEqual(np.array([4, 7], dtype=np.float32), np.sum(1 - output_paddings, axis=1))
-        self.assertAllClose(
-            np.sum(inputs**2, (1, 2)),
-            np.sum(outputs**2, (1, 2)) + np.array([np.sum(inputs[0][8] ** 2), 0.0]),
-        )
-
-    @parameterized.product(stride=(2, 3, 4), pad=((0, 0), (1, 1), (2, 0)))
-    def test_stack_consistent_outputs(self, stride, pad):
-        """Tests that StackOverTime has consistent outputs under different padding lengths."""
-        batch_size, input_dim = 2, 1
-        input_length = 7
-        expected_output_length = (input_length + pad[0]) // stride
-        layer: StackOverTime = (
-            StackOverTime.default_config()
-            .set(
-                name="test",
-                stride=stride,
-                padding=pad,
-            )
-            .instantiate(parent=None)
-        )
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-        for ll in range(4, 11):
-            # Batch with another example of length ll.
-            length = max(input_length, ll)
-            inputs = jnp.ones([batch_size, length, input_dim])
-            paddings = jnp.arange(length)[None, :] >= jnp.array([7, ll])[:, None]
-            (outputs, output_paddings), _ = F(
-                layer,
-                inputs=dict(inputs=inputs, paddings=paddings),
-                is_training=False,
-                state=layer_params,
-                prng_key=jax.random.PRNGKey(5),
-            )
-            output_shape = layer.output_shape(input_shape=inputs.shape)
-            self.assertAllEqual(outputs.shape, output_shape)
-            self.assertEqual(expected_output_length, np.sum(1 - output_paddings, axis=1)[0])
-
-    @parameterized.parameters(((0, 1), (0, 0)), ((1, 1), (3, 0)), ((1, 1), (0, 3)))
-    def test_stack_vs_conv2d_output_len_match(self, conv_padding, stack_padding):
-        # Note that to get the same output length, we need to pad the sequence differently
-        # for convolution and stacking layer.
-        for audio_seq_len in [16000, 16160, 16320, 16480, 16640, 16800, 16960, 17120]:
-            sampling_rate, window_size_ms, window_step_ms = 16000, 25, 10
-            window_size = window_size_ms * sampling_rate // 1000
-            window_step = window_step_ms * sampling_rate // 1000
-            seq_len = max(audio_seq_len - window_size, 0) // window_step + 1
-            conv_layer: Conv2DWith1DPadding = (
-                Conv2DWith1DPadding.default_config()
-                .set(
-                    name="test_conv",
-                    input_dim=3,
-                    output_dim=3,
-                    window=(3, 3),
-                    strides=(2, 2),
-                    padding=(conv_padding, (0, 1)),
-                )
-                .instantiate(parent=None)
-            )
-            stack_layer: StackOverTime = (
-                StackOverTime.default_config()
-                .set(name="test_stack", stride=4, padding=stack_padding)
-                .instantiate(parent=None)
-            )
-            # Computes downsampler output shape.
-            down_sample_shape1 = conv_layer.output_shape(input_shape=[None, seq_len, 80, 3])
-            down_sample_shape2 = conv_layer.output_shape(input_shape=down_sample_shape1)
-
-            # Computes stack output shape.
-            stack_shape = stack_layer.output_shape(input_shape=[None, seq_len, 80])
-            # Tests that the sequence length dimension matches.
-            self.assertEqual(down_sample_shape2[1], stack_shape[1])
-
     def test_multilinear_fan_axes(self):
         input_dim, num_outputs, output_dim = 3, 4, 6
         layer: MultiLinear = (
@@ -1784,7 +1125,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         },
     )
     def test_separable_space_time_positional_embedding(
-        self, positions: Optional[Union[List[int], List[List[int]]]]
+        self, positions: Optional[Union[list[int], list[list[int]]]]
     ):
         dim = 4
         video_size = (64, 64, 4)
@@ -1848,14 +1189,57 @@ class LayerTest(TestCase, tf.test.TestCase):
             expected_embed = spatial_embeddings[spatial_idx] + temporal_embeddings[temporal_idx]
             assert_allclose(output, expected_embed)
 
+    def test_moving_average(self):
+        cfg = MovingAverage.default_config().set(name="moving_avg", min_weight=0.1)
+        layer: MovingAverage = cfg.instantiate(parent=None)
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        self.assertEqual(dict(count=[], value=[]), shapes(layer_params))
+
+        # Random inputs.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [10])
+
+        for i in range(inputs.shape[0]):
+            self.assertEqual(layer_params["count"], i)
+            outputs, output_collection = F(
+                layer,
+                inputs=dict(x=inputs[i]),
+                is_training=True,
+                state=layer_params,
+                prng_key=prng_key,
+            )
+            # When count < 1 / min_weight, the moving average is simply the average.
+            self.assertAlmostEqual(outputs, jnp.mean(inputs[: i + 1]))
+            # Update layer_params with state_updates.
+            param_updates = output_collection.state_updates
+            self.assertEqual(shapes(layer_params), shapes(param_updates))
+            layer_params = copy.deepcopy(param_updates)
+
+        converge_to = 3.14
+        for _ in range(100):
+            outputs, output_collection = F(
+                layer,
+                inputs=dict(x=converge_to),
+                is_training=True,
+                state=layer_params,
+                prng_key=prng_key,
+            )
+            layer_params = copy.deepcopy(output_collection.state_updates)
+
+        self.assertAlmostEqual(outputs, layer_params["value"])
+        self.assertAllClose(outputs, converge_to, atol=0.01, rtol=0.01)
+
 
 class EmbedTest(parameterized.TestCase):
     @staticmethod
-    def build_embedder(dim, num_embeddings, rng):
-        cfg = Embedding.default_config()
-        cfg.dim = dim
-        cfg.num_embeddings = num_embeddings
-        cfg.name = "embed"
+    def build_embedder(dim, num_embeddings, rng, **kwargs):
+        cfg = Embedding.default_config().set(name="embed", dim=dim, num_embeddings=num_embeddings)
+        if kwargs:
+            cfg = cfg.set(**kwargs)
         emb = cfg.instantiate(parent=None)
         state = emb.initialize_parameters_recursively(rng)
         return (emb, state)
@@ -1870,6 +1254,28 @@ class EmbedTest(parameterized.TestCase):
         )
         np.testing.assert_array_equal(state["weight"][ixs], actual_embeds)
 
+    def test_embed_with_scale(self):
+        dim = 256
+        num_embeddings = 16
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, input_key, fwd_key = jax.random.split(prng_key, num=3)
+        embedder, state = EmbedTest.build_embedder(
+            dim, num_embeddings, input_key, scale=Embedding.Scale.UNIT
+        )
+        batch, seq_len = 5, 8
+        ixs = jax.random.randint(input_key, minval=0, maxval=num_embeddings, shape=(batch, seq_len))
+
+        outputs, _ = F(
+            embedder,
+            inputs=(ixs,),
+            is_training=True,
+            state=state,
+            prng_key=fwd_key,
+        )
+
+        assert_allclose(jnp.mean(outputs), 0.0, atol=0.05)
+        assert_allclose(jnp.std(outputs), 1.0, atol=0.05)
+
     @parameterized.parameters(itertools.product((5, 7), (2, 16), (10, 100), (True, False)))
     def test_embed_attend(self, seq_len, dim, num_embeddings, is_training):
         rng = jax.random.PRNGKey(1)
@@ -1880,11 +1286,64 @@ class EmbedTest(parameterized.TestCase):
         )[0]
         assert_allclose(jnp.dot(x, state["weight"].T), actual_attends)
 
+    @mock.patch("axlearn.common.utils.with_sharding_constraint")
+    def test_embed_partition_specs_constraint(self, mock_with_sharding_constraint):
+        # Configure mock to return its input.
+        mock_with_sharding_constraint.side_effect = lambda x, *args: x
+
+        dim = 16
+        num_embeddings = 100
+        seq_len = 5
+        rng = jax.random.PRNGKey(1)
+
+        # Configure embedding with partition specs.
+        cfg = Embedding.default_config().set(
+            name="embed",
+            dim=dim,
+            num_embeddings=num_embeddings,
+            input_partition_spec=("fsdp", None),
+            output_partition_spec=("fsdp", "model"),
+            embedding_partition_spec=("model", "fsdp"),
+        )
+
+        # Instantiate embedding.
+        emb = cfg.instantiate(parent=None)
+        state = emb.initialize_parameters_recursively(rng)
+
+        # Test lookup functionality.
+        ixs = jax.random.randint(rng, minval=0, maxval=num_embeddings, shape=(3, seq_len))
+        actual_embeds, _ = module.functional(emb, rng, state=state, inputs=[ixs], is_training=True)
+
+        # Verify with_sharding_constraint was called in correct order with proper specs.
+        calls = mock_with_sharding_constraint.call_args_list
+        self.assertEqual(len(calls), 3)
+
+        # 1. Input activation constraint (indices tensor).
+        input_spec = calls[0].args[1]
+        self.assertEqual(input_spec, ("fsdp", None))
+        self.assertEqual(calls[0].args[0].shape, (3, seq_len))
+        self.assertEqual(calls[0].args[0].dtype, jnp.int32)
+        np.testing.assert_array_equal(calls[0].args[0], ixs)
+
+        # 2. Embedding weight constraint.
+        weight_spec = calls[1].args[1]
+        self.assertEqual(weight_spec, ("model", "fsdp"))
+        self.assertEqual(calls[1].args[0].shape, (num_embeddings, dim))
+        self.assertEqual(calls[1].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[1].args[0], state["weight"])
+
+        # 3. Output activation constraint (after lookup).
+        output_spec = calls[2].args[1]
+        self.assertEqual(output_spec, ("fsdp", "model"))
+        self.assertEqual(calls[2].args[0].shape, (3, seq_len, dim))
+        self.assertEqual(calls[2].args[0].dtype, jnp.float32)
+        np.testing.assert_array_equal(calls[2].args[0], actual_embeds)
+
 
 class BiasLayer(BaseLayer):
     """A test layer with bias."""
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         return dict(bias=ParameterSpec(shape=[], mesh_axes=None))
 
     def forward(self, x: Tensor) -> Tensor:
@@ -1903,7 +1362,7 @@ class ParentLayer(BaseLayer):
 
     @config_class
     class Config(BaseLayer.Config):
-        children: Dict[str, BaseLayer.Config] = {}
+        children: dict[str, BaseLayer.Config] = {}
         shared_modules: Sequence[str] = []
 
     def __init__(self, cfg: BaseLayer.Config, *, parent: Optional[Module]):
@@ -1930,7 +1389,7 @@ class RedirectToSharedModuleTest(TestCase):
                 shared_modules=["shared_bias"],
                 children=dict(
                     shared_bias=BiasLayer.default_config().set(
-                        param_init=config_for_class(ConstantInitializer).set(value=1)
+                        param_init=ConstantInitializer.default_config().set(value=1)
                     ),
                     parent_a=ParentLayer.default_config().set(
                         children=dict(
@@ -1954,7 +1413,7 @@ class RedirectToSharedModuleTest(TestCase):
             )
 
             @partial(jax.jit, static_argnames=("path", "child_method"))
-            def jit_forward(inputs: Tensor, *, path: Tuple[str], child_method: str = "forward"):
+            def jit_forward(inputs: Tensor, *, path: tuple[str], child_method: str = "forward"):
                 outputs, _ = F(
                     layer,
                     state=state,
@@ -2012,6 +1471,14 @@ class SetConfigTest(TestCase):
         self.assertEqual(0.1, cfg.transformer.layer.self_attention.dropout.rate)
         self.assertEqual(0.1, cfg.transformer.layer.feed_forward.dropout.rate)
         self.assertEqual(0.1, cfg.output_dropout.rate)
+
+    def test_set_layer_norm_eps_recursively(self):
+        cfg = Decoder.default_config()
+        self.assertEqual(1e-8, cfg.transformer.layer.self_attention.norm.eps)
+        self.assertEqual(1e-8, cfg.transformer.layer.feed_forward.norm.eps)
+        set_layer_norm_eps_recursively(cfg, 1e-5)
+        self.assertEqual(1e-5, cfg.transformer.layer.self_attention.norm.eps)
+        self.assertEqual(1e-5, cfg.transformer.layer.feed_forward.norm.eps)
 
 
 if __name__ == "__main__":

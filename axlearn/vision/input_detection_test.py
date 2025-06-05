@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests object detection inputs."""
 # pylint: disable=no-member,no-self-use
 import numpy as np
@@ -29,7 +31,7 @@ class DetectionInputTest(parameterized.TestCase, tf.test.TestCase):
         cfg.source.set(
             dataset_name="coco/2017",
             split="validation",
-            shuffle_buffer_size=100 if is_training else 0,
+            train_shuffle_buffer_size=100,
         )
         cfg.processor.set(
             image_size=(image_size, image_size),

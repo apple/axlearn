@@ -1,5 +1,12 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Detection post-processing operations."""
-from typing import Dict, Tuple
 
 import jax
 from jax import numpy as jnp
@@ -11,7 +18,7 @@ from axlearn.vision import nms, utils_detection
 from axlearn.vision.box_coder import BoxCoder
 
 
-def _select_top_k_scores(scores_in: Tensor, pre_nms_num_detections: int) -> Tuple[Tensor, ...]:
+def _select_top_k_scores(scores_in: Tensor, pre_nms_num_detections: int) -> tuple[Tensor, ...]:
     """Selects top_k scores and indices for each class.
 
     Args:
@@ -35,7 +42,7 @@ def _generate_detections(
     pre_nms_score_threshold: float = 0.05,
     nms_iou_threshold: float = 0.5,
     max_num_detections: int = 100,
-) -> Tuple[Tensor, ...]:
+) -> tuple[Tensor, ...]:
     """Generates the final detections given the model outputs.
 
     This implementation unrolls classes dimension while using the lax.while_loop
@@ -144,9 +151,9 @@ class MultilevelDetectionGenerator(BaseLayer):
     # pylint: disable-next=no-self-use
     def _decode_multilevel_outputs(
         self,
-        raw_boxes: Dict[int, Tensor],
-        raw_scores: Dict[int, Tensor],
-        anchor_boxes: Dict[str, Tensor],
+        raw_boxes: dict[int, Tensor],
+        raw_scores: dict[int, Tensor],
+        anchor_boxes: dict[str, Tensor],
         image_shape: Tensor,
     ):
         """Collects dict of multilevel boxes and scores into lists."""
@@ -195,9 +202,9 @@ class MultilevelDetectionGenerator(BaseLayer):
 
     def forward(
         self,
-        raw_boxes: Dict[int, Tensor],
-        raw_scores: Dict[int, Tensor],
-        anchor_boxes: Dict[str, Tensor],
+        raw_boxes: dict[int, Tensor],
+        raw_scores: dict[int, Tensor],
+        anchor_boxes: dict[str, Tensor],
         image_shape: Tensor,
     ):
         """Generates final detections.
@@ -293,7 +300,7 @@ class DetectionGenerator(BaseLayer):
         raw_scores: Tensor,
         anchor_boxes: Tensor,
         image_shape: Tensor,
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """Generates final detections.
 
         Args:

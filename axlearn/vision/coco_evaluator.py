@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# cocodataset/cocoapi:
+# Copyright (c) 2014, Piotr Dollar and Tsung-Yi Lin. All rights reserved.
+# Licensed under BSD 2-Clause License.
+
 # pylint: disable=consider-using-f-string
 """The COCO-style evaluator.
 
@@ -11,11 +19,10 @@ The following snippet demonstrates the use of interfaces:
 
 See also: https://github.com/cocodataset/cocoapi/
 """
-from typing import Any, Dict
+from typing import Any
 
 import jax
 import numpy as np
-import six
 
 # Import libraries
 from absl import logging
@@ -99,14 +106,14 @@ class COCOEvaluator:
         if not self._annotation_file:
             self._groundtruths = {}
 
-    def result(self) -> Dict[str, Any]:
+    def result(self) -> dict[str, Any]:
         """Evaluates detection results, and reset_states."""
         metric_dict = self.evaluate()
         # Cleans up the internal variables in order for a fresh eval next time.
         self.reset_states()
         return metric_dict
 
-    def evaluate(self) -> Dict[str, Any]:
+    def evaluate(self) -> dict[str, Any]:
         """Evaluates with detections from all images with COCO API.
 
         Returns:
@@ -159,8 +166,8 @@ class COCOEvaluator:
 
         return metrics_dict
 
-    def _retrieve_per_category_metrics(self, coco_eval, prefix="") -> Dict[str, Any]:
-        """Retrieves and per-category metrics and retuns them in a dict.
+    def _retrieve_per_category_metrics(self, coco_eval, prefix="") -> dict[str, Any]:
+        """Retrieves and per-category metrics and returns them in a dict.
 
         Args:
             coco_eval: a cocoeval.COCOeval object containing evaluation data.
@@ -186,40 +193,40 @@ class COCOEvaluator:
                 category_display_name = category_id
 
             metrics_dict[
-                prefix + "Precision mAP ByCategory/{}".format(category_display_name)
+                prefix + f"Precision mAP ByCategory/{category_display_name}"
             ] = category_stats[0][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Precision mAP ByCategory@50IoU/{}".format(category_display_name)
+                prefix + f"Precision mAP ByCategory@50IoU/{category_display_name}"
             ] = category_stats[1][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Precision mAP ByCategory@75IoU/{}".format(category_display_name)
+                prefix + f"Precision mAP ByCategory@75IoU/{category_display_name}"
             ] = category_stats[2][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Precision mAP ByCategory (small) /{}".format(category_display_name)
+                prefix + f"Precision mAP ByCategory (small) /{category_display_name}"
             ] = category_stats[3][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Precision mAP ByCategory (medium) /{}".format(category_display_name)
+                prefix + f"Precision mAP ByCategory (medium) /{category_display_name}"
             ] = category_stats[4][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Precision mAP ByCategory (large) /{}".format(category_display_name)
+                prefix + f"Precision mAP ByCategory (large) /{category_display_name}"
             ] = category_stats[5][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Recall AR@1 ByCategory/{}".format(category_display_name)
+                prefix + f"Recall AR@1 ByCategory/{category_display_name}"
             ] = category_stats[6][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Recall AR@10 ByCategory/{}".format(category_display_name)
+                prefix + f"Recall AR@10 ByCategory/{category_display_name}"
             ] = category_stats[7][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Recall AR@100 ByCategory/{}".format(category_display_name)
+                prefix + f"Recall AR@100 ByCategory/{category_display_name}"
             ] = category_stats[8][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Recall AR (small) ByCategory/{}".format(category_display_name)
+                prefix + f"Recall AR (small) ByCategory/{category_display_name}"
             ] = category_stats[9][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Recall AR (medium) ByCategory/{}".format(category_display_name)
+                prefix + f"Recall AR (medium) ByCategory/{category_display_name}"
             ] = category_stats[10][category_index].astype(np.float32)
             metrics_dict[
-                prefix + "Recall AR (large) ByCategory/{}".format(category_display_name)
+                prefix + f"Recall AR (large) ByCategory/{category_display_name}"
             ] = category_stats[11][category_index].astype(np.float32)
 
         return metrics_dict
@@ -237,7 +244,7 @@ class COCOEvaluator:
     def _convert_to_numpy(self, groundtruths, predictions):
         """Converts tensors to numpy arrays."""
         if groundtruths:
-            labels = jax.tree_util.tree_map(np.array, groundtruths)
+            labels = jax.tree.map(np.array, groundtruths)
             numpy_groundtruths = {}
             for key, val in labels.items():
                 if isinstance(val, tuple):
@@ -247,7 +254,7 @@ class COCOEvaluator:
             numpy_groundtruths = groundtruths
 
         if predictions:
-            outputs = jax.tree_util.tree_map(np.array, predictions)
+            outputs = jax.tree.map(np.array, predictions)
             numpy_predictions = {}
             for key, val in outputs.items():
                 if isinstance(val, tuple):
@@ -303,10 +310,10 @@ class COCOEvaluator:
 
         for k in self._required_prediction_fields:
             if k not in predictions:
-                raise ValueError("Missing the required key `{}` in predictions!".format(k))
+                raise ValueError(f"Missing the required key `{k}` in predictions!")
         if self._need_rescale_bboxes:
             self._process_predictions(predictions)
-        for k, v in six.iteritems(predictions):
+        for k, v in predictions.items():
             if k not in self._predictions:
                 self._predictions[k] = [v]
             else:
@@ -316,8 +323,8 @@ class COCOEvaluator:
             assert groundtruths
             for k in self._required_groundtruth_fields:
                 if k not in groundtruths:
-                    raise ValueError("Missing the required key `{}` in groundtruths!".format(k))
-            for k, v in six.iteritems(groundtruths):
+                    raise ValueError(f"Missing the required key `{k}` in groundtruths!")
+            for k, v in groundtruths.items():
                 if k not in self._groundtruths:
                     self._groundtruths[k] = [v]
                 else:

@@ -1,18 +1,22 @@
-"""Retreival evaluation pipeline."""
+# Copyright © 2023 Apple Inc.
+
+"""Retrieval evaluation pipeline."""
+
 import csv
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from functools import partial
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional
 
 import jax
 import numpy as np
-import tensorflow as tf
 from absl import logging
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
+from axlearn.common import file_system as fs
 from axlearn.common import utils
-from axlearn.common.attention import NEG_INF
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.evaler import GlobalMetricCalculator, PredictionOutputs
@@ -22,12 +26,13 @@ from axlearn.common.metrics_retrieval import (
     calculate_mean_metrics,
     metric_at_k_name,
     top_k_accuracy,
+    top_k_recall,
 )
 from axlearn.common.module import Module
 from axlearn.common.utils import NestedPartitionSpec, NestedTensor, Tensor, with_sharding_constraint
 
 
-def clip_generate_labels(sentence_paddings: Tensor) -> Dict[str, Tensor]:
+def clip_generate_labels(sentence_paddings: Tensor) -> dict[str, Tensor]:
     """Generate the image to text and text to image retrieval labels.
 
     Assumption:
@@ -105,11 +110,11 @@ def clip_generate_labels(sentence_paddings: Tensor) -> Dict[str, Tensor]:
 
 def calculate_clip_retrieval_metrics(
     *,
-    top_ks: List[int],
+    top_ks: list[int],
     visual_embeddings: Tensor,
     textual_embeddings: Tensor,
     valid_sentences: Tensor,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Calculates top-k accuracies.
 
     Args:
@@ -188,9 +193,9 @@ class CLIPRetrievalMetricCalculator(GlobalMetricCalculator):
     @config_class
     class Config(GlobalMetricCalculator.Config):
         # The values for k for which to compute accuracy.
-        top_ks: Required[List[int]] = REQUIRED
+        top_ks: Required[list[int]] = REQUIRED
 
-    def _calculate_metrics(self, outputs: PredictionOutputs) -> Dict[str, Tensor]:
+    def _calculate_metrics(self, outputs: PredictionOutputs) -> dict[str, Tensor]:
         cfg = self.config
         metrics = calculate_clip_retrieval_metrics(
             top_ks=cfg.top_ks,
@@ -206,20 +211,31 @@ class CLIPRetrievalMetricCalculator(GlobalMetricCalculator):
 
 
 def _named_average_precision_at_k(
-    scores: Tensor, relevance_labels: Tensor, name: str, top_ks: List[int]
-):
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: list[int]
+) -> dict[str, str]:
     output = average_precision_at_k(scores=scores, relevance_labels=relevance_labels, top_ks=top_ks)
     return {metric_at_k_name(name, k): v for k, v in output.items()}
 
 
-def _named_top_k_accuracy(scores: Tensor, relevance_labels: Tensor, name: str, top_ks: List[int]):
+def _named_top_k_accuracy(
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: list[int]
+) -> dict[str, str]:
     output = top_k_accuracy(
         sim=scores, gt_targets=None, relevance_labels=relevance_labels, top_ks=top_ks
     )
     return {metric_at_k_name(name, k): v for k, v in zip(top_ks, output)}
 
 
-def _get_ranking_metrics_fns(metrics: Sequence[str]) -> List[Callable]:
+def _named_top_k_recall(
+    scores: Tensor, *, relevance_labels: Tensor, name: str, top_ks: list[int]
+) -> dict[str, str]:
+    output = top_k_recall(
+        sim=scores, gt_targets=None, relevance_labels=relevance_labels, top_ks=top_ks
+    )
+    return {metric_at_k_name(name, k): v for k, v in zip(top_ks, output)}
+
+
+def _get_ranking_metrics_fns(metrics: Sequence[str]) -> list[Callable]:
     # Parse metric names.
     metric_to_ks = defaultdict(list)
     for metric in metrics:
@@ -233,6 +249,8 @@ def _get_ranking_metrics_fns(metrics: Sequence[str]) -> List[Callable]:
             metrics_fns.append(partial(_named_average_precision_at_k, top_ks=ks, name=name))
         elif name == "accuracy":
             metrics_fns.append(partial(_named_top_k_accuracy, top_ks=ks, name=name))
+        elif name == "recall":
+            metrics_fns.append(partial(_named_top_k_recall, top_ks=ks, name=name))
         else:
             raise ValueError(f"Unknown metric: {name}")
     return metrics_fns
@@ -252,13 +270,13 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
         #   * MAP - mean average precision
         #   * MAP@k - mean average precision at K
         #   * accuracy@k - accuracy at K
-        # TODO(atimofeev): add more suported metrics (accuracy, recall, etc.)
-        metrics: Required[List[str]] = REQUIRED
+        # TODO(atimofeev): add more supported metrics (accuracy, recall, etc.)
+        metrics: Required[list[str]] = REQUIRED
 
         # Optional tuple of cateogory names - category `i` gets name `categories_names[i]`.
         # Categories are used for providing metrics for a subset of items belonging to a particular
         # category.
-        categories_names: Optional[Tuple[str, ...]] = None
+        categories_names: Optional[tuple[str, ...]] = None
 
         # Field inside output which contains embedding for the evaluation.
         # For nested fields use 'root/nested1/nested2' notation.
@@ -294,7 +312,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
         *,
         model_params: NestedTensor,
         state: NestedTensor,
-    ) -> Dict[str, NestedTensor]:
+    ) -> dict[str, NestedTensor]:
         """Calls predict method of the model and returns input_batch and per-batch model outputs.
 
         Will be called repeatedly during an evaluation step, once per evaluation input batch.
@@ -313,7 +331,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
         result["output"] = self._select_predictions(result["output"])
         return result
 
-    def _calculate_metrics(self, outputs: PredictionOutputs) -> Dict[str, Tensor]:
+    def _calculate_metrics(self, outputs: PredictionOutputs) -> dict[str, Tensor]:
         """Calculates configured metrics for the embedding queries retrieval from index embeddings.
 
         An index item is considered relevant to a query if they share the same label.
@@ -344,7 +362,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
             categories = jnp.concatenate(categories_chunked)
         else:
             categories = None
-        per_query_metrics = jax.tree_util.tree_map(  # pylint: disable=no-value-for-parameter
+        per_query_metrics = jax.tree.map(  # pylint: disable=no-value-for-parameter
             lambda *xs: jnp.concatenate(xs), *metrics_chunked
         )
 
@@ -366,7 +384,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
 
     def _get_chunk_metrics(
         self, outputs: PredictionOutputs, query_indices: Tensor
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """Returns metrics for the given chunk of query indices."""
         scores = self._get_scores(outputs, query_indices)
         relevance_labels = self._get_relevance_labels(outputs, query_indices)
@@ -386,7 +404,7 @@ class EmbeddingRetrievalMetricCalculator(GlobalMetricCalculator):
             predict_outputs={"embedding": embeddings},
         )
 
-    def _get_query_indices_chunked(self, outputs: PredictionOutputs) -> Tuple[List[Tensor], int]:
+    def _get_query_indices_chunked(self, outputs: PredictionOutputs) -> tuple[list[Tensor], int]:
         is_query = outputs.input_batch.get("is_query")
         if is_query is None:
             num = outputs.predict_outputs["embedding"].shape[0]
@@ -510,10 +528,10 @@ class CxcImageRetrievalMetricCalculator(EmbeddingRetrievalMetricCalculator):
         return relevance_labels[query_indices] >= self.config.threshold
 
 
-def _load_cxc_relevance(path: str) -> Tuple[Tensor, Dict[str, int]]:
-    with tf.io.gfile.GFile(path) as fin:
+def _load_cxc_relevance(path: str) -> tuple[Tensor, dict[str, int]]:
+    with fs.open(path) as fin:
         rows = list(csv.DictReader(fin))
-    image_ids = sorted(set(row[k] for row in rows for k in ["image1", "image2"]))
+    image_ids = sorted({row[k] for row in rows for k in ["image1", "image2"]})
     image_id_to_pos = {k: i for i, k in enumerate(image_ids)}
 
     n = len(image_ids)
@@ -535,8 +553,8 @@ class KnnMetricCalculator(EmbeddingRetrievalMetricCalculator):
 
     @config_class
     class Config(EmbeddingRetrievalMetricCalculator.Config):
-        top_ks: Tuple[int, ...] = (1, 20, 200)
-        temps: Tuple[float, ...] = (0.01, 0.03, 0.07)
+        top_ks: tuple[int, ...] = (1, 20, 200)
+        temps: tuple[float, ...] = (0.01, 0.03, 0.07)
         num_labels: Required[int] = REQUIRED
 
     @classmethod
@@ -547,7 +565,7 @@ class KnnMetricCalculator(EmbeddingRetrievalMetricCalculator):
 
     def _get_chunk_metrics(
         self, outputs: PredictionOutputs, query_indices: Tensor
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """Returns metrics for the given chunk of query indices."""
 
         cfg = self.config
@@ -569,8 +587,8 @@ class KnnMetricCalculator(EmbeddingRetrievalMetricCalculator):
 
         chunk_metrics = {}
         for k in cfg.top_ks:
-            top_similarities, top_indicies = jax.lax.top_k(similarities, k)
-            top_labels = jnp.take(index_labels, top_indicies)
+            top_similarities, top_indices = jax.lax.top_k(similarities, k)
+            top_labels = jnp.take(index_labels, top_indices)
             for temp in cfg.temps:
                 weights = jnp.exp(top_similarities / temp)
                 label_scores = batch_segment_sum(weights, top_labels)

@@ -1,4 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests vision param converter utils."""
+
 import jax
 import jax.numpy as jnp
 from absl.testing import parameterized
@@ -6,7 +9,9 @@ from transformers.models.clip import modeling_clip as hf_clip
 
 from axlearn.common.attention import LearnedPositionalEmbedding
 from axlearn.common.embedding import TransformerTextEmbeddings
+from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_converter_test import BaseParamConverterTest, torch_output_to_dict
+from axlearn.common.test_utils import set_threefry_partitionable
 from axlearn.common.text_encoder import ENCODED_HIDDEN_STATES
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import as_tensor
@@ -102,7 +107,7 @@ class HFClipTest(BaseParamConverterTest):
         out, hf_out = self._compute_layer_outputs(
             test_layer=layer,
             ref_layer=hf_layer,
-            test_inputs=[inputs],
+            test_inputs=dict(input_batch=dict(inputs=inputs)),
             ref_inputs=as_torch_tensor(inputs),
         )
         # Compare only at non-padding positions.
@@ -212,6 +217,7 @@ class HFClipTest(BaseParamConverterTest):
         ).instantiate(parent=None)
 
     @parameterized.parameters([False, True])
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_clip_model(self, remat):
         batch = 3
         layer = self._hf_clip_model(remat=remat)
@@ -243,6 +249,30 @@ class HFClipTest(BaseParamConverterTest):
             jnp.squeeze(out["visual_encoder"]["output_features"]), hf_out["image_embeds"]
         )
 
+    @parameterized.parameters([False, True])
+    def test_clip_vision_model_with_projection(self, remat):
+        batch = 3
+        layer = self._hf_clip_model(remat=remat)
+        vision_config = self.clip_cfg.vision_config
+        hf_layer = hf_clip.CLIPVisionModelWithProjection(vision_config)
+
+        image_inputs, _, _ = self._dummy_clip_input(batch)
+
+        out, hf_out = self._compute_layer_outputs(
+            test_layer=layer,
+            ref_layer=hf_layer,
+            test_inputs=dict(
+                input_batch={
+                    "image": jnp.expand_dims(jnp.einsum("bchw->bhwc", image_inputs), 1),
+                }
+            ),
+            ref_inputs={
+                "pixel_values": as_torch_tensor(image_inputs),
+            },
+            method="embed_image_batch",
+        )
+        self.assertNestedAllClose(jnp.squeeze(out), l2_normalize(hf_out["image_embeds"]))
+
     def test_clip_roundtrip(self):
         """Test CLIP Hugging Face to AXLearn and back."""
         batch = 3
@@ -259,7 +289,7 @@ class HFClipTest(BaseParamConverterTest):
             "input_ids": as_torch_tensor(inputs),
             "pixel_values": as_torch_tensor(image_inputs),
         }
-        expected, actual = jax.tree_util.tree_map(
+        expected, actual = jax.tree.map(
             as_tensor,
             (
                 torch_output_to_dict(hf_layer(**hf_inputs)),
@@ -267,3 +297,10 @@ class HFClipTest(BaseParamConverterTest):
             ),
         )
         self.assertNestedAllClose(expected, actual)
+
+    def test_clip_layer_kv_cache_exists(self):
+        hf_layer = hf_clip.CLIPEncoderLayer(self.clip_cfg.vision_config)
+        params = parameters_from_torch_layer(hf_layer)
+        self.assertIn("self_attention", params)
+        self.assertIn("attention", params["self_attention"])
+        self.assertIn("kv_cache", params["self_attention"]["attention"])

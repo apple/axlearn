@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tools for running inference on AXLearn models.
 
 On compatible trainer checkpoints for `InferenceRunner`:
@@ -9,33 +11,22 @@ On compatible trainer checkpoints for `InferenceRunner`:
     only a subset of the model state, or a checkpoint with different scope names, use a suitable
     state builder.
 """
+
+from collections.abc import Generator, Iterable, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Generator,
-    Iterable,
-    NamedTuple,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
-)
+from typing import Any, Callable, NamedTuple, Optional, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
-from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import CheckpointValidationType
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.learner import LearnerState
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.state_builder import Builder, TensorStoreStateStorageBuilder
@@ -45,7 +36,9 @@ from axlearn.common.utils import (
     NestedPartitionSpec,
     NestedTensor,
     PartitionSpec,
+    Tensor,
     TensorSpec,
+    prune_tree,
 )
 
 
@@ -56,12 +49,12 @@ class MethodRunner:
     def __init__(
         self,
         *,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         mesh: jax.sharding.Mesh,
         input_batch_partition_spec: DataPartitionType,
         jit_run_on_batch: Callable[
-            [jax.random.KeyArray, NestedTensor],
-            Tuple[jax.random.KeyArray, NestedTensor, NestedTensor],
+            [Tensor, NestedTensor],
+            tuple[Tensor, NestedTensor, NestedTensor, NestedTensor],
         ],
     ):
         """Initializes MethodRunner object.
@@ -71,7 +64,7 @@ class MethodRunner:
             mesh: mesh to be used during method running, same as the one used for pjit.
             input_batch_partition_spec: partition spec for input batches.
             jit_run_on_batch: callable which takes prng key, input batch and outputs
-                updated prng key, outputs and summaries.
+                updated prng key, outputs, summaries, and module outputs.
         """
         self._prng_key = prng_key
         self._mesh = mesh
@@ -88,6 +81,8 @@ class MethodRunner:
         input_batch: NestedTensor
         # Summaries.
         summaries: NestedTensor
+        # Module outputs.
+        module_outputs: NestedTensor
 
     def __call__(self, input_batch: NestedTensor) -> Output:
         """Computes outputs and summaries for the given input.
@@ -127,6 +122,7 @@ class MethodRunner:
                 self._prng_key,
                 global_output_batch,
                 summaries,
+                module_outputs,
             ) = self._jit_run_on_batch(
                 self._prng_key,
                 global_input_batch,
@@ -135,15 +131,16 @@ class MethodRunner:
                 output_batch=global_output_batch,
                 input_batch=global_input_batch,
                 summaries=summaries,
+                module_outputs=module_outputs,
             )
 
 
 class _InferenceRunnerState(NamedTuple):
     """Contains inference runner {state | state-partition-specs}."""
 
-    prng_key: Union[jax.random.KeyArray, NestedPartitionSpec]
+    prng_key: Union[Tensor, NestedPartitionSpec]
     model: Union[NestedTensor, NestedPartitionSpec]
-    learner: Optional[Union[LearnerState, NestedPartitionSpec]] = None
+    learner: Optional[Union[NestedTensor, NestedPartitionSpec]] = None
 
 
 class InferenceRunner(Module):
@@ -194,7 +191,13 @@ class InferenceRunner(Module):
         )
         return cfg
 
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+    def __init__(
+        self,
+        cfg: Config,
+        *,
+        parent: Optional[Module],
+        devices: Optional[np.ndarray] = None,
+    ):
         super().__init__(cfg, parent=parent)
 
         cfg = self.config
@@ -202,8 +205,6 @@ class InferenceRunner(Module):
             utils.validate_float_dtype(cfg.inference_dtype)
 
         # Create device mesh.
-        if not jax.config.jax_array:  # pylint: disable=no-member
-            raise NotImplementedError(f"{self.__class__.__name__} requires jax_array=True")
         logging.info(
             "Devices: global=%s local=%s %s",
             jax.device_count(),
@@ -211,7 +212,8 @@ class InferenceRunner(Module):
             [device.platform for device in jax.local_devices()],
         )
         logging.info("Mesh shape: %s", cfg.mesh_shape)
-        devices = mesh_utils.create_device_mesh(cfg.mesh_shape)
+        if devices is None:
+            devices = utils.create_device_mesh(cfg.mesh_shape)
         mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
         logging.info("Global mesh: %s", mesh)
         self._mesh = mesh
@@ -220,14 +222,16 @@ class InferenceRunner(Module):
         with self.mesh():
             self._add_child("model", cfg.model)
             self._model_param_specs = self.model.create_parameter_specs_recursively()
+            self._model_param_specs = self._inference_cast(self._model_param_specs)
+
             self._inference_runner_state_specs = _InferenceRunnerState(
                 prng_key=TensorSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
                 model=self._model_param_specs,
             )
-            self._inference_runner_state_partition_specs = jax.tree_util.tree_map(
+            self._inference_runner_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._inference_runner_state_specs
             )
-            logging.info("Building ckpt state from %s", cfg.init_state_builder.cls.__name__)
+            logging.info("Building ckpt state from %s", cfg.init_state_builder.klass.__name__)
             builder = cfg.init_state_builder.set(
                 name="init_state_builder",
             ).instantiate(parent=None)
@@ -237,7 +241,7 @@ class InferenceRunner(Module):
                 logging.warning(
                     "init_state_builder %s expects input_state_type StateType.TENSOR "
                     "but inference runner gives StateType.TENSOR_SPECS.",
-                    cfg.init_state_builder.cls.__name__,
+                    cfg.init_state_builder.klass.__name__,
                 )
 
             # See "On compatible trainer checkpoints for `InferenceRunner`" in the file docstring.
@@ -257,7 +261,7 @@ class InferenceRunner(Module):
         input_batches: Iterable[NestedTensor],
         *,
         method: str,
-        prng_key: Optional[jax.random.KeyArray] = None,
+        prng_key: Optional[Tensor] = None,
         **kwargs,
     ) -> Generator[NestedTensor, None, None]:
         """Runs inference on the provided input batches.
@@ -298,7 +302,8 @@ class InferenceRunner(Module):
         self,
         *,
         method: str,
-        prng_key: Optional[jax.random.KeyArray] = None,
+        prng_key: Optional[Tensor] = None,
+        drop_module_outputs: Callable[[str], bool] = lambda _: True,
         **kwargs,
     ) -> MethodRunner:
         """Creates MethodRunner for the specified method and arguments.
@@ -309,6 +314,10 @@ class InferenceRunner(Module):
                 returned value are NestedTensors containing Tensors with a leading dimension of
                 `batch_size` and will be partitioned with input_batch_partition_spec.
             prng_key: the random key used for inference. Use restored key if None.
+            drop_module_outputs: A callable that takes a path and outputs a decision of whether to
+                drop the module output at the given path, where True means we drop. By default, the
+                callable always returns True, meaning all module outputs are dropped.
+                Warning: Returned module outputs are fully replicated.
             kwargs: Keyword arguments to pass to the method.
 
         Returns:
@@ -334,6 +343,7 @@ class InferenceRunner(Module):
                     model_params,
                     input_batch,
                     method=method,
+                    drop_module_outputs=drop_module_outputs,
                     **kwargs,
                 )
 
@@ -345,10 +355,11 @@ class InferenceRunner(Module):
                     self._inference_runner_state_partition_specs.prng_key,
                     data_partition_spec,  # Input batch.
                 ),
-                out_axis_resources=(
+                out_shardings=(
                     self._inference_runner_state_partition_specs.prng_key,
                     data_partition_spec,  # Output batch.
                     None,  # Summaries.
+                    None,  # Module outputs.
                 ),
             )
             self.vlog(1, "jit complete for %s", method)
@@ -361,37 +372,53 @@ class InferenceRunner(Module):
                 jit_run_on_batch=partial(jit_inference_iter_fn, self._inference_runner_state.model),
             )
 
+    def _inference_cast(
+        self, in_tree: Union[NestedTensor, NestedPartitionSpec]
+    ) -> Union[NestedTensor, NestedPartitionSpec]:
+        """Cast state or input tensors to inference dtype."""
+        cfg: InferenceRunner.Config = self.config
+        if cfg.inference_dtype is not None:
+            return utils.cast_floats(in_tree, to_dtype=cfg.inference_dtype)
+        return in_tree
+
     def _inference_iter(
         self,
-        prng_key: jax.random.KeyArray,
+        prng_key: Tensor,
         model_params: NestedTensor,
-        input_batch: Dict[str, Any],
+        input_batch: dict[str, Any],
         *,
-        method,
+        method: str,
+        drop_module_outputs: Callable[[str], bool] = lambda _: True,
         **kwargs,
-    ) -> Tuple[jax.random.KeyArray, NestedTensor, NestedTensor]:
+    ) -> tuple[Tensor, NestedTensor, NestedTensor, NestedTensor]:
         """Implements inference for a single input batch."""
-        cfg = self.config
         new_prng_key, iter_key = jax.random.split(prng_key)
 
-        def inference_cast(in_tree: NestedTensor) -> NestedTensor:
-            if cfg.inference_dtype is not None:
-                return utils.cast_floats(in_tree, to_dtype=cfg.inference_dtype)
-            return in_tree
+        # Shard and (possibly) dispatch the input batch.
+        input_batch = utils.dispatch_input_batch(input_batch)
 
-        input_batch = utils.shard_input_batch(inference_cast(input_batch))
         output_batch, output_collection = F(
             self.model,
             prng_key=iter_key,
-            state=inference_cast(model_params),
-            inputs={"input_batch": input_batch, **kwargs},
+            state=model_params,
+            inputs={"input_batch": self._inference_cast(input_batch), **kwargs},
             is_training=False,
             method=method,
+            # Do not drop module_outputs so they can be returned.
+            drop_output_collections=(),
         )
+
+        # Prune module outputs
+        module_outputs = prune_tree(
+            output_collection.module_outputs,
+            should_prune=lambda path, _: drop_module_outputs(path),
+        )
+
         return (
             new_prng_key,
             output_batch,
             output_collection.summaries,
+            module_outputs,
         )
 
     def mesh(self):

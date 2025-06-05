@@ -1,20 +1,27 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/detectron2:
+# Copyright 2019-2020, detectron2 contributors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An AXLearn implementation of ViTDet transformer window attention.
 
 ViTDet References:
 https://github.com/facebookresearch/detectron2/blob/d1f8accbc92c7c7e1c08e37d3ec9f6d1fc83d235/detectron2/modeling/backbone/utils.py#L16-L60
 """
-from typing import Tuple
 
 from jax import numpy as jnp
 
 from axlearn.common.utils import Tensor
 
 
-# pylint: disable-next=redefined-builtin
 def window_partition_with_window_size(
+    # pylint: disable-next=redefined-builtin
     input: Tensor,
     window_size: int,
-) -> Tuple[Tensor, Tuple[int, int]]:
+) -> tuple[Tensor, tuple[int, int]]:
     """Partitions input tensor into non-overlapping windows with given window size (padding).
     Args:
         input: The input Tensor with shape (batch, height, width, dim).
@@ -49,11 +56,11 @@ def window_partition_with_window_size(
     return windows, (resized_height, resized_width)
 
 
-# pylint: disable-next=redefined-builtin
 def window_partition_with_num_windows(
+    # pylint: disable-next=redefined-builtin
     input: Tensor,
     num_windows: int,
-) -> Tuple[Tensor, Tuple[int, int]]:
+) -> tuple[Tensor, tuple[int, int]]:
     """Partitions input tensor into non-overlapping windows with given number of windows (cropping).
     Args:
         input: The input Tensor with shape (batch, height, width, dim).
@@ -93,8 +100,8 @@ def window_partition_with_num_windows(
 def window_unpartition_with_window_size(
     windows: Tensor,
     window_size: int,
-    resized_hw: Tuple[int, int],
-    original_hw: Tuple[int, int],
+    resized_hw: tuple[int, int],
+    original_hw: tuple[int, int],
 ) -> Tensor:
     """Unpartition window tensor into original sequences and remove padding given window size.
     Args:
@@ -132,8 +139,8 @@ def window_unpartition_with_window_size(
 def window_unpartition_with_num_windows(
     windows: Tensor,
     num_windows: int,
-    resized_hw: Tuple[int, int],
-    original_hw: Tuple[int, int],
+    resized_hw: tuple[int, int],
+    original_hw: tuple[int, int],
 ) -> Tensor:
     """Unpartition window tensor into original sequences and remove padding given number of windows.
     Args:

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests for detection_generator.py."""
 import random
 

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests image input modules."""
 # pylint: disable=no-member,no-self-use
 import jax.numpy as jnp
@@ -35,7 +37,7 @@ class BaseImagenetInputTest(parameterized.TestCase):
         cfg.source.set(
             dataset_name="imagenet2012",
             split="train",
-            shuffle_buffer_size=100 if is_training else 0,
+            train_shuffle_buffer_size=100,
         )
         cfg.batcher.set(global_batch_size=8)
         return cfg
@@ -53,12 +55,13 @@ class BaseImagenetInputTest(parameterized.TestCase):
         return cfg
 
     def _test_fake_input(
-        self, dataset, is_training, eval_resize, augment_name, erasing_probability
+        self, dataset, is_training, eval_resize, augment_name, erasing_probability, use_whitening
     ):
         cfg = self._build_input_config(dataset, is_training=is_training)
         cfg.processor.eval_resize = eval_resize
         cfg.processor.augment_name = augment_name
         cfg.processor.erasing_probability = erasing_probability
+        cfg.processor.use_whitening = use_whitening
         if not is_training:
             cfg.source.set(total_num_examples=40)
         cfg.batcher.set(global_batch_size=8)
@@ -152,11 +155,16 @@ class ImagenetInputTest(BaseImagenetInputTest):
         eval_resize=(None, (256, 256)),
         augment_name=(None, "randaugment"),
         erasing_probability=(None, 0.25),
+        use_whitening=(False, True),
     )
-    def test_fake_input(self, dataset, is_training, eval_resize, augment_name, erasing_probability):
+    def test_fake_input(
+        self, dataset, is_training, eval_resize, augment_name, erasing_probability, use_whitening
+    ):
         if dataset == "imagenetv2" and is_training:
             return  # imagenetv2 is only used for testing.
-        self._test_fake_input(dataset, is_training, eval_resize, augment_name, erasing_probability)
+        self._test_fake_input(
+            dataset, is_training, eval_resize, augment_name, erasing_probability, use_whitening
+        )
 
     @parameterized.product(
         dataset=("imagenet",),

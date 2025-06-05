@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/vision_transformer:
+# Copyright 2023 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/deit:
+# Copyright (c) 2015-present, Facebook, Inc. All rights reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Vision transformer layers.
 
 References:
@@ -7,7 +19,7 @@ References:
 # pylint: disable=duplicate-code
 import copy
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 import jax.nn
 import numpy as np
@@ -15,6 +27,7 @@ from jax import numpy as jnp
 
 from axlearn.common import param_init
 from axlearn.common.attention import (
+    BaseStackedTransformerLayer,
     LearnedPositionalEmbedding,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
@@ -22,15 +35,9 @@ from axlearn.common.attention import (
     scaled_hidden_dim,
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    InstantiableConfig,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.convolution import Conv2D
 from axlearn.common.layers import (
-    Conv2D,
     Dropout,
     DropToken,
     L2Norm,
@@ -52,7 +59,7 @@ def sequence_to_space_with_scaling(
     *,
     num_cls_tokens: int,
     target_len: Optional[int] = None,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """A method to convert a 1D sequence features to 2D space features with 2D scaling.
 
     Inspired from https://github.com/facebookresearch/deit/blob/main/main.py#L284-L302.
@@ -99,7 +106,7 @@ class ConvertToSequence(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures ConvertToSequence."""
 
-        patch_size: Tuple[int, int] = (16, 16)  # The 2-D patch size.
+        patch_size: tuple[int, int] = (16, 16)  # The 2-D patch size.
         input_dim: Required[int] = REQUIRED  # The input feature dim.
         output_dim: Required[int] = REQUIRED  # The output feature dim.
         conv: InstantiableConfig = Conv2D.default_config().set(
@@ -109,7 +116,7 @@ class ConvertToSequence(BaseLayer):
             param_partition_spec=(None, None, None, "model"),
         )
         # The stride for patching. This defaults to the patch size.
-        stride: Optional[Tuple[int, int]] = None
+        stride: Optional[tuple[int, int]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -158,7 +165,7 @@ class Encoder1D(BaseLayer):
         # Positional embedding config.
         pos_emb: InstantiableConfig = LearnedPositionalEmbedding.default_config()
         # The transformer layer stack config.
-        transformer: InstantiableConfig = StackedTransformerLayer.default_config()
+        transformer: BaseStackedTransformerLayer.Config = StackedTransformerLayer.default_config()
         # The normalization layer config for encoder output.
         output_norm: InstantiableConfig = layer_norm_config()
         # The DropToken layer proposed in the FLIP paper.
@@ -174,7 +181,7 @@ class Encoder1D(BaseLayer):
         # pylint: disable=no-member
         # https://github.com/google-research/vision_transformer/blob/dc8ddbcdeefd281d6cc7fea0c97355495688ca9c/vit_jax/models.py#L189
         if cfg.use_pos_emb:
-            cfg.pos_emb.param_init = config_for_class(GaussianInitializer).set(std=0.02)
+            cfg.pos_emb.param_init = GaussianInitializer.default_config().set(std=0.02)
         # Vision transformer uses 'gelu' and dropout=0.1 by default.
         set_dropout_rate_recursively(cfg, dropout_rate=0.1)
         transformer_layer_cfg = cfg.transformer.layer
@@ -316,20 +323,20 @@ class VisionTransformer(BaseLayer):
             return cfg.output_proj.output_dim
         return cfg.output_dim
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         param_specs = {}
         if cfg.num_cls_tokens:
             param_specs["cls_token"] = ParameterSpec(
                 shape=(1, cfg.num_cls_tokens, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.ConstantInitializer(0.0),
+                initializer=param_init.constant_initializer(0.0),
             )
         if cfg.use_mask_tokens:
             param_specs["mask_token"] = ParameterSpec(
                 shape=(1, 1, cfg.output_dim),
                 mesh_axes=(None, None, "model"),
-                initializer=param_init.GaussianInitializer(std=0.02),
+                initializer=param_init.gaussian_initializer(std=0.02),
             )
         return param_specs
 
@@ -349,12 +356,12 @@ class VisionTransformer(BaseLayer):
         if cfg.output_proj_norm:
             self._add_child("output_proj_norm", cfg.output_proj_norm)
 
-    def forward(self, image: Tensor, is_masked: Optional[Tensor] = None) -> Dict[str, Tensor]:
+    def forward(self, image: Tensor, is_masked: Optional[Tensor] = None) -> dict[str, Tensor]:
         """Compute prediction on an image.
 
         Args:
             image: The input image. Shape: (batch, height, width, channels).
-            is_masked: a boolen Tensor in shape (batch, length), representing masked positions
+            is_masked: a boolean Tensor in shape (batch, length), representing masked positions
                 for the patchifie input sequence.
 
         Returns:
@@ -408,7 +415,7 @@ class VisionTransformer(BaseLayer):
         return outputs
 
     @property
-    def endpoints_dims(self) -> Dict[str, int]:
+    def endpoints_dims(self) -> dict[str, int]:
         """A dict of {str: hidden_dim} specifies dimension of intermediate and output features."""
         cfg = self.config
         patch_size = cfg.visual_embed.convert_to_sequence.patch_size[0]
@@ -464,15 +471,15 @@ _NAMED_VIT_MODELS = {
 
 
 def _set_model_config(
-    cfg,
+    cfg: VisionTransformer.Config,
     *,
     num_layers: int,
     model_dim: int,
     num_heads: int,
     feed_forward_dim: Optional[int] = None,
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
-    stride: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
+    stride: Optional[tuple[int, int]] = None,
     # One of ["cls_token", "cls_distill_token", "gap"].
     global_feature_extraction: str = "cls_token",
     dtype: jnp.dtype = jnp.float32,
@@ -521,12 +528,15 @@ def _set_model_config(
     encoder_cfg.use_pos_emb = use_pos_emb
     if use_pos_emb:
         encoder_cfg.pos_emb.shape = (seq_len,)
+
+    # pylint: disable=attribute-error
     if feed_forward_dim is not None:
         encoder_cfg.transformer.layer.feed_forward.hidden_dim = feed_forward_dim
     encoder_cfg.transformer.layer.self_attention.attention.num_heads = num_heads
 
     if atten_logit_cap is not None:
         encoder_cfg.transformer.layer.self_attention.attention.atten_logit_cap = atten_logit_cap
+    # pylint: enable=attribute-error
 
     set_dropout_rate_recursively(cfg, dropout_rate)
     if peak_stochastic_depth_rate is not None:
@@ -547,9 +557,9 @@ def build_vit_model_config(**kwargs):
 
 def named_model_configs(
     *,
-    extra_settings: Optional[Dict[str, Any]] = None,
-    include_models: Optional[List[str]] = None,  # If set, only get models configs in the list.
-) -> Dict[str, InstantiableConfig]:
+    extra_settings: Optional[dict[str, Any]] = None,
+    include_models: Optional[list[str]] = None,  # If set, only get models configs in the list.
+) -> dict[str, InstantiableConfig]:
     # Avoid modifying `_NAMED_VIT_MODELS` in place.
     models = copy.deepcopy(_NAMED_VIT_MODELS)
     # Large ViT models with RepeatedTransformerLayer.

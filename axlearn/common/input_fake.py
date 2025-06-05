@@ -1,23 +1,30 @@
+# Copyright © 2023 Apple Inc.
+
 """Fake input modules."""
+
 import json
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from collections.abc import Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import jax
 import numpy as np
 import tensorflow as tf
 
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.input_tf_data import BuildDatasetFn
-from axlearn.common.module import Module
-from axlearn.common.utils import as_tensor
+from axlearn.common.input_base import Input
+from axlearn.common.utils import Nested, Tensor, as_numpy_array, as_tensor
+
+if TYPE_CHECKING:
+    # TODO(markblee): replace with generic "dataset" definition
+    from axlearn.common.input_tf_data import BuildDatasetFn
 
 
-class FakeTextInput(Module):
-    """Produces fake text inputs."""
+class EmptyInput(Input):
+    """Produces empty inputs."""
 
     @config_class
-    class Config(Module.Config):
-        """Configures FakeTextInput."""
+    class Config(Input.Config):
+        """Configures EmptyInput."""
 
         is_training: Required[bool] = REQUIRED
         global_batch_size: Required[int] = REQUIRED  # The global batch size.
@@ -41,10 +48,14 @@ class FakeTextInput(Module):
         return self
 
     def dataset(self):
-        return self.__iter__()
+        return self.__iter__()  # pylint: disable=unnecessary-dunder-call
+
+    def batches(self, it: tf.data.Iterator) -> Iterable[Nested[Tensor]]:
+        for input_batch in it:
+            yield as_numpy_array(input_batch)
 
 
-class FakeLmInput(FakeTextInput):
+class FakeLmInput(EmptyInput):
     """Produces fake language modeling inputs."""
 
     def __next__(self):
@@ -75,33 +86,11 @@ class FakeLmInput(FakeTextInput):
         )
 
 
-class FakeRlInput(FakeTextInput):
-    """Returns fake observations for RL training."""
-
-    def __next__(self):
-        cfg = self.config
-        self._num_batches += 1
-        if cfg.total_num_batches is not None and self._num_batches > cfg.total_num_batches:
-            raise StopIteration()
-        self._prng_key, observations_key = jax.random.split(self._prng_key, 2)
-        if cfg.global_batch_size <= 0 or cfg.global_batch_size % jax.process_count() != 0:
-            raise ValueError(
-                f"Global batch size ({cfg.global_batch_size}) "
-                f"must be positive and divisible by process count ({jax.process_count()})"
-            )
-        batch_size = cfg.global_batch_size // jax.process_count()
-        observations = jax.random.uniform(
-            observations_key,
-            shape=[batch_size, cfg.source_length],
-        )
-        return as_tensor(dict(observations=observations))
-
-
-class FakeSeq2SeqInput(FakeTextInput):
+class FakeSeq2SeqInput(EmptyInput):
     """Produces fake sequence-to-sequence inputs."""
 
     @config_class
-    class Config(FakeTextInput.Config):
+    class Config(EmptyInput.Config):
         target_length: int = 1024  # The length of a target sequence (in tokens).
 
     def __next__(self):
@@ -140,11 +129,11 @@ class FakeSeq2SeqInput(FakeTextInput):
         )
 
 
-class FakeSequenceClassificationInput(FakeTextInput):
+class FakeSequenceClassificationInput(EmptyInput):
     """Produces fake sequence classification inputs."""
 
     @config_class
-    class Config(FakeTextInput.Config):
+    class Config(EmptyInput.Config):
         """Configures FakeSequenceClassificationInput."""
 
         num_labels: int = 2  # The number of different classes.
@@ -183,7 +172,7 @@ class FakeSequenceClassificationInput(FakeTextInput):
         )
 
 
-class FakeExtractiveQuestionAnsweringInput(FakeTextInput):
+class FakeExtractiveQuestionAnsweringInput(EmptyInput):
     """Produces fake extractive QA inputs."""
 
     def __next__(self):
@@ -235,18 +224,17 @@ class FakeExtractiveQuestionAnsweringInput(FakeTextInput):
 
 def fake_source(
     is_training: bool,
-    examples: Sequence[Dict[str, tf.Tensor]],
+    examples: Sequence[dict[str, tf.Tensor]],
     repeat: int = 1,
-    spec: Optional[Dict[str, tf.TypeSpec]] = None,
+    spec: Optional[dict[str, tf.TypeSpec]] = None,
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     if len(examples) == 0:
         raise ValueError("examples cannot be empty")
 
     def data_gen():
         for _ in range(repeat):
-            for e in examples:
-                yield e
+            yield from examples
 
     def fn() -> tf.data.Dataset:
         ds = tf.data.Dataset.from_generator(
@@ -268,22 +256,25 @@ def fake_source(
 def fake_text_source(
     *,
     text_field_name: str = "text",
+    repeat: int = 1,
     is_training: bool,
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+    batch_size: int = 2,
+) -> "BuildDatasetFn":
     return fake_source(
         is_training=is_training,
         examples=[
             {
                 text_field_name: ("train" if is_training else "eval") + f" text {ix}",
             }
-            for ix in range(2 * 2 if is_training else 2)
+            for ix in range(2 * batch_size if is_training else batch_size)
         ],
         shuffle_buffer_size=shuffle_buffer_size,
+        repeat=repeat,
     )
 
 
-def fake_serialized_json_source(examples: Sequence[Dict[str, Any]]) -> BuildDatasetFn:
+def fake_serialized_json_source(examples: Sequence[dict[str, Any]]) -> "BuildDatasetFn":
     """Returns a BuildDatasetFn that returns a dataset of jsonlines of examples.
 
     Args:
@@ -313,7 +304,7 @@ def fake_text2text_source(
     target_key: str = "target_text",
     is_training: bool,
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     return fake_source(
         is_training=is_training,
         examples=[
@@ -329,14 +320,14 @@ def fake_text2text_source(
 
 def fake_glue_source(
     *,
-    input_key: Union[str, Tuple[str, str]],
+    input_key: Union[str, tuple[str, str]],
     label_key: str,
     is_training: bool,
     label_value: Union[int, Sequence[int]] = 0,
     num_examples: Optional[int] = None,
     shuffle_buffer_size: Optional[int] = None,
-    spec: Optional[Dict[str, tf.TypeSpec]] = None,
-) -> BuildDatasetFn:
+    spec: Optional[dict[str, tf.TypeSpec]] = None,
+) -> "BuildDatasetFn":
     if isinstance(input_key, str):
         input_key = [input_key]
     if num_examples is None:
@@ -364,7 +355,7 @@ def fake_classification_source(
     is_training: bool,
     classes: Sequence[str],
     shuffle_buffer_size: Optional[int] = None,
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     num_classes = len(classes)
     return fake_source(
         is_training=is_training,
@@ -388,7 +379,7 @@ def fake_classification_source_instruct_lm(
     shuffle_buffer_size: Optional[int] = None,
     eoa_text: str = "<eoa>",
     eob_text: str = "<eob>",
-) -> BuildDatasetFn:
+) -> "BuildDatasetFn":
     """Returns a BuildDatasetFn containing fake classification examples in the InstructLM format.
 
     Args:
@@ -422,3 +413,65 @@ def fake_classification_source_instruct_lm(
         ],
         shuffle_buffer_size=shuffle_buffer_size,
     )
+
+
+def fake_speech_source(
+    *,
+    is_training: bool,
+    max_len: int = 100,
+    num_examples: int = 100,
+    speech_key: str = "speech",
+    shuffle_buffer_size: Optional[int] = None,
+) -> "BuildDatasetFn":
+    """Fake speech data source.
+
+    Args:
+        is_training: A boolean indicating whether it is in the training mode.
+        max_len: Maximum sequence length (in samples) for generated speech data.
+        num_examples: Integer of number of examples in the dataset.
+        speech_key: Key name for the audio field in each example dict.
+        shuffle_buffer_size: Shuffle buffer size used for training.
+
+    Returns:
+        A BuildDatasetFn producing fake examples with `speech_key` with random integer values
+        (assuming 16 bit-depth).
+    """
+    return fake_source(
+        is_training=is_training,
+        examples=[
+            {
+                speech_key: jax.random.randint(
+                    jax.random.PRNGKey(ix),
+                    minval=-(2**15),
+                    maxval=2**15,
+                    shape=[min(max_len // 2 + ix, max_len)],
+                ),
+            }
+            for ix in range(num_examples)
+        ],
+        shuffle_buffer_size=shuffle_buffer_size,
+        spec={speech_key: tf.TensorSpec(shape=(None,), dtype=tf.int16)},
+    )
+
+
+def fake_grain_source(
+    examples: Sequence[Any],
+    *,
+    repeat: Optional[int] = 1,
+    shuffle_seed: Optional[int] = None,
+):
+    """Returns a fake grain input source."""
+
+    if len(examples) == 0:
+        raise ValueError("Input examples cannot be empty.")
+
+    # Lazy import to avoid introducing a global dependency.
+    # pylint: disable-next=import-outside-toplevel
+    from grain._src.python.dataset.transformations import source
+
+    ds = source.SourceMapDataset(examples)
+    if shuffle_seed is not None:
+        ds = ds.seed(shuffle_seed)
+        ds = ds.shuffle()  # Uses the configured seed, if provided.
+    ds = ds.repeat(num_epochs=repeat)
+    return ds

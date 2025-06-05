@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Sampling Ops."""
 from dataclasses import dataclass
 
@@ -5,10 +7,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from axlearn.common.module import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
-def sample(*, is_candidate: Tensor, size: Tensor, prng_key: jax.random.KeyArray) -> Tensor:
+def sample(*, is_candidate: Tensor, size: Tensor, prng_key: Tensor) -> Tensor:
     """Samples candidate elements.
 
     Samples `size` elements along the last axis and returns a boolean tensor indicating their
@@ -72,9 +74,7 @@ class LabelSampler:
         self.background_label = background_label
         self.ignore_label = ignore_label
 
-    def __call__(
-        self, *, labels: Tensor, paddings: Tensor, prng_key: jax.random.KeyArray
-    ) -> LabelSamples:
+    def __call__(self, *, labels: Tensor, paddings: Tensor, prng_key: Tensor) -> LabelSamples:
         """Samples foreground and background labels at the specified rate.
 
         Avoids sampling `ignore` labels and padding.
@@ -89,7 +89,7 @@ class LabelSampler:
         """
         prng_key1, prng_key2 = jax.random.split(prng_key, num=2)
         foreground_candidates = (
-            ~paddings & (labels != self.ignore_label) & (labels != self.background_label)
+            safe_not(paddings) & (labels != self.ignore_label) & (labels != self.background_label)
         )
         num_foreground = jnp.minimum(jnp.sum(foreground_candidates, axis=-1), self.num_foreground)
         foreground_samples = sample(
@@ -97,7 +97,7 @@ class LabelSampler:
             size=num_foreground,
             prng_key=prng_key1,
         )
-        background_candidates = ~paddings & (labels == self.background_label)
+        background_candidates = safe_not(paddings) & (labels == self.background_label)
         num_background = self.size - num_foreground
         background_samples = sample(
             is_candidate=background_candidates,
@@ -106,5 +106,5 @@ class LabelSampler:
         )
         samples = foreground_samples | background_samples
         _, indices = jax.lax.top_k(samples, k=self.size)
-        paddings = ~(jnp.take_along_axis(samples, indices, axis=-1))
+        paddings = jnp.bitwise_not(jnp.take_along_axis(samples, indices, axis=-1))
         return LabelSamples(indices=indices, paddings=paddings)

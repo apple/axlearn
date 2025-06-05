@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests normalization utils."""
 import jax.numpy as jnp
 import numpy as np

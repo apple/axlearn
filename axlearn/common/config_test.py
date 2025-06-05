@@ -1,32 +1,37 @@
+# Copyright © 2023 Apple Inc.
+
 """Unittests for config.py."""
-# pylint: disable=too-many-public-methods
+
+# pylint: disable=too-many-public-methods,protected-access
 import collections
 import copy
 import dataclasses
+import math
+import typing
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional, Union
 
 import attr
+import attrs
 import numpy as np
-import tensorflow_datasets as tfds
 import wrapt
-from absl.testing import absltest
-from jax import numpy as jnp
+from absl.testing import absltest, parameterized
 
 from axlearn.common import config
-from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
     Configurable,
     InstantiableConfig,
     Required,
+    RequiredFieldMissingError,
     config_class,
     maybe_set_config,
+    validate_config_field_value,
 )
 
 
-class ConfigTest(absltest.TestCase):
+class ConfigTest(parameterized.TestCase):
     def test_missing_decorator(self):
         """Tests config class without the @config_class decorator."""
         with self.assertRaisesRegex(config.MissingConfigClassDecoratorError, "@config_class"):
@@ -64,7 +69,95 @@ class ConfigTest(absltest.TestCase):
             class Config(ConfigBase):
                 foo = 10
 
-            _ = Config()
+            del Config
+
+    def test_non_config_field_with_inheritance(self):
+        """Repeat test_non_config_field test but with inherited class.
+
+        We need to make sure that overriding attributes (including functions) without typehints
+        result in failures.
+        """
+
+        @config_class
+        class PConfig(ConfigBase):
+            foo: int = 10
+
+        # Check overriding attribute without typehints result in failure.
+        with self.assertRaisesRegex(config.NonConfigFieldError, "foo"):
+
+            @config_class
+            class CConfig1(PConfig):
+                foo = 10
+
+            del CConfig1
+
+        # Check that no new __annotation__ doesn't result in failures.
+        @config_class
+        class CConfig2(PConfig):
+            pass
+
+        _ = CConfig2()
+
+        # Check that overriding with a normal function without typehints results in failure.
+        with self.assertRaisesRegex(config.NonConfigFieldError, "foo"):
+
+            def f():
+                pass
+
+            @config_class
+            class CConfig3(PConfig):
+                foo = f
+
+            del CConfig3
+
+        # Check that overriding with a fake class instance method without typehints raises an error.
+        with self.assertRaisesRegex(config.NonConfigFieldError, "foo"):
+
+            def fake_foo(self):
+                print(self)
+
+            @config_class
+            class CConfig4(PConfig):
+                foo = fake_foo
+
+            del CConfig4
+
+        # Check that callable classes with `self` are caught.
+        with self.assertRaisesRegex(config.NonConfigFieldError, "foo"):
+
+            @dataclasses.dataclass
+            class CallableClass:
+                def my_fn(self):
+                    del self
+
+            @config_class
+            class CConfig5(PConfig):
+                foo = CallableClass()
+
+            del CConfig5
+
+        # Use lambda defined in the class to fake a class instance method.
+        with self.assertRaisesRegex(config.NonConfigFieldError, "foo"):
+
+            @config_class
+            class CConfig6(PConfig):
+                foo = lambda self: self
+
+            del CConfig6
+
+        # Check that overriding existing class instance methods are fine.
+        @config_class
+        class CConfig7(ConfigBase):
+            def set(self, **kwargs):
+                pass
+
+        _ = CConfig7()
+
+        # Check that attributes set after-the-fact are still caught.
+        with self.assertRaisesRegex(config.NonConfigFieldError, "other_field"):
+            CConfig7.other_field = 1
+
+            _ = CConfig7()
 
     def test_definition(self):
         @config_class
@@ -77,7 +170,7 @@ class ConfigTest(absltest.TestCase):
         self.assertEmpty(cfg.items())
         self.assertNotIn("num_layers", cfg)
         self.assertEqual(
-            "<class 'axlearn.common.config.config_class("
+            "<class 'axlearn.common.config_test.config_class("
             f"{ConfigTest.__module__}.ConfigTest.test_definition.<locals>.EmptyConfig"
             ")'>",
             str(type(cfg)),
@@ -93,11 +186,14 @@ class ConfigTest(absltest.TestCase):
         self.assertEqual([("num_layers", 10)], cfg.items())
         self.assertIn("num_layers", cfg)
         self.assertEqual(10, cfg.num_layers)
+        cfg.num_layers = 12
+        self.assertEqual(12, cfg.num_layers)
+        self.assertEqual(10, attr.fields(type(cfg)).num_layers.default)
 
     def test_mutable_values(self):
         @config_class
         class Config(ConfigBase):
-            list_value: List = []
+            list_value: list = []
 
         # Different Config instances do not share the default value instance.
         cfg1 = Config()
@@ -107,7 +203,7 @@ class ConfigTest(absltest.TestCase):
         self.assertSequenceEqual(cfg1.list_value, [123])
         self.assertSequenceEqual(cfg2.list_value, [])
 
-        mutable_list: List = [1, 2, [3]]
+        mutable_list: list = [1, 2, [3]]
         cfg2.list_value = mutable_list
         # Assignment to a config field is by value.
         self.assertSequenceEqual(cfg2.list_value, [1, 2, [3]])
@@ -120,7 +216,7 @@ class ConfigTest(absltest.TestCase):
     def test_config_inheritance(self):
         @config_class
         class BaseLayerConfig(ConfigBase):
-            dtype: jnp.dtype = jnp.float32
+            dtype: np.dtype = np.float32
 
         @config_class
         class LayerNormConfig(BaseLayerConfig):
@@ -129,7 +225,7 @@ class ConfigTest(absltest.TestCase):
         cfg: LayerNormConfig = LayerNormConfig(dim=16)  # pylint: disable=unexpected-keyword-arg
         self.assertIsInstance(cfg, BaseLayerConfig)
         self.assertEqual(16, cfg.dim)
-        self.assertEqual(jnp.float32, cfg.dtype)
+        self.assertEqual(np.float32, cfg.dtype)
 
     def test_config_inheritance_field_redefinition(self):
         @config_class
@@ -224,7 +320,7 @@ class ConfigTest(absltest.TestCase):
     def test_value_types(self):
         @config_class
         class TestConfig(ConfigBase):
-            sub: Optional[List] = None
+            sub: Optional[Any] = None
 
         cfg = TestConfig()
         # Config field values can be a list.
@@ -348,6 +444,12 @@ class ConfigTest(absltest.TestCase):
         self.assertEqual(8, model_cfg.decoder.num_layers)
 
     def test_required_values(self):
+        self.assertEqual("REQUIRED", str(REQUIRED))
+        self.assertEqual("REQUIRED", repr(REQUIRED))
+        self.assertFalse(REQUIRED)
+        self.assertIs(REQUIRED, REQUIRED)
+        self.assertEqual(REQUIRED, REQUIRED)
+
         class Layer(Configurable):
             @config_class
             class Config(Configurable.Config):
@@ -388,11 +490,12 @@ class ConfigTest(absltest.TestCase):
 
         cfg = config.config_for_class(Layer)
         self.assertEqual(
-            f"config_for_class({Layer.__module__}.{Layer.__qualname__})", type(cfg).__name__
+            f"config_for_class({Layer.__module__}.{Layer.__qualname__})",
+            type(cfg).__name__,
         )
         self.assertIsInstance(cfg, config.InstantiableConfig)
-        self.assertContainsSubset({"cls", "in_features", "out_features", "bias"}, cfg.keys())
-        self.assertEqual(cfg.cls, Layer)
+        self.assertContainsSubset({"klass", "in_features", "out_features", "bias"}, cfg.keys())
+        self.assertEqual(cfg.klass, Layer)
         self.assertIsInstance(cfg.in_features, config.RequiredFieldValue)
         self.assertIsInstance(cfg.out_features, config.RequiredFieldValue)
         self.assertTrue(
@@ -413,8 +516,27 @@ class ConfigTest(absltest.TestCase):
 
         self.assertEqual(param_shapes(layer1), param_shapes(layer2))
 
+    def test_class_with_tensor_fields(self):
+        @dataclasses.dataclass
+        class Bias:
+            shape: tuple[int, ...]
+            target_positions: np.ndarray
+            source_positions: Optional[np.ndarray] = None
+
+        cfg = config.config_for_class(Bias).set(shape=[1, 2])
+        target_positions = np.asarray([0, 1])
+        source_positions = np.asarray([2, 3])
+        bias = cfg.instantiate(target_positions=target_positions, source_positions=source_positions)
+        np.testing.assert_array_equal(bias.target_positions, target_positions)
+        np.testing.assert_array_equal(bias.source_positions, source_positions)
+        with self.assertRaisesRegex(RequiredFieldMissingError, "target_positions"):
+            cfg.instantiate(source_positions=source_positions)
+
     def test_instantiable_config_from_function_signature(self):
-        cfg = config.config_for_function(tfds.load)
+        def load(name: str, *, split: Optional[str] = None, download: bool = True):
+            del name, split, download
+
+        cfg = config.config_for_function(load)
         self.assertIsInstance(cfg, config.InstantiableConfig)
         self.assertContainsSubset({"fn", "name", "split", "download"}, cfg.keys())
         self.assertIsInstance(cfg.name, config.RequiredFieldValue)
@@ -443,10 +565,78 @@ class ConfigTest(absltest.TestCase):
         cfg.var_kwargs = {"a": 1, "b": 2}
         self.assertEqual(cfg.var_kwargs, cfg.instantiate())
 
-        with self.assertRaisesRegex(ValueError, "already specified"):
-            self.assertEqual(cfg.var_kwargs, cfg.instantiate(a=3))
+        # Override the value of 'a' during instantiate().
+        self.assertEqual({"a": 3, "b": 2}, cfg.instantiate(a=3))
 
-    def test_to_dict(self):
+    @parameterized.parameters(
+        # Test some basic cases.
+        dict(kwargs=dict(x="x", y="y", z="z"), expected=("x", "y", "z")),
+        # Test configuring a builtin function.
+        dict(fn=pow, kwargs=dict(base=2, exp=3), expected=8),
+        # Test raising when attempting to configure positional-only args. They currently can't be
+        # reliably configured, as ordering may be lost.
+        # TODO(markblee): Add support for positional args.
+        dict(
+            fn=math.pow,
+            kwargs=dict(x=2, y=3),
+            expected=NotImplementedError("param kind POSITIONAL_ONLY"),
+        ),
+        # Not enough args, will fail when instantiating the config.
+        dict(
+            kwargs=dict(x="x", y="y"),
+            expected=RequiredFieldMissingError("required field .* z"),
+        ),
+        # Test configuring a function with `fn` as an arg.
+        dict(
+            fn=lambda fn: fn + 1,
+            kwargs=dict(fn=1),
+            expected=ValueError("'fn' parameter"),
+        ),
+        # Test configuring a function with `_` as an arg.
+        dict(fn=lambda _: 1, kwargs=dict(x=2), expected=ValueError("'_' parameter")),
+    )
+    def test_config_for_function(self, kwargs, fn=None, expected=None):
+        if fn is None:
+            fn = lambda x, y, z: (x, y, z)
+
+        def build_and_invoke():
+            cfg = config.config_for_function(fn)
+            return cfg.set(**kwargs).instantiate()
+
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                build_and_invoke()
+        else:
+            self.assertEqual(build_and_invoke(), expected)
+
+    def test_function_with_tensor_fields(self):
+        def fn(axis: int, x: np.ndarray) -> np.ndarray:
+            return x.sum(axis=axis)
+
+        cfg = config.config_for_function(fn).set(axis=0)
+        x = np.asarray([[0, 1, 3], [2, 5, 7]])
+        np.testing.assert_array_equal([2, 6, 10], cfg.instantiate(x=x))
+        with self.assertRaisesRegex(RequiredFieldMissingError, "x"):
+            cfg.instantiate()
+
+    def test_config_for_function_has_type_information(self):
+        """Tests that type information is available when using `config_for_function`."""
+
+        # pylint: disable-next=unused-argument
+        def fn(w: int, x: str, y: Union[int, str], z: Required[float]):
+            pass
+
+        cfg = config.config_for_function(fn)
+        fields = attrs.fields(cfg.__class__)
+        fields_dict = {field.name: field.type for field in fields}
+        self.assertEqual(set(fields_dict.keys()), {"fn", "w", "x", "y", "z"})
+        # collections.abc.Callable is apparently not equal to typing.Callable.
+        # For forward compatibility, we just check the name.
+        self.assertEqual(typing.get_origin(fields_dict["fn"]).__name__, "Callable")
+        del fields_dict["fn"]
+        self.assertEqual(fields_dict, dict(w=int, x=str, y=Union[int, str], z=Required[float]))
+
+    def test_to_dict_and_debug_string(self):
         def fn_with_args(*args):
             return list(args)
 
@@ -455,14 +645,22 @@ class ConfigTest(absltest.TestCase):
             name: str
             age: int
 
+        @dataclasses.dataclass
+        class Cat:
+            name: str
+            bleed: Optional[str] = None
+            adopted: Optional[bool] = True
+
         @config_class
         class TestConfigA(ConfigBase):
             num_layers: int = 10
-            extra: Dict[str, int] = {"alpha": 1, "beta": 2}
+            extra: dict[str, int] = {"alpha": 1, "beta": 2}
             required_int: Required[int] = REQUIRED
             fn: InstantiableConfig = config.config_for_function(fn_with_args).set(args=[1, 2, 3])
             person: Person = Person("Johnny Appleseed", 30)  # pytype: disable=invalid-annotation
             person_cls: type = Person
+            notes: Optional[str] = None
+            cats: list[Cat] = [Cat(name="Ross", adopted=True)]  # pytype: disable=invalid-annotation
 
         @config_class
         class TestConfigB(ConfigBase):
@@ -471,10 +669,10 @@ class ConfigTest(absltest.TestCase):
         @config_class
         class TestConfigC(ConfigBase):
             foo: str = "hello world"
-            bar: List[str] = ["a", "b", "c"]
+            bar: list[str] = ["a", "b", "c"]
             my_config: TestConfigA = TestConfigA()  # pytype: disable=invalid-annotation
-            config_dict: Dict[str, InstantiableConfig] = {"config_b": TestConfigB()}
-            config_list: List[InstantiableConfig] = [TestConfigB(), TestConfigB().set(count=1)]
+            config_dict: dict[str, ConfigBase] = {"config_b": TestConfigB()}
+            config_list: list[ConfigBase] = [TestConfigB(), TestConfigB().set(count=1)]
             config_type: type = ConfigTest
             config_func: Callable = config.similar_names
 
@@ -492,12 +690,126 @@ class ConfigTest(absltest.TestCase):
                     "fn": {"args": [1, 2, 3], "fn": None},
                     "person": {"name": "Johnny Appleseed", "age": 30},
                     "person_cls": "axlearn.common.config_test.Person",
+                    "cats": [{"name": "Ross"}],
                 },
                 "config_dict": {"config_b": {"count": 5}},
                 "config_list": [{"count": 5}, {"count": 1}],
                 "config_type": "axlearn.common.config_test.ConfigTest",
-                "config_func": "axlearn.common.utils.similar_names",
+                "config_func": "axlearn.common.config.similar_names",
             },
+        )
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_default_values=set()),
+            {
+                "bar[0]": "a",
+                "bar[1]": "b",
+                "bar[2]": "c",
+                "config_dict['config_b'].count": 5,
+                "config_func": config.similar_names,
+                "config_list[0].count": 5,
+                "config_list[1].count": 1,
+                "config_type": ConfigTest,
+                "foo": "hello world",
+                "my_config.extra['alpha']": 1,
+                "my_config.extra['beta']": 2,
+                "my_config.fn.args[0]": 1,
+                "my_config.fn.args[1]": 2,
+                "my_config.fn.args[2]": 3,
+                "my_config.fn.fn": fn_with_args,
+                "my_config.num_layers": 10,
+                "my_config.person['name']": "Johnny Appleseed",
+                "my_config.person['age']": 30,
+                "my_config.person_cls": Person,
+                "my_config.required_int": REQUIRED,
+                "my_config.notes": None,
+                "my_config.cats[0]['name']": "Ross",
+                "my_config.cats[0]['bleed']": None,
+                "my_config.cats[0]['adopted']": True,
+            },
+        )
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_default_values={None, REQUIRED}),
+            {
+                "bar[0]": "a",
+                "bar[1]": "b",
+                "bar[2]": "c",
+                "config_dict['config_b'].count": 5,
+                "config_func": config.similar_names,
+                "config_list[0].count": 5,
+                "config_list[1].count": 1,
+                "config_type": ConfigTest,
+                "foo": "hello world",
+                "my_config.extra['alpha']": 1,
+                "my_config.extra['beta']": 2,
+                "my_config.fn.args[0]": 1,
+                "my_config.fn.args[1]": 2,
+                "my_config.fn.args[2]": 3,
+                "my_config.fn.fn": fn_with_args,
+                "my_config.num_layers": 10,
+                "my_config.person['name']": "Johnny Appleseed",
+                "my_config.person['age']": 30,
+                "my_config.person_cls": Person,
+                "my_config.cats[0]['name']": "Ross",
+                "my_config.cats[0]['adopted']": True,
+                # REQUIRED/None are trivial default values and so are omitted.
+                # "my_config.required_int": REQUIRED,
+                # "my_config.notes": None,
+                # "my_config.cats[0]['bleed']": None,
+            },
+        )
+        self.assertEqual(
+            (
+                "bar[0]: 'a'\n"
+                "bar[1]: 'b'\n"
+                "bar[2]: 'c'\n"
+                "config_dict['config_b'].count: 5\n"
+                "config_func: 'axlearn.common.config.similar_names'\n"
+                "config_list[0].count: 5\n"
+                "config_list[1].count: 1\n"
+                "config_type: 'axlearn.common.config_test.ConfigTest'\n"
+                "foo: 'hello world'\n"
+                "my_config.cats[0]['name']: 'Ross'\n"
+                "my_config.cats[0]['adopted']: True\n"
+                "my_config.extra['alpha']: 1\n"
+                "my_config.extra['beta']: 2\n"
+                "my_config.fn.args[0]: 1\n"
+                "my_config.fn.args[1]: 2\n"
+                "my_config.fn.args[2]: 3\n"
+                "my_config.fn.fn: 'axlearn.common.config_test.fn_with_args'\n"
+                "my_config.num_layers: 10\n"
+                "my_config.person['name']: 'Johnny Appleseed'\n"
+                "my_config.person['age']: 30\n"
+                "my_config.person_cls: 'axlearn.common.config_test.Person'"
+            ),
+            cfg.debug_string(),
+        )
+
+    @parameterized.product(
+        omit_default_values=({None, REQUIRED}, {}),
+        default_value=(REQUIRED, None, False, 0, 0.0, ""),
+        set_value=(REQUIRED, None, False, 0, 0.0, ""),
+    )
+    def test_to_flat_dict_omit_default_values(
+        self, *, omit_default_values, default_value, set_value
+    ):
+        """Tests ConfigBase.to_flat_dict with omit_trivial_default_values=True."""
+
+        @config_class
+        class TestConfig(ConfigBase):
+            value: Any = default_value
+
+        cfg = TestConfig().set(value=set_value)
+        omit = default_value is set_value and default_value in omit_default_values
+        self.assertCountEqual(
+            cfg.to_flat_dict(omit_default_values=omit_default_values),
+            {} if omit else {"value": set_value},
+            msg=f"{default_value} vs. {set_value}",
+        )
+        # debug_string() omits trivial default values.
+        self.assertEqual(
+            cfg.debug_string(omit_default_values=omit_default_values),
+            "" if omit else f"value: {repr(set_value)}",
+            msg=f"{default_value} vs. {set_value}",
         )
 
     def test_to_dict_with_defaultdict(self):
@@ -505,7 +817,7 @@ class ConfigTest(absltest.TestCase):
 
         @config_class
         class TestConfigWithDefaultDict(ConfigBase):
-            something: Dict[str, Any] = defaultdict(lambda: 1)
+            something: dict[str, Any] = defaultdict(lambda: 1)
 
         cfg = TestConfigWithDefaultDict()
         out = cfg.to_dict()
@@ -530,18 +842,188 @@ class ConfigTest(absltest.TestCase):
         self.assertEqual("test", cfg.instantiate().x)
 
     def test_maybe_set_config(self):
-        cfg = BaseLayer.default_config()
+        @config_class
+        class ModuleConfig(ConfigBase):
+            vlog: Optional[int] = None
+
+        @config_class
+        class BaseLayerConfig(ModuleConfig):
+            dtype: np.dtype = np.float16
+
+        cfg = BaseLayerConfig()
 
         # Set the value if the key exists.
-        self.assertEqual(cfg.vlog, 0)
-        maybe_set_config(cfg, "vlog", 1)
+        self.assertIsNone(cfg.vlog)
+        maybe_set_config(cfg, vlog=1)
         self.assertEqual(cfg.vlog, 1)
 
         # Do nothing if the key does not exist.
         not_exist_key = "not_exist_field"
         self.assertFalse(hasattr(cfg, not_exist_key))
-        maybe_set_config(cfg, not_exist_key, 3)
+        maybe_set_config(cfg, **{not_exist_key: 3})
         self.assertFalse(hasattr(cfg, not_exist_key))
+
+        # Set multiple keys.
+        maybe_set_config(cfg, vlog=2, dtype=np.float32, not_exist_field=4)
+        self.assertEqual(cfg.vlog, 2)
+        self.assertEqual(cfg.dtype, np.float32)
+        self.assertFalse(hasattr(cfg, not_exist_key))
+
+    def test_validate_hf(self):
+        class HFLike:
+            def from_pretrained(self, *args):
+                del args
+
+            def to_dict(self, *args):
+                del args
+
+        # Note that hasattr(HFLike, "from_pretrained") == True.
+        validate_config_field_value(HFLike)
+        validate_config_field_value(HFLike())
+
+    def test_register_validator(self):
+        # Test validating a custom type.
+        class MyCustomType:
+            value: int = 0
+
+        @config_class
+        class MyConfig(ConfigBase):
+            custom: Any = MyCustomType()
+
+        # Validate that custom type initially is not accepted.
+        with self.assertRaises(config.InvalidConfigValueError):
+            validate_config_field_value(MyCustomType())
+        with self.assertRaises(config.InvalidConfigValueError):
+            MyConfig()
+
+        def validate_fn(v):
+            if v.value <= 0:
+                raise config.InvalidConfigValueError()
+
+        # Register custom validator.
+        config.register_validator(
+            match_fn=lambda v: isinstance(v, MyCustomType), validate_fn=validate_fn
+        )
+
+        # Test that validate_fn is invoked.
+        with self.assertRaises(config.InvalidConfigValueError):
+            validate_config_field_value(MyCustomType())
+        with self.assertRaises(config.InvalidConfigValueError):
+            MyConfig()
+
+        # Test that validation succeeds.
+        MyCustomType.value = 1
+        validate_config_field_value(MyCustomType())
+        MyConfig()
+
+        def raise_fn(v):
+            del v
+            raise config.InvalidConfigValueError()
+
+        # Check that all matched validators are invoked.
+        config.register_validator(
+            match_fn=lambda v: isinstance(v, MyCustomType), validate_fn=raise_fn
+        )
+
+        with self.assertRaises(config.InvalidConfigValueError):
+            validate_config_field_value(MyCustomType())
+        with self.assertRaises(config.InvalidConfigValueError):
+            MyConfig()
+
+    def test_override_set_get(self):
+        @config_class
+        class MyConfig(ConfigBase):
+            """A dummy config overriding setattr/getattr."""
+
+            a: Required[int] = REQUIRED
+
+            def __getattr__(self, name: str) -> Any:
+                try:
+                    return super().__getattr__(name)
+                except KeyError:
+                    return "default"
+
+            def set(self, **kwargs):
+                try:
+                    return super().set(**kwargs)
+                except config.UnknownFieldError:
+                    return self
+
+        cfg = MyConfig()
+        cfg.a = 123
+        self.assertEqual(123, cfg.a)
+        self.assertEqual("default", cfg.b)
+        cfg.set(b=345)
+        self.assertEqual(123, cfg.a)
+        self.assertEqual("default", cfg.b)
+        cfg_clone = cfg.clone(b=345)
+        self.assertEqual(123, cfg_clone.a)
+        self.assertEqual("default", cfg_clone.b)
+
+    def test_get_recursively(self):
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
+
+                value: int = 0
+
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
+
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
+
+        cfg = Test.default_config()
+
+        # Test getting nested value.
+        self.assertEqual(cfg.get_recursively(["nested", "value"]), 0)
+
+        # Test getting top-level value.
+        self.assertEqual(cfg.get_recursively(["value"]), 1)
+
+        # Test getting non-existent value.
+        with self.assertRaises(AttributeError):
+            cfg.get_recursively(["non_existent"])
+
+        # Test getting empty path, should return self.
+        self.assertEqual(cfg.get_recursively([]), cfg)
+
+    def test_set_recursively(self):
+        class Nested(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """A dummy config."""
+
+                value: int = 0
+
+        class Test(Configurable):
+            @config_class
+            class Config(Configurable.Config):
+                """Another dummy config that has a nested config."""
+
+                nested: Nested.Config = Nested.default_config()
+                value: int = 1
+
+        cfg = Test.default_config()
+
+        # Test setting nested value.
+        cfg.set_recursively(["nested", "value"], value=10)
+        self.assertEqual(cfg.nested.value, 10)
+
+        # Test setting top-level value.
+        cfg.set_recursively(["value"], value=5)
+        self.assertEqual(cfg.value, 5)
+
+        # Test setting non-existent value.
+        with self.assertRaises(AttributeError):
+            cfg.set_recursively(["non_existent"], value=20)
+
+        # Test setting empty path.
+        with self.assertRaises(ValueError):
+            cfg.set_recursively([], value=20)
 
 
 if __name__ == "__main__":

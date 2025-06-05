@@ -1,5 +1,12 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """R-CNN model implementations, e.g. as seen in https://arxiv.org/abs/1506.01497."""
-from typing import Dict, Tuple
 
 import jax.numpy as jnp
 
@@ -150,12 +157,12 @@ class FasterRCNN(BaseModel):
         self._add_child("rcnn_metric", cfg.rcnn_metric.clone(num_classes=cfg.num_classes))
         self._add_child("rpn_metric", cfg.rpn_metric)
 
-    def _extract_rpn_features(self, image: Tensor) -> Dict[int, Tensor]:
+    def _extract_rpn_features(self, image: Tensor) -> dict[int, Tensor]:
         backbone_features = self.backbone(image)
         multilevel_features = self.fpn(backbone_features)
         return multilevel_features
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> Tuple[None, Dict[str, Tensor]]:
+    def predict(self, input_batch: dict[str, Tensor]) -> tuple[None, dict[str, Tensor]]:
         """Runs prediction on images and returns post-processed outputs.
 
         Args:
@@ -208,7 +215,7 @@ class FasterRCNN(BaseModel):
         )
         return final_detections
 
-    def forward(self, input_batch: Dict[str, Tensor]) -> Tuple[Tensor, Dict[str, Tensor]]:
+    def forward(self, input_batch: dict[str, Tensor]) -> tuple[Tensor, dict[str, Tensor]]:
         """Runs forward pass and computes total loss.
 
         Args:

@@ -1,7 +1,26 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# huggingface/transformers:
+# Copyright 2021 The Google Flax Team Authors and The HuggingFace Inc. team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# bzhangGo/rmsnorm:
+# Copyright (c) 2019, Biao Zhang. All rights reserved.
+# Licensed under the BSD 3-Clause License.
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 # pylint: disable=too-many-lines
 """Basic layers."""
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+import enum
+import math
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Union
 
 import jax
 from absl import logging
@@ -9,6 +28,7 @@ from jax import nn
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
+from axlearn.common import convolution
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterNoise, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -18,24 +38,37 @@ from axlearn.common.config import (
     UnknownFieldError,
     config_class,
 )
+from axlearn.common.convolution import Conv2D
 from axlearn.common.loss import binary_cross_entropy, categorical_hinge_loss, cross_entropy
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.metrics_classification import precision_recall_f_score
-from axlearn.common.module import Module, child_context
+from axlearn.common.module import Module, child_context, nowrap
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
-    ConstantInitializer,
     DefaultInitializer,
     FanAxes,
     WeightInitializer,
+    constant_initializer,
 )
+from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
     NestedTensor,
     Tensor,
+    maybe_shard,
     partial_with_fn_metadata,
     with_sharding_constraint,
 )
+
+# TODO(dhwang2): remove them.
+# DEPRECATED: Avoid using this; instead, directly import convolution.py. Aliases for convolution are
+# provided for backward compatibility.
+ConvPaddingType = convolution.ConvPaddingType
+Conv1D = convolution.Conv1D
+Conv2D = convolution.Conv2D
+Conv2DTranspose = convolution.Conv2DTranspose
+Conv2DWith1DPadding = convolution.Conv2DWith1DPadding
+Conv3D = convolution.Conv3D
 
 
 def get_activation_fn(name) -> Callable[[Tensor], Tensor]:
@@ -72,7 +105,7 @@ class RedirectToSharedModule(BaseLayer):
         shared_module: Required[str] = REQUIRED
         # A mapping from redirection layer method name to the target layer method.
         # If empty, assume {"forward": "forward"}.
-        method_map: Dict[str, str] = {}
+        method_map: dict[str, str] = {}
 
         def set(self, **kwargs) -> "RedirectToSharedModule.Config":
             try:
@@ -82,7 +115,7 @@ class RedirectToSharedModule(BaseLayer):
                 # We intentionally ignore this exception.
             return self
 
-    def _methods_to_wrap_for_auto_child_context(self) -> Dict[str, Callable]:
+    def _methods_to_wrap_for_auto_child_context(self) -> dict[str, Callable]:
         cfg: RedirectToSharedModule.Config = self.config
         method_dict = {}
         for source_method, target_method in (cfg.method_map or {"forward": "forward"}).items():
@@ -101,10 +134,38 @@ class RedirectToSharedModule(BaseLayer):
             ) from e
 
     def _redirect(self, *args, redirection_target_method: str, **kwargs) -> Any:
-        cfg = self.config  # type: RedirectToSharedModule.Config
+        cfg: RedirectToSharedModule.Config = self.config
         shared_module = self.get_shared_module(cfg.shared_module)
-        with child_context("redirect", module=shared_module.module, state=shared_module.state):
-            return getattr(shared_module.module, redirection_target_method)(*args, **kwargs)
+        return getattr(shared_module.module, redirection_target_method)(*args, **kwargs)
+
+
+def get_dropout_mask(shape: tuple[int, ...], *, prng_key: Tensor, rate: float):
+    """Returns a bool dropout mask for the specified tensor shape where True indicates dropout."""
+    return jax.random.bernoulli(prng_key, rate, shape)
+
+
+def dropout(
+    x: Tensor, *, rate: float, prng_key: Optional[Tensor] = None, mask: Optional[Tensor] = None
+):
+    """Performs dropout on `x` according to dropout rate or mask.
+
+    After dropout, `x` will be rescaled by 1 / (1 - rate). If `mask` is provided, use `mask`.
+    Otherwise, generate a dropout mask using `prng_key` and `rate`.
+
+    Args:
+        x: Input tensor.
+        rate: Dropout rate.
+        prng_key: PRNG key used for mask generation. Required if `mask` is None.
+        mask: A boolean mask with the same shape as x. If provided, `prng_key` will be ignored.
+            Any values in `x` where `mask` is True will be dropped.
+    """
+    if not 0 < rate < 1:
+        raise ValueError(f"Dropout rate must be between 0 and 1. Got {rate=}")
+    if mask is None:
+        if prng_key is None:
+            raise ValueError("prng_key must be provided when mask is not specified.")
+        mask = get_dropout_mask(x.shape, prng_key=prng_key, rate=rate)
+    return jnp.where(mask, 0, x) / (1 - rate)
 
 
 class Dropout(BaseLayer):
@@ -118,12 +179,10 @@ class Dropout(BaseLayer):
         cfg = self.config
         if not self.is_training or cfg.rate is None or cfg.rate == 0:
             return x
-        assert 0 < cfg.rate < 1
-        samples = jax.random.uniform(
-            self.prng_key, shape=x.shape, dtype=x.dtype, minval=0.0, maxval=1.0
-        )
-        dropout = jnp.floor(1 - cfg.rate + samples)
-        return x * dropout / (1.0 - cfg.rate)
+        return dropout(x, prng_key=self.prng_key, rate=cfg.rate)
+
+    def get_prng_key(self) -> Tensor:
+        return self.prng_key
 
 
 class DropToken(BaseLayer):
@@ -168,7 +227,9 @@ class DropToken(BaseLayer):
         if not self.is_training or num_chosen_tokens == num_tokens:
             return x
         patch_id = jnp.tile(jnp.arange(0, num_tokens), (batch_size, 1))
-        sampled_id = jax.random.shuffle(self.prng_key, patch_id, axis=1)[:, :num_chosen_tokens]
+        sampled_id = jax.random.permutation(self.prng_key, patch_id, axis=1, independent=True)[
+            :, :num_chosen_tokens
+        ]
         sampled_id_one_hot = jax.nn.one_hot(sampled_id, num_tokens)
         sampled_patch = jnp.einsum("bnd,bkn->bkd", tokens, sampled_id_one_hot)
         if cfg.num_cls_tokens > 0:
@@ -198,6 +259,28 @@ def set_dropout_rate_recursively(
 
     def enter_fn(_, value, default_kv):
         return None if is_dropout_config(value) else default_kv
+
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+
+
+def set_layer_norm_eps_recursively(cfg: ConfigBase, eps: float, set_only_if_none: bool = False):
+    """Sets LayerNorm.Config.eps recursively.
+
+    Args:
+        cfg: The root config under which to look for LayerNorm.Config.
+        eps: The target value.
+        set_only_if_none: Override LayerNorm.Config.eps to `eps` only if the original is None.
+    """
+
+    def is_layer_norm_config(cfg):
+        return isinstance(cfg, LayerNorm.Config)
+
+    def visit_fn(_, value):
+        if is_layer_norm_config(value) and (not set_only_if_none or value.eps is None):
+            value.eps = eps
+
+    def enter_fn(_, value, default_kv):
+        return None if is_layer_norm_config(value) else default_kv
 
     cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
 
@@ -255,7 +338,7 @@ class LayerNormStateless(BaseNormalizationLayer):
 class LayerNorm(LayerNormStateless):
     """Reference: https://arxiv.org/abs/1607.06450."""
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
@@ -268,8 +351,8 @@ class LayerNorm(LayerNormStateless):
         return x
 
 
-class RMSNorm(BaseNormalizationLayer):
-    """Reference: https://github.com/bzhangGo/rmsnorm."""
+class RMSNormStateless(BaseNormalizationLayer):
+    """Stateless version of https://github.com/bzhangGo/rmsnorm."""
 
     @config_class
     class Config(BaseNormalizationLayer.Config):
@@ -277,8 +360,34 @@ class RMSNorm(BaseNormalizationLayer):
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
+        # If not None, how to partition input activation values.
+        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition output activation values.
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _forward(self, x: Tensor) -> Tensor:
+        cfg = self.config
+        x = maybe_shard(x, cfg.input_partition_spec)
+        x_dtype = x.dtype
+        if cfg.forward_dtype is not None:
+            x = x.astype(cfg.forward_dtype)
+        moment2 = (x * x).mean(axis=-1, keepdims=True)
+        x = x * jax.lax.rsqrt(moment2 + cfg.eps)
+        x = x.astype(x_dtype)
+        return x
+
+    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
+        del paddings  # paddings do not affect LayerNorm results
+        cfg = self.config
+        x = self._forward(x)
+        x = maybe_shard(x, cfg.output_partition_spec)
+        return x
+
+
+class RMSNorm(RMSNormStateless):
+    """Reference: https://github.com/bzhangGo/rmsnorm."""
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
@@ -287,13 +396,8 @@ class RMSNorm(BaseNormalizationLayer):
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         del paddings  # paddings do not affect LayerNorm results
         cfg = self.config
-        x_dtype = x.dtype
-        if cfg.forward_dtype is not None:
-            x = x.astype(cfg.forward_dtype)
-        moment2 = (x * x).mean(axis=-1, keepdims=True)
-        x = x * jax.lax.rsqrt(moment2 + cfg.eps)
-        x = x.astype(x_dtype)
-        x = x * self.parameters["scale"]
+        x = self._forward(x) * self.parameters["scale"]
+        x = maybe_shard(x, cfg.output_partition_spec)
         return x
 
 
@@ -328,9 +432,9 @@ def _compute_moments_with_paddings(
     x: Tensor,
     *,
     paddings: Tensor,
-    reduction_axis: List[int],
+    reduction_axis: Sequence[int],
     keepdims: bool = False,
-) -> Tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor]:
     """Computes mean and variance over sequence data.
 
     Args:
@@ -355,8 +459,57 @@ def _compute_moments_with_paddings(
     return mean, variance
 
 
+def _compute_mean_square_with_paddings(
+    x: Tensor,
+    *,
+    paddings: Tensor,
+    reduction_axis: Sequence[int],
+) -> Tensor:
+    """Computes root mean square moments over sequence data.
+
+    Args:
+        x: inputs tensor of shape [batch_size, seq_len, ...].
+        paddings: 0/1 tensor of shape [batch_size, seq_len].
+        reduction_axis: a list of axes to compute moments over.
+
+    Returns:
+        mean_square: with the same shape as `x` except for axes specified in `reduction_axis`,
+            which will have dim of 1.
+    """
+    expanded_paddings = jnp.expand_dims(paddings, axis=tuple(range(2, x.ndim)))
+    mask = 1 - expanded_paddings
+    sum_x2 = jnp.sum((x * x) * mask, axis=reduction_axis, keepdims=True)
+    count_x2 = jnp.sum(jnp.ones_like(x) * mask, axis=reduction_axis, keepdims=True)
+    # If all elements of `padding` are 1 (i.e., jnp.all(padding == 1)), mean_square will be 0.
+    # However, the computation remains stable due to max(1, count).
+    mean_square = sum_x2 / jnp.maximum(count_x2, 1.0)
+    return mean_square
+
+
+class NormType(enum.Enum):
+    """NormType defines the normalization methods for the GroupNorm class.
+
+    Available normalization types:
+    - **LAYERNORM**: Applies layernorm across all axes except for the group and batch axes.
+    - **RMSNORM**: Applies rmsnorm across all axes except for the group and batch axes.
+    """
+
+    LAYERNORM = "layernorm"
+    RMSNORM = "rmsnorm"
+
+
 class GroupNorm(BaseNormalizationLayer):
-    """https://arxiv.org/abs/1803.08494."""
+    """GroupNorm provides group-wise normalization for inputs.
+
+    The choice of `norm_type` and `norm_axes` should be guided by the specific domain. In the vision
+    domain LayerNorm is typically applied across all axes except the group and batch dimensions,
+    e.g., normalization across spatial dims and feature channels (https://arxiv.org/abs/1803.08494).
+    In the text domain, normalization may be performed along the feature axis alone, e.g., RMSNorm
+    is applied along the last feature axis in [Mamba2](https://arxiv.org/abs/2405.21060).
+
+    In the future, we may consider supporting sliding window or causal group norm, e.g.,
+    https://github.com/tensorflow/lingvo/blob/b26149e423cd51498bd884ffd37a6b5ceb244d68/lingvo/core/bn_layers.py#L756-L764
+    """
 
     @config_class
     class Config(BaseNormalizationLayer.Config):
@@ -368,13 +521,35 @@ class GroupNorm(BaseNormalizationLayer):
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
+        # LAYERNORM` or `RMSNORM`.
+        # If None, assumes `LAYERNORM` (for backwards compatibility).
+        norm_type: Optional[NormType] = None
+        # Axes to apply the normalization in addition to the group size axis.
+        # E.g., (1,) means normalizing normalizing along the time axis (as well as the group size
+        # axis) if the input tensor has shape (batch, time, dim); (1, -1) has the same effect as
+        # (1,) as the last dim (i.e., the group size axis) is automatically added.
+        # If None, reduces along all dims except for the num of group and batch axes (for
+        # backwards compatibility).
+        norm_axes: Optional[Union[tuple[int, ...], int]] = None
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config()
+        if cfg.norm_type is None:
+            cfg.norm_type = NormType.LAYERNORM
+        return cfg
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
-        return {
-            "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
-            "bias": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
-        }
+        if cfg.norm_type == NormType.LAYERNORM:
+            return {
+                "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+                "bias": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+            }
+        else:
+            return {
+                "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
+            }
 
     def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
         """Applies group normalization.
@@ -390,6 +565,7 @@ class GroupNorm(BaseNormalizationLayer):
 
         Raises:
             ValueError: if num_groups does not divide input_dim.
+            ValueError: if num_groups axis is included in norm_axes.
         """
         cfg = self.config
         if cfg.num_groups <= 0 or cfg.input_dim % cfg.num_groups != 0:
@@ -400,22 +576,57 @@ class GroupNorm(BaseNormalizationLayer):
             x = x.astype(cfg.forward_dtype)
         # Reshape to [..., num_groups, group_size].
         y = jnp.reshape(x, list(x.shape[:-1]) + [cfg.num_groups, group_size])
-        # Reduce along spatial dims and group_size, but not along batch or num_groups.
-        reduction_axis = list(range(1, y.ndim - 2)) + [-1]
-        if paddings is None:
-            mean = jnp.mean(y, axis=reduction_axis, keepdims=True)
-            variance = jnp.mean((y - mean) ** 2, axis=reduction_axis, keepdims=True)
+
+        # Default norm axes: all axes except for the group and batch axes.
+        if cfg.norm_axes is None:
+            reduction_axis = list(range(1, y.ndim - 2)) + [y.ndim - 1]
         else:
-            mean, variance = _compute_moments_with_paddings(
-                x=y,
-                paddings=paddings,
-                reduction_axis=reduction_axis,
-                keepdims=True,
-            )
-        y = (y - mean) * jax.lax.rsqrt(variance + cfg.eps)
-        x = jnp.reshape(y, x.shape)
-        x = x.astype(x_dtype)
-        x = x * self.parameters["scale"] + self.parameters["bias"]
+            reduction_axis = cfg.norm_axes
+
+        # Normalize to a list of non-negative axes.
+        if isinstance(reduction_axis, int):
+            reduction_axis = [reduction_axis]
+        reduction_axis = [axis if axis >= 0 else y.ndim + axis for axis in reduction_axis]
+
+        if y.ndim - 2 in reduction_axis:
+            raise ValueError("GroupNorm should not normalize along the num_groups axis.")
+
+        if 0 in reduction_axis:
+            raise ValueError("GroupNorm should not normalize along the batch axis.")
+
+        # Add the group size axis to the reduction axis.
+        if y.ndim - 1 not in reduction_axis:
+            reduction_axis.append(y.ndim - 1)
+
+        if cfg.norm_type == NormType.LAYERNORM:
+            if paddings is None:
+                mean = jnp.mean(y, axis=reduction_axis, keepdims=True)
+                variance = jnp.mean((y - mean) ** 2, axis=reduction_axis, keepdims=True)
+            else:
+                mean, variance = _compute_moments_with_paddings(
+                    x=y,
+                    paddings=paddings,
+                    reduction_axis=reduction_axis,
+                    keepdims=True,
+                )
+
+            y = (y - mean) * jax.lax.rsqrt(variance + cfg.eps)
+            x = jnp.reshape(y, x.shape)
+            x = x.astype(x_dtype)
+            x = x * self.parameters["scale"] + self.parameters["bias"]
+        else:
+            if paddings is None:
+                msquare = (y * y).mean(axis=reduction_axis, keepdims=True)
+            else:
+                msquare = _compute_mean_square_with_paddings(
+                    x=y,
+                    paddings=paddings,
+                    reduction_axis=reduction_axis,
+                )
+            y = y * jax.lax.rsqrt(msquare + cfg.eps)
+            x = jnp.reshape(y, x.shape)
+            x = x.astype(x_dtype)
+            x = x * self.parameters["scale"]
         return x
 
 
@@ -433,7 +644,7 @@ class BatchNorm(BaseNormalizationLayer):
         # Cast input to this dtype for the 'forward' call.  If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return {
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
@@ -442,14 +653,14 @@ class BatchNorm(BaseNormalizationLayer):
                 shape=[cfg.input_dim],
                 dtype=jnp.float32,
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(0.0),
+                initializer=constant_initializer(0.0),
                 weight_decay_scale=0,
             ),
             "moving_variance": ParameterSpec(
                 shape=[cfg.input_dim],
                 dtype=jnp.float32,
                 mesh_axes=(None,),
-                initializer=ConstantInitializer(1.0),
+                initializer=constant_initializer(1.0),
                 weight_decay_scale=0,
             ),
         }
@@ -485,11 +696,11 @@ class BatchNorm(BaseNormalizationLayer):
         return x
 
 
-class Linear(BaseLayer):
+class Linear(DenseGeneralBaseLayer):
     """The linear layer."""
 
     @config_class
-    class Config(BaseLayer.Config):
+    class Config(DenseGeneralBaseLayer.Config):
         """Configures Linear."""
 
         # Input feature dim.
@@ -499,7 +710,7 @@ class Linear(BaseLayer):
         # Whether to add a bias.
         bias: bool = True
         # If not None, how to partition output values.
-        output_partition_spec: Optional[Tuple[Optional[str]]] = None
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
 
     @classmethod
     def default_config(cls):
@@ -507,18 +718,23 @@ class Linear(BaseLayer):
         cfg.param_partition_spec = (None, None)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
                 shape=(cfg.input_dim, cfg.output_dim),
+                # A mapping from parameter axes to logical mesh axes (or None if replicating along
+                # an axis).
                 mesh_axes=cfg.param_partition_spec,
+                # Used by optimizers that maintain factored stats, e.g., Adafactor.
                 factorization=FactorizationSpec(axes=("row", "col")),
             )
         )
         if cfg.bias:
             params["bias"] = ParameterSpec(
-                shape=[cfg.output_dim], mesh_axes=(cfg.param_partition_spec[-1],)
+                shape=[cfg.output_dim],
+                # Follow the partitioning of the output dimension of the weight matrix.
+                mesh_axes=(cfg.param_partition_spec[-1],),
             )
         return params
 
@@ -531,7 +747,9 @@ class Linear(BaseLayer):
 
     def forward(self, x: Tensor) -> Tensor:
         cfg = self.config
-        output = x @ self.parameters["weight"]
+        output = self.einsum_maybe_quantized(
+            "...d,dh->...h", activation=x, kernel=self.parameters["weight"]
+        )
         if cfg.bias:
             output += self.parameters["bias"]
         return self._maybe_shard(output)
@@ -548,19 +766,6 @@ class UnitNormLinear(Linear):
             return super().forward(x)
 
 
-def _check_conv_cfg(padding: Union[str, Sequence[Tuple[int, int]]], strides: Sequence[int]):
-    if isinstance(padding, str):
-        if padding in ("SAME", "VALID"):
-            if padding == "SAME" and any(s > 1 for s in strides):
-                raise NotImplementedError("SAME padding does not support strides > 1")
-        else:
-            raise NotImplementedError(f"{padding} padding is not supported.")
-    else:
-        padding_flattened = (p for p_tuple in padding for p in p_tuple)
-        if any(p < 0 for p in padding_flattened):
-            raise NotImplementedError("Negative padding is not supported")
-
-
 class MaxPool2D(BaseLayer):
     """A wrapper for the 2D max pooling layer."""
 
@@ -568,8 +773,8 @@ class MaxPool2D(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures MaxPool2D."""
 
-        window: Tuple[int, int] = (2, 2)
-        strides: Tuple[int, int] = (1, 1)
+        window: tuple[int, int] = (2, 2)
+        strides: tuple[int, int] = (1, 1)
 
     @classmethod
     def default_config(cls):
@@ -595,6 +800,7 @@ class MaxPool2D(BaseLayer):
         )
         return output
 
+    @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         cfg = self.config
         if len(input_shape) != 4:
@@ -612,531 +818,26 @@ class MaxPool2D(BaseLayer):
         return [input_shape[0], output_height, output_width, input_shape[3]]
 
 
-# The accuracy of the output of this layer currently doesn't match that of PyTorch
-# quite as closely as we would like. See layers_test.py:test_conv2d().
-class Conv2D(BaseLayer):
-    """The 2-D convolution layer.
-
-    Kernel weights have the HWIO layout and in the shape of (window[0], window[1], input_dim,
-    output_dim). Both inputs and outputs will be in the NHWC layout.
-    """
-
-    @config_class
-    class Config(BaseLayer.Config):
-        """Configures Conv2D."""
-
-        window: Tuple[int, int] = (1, 1)  # The convolution window.
-        strides: Tuple[int, int] = (1, 1)  # The convolution strides.
-        # Paddings: "SAME", "VALID", or ((top, bottom), (left, right)).
-        padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
-        output_dim: Required[int] = REQUIRED  # Output feature dim.
-        bias: bool = True  # Whether to add a bias.
-        # The number of groups in which the input is split along the channel axis.
-        # input_dim and output_dim must both be divisible by num_input_dim_groups. For example,
-        # - At num_input_dim_groups=1, all inputs are convolved to all outputs (the default).
-        # - At num_input_dim_groups=2, the operation is equivalent to concatenating two conv layers
-        #   side by side, each seeing half the input and producing half the output channels.
-        # - At num_input_dim_groups=input_dim, each input channel is convolved with its own
-        #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
-        #   where K is a positive integer, the operation is also known as a "depthwise convolution".
-        num_input_dim_groups: Optional[int] = 1
-
-    @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.param_partition_spec = (None, None, None, None)
-        return cfg
-
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
-        cfg = self.config
-        _check_conv_cfg(cfg.padding, cfg.strides)
-        params = dict(
-            weight=ParameterSpec(
-                shape=list(cfg.window)
-                + [cfg.input_dim // cfg.num_input_dim_groups, cfg.output_dim],
-                mesh_axes=cfg.param_partition_spec,
-                factorization=FactorizationSpec(axes=(None, None, "row", "col")),
-            )
-        )
-        if cfg.bias:
-            params["bias"] = ParameterSpec(
-                shape=[cfg.output_dim], mesh_axes=(cfg.param_partition_spec[-1],)
-            )
-        return params
-
-    def forward(self, x: Tensor) -> Tensor:
-        cfg = self.config
-        output = jax.lax.conv_general_dilated(
-            lhs=x,
-            rhs=self.parameters["weight"],
-            window_strides=cfg.strides,
-            dimension_numbers=("NHWC", "HWIO", "NHWC"),
-            padding=cfg.padding,
-            feature_group_count=cfg.num_input_dim_groups,
-        )
-        if cfg.bias:
-            output += self.parameters["bias"]
-        return output
-
-    def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
-        cfg = self.config
-        if len(input_shape) != 4:
-            raise ValueError(f"We expect len(input_shape) = 4, but got {len(input_shape)}.")
-        if input_shape[-1] != cfg.input_dim:
-            raise ValueError(
-                f"input_shape[-1] = {input_shape[-1]} does not match "
-                "cfg.input_dim = {cfg.input_dim}."
-            )
-        input_height, input_width = input_shape[1:3]
-        if cfg.padding == "SAME":
-            if cfg.padding == "SAME" and any(s > 1 for s in cfg.strides):
-                raise NotImplementedError("SAME padding does not support strides > 1")
-            pad_height = cfg.window[0] - 1
-            pad_width = cfg.window[1] - 1
-
-        elif cfg.padding == "VALID":
-            pad_height = pad_width = 0
-        else:
-            pad_height = cfg.padding[0][0] + cfg.padding[0][1]
-            pad_width = cfg.padding[1][0] + cfg.padding[1][1]
-        if input_height is not None:
-            output_height = max(input_height + pad_height - cfg.window[0], 0) // cfg.strides[0] + 1
-        else:
-            output_height = None
-        if input_width is not None:
-            output_width = max(input_width + pad_width - cfg.window[1], 0) // cfg.strides[1] + 1
-        else:
-            output_width = None
-        return [input_shape[0], output_height, output_width, cfg.output_dim]
-
-
-def _compute_conv_output_1d_padding(
-    in_paddings: Tensor, *, window: int, stride: int, conv_padding_cfg: Union[str, Tuple[int, int]]
-):
-    """Helper function to compute 1D paddings for 2D convolution.
-
-    Args:
-        in_paddings: A Tensor of shape [batch_size, seq_len].
-        window: convolution window size of the time axis.
-        stride: convolution stride size of the time axis.
-        conv_padding_cfg: convolution padding along the time axis.
-            Either the string "SAME", the string "VALID", or an
-            integer pair (left, right) that gives the padding to
-            apply before and after the time dimension. Front paddings
-            are treated as valid frames and back paddings as invalid frames.
-
-    Returns:
-        out_paddings: A Tensor of shape [batch_size, seq_len].
-
-    Raises:
-        NotImplementedError: If conv_padding_cfg is SAME and strides is > 1.
-    """
-    if conv_padding_cfg == "SAME":
-        if stride == 1:
-            return in_paddings
-        raise NotImplementedError("SAME padding does not support strides > 1")
-
-    if isinstance(conv_padding_cfg, tuple):
-        # Front paddings are valid frames.
-        in_paddings = jnp.pad(in_paddings, ((0, 0), (conv_padding_cfg[0], 0)), constant_values=0)
-        # Back paddings are invalid frames.
-        in_paddings = jnp.pad(in_paddings, ((0, 0), (0, conv_padding_cfg[1])), constant_values=1)
-    # Apply max pooling with "VALID" padding along the time axis.
-    out_paddings = jax.lax.reduce_window(
-        in_paddings,
-        init_value=-jnp.inf,
-        computation=jax.lax.max,
-        window_dimensions=(1, window),
-        window_strides=(1, stride),
-        padding="VALID",
-    )
-    return out_paddings
-
-
-class Conv2DTranspose(BaseLayer):
-    """The 2-D transposed convolution layer.
-
-    Kernel weights have the HWIO layout and in the shape of (window[0], window[1], output_dim,
-    input_dim). Both inputs and outputs will be in the NHWC layout.
-    """
-
-    @config_class
-    class Config(BaseLayer.Config):
-        """Configures Conv2DTranspose."""
-
-        window: Tuple[int, int] = (1, 1)
-        strides: Tuple[int, int] = (1, 1)
-        padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int]]] = ((0, 0), (0, 0))
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
-        output_dim: Required[int] = REQUIRED  # Output feature dim.
-        bias: bool = True  # Whether to add a bias.
-
-    @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.param_partition_spec = (None, None, None, None)
-        return cfg
-
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
-        cfg = self.config
-        _check_conv_cfg(cfg.padding, cfg.strides)
-        params = dict(
-            weight=ParameterSpec(
-                shape=list(cfg.window) + [cfg.output_dim, cfg.input_dim],
-                mesh_axes=cfg.param_partition_spec,
-                factorization=FactorizationSpec(axes=(None, None, "row", "col")),
-            )
-        )
-        if cfg.bias:
-            params["bias"] = ParameterSpec(
-                shape=[cfg.output_dim], mesh_axes=(cfg.param_partition_spec[-1],)
-            )
-        return params
-
-    def forward(self, x: Tensor) -> Tensor:
-        cfg = self.config
-        output = jax.lax.conv_transpose(
-            lhs=x,
-            rhs=self.parameters["weight"],
-            strides=cfg.strides,
-            dimension_numbers=("NHWC", "HWIO", "NHWC"),
-            padding=cfg.padding,
-            # if True flips spatial axes and swaps the input/output channel axes of the kernel.
-            # This makes the output of this function identical to the gradient-derived functions
-            # like keras.layers.Conv2DTranspose applied to the same kernel.
-            transpose_kernel=True,
-        )
-        if cfg.bias:
-            output += self.parameters["bias"]
-        return output
-
-    def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
-        cfg = self.config
-        if len(input_shape) != 4:
-            raise ValueError(f"We expect len(input_shape) = 4, but got {len(input_shape)}.")
-        if input_shape[-1] != cfg.input_dim:
-            raise ValueError(
-                f"input_shape[-1] = {input_shape[-1]} does not match "
-                "cfg.input_dim = {cfg.input_dim}."
-            )
-        input_height, input_width = input_shape[1:3]
-        output_height, output_width = None, None
-
-        if cfg.padding == "SAME":
-            if cfg.padding == "SAME" and any(s > 1 for s in cfg.strides):
-                raise NotImplementedError("SAME padding does not support strides > 1")
-            if input_height is not None:
-                output_height = input_height * cfg.strides[0]
-            if input_width is not None:
-                output_width = input_width * cfg.strides[0]
-        elif cfg.padding == "VALID":
-            if input_height is not None:
-                output_height = input_height * cfg.strides[0] + max(
-                    cfg.window[0] - cfg.strides[0], 0
-                )
-            if input_width is not None:
-                output_width = input_width * cfg.strides[1] + max(cfg.window[1] - cfg.strides[1], 0)
-
-        return [input_shape[0], output_height, output_width, cfg.output_dim]
-
-
-class Conv2DWith1DPadding(Conv2D):
-    """The 2-D convolution with 1-D padding on the time axis.
-
-    We assume the data is in the format of [batch, time, frequency, input_dim]. This layer
-    computes paddings along the time axis. In the conv_padding_cfg, front paddings
-    are treated as valid frames and back paddings as invalid frames.
-    """
-
-    Config = Conv2D.Config
-
-    # We add a kwargs "paddings" to the forward method.
-    # pylint: disable-next=arguments-differ
-    def forward(self, x: Tensor, *, paddings: Tensor) -> Tuple[Tensor, Tensor]:
-        """
-        Computes convolution outputs and paddings.
-
-        Args:
-            x: A Tensor of shape [batch_size, seq_len, frequency, input_dim].
-            paddings: A Tensor of shape [batch_size, seq_len].
-
-        Returns:
-            output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
-            paddings: A Tensor of shape [batch_size, seq_len].
-        """
-        cfg = self.config
-        # Apply padding to the input.
-        assert len(x.shape) == len(paddings.shape) + 2
-        x = x * (1 - paddings[..., None, None])
-
-        # Apply Conv2D.
-        output = super().forward(x)
-        # Compute paddings conv output.
-        output_paddings = _compute_conv_output_1d_padding(
-            paddings,
-            window=cfg.window[0],
-            stride=cfg.strides[0],
-            conv_padding_cfg=cfg.padding if isinstance(cfg.padding, str) else cfg.padding[0],
-        )
-        # Apply padding to the outputs.
-        output = output * (1 - output_paddings[..., None, None])
-        return output, output_paddings
-
-
-class Conv3D(BaseLayer):
-    """The 3-D convolution layer.
-
-    Kernel weights have the HWDIO layout and in the shape of (window[0], window[1],
-    window[2], input_dim, output_dim). Both inputs and outputs will be in the NHWDC layout.
-    """
-
-    @config_class
-    class Config(BaseLayer.Config):
-        """Configures Conv3D."""
-
-        window: Tuple[int, int, int] = (1, 1, 1)  # The convolution window.
-        strides: Tuple[int, int, int] = (1, 1, 1)  # The convolution strides.
-
-        # Paddings: "SAME" or "VALID, or ((top, bottom), (left, right), (front, back))
-        padding: Union[str, Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]] = (
-            (0, 0),
-            (0, 0),
-            (0, 0),
-        )
-
-        input_dim: Required[int] = REQUIRED  # Input feature dim.
-        output_dim: Required[int] = REQUIRED  # Output feature dim.
-
-        bias: bool = True  # Whether to add a bias.
-
-        # The number of groups in which the input is split along the channel axis.
-        # input_dim and output_dim must both be divisible by num_input_dim_groups. For example,
-        # - At num_input_dim_groups=1, all inputs are convolved to all outputs (the default).
-        # - At num_input_dim_groups=2, the operation is equivalent to concatenating two conv layers
-        #   side by side, each seeing half the input and producing half the output channels.
-        # - At num_input_dim_groups=input_dim, each input channel is convolved with its own
-        #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
-        #   where K is a positive integer, the operation is also known as a "depthwise convolution".
-        num_input_dim_groups: Optional[int] = 1
-
-    @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.param_partition_spec = (None, None, None, None, None)
-        return cfg
-
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
-        cfg = self.config
-        _check_conv_cfg(cfg.padding, cfg.strides)
-        params = dict(
-            weight=ParameterSpec(
-                shape=list(cfg.window)
-                + [cfg.input_dim // cfg.num_input_dim_groups, cfg.output_dim],
-                mesh_axes=cfg.param_partition_spec,
-                factorization=FactorizationSpec(axes=(None, None, None, "row", "col")),
-            )
-        )
-        if cfg.bias:
-            params["bias"] = ParameterSpec(
-                shape=[cfg.output_dim], mesh_axes=(cfg.param_partition_spec[-1],)
-            )
-        return params
-
-    def forward(self, x: Tensor) -> Tensor:
-        cfg = self.config
-        output = jax.lax.conv_general_dilated(
-            lhs=x,
-            rhs=self.parameters["weight"],
-            window_strides=cfg.strides,
-            dimension_numbers=("NHWDC", "HWDIO", "NHWDC"),
-            padding=cfg.padding,
-            feature_group_count=cfg.num_input_dim_groups,
-        )
-        if cfg.bias:
-            output += self.parameters["bias"]
-        return output
-
-    def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
-        cfg = self.config
-        if len(input_shape) != 5:
-            raise ValueError(f"We expect len(input_shape) = 5, but got {len(input_shape)}.")
-        if input_shape[-1] != cfg.input_dim:
-            raise ValueError(
-                f"input_shape[-1] = {input_shape[-1]} does not match "
-                "cfg.input_dim = {cfg.input_dim}."
-            )
-
-        if cfg.padding == "SAME":
-            pad_height = cfg.window[0] - 1
-            pad_width = cfg.window[1] - 1
-            pad_depth = cfg.window[2] - 1
-        elif cfg.padding == "VALID":
-            pad_height = pad_width = pad_depth = 0
-        else:
-            pad_height = cfg.padding[0][0] + cfg.padding[0][1]
-            pad_width = cfg.padding[1][0] + cfg.padding[1][1]
-            pad_depth = cfg.padding[2][0] + cfg.padding[2][1]
-
-        def compute_output_size(i, p, w, s):
-            if i is None:
-                return None
-            return max(i + p - w, 0) // s + 1
-
-        pad_shape = [pad_height, pad_width, pad_depth]
-        output_shape = [
-            compute_output_size(
-                input_shape[idx + 1], pad_shape[idx], cfg.window[idx], cfg.strides[idx]
-            )
-            for idx in range(3)
-        ]
-
-        return [input_shape[0], *output_shape, cfg.output_dim]
-
-
-class Conv1D(BaseLayer):
-    """The 1D convolution layer.
-
-    Kernel weights have the WIO layout and in the shape of (window, input_dim, output_dim).
-    Both inputs and outputs will be in the NWC layout.
-    """
-
-    @config_class
-    class Config(BaseLayer.Config):
-        """Configures Conv1D."""
-
-        window: Required[int] = REQUIRED  # The convolution window.
-        strides: int = 1  # The convolution strides.
-        # Paddings: "SAME", "VALID", or (left, right).
-        # For causal convolution, set padding to (window - 1, 0).
-        padding: Union[str, Tuple[int, int]] = (0, 0)
-        # Input feature dim, which is also the output dim.
-        input_dim: Required[int] = REQUIRED
-        output_dim: Required[int] = REQUIRED  # Output feature dim.
-        bias: bool = True  # Whether to add a bias.
-        # The number of groups in which the input is split along the channel axis.
-        # input_dim and output_dim must both be divisible by num_input_dim_groups. For example,
-        # - At num_input_dim_groups=1, all inputs are convolved to all outputs (the default).
-        # - At num_input_dim_groups=2, the operation is equivalent to concatenating two conv layers
-        #   side by side, each seeing half the input and producing half the output channels.
-        # - At num_input_dim_groups=input_dim, each input channel is convolved with its own
-        #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
-        #   where K is a positive integer, the operation is also known as a "depthwise convolution".
-        num_input_dim_groups: Optional[int] = 1
-
-    @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.param_partition_spec = (None, None, "model")
-        return cfg
-
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
-        cfg = self.config
-        if cfg.padding in ("SAME", "VALID"):
-            if cfg.padding == "SAME" and cfg.strides > 1:
-                raise NotImplementedError("SAME padding does not support strides > 1")
-        else:
-            left, right = cfg.padding
-            if any(p < 0 for p in (left, right)):
-                raise NotImplementedError("Negative padding is not supported")
-        params = dict(
-            weight=ParameterSpec(
-                shape=[cfg.window, cfg.input_dim // cfg.num_input_dim_groups, cfg.output_dim],
-                mesh_axes=cfg.param_partition_spec,
-            )
-        )
-        if cfg.bias:
-            params["bias"] = ParameterSpec(
-                shape=[cfg.output_dim], mesh_axes=(cfg.param_partition_spec[-1],)
-            )
-        return params
-
-    def forward(self, x: Tensor) -> Tensor:
-        cfg = self.config
-        output = jax.lax.conv_general_dilated(
-            lhs=x,
-            rhs=self.parameters["weight"],
-            window_strides=(cfg.strides,),
-            dimension_numbers=("NWC", "WIO", "NWC"),
-            padding=cfg.padding if isinstance(cfg.padding, str) else (cfg.padding,),
-            feature_group_count=cfg.num_input_dim_groups,
-        )
-        if cfg.bias:
-            output += self.parameters["bias"]
-        return output
-
-
-class DepthwiseConv1D(BaseLayer):
-    """The 1-D depth-wise convolution layer.
-
-    Kernel weights have the WIO layout and in the shape of (window, 1, output_dim=input_dim).
-    Both inputs and outputs will be in the NWC layout.
-    """
-
-    @config_class
-    class Config(BaseLayer.Config):
-        """Configures DepthwiseConv1D."""
-
-        window: Required[int] = REQUIRED  # The convolution window.
-        strides: int = 1  # The convolution strides.
-        # Paddings: "SAME", "VALID", or (left, right).
-        # For causal convolution, set padding to (window - 1, 0).
-        padding: Union[str, Tuple[int, int]] = (0, 0)
-        # Input feature dim, which is also the output dim.
-        input_dim: Required[int] = REQUIRED
-        bias: bool = True  # Whether to add a bias.
-
-    @classmethod
-    def default_config(cls):
-        cfg = super().default_config()
-        cfg.param_partition_spec = (None, None, "model")
-        return cfg
-
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
-        cfg = self.config
-        if cfg.padding in ("SAME", "VALID"):
-            if cfg.padding == "SAME" and cfg.strides > 1:
-                raise NotImplementedError("SAME padding does not support strides > 1")
-        else:
-            left, right = cfg.padding
-            if any(p < 0 for p in (left, right)):
-                raise NotImplementedError("Negative padding is not supported")
-        params = dict(
-            weight=ParameterSpec(
-                # https://www.tensorflow.org/xla/operation_semantics#conv_convolution:
-                # The input feature dimension of rhs needs to be equal to the lhs input feature
-                # dimension divided by feature_group_count (so it already has the size of a group
-                # of input features).
-                shape=[cfg.window, 1, cfg.input_dim],
-                mesh_axes=cfg.param_partition_spec,
-            )
-        )
-        if cfg.bias:
-            params["bias"] = ParameterSpec(
-                shape=[cfg.input_dim], mesh_axes=(cfg.param_partition_spec[-1],)
-            )
-        return params
-
-    def forward(self, x: Tensor) -> Tensor:
-        cfg = self.config
-        output = jax.lax.conv_general_dilated(
-            lhs=x,
-            rhs=self.parameters["weight"],
-            window_strides=(cfg.strides,),
-            dimension_numbers=("NWC", "WIO", "NWC"),
-            padding=cfg.padding if isinstance(cfg.padding, str) else (cfg.padding,),
-            feature_group_count=cfg.input_dim,
-        )
-        if cfg.bias:
-            output += self.parameters["bias"]
-        return output
-
-
 class Embedding(BaseLayer):
     """Implements an embedding lookup function.
 
     Batched map for int in [0, <num_embeddings>) -> <dim> float vector.
     """
+
+    class Scale(enum.Enum):
+        """Defines the scale method on embedding activations.
+
+        Available types:
+        1. **UNIT**: Scale the activation components to ~1.
+
+        The activation component should roughly have a magnitude of 1. Since the embedding tensor is
+        initialized with a scale of `1/√dim`, the activation is multiplied by `√dim` to
+        maintain the desired scale. e.g. Gemma [1]
+        [1]
+        https://github.com/google-deepmind/gemma/blob/0d6ae857591248422127ca14c027909546362e6a/gemma/modules.py#L80
+        """
+
+        UNIT = "unit"
 
     @config_class
     class Config(BaseLayer.Config):
@@ -1144,6 +845,14 @@ class Embedding(BaseLayer):
 
         num_embeddings: Required[int] = REQUIRED  # Maximum number of embeddings in table.
         dim: Required[int] = REQUIRED  # Embedding vector dimensionality.
+        # If not None, how to partition input activation values.
+        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition embedding table.
+        embedding_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If not None, how to partition output activation values.
+        output_partition_spec: Optional[tuple[Optional[str]]] = None
+        # Optional scaling of the embedding activations.
+        scale: Optional["Embedding.Scale"] = None
 
     @classmethod
     def default_config(cls):
@@ -1168,7 +877,7 @@ class Embedding(BaseLayer):
         )
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         return dict(
             weight=ParameterSpec(
@@ -1178,8 +887,31 @@ class Embedding(BaseLayer):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        cfg = self.config
+        x = maybe_shard(x, cfg.input_partition_spec)
         emb = self.parameters["weight"]
-        return emb[x]
+        emb = maybe_shard(emb, cfg.embedding_partition_spec)
+        activation = emb[x]
+        activation = self._scale(activation)
+        activation = maybe_shard(activation, cfg.output_partition_spec)
+        return activation
+
+    def _scale(self, x: Tensor) -> Tensor:
+        """Scale the activation if needed."""
+        cfg = self.config
+        if cfg.scale is None:
+            return x
+
+        # Unsloth [1] discovered that `sqrt(dim)` needs to be computed in float32.
+        # [1] Sec 3 in https://unsloth.ai/blog/gemma-bugs.html
+        x_dtype = x.dtype
+        x = x.astype(jnp.float32)
+        if cfg.scale == self.Scale.UNIT:
+            x = x * math.sqrt(x.shape[-1])
+        else:
+            raise ValueError(f"Unknown scale {cfg.scale}.")
+        x = x.astype(x_dtype)
+        return x
 
     def attend(self, x: Tensor) -> Tensor:
         """Apply query array 'x' to the embedding weight array.
@@ -1253,13 +985,13 @@ class ClassificationMetric(BaseClassificationMetric):
             A float Tensor represents the loss.
         """
         cfg = self.config
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        num_examples = mask.sum()
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        num_examples = live_targets.sum()
 
         loss, all_losses = cross_entropy(
             logits,
-            labels,
-            mask=mask,
+            target_labels=labels,
+            live_targets=live_targets,
             label_smoothing=cfg.label_smoothing,
             soft_target_labels=soft_labels,
         )
@@ -1321,17 +1053,17 @@ class BinaryClassificationMetric(BaseClassificationMetric):
                 f"Binary classification is only defined for two classes; "
                 f"{cfg.num_classes} were provided"
             )
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        num_examples = mask.sum()
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        num_examples = live_targets.sum()
         loss, all_losses = binary_cross_entropy(
             logits,
-            labels,
-            mask=mask,
+            target_labels=labels,
+            live_targets=live_targets,
         )
         preds = jnp.where(jnp.greater(nn.sigmoid(logits), cfg.prediction_threshold), 1, 0)
         scores = precision_recall_f_score(
-            y_true=(mask * labels).reshape(-1),
-            y_pred=(mask * preds).reshape(-1),
+            y_true=(live_targets * labels).reshape(-1),
+            y_pred=(live_targets * preds).reshape(-1),
         )
         self.add_summary("precision", scores["precision"])
         self.add_summary("recall", scores["recall"])
@@ -1389,20 +1121,20 @@ class CategoricalHingeLossMetric(BaseClassificationMetric):
 
         one_hot_labels = jax.nn.one_hot(labels, cfg.num_classes)
 
-        pre_mask_loss = categorical_hinge_loss(logits, one_hot_labels)
+        per_target_loss = categorical_hinge_loss(logits, one_hot_labels)
 
-        mask = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
-        mask = mask.astype(pre_mask_loss.dtype)
-        num_unmasked = mask.sum()
-        denominator = jnp.maximum(1, num_unmasked)
-        loss = (pre_mask_loss * mask).sum() / denominator
+        live_targets = jnp.logical_and(0 <= labels, labels < cfg.num_classes)
+        live_targets = live_targets.astype(per_target_loss.dtype)
+        num_live_targets = live_targets.sum()
+        denominator = jnp.maximum(1, num_live_targets)
+        loss = (per_target_loss * live_targets).sum() / denominator
 
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / denominator
 
-        self.add_summary("loss", WeightedScalar(loss, num_unmasked))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_unmasked))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_unmasked))
+        self.add_summary("loss", WeightedScalar(loss, num_live_targets))
+        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_live_targets))
+        self.add_summary("accuracy", WeightedScalar(accuracy, num_live_targets))
 
         return loss
 
@@ -1608,75 +1340,6 @@ class SqueezeExcitation(BaseLayer):
         return get_activation_fn(cfg.gating)(x) * inputs
 
 
-class StackOverTime(BaseLayer):
-    """Stack inputs along the time axis.
-
-    StackOverTime behaves the same as Conv2DWith1DPadding w.r.t. paddings along the time axis.
-    We treat front paddings as valid frames and back paddings as invalid frames.
-    """
-
-    @config_class
-    class Config(BaseLayer.Config):
-        """Configures StackOverTime."""
-
-        stride: Required[int] = REQUIRED  # Number of frames to stack.
-        # Number of paddings to apply along the time axis. The two integers indicate
-        # leading and trailing padding to add respectively.
-        padding: Tuple[int, int] = (0, 0)
-
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tuple[Tensor, Tensor]:
-        """Stacks stride number of frames into one frame along the time axis.
-
-        Args:
-            inputs: Tensor of shape [batch, time, input_dim].
-            paddings: 0/1 Tensor of shape [batch, time], paddings of the input sequences.
-
-        Returns:
-            stacked_inputs: Tensor of shape [batch, time // stride, input_dim * stride].
-            stacked_paddings: 0/1 Tensor of shape [batch, time // stride]. An output frame
-                is padding if at least one of the stacked input frames is padding.
-
-        Raises:
-            ValueError: If stride is <= 1.
-        """
-        cfg = self.config
-        if cfg.stride <= 1:
-            raise ValueError(f"stride should be greater than 1, but got {cfg.stride}.")
-        inputs = jnp.pad(inputs, ((0, 0), cfg.padding, (0, 0)), constant_values=0)
-        # Front paddings are valid frames.
-        paddings = jnp.pad(paddings, ((0, 0), (cfg.padding[0], 0)), constant_values=0)
-        # Back paddings are invalid frames.
-        paddings = jnp.pad(paddings, ((0, 0), (0, cfg.padding[1])), constant_values=1)
-
-        batch_size, seq_len, input_dim = inputs.shape
-        output_length = seq_len // cfg.stride
-        new_shape = [batch_size, output_length, input_dim * cfg.stride]
-        # Stack inputs over the time dimension.
-        stacked_inputs = jnp.reshape(inputs[:, : output_length * cfg.stride, :], new_shape)
-        # An output frame is padding if at least one of the stacked input frames is padding.
-        stacked_paddings = jnp.max(
-            jnp.reshape(paddings[:, : output_length * cfg.stride], [-1, output_length, cfg.stride]),
-            axis=-1,
-        )
-        stacked_inputs = stacked_inputs * (1 - stacked_paddings)[:, :, None]
-        return stacked_inputs, stacked_paddings
-
-    def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
-        """Computes stacked output shape.
-
-        Args:
-            input_shape: The input dimensions are (batch, time, feature_dim).
-                If the value of the dimension is not available, use None.
-
-        Returns:
-            The output shape. The dimensions are (batch, time, feature_dim).
-        """
-        cfg = self.config
-        batch_size, seq_len, input_dim = input_shape
-        output_length = (seq_len + sum(cfg.padding)) // cfg.stride if seq_len is not None else None
-        return [batch_size, output_length, input_dim * cfg.stride]
-
-
 class MultiLinear(BaseLayer):
     """A linear layer with multiple outputs."""
 
@@ -1697,7 +1360,7 @@ class MultiLinear(BaseLayer):
         return cfg
 
     # pylint: disable-next=duplicate-code
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         params = dict(
             weight=ParameterSpec(
@@ -1743,11 +1406,11 @@ class VariationalNoise(ParameterNoise):
 
         vn_std: Required[float] = REQUIRED
 
-    def apply(self, prng_key: jax.random.KeyArray, params: NestedTensor) -> NestedTensor:
+    def apply(self, prng_key: Tensor, params: NestedTensor) -> NestedTensor:
         cfg = self.config
         if cfg.vn_std <= 0:
             return params
-        return jax.tree_util.tree_map(
+        return jax.tree.map(
             lambda x: x + jax.random.normal(prng_key, x.shape, dtype=x.dtype) * cfg.vn_std, params
         )
 
@@ -1821,3 +1484,58 @@ class SeparableSpaceTimePositionalEmbedding(BaseLayer):
         """
         emb = self.embeddings()
         return emb[positions]
+
+
+class MovingAverage(BaseLayer):
+    """A layer to maintain an exponential moving average stats.
+
+    Given each value `x`, updates `moving_average` as:
+        moving_average = x * weight + moving_average * (1 - weight)
+        count = count + 1
+
+    where `weight` is determined by:
+        weight = max(cfg.min_weight, 1 / (count + 1))
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        shape: Sequence[int] = tuple()
+        # The minimum weight for an update.
+        min_weight: Required[float] = REQUIRED
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        return {
+            "count": ParameterSpec(
+                shape=[],
+                dtype=jnp.int32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0),
+                weight_decay_scale=0,
+            ),
+            "value": ParameterSpec(
+                shape=cfg.shape,
+                dtype=jnp.float32,
+                mesh_axes=(None,),
+                initializer=constant_initializer(0.0),
+                weight_decay_scale=0,
+            ),
+        }
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Computes a moving average of `x`.
+
+        The moving average updates will be set in OutputCollection.state_updates.
+
+        Args:
+            x: A Tensor of shape cfg.shape.
+
+        Returns:
+            Returns the current moving average.
+        """
+        cfg = self.config
+        weight = jnp.maximum(cfg.min_weight, 1.0 / (1 + self.parameters["count"]))
+        new_moving_average = (1 - weight) * self.parameters["value"] + weight * x
+        self.add_state_update("value", new_moving_average)
+        self.add_state_update("count", 1 + self.parameters["count"])
+        return new_moving_average

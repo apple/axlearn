@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """An implementation of sequence transducer model.
 
 Reference:
@@ -31,8 +33,6 @@ where
 * log_prob_blank = log_prob_vocab[:T, :U + 1, blank]
 * log_prob_y = log_prob_vocab[:T + 1, :U, y], where y = A/B, for u = 0/1, respectively.
 """
-
-from typing import Dict, Tuple
 
 import jax
 from chex import dataclass
@@ -75,15 +75,17 @@ class LogitsToLogProbFn(Protocol):
 
 
 def classic_logits_to_log_probs(
-    *, blank_logit_bias: float = 0, blank_id: int = 0
+    *,
+    blank_id: int,
+    blank_logit_bias: float = 0,
 ) -> LogitsToLogProbFn:
     """Computes blank and token log_probs from the given logits.
 
     ... according to the classic (https://arxiv.org/abs/1211.3711) formulation.
 
     Args:
-        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
         blank_id: an int in range [0, vocab_size) representing the blank id.
+        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
 
     Returns:
         A LogitsToLogProbFn.
@@ -100,14 +102,14 @@ def classic_logits_to_log_probs(
     return fn
 
 
-def hat_logits_to_log_probs(*, blank_logit_bias: float = 0, blank_id: int = 0):
+def hat_logits_to_log_probs(*, blank_id: int, blank_logit_bias: float = 0):
     """Computes blank and token log_probs from the given logits.
 
     ... according to the HAT (https://arxiv.org/abs/2003.07705) formulation.
 
     Args:
-        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
         blank_id: an int in range [0, vocab_size) representing the blank id.
+        blank_logit_bias: a scalar bias to be applied on the blank logit before sigmoid.
 
     Returns:
         A LogitsToLogProbFn.
@@ -132,7 +134,7 @@ def hat_logits_to_log_probs(*, blank_logit_bias: float = 0, blank_id: int = 0):
 
 
 def log_probs_from_blank_and_tokens(
-    log_prob_blank: Tensor, log_prob_tokens: Tensor, *, blank_id: int = 0
+    log_prob_blank: Tensor, log_prob_tokens: Tensor, *, blank_id: int
 ):
     """Computes full log_probs tensor from log_prob_blank and log_prob_tokens.
 
@@ -180,6 +182,7 @@ class Transducer(BaseLayer):
         super().__init__(cfg, parent=parent)
         cfg: Transducer.Config = self.config
         self._add_child("proj", cfg.proj.set(input_dim=cfg.input_dim, output_dim=cfg.vocab_size))
+        self._logits_to_log_probs: LogitsToLogProbFn = cfg.logits_to_log_probs.instantiate()
 
     def forward(
         self,
@@ -189,7 +192,7 @@ class Transducer(BaseLayer):
         lm_data: Tensor,
         lm_paddings: Tensor,
         target_labels: Tensor,
-    ) -> Tuple[Tensor, Dict[str, Tensor]]:
+    ) -> tuple[Tensor, dict[str, Tensor]]:
         """Computes the transducer loss (for training and evaluation).
 
         Args:
@@ -243,9 +246,9 @@ class Transducer(BaseLayer):
             # Yet another possibility is to use a chunk-wise loop to reduce number of iterations
             # in the map loop. We may consider this if this loop turns out to be the bottleneck
             # of transducer training.
-            def map_fn(am_t: Seq) -> Tuple[Tensor, Tensor]:
+            def map_fn(am_t: Seq) -> tuple[Tensor, Tensor]:
                 # [1, ...].
-                am_t = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, 0), am_t)
+                am_t = jax.tree.map(lambda x: jnp.expand_dims(x, 0), am_t)
                 # [1, lm_max_len, ...].
                 prediction_t = self.predict(am_t.data, lm_i.data)
                 # [1, lm_max_len].
@@ -298,7 +301,7 @@ class Transducer(BaseLayer):
         )
         # [..., am_max_len, lm_max_len, vocab_size].
         logits = self.proj(hidden)
-        return cfg.logits_to_log_probs.instantiate()(logits)
+        return self._logits_to_log_probs(logits)
 
 
 def _tilt(x: Tensor, pad_value: Tensor) -> Tensor:
@@ -535,8 +538,8 @@ def _log_prob_alignments_fwd(log_prob_blank: Tensor, log_prob_y: Tensor):
 
 
 def _log_prob_alignments_bwd(
-    res: Tuple[Tensor, Tensor, Tensor], g: Tensor
-) -> Tuple[Tensor, Tensor]:
+    res: tuple[Tensor, Tensor, Tensor], g: Tensor
+) -> tuple[Tensor, Tensor]:
     """The backward part of custom_vjp of log_prob_alignments.
 
     Args:
@@ -570,7 +573,7 @@ log_prob_alignments.defvjp(_log_prob_alignments_fwd, _log_prob_alignments_bwd)
 
 def apply_paddings(
     log_prob_blank: Tensor, log_prob_y: Tensor, am_paddings: Tensor, lm_paddings: Tensor
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Applies paddings to log_prob_{blank, y}.
 
     Since sequences in a batch may have different lengths, we pad them to fixed sizes, e.g.,
@@ -628,7 +631,7 @@ def apply_paddings(
         jnp.arange(am_max_seq_len) < am_eos_index - 1, axis=-1
     ) * jnp.expand_dims(jnp.arange(lm_max_seq_len) <= lm_eos_index, axis=0)
     # The terminal state reached by a blank step.
-    log_prob_blank_mask = log_prob_blank_mask.at[am_eos_index - 1, lm_eos_index].set(1)
+    log_prob_blank_mask = log_prob_blank_mask.at[am_eos_index - 1, lm_eos_index].set(True)
     # Set to NEG_INF if mask==0.
     log_prob_blank = log_prob_blank * log_prob_blank_mask + _NEG_INF * (1 - log_prob_blank_mask)
 

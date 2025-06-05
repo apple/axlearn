@@ -1,14 +1,20 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests dual-encoder modules."""
 # pylint: disable=no-self-use
-from typing import Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import pytest
+from absl.testing import parameterized
 
+from axlearn.common import learner
 from axlearn.common.bert import bert_embedding_config, bert_model_config, bert_transformer_config
+from axlearn.common.config import config_for_function
 from axlearn.common.layers import Linear, RedirectToSharedModule
 from axlearn.common.module import functional as F
+from axlearn.common.schedule import polynomial
 from axlearn.common.test_utils import TestCase
 from axlearn.common.text_dual_encoder import (
     NEGATIVE_EMBEDDINGS,
@@ -23,18 +29,20 @@ from axlearn.common.text_dual_encoder import (
     RANKS,
     SIMILARITY_MATRIX,
     TEXT_DUAL_ENCODER_SHARED_MODULE_NAME,
+    FLOPsLossLayer,
     RankingPairwiseLossLayer,
     TextEmbeddingAsymmetricContrastiveLossLayer,
     TextEmbeddingDualEncoder,
     TextEmbeddingStreamEncoder,
 )
 from axlearn.common.text_encoder import TextEmbeddingEncoder
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, get_recursively
 
 HIDDEN_DIM = 16
 VOCAB_SIZE = 32
 LEFT_ENCODER_NAME = "query_encoder"
 RIGHT_ENCODER_NAME = "doc_encoder"
+SPARSE = "sparse"
 
 
 def sample_text_embedding_stream_encoder_config(
@@ -66,10 +74,12 @@ def sample_text_embedding_stream_encoder_config(
     )
 
 
-def sample_contrastive_loss_layer_config() -> TextEmbeddingAsymmetricContrastiveLossLayer.Config:
+def sample_contrastive_loss_layer_config(
+    *, left_encoder_name=LEFT_ENCODER_NAME, right_encoder_name=RIGHT_ENCODER_NAME
+) -> TextEmbeddingAsymmetricContrastiveLossLayer.Config:
     return TextEmbeddingAsymmetricContrastiveLossLayer.default_config().set(
-        left_encoder_name=LEFT_ENCODER_NAME,
-        right_encoder_name=RIGHT_ENCODER_NAME,
+        left_encoder_name=left_encoder_name,
+        right_encoder_name=right_encoder_name,
     )
 
 
@@ -81,7 +91,22 @@ def sample_ranking_pairwise_loss_layer_config() -> RankingPairwiseLossLayer.Conf
     )
 
 
-def random_int_array(*, shape: Tuple) -> Tensor:
+def sample_flops_loss_layer_config(
+    *,
+    flops_weight_schedule,
+    left_encoder_flops_loss_weight: float = 1.0,
+    right_encoder_flops_loss_weight: float = 1.0,
+) -> FLOPsLossLayer.Config:
+    return FLOPsLossLayer.default_config().set(
+        left_encoder_name=(LEFT_ENCODER_NAME, SPARSE),
+        right_encoder_name=(RIGHT_ENCODER_NAME, SPARSE),
+        left_encoder_flops_loss_weight=left_encoder_flops_loss_weight,
+        right_encoder_flops_loss_weight=right_encoder_flops_loss_weight,
+        flops_weight_schedule=flops_weight_schedule,
+    )
+
+
+def random_int_array(*, shape: tuple) -> Tensor:
     return jax.random.randint(jax.random.PRNGKey(0), shape=shape, minval=1, maxval=VOCAB_SIZE)
 
 
@@ -327,6 +352,62 @@ class TestTextEmbeddingAsymmetricContrastiveLossLayer(TestCase):
                 prng_key=jax.random.PRNGKey(0),
             )
 
+    @parameterized.parameters(
+        ([LEFT_ENCODER_NAME, "emb_1"], [RIGHT_ENCODER_NAME, "emb_2"]),
+        ([LEFT_ENCODER_NAME, "emb_1"], [RIGHT_ENCODER_NAME]),
+        ([LEFT_ENCODER_NAME], [RIGHT_ENCODER_NAME, "emb_2"]),
+    )
+    def test_complex_encoder_name(self, left_encoder_name, right_encoder_name):
+        # pytype: disable=attribute-error
+        model_cfg = sample_contrastive_loss_layer_config(
+            left_encoder_name=left_encoder_name,
+            right_encoder_name=right_encoder_name,
+        )
+        model_cfg.set(name="test_complex_encoder_name")
+        model = model_cfg.instantiate(parent=None)
+        model_params = model.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        input_batch = {
+            LEFT_ENCODER_NAME: {
+                "emb_1": {POSITIVE_EMBEDDINGS: random_int_array(shape=(2, 1, HIDDEN_DIM))},
+                POSITIVE_EMBEDDINGS: random_int_array(shape=(4, 1, HIDDEN_DIM)),
+            },
+            RIGHT_ENCODER_NAME: {
+                "emb_2": {
+                    POSITIVE_EMBEDDINGS: random_int_array(shape=(2, 1, HIDDEN_DIM)),
+                    POSITIVE_PADDINGS: jnp.zeros((2, 1)),
+                    NEGATIVE_EMBEDDINGS: random_int_array(shape=(4, 2, HIDDEN_DIM)),
+                    NEGATIVE_PADDINGS: jnp.asarray([[0, 0], [0, 1], [1, 1], [0, 1]]),
+                },
+                POSITIVE_EMBEDDINGS: random_int_array(shape=(3, 1, HIDDEN_DIM)),
+                POSITIVE_PADDINGS: jnp.zeros((3, 1)),
+                NEGATIVE_EMBEDDINGS: random_int_array(shape=(2, 2, HIDDEN_DIM)),
+                NEGATIVE_PADDINGS: jnp.asarray([[0, 0], [0, 1]]),
+            },
+        }
+
+        outputs, _ = F(
+            model,
+            inputs=dict(input_batch=input_batch),
+            state=model_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+        left_emb_shape = get_recursively(input_batch, left_encoder_name)[POSITIVE_EMBEDDINGS].shape[
+            0
+        ]
+
+        negative_emb_shape = get_recursively(input_batch, right_encoder_name)[
+            NEGATIVE_EMBEDDINGS
+        ].shape
+        right_emb_shape = (
+            get_recursively(input_batch, right_encoder_name)[POSITIVE_EMBEDDINGS].shape[0]
+            + negative_emb_shape[0] * negative_emb_shape[1]
+        )
+
+        assert outputs[1][SIMILARITY_MATRIX].shape == (left_emb_shape, right_emb_shape)
+        # pytype: enable=attribute-error
+
 
 class TestRankingPairwiseLossLayer(TestCase):
     """Tests RankingPairwiseLossLayer."""
@@ -471,3 +552,76 @@ class TestSiameseTextEmbeddingDualEncoder(TestCase):
         )
         loss = outputs[0]
         assert loss.shape == ()
+
+
+class TestFLOPsLossLayer(TestCase):
+    """Tests FLOPsLossLayer."""
+
+    @parameterized.parameters(
+        (0.5, 0.2),
+    )
+    def test_flops_loss(self, left_encoder_flops_loss_weight, right_encoder_flops_loss_weight):
+        flops_weight_schedule_end_step = 4
+        model_cfg = sample_flops_loss_layer_config(
+            left_encoder_flops_loss_weight=left_encoder_flops_loss_weight,
+            right_encoder_flops_loss_weight=right_encoder_flops_loss_weight,
+            flops_weight_schedule=config_for_function(polynomial).set(
+                begin_step=0, end_step=flops_weight_schedule_end_step, end_value=1, power=2
+            ),
+        )
+        model_cfg.set(name="test_flops_loss")
+        model = model_cfg.instantiate(parent=None)
+        model_params = model.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        input_batch = {
+            LEFT_ENCODER_NAME: {
+                SPARSE: {
+                    POSITIVE_EMBEDDINGS: jnp.asarray([[[2, 0]], [[4, 4]]]),
+                }
+            },
+            RIGHT_ENCODER_NAME: {
+                SPARSE: {
+                    POSITIVE_EMBEDDINGS: jnp.asarray([[[2, 2], [3, 4]], [[4, 4], [5, 5]]]),
+                    NEGATIVE_EMBEDDINGS: jnp.asarray([[[4, 4]], [[1, 1]]]),
+                    POSITIVE_PADDINGS: jnp.asarray([[0, 0], [0, 1]]),
+                    NEGATIVE_PADDINGS: jnp.asarray([[0], [1]]),
+                },
+            },
+        }
+
+        def _expected_poly_weight_warmup(*, step: int, warmup_step: int, weight: float) -> float:
+            if step >= warmup_step:
+                return weight
+            else:
+                return (step / warmup_step) ** 2 * weight
+
+        steps = 6
+        for step in range(steps):
+            outputs, output_collections = F(
+                model,
+                inputs=dict(input_batch=input_batch),
+                state=model_params,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(0),
+            )
+            # pylint: disable-next=protected-access
+            learner._apply_updates(model_params, output_collections.state_updates)
+            loss, _ = outputs
+            expected_query_flops_loss = ((2 + 4) / 2) ** 2 + ((0 + 4) / 2) ** 2
+            expected_passage_flops_loss = ((2 + 3 + 4 + 4) / 4) ** 2 + ((2 + 4 + 4 + 4) / 4) ** 2
+            expected_left_scheduled_weighted = _expected_poly_weight_warmup(
+                step=step,
+                warmup_step=flops_weight_schedule_end_step,
+                weight=left_encoder_flops_loss_weight,
+            )
+            expected_right_scheduled_weighted = _expected_poly_weight_warmup(
+                step=step,
+                warmup_step=flops_weight_schedule_end_step,
+                weight=right_encoder_flops_loss_weight,
+            )
+            expected_loss = (
+                expected_query_flops_loss * expected_left_scheduled_weighted
+                + expected_passage_flops_loss * expected_right_scheduled_weighted
+            )
+
+            self.assertEqual(loss, expected_loss)

@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/DeBERTa:
+# Copyright (c) Microsoft, Inc. 2020.
+# Licensed under the MIT license.
+#
+# huggingface/transformers:
+# Copyright 2020 Microsoft and the Hugging Face Inc. team.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """A replication of DeBERTa.
 
 References:
@@ -6,7 +18,7 @@ https://github.com/microsoft/DeBERTa
 """
 import math
 from enum import Enum
-from typing import Optional, Set, Type, cast
+from typing import Optional, cast
 
 import jax.numpy as jnp
 
@@ -24,7 +36,7 @@ from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config
 from axlearn.common.embedding import Embedding
 from axlearn.common.encoder import Encoder
 from axlearn.common.layers import BaseClassificationHead, Dropout, LayerNorm, RedirectToSharedModule
-from axlearn.common.module import Module
+from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 
 
@@ -174,7 +186,7 @@ class DisentangledSelfAttention(MultiheadAttention):
         """Configures DisentangledSelfAttention.Config."""
 
         # Type(s) of attention to include in attention score.
-        attention_type: Required[Set[DisentangledAttentionType]] = REQUIRED
+        attention_type: Required[set[DisentangledAttentionType]] = REQUIRED
         # Maximum distance for bucketing.
         max_distance: Required[int] = REQUIRED
         # Number of relative position buckets in each distance. If None, defaults to max_distance.
@@ -228,7 +240,7 @@ class DisentangledSelfAttention(MultiheadAttention):
         cfg = self.config
 
         # Make sure attention types are all valid.
-        valid_attention_types = set(v for v in DisentangledAttentionType)
+        valid_attention_types = set(DisentangledAttentionType)
         invalid_attention_types = set(cfg.attention_type).difference(valid_attention_types)
         if invalid_attention_types:
             raise ValueError(
@@ -255,8 +267,21 @@ class DisentangledSelfAttention(MultiheadAttention):
         # https://github.com/microsoft/DeBERTa/blob/771f5822798da4bef5147edfe2a4d0e82dd39bac/DeBERTa/deberta/disentangled_attention.py#L85
         cfg = self.config
         q_scale = (1 + len(cfg.attention_type)) ** -0.5
+        q_proj = self.scale_query(q_proj * q_scale, positions=None)
+        k_proj = self.scale_key(k_proj, positions=None)
         # [batch, num_heads, target_length, source_length].
-        return super()._compute_logits(q_proj * q_scale, k_proj)
+        return super()._compute_logits(q_proj, k_proj)
+
+    def _scale_qk(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        query_positions: Tensor,
+        key_positions: Tensor,
+    ):
+        # Do not scale q/k here as _attention_scores expects unscaled q/k.
+        return q_proj, k_proj
 
     def _disentangled_attention_bias(
         self,
@@ -324,7 +349,8 @@ class DisentangledSelfAttention(MultiheadAttention):
             # [1, 2 * num_directional_buckets, num_heads, per_head_dim].
             pos_k_proj = self.pos_k_proj(relative_pos_emb)
             # [batch, num_heads, query_len, 2 * num_directional_buckets].
-            c2p_score = self._attention_scores(q_proj, pos_k_proj)
+            with child_context("c2p_attn_scores", module=self):
+                c2p_score = self._attention_scores(q_proj, pos_k_proj)
             # Gather along last axis using the relative positions d(i,j), as in Equation (4).
             # [batch, 1, query_len, key_len]. Range is inclusive.
             d_ij = jnp.clip(relative_pos, 0, 2 * num_directional_buckets - 1)
@@ -336,7 +362,8 @@ class DisentangledSelfAttention(MultiheadAttention):
             # [1, 2 * num_directional_buckets, num_heads, per_head_dim].
             pos_q_proj = self.pos_q_proj(relative_pos_emb)
             # [batch, num_heads, key_len, 2 * num_directional_buckets].
-            p2c_score = self._attention_scores(k_proj, pos_q_proj)
+            with child_context("p2c_attn_scores", module=self):
+                p2c_score = self._attention_scores(k_proj, pos_q_proj)
             # Gather along last axis using the relative positions d(j,i), as in Equation (4).
             # [batch, 1, query_len, key_len']. Range is inclusive.
             d_ji = jnp.clip(
@@ -384,7 +411,7 @@ class DeBERTaV2Encoder(Encoder):
         relative_pos_emb: Embedding.Config = DeBERTaV2RelativePositionalEmbedding.default_config()
 
     @classmethod
-    def default_config(cls: Type["DeBERTaV2Encoder"]) -> Encoder.Config:
+    def default_config(cls: type["DeBERTaV2Encoder"]) -> Encoder.Config:
         cfg = super().default_config()
         cfg.transformer = RepeatedTransformerLayer.default_config()
         cfg.transformer.layer.self_attention.attention = (
@@ -413,7 +440,7 @@ def deberta_v2_self_attention_config(
     share_projections: bool = True,
     num_directional_buckets: Optional[int] = None,
     attention_type: Optional[
-        Set[DisentangledAttentionType]
+        set[DisentangledAttentionType]
     ] = (  # pytype: disable=annotation-type-mismatch
         DisentangledAttentionType.P2C,
         DisentangledAttentionType.C2P,
@@ -475,7 +502,7 @@ def deberta_v2_encoder_config(
     max_position_embeddings: Optional[int] = None,
     num_directional_buckets: Optional[int] = None,
     base_cfg: Optional[DeBERTaV2Encoder.Config] = None,
-    stack_cls: Optional[Type[BaseStackedTransformerLayer]] = None,
+    stack_cls: Optional[type[BaseStackedTransformerLayer]] = None,
 ) -> DeBERTaV2Encoder.Config:
     """Builds configs for DeBERTaV2 Encoder.
 

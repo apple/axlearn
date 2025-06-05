@@ -1,17 +1,21 @@
+# Copyright © 2023 Apple Inc.
+
 """Adapter layers to use Flax/Linen modules.
 
 FlaxLayer allows users to use flax.linen modules in an AXLearn module hierarchy.
 See the FeedForward layer in adapter_flax_test.py for an example.
 """
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Callable, Optional, Union
 
 import jax.random
 from flax.linen import Module as FlaxModule
+from flax.linen import Partitioned
 
 from axlearn.common import utils
-from axlearn.common.base_layer import BaseLayer, NestedParameterSpec, ParameterSpec, PartitionSpec
+from axlearn.common.base_layer import BaseLayer, NestedParameterSpec, ParameterSpec
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.module import Module, NestedTensor
+from axlearn.common.module import Module, Nested, Tensor
 
 
 class FlaxLayer(BaseLayer):
@@ -23,11 +27,11 @@ class FlaxLayer(BaseLayer):
 
         # A function to return a linen.Module.
         create_module_fn: Required[Callable[[], FlaxModule]] = REQUIRED
-        create_module_kwargs: Dict[str, Any] = {}  # The kwargs for create_module_fn.
+        create_module_kwargs: dict[str, Any] = {}  # The kwargs for create_module_fn.
 
         # A function to return (args, kwargs) used for linen.Module.init.
-        create_dummy_input_fn: Required[Callable[[], Tuple[Sequence, Dict]]] = REQUIRED
-        create_dummy_input_kwargs: Dict[str, Any] = {}  # The kwargs for create_dummy_input_fn.
+        create_dummy_input_fn: Required[Callable[[], tuple[Sequence, dict]]] = REQUIRED
+        create_dummy_input_kwargs: dict[str, Any] = {}  # The kwargs for create_dummy_input_fn.
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -37,19 +41,29 @@ class FlaxLayer(BaseLayer):
         self.vlog(1, "dummy_inputs=%s", utils.shapes(self._dummy_inputs))
 
     def create_parameter_specs_recursively(self) -> NestedParameterSpec:
-        # Create parameters with a dummy PRNGKey. The parameters are used only to generate a
-        # NestedParameterSpec.
-        params = self.initialize_parameters_recursively(jax.random.PRNGKey(0))
         if self.config.param_partition_spec is not None:
-            raise NotImplementedError("FlaxLayer does not support partitioned parameters yet.")
-        return jax.tree_util.tree_map(
-            lambda x: ParameterSpec(
-                dtype=x.dtype,
-                shape=x.shape,
-                # Replicate the parameter.
-                mesh_axes=PartitionSpec(*([None] * len(x.shape))),
-            ),
-            params,
+            raise ValueError("Specify partition specs on the Flax nn.Module directly.")
+
+        param_specs = jax.eval_shape(self.initialize_parameters_recursively, jax.random.PRNGKey(0))
+
+        def get_param_spec(param_spec: Union[Partitioned, jax.ShapeDtypeStruct]) -> ParameterSpec:
+            # Will be Partitioned e.g. if the flax layer has partitioning annotations.
+            if isinstance(param_spec, Partitioned):
+                mesh_axes = param_spec.get_partition_spec()
+                param_spec = param_spec.value
+            else:
+                # If not Partitioned, use None to indicate replication across all axes.
+                mesh_axes = None
+            return ParameterSpec(
+                dtype=param_spec.dtype,
+                shape=param_spec.shape,
+                mesh_axes=mesh_axes,
+            )
+
+        return jax.tree.map(
+            get_param_spec,
+            param_specs,
+            is_leaf=lambda x: isinstance(x, Partitioned),
         )
 
     def _create_flax_module(self) -> FlaxModule:
@@ -61,18 +75,18 @@ class FlaxLayer(BaseLayer):
         return cfg.create_dummy_input_fn(**cfg.create_dummy_input_kwargs)
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
-    ) -> NestedTensor:
+        self, prng_key: utils.Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
+    ) -> Nested[Tensor]:
         if self._use_prebuilt_params(prebuilt):
-            return prebuilt
+            return jax.tree.map(lambda _: None, prebuilt)
         args, kwargs = self._dummy_inputs
         return self._module.init(prng_key, *args, **kwargs)
 
     def forward(
         self,
         *args,
-        rngs: Optional[Dict[str, jax.random.PRNGKey]] = None,
-        mutable: Optional[Union[bool, str, List[str]]] = None,
+        rngs: Optional[dict[str, jax.random.PRNGKey]] = None,
+        mutable: Optional[Union[bool, str, list[str]]] = None,
         module_method: Optional[str] = None,
         **kwargs,
     ):
@@ -99,7 +113,7 @@ class FlaxLayer(BaseLayer):
 
 def config_for_flax_module(
     create_module_fn: Callable[[], FlaxModule],
-    create_dummy_input_fn: Callable[[], NestedTensor],
+    create_dummy_input_fn: Callable[[], Nested[Tensor]],
     **kwargs,
 ):
     return FlaxLayer.default_config().set(

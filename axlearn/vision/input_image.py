@@ -1,19 +1,41 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# pytorch/vision:
+# Copyright (c) Soumith Chintala 2016, All rights reserved.
+# Licensed under the BSD 3-Clause License.
+#
+# google/flax:
+# Copyright 2023 The Flax Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google-research/vision_transformer:
+# Copyright 2023 Google LLC.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Image input modules.
 
 References:
-https://github.com/pytorch/vision/blob/main/torchvision/prototype/models/resnet.py
-https://github.com/pytorch/vision/blob/main/references/classification/presets.py
-https://github.com/google/flax/blob/main/examples/imagenet/input_pipeline.py
-https://github.com/google-research/vision_transformer/blob/main/vit_jax/input_pipeline.py#L195-L241
+https://github.com/pytorch/vision/blob/29418e34a94e2c43f861a321265f7f21035e7b19/torchvision/models/resnet.py
+https://github.com/pytorch/vision/blob/29418e34a94e2c43f861a321265f7f21035e7b19/references/classification/presets.py
+https://github.com/google/flax/blob/ce98f350c22599b31cce1b787f5ed2d5510f0706/examples/imagenet/input_pipeline.py
+https://github.com/google-research/vision_transformer/blob/ac6e056f9da686895f9f0f6ac026d3b5a464e59e/vit_jax/input_pipeline.py#L195-L241
+https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/legacy/image_classification/augment.py
 """
-from typing import Any, Dict, List, Optional, Tuple
+
+from typing import Any, Optional
 
 import numpy as np
 import tensorflow as tf
 from absl import logging
 
 from axlearn.common import input_tf_data
-from axlearn.common.config import config_class, config_for_function
+from axlearn.common.config import config_for_function
 from axlearn.common.utils import Tensor
 from axlearn.vision import augment
 from axlearn.vision.mask_generator import MaskingGenerator
@@ -39,8 +61,8 @@ def filter_invalid_images(ds: tf.data.Dataset) -> tf.data.Dataset:
 def whiten(
     image: np.ndarray,
     *,
-    mean_rgb: Optional[List[float]] = None,
-    stddev_rgb: Optional[List[float]] = None,
+    mean_rgb: Optional[list[float]] = None,
+    stddev_rgb: Optional[list[float]] = None,
 ) -> tf.Tensor:
     image = tf.cast(tf.convert_to_tensor(image), tf.float32)
     image -= tf.constant(mean_rgb or MEAN_RGB, shape=[1, 1, 3], dtype=image.dtype)
@@ -51,8 +73,8 @@ def whiten(
 def de_whiten(
     image: np.ndarray,
     *,
-    mean_rgb: Optional[List[float]] = None,
-    stddev_rgb: Optional[List[float]] = None,
+    mean_rgb: Optional[list[float]] = None,
+    stddev_rgb: Optional[list[float]] = None,
 ) -> tf.Tensor:
     """De-whitens given whitened image.
 
@@ -73,8 +95,8 @@ def de_whiten(
 
 def random_crop(
     image: tf.Tensor,
-    aspect_ratio_range: Tuple[float, float] = (0.75, 1.33),
-    area_range: Tuple[float, float] = (0.08, 1.0),
+    aspect_ratio_range: tuple[float, float] = (0.75, 1.33),
+    area_range: tuple[float, float] = (0.08, 1.0),
     max_attempts: int = 100,
 ):
     """Generates a randomly cropped image.
@@ -152,8 +174,13 @@ def randaugment(
     magnitude: float = 10.0,
     cutout_const: float = 40.0,
     translate_const: float = 100.0,
-    exclude_ops: Optional[List[str]] = None,
+    exclude_ops: Optional[list[str]] = None,
 ):
+    """Applies RandAugment from https://arxiv.org/abs/1909.13719.
+
+    Reference:
+    https://github.com/tensorflow/models/blob/5a0305c41304e8136e2056c589ab490a807dffa0/official/legacy/image_classification/augment.py
+    """
     logging.info("Applying randaugment with %s layers and magnitude %s.", num_layers, magnitude)
     available_ops = [
         "AutoContrast",
@@ -214,7 +241,7 @@ def random_erasing(
 
     Args:
         image: the input image of shape [H, W, C].
-        erasing_probability: the probablity of applying random erasing.
+        erasing_probability: the probability of applying random erasing.
 
     Returns:
         The augmented image.
@@ -229,12 +256,12 @@ def crop_augment_whiten(
     image: Tensor,
     *,
     is_training: bool,
-    image_size: Tuple[int, int],
-    eval_resize: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int],
+    eval_resize: Optional[tuple[int, int]] = None,
     augment_name: Optional[str] = None,
     randaug_num_layers: int = 2,
     randaug_magnitude: int = 10,
-    randaug_exclude_ops: Optional[List[str]] = None,
+    randaug_exclude_ops: Optional[list[str]] = None,
     erasing_probability: Optional[float] = None,
     use_whitening: bool = True,
 ):
@@ -285,19 +312,20 @@ def crop_augment_whiten(
 
 def _process_example(
     is_training: bool,
-    image_size: Tuple[int, int],
-    eval_resize: Optional[Tuple[int, int]] = None,
+    image_size: tuple[int, int],
+    eval_resize: Optional[tuple[int, int]] = None,
     num_parallel_calls: Optional[int] = None,
     augment_name: Optional[str] = None,
     randaug_num_layers: int = 2,
     randaug_magnitude: int = 10,
-    randaug_exclude_ops: Optional[List[str]] = None,
+    randaug_exclude_ops: Optional[list[str]] = None,
     erasing_probability: Optional[float] = None,
+    use_whitening: bool = True,
     mask_window_size: Optional[int] = None,
     num_masking_patches: Optional[int] = None,
     input_key: str = "image",
 ):
-    def example_fn(example: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def example_fn(example: dict[str, Tensor]) -> dict[str, Tensor]:
         image = example[input_key]
         image = crop_augment_whiten(
             image,
@@ -309,6 +337,7 @@ def _process_example(
             randaug_magnitude=randaug_magnitude,
             randaug_exclude_ops=randaug_exclude_ops,
             erasing_probability=erasing_probability,
+            use_whitening=use_whitening,
         )
         data = {"image": image, "label": example["label"]}
 
@@ -327,7 +356,7 @@ def _process_example(
         return data
 
     def dataset_fn(ds: tf.data.Dataset) -> tf.data.Dataset:
-        return ds.map(example_fn, num_parallel_calls=num_parallel_calls)
+        return ds.map(example_fn, num_parallel_calls=num_parallel_calls or tf.data.AUTOTUNE)
 
     return dataset_fn
 
@@ -337,28 +366,20 @@ def pad_with_negative_labels(element_spec: Any) -> Any:
     # For multilabel classification usecases, we support the plural version of label.
     for key in ("label", "labels", "text"):
         if key in example:
-            example[key] = -tf.ones_like(example[key])
+            example[key] = tf.negative(tf.ones_like(example[key]))
     return example
 
 
+# TODO(markblee): Deprecate Input subclasses in favor of config builder pattern.
 class ImagenetInput(input_tf_data.Input):
     """ImageNet input module."""
-
-    @config_class
-    class Config(input_tf_data.Input.Config):
-        """Configures ImagenetInput."""
-
-        image_size: Tuple[int, int] = (224, 224)  # The image size.
-        # The image size to resize to during eval before cropping. If set to None, center crop the
-        # image then resize to `image_size` while perserving the original aspect ratio.
-        eval_resize: Optional[Tuple[int, int]] = None
 
     @classmethod
     def default_config(cls):
         cfg = super().default_config()  # type: ImagenetInput.Config
         cfg.source = config_for_function(input_tf_data.tfds_dataset).set(
             dataset_name="imagenet2012",
-            shuffle_buffer_size=1024,  # to be tuned.
+            train_shuffle_buffer_size=1024,  # to be tuned.
         )
         cfg.processor = config_for_function(_process_example).set(
             image_size=(224, 224),
@@ -391,7 +412,7 @@ def fake_image_dataset(
 ) -> input_tf_data.BuildDatasetFn:
     del is_training
 
-    def example_fn(_) -> Dict[str, Tensor]:
+    def example_fn(_) -> dict[str, Tensor]:
         rng = np.random.RandomState(0)
         image = rng.randint(
             low=0,

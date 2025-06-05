@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# microsoft/unilm:
+# Copyright (c) 2022 Microsoft.
+# Licensed under The MIT License.
+
 """BEiT-3 Image Tokenizer
 
 Sect. 2.2 of https://arxiv.org/pdf/2208.10442.pdf, BEiT-3 uses BEiT-v2 image tokenizer.
@@ -9,20 +17,14 @@ Later, when we support image tokenizer finetuning, we might implement EMA on KMe
 Ref: https://github.com/microsoft/unilm/blob/master/beit2/norm_ema_quantizer.py
 """
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
 
 from axlearn.common.attention import scaled_hidden_dim
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
-from axlearn.common.config import (
-    REQUIRED,
-    FunctionConfigBase,
-    Required,
-    config_class,
-    config_for_class,
-)
+from axlearn.common.config import REQUIRED, FunctionConfigBase, Required, config_class
 from axlearn.common.layers import (
     L2Norm,
     LayerNorm,
@@ -48,7 +50,7 @@ class BEiTStochasticDepth(BaseLayer):
     where gamma is constant initialized and with shape of (1, 1, input_dim).
 
     Reference:
-    https://github.com/microsoft/unilm/blob/master/beit2/modeling_finetune.py#L197
+    https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_finetune.py#L197
     """
 
     @config_class
@@ -62,10 +64,10 @@ class BEiTStochasticDepth(BaseLayer):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        cfg.param_init = config_for_class(ConstantInitializer).set(value=1)
+        cfg.param_init = ConstantInitializer.default_config().set(value=1)
         return cfg
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         param_specs = {}
         param_specs["gamma"] = ParameterSpec(
             shape=(1, 1, self.config.input_dim),
@@ -96,7 +98,7 @@ class BEiTImageTokenizerMapping(BaseLayer):
 
     Backbone output (model_dim) -> Linear1 (model_dim) -> tanh -> Linear2 (dim=32)
 
-    Ref: https://github.com/microsoft/unilm/blob/master/beit2/modeling_vqkd.py#L87-L91
+    https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L87-L91
     """
 
     @config_class
@@ -106,7 +108,7 @@ class BEiTImageTokenizerMapping(BaseLayer):
         # The input_dim for BEiT-3 is ViT model_dim.
         input_dim: Required[int] = REQUIRED
         # The output_dim for BEiT-3 is 32.
-        # Ref: https://github.com/microsoft/unilm/blob/master/beit2/modeling_vqkd.py#L34
+        # https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L34
         output_dim: Required[int] = REQUIRED
         linear1: Linear.Config = Linear.default_config()
         linear2: Linear.Config = Linear.default_config()
@@ -140,7 +142,7 @@ class BEiTImageTokenizerMapping(BaseLayer):
 class BEiTImageVQKD(BaseLayer):
     """Image encoder for BEiTImageTokenizer.
 
-    Ref: https://github.com/microsoft/unilm/blob/master/beit2/modeling_vqkd.py#L87-L91
+    https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L87-L91
     """
 
     @config_class
@@ -161,7 +163,7 @@ class BEiTImageVQKD(BaseLayer):
         self._add_child("l2norm", cfg.l2norm)
         self._add_child("output_proj", cfg.output_proj)
 
-    def forward(self, inputs: Tensor) -> Tuple[Tensor, Dict[str, Tensor]]:
+    def forward(self, inputs: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         """Image encoder for BeiTImageTokenizer.
 
         Args:
@@ -180,14 +182,19 @@ class BEiTImageVQKD(BaseLayer):
         # encoded_outputs shape [batch_size, seq_len, codebook_dim]
         encoded_outputs = self.output_proj(encoded_features)
         encoded_outputs = self.l2norm(encoded_outputs)
-        paddings = jnp.zeros(encoded_outputs.shape[:2])
+        paddings = jnp.zeros(encoded_outputs.shape[:2], jnp.bool)
         quantized_output = self.quantizer(inputs=encoded_outputs, paddings=paddings)
         # quantized_output.quantized_vectors shape [batch_size, seq_len, 1, codebook_dim]
-        # quantized_output.onehots in shape [batch_size, seq_len, 1, codebook_size]
         # quantized_output.ids in shape [batch_size, seq_len, 1]
+        onehots = jax.nn.one_hot(
+            quantized_output.ids,
+            num_classes=self.config.quantizer.codebook_size,
+            axis=-1,
+            dtype=jnp.int32,
+        )
         return jnp.squeeze(quantized_output.ids, axis=-1), {
             "quantized_vectors": jnp.squeeze(quantized_output.quantized_vectors, axis=-2),
-            "quantized_codebook_onehots": jnp.squeeze(quantized_output.onehots, axis=-2),
+            "quantized_codebook_onehots": jnp.squeeze(onehots, axis=-2),
         }
 
 
@@ -199,8 +206,8 @@ def set_beit_image_tokenizer_encoder_config(
     codebook_dim: int = 32,
     num_heads: int = 12,
     feed_forward_dim: Union[int, FunctionConfigBase] = scaled_hidden_dim(scale=4),
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
     dropout_rate: float = 0,
     pooler_config: BasePoolingLayer.Config = AveragePooling.default_config(),
     feed_forward_act: str = "exact_gelu",
@@ -212,7 +219,7 @@ def set_beit_image_tokenizer_encoder_config(
     """Configure the BEiT-3 Image Tokenizer.
 
     The default setting is adapted from:
-    https://github.com/microsoft/unilm/blob/master/beit2/modeling_vqkd.py#L243
+    https://github.com/microsoft/unilm/blob/716e4726e6154b4feb95db0b4dffd925bb5f5218/beit2/modeling_vqkd.py#L243
 
     Args:
         num_layers: An integer indicating the number of transformer blocks.

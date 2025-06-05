@@ -1,6 +1,8 @@
+# Copyright © 2023 Apple Inc.
+
 """Vision param converters."""
 import copy
-from typing import Optional, Type, Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -28,6 +30,8 @@ from axlearn.common.text_encoder import TextEmbeddingEncoder
 from axlearn.common.utils import NestedTensor
 from axlearn.common.vision_transformer import Encoder1D, VisionTransformer
 from axlearn.vision.clip import CLIPImageStreamEncoder, CLIPTextStreamEncoder
+from axlearn.vision.image_classification import ImageClassificationModel
+from axlearn.vision.mobilenets_blocks import MobileBlockType
 
 
 @register_axlearn_to_torch(src=[MultiStreamModel], dst=[hf_clip.CLIPModel])
@@ -53,6 +57,22 @@ def parameters_to_hf_clip_model(
         src.textual_encoder.output_proj,
         params["textual_encoder"]["output_proj"],
         dst.text_projection,
+    )
+
+
+@register_axlearn_to_torch(src=[MultiStreamModel], dst=[hf_clip.CLIPVisionModelWithProjection])
+def parameters_to_hf_clip_vision_model_with_projection(
+    *, src: MultiStreamModel, params: NestedTensor, dst: hf_clip.CLIPVisionModelWithProjection
+):
+    axlearn_to_torch(
+        src.visual_encoder.image_encoder,
+        params["visual_encoder"]["image_encoder"],
+        dst.vision_model,
+    )
+    axlearn_to_torch(
+        src.visual_encoder.output_proj,
+        params["visual_encoder"]["output_proj"],
+        dst.visual_projection,
     )
 
 
@@ -90,9 +110,7 @@ def parameters_to_hf_clip_encoder(*, src: Encoder, params: NestedTensor, dst: hf
             assert isinstance(src.transformer, RepeatedTransformerLayer)
             axlearn_to_torch(
                 src.transformer.repeat.layer,
-                jax.tree_util.tree_map(
-                    lambda x, idx=i: x[idx], params["transformer"]["repeat"]["layer"]
-                ),
+                jax.tree.map(lambda x, idx=i: x[idx], params["transformer"]["repeat"]["layer"]),
                 dst_layer,
             )
 
@@ -220,7 +238,7 @@ def _parameters_from_clip_visual_encoder(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPVisionTransformer])
 def parameters_from_clip_vision_transformer(
-    src: hf_clip.CLIPVisionTransformer, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPVisionTransformer, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     # The HF CLIP cls_token shape is [dim].
@@ -237,7 +255,7 @@ def parameters_from_clip_vision_transformer(
                 src.encoder,
                 src.embeddings,
                 src.pre_layrnorm,
-                src.post_layernorm
+                src.post_layernorm,
                 # pre_layrnorm is not a typo.
             ),
             pooler={},
@@ -266,7 +284,7 @@ def _parameters_from_clip_attention_dense(src: hf_clip.CLIPAttention) -> NestedT
         weight=output_dense.weight.view(-1, num_heads, per_head_dim),
         bias=output_dense.bias,
     )
-    return dict(i_proj=i_proj, o_proj=o_proj, dropout={})
+    return dict(i_proj=i_proj, o_proj=o_proj, dropout={}, scale_key={}, scale_query={}, kv_cache={})
 
 
 def _parameters_from_clip_attention(
@@ -297,7 +315,7 @@ def _parameters_from_clip_feed_forward(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPEncoderLayer])
 def parameters_from_clip_layer(
-    src: hf_clip.CLIPEncoderLayer, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPEncoderLayer, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     return dict(
@@ -308,7 +326,7 @@ def parameters_from_clip_layer(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPTextEmbeddings])
 def parameters_from_clip_text_embedding(
-    src: hf_clip.CLIPTextEmbeddings, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPTextEmbeddings, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     if src.token_embedding.weight.shape[0] == 49408:
@@ -330,7 +348,7 @@ def parameters_from_clip_text_embedding(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPEncoder])
 def parameters_from_clip_encoder(
-    src_enc: hf_clip.CLIPEncoder, dst: Optional[Union[BaseLayer, Type]] = None
+    src_enc: hf_clip.CLIPEncoder, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     params = {}
@@ -341,7 +359,7 @@ def parameters_from_clip_encoder(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPTextTransformer])
 def parameters_from_clip_text_transformer(
-    src: hf_clip.CLIPTextTransformer, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPTextTransformer, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     return {
@@ -359,7 +377,7 @@ def parameters_from_clip_text_transformer(
 
 @register_torch_to_axlearn(src=[hf_clip.CLIPModel])
 def parameters_from_clip_model(
-    src: hf_clip.CLIPModel, dst: Optional[Union[BaseLayer, Type]] = None
+    src: hf_clip.CLIPModel, dst: Optional[Union[BaseLayer, type]] = None
 ) -> NestedTensor:
     del dst
     visual_encoder = torch_to_axlearn(src.vision_model)
@@ -375,3 +393,192 @@ def parameters_from_clip_model(
             log_logit_scale=src.logit_scale.reshape(1),
         ),
     )
+
+
+class ClassificationModelParamConverter:
+    """Base class for converting parameters of classification models from PyTorch to JAX."""
+
+    @staticmethod
+    def _params_from_conv(ref: torch.nn.Module) -> NestedTensor:
+        param = {
+            # torch conv uses layout (output, input, H, W)
+            # while axlearn uses (H, W, input, output).
+            "weight": ref.weight.permute(2, 3, 1, 0),
+        }
+        if hasattr(ref, "bias"):
+            param["bias"] = ref.bias
+        return param
+
+    @staticmethod
+    def _params_from_linear(ref: torch.nn.Module) -> NestedTensor:
+        return {
+            # torch linear uses layout (output, input)
+            # while axlearn uses (input, output).
+            "weight": ref.weight.transpose(1, 0),
+            "bias": ref.bias,
+        }
+
+    @staticmethod
+    def _params_from_bn(ref: torch.nn.Module) -> NestedTensor:
+        return {
+            "scale": ref.weight,
+            "bias": ref.bias,
+            "moving_mean": ref.running_mean,
+            "moving_variance": ref.running_var,
+        }
+
+
+class MobileNetsParamConverter(ClassificationModelParamConverter):
+    """Converter for parameters of MobileNets from PyTorch to JAX."""
+
+    @staticmethod
+    def _params_from_squeeze_excitation(ref: torch.nn.Module) -> NestedTensor:
+        params = {}
+        if hasattr(ref, "conv_expand"):
+            params["expand"] = MobileNetsParamConverter._params_from_conv(ref.conv_expand)
+        if hasattr(ref, "conv_reduce"):
+            params["reduce"] = MobileNetsParamConverter._params_from_conv(ref.conv_reduce)
+        return params
+
+    @staticmethod
+    def _params_from_block(block_type: MobileBlockType, ref: torch.nn.Module) -> NestedTensor:
+        if block_type == MobileBlockType.CONV_BN_ACT:
+            params = {
+                "conv": MobileNetsParamConverter._params_from_conv(ref.conv),
+                "bn": MobileNetsParamConverter._params_from_bn(ref.bn1),
+            }
+        elif block_type == MobileBlockType.DEPTHWISE_SEPARABLE:
+            params = {
+                "conv_dw": MobileNetsParamConverter._params_from_conv(ref.conv_dw),
+                "bn_dw": MobileNetsParamConverter._params_from_bn(ref.bn1),
+                "conv_pw": MobileNetsParamConverter._params_from_conv(ref.conv_pw),
+                "bn_pw": MobileNetsParamConverter._params_from_bn(ref.bn2),
+            }
+        elif block_type == MobileBlockType.INVERTED_BOTTLENECK:
+            params = {
+                "conv_exp": MobileNetsParamConverter._params_from_conv(ref.conv_pw),
+                "bn_exp": MobileNetsParamConverter._params_from_bn(ref.bn1),
+                "conv_dw": MobileNetsParamConverter._params_from_conv(ref.conv_dw),
+                "bn_dw": MobileNetsParamConverter._params_from_bn(ref.bn2),
+                "conv_pw": MobileNetsParamConverter._params_from_conv(ref.conv_pwl),
+                "bn_pw": MobileNetsParamConverter._params_from_bn(ref.bn3),
+            }
+        elif block_type == MobileBlockType.FUSED_INVERTED_BOTTLENECK:
+            params = {
+                "conv_exp": MobileNetsParamConverter._params_from_conv(ref.conv_exp),
+                "bn_exp": MobileNetsParamConverter._params_from_bn(ref.bn1),
+                "conv_pw": MobileNetsParamConverter._params_from_conv(ref.conv_pwl),
+                "bn_pw": MobileNetsParamConverter._params_from_bn(ref.bn2),
+            }
+        if hasattr(ref, "se"):
+            params["se"] = MobileNetsParamConverter._params_from_squeeze_excitation(ref.se)
+        return params
+
+    @staticmethod
+    def _params_from_stem(ref: torch.nn.ModuleList) -> NestedTensor:
+        return {
+            "conv": MobileNetsParamConverter._params_from_conv(ref.conv_stem),
+            "bn": MobileNetsParamConverter._params_from_bn(ref.bn1),
+        }
+
+    @staticmethod
+    def _params_from_embedding_layer(ref: torch.nn.ModuleList) -> NestedTensor:
+        params = {
+            "conv_pw": MobileNetsParamConverter._params_from_conv(ref.conv_head),
+        }
+        if hasattr(ref, "bn2"):
+            params["bn"] = MobileNetsParamConverter._params_from_bn(ref.bn2)
+        return params
+
+    @staticmethod
+    def _params_from_backbone(
+        cfg: ImageClassificationModel.Config, ref: torch.nn.ModuleList
+    ) -> NestedTensor:
+        params = {
+            "stem": MobileNetsParamConverter._params_from_stem(ref),
+            "embedding_layer": MobileNetsParamConverter._params_from_embedding_layer(ref),
+        }
+        block_defs = cfg.backbone.block_defs
+        for stage_idx, (stage_defs, ref_stage) in enumerate(zip(block_defs, ref.blocks)):
+            for block_idx, (stage_def, ref_block) in enumerate(zip(stage_defs, ref_stage)):
+                block_type: MobileBlockType = stage_def[0]
+                block_str = f"blocks_{stage_idx}_{block_idx}"
+                params[block_str] = MobileNetsParamConverter._params_from_block(
+                    block_type, ref_block
+                )
+        return params
+
+    @staticmethod
+    def _params_from_classifier(ref: torch.nn.ModuleList) -> NestedTensor:
+        return MobileNetsParamConverter._params_from_linear(ref.classifier)
+
+    @staticmethod
+    def params_from_model(
+        cfg: ImageClassificationModel.Config, ref: torch.nn.Module
+    ) -> NestedTensor:
+        return {
+            "backbone": MobileNetsParamConverter._params_from_backbone(cfg, ref),
+            "classifier": MobileNetsParamConverter._params_from_classifier(ref),
+        }
+
+
+class ResNetParamConverter(ClassificationModelParamConverter):
+    """Converter for ResNet parameters from PyTorch to JAX."""
+
+    @staticmethod
+    def _params_from_downsample(ref: torch.nn.ModuleList) -> NestedTensor:
+        return {
+            "conv": ResNetParamConverter._params_from_conv(ref[0]),
+            "norm": ResNetParamConverter._params_from_bn(ref[1]),
+        }
+
+    @staticmethod
+    def _params_from_block(ref: torch.nn.Module) -> NestedTensor:
+        params = {
+            "conv1": ResNetParamConverter._params_from_conv(ref.conv1),
+            "norm1": ResNetParamConverter._params_from_bn(ref.bn1),
+            "conv2": ResNetParamConverter._params_from_conv(ref.conv2),
+            "norm2": ResNetParamConverter._params_from_bn(ref.bn2),
+        }
+        if hasattr(ref, "conv3"):
+            params["conv3"] = ResNetParamConverter._params_from_conv(ref.conv3)
+        if hasattr(ref, "bn3"):
+            params["norm3"] = ResNetParamConverter._params_from_bn(ref.bn3)
+        if getattr(ref, "downsample"):
+            params["downsample"] = ResNetParamConverter._params_from_downsample(ref.downsample)
+        return params
+
+    @staticmethod
+    def _params_from_stage(ref: torch.nn.ModuleList) -> NestedTensor:
+        return {
+            f"block{i}": ResNetParamConverter._params_from_block(block)
+            for i, block in enumerate(ref)
+        }
+
+    @staticmethod
+    def _params_from_stem(ref: torch.nn.ModuleList) -> NestedTensor:
+        return {
+            "conv1": ResNetParamConverter._params_from_conv(ref.conv1),
+            "norm1": ResNetParamConverter._params_from_bn(ref.bn1),
+        }
+
+    @staticmethod
+    def _params_from_backbone(ref: torch.nn.ModuleList) -> NestedTensor:
+        return {
+            "stem": ResNetParamConverter._params_from_stem(ref),
+            **{
+                f"stage{i}": ResNetParamConverter._params_from_stage(getattr(ref, f"layer{i + 1}"))
+                for i in range(4)
+            },
+        }
+
+    @staticmethod
+    def _params_from_classifier(ref: torch.nn.ModuleList) -> NestedTensor:
+        return ResNetParamConverter._params_from_linear(ref.fc)
+
+    @staticmethod
+    def params_from_model(ref: torch.nn.Module) -> NestedTensor:
+        return {
+            "backbone": ResNetParamConverter._params_from_backbone(ref),
+            "classifier": ResNetParamConverter._params_from_classifier(ref),
+        }

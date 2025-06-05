@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests mobile networks."""
 import re
 
@@ -20,37 +28,41 @@ from axlearn.vision.mobilenets import (
 )
 
 
-# TODO(e_daxberger): Compare model outputs against reference implementation,
-# e.g. https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet_v3.py
 class MobileNetsTest(parameterized.TestCase):
     """Tests MobileNets."""
 
+    # TODO(edaxberger): Unify this test with test_mobilenets in image_classification_test.py.
     @parameterized.parameters(
-        (ModelNames.MOBILENETV3, "small-minimal-100"),
-        (ModelNames.MOBILENETV3, "small-100"),
-        (ModelNames.MOBILENETV3, "large-minimal-100"),
-        (ModelNames.MOBILENETV3, "large-100"),
-        # (ModelNames.MOBILENETV3, "small-minimal-075"), # not available in timm
-        (ModelNames.MOBILENETV3, "small-075"),
-        # (ModelNames.MOBILENETV3, "large-minimal-075"), # not available in timm
-        (ModelNames.MOBILENETV3, "large-075"),
-        (ModelNames.EFFICIENTNET, "B0"),
-        (ModelNames.EFFICIENTNET, "B1"),
-        (ModelNames.EFFICIENTNET, "B2"),
-        (ModelNames.EFFICIENTNET, "B3"),
-        (ModelNames.EFFICIENTNET, "B4"),
-        (ModelNames.EFFICIENTNET, "B5"),
-        (ModelNames.EFFICIENTNET, "B6"),
-        (ModelNames.EFFICIENTNET, "B7"),
-        (ModelNames.EFFICIENTNET, "B8"),
-        (ModelNames.EFFICIENTNET, "lite0"),
-        (ModelNames.EFFICIENTNET, "lite1"),
-        (ModelNames.EFFICIENTNET, "lite2"),
-        (ModelNames.EFFICIENTNET, "lite3"),
-        (ModelNames.EFFICIENTNET, "lite4"),
+        (ModelNames.MOBILENETV3, "small-minimal-100", None),
+        (ModelNames.MOBILENETV3, "small-075", None),
+        (ModelNames.MOBILENETV3, "small-100", None),
+        (ModelNames.MOBILENETV3, "large-minimal-100", None),
+        (ModelNames.MOBILENETV3, "large-075", None),
+        (ModelNames.MOBILENETV3, "large-100", None),
+        (ModelNames.EFFICIENTNET, "B0", "V1"),
+        (ModelNames.EFFICIENTNET, "B1", "V1"),
+        (ModelNames.EFFICIENTNET, "B2", "V1"),
+        (ModelNames.EFFICIENTNET, "B3", "V1"),
+        (ModelNames.EFFICIENTNET, "B4", "V1"),
+        (ModelNames.EFFICIENTNET, "B5", "V1"),
+        (ModelNames.EFFICIENTNET, "B6", "V1"),
+        (ModelNames.EFFICIENTNET, "B7", "V1"),
+        (ModelNames.EFFICIENTNET, "B8", "V1"),
+        (ModelNames.EFFICIENTNET, "lite0", "V1"),
+        (ModelNames.EFFICIENTNET, "lite1", "V1"),
+        (ModelNames.EFFICIENTNET, "lite2", "V1"),
+        (ModelNames.EFFICIENTNET, "lite3", "V1"),
+        (ModelNames.EFFICIENTNET, "lite4", "V1"),
+        (ModelNames.EFFICIENTNET, "B0", "V2"),
+        (ModelNames.EFFICIENTNET, "B1", "V2"),
+        (ModelNames.EFFICIENTNET, "B2", "V2"),
+        (ModelNames.EFFICIENTNET, "B3", "V2"),
+        (ModelNames.EFFICIENTNET, "S", "V2"),
+        (ModelNames.EFFICIENTNET, "M", "V2"),
+        (ModelNames.EFFICIENTNET, "L", "V2"),
     )
-    def test_param_count(self, model_name, variant):
-        cfg = named_model_configs(model_name, variant)
+    def test_param_count(self, model_name, variant, version):
+        cfg = named_model_configs(model_name, variant, efficientnet_version=version)
         classification_model = (
             ImageClassificationModel.default_config()
             .set(
@@ -64,10 +76,11 @@ class MobileNetsTest(parameterized.TestCase):
             jax.random.PRNGKey(1)
         )
 
-        if model_name == ModelNames.EFFICIENTNET:
-            timm_model_name = "efficientnet"
-        elif model_name == ModelNames.MOBILENETV3:
-            timm_model_name = "mobilenetv3"
+        timm_model_name = {
+            (ModelNames.EFFICIENTNET, "V1"): "efficientnet",
+            (ModelNames.EFFICIENTNET, "V2"): "efficientnetv2",
+            (ModelNames.MOBILENETV3, None): "mobilenetv3",
+        }[(model_name, version)]
         timm_variant = variant.replace("-", "_").lower()
 
         ref_model = timm.create_model(f"tf_{timm_model_name}_{timm_variant}", pretrained=False)
@@ -85,17 +98,18 @@ class MobileNetsTest(parameterized.TestCase):
         self.assertEqual(count_model_params(init_params_classifier), expected_param_count)
 
     @parameterized.product(
-        model=(
-            (ModelNames.MOBILENETV3, "small-minimal-100"),
-            (ModelNames.EFFICIENTNET, "B0"),
-            (ModelNames.EFFICIENTNET, "lite0"),
+        model_variant=(
+            (ModelNames.MOBILENETV3, "small-minimal-100", None),
+            (ModelNames.EFFICIENTNET, "B0", "V1"),
+            (ModelNames.EFFICIENTNET, "lite0", "V1"),
+            (ModelNames.EFFICIENTNET, "B0", "V2"),
         ),
         is_training=(False, True),
         endpoints_mode=tuple(EndpointsMode),
     )
-    def test_shapes(self, model, is_training, endpoints_mode):
-        model_name, variant = model
-        cfg = named_model_configs(model_name, variant)
+    def test_shapes(self, model_variant, is_training, endpoints_mode):
+        model_name, variant, version = model_variant
+        cfg = named_model_configs(model_name, variant, efficientnet_version=version)
         model: MobileNets = cfg.set(name="backbone", endpoints_mode=endpoints_mode).instantiate(
             parent=None
         )
@@ -107,7 +121,7 @@ class MobileNetsTest(parameterized.TestCase):
             is_training=is_training,
             prng_key=jax.random.PRNGKey(123),
             state=init_params,
-            inputs=dict(input_batch=jax.tree_util.tree_map(jnp.asarray, inputs)),
+            inputs=dict(input_batch=jax.tree.map(jnp.asarray, inputs)),
         )
         self.assertListEqual(
             sorted(outputs.keys()),
@@ -120,13 +134,15 @@ class MobileNetsTest(parameterized.TestCase):
     @parameterized.product(
         endpoints_mode=tuple(EndpointsMode),
         model_variant=(
-            (ModelNames.MOBILENETV3, "small-minimal-100"),
-            (ModelNames.EFFICIENTNET, "B0"),
-            (ModelNames.EFFICIENTNET, "lite0"),
+            (ModelNames.MOBILENETV3, "small-minimal-100", None),
+            (ModelNames.EFFICIENTNET, "B0", "V1"),
+            (ModelNames.EFFICIENTNET, "lite0", "V1"),
+            (ModelNames.EFFICIENTNET, "B0", "V2"),
         ),
     )
     def test_feature_maps(self, endpoints_mode, model_variant):
-        cfg = named_model_configs(*model_variant)
+        model_name, variant, version = model_variant
+        cfg = named_model_configs(model_name, variant, efficientnet_version=version)
         cfg.embedding_layer = None
         model: MobileNets = cfg.set(name="backbone", endpoints_mode=endpoints_mode).instantiate(
             parent=None
@@ -139,10 +155,10 @@ class MobileNetsTest(parameterized.TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
             state=init_params,
-            inputs=dict(input_batch=jax.tree_util.tree_map(jnp.asarray, inputs)),
+            inputs=dict(input_batch=jax.tree.map(jnp.asarray, inputs)),
         )
         expected_feature_dims = {
-            (ModelNames.MOBILENETV3, "small-minimal-100"): {
+            (ModelNames.MOBILENETV3, "small-minimal-100", None): {
                 EndpointsMode.DEFAULT: {
                     "2": 16,
                     "3": 24,
@@ -159,7 +175,7 @@ class MobileNetsTest(parameterized.TestCase):
                 },
                 EndpointsMode.LASTBLOCKS: {"stem": 16, "1": 16, "2": 24, "3": 48, "4": 576},
             },
-            (ModelNames.EFFICIENTNET, "B0"): {
+            (ModelNames.EFFICIENTNET, "B0", "V1"): {
                 EndpointsMode.DEFAULT: {
                     "2": 16,
                     "3": 24,
@@ -183,7 +199,8 @@ class MobileNetsTest(parameterized.TestCase):
             (
                 ModelNames.EFFICIENTNET,
                 "lite0",
-            ): {  # identical to (ModelNames.EFFICIENTNET, "B0")
+                "V1",
+            ): {  # Identical to (ModelNames.EFFICIENTNET, "B0", "V1").
                 EndpointsMode.DEFAULT: {
                     "2": 16,
                     "3": 24,
@@ -204,18 +221,44 @@ class MobileNetsTest(parameterized.TestCase):
                 },
                 EndpointsMode.LASTBLOCKS: {"1": 16, "2": 24, "3": 40, "4": 112, "5": 320},
             },
+            (ModelNames.EFFICIENTNET, "B0", "V2"): {
+                EndpointsMode.DEFAULT: {
+                    "2": 16,
+                    "3": 32,
+                    "4": 32,
+                    "5": 48,
+                    "6": 48,
+                    "7": 96,
+                    "8": 96,
+                    "9": 96,
+                    "10": 112,
+                    "11": 112,
+                    "12": 112,
+                    "13": 112,
+                    "14": 112,
+                    "15": 192,
+                    "16": 192,
+                    "17": 192,
+                    "18": 192,
+                    "19": 192,
+                    "20": 192,
+                    "21": 192,
+                    "22": 192,
+                },
+                EndpointsMode.LASTBLOCKS: {"1": 16, "2": 32, "3": 48, "4": 112, "5": 192},
+            },
         }
-        # ensure equality between actual output and registered endpoint
+        # Ensure equality between actual output and registered endpoint.
         self.assertListEqual(
             sorted(outputs.keys()),
             sorted(model.endpoints_dims.keys()),
         )
-        # compare with expected outputs
+        # Compare with expected outputs.
         self.assertSetEqual(
             set(expected_feature_dims[model_variant][endpoints_mode].keys()),
             set(model.endpoints_dims.keys()),
         )
-        # compare expected output dims
+        # Compare expected output dims.
         for k in outputs:
             self.assertEqual(
                 expected_feature_dims[model_variant][endpoints_mode][k], model.endpoints_dims[k]

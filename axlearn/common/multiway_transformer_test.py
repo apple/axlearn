@@ -1,4 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests Multiway transformer layers."""
+
 # pylint: disable=no-member,no-self-use,duplicate-code
 import jax
 import jax.numpy as jnp
@@ -6,13 +9,13 @@ import numpy as np
 from absl.testing import absltest, parameterized
 
 from axlearn.common.attention import (
-    NEG_INF,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
     TransformerLayer,
-    make_causal_mask,
+    build_remat_spec,
 )
+from axlearn.common.attention_bias import NEG_INF, make_causal_biases
 from axlearn.common.module import functional as F
 from axlearn.common.multiway_transformer import (
     IMAGE_MODALITY,
@@ -24,13 +27,13 @@ from axlearn.common.multiway_transformer import (
     _set_model_config,
 )
 from axlearn.common.test_utils import assert_allclose
-from axlearn.common.utils import VDict, as_tensor, count_model_params
+from axlearn.common.utils import TensorSpec, VDict, as_tensor, count_model_params
 from axlearn.vision import mask_generator
 
 
 class ModelTest(parameterized.TestCase):
-    @parameterized.parameters(1, 3)
-    def test_stacked_with_multiway_transformer_layer(self, num_ffn):
+    @parameterized.product(num_ffn=(1, 3), test_remat=(True, False))
+    def test_stacked_with_multiway_transformer_layer(self, num_ffn, test_remat):
         batch_size, tgt_len = 10, 6
         num_dec_layers, model_dim, num_heads = 3, 16, 4
         model_dim = 16
@@ -46,6 +49,8 @@ class ModelTest(parameterized.TestCase):
         layer_cfg.feed_forward.hidden_dim = model_dim * 4
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        if test_remat:
+            layer_cfg.remat_spec = build_remat_spec(cfg)
 
         # Test forward pass for all experts.
         data = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
@@ -114,10 +119,11 @@ class ModelTest(parameterized.TestCase):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = make_causal_mask(tgt_len)
+        self_attention_logit_biases = make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -126,13 +132,19 @@ class ModelTest(parameterized.TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
-        initial_state = layer.init_states(target_batch_size=batch_size, target_max_len=tgt_len)
-        inputs = dict(cached_states=initial_state, cross_attention_data=source)
+        initial_state, initial_output = layer.init_states(
+            time_step=None, data=TensorSpec([batch_size, tgt_len], dtype=jnp.float32)
+        )
+        self.assertIsNone(initial_output)
+        inputs = dict(
+            cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
+        )
         decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
         decoder_self_attention_probs = jnp.zeros(
             shape=[tgt_len, num_dec_layers, batch_size, num_heads, tgt_len]
@@ -212,10 +224,11 @@ class ModelTest(parameterized.TestCase):
         target = jax.random.normal(jax.random.PRNGKey(123), [batch_size, tgt_len, model_dim])
         source = jax.random.normal(jax.random.PRNGKey(456), [batch_size, src_len, model_dim * 2])
 
-        self_attention_logit_biases = make_causal_mask(tgt_len)
+        self_attention_logit_biases = make_causal_biases(tgt_len)
         cross_attention_logit_biases = (
             jnp.array(np.random.randint(0, 2, [tgt_len, src_len])) * NEG_INF
         )
+        return_aux = {"self_attention_probs", "cross_attention_probs"}
 
         forward_outputs, _ = F(
             layer,
@@ -224,6 +237,7 @@ class ModelTest(parameterized.TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
             state=layer_params,
             is_training=False,
@@ -242,8 +256,9 @@ class ModelTest(parameterized.TestCase):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                return_aux=return_aux,
             ),
-            method="prefill_states",
+            method="init_states",
         )
 
         # Zero-out outputs starting from initial time_step, and test that we can recover the full
@@ -268,7 +283,9 @@ class ModelTest(parameterized.TestCase):
         decoder_cross_attention_probs = jnp.moveaxis(decoder_cross_attention_probs, -2, -1)
 
         # Call extend_step from time_step, ensuring that outputs match.
-        inputs = dict(cached_states=initial_states, cross_attention_data=source)
+        inputs = dict(
+            cached_states=initial_states, cross_attention_data=source, return_aux=return_aux
+        )
         while jnp.any(time_step < tgt_len):
             # [batch, tgt_len=1, model_dim].
             inputs["data"] = jnp.take_along_axis(

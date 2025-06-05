@@ -1,0 +1,36 @@
+name: pre-commit
+
+on: [pull_request, merge_group]
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    # resource_class: large
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      - run: pip install --upgrade pip
+      # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
+      - run: pip install '.[core,dev,grain,gcp,vertexai_tensorboard,open_api]'
+      # pylint uses approx 12GB of memory during this run, look into split to decrease?
+      - run: |
+          # Start memory monitor as a background process.
+          { .github/scripts/monitor_memory.sh & } || true
+          MONITOR_PID=$!
+          # A short sleep to wait for monitor process to start.
+          sleep 1
+
+          # Start pre-commit check.
+          echo "====== Starting pre-commit... ======"
+          pre-commit run --all-files
+          echo "====== pre-commit completed. ======"
+
+          # Clean up memory monitor process.
+          if kill -0 $MONITOR_PID 2>/dev/null; then
+            echo "Manually stopping monitor process..."
+            kill $MONITOR_PID || true
+          fi
+      - run: pytype -j auto .

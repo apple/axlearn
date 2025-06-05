@@ -1,10 +1,10 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests T5 inputs."""
-import functools
 import logging
 import os
-from functools import partial
-from typing import Dict, List, Tuple
 
+import pytest
 import seqio
 import tensorflow as tf
 from absl.testing import absltest, parameterized
@@ -25,14 +25,6 @@ from axlearn.common.input_t5 import (
     split_tokens,
 )
 from axlearn.common.input_text_test import tokenizers_dir
-from axlearn.common.input_tf_data import rekey
-
-try:
-    import t5.data  # pytype: disable=import-error
-
-    _T5X_INSTALLED = True
-except ImportError:
-    _T5X_INSTALLED = False
 
 t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
 
@@ -71,7 +63,7 @@ def _interleave(vocab, source_ids, target_labels):
 
 
 class T5InputTest(parameterized.TestCase, tf.test.TestCase):
-    def _assert_oneof(self, actual: tf.Tensor, candidates: List[List[int]]):
+    def _assert_oneof(self, actual: tf.Tensor, candidates: list[list[int]]):
         for candidate in candidates:
             try:
                 self.assertAllEqual(actual, candidate)
@@ -122,7 +114,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_select_random_chunk(
-        self, chunk_size: int, examples: List[tf.Tensor], expected_one_of: List[List[tf.Tensor]]
+        self, chunk_size: int, examples: list[tf.Tensor], expected_one_of: list[list[tf.Tensor]]
     ):
         def _check(ds):
             ds = list(ds)
@@ -137,22 +129,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         )
         processor = select_random_chunk(chunk_size=chunk_size)
         _check(processor(source()))
-
-        # Check that T5 also matches what we expect.
-        if _T5X_INSTALLED:
-            ds = t5.data.preprocessors.select_random_chunk(
-                source(),
-                feature_key="source_ids",
-                output_features={
-                    "source_ids": seqio.Feature(
-                        vocabulary=_t5_vocab(),
-                        add_eos=True,
-                        required=False,
-                    ),
-                },
-                max_length=chunk_size,
-            )
-            _check(ds)
 
     @parameterized.parameters(
         # Test a basic case with num_examples % batch_size == 0.
@@ -210,7 +186,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_reduce_concat_tokens(
-        self, batch_size: int, examples: List[tf.Tensor], expected: List[tf.Tensor], repeat: int = 1
+        self, batch_size: int, examples: list[tf.Tensor], expected: list[tf.Tensor], repeat: int = 1
     ):
         def _check(ds):
             ds = list(ds)
@@ -226,15 +202,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         )
         processor = reduce_concat_tokens(batch_size=batch_size)
         _check(processor(source()))
-
-        # Check that T5 also matches what we expect.
-        if _T5X_INSTALLED:
-            ds = t5.data.preprocessors.reduce_concat_tokens(
-                source(),
-                feature_key="source_ids",
-                batch_size=batch_size,
-            )
-            _check(ds)
 
     @parameterized.parameters(
         dict(
@@ -261,7 +228,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_random_spans_helper(
         self,
-        expected: Tuple[int, int],
+        expected: tuple[int, int],
         desired_source_length: int,
         noise_density: float,
         mean_noise_span_length: float,
@@ -275,19 +242,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
                 mean_noise_span_length=mean_noise_span_length,
             ),
         )
-
-        # Check that T5 also matches what we expect.
-        if _T5X_INSTALLED:
-            self.assertAllEqual(
-                expected,
-                t5.data.preprocessors.random_spans_helper(
-                    inputs_length=desired_source_length,
-                    noise_density=noise_density,
-                    mean_noise_span_length=mean_noise_span_length,
-                    extra_tokens_per_span_inputs=1,
-                    extra_tokens_per_span_targets=1,
-                ),
-            )
 
     @parameterized.parameters(
         # Test when length % max_tokens_per_segment == 0.
@@ -316,7 +270,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_split_tokens(
-        self, examples: List[tf.Tensor], max_tokens_per_segment: int, expected: List[tf.Tensor]
+        self, examples: list[tf.Tensor], max_tokens_per_segment: int, expected: list[tf.Tensor]
     ):
         def _check(ds):
             ds = list(ds)
@@ -331,15 +285,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         )
         processor = split_tokens(max_tokens_per_segment=max_tokens_per_segment)
         _check(processor(source()))
-
-        if _T5X_INSTALLED:
-            actual = t5.data.preprocessors.split_tokens(
-                source(),
-                feature_key="source_ids",
-                min_tokens_per_segment=None,
-                max_tokens_per_segment=max_tokens_per_segment,
-            )
-            _check(actual)
 
     @parameterized.parameters(
         dict(seq_len=10, num_segments=3),
@@ -413,16 +358,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         self.assertEqual(_count_tokens(actual), expected_noise_tokens)
         self.assertEqual(_count_spans(actual), expected_noise_spans)
 
-        if _T5X_INSTALLED:
-            actual = t5.data.preprocessors.random_spans_noise_mask(
-                length=seq_len,
-                noise_density=noise_density,
-                mean_noise_span_length=mean_noise_span_length,
-                seeds=tf.constant([[123, 124], [125, 126]], tf.int32),
-            )
-            self.assertEqual(_count_tokens(actual), expected_noise_tokens)
-            self.assertEqual(_count_spans(actual), expected_noise_spans)
-
     @parameterized.parameters(
         # Test an empty input.
         dict(
@@ -458,6 +393,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             expected=tf.constant([32099, 12, 13, 14, 15, 32098, 19]),
         ),
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_noise_span_to_unique_sentinel(
         self, input_ids: tf.Tensor, noise_mask: tf.Tensor, expected: tf.Tensor
     ):
@@ -466,14 +404,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             input_ids=input_ids, noise_mask=noise_mask, vocab=vocab
         )
         self.assertAllEqual(expected, actual)
-
-        if _T5X_INSTALLED:
-            self.assertAllEqual(
-                expected,
-                t5.data.preprocessors.noise_span_to_unique_sentinel(
-                    input_ids, noise_mask, vocab, None
-                ),
-            )
 
     @parameterized.parameters(
         # Test an empty input.
@@ -510,6 +440,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             expected=tf.constant([10, 11, 32099, 16, 17, 18, 32098]),
         ),
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_nonnoise_span_to_unique_sentinel(
         self, input_ids: tf.Tensor, noise_mask: tf.Tensor, expected: tf.Tensor
     ):
@@ -518,14 +451,6 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             input_ids=input_ids, noise_mask=noise_mask, vocab=vocab
         )
         self.assertAllEqual(actual, expected)
-
-        if _T5X_INSTALLED:
-            self.assertAllEqual(
-                expected,
-                t5.data.preprocessors.nonnoise_span_to_unique_sentinel(
-                    input_ids, noise_mask, vocab, None
-                ),
-            )
 
     @parameterized.parameters(
         # Test an empty input.
@@ -589,6 +514,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             # ],
         ),
     )
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_apply_t5_mask(
         self,
         source_ids: tf.Tensor,
@@ -617,51 +545,7 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             mean_noise_span_length=mean_noise_span_length,
             vocab_cfg=vocab_cfg,
         )
-        ds = processor(source())
-        actual = _check(vocab, ds)
-
-        if _T5X_INSTALLED:
-
-            def _seeded(fn, custom_seeds):
-                # Ignore the seeds that t5 provides.
-                @functools.wraps(fn)
-                def wrapped(*args, seeds, **kwargs):
-                    del seeds
-                    return fn(*args, seeds=custom_seeds, **kwargs)
-
-                return wrapped
-
-            ds = t5.data.preprocessors.denoise(
-                rekey({"targets": "source_ids"})(source()),
-                output_features={
-                    "targets": seqio.Feature(
-                        vocabulary=_t5_vocab(),
-                        add_eos=True,
-                        required=False,
-                    ),
-                },
-                # Note: seed is unused for the *_to_unique_sentinel.
-                inputs_fn=t5.data.preprocessors.noise_span_to_unique_sentinel,
-                targets_fn=t5.data.preprocessors.nonnoise_span_to_unique_sentinel,
-                noise_density=noise_density,
-                noise_mask_fn=_seeded(
-                    partial(
-                        t5.data.preprocessors.random_spans_noise_mask,
-                        mean_noise_span_length=mean_noise_span_length,
-                    ),
-                    tf.constant([[125, 126], [127, 128]], tf.int32),
-                ),
-            )
-            expected = _check(vocab, ds, source_key="inputs", target_key="targets")
-            # Check same number of sentinels.
-            self.assertEqual(
-                _count_sentinels(vocab, expected["inputs"]),
-                _count_sentinels(vocab, actual["source_ids"]),
-            )
-            self.assertEqual(
-                _count_sentinels(vocab, expected["targets"]),
-                _count_sentinels(vocab, actual["target_labels"]),
-            )
+        _check(vocab, processor(source()))
 
     @parameterized.parameters(
         # Test a basic input.
@@ -701,7 +585,10 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             # ],
         ),
     )
-    def test_make_t5_autoregressive_inputs(self, examples: List[Dict[str, tf.Tensor]], **kwargs):
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_make_t5_autoregressive_inputs(self, examples: list[dict[str, tf.Tensor]], **kwargs):
         tf.random.set_seed(1234)
         source = fake_source(
             is_training=False,
@@ -732,6 +619,9 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
             # Due to how we construct our inputs, the interleaved IDs should be strictly increasing.
             assert_strictly_increasing(_interleave(vocab, source_ids, target_labels))
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
     def test_make_t5_autoregressive_inputs_validation(self):
         with self.assertRaisesRegex(ValueError, "exceeds max target"):
             make_t5_autoregressive_inputs(
@@ -745,33 +635,55 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         dict(
             is_training=True,
             example=dict(
-                target_ids=tf.constant([1, 2, 3, 4, 1, 5, 6]),
-                target_positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                target=dict(
+                    input_ids=tf.constant([1, 2, 3, 4, 1, 5, 6]),
+                    positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                ),
             ),
             expected=dict(
-                target_ids=tf.constant([0, 2, 3, 4, 0, 5, 6]),
-                target_positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([0, 2, 3, 4, 0, 5, 6]),
+                        positions=tf.constant([0, 1, 2, 3, 0, 1, 2]),
+                    ),
+                ),
             ),
         ),
         dict(
             is_training=True,
             example=dict(
-                target_ids=tf.constant([1, 1, 8, 1, 9, 10, 11]),
-                target_positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([1, 1, 8, 1, 9, 10, 11]),
+                        positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                    ),
+                ),
             ),
             expected=dict(
-                target_ids=tf.constant([0, 0, 8, 0, 9, 10, 11]),
-                target_positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([0, 0, 8, 0, 9, 10, 11]),
+                        positions=tf.constant([0, 0, 1, 0, 1, 2, 3]),
+                    ),
+                ),
             ),
         ),
         # Unpacked input.
         dict(
             is_training=True,
             example=dict(
-                target_ids=tf.constant([1, 2, 3, 4, 0, 0, 0]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([1, 2, 3, 4, 0, 0, 0]),
+                    ),
+                ),
             ),
             expected=dict(
-                target_ids=tf.constant([0, 2, 3, 4, 0, 0, 0]),
+                dict(
+                    target=dict(
+                        input_ids=tf.constant([0, 2, 3, 4, 0, 0, 0]),
+                    ),
+                ),
             ),
         ),
         # Eval input.
@@ -782,15 +694,14 @@ class T5InputTest(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_map_prefix_to_value(
-        self, is_training: bool, example: Dict[str, tf.Tensor], expected: Dict[str, tf.Tensor]
+        self, is_training: bool, example: dict[str, tf.Tensor], expected: dict[str, tf.Tensor]
     ):
         source = fake_source(is_training=is_training, examples=[example])
         processor = map_prefix_to_value(is_training, value=0)
         ds = processor(source())
         actual = next(iter(ds))
         if is_training:
-            for key in expected:
-                self.assertAllEqual(expected[key], actual[key])
+            tf.nest.map_structure(self.assertAllEqual, expected, actual)
         else:
             self.assertAllEqual(expected["prefix"], actual["prefix"])
 

@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# google-research/t5x:
+# Copyright 2023 The T5X Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests for beam_search.
 
 Adapted from: https://github.com/google-research/t5x/blob/main/t5x/decoding_test.py
@@ -5,7 +13,8 @@ Adapted from: https://github.com/google-research/t5x/blob/main/t5x/decoding_test
 # pylint: disable=no-self-use,too-many-lines,protected-access
 import logging
 import os
-from typing import Sequence, Tuple
+from collections.abc import Sequence
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -20,7 +29,22 @@ from axlearn.common.utils import NestedTensor, Tensor
 
 EOS_ID = 1
 NEG_INF = decoding.NEG_INF
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
+_SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
+_T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base")
+
+
+class _TokenSumPrefixMerger(decoding.PrefixMerger):
+    """A PrefixMerge that merges all prefixes with the same sum of ids."""
+
+    def init_state(self, *, tokens: Tensor) -> NestedTensor:
+        return dict(sum=tokens.sum(axis=-1))
+
+    def compute(self, state: NestedTensor) -> Tensor:
+        return decoding.compute_merge_matrix_by_prefix_ids(state["sum"])
+
+    def update(self, *, tokens: Tensor, state: NestedTensor) -> NestedTensor:
+        return dict(sum=state["sum"] + tokens)
 
 
 class DecodeTest(parameterized.TestCase):
@@ -47,7 +71,8 @@ class DecodeTest(parameterized.TestCase):
         np.testing.assert_allclose(t5_brevity_penalty_score, raw_scores / 2, atol=1e-6)
 
         with self.assertRaises(NotImplementedError):
-            decoding.brevity_penalty_fn(bp_type="next")(length=jnp.array(1), raw_scores=raw_scores)
+            fn = decoding.brevity_penalty_fn(bp_type="next")  # pytype: disable=wrong-arg-types
+            fn(length=jnp.array(1), raw_scores=raw_scores)
 
     def test_beam_search_decode_with_brevity_penalty(self):
         # Toy problem, we have 4 states, A, B, START, END, (plus PAD).
@@ -105,7 +130,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             cur_iter = state_cache["cur_iter"]
             # grab edge potentials for the current timestep
             cur_edge_potentials = jnp.take_along_axis(
@@ -134,9 +159,11 @@ class DecodeTest(parameterized.TestCase):
         init_cache = {}
         init_cache["cur_iter"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
 
-        # alpha is zero and beam search will perfer shorter sequences.
+        # alpha is zero and beam search will prefer shorter sequences.
+        inputs = np.zeros([batch_size, decode_length])
         beam_search_output = decoding.beam_search_decode(
-            inputs=np.zeros([batch_size, decode_length]),
+            inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=0),
             cache=init_cache,
             tokens_to_scores=tokens_to_scores,
             eos_id=4,
@@ -165,8 +192,10 @@ class DecodeTest(parameterized.TestCase):
 
         # Length normalization with alpha 1 and hf bp type.
         # Divides the log probs by the length of the input sequence.
+        inputs = np.zeros([batch_size, decode_length])
         beam_search_output = decoding.beam_search_decode(
-            inputs=np.zeros([batch_size, decode_length]),
+            inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=0),
             cache=init_cache,
             tokens_to_scores=tokens_to_scores,
             eos_id=4,
@@ -308,7 +337,7 @@ class DecodeTest(parameterized.TestCase):
             }
         }
         np.testing.assert_array_equal(expected_seqs, gathered_seqs)
-        jax.tree_util.tree_map(np.testing.assert_array_equal, expected_cache, gathered_cache)
+        jax.tree.map(np.testing.assert_array_equal, expected_cache, gathered_cache)
 
     def test_beam_search_decode(self):
         # Toy problem, we have 4 states, A, B, START, END, (plus PAD).
@@ -359,7 +388,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             cur_iter = state_cache["cur_iter"]
             # grab edge potentials for the current timestep
             cur_edge_potentials = jnp.take_along_axis(
@@ -388,8 +417,10 @@ class DecodeTest(parameterized.TestCase):
         init_cache = {}
         init_cache["cur_iter"] = jnp.zeros((batch_size, 1), dtype=jnp.int32)
 
+        inputs = np.zeros([batch_size, decode_length])
         beam_search_output = decoding.beam_search_decode(
-            inputs=np.zeros([batch_size, decode_length]),
+            inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=0),
             cache=init_cache,
             tokens_to_scores=tokens_to_scores,
             eos_id=4,
@@ -437,6 +468,7 @@ class DecodeTest(parameterized.TestCase):
         rolled_inputs = np.array([[7, 0, 0, 0, 0], [4, 5, 0, 0, 0]], dtype=np.int32)
         beam_search_output = decoding.beam_search_decode(
             inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=0),
             cache={},
             tokens_to_scores=token_to_scores,
             eos_id=EOS_ID,
@@ -507,6 +539,7 @@ class DecodeTest(parameterized.TestCase):
 
         beam_search_output_zeros = decoding.beam_search_decode(
             inputs=inputs_zero,
+            time_step=decoding.infer_initial_time_step(inputs_zero, pad_id=0),
             cache={},
             tokens_to_scores=token_to_scores,
             eos_id=EOS_ID,
@@ -514,6 +547,7 @@ class DecodeTest(parameterized.TestCase):
         )
         beam_search_output_eos_prefix = decoding.beam_search_decode(
             inputs=inputs_eos_prefix,
+            time_step=decoding.infer_initial_time_step(inputs_eos_prefix, pad_id=0),
             cache={},
             tokens_to_scores=token_to_scores,
             eos_id=EOS_ID,
@@ -552,6 +586,7 @@ class DecodeTest(parameterized.TestCase):
         inputs = np.full((2, 5), pad_id, dtype=np.int32)
         beam_search_output = decoding.beam_search_decode(
             inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
             cache={},
             tokens_to_scores=token_to_scores,
             eos_id=EOS_ID,
@@ -576,37 +611,75 @@ class DecodeTest(parameterized.TestCase):
             np.array([[[2, 2, 2, 2, 2], [2, 2, 2, 2, 3]], [[3, 3, 3, 3, 3], [3, 3, 3, 3, 2]]]),
         )
 
-    @parameterized.product(inputs_size=[1, 3, 6, 7], low=[0, 1])
-    def test_beam_init_with_inputs(self, inputs_size: int, low: int):
+    @parameterized.product(prefix_length=[1, 3, 6, 7], low=[0, 1])
+    def test_beam_init_with_inputs(self, prefix_length: int, low: int):
         batch_size = 2
         beam_size = 3
         max_decode_len = 6
+        pad_id = 0
+
         # The user should be able to use teacher forcing on non-consecutive indices.
         # This is tested with low=0.
-        inputs = np.random.randint(low, 10, size=(batch_size, inputs_size))
+        inputs = jax.random.randint(
+            jax.random.PRNGKey(123),
+            shape=[batch_size, prefix_length],
+            minval=low,
+            maxval=10,
+        )
 
-        if inputs_size > max_decode_len:
-            with pytest.raises(ValueError):
-                decoding._beam_init(
-                    batch_size=batch_size,
-                    beam_size=beam_size,
-                    max_decode_len=max_decode_len,
-                    cache={},
-                    inputs=inputs,
-                    pad_id=0,
-                )
-            return
-
-        state = decoding._beam_init(
-            batch_size=2,
-            beam_size=3,
+        common_kwargs = dict(
+            beam_size=beam_size,
             max_decode_len=max_decode_len,
             cache={},
             inputs=inputs,
-            pad_id=0,
+            pad_id=pad_id,
+        )
+
+        if prefix_length > max_decode_len:
+            with self.assertRaisesRegex(ValueError, "max_decode_len"):
+                decoding._beam_init(
+                    time_step=jnp.zeros([batch_size], dtype=inputs.dtype),
+                    **common_kwargs,
+                )
+            return
+
+        # Test that inputs and time_step must have the same batch_size dim.
+        with self.assertRaisesRegex(ValueError, "time_step.shape"):
+            decoding._beam_init(
+                time_step=jnp.zeros([inputs.shape[0] + 1], dtype=inputs.dtype),
+                **common_kwargs,
+            )
+
+        state = decoding._beam_init(
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
+            **common_kwargs,
+        )
+        # Starting index should be within valid range.
+        self.assertTrue(jnp.all((0 <= state.cur_index) & (state.cur_index < max_decode_len)))
+        # Starting index should always point to a non-pad token, unless all initial tokens are
+        # padding.
+        self.assertTrue(
+            jnp.all(
+                (
+                    jnp.take_along_axis(state.live_seqs, state.cur_index[:, None, None], axis=-1)
+                    != pad_id
+                )
+                | (jnp.all(state.live_seqs == pad_id, axis=-1, keepdims=True))
+            )
+        )
+        # Everything afterwards should always point to a pad token.
+        self.assertTrue(
+            jnp.all(
+                jnp.where(
+                    jnp.arange(max_decode_len)[None, None, :] > state.cur_index[:, None, None],
+                    state.live_seqs,
+                    pad_id,
+                )
+                == pad_id
+            )
         )
         np.testing.assert_array_equal(
-            state.live_seqs[:, :, :inputs_size], np.tile(inputs[:, None, :], (1, beam_size, 1))
+            state.live_seqs[:, :, :prefix_length], np.tile(inputs[:, None, :], (1, beam_size, 1))
         )
 
     def test_compute_merge_matrix_by_prefixes(self):
@@ -686,8 +759,10 @@ class DecodeTest(parameterized.TestCase):
             )
             return log_probs, dict(step=cache["step"] + 1)
 
+        inputs = jnp.zeros([batch_size, max_decode_len], dtype=jnp.int32)
         kwargs = dict(
-            inputs=jnp.zeros([batch_size, max_decode_len], dtype=jnp.int32),
+            inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=0),
             cache=cache,
             tokens_to_scores=tokens_to_scores,
             eos_id=1,
@@ -695,21 +770,7 @@ class DecodeTest(parameterized.TestCase):
         )
         outputs_without_merger = decoding.beam_search_decode(**kwargs)
 
-        class PrefixMerger(decoding.PrefixMerger):
-            """A PrefixMerge that merges all prefixes with the same sum of ids."""
-
-            def init_state(
-                self, *, batch_size: int, num_decodes: int, max_decode_len: int
-            ) -> NestedTensor:
-                return dict(sum=jnp.zeros([batch_size, num_decodes], dtype=jnp.int32))
-
-            def compute(self, state: NestedTensor) -> Tensor:
-                return decoding.compute_merge_matrix_by_prefix_ids(state["sum"])
-
-            def update(self, *, tokens: Tensor, state: NestedTensor) -> NestedTensor:
-                return dict(sum=state["sum"] + tokens)
-
-        prefix_merger = PrefixMerger()
+        prefix_merger = _TokenSumPrefixMerger()
         outputs_with_merger = decoding.beam_search_decode(**kwargs, prefix_merger=prefix_merger)
 
         logging.info(
@@ -754,6 +815,91 @@ class DecodeTest(parameterized.TestCase):
         self.assertLess(outputs_without_merger.scores[0, 0], outputs_with_merger.scores[0, 0])
         # The final sequence of outputs_with_merger has a score close to NEG_INF.
         self.assertLess(outputs_with_merger.scores[0, -1], NEG_INF * 0.5)
+
+    @parameterized.product(
+        [
+            # All begin at index 0.
+            dict(prompt_length=[1, 1, 1], num_decodes=5),
+            # Each begins at a different index.
+            dict(prompt_length=[5, 7, 128, 21, 38, 256], num_decodes=3),
+        ],
+        pad_id=[0, -1],
+        prefix_merger=[None, _TokenSumPrefixMerger()],
+        brevity_penalty=[None, decoding.brevity_penalty_fn(bp_type="hf", alpha=1.0)],
+    )
+    def test_beam_search_prefill(
+        self,
+        prompt_length: Sequence[int],
+        num_decodes: int,
+        pad_id: int,
+        prefix_merger: Optional[decoding.PrefixMerger],
+        brevity_penalty: Optional[decoding.BrevityPenaltyFn],
+    ):
+        """Tests beam search with prefilling matches decoding from scratch."""
+        vocab_size = 1024
+        decode_length = 256
+        eos_id = vocab_size - 1
+        prompt_length = jnp.minimum(jnp.asarray(prompt_length), decode_length)[:, None]
+        batch_size = prompt_length.shape[0]
+
+        # Construct prompt tokens.
+        prompt_tokens = jax.random.randint(
+            jax.random.PRNGKey(123),
+            [batch_size, decode_length],
+            minval=1,
+            maxval=vocab_size - 1,
+        )
+        # Ensure pad_id and eos_id are not already in prompt_tokens.
+        self.assertFalse(jnp.any(prompt_tokens == pad_id))
+        self.assertFalse(jnp.any(prompt_tokens == eos_id))
+
+        prompt_mask = jnp.arange(decode_length) < prompt_length
+        prompt_tokens = prompt_tokens * prompt_mask + pad_id * (1 - prompt_mask)
+
+        # Create a dummy mapping from prefix -> logits.
+        dummy_emb = jax.random.uniform(jax.random.PRNGKey(123), [decode_length, vocab_size]) * -1
+
+        def tokens_to_scores(tokens: Tensor, cache: NestedTensor) -> tuple[Tensor, NestedTensor]:
+            # [batch, vocab]
+            logits = jnp.einsum("ij,jk->ik", tokens + 1, dummy_emb)
+            logits = logits.at[:, 0].set(NEG_INF)  # Don't emit padding.
+            return logits, cache
+
+        # [batch_size, decode_length].
+        common_kwargs = dict(
+            cache={},
+            tokens_to_scores=tokens_to_scores,
+            eos_id=eos_id,
+            num_decodes=num_decodes,
+            pad_id=pad_id,
+            loop="lax",
+            # Note: we can reuse the same prefix_merger instance as it's stateless.
+            prefix_merger=prefix_merger,
+            brevity_penalty=brevity_penalty,
+        )
+
+        # Decode once with prefilling (non-pad inputs and non-zero input_scores).
+        prefill_output = decoding.beam_search_decode(
+            inputs=prompt_tokens,
+            time_step=decoding.infer_initial_time_step(prompt_tokens, pad_id=pad_id),
+            **common_kwargs,
+        )
+
+        # Decode again *without* pre-filling, and ensure that outputs all match.
+        from_scratch_output = decoding.beam_search_decode(
+            inputs=prompt_tokens,
+            time_step=jnp.zeros([batch_size], dtype=prompt_tokens.dtype),
+            **common_kwargs,
+        )
+
+        # Check equivalence.
+        # Note that live_{sequences,scores} are not expected to match when decoding from index 0 vs
+        # decoding from the end of each prefix. This is because live_{sequences,scores} depends on
+        # where cur_index is at: starting from 0 will always terminate at the same position across
+        # the batch, but starting from the end of each prefix may end at different positions.
+        # This should be consistent with the original T5X-based implementation.
+        self.assertTrue(jnp.allclose(prefill_output.sequences, from_scratch_output.sequences))
+        self.assertTrue(jnp.allclose(prefill_output.scores, from_scratch_output.scores))
 
     def test_stop_on_subsequence_raises_on_empty_sequence(self):
         msg = "Zero length stopping seqs are not supported. Zero length seqs at indices [1]."
@@ -910,7 +1056,11 @@ class DecodeTest(parameterized.TestCase):
         # Test without token_scores.
         inputs = jnp.full((batch_size, max_decode_len), pad_id)
         inputs = inputs.at[:, 0].set(bos_id)
-        state = decoding._decode_init(batch_size, inputs=inputs, **common_kwargs)
+        state = decoding._decode_init(
+            inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
+            **common_kwargs,
+        )
         self.assertTrue(jnp.all(state.cur_index == 0))
         self.assertTrue(jnp.all(state.token_scores == 0))
         self.assertTrue(jnp.all(state.sequences == inputs[:, None, :]))
@@ -918,16 +1068,32 @@ class DecodeTest(parameterized.TestCase):
 
         # Test inputs length < max_decode_len.
         inputs = jnp.full((batch_size, max_decode_len // 2), bos_id)
-        state = decoding._decode_init(batch_size, inputs=inputs, **common_kwargs)
+        state = decoding._decode_init(
+            inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
+            **common_kwargs,
+        )
         self.assertTrue(jnp.all(state.cur_index == (max_decode_len // 2 - 1)))
         self.assertTrue(jnp.all(state.token_scores == 0))
         self.assertTrue(jnp.all(state.sequences[:, :, : inputs.shape[1]] == inputs[:, None, :]))
         self.assertTrue(jnp.all(state.sequences[:, :, inputs.shape[1] :] == pad_id))
 
+        # Test with time_step.shape[0] != inputs.shape[0].
+        with self.assertRaisesRegex(ValueError, "time_step.shape"):
+            decoding._decode_init(
+                inputs=inputs,
+                time_step=jnp.zeros([inputs.shape[0] + 1], dtype=inputs.dtype),
+                **common_kwargs,
+            )
+
         # Test with inputs length > max_decode_len.
+        inputs = jnp.full((batch_size, max_decode_len + 1), bos_id)
         with self.assertRaisesRegex(ValueError, "Expected inputs.shape"):
-            inputs = jnp.full((batch_size, max_decode_len + 1), bos_id)
-            decoding._decode_init(batch_size, inputs=inputs, **common_kwargs)
+            decoding._decode_init(
+                inputs=inputs,
+                time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
+                **common_kwargs,
+            )
 
         # Test with token_scores.
         inputs = jnp.full((batch_size, max_decode_len // 2), bos_id)
@@ -935,7 +1101,10 @@ class DecodeTest(parameterized.TestCase):
             jax.random.PRNGKey(234), (batch_size, max_decode_len // 2)
         )
         state = decoding._decode_init(
-            batch_size, inputs=inputs, token_scores=token_scores, **common_kwargs
+            inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
+            token_scores=token_scores,
+            **common_kwargs,
         )
         self.assertTrue(jnp.all(state.token_scores[:, :, 0] == 0))  # Dummy token scores are 0.
         self.assertTrue(
@@ -950,8 +1119,8 @@ class DecodeTest(parameterized.TestCase):
         token_scores = jnp.ones((batch_size, max_decode_len))
         with self.assertRaisesRegex(ValueError, "Expected token_scores.shape"):
             decoding._decode_init(
-                batch_size,
                 inputs=inputs,
+                time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
                 token_scores=token_scores,
                 **common_kwargs,
             )
@@ -983,7 +1152,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             # Emit cur_iter + 1 unless decode index == cur_iter, in which case emit EOS.
             cur_iter = state_cache["cur_iter"]
             prompt_length = state_cache["prompt_length"]
@@ -1031,6 +1200,7 @@ class DecodeTest(parameterized.TestCase):
         inputs = input_mask * eos_id + (1 - input_mask) * pad_id
         sample_decoding_output = decoding.sample_decode(
             inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
             cache=init_cache,
             tokens_to_scores=tokens_to_scores,
             stop_decoding_condition=decoding.StopOnSubsequence([[eos_id]]),
@@ -1118,7 +1288,9 @@ class DecodeTest(parameterized.TestCase):
             [1, num_decodes, 1],
         )
         prompt_mask = (jnp.arange(decode_length) < prompt_length)[:, None, :]
-        # Ensure pad_id and eos_id are not already in ref_tokens.
+        # Ensure pad_id and eos_id are not already in prompt_tokens.
+        # This is mainly because when decoding from scratch, padding is used to infer whether we're
+        # out of prompt, whereas in the prefill case we treat intermediate padding as within prompt.
         self.assertFalse(jnp.any(prompt_tokens == pad_id))
         self.assertFalse(jnp.any(prompt_tokens == eos_id))
 
@@ -1137,7 +1309,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             cur_iter = state_cache["cur_iter"]
             prompt_length = state_cache["prompt_length"]
 
@@ -1175,6 +1347,7 @@ class DecodeTest(parameterized.TestCase):
         inputs = inputs[:, 0, :]
         sample_decoding_output = decoding.sample_decode(
             inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
             cache=dict(
                 cur_iter=jnp.reshape(initial_index, (-1, 1)),
                 prompt_length=prompt_length,
@@ -1191,6 +1364,7 @@ class DecodeTest(parameterized.TestCase):
         inputs = inputs.at[:, 0].set(eos_id)
         from_scratch_decoding_output = decoding.sample_decode(
             inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=pad_id),
             cache=dict(
                 cur_iter=jnp.zeros((batch_size, 1), dtype=jnp.int32),
                 prompt_length=prompt_length,
@@ -1281,15 +1455,14 @@ class DecodeTest(parameterized.TestCase):
         ),
         # pylint: enable=line-too-long
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
     def test_sample_decode_with_complex_stopping_condition(
         self,
         fake_decodes: Sequence[Sequence[str]],
         prompts: Sequence[Sequence[str]],
         expected: Sequence[Sequence[str]],
     ):
-        sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
-        vocab = seqio.SentencePieceVocabulary(sentence_piece_vocab_file)
+        vocab = seqio.SentencePieceVocabulary(_T5_VOCAB_FILE)
         batch_size = len(fake_decodes)
         num_decodes = len(fake_decodes[0])
 
@@ -1313,7 +1486,7 @@ class DecodeTest(parameterized.TestCase):
 
         def tokens_to_scores(
             token_indices: Tensor, state_cache: NestedTensor  # pylint: disable=unused-argument
-        ) -> Tuple[Tensor, NestedTensor]:
+        ) -> tuple[Tensor, NestedTensor]:
             # [batch_size * num_decodes, 1].
             cur_iter = state_cache["cur_iter"]
             prompt_length = state_cache["prompt_length"]
@@ -1355,6 +1528,7 @@ class DecodeTest(parameterized.TestCase):
         inputs = inputs[:, 0, :].numpy()
         sample_decoding_output = decoding.sample_decode(
             inputs=inputs,
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=vocab.pad_id),
             cache=init_cache,
             tokens_to_scores=tokens_to_scores,
             stop_decoding_condition=decoding.StopOnSubsequence(
@@ -1380,7 +1554,7 @@ class DecodeTest(parameterized.TestCase):
         )
 
         # Compare against expected.
-        target = jnp.asarray(jax.tree_map(vocab.tokenizer.piece_to_id, expected))
+        target = jnp.asarray(jax.tree.map(vocab.tokenizer.piece_to_id, expected))
         self.assertTrue(jnp.all(sequences == target))
 
         # Check that the token scores are 0 for pad_id tokens.
@@ -1394,6 +1568,39 @@ class DecodeTest(parameterized.TestCase):
         )
         # Compare the rest of the token scores.
         self.assertTrue(jnp.all(token_scores[sequences != vocab.pad_id] < 0))
+
+    @parameterized.parameters(
+        dict(
+            prefix=jnp.array(
+                [
+                    [1, 2, 0],
+                    [0, 1, 0],
+                    [0, 1, 2],
+                    [0, 0, 0],
+                    [1, 2, 3],
+                ]
+            ),
+            pad_id=0,
+            expected=jnp.array([1, 1, 2, 0, 2]),
+        ),
+        dict(
+            prefix=jnp.array(
+                [
+                    [1, 2, 4],
+                    [4, 1, 4],
+                    [4, 1, 2],
+                    [4, 4, 4],
+                    [1, 2, 3],
+                ]
+            ),
+            pad_id=4,
+            expected=jnp.array([1, 1, 2, 0, 2]),
+        ),
+    )
+    def test_infer_initial_time_step(self, prefix: Tensor, pad_id: int, expected: Tensor):
+        self.assertTrue(
+            jnp.all(expected == decoding.infer_initial_time_step(prefix, pad_id=pad_id))
+        )
 
 
 if __name__ == "__main__":

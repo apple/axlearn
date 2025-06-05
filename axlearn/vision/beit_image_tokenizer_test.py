@@ -1,8 +1,9 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests BEiT image tokenizer."""
 import jax
 from absl.testing import absltest, parameterized
 
-from axlearn.common.config import config_for_class
 from axlearn.common.module import functional as F
 from axlearn.common.param_init import ConstantInitializer
 from axlearn.common.test_utils import TestCase, assert_allclose
@@ -53,7 +54,7 @@ class BEITImageQuantizerTest(TestCase):
             name="test",
             input_dim=model_dim,
             rate=rate,
-            param_init=config_for_class(ConstantInitializer).set(value=2),
+            param_init=ConstantInitializer.default_config().set(value=2),
         )
         layer = cfg.instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))

@@ -1,0 +1,32 @@
+name: build-and-test
+on: [pull_request, push, merge_group]
+
+jobs:
+  build-and-test-job:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        test-group: [a, b, c, d, e]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Gather test files
+        run: find axlearn -name '*_test.py' > pytest_files.txt
+      - name: Split test files into groups
+        # GNU split lets us do "-n r/5" to round robin into 5 files without breaking lines
+        # BSD split requires knowing the number of lines and uses "-l XX"
+        run: split -n r/5 -a 1 pytest_files.txt split_pytest_files
+      - name: Select a test group
+        run: tr '\n' ' ' < split_pytest_files${{ matrix.test-group }} > test_files_oneline
+      - name: Read test inputs
+        id: test-selector
+        run: echo "PYTEST_FILES='$(cat test_files_oneline)'" >> "$GITHUB_OUTPUT"
+      - name: Run tests
+        uses: docker/build-push-action@v6
+        with:
+          push: false
+          target: ci
+          context: .
+          build-args: |
+            SKIP_PRECOMMIT=--skip-pre-commit
+            PYTEST_FILES=${{ steps.test-selector.outputs.PYTEST_FILES }}

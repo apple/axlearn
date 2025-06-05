@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/lingvo:
+# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# google/praxis:
+# Copyright 2022 The Pax Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """An implementation of Conformer layers.
 
 References:
@@ -5,9 +17,9 @@ https://arxiv.org/abs/2005.08100
 https://github.com/tensorflow/lingvo/blob/d2f1e1b3cccdac8f73ae20f86afb03560b1c176d/lingvo/core/conformer_layer.py
 """
 
-from typing import Optional, Tuple, Union
+from typing import Literal, Optional, Sequence, Union
 
-import jax
+import chex
 from jax import numpy as jnp
 
 from axlearn.common.attention import (
@@ -16,12 +28,14 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerFeedForwardLayer,
     scaled_hidden_dim,
+    set_attention_partition_specs,
+    set_feed_forward_partition_specs,
 )
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.convolution import Conv1D
 from axlearn.common.layers import (
     BatchNorm,
-    DepthwiseConv1D,
     Dropout,
     GroupNorm,
     LayerNorm,
@@ -30,7 +44,7 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module
 from axlearn.common.repeat import Repeat
-from axlearn.common.utils import NestedTensor, Tensor, get_or_none
+from axlearn.common.utils import Tensor, safe_not
 
 
 class LConvLayer(BaseLayer):
@@ -59,9 +73,9 @@ class LConvLayer(BaseLayer):
 
         input_dim: Required[int] = REQUIRED  # Input feature dim.
         linear1_norm: LayerNorm.Config = LayerNorm.default_config()
-        linear1_activation: Tuple[str, str] = ("linear", "nn.sigmoid")
+        linear1_activation: tuple[str, str] = ("linear", "nn.sigmoid")
         linear1: Linear.Config = Linear.default_config().set(bias=True)
-        conv: DepthwiseConv1D.Config = DepthwiseConv1D.default_config().set(
+        conv: Conv1D.Config = Conv1D.default_config().set(
             # See Table 2 and 7.
             window=32,
             bias=False,
@@ -85,7 +99,15 @@ class LConvLayer(BaseLayer):
                 cfg.linear1.set(input_dim=cfg.input_dim, output_dim=cfg.input_dim),
             )
 
-        self._add_child("conv", cfg.conv.set(input_dim=cfg.input_dim))
+        # Setup Depthwise Convolution (3 dims are same).
+        self._add_child(
+            "conv",
+            cfg.conv.set(
+                input_dim=cfg.input_dim,
+                output_dim=cfg.input_dim,
+                num_input_dim_groups=cfg.input_dim,
+            ),
+        )
         self._add_child("conv_norm", cfg.conv_norm.set(input_dim=cfg.input_dim))
         self._add_child(
             "linear2",
@@ -104,6 +126,7 @@ class LConvLayer(BaseLayer):
             The output feature of shape [batch, seq_len, input_dim].
         """
         cfg = self.config
+        chex.assert_type(paddings, jnp.bool)
         x = self.linear1_norm(inputs)
         activations = [
             get_activation_fn(activation)(self.children[f"linear1_{i}"](x))
@@ -113,8 +136,8 @@ class LConvLayer(BaseLayer):
         x = activations[0] * activations[1]
         # We need to clear padded positions in 'x' before feeding into `conv` to ensure padding
         # doesn't affect results.
-        x = self.conv(x * jnp.expand_dims(1 - paddings, axis=-1))
-        x = self.conv_norm(x)
+        x = self.conv(x * jnp.expand_dims(safe_not(paddings), axis=-1))
+        x = self.conv_norm(x, paddings=paddings)
         x = get_activation_fn(cfg.conv_activation)(x)
         x = self.linear2(x)
         x = self.dropout(x)
@@ -191,6 +214,13 @@ class ConformerLayer(BaseLayer):
         )
         lconv: LConvLayer.Config = LConvLayer.default_config()
         norm: LayerNorm.Config = LayerNorm.default_config()
+        # Layer order. If None, default to "mhsa_before_conv", i.e., conformer layer order as
+        # secified in https://arxiv.org/abs/2005.08100.
+        # If not None, specify the layer order regarding conv and multihead self attention (mhsa).
+        # e.g., lconv_before_mhsa can be found in Figure 1 https://arxiv.org/pdf/2011.10798.
+        layer_order: Optional[
+            Literal["lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"]
+        ] = None
 
         # Config for computing relative position embeddings for range [-seq_len + 1, seq_len - 1].
         # It should only be used when attention is of class MultiheadAttention.
@@ -225,10 +255,10 @@ class ConformerLayer(BaseLayer):
         self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
 
         if cfg.rel_pos_emb:
-            if not cfg.self_attention.attention.cls == MultiheadAttention:
+            if not cfg.self_attention.attention.klass == MultiheadAttention:
                 raise ValueError(
                     "rel_pos_emb should only be set in MultiheadAttention, "
-                    f"but got {cfg.self_attention.attention.cls}."
+                    f"but got {cfg.self_attention.attention.klass}."
                 )
             pos_emb_dim = cfg.self_attention.attention.num_heads
             self._add_child("rel_pos_emb", cfg.rel_pos_emb.set(dim=pos_emb_dim))
@@ -242,6 +272,11 @@ class ConformerLayer(BaseLayer):
                 f"cfg.right_context must be greater or equal to 0, get {cfg.right_context}."
             )
 
+        if cfg.layer_order is not None:
+            supported_layer_order = ["lconv_before_ff", "lconv_before_mhsa", "mhsa_before_lconv"]
+            if cfg.layer_order not in supported_layer_order:
+                raise ValueError(f"Only {supported_layer_order} is allowed, got {cfg.layer_order}")
+
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tensor:
         """Computes ConformerLayer outputs.
 
@@ -254,6 +289,13 @@ class ConformerLayer(BaseLayer):
         """
         cfg = self.config
         x = inputs
+
+        layer_order = cfg.layer_order
+        if layer_order is None:
+            layer_order = "mhsa_before_lconv"
+
+        if layer_order == "lconv_before_ff":
+            x = self.lconv(x, paddings=paddings)
         x = self.ff_start(x)
         attention_logit_biases = compute_attention_logit_biases(
             paddings=paddings,
@@ -264,14 +306,57 @@ class ConformerLayer(BaseLayer):
         # ToDo(zhiyunlu): test limited context mask with rel_pos_emb.
         if self.config.rel_pos_emb:
             attention_logit_biases = self.rel_pos_emb(attention_logit_biases)
+        if layer_order == "lconv_before_mhsa":
+            x = self.lconv(x, paddings=paddings)
         x = self.self_attention(target=x, attention_logit_biases=attention_logit_biases).data
-        x = self.lconv(x, paddings=paddings)
+        if layer_order == "mhsa_before_lconv":
+            x = self.lconv(x, paddings=paddings)
         x = self.ff_end(x)
         x = self.norm(x)
         return x
 
 
-class _ConformerRepeat(Repeat):
+def set_double_shard_weights_config(
+    cfg: ConformerLayer.Config,
+    *,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
+    fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
+    tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
+):
+    """Sets `cfg` to shard FFN and attention weights over both fsdp and tp axes.
+
+    Similar to set_double_shard_weights_config() in attention.py
+
+    Args:
+        cfg: A ConformerLayer layer config to apply sharding spec to.
+        batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
+        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
+        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+    """
+    set_attention_partition_specs(
+        cfg.self_attention.attention,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+    )
+    set_feed_forward_partition_specs(
+        cfg.ff_start,
+        batch_axis_names=batch_axis_names,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+        seq_axis_names=seq_axis_names,
+    )
+    set_feed_forward_partition_specs(
+        cfg.ff_end,
+        batch_axis_names=batch_axis_names,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+        seq_axis_names=seq_axis_names,
+    )
+
+
+class ConformerRepeat(Repeat):
     """A Repeat layer with layer=ConformerLayer.
 
     See axlearn/common/repeat.py for more details.
@@ -300,6 +385,8 @@ class RepeatedConformerLayer(BaseLayer):
         num_layers: Required[int] = REQUIRED
         # Config for each layer in the stack.
         layer: ConformerLayer.Config = ConformerLayer.default_config()
+        # Config for the repeat implementation.
+        repeat: ConformerRepeat.Config = ConformerRepeat.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -308,23 +395,11 @@ class RepeatedConformerLayer(BaseLayer):
             raise ValueError(
                 f"num_layers must be greater than 0, get cfg.num_layers = {cfg.num_layers}."
             )
-        repeat_cfg = _ConformerRepeat.default_config().set(
+        repeat_cfg = cfg.repeat.set(
             layer=cfg.layer.set(input_dim=cfg.input_dim),
             num_layers=cfg.num_layers,
         )
         self._add_child("repeat", repeat_cfg)
-
-    def initialize_parameters_recursively(
-        self,
-        prng_key: jax.random.KeyArray,
-        *,
-        prebuilt: Optional[NestedTensor] = None,
-    ) -> NestedTensor:
-        return dict(
-            repeat=self.repeat.initialize_parameters_recursively(
-                prng_key, prebuilt=get_or_none(prebuilt, "repeat")
-            )
-        )
 
     def forward(self, inputs: Tensor, *, paddings: Tensor) -> Tensor:
         return self.repeat(inputs=inputs, paddings=paddings)

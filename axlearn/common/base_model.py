@@ -1,5 +1,6 @@
+# Copyright © 2023 Apple Inc.
+
 """Base model definition."""
-from typing import Tuple
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.module import NestedTensor, Tensor
@@ -21,7 +22,7 @@ class BaseModel(BaseLayer):
             A NestedTensor containing Tensors with a leading dimension of `batch_size`.
     """
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         """Computes loss and auxiliary outputs with the given inputs.
 
         Args:

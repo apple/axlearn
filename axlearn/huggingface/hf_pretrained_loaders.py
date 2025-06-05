@@ -1,55 +1,64 @@
-"""HuggingFace pretraiend loaders."""
-import torch
+# Copyright © 2024 Apple Inc.
 
-from axlearn.huggingface.hf_module import download_hf_models_from_gs
+"""Utilities for loading pre-trained Hugging Face models."""
+from collections.abc import Sequence
+from typing import Any, Callable
+
+from axlearn.common.config import config_for_function
+from axlearn.common.state_builder import HuggingFacePreTrainedBuilder
+from axlearn.huggingface.hf_module import download_hf_models_from_remote
 
 
-def load_pytorch_deberta_v2_from_pretrained(model_path: str):
-    """Downloads model_path and loads pre-trained DeBERTa v2 model from path.
+def auto_model_from_pretrained(  # pytype: disable=name-error
+    model_name_or_path: str,
+) -> "AutoModel":
+    """Downloads and loads pre-trained HF model.
 
     Args:
-        model_path: Path to the pre-trained model.
+        model_name_or_path: Model name or local or GCS path to the pre-trained model.
 
     Returns:
-        A Hugging Face DebertaV2Model.
-
-    Raises:
-        NotImplementedError: The model path scheme is unsupported.
+        A Hugging Face transformers PreTrainedModel.
     """
     # Lazily import to avoid introducing a dependency otherwise.
     # pylint: disable-next=import-outside-toplevel
-    from transformers import DebertaV2Model
+    from transformers import AutoModel
 
-    if model_path.startswith("gs://"):
-        model_path = download_hf_models_from_gs(model_path)
-    else:
-        raise NotImplementedError(f"Unsupported scheme for model path: {model_path}.")
+    if model_name_or_path.startswith("gs://"):
+        model_name_or_path = download_hf_models_from_remote(model_name_or_path)
 
-    return DebertaV2Model.from_pretrained(model_path)
+    return AutoModel.from_pretrained(model_name_or_path)
 
 
-def load_pytorch_mt0_from_pretrained(model_path: str):
-    """Downloads model_path and loads pre-trained mT0/mT5 model from path.
+def hf_pretrained_builder_config(
+    *,
+    model_name_or_path: str,
+    target_scope: Sequence[str] = tuple(),
+    source_scope: Sequence[str] = ("encoder",),
+    from_pretrained_fn: Callable[[str], Any] = auto_model_from_pretrained,
+) -> HuggingFacePreTrainedBuilder.Config:
+    """Constructs a HuggingFacePreTrainedBuilder config to initialize from HF models.
+
+    The builder will replace the target model's parameters under
+    target_scope1->target_scope2->... to the HF model's parameters under
+    source_scope1->source_scope2->...
 
     Args:
-        model_path: Path to the pre-trained model.
+        model_name_or_path: Model name or location of the model's artifacts folder.
+        target_scope: A list of strings with multiple scope names.
+            If empty, it means the whole model state parameters will be replaced.
+        source_scope: A list of strings with multiple scope names.
+            If empty, it means the whole HF model parameters will be used for replacement.
+        from_pretrained_fn: A function that takes a model identifier and returns an HF model.
 
     Returns:
-        A Hugging Face t0 model.
-
-    Raises:
-        NotImplementedError: The model path scheme is unsupported.
+        HuggingFacePreTrainedBuilder config to initialize from HF models.
     """
-    # Lazily import to avoid introducing a dependency otherwise.
-    # pylint: disable-next=import-outside-toplevel
-    from transformers.models.mt5 import modeling_mt5
-
-    if model_path.startswith("gs://"):
-        model_path_local = download_hf_models_from_gs(model_path)
-        return modeling_mt5.MT5ForConditionalGeneration.from_pretrained(
-            model_path_local, torch_dtype=torch.bfloat16
-        )
-
-    return modeling_mt5.MT5ForConditionalGeneration.from_pretrained(
-        model_path, torch_dtype=torch.bfloat16
+    builder = HuggingFacePreTrainedBuilder.default_config().set(
+        hf_layer_config=config_for_function(from_pretrained_fn).set(
+            model_name_or_path=model_name_or_path
+        ),
+        target_scope=target_scope,
+        source_scope=source_scope,
     )
+    return builder

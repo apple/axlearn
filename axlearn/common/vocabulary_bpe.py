@@ -1,10 +1,19 @@
-"""An implemention of GPT2 BPE as a seqio Vocabulary.
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# openai/gpt-2:
+# Copyright (c) 2019 OpenAI.
+# Licensed under a modified MIT license.
+
+"""An implementation of GPT2 BPE as a seqio Vocabulary.
 
 Reference:
 https://github.com/openai/gpt-2/blob/a74da5d99abaaba920de8131d64da2862a8f213b/src/encoder.py
 """
 
-from typing import Any, Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Optional
 
 import regex as re
 import seqio
@@ -42,7 +51,7 @@ class BPEVocabulary(seqio.SentencePieceVocabulary):
         sentencepiece_model_file: str,
         extra_ids: int = 0,
         decode_errors: str = "replace",
-        id_map: Optional[Dict[int, int]] = None,
+        id_map: Optional[dict[int, int]] = None,
         decode_as_control: Optional[Sequence[int]] = None,
     ):
         """Instantiates the vocab."""
@@ -106,7 +115,7 @@ class BPEVocabulary(seqio.SentencePieceVocabulary):
         self._ud_pat = "(" + "|".join([re.escape(piece) for piece in ud_pieces]) + ")"
 
     @property
-    def id_map(self) -> Dict[int, int]:
+    def id_map(self) -> dict[int, int]:
         return self._id_map
 
     @property
@@ -173,7 +182,7 @@ class BPEVocabulary(seqio.SentencePieceVocabulary):
             A tf.Tensor of shape [num_tokens] and dtype tf.string.
         """
         # Simulate the lookahead by splitting in two stages.
-        # `(?s).*` tells us to keep all delimeters ( `.` does not by default include e.g. `\n`).
+        # `(?s).*` tells us to keep all delimiters ( `.` does not by default include e.g. `\n`).
         s = tft.regex_split(s, f"[{self._spc}][^{self._spc}]+", keep_delim_regex_pattern="(?s).*")
         tokens = tft.regex_split(s, self._pat, keep_delim_regex_pattern="(?s).*")
         return tokens.flat_values
@@ -349,7 +358,7 @@ class BPEVocabulary(seqio.SentencePieceVocabulary):
         return self._byte_decode_tf(s)
 
 
-def _static_hash_table(d: Dict[Any, Any], default_value: Any) -> tf.lookup.StaticHashTable:
+def _static_hash_table(d: dict[Any, Any], default_value: Any) -> tf.lookup.StaticHashTable:
     """Convert a list of keys and values to a static lookup table."""
     return tf.lookup.StaticHashTable(
         tf.lookup.KeyValueTensorInitializer(
@@ -360,7 +369,7 @@ def _static_hash_table(d: Dict[Any, Any], default_value: Any) -> tf.lookup.Stati
     )
 
 
-def _bytes_to_unicode() -> Dict[int, str]:
+def _bytes_to_unicode() -> dict[int, str]:
     """Returns mapping from utf-8 bytes to unicode strings.
 
     Copied from original GPT2 implementation with some comments.

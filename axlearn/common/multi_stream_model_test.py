@@ -1,7 +1,8 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests multistream model."""
 # pylint: disable=no-self-use
 import copy
-from typing import Tuple
 
 import jax
 import numpy as np
@@ -32,7 +33,7 @@ class MockFusionNetwork(FusionNetwork):
     class Config(FusionNetwork.Config):
         count_fusion: int = 0
 
-    def forward(self, input_batch: NestedTensor) -> Tuple[Tensor, NestedTensor]:
+    def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
         image_emb = input_batch["encoder"]["image_emb"]
         loss = jnp.mean(image_emb, axis=1)
         return loss, {"image_emb": image_emb, "count_fusion": self.config.count_fusion}
@@ -183,7 +184,7 @@ class MultiStreamPipelineTest(TestCase):
         )
         assert_allclose(outputs["encoder"]["count_encoder"], 3)
 
-    def caluclate_loss(self, input_batch, loss_weights):
+    def calculate_loss(self, input_batch, loss_weights):
         encoder_name = "encoder"
         fusion_1_name = "fusion_1"
         fusion_2_name = "fusion_2"
@@ -217,9 +218,9 @@ class MultiStreamPipelineTest(TestCase):
         }
 
         # The input_batch is updated during feedforward. Therefore, copy.deepcopy is required.
-        loss_0 = self.caluclate_loss(copy.deepcopy(input_batch), {"fusion_1": 0, "fusion_2": 1})
-        loss_1 = self.caluclate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 0})
-        loss_2 = self.caluclate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 1})
+        loss_0 = self.calculate_loss(copy.deepcopy(input_batch), {"fusion_1": 0, "fusion_2": 1})
+        loss_1 = self.calculate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 0})
+        loss_2 = self.calculate_loss(copy.deepcopy(input_batch), {"fusion_1": 1, "fusion_2": 1})
         assert_allclose(loss_0, loss_1)
         assert_allclose(loss_0 * 2, loss_2)
 

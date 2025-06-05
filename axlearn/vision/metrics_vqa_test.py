@@ -1,6 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests VQA metrics."""
 # pylint: disable=no-self-use,
-from typing import List
 
 from absl.testing import absltest, parameterized
 
@@ -297,7 +298,7 @@ class TestMetricsVQA(parameterized.TestCase):
             "expected": 0.3,
         },
     )
-    def test_sample_vqa_match_score(self, answer: str, gt_answers: List[str], expected: float):
+    def test_sample_vqa_match_score(self, answer: str, gt_answers: list[str], expected: float):
         assert vqa_accuracy_score(answer=answer, gt_answers=gt_answers) == expected
 
 

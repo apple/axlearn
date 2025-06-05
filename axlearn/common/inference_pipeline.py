@@ -1,8 +1,14 @@
-"""An inference pipeline consists of an input, a runner, and an output writer."""
-from typing import Optional, Tuple
+# Copyright © 2023 Apple Inc.
 
+"""An inference pipeline consists of an input, a runner, and an output writer."""
+
+import time
+from typing import Optional
+
+import jax
 import numpy as np
 import tensorflow as tf
+from absl import logging
 from jax.experimental import multihost_utils
 
 from axlearn.common import utils
@@ -15,7 +21,7 @@ from axlearn.common.summary_writer import BaseWriter, SummaryWriter
 from axlearn.common.utils import NestedTensor, Tensor
 
 
-def pop_string_tensors(batch: NestedTensor) -> Tuple[NestedTensor, NestedTensor]:
+def pop_string_tensors(batch: NestedTensor) -> tuple[NestedTensor, NestedTensor]:
     """Remove string tensors from a batch, returning (batch w/o string tensors, string tensors).
 
     Args:
@@ -106,22 +112,22 @@ class InferencePipeline(Module):
         )
         self._add_child("summary_writer", cfg.summary_writer)
 
-    def run(self):
+    def run(self, **kwargs):
         cfg = self.config
-        method_runner = self.runner.create_method_runner(method=cfg.model_method)
+        method_runner = self.runner.create_method_runner(method=cfg.model_method, **kwargs)
 
-        batch_index = 0
-        for input_batch in self.input.dataset():
+        start_time = time.perf_counter()
+
+        for batch_index, input_batch in enumerate(self.input.dataset()):
             input_batch, input_batch_str_tensors = pop_string_tensors(input_batch)
+            input_batch = utils.as_numpy_array(input_batch)
             # pylint: disable-next=protected-access
             with method_runner._mesh:
                 global_input_batch = utils.host_to_global_device_array(
                     input_batch, partition=cfg.runner.input_batch_partition_spec
                 )
             output: MethodRunner.Output = method_runner(global_input_batch)
-            output_batch = utils.global_to_host_array(
-                output.output_batch, partition=cfg.runner.input_batch_partition_spec
-            )
+            output_batch = utils.global_to_host_array(output.output_batch)
             if len(input_batch_str_tensors) != 0:
                 input_batch = merge_with_string_tensors(input_batch, input_batch_str_tensors)
             self.output_writer.write(
@@ -129,6 +135,19 @@ class InferencePipeline(Module):
                 output_batch=output_batch,
             )
             self.summary_writer(step=batch_index, values=output.summaries)
+
+            if (batch_index + 1) % 10 == 0:
+                global_batch_size = len(jax.tree_util.tree_leaves(global_input_batch)[0])
+                logging.info(
+                    "Processed %d batches and %d examples",
+                    batch_index + 1,
+                    (batch_index + 1) * global_batch_size,
+                )
+                now = time.perf_counter()
+                average_batch_time = (now - start_time) / 10
+                logging.info("Average time per batch: %.2f seconds", average_batch_time)
+                start_time = now
+
         self.output_writer.flush()
         # Synchronize flush across hosts.
         multihost_utils.sync_global_devices(self.path())

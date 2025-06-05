@@ -1,5 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests for coco_utils.py."""
-from typing import Any, Dict, List, Union
+from typing import Any, Union
 
 import numpy as np
 import tensorflow as tf
@@ -14,10 +16,10 @@ class CocoToolsTest(parameterized.TestCase, tf.test.TestCase):
     def test_export_detections_to_coco(self):
         image_ids = ["first", "second"]
         detections_boxes = [
-            np.array([[100, 100, 200, 200]], np.float),
-            np.array([[50, 50, 100, 100]], np.float),
+            np.array([[100, 100, 200, 200]], float),
+            np.array([[50, 50, 100, 100]], float),
         ]
-        detections_scores = [np.array([0.8], np.float), np.array([0.7], np.float)]
+        detections_scores = [np.array([0.8], float), np.array([0.7], float)]
         detections_classes = [np.array([1], np.int32), np.array([1], np.int32)]
         predictions = {
             "source_id": np.expand_dims(image_ids, axis=0),
@@ -106,9 +108,9 @@ class CocoToolsTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_export_groundtruths_to_coco(
         self,
-        groundtruth_classes: Union[List[List[int]], List[List[List[int]]]],
-        expected_categories: List[Dict[str, int]],
-        expected_annotations: List[Dict[str, Any]],
+        groundtruth_classes: Union[list[list[int]], list[list[list[int]]]],
+        expected_categories: list[dict[str, int]],
+        expected_annotations: list[dict[str, Any]],
     ):
         groundtruth_boxes = np.array(
             [[[100, 100, 200, 200]], [[50, 50, 100, 100]]], dtype=np.float32

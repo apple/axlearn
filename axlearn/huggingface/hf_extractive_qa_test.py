@@ -1,6 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests HF Extractive QA wrappers."""
 import os
-from typing import Type
 
 import jax.random
 import numpy as np
@@ -46,8 +47,8 @@ class HfExtractiveQuestionAnsweringWrapperTest(parameterized.TestCase):
     )
     def test_feed_forward(  # pylint: disable=too-many-statements
         self,
-        extractive_qa_wrapper: Type[_HfExtractiveQuestionAnsweringWrapper],
-        hf_config_cls: Type[PretrainedConfig],
+        extractive_qa_wrapper: type[_HfExtractiveQuestionAnsweringWrapper],
+        hf_config_cls: type[PretrainedConfig],
         hidden_dim: int,
     ):
         batch_size, seq_len = 4, 8
@@ -228,8 +229,8 @@ class HfExtractiveQuestionAnsweringWrapperTest(parameterized.TestCase):
     )
     def test_attention_mask(
         self,
-        extractive_qa_wrapper: Type[_HfExtractiveQuestionAnsweringWrapper],
-        hf_config_cls: Type[PretrainedConfig],
+        extractive_qa_wrapper: type[_HfExtractiveQuestionAnsweringWrapper],
+        hf_config_cls: type[PretrainedConfig],
         hidden_dim: int,
         pad_token_id: int,
     ):  # pylint: disable=duplicate-code
@@ -272,7 +273,7 @@ class HfExtractiveQuestionAnsweringWrapperTest(parameterized.TestCase):
     )
     def test_exception_when_missing_hf_config(
         self,
-        extractive_qa_wrapper: Type[_HfExtractiveQuestionAnsweringWrapper],
+        extractive_qa_wrapper: type[_HfExtractiveQuestionAnsweringWrapper],
     ):
         with self.assertRaises(RequiredFieldMissingError) as e:
             cfg = extractive_qa_wrapper.default_config().set(

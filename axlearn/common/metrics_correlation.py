@@ -1,3 +1,15 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# scikit-learn/scikit-learn:
+# Copyright (c) 2007-2023 The scikit-learn developers. All rights reserved.
+# Licensed under BSD 3 clause.
+#
+# scipy/scipy:
+# Copyright (c) 2001-2002 Enthought, Inc. 2003-2023, SciPy Developers. All rights reserved.
+# Licensed under BSD 3 clause.
+
 """Correlation metrics like Pearson's r and Spearman's rho."""
 from typing import Optional
 
@@ -165,8 +177,8 @@ def spearman_corrcoef(x: Tensor, y: Tensor, *, eps: float = 1e-8, mask: Optional
             )
 
         # Replace masked elements with -inf so they will be ranked lowest
-        x = jnp.where(mask != 0, x, jnp.NINF)
-        y = jnp.where(mask != 0, y, jnp.NINF)
+        x = jnp.where(mask != 0, x, -jnp.inf)
+        y = jnp.where(mask != 0, y, -jnp.inf)
 
     ranked_x = _rankdata(x)
     ranked_y = _rankdata(y)

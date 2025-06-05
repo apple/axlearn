@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests RCNN layers."""
 import jax.random
 import numpy as np
@@ -21,7 +23,7 @@ def _input_config(is_training: bool, batch_size: int, image_size: int, output_st
     cfg.source.set(
         dataset_name="coco/2017",
         split="validation",
-        shuffle_buffer_size=100 if is_training else 0,
+        train_shuffle_buffer_size=100,
     )
     cfg.processor.set(
         image_size=(image_size, image_size), max_num_instances=10, output_stride=output_stride

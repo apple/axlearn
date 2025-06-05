@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests CyCLIP implementation."""
 # pylint: disable=no-self-use
 

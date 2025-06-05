@@ -1,4 +1,6 @@
-"""Tests MobileNetV3 blocks."""
+# Copyright © 2023 Apple Inc.
+
+"""Tests blocks for mobile networks."""
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods
 import jax.random
 import tensorflow as tf
@@ -8,89 +10,149 @@ from axlearn.common import utils
 from axlearn.common.layers import SqueezeExcitation, StochasticDepth
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
-from axlearn.vision.mobilenets_blocks import ConvBnAct, DepthwiseSeparable, InvertedResidual
+from axlearn.vision.mobilenets_blocks import ConvBnAct, MobileBlock, MobileBlockType
 
 
 # pylint: disable=too-many-public-methods
-class MobileNetV3BlockTest(TestCase, tf.test.TestCase):
-    """Tests MobileNetV3 blocks."""
+class MobileNetsBlocksTest(TestCase, tf.test.TestCase):
+    """Tests blocks for mobile networks."""
 
     @parameterized.named_parameters(
         {
-            "testcase_name": "ConvBnAct",
+            "testcase_name": "CONV_BN_ACT",
             "block_class": ConvBnAct,
+            "block_type": None,
             "se_ratio": 0.0,
             "exp_ratio": 1.0,
             "drop_path_rate": 0.0,
             "num_params": 4736,
         },
         {
-            "testcase_name": "DepthwiseSeparable",
-            "block_class": DepthwiseSeparable,
+            "testcase_name": "DEPTHWISE_SEPARABLE",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.DEPTHWISE_SEPARABLE,
             "se_ratio": 0.0,
             "exp_ratio": 1.0,
             "drop_path_rate": 0.0,
             "num_params": 848,
         },
         {
-            "testcase_name": "DepthwiseSeparable_DROP",
-            "block_class": DepthwiseSeparable,
+            "testcase_name": "DEPTHWISE_SEPARABLE_DROP",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.DEPTHWISE_SEPARABLE,
             "se_ratio": 0.5,
             "exp_ratio": 1.0,
             "drop_path_rate": 0.5,
             "num_params": 1128,
         },
         {
-            "testcase_name": "DepthwiseSeparable_SE",
-            "block_class": DepthwiseSeparable,
+            "testcase_name": "DEPTHWISE_SEPARABLE_SE",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.DEPTHWISE_SEPARABLE,
             "se_ratio": 0.5,
             "exp_ratio": 1.0,
             "drop_path_rate": 0.0,
             "num_params": 1128,
         },
         {
-            "testcase_name": "InvertedResidual",
-            "block_class": InvertedResidual,
+            "testcase_name": "INVERTED_BOTTLENECK",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.INVERTED_BOTTLENECK,
             "se_ratio": 0.0,
             "exp_ratio": 1.0,
             "drop_path_rate": 0.0,
             "num_params": 848,
         },
         {
-            "testcase_name": "InvertedResidual_DROP",
-            "block_class": InvertedResidual,
+            "testcase_name": "INVERTED_BOTTLENECK_DROP",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.INVERTED_BOTTLENECK,
             "se_ratio": 0.0,
             "exp_ratio": 1.0,
             "drop_path_rate": 0.5,
             "num_params": 848,
         },
         {
-            "testcase_name": "InvertedResidual_SE",
-            "block_class": InvertedResidual,
+            "testcase_name": "INVERTED_BOTTLENECK_SE",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.INVERTED_BOTTLENECK,
             "se_ratio": 0.5,
             "exp_ratio": 1.0,
             "drop_path_rate": 0.0,
             "num_params": 1128,
         },
         {
-            "testcase_name": "InvertedResidual_EXP",
-            "block_class": InvertedResidual,
+            "testcase_name": "INVERTED_BOTTLENECK_EXP",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.INVERTED_BOTTLENECK,
             "se_ratio": 0.0,
             "exp_ratio": 2.0,
             "drop_path_rate": 0.0,
             "num_params": 2208,
         },
         {
-            "testcase_name": "InvertedResidual_EXP_SE",
-            "block_class": InvertedResidual,
+            "testcase_name": "INVERTED_BOTTLENECK_EXP_SE",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.INVERTED_BOTTLENECK,
             "se_ratio": 0.5,
             "exp_ratio": 2.0,
             "drop_path_rate": 0.0,
             "num_params": 3280,
         },
+        {
+            "testcase_name": "FUSED_INVERTED_BOTTLENECK",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.FUSED_INVERTED_BOTTLENECK,
+            "se_ratio": 0.0,
+            "exp_ratio": 1.0,
+            "drop_path_rate": 0.0,
+            "num_params": 640,
+        },
+        {
+            "testcase_name": "FUSED_INVERTED_BOTTLENECK_DROP",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.FUSED_INVERTED_BOTTLENECK,
+            "se_ratio": 0.0,
+            "exp_ratio": 1.0,
+            "drop_path_rate": 0.5,
+            "num_params": 640,
+        },
+        {
+            "testcase_name": "FUSED_INVERTED_BOTTLENECK_SE",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.FUSED_INVERTED_BOTTLENECK,
+            "se_ratio": 0.5,
+            "exp_ratio": 1.0,
+            "drop_path_rate": 0.0,
+            "num_params": 920,
+        },
+        {
+            "testcase_name": "FUSED_INVERTED_BOTTLENECK_EXP",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.FUSED_INVERTED_BOTTLENECK,
+            "se_ratio": 0.0,
+            "exp_ratio": 2.0,
+            "drop_path_rate": 0.0,
+            "num_params": 5888,
+        },
+        {
+            "testcase_name": "FUSED_INVERTED_BOTTLENECK_EXP_SE",
+            "block_class": MobileBlock,
+            "block_type": MobileBlockType.FUSED_INVERTED_BOTTLENECK,
+            "se_ratio": 0.5,
+            "exp_ratio": 2.0,
+            "drop_path_rate": 0.0,
+            "num_params": 6960,
+        },
     )
-    def test_mobilenetv3_blocks(
-        self, block_class, se_ratio: float, exp_ratio: float, drop_path_rate: float, num_params: int
+    def test_mobilenets_blocks(
+        self,
+        block_class,
+        block_type: MobileBlockType,
+        se_ratio: float,
+        exp_ratio: float,
+        drop_path_rate: float,
+        num_params: int,
     ):
         # Initialize layer.
         input_dim = 16
@@ -98,18 +160,12 @@ class MobileNetV3BlockTest(TestCase, tf.test.TestCase):
         cfg = block_class.default_config().set(
             name="test", input_dim=input_dim, output_dim=output_dim
         )
+        if block_type is not None:
+            cfg.mobile_block_type = block_type
         if se_ratio > 0.0:
-            se_layer = SqueezeExcitation.default_config().set(se_ratio=se_ratio)
-            if block_class == DepthwiseSeparable:
-                cfg.se_layer = se_layer
-            elif block_class == InvertedResidual:
-                cfg.depthwise_separable.se_layer = se_layer
+            cfg.se_layer = SqueezeExcitation.default_config().set(se_ratio=se_ratio)
         if drop_path_rate > 0.0:
-            drop_path = StochasticDepth.default_config().set(rate=drop_path_rate)
-            if block_class == DepthwiseSeparable:
-                cfg.drop_path = drop_path
-            elif block_class == InvertedResidual:
-                cfg.depthwise_separable.drop_path = drop_path
+            cfg.drop_path = StochasticDepth.default_config().set(rate=drop_path_rate)
         if exp_ratio > 1.0:
             cfg.exp_ratio = exp_ratio
         layer: block_class = cfg.instantiate(parent=None)

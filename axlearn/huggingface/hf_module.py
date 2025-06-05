@@ -1,23 +1,26 @@
+# Copyright © 2023 Apple Inc.
+
 """HuggingFace module wrappers."""
+
 import json
 import os
-from abc import ABC
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Optional
 
 import jax.numpy as jnp
 import jax.random
-import tensorflow as tf
 from absl import logging
-from flax.core.frozen_dict import freeze, unfreeze
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
 
+from axlearn.common import file_system as fs
 from axlearn.common.adapter_flax import config_for_flax_module
+from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, Required, RequiredFieldMissingError, config_class
 from axlearn.common.module import Module, NestedTensor  # pylint: disable=unused-import
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Nested, Tensor
 
 HF_MODULE_KEY = "hf_module"
 
@@ -35,35 +38,37 @@ def get_hf_models_cache_dir() -> Path:
     return hf_models_cache_dir
 
 
-def download_hf_models_from_gs(gs_path: str) -> str:
-    """Downloads HuggingFace model artifacts from gs buckets.
+def download_hf_models_from_remote(remote_path: str) -> str:
+    """Downloads HuggingFace model artifacts from remote storage like gs:// or s3://.
+
+    If the remote_path is actually local, it will just copy it to the cache_dir.
 
     Args:
-        gs_path: Model artifacts location.
+        remote_path: Model artifacts location.
 
     Returns:
         Local path of downloaded models.
     """
-    model_name = gs_path.rstrip("/").split("/")[-1]
+    model_name = remote_path.rstrip("/").split("/")[-1]
     cache_dir = get_hf_models_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_pretrained_model_path = cache_dir / model_name
     if not local_pretrained_model_path.exists():
         local_pretrained_model_path.mkdir(parents=True)
-        for filename in tf.io.gfile.listdir(gs_path):
+        for filename in fs.listdir(remote_path):
             logging.info(
                 "Downloading %s to %s",
-                os.path.join(gs_path, filename),
+                os.path.join(remote_path, filename),
                 local_pretrained_model_path / filename,
             )
-            tf.io.gfile.copy(
-                os.path.join(gs_path, filename),
+            fs.copy(
+                os.path.join(remote_path, filename),
                 str(local_pretrained_model_path / filename),
             )
     return str(local_pretrained_model_path)
 
 
-class HfModuleWrapper(BaseModel, ABC):
+class HfModuleWrapper(BaseModel):
     """A wrapper for Hugging Face Flax modules so that they can be used within AXLearn.
 
     This is the super class for all Hugging Face Flax module wrappers, such as
@@ -87,8 +92,9 @@ class HfModuleWrapper(BaseModel, ABC):
 
         dtype: Required[jnp.dtype] = REQUIRED
         # Type of HF pretrained model.
-        hf_model_type: Required[Type[FlaxPreTrainedModel]] = REQUIRED
-        # A local or GCS path to the Hugging Face model directory.
+        hf_model_type: Required[type[FlaxPreTrainedModel]] = REQUIRED
+        # A local or remote path to the Hugging Face model directory.
+        # Schemes must be supported by tf.io.
         pretrained_model_path: Optional[str] = None
         # Initialize model parameters from PyTorch checkpoint rather than Flax checkpoint.
         from_pt: Optional[bool] = False
@@ -107,9 +113,18 @@ class HfModuleWrapper(BaseModel, ABC):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
+        self._local_pretrained_model_path = None
         if cfg.pretrained_model_path is not None:
             hf_config_cls = cfg.hf_model_type.config_class
-            with tf.io.gfile.GFile(os.path.join(cfg.pretrained_model_path, "config.json")) as f:
+
+            self._local_pretrained_model_path = download_hf_models_from_remote(
+                cfg.pretrained_model_path
+            )
+            logging.info("Using model path %s", self._local_pretrained_model_path)
+
+            with open(
+                os.path.join(self._local_pretrained_model_path, "config.json"), encoding="utf-8"
+            ) as f:
                 final_hf_config = hf_config_cls(**json.load(f))
 
             if cfg.hf_config is not None:
@@ -141,43 +156,17 @@ class HfModuleWrapper(BaseModel, ABC):
         )
 
     def initialize_parameters_recursively(
-        self, prng_key: jax.random.KeyArray, *, prebuilt: Optional[NestedTensor] = None
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
     ) -> NestedTensor:
         if self._use_prebuilt_params(prebuilt):
-            return prebuilt
+            return jax.tree.map(lambda _: None, prebuilt)
         params = super().initialize_parameters_recursively(prng_key, prebuilt=prebuilt)
         cfg = self.config
-        if cfg.pretrained_model_path is not None:
-            if cfg.pretrained_model_path.startswith("gs://"):
-                # Cache the model locally, if it is not already cached.
-                model_name = cfg.pretrained_model_path.rstrip("/").split("/")[-1]
-                cache_dir = get_hf_models_cache_dir()
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                local_pretrained_model_path = cache_dir / model_name
-                if not local_pretrained_model_path.exists():
-                    local_pretrained_model_path.mkdir(parents=True)
-                    for filename in tf.io.gfile.listdir(cfg.pretrained_model_path):
-                        logging.info(
-                            "Downloading %s to %s",
-                            os.path.join(cfg.pretrained_model_path, filename),
-                            local_pretrained_model_path / filename,
-                        )
-                        tf.io.gfile.copy(
-                            os.path.join(cfg.pretrained_model_path, filename),
-                            str(local_pretrained_model_path / filename),
-                        )
-                else:
-                    logging.info(
-                        "Found cache %s, skipping downloading model from %s",
-                        local_pretrained_model_path,
-                        cfg.pretrained_model_path,
-                    )
-            else:
-                local_pretrained_model_path = cfg.pretrained_model_path
+        if self._local_pretrained_model_path is not None:
             hf_model = cfg.hf_model_type.from_pretrained(
-                local_pretrained_model_path, from_pt=cfg.from_pt
+                self._local_pretrained_model_path, from_pt=cfg.from_pt
             )
-            hf_module_params = unfreeze(params[HF_MODULE_KEY])
+            hf_module_params = params[HF_MODULE_KEY]
             hf_module_params["params"] = {
                 key: (
                     value
@@ -186,10 +175,10 @@ class HfModuleWrapper(BaseModel, ABC):
                 )
                 for key, value in hf_model.params.items()
             }
-            params[HF_MODULE_KEY] = freeze(hf_module_params)
+            params[HF_MODULE_KEY] = hf_module_params
         return params
 
-    def _dummy_input_kwargs(self) -> Dict[str, Optional[Tensor]]:  # pylint: disable=no-self-use
+    def _dummy_input_kwargs(self) -> dict[str, Optional[Tensor]]:  # pylint: disable=no-self-use
         """Returns a dictionary of kwargs to pass to linen.Module.init."""
         return dict(
             # The first dim is batch size.
@@ -199,7 +188,7 @@ class HfModuleWrapper(BaseModel, ABC):
             position_ids=jnp.zeros([1, 8], dtype=jnp.int32),
         )
 
-    def create_dummy_input_fn(self) -> Callable[[], Tuple[Sequence, Dict]]:
+    def create_dummy_input_fn(self) -> Callable[[], tuple[Sequence, dict]]:
         """Returns a function that returns (args, kwargs) for linen.Module.init."""
 
         def create_dummy_input():
@@ -207,7 +196,7 @@ class HfModuleWrapper(BaseModel, ABC):
 
         return create_dummy_input
 
-    def _forward_kwargs(self, input_batch: Dict[str, Tensor]) -> Dict[str, Any]:
+    def _forward_kwargs(self, input_batch: dict[str, Tensor]) -> dict[str, Any]:
         """Returns a dictionary of kwargs for HF module's forward __call__.
 
         Args:
@@ -239,7 +228,7 @@ class HfModuleWrapper(BaseModel, ABC):
             rngs={"params": self.prng_key, "dropout": dropout_subkey},
         )
 
-    def predict(self, input_batch: Dict[str, Tensor]) -> NestedTensor:
+    def predict(self, input_batch: dict[str, Tensor]) -> NestedTensor:
         """Runs model prediction with the given inputs.
 
         Args:
@@ -255,4 +244,4 @@ class HfModuleWrapper(BaseModel, ABC):
         """
         hf_module = self.children[HF_MODULE_KEY]
         hf_output = hf_module(**self._forward_kwargs(input_batch))
-        return hf_output
+        return dict(hf_output)

@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests LoRa implementations."""
 # pylint: disable=no-self-use
 
@@ -9,15 +11,24 @@ import numpy as np
 import torch
 import torch.nn.functional as torchF
 from absl.testing import absltest, parameterized
-from einops import rearrange
 
 from axlearn.common import utils
-from axlearn.common.attention import FusedQKVLinear, MultiheadOutputLinear
+from axlearn.common.attention import (
+    FusedQKVLinear,
+    KVState,
+    MultiheadAttention,
+    MultiheadOutputLinear,
+    QKVLinear,
+    QLinear,
+)
+from axlearn.common.attention_bias import CausalAttentionBias
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import Linear
 from axlearn.common.lora import (
     LoraFusedQKVAdapter,
     LoraFusedQKVLinear,
     LoraLinear,
+    LoraLinearAdapter,
     LoraMultiheadOutputLinear,
 )
 from axlearn.common.module import functional as F
@@ -27,6 +38,21 @@ from axlearn.common.utils import Tensor
 
 
 class LoraLinearTest(TestCase):
+    def test_set_param_spec_config(self):
+        layer_cfg = LoraLinearAdapter.default_config().set(
+            name="test",
+            rank=2,
+            alpha=1.0,
+            input_dim=2,
+            output_dim=4,
+        )
+        layer_cfg.lora_down.param_partition_spec = ["data", None]
+        layer_cfg.lora_up.param_partition_spec = [None, "data"]
+        layer = layer_cfg.instantiate(parent=None)
+        param_specs = layer.create_parameter_specs_recursively()
+        self.assertEqual(param_specs["lora_down"]["weight"].mesh_axes, ("data", None))
+        self.assertEqual(param_specs["lora_up"]["weight"].mesh_axes, (None, "data"))
+
     def test_forward(self):
         input_dim = 2
         output_dim = 4
@@ -70,9 +96,61 @@ class LoraLinearTest(TestCase):
 
         assert_allclose(outputs, ref_outputs)
 
+    def test_alpha_is_zero(self):
+        input_dim = 2
+        output_dim = 4
+        batch_size = 2
+        rank = 2
+        alpha = 0
+
+        inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, input_dim))
+
+        ref_layer_cfg = Linear.default_config().set(
+            name="ref_layer", input_dim=input_dim, output_dim=output_dim
+        )
+        ref_layer = ref_layer_cfg.instantiate(parent=None)
+        ref_state = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        ref_outputs, _ = F(
+            ref_layer,
+            state=ref_state,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=(inputs,),
+        )
+        layer_cfg = LoraLinear.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            output_dim=output_dim,
+        )
+        layer_cfg.adapter.set(rank=rank, alpha=alpha)
+        layer = layer_cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(123), prebuilt=None
+        )
+        state["layer"]["weight"] = ref_state["weight"]
+        state["layer"]["bias"] = ref_state["bias"]
+        state["adapter"]["lora_up"]["weight"] = jax.random.normal(
+            jax.random.PRNGKey(1), (rank, output_dim)
+        )
+        outputs, _ = F(
+            layer,
+            state=state,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            inputs=(inputs,),
+        )
+
+        self.assertNestedEqual(outputs, ref_outputs)
+
 
 class LoraFusedQKVLinearTest(TestCase):
-    def test_forward(self):
+    @parameterized.parameters(
+        (QKVLinear.default_config(),),
+        (FusedQKVLinear.default_config(),),
+        (QLinear.default_config(),),
+    )
+    def test_forward(self, ref_layer_cfg):
+        test_layer_cfg = LoraFusedQKVLinear.default_config().set(layer=ref_layer_cfg)
         model_dim = 6
         num_heads = 2
         per_head_dim = 3
@@ -82,8 +160,24 @@ class LoraFusedQKVLinearTest(TestCase):
         alpha = 4
         enable_lora = dict(query=True, key=False, value=True)
         inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, seq_len, model_dim))
+        if isinstance(ref_layer_cfg, QLinear.Config):
+            external_key = jax.random.normal(
+                jax.random.PRNGKey(78), (batch_size, seq_len, num_heads, per_head_dim)
+            )
+            external_value = jax.random.normal(
+                jax.random.PRNGKey(90), (batch_size, seq_len, num_heads, per_head_dim)
+            )
+            key_positions = jnp.arange(seq_len)[None]
+            inputs = dict(
+                query=inputs,
+                kv_state=KVState(
+                    k_proj=external_key, v_proj=external_value, key_positions=key_positions
+                ),
+            )
+        else:
+            inputs = (inputs,)
 
-        ref_layer_cfg = FusedQKVLinear.default_config().set(
+        ref_layer_cfg = ref_layer_cfg.set(
             name="ref_test",
             query_dim=model_dim,
             key_dim=model_dim,
@@ -98,10 +192,10 @@ class LoraFusedQKVLinearTest(TestCase):
             state=ref_state,
             is_training=True,
             prng_key=jax.random.PRNGKey(456),
-            inputs=(inputs,),
+            inputs=inputs,
         )
 
-        layer_cfg = LoraFusedQKVLinear.default_config().set(
+        layer_cfg = test_layer_cfg.set(
             name="test",
             query_dim=model_dim,
             key_dim=model_dim,
@@ -114,155 +208,88 @@ class LoraFusedQKVLinearTest(TestCase):
         state = layer.initialize_parameters_recursively(
             prng_key=jax.random.PRNGKey(123), prebuilt=None
         )
-        state["layer"]["qkv_proj"]["weight"] = ref_state["qkv_proj"]["weight"]
-        state["layer"]["qkv_proj"]["bias"] = ref_state["qkv_proj"]["bias"]
+        for layer_type in ("qkv_proj", "q_proj", "k_proj", "v_proj"):
+            if layer_type in ref_state:
+                state["layer"][layer_type]["weight"] = ref_state[layer_type]["weight"]
+                state["layer"][layer_type]["bias"] = ref_state[layer_type]["bias"]
         outputs, _ = jax.jit(partial(F, layer, is_training=True))(
             state=state,
             prng_key=jax.random.PRNGKey(456),
-            inputs=(inputs,),
+            inputs=inputs,
         )
 
+        # Expect the same output due to zero initialization of one of the LoRA weights.
         assert_allclose(outputs, ref_outputs)
 
-    def test_extend_step(self):
+    @parameterized.parameters(
+        (QKVLinear.default_config(),),
+        (FusedQKVLinear.default_config(),),
+    )
+    def test_extend_step(self, ref_layer_cfg):
         model_dim = 6
         num_heads = 2
-        per_head_dim = 3
-        seq_len = 4
-        batch_size = 2
+        lora_linear = LoraFusedQKVLinear.default_config().set(layer=ref_layer_cfg)
         rank = 2
         alpha = 4
         enable_lora = dict(query=True, key=False, value=True)
-        num_enabled = sum(enable_lora.values())
-        inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, seq_len, model_dim))
-
-        layer_cfg = LoraFusedQKVLinear.default_config().set(
+        lora_linear.adapter.set(rank=rank, alpha=alpha, enable_lora=enable_lora)
+        cfg = MultiheadAttention.default_config().set(
             name="test",
+            input_linear=lora_linear,
             query_dim=model_dim,
             key_dim=model_dim,
             value_dim=model_dim,
             num_heads=num_heads,
-            per_head_dim=per_head_dim,
+            mask=CausalAttentionBias.default_config(),
         )
-        layer_cfg.adapter.set(rank=rank, alpha=alpha, enable_lora=enable_lora)
-        layer = layer_cfg.instantiate(parent=None)
-        state = layer.initialize_parameters_recursively(
-            prng_key=jax.random.PRNGKey(123), prebuilt=None
-        )
-        state["adapter"]["lora_up"]["weight"] = jax.random.normal(
-            jax.random.PRNGKey(1), (num_enabled, rank, num_heads, per_head_dim)
-        )
-        outputs, _ = jax.jit(partial(F, layer, is_training=False))(
-            state=state,
-            prng_key=jax.random.PRNGKey(456),
-            inputs=(inputs,),
-        )
-        q_proj, k_proj, v_proj = outputs
-        forward_outputs = jnp.stack([q_proj, k_proj, v_proj])
+        layer = cfg.instantiate(parent=None)
 
-        initial_cache_state = layer.init_states(
-            target_batch_size=batch_size, target_max_len=seq_len
-        )
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
 
-        decoder_inputs = dict(cached_states=initial_cache_state)
-        decoder_outputs = jnp.zeros(shape=[seq_len, 3, batch_size, num_heads, per_head_dim])
-        for t in range(seq_len):
-            decoder_inputs["query"] = jnp.expand_dims(inputs[:, t, :], axis=1)
-            (updated_states, outputs), _ = F(
-                layer,
-                state=state,
-                is_training=False,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=decoder_inputs,
-                method="extend_step",
-            )
-            decoder_inputs["cached_states"] = updated_states
-            q_proj, k_proj, v_proj = outputs
-            k_proj = jnp.expand_dims(k_proj[:, t, :, :], axis=1)
-            v_proj = jnp.expand_dims(v_proj[:, t, :, :], axis=1)
+        # Generate input sequences.
+        batch, seq_len = 2, 10
+        prng_key, data_key = jax.random.split(prng_key)
+        query = jax.random.uniform(data_key, [batch, seq_len, model_dim])
 
-            decoder_outputs = decoder_outputs.at[t].set(
-                jnp.squeeze(jnp.stack([q_proj, k_proj, v_proj]), axis=2)
-            )
-        decoder_out_transposed = jnp.transpose(decoder_outputs, [1, 2, 0, 3, 4])
-        assert_allclose(
-            decoder_out_transposed,
-            forward_outputs,
-            atol=1e-6,
-        )
-
-    def test_prefill_states(self):
-        model_dim = 6
-        num_heads = 2
-        per_head_dim = 3
-        seq_len = 4
-        batch_size = 2
-        rank = 2
-        alpha = 4
-        enable_lora = dict(query=True, key=False, value=True)
-        num_enabled = sum(enable_lora.values())
-        inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, seq_len, model_dim))
-
-        layer_cfg = LoraFusedQKVLinear.default_config().set(
-            name="test",
-            query_dim=model_dim,
-            key_dim=model_dim,
-            value_dim=model_dim,
-            num_heads=num_heads,
-            per_head_dim=per_head_dim,
-        )
-        layer_cfg.adapter.set(rank=rank, alpha=alpha, enable_lora=enable_lora)
-        layer = layer_cfg.instantiate(parent=None)
-        state = layer.initialize_parameters_recursively(
-            prng_key=jax.random.PRNGKey(123), prebuilt=None
-        )
-        state["adapter"]["lora_up"]["weight"] = jax.random.normal(
-            jax.random.PRNGKey(1), (num_enabled, rank, num_heads, per_head_dim)
-        )
-        forward_outputs, _ = jax.jit(partial(F, layer, is_training=False))(
-            state=state,
-            prng_key=jax.random.PRNGKey(456),
-            inputs=(inputs,),
-        )
-
-        time_step = jnp.arange(batch_size)
-        (initial_cache_states, initial_outputs), _ = F(
+        # Compute layer outputs.
+        fwd_outputs, _ = F(
             layer,
-            state=state,
+            inputs=dict(query=query),
             is_training=False,
-            prng_key=jax.random.PRNGKey(456),
-            inputs=dict(time_step=time_step, query=inputs),
-            method="prefill_states",
+            state=layer_params,
+            prng_key=prng_key,
         )
-        time_step_mask = jnp.arange(seq_len) < time_step[:, None]
-        # [batch, tgt_len, num_heads, per_head_dim].
-        decoder_outputs = initial_outputs.query * time_step_mask[..., None, None]
-        decoder_inputs = dict(cached_states=initial_cache_states)
-        while jnp.any(time_step < seq_len):
-            decoder_inputs["query"] = jnp.take_along_axis(
-                inputs, time_step[:, None, None], axis=1, mode="clip"
+
+        # Compute extend_step.
+        (cached_states, _), _ = F(
+            layer,
+            inputs=dict(time_step=None, query=query),
+            is_training=False,
+            state=layer_params,
+            prng_key=prng_key,
+            method="init_states",
+        )
+        step_data = []
+        for i in range(seq_len):
+            step_inputs = dict(
+                cached_states=cached_states,
+                query=query[:, i : i + 1],
             )
-            (updated_states, outputs), _ = F(
+            (cached_states, step_outs), _ = F(
                 layer,
-                state=state,
+                prng_key=jax.random.PRNGKey(0),
+                state=layer_params,
+                inputs=step_inputs,
                 is_training=False,
-                prng_key=jax.random.PRNGKey(456),
-                inputs=decoder_inputs,
                 method="extend_step",
             )
-            decoder_inputs["cached_states"] = updated_states
-            q_proj, _, _ = outputs
-
-            # [batch, tgt_len, 1, 1].
-            oh_indices = jax.nn.one_hot(time_step, seq_len)[:, :, None, None]
-            decoder_outputs = decoder_outputs + q_proj * oh_indices
-            time_step = time_step + 1
-
-        assert_allclose(
-            decoder_outputs,
-            forward_outputs.query,
-            atol=1e-6,
-        )
+            step_data.append(step_outs.data)
+        step_data = jnp.concatenate(step_data, axis=1)
+        self.assertEqual(step_data.dtype, fwd_outputs.data.dtype)
+        assert_allclose(step_data, fwd_outputs.data)
 
 
 class LoraMultiheadOutputLinearTest(TestCase):

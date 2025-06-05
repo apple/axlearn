@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/tpu:
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Util functions related to pycocotools and COCO eval.
 
 The functions in this file have been borrowed from the tensorflow model garden's coco_utils.py.
@@ -6,7 +14,7 @@ https://github.com/tensorflow/tpu/blob/119236319e51d1b575c57b99a69812a0dff90d36/
 """
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import numpy as np
 import six
@@ -37,7 +45,7 @@ class COCOWrapper(coco.COCO):
             eval_type: either 'box' or 'mask'.
             annotation_file: a JSON file that stores annotations of the eval dataset.
                 This is required if `gt_dataset` is not provided.
-            gt_dataset: the groundtruth eval datatset in COCO API format.
+            gt_dataset: the groundtruth eval dataset in COCO API format.
 
         Raises:
             ValueError: If annotation_file and gt_dataset are both specified or both left
@@ -57,7 +65,7 @@ class COCOWrapper(coco.COCO):
             self.dataset = gt_dataset
             self.createIndex()
 
-    def loadRes(self, predictions: List[Dict[str, Any]]) -> coco.COCO:
+    def loadRes(self, predictions: list[dict[str, Any]]) -> coco.COCO:
         """Loads result file and return a result api object.
 
         Args:
@@ -97,7 +105,7 @@ class COCOWrapper(coco.COCO):
 
 
 def calculate_per_category_metrics(
-    categories: List[int], precision: np.ndarray, recall: np.ndarray
+    categories: list[int], precision: np.ndarray, recall: np.ndarray
 ) -> np.ndarray:
     """Returns per category coco metrics.
 
@@ -166,7 +174,7 @@ def calculate_per_category_metrics(
     return category_stats
 
 
-def convert_predictions_to_coco_annotations(predictions: Dict[str, List[np.ndarray]]):
+def convert_predictions_to_coco_annotations(predictions: dict[str, list[np.ndarray]]):
     """Converts a batch of predictions to annotations in COCO format.
 
     Args:
@@ -225,7 +233,7 @@ def convert_predictions_to_coco_annotations(predictions: Dict[str, List[np.ndarr
 
 
 def convert_groundtruths_to_coco_dataset(
-    groundtruths: Dict[str, np.ndarray], label_map: Optional[Dict[int, str]] = None
+    groundtruths: dict[str, np.ndarray], label_map: Optional[dict[int, str]] = None
 ):
     """Converts groundtruths to the dataset in COCO format.
 
@@ -256,7 +264,7 @@ def convert_groundtruths_to_coco_dataset(
                 masks depending on which one is available.
             - masks: a list of numpy arrays of string of shape [batch_size, K],
         label_map: (optional) a dictionary that defines items from the category id to the category
-            name. If `None`, collect the category mappping from the `groundtruths`.
+            name. If `None`, collect the category mapping from the `groundtruths`.
 
     Returns:
         coco_groundtruths: the groundtruth dataset in COCO format.
@@ -269,7 +277,7 @@ def convert_groundtruths_to_coco_dataset(
         for i, h, w in zip(source_ids, heights, widths)
     ]
 
-    def _create_annotation(*, batch_id: int, image_id: int, box_id: int, class_label: int) -> Dict:
+    def _create_annotation(*, batch_id: int, image_id: int, box_id: int, class_label: int) -> dict:
         ann = {}
         ann["image_id"] = int(groundtruths["source_id"][batch_id][image_id])
         if "is_crowds" in groundtruths:

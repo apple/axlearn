@@ -1,13 +1,17 @@
+# Copyright © 2023 Apple Inc.
+
 """A library to support writing inference outputs."""
+
 import json
 import os.path
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import jax
 import numpy as np
 import tensorflow as tf
 from jax import numpy as jnp
 
+from axlearn.common import file_system as fs
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
 from axlearn.common.utils import (
@@ -69,8 +73,8 @@ def _tf_feature(value: Union[Tensor, tf.Tensor]) -> tf.train.Feature:
 
 
 def _json_feature(
-    value: Union[Tensor, tf.Tensor]
-) -> Union[int, float, bool, str, List[Union[int, float, bool, str]]]:
+    value: Union[Tensor, tf.Tensor],
+) -> Union[int, float, bool, str, list[Union[int, float, bool, str]]]:
     if isinstance(value, tf.Tensor):
         value = value.numpy()
 
@@ -78,7 +82,7 @@ def _json_feature(
         return value.decode("utf-8")
 
     if value.dtype == object:
-        value = value.astype(dtype=str)
+        value = np.char.decode(value.astype(np.bytes_), "utf-8")
 
     return value.tolist()
 
@@ -111,7 +115,7 @@ class TfExampleRecordSink(BaseRecordSink):
             process_count=jax.process_count(),
         )
 
-        tf.io.gfile.makedirs(os.path.dirname(output_path))
+        fs.makedirs(os.path.dirname(output_path))
         self._writer = tf.io.TFRecordWriter(output_path)
 
     def write(self, record: NestedTensor):
@@ -152,8 +156,8 @@ class JsonlExampleRecordSink(BaseRecordSink):
             process_index=jax.process_index(),
             process_count=jax.process_count(),
         )
-        tf.io.gfile.makedirs(os.path.dirname(output_path))
-        self._writer = tf.io.gfile.GFile(output_path, "w")
+        fs.makedirs(os.path.dirname(output_path))
+        self._writer = fs.open(output_path, "w")
 
     def write(self, record: NestedTensor):
         feature_dict = {path: _json_feature(value) for path, value in flatten_items(record)}
@@ -198,7 +202,7 @@ class OutputRecordWriter(BaseOutputWriter):
         local_batch_size = jax.tree_util.tree_leaves(local_data)[0].shape[0]
 
         for i in range(local_batch_size):
-            example = jax.tree_util.tree_map(lambda x, index=i: x[index], local_data)
+            example = jax.tree.map(lambda x, index=i: x[index], local_data)
             self.sink.write(
                 self._build_record(input_example=example["input"], output_example=example["output"])
             )

@@ -1,15 +1,18 @@
+# Copyright © 2023 Apple Inc.
+
 """A library to support composite inputs."""
 
-from typing import Dict, Iterable, Optional, Sequence
+from collections.abc import Sequence
+from typing import Optional
 
 import tensorflow as tf
 
+from axlearn.common import input_base
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import NestedTensor
 
 
-class ConcatenatedInput(Module):
+class ConcatenatedInput(input_base.Input):
     """A Module to generate input batches from a sequence of sub inputs.
 
     The sub inputs will be iterated in the order that they are given. All sub inputs except the
@@ -17,7 +20,7 @@ class ConcatenatedInput(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(input_base.Input.Config):
         is_training: Required[bool] = REQUIRED
         inputs: Sequence[InstantiableConfig] = []
 
@@ -31,12 +34,6 @@ class ConcatenatedInput(Module):
             for i, input_cfg in enumerate(cfg.inputs)
         ]
 
-    def __iter__(self) -> Iterable[NestedTensor]:
-        for input_i, sub_input in enumerate(self._inputs):
-            for element in sub_input:
-                yield element
-            self.vlog(1, "Finished input %s", input_i)
-
     def dataset(self) -> tf.data.Dataset:
         ds = self._inputs[0].dataset()
         for sub_input in self._inputs[1:]:
@@ -44,7 +41,7 @@ class ConcatenatedInput(Module):
         return ds
 
 
-class ZipInput(Module):
+class ZipInput(input_base.Input):
     """A Module to generate input batches from a sequence of sub inputs.
 
     The sub inputs will be combined in the order that they are given.
@@ -53,9 +50,9 @@ class ZipInput(Module):
     """
 
     @config_class
-    class Config(Module.Config):
+    class Config(input_base.Input.Config):
         is_training: Required[bool] = REQUIRED
-        inputs: Dict[str, InstantiableConfig] = {}
+        inputs: dict[str, InstantiableConfig] = {}
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -68,9 +65,4 @@ class ZipInput(Module):
 
     def dataset(self) -> tf.data.Dataset:
         dataset = tf.data.Dataset.zip(tuple(x.dataset() for x in self._inputs))
-        return dataset.map(
-            lambda *x: dict((self._inputs_name[i], data) for i, data in enumerate(x))
-        )
-
-    def __iter__(self) -> Iterable[Dict]:
-        return iter(self.dataset())
+        return dataset.map(lambda *x: {self._inputs_name[i]: data for i, data in enumerate(x)})

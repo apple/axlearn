@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests optimizer schedules."""
 import math
 
@@ -5,14 +7,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 
 from axlearn.common import schedule
 from axlearn.common.schedule import adafactor_decay_rate, as_schedule_fn
 
 
 # pylint: disable=no-self-use
-class ScheduleTest(absltest.TestCase):
+class ScheduleTest(parameterized.TestCase):
     """Tests schedules."""
 
     def test_constant(self):
@@ -76,13 +78,30 @@ class ScheduleTest(absltest.TestCase):
             else:
                 self.assertEqual(0.001, value)
 
+    def test_segment_wise(self):
+        s = jax.jit(schedule.segment_wise(segment_steps=[100, 100], segments=[0.1, 0.01, 0.001]))
+        for step in range(0, 301, 1):
+            value = s(step)
+            if step < 1:
+                self.assertEqual(0, value)
+            elif step <= 100:
+                self.assertEqual(0.1, value)
+            elif step <= 200:
+                self.assertEqual(0.01, value)
+            else:
+                self.assertEqual(0.001, value)
+
+    def test_segment_wise_errors(self):
+        with self.assertRaisesRegex(ValueError, "Unexpected length"):
+            schedule.segment_wise(segment_steps=[100, 100], segments=[0.1, 0.01])
+
     def test_decay_bias_correction(self):
         decay = 0.999
         s = schedule.decay_bias_correction(decay)
         samples = [3, 4, 1, 2, 4, 6, 8, 9]
         moment = 0
         for i, sample in enumerate(samples):
-            decay_i = s(i)
+            decay_i = s(i + 1)  # step starts from 1.
             moment = (1 - decay_i) * sample + decay_i * moment
             # Initially moment is an approximation of the mean value.
             self.assertAlmostEqual(moment, sum(samples[: i + 1]) / (i + 1), places=2)
@@ -107,30 +126,43 @@ class ScheduleTest(absltest.TestCase):
             else:
                 self.assertAlmostEqual(1 / math.sqrt(step), value)
 
-    def test_cosine_with_linear_warmup(self):
+    @parameterized.product(
+        warmup_steps=(0, 100),
+        decay_begin_step=(None, 50, 200),
+    )
+    def test_cosine_with_linear_warmup(self, warmup_steps, decay_begin_step):
         peak_lr = 0.1
         max_step = 300
-        warmup_steps = 100
         s = jax.jit(
             schedule.cosine_with_linear_warmup(
                 peak_lr=peak_lr,
                 max_step=max_step,
                 warmup_steps=warmup_steps,
+                decay_begin_step=decay_begin_step,
             )
         )
-        for step in range(0, 301, 50):
+        decay_begin_step = max(warmup_steps, decay_begin_step or 0)
+        for step in range(1, 301, 50):
             value = s(step)
-            if step < 100:
+            if step <= warmup_steps:
                 # Test linear warmup.
                 self.assertEqual(peak_lr * step / warmup_steps, value)
+            elif warmup_steps < step <= decay_begin_step:
+                # Test constant
+                self.assertEqual(peak_lr, value)
             else:
                 # Test cosine decay schedule.
                 cosine_rate = (
                     peak_lr
                     * 0.5
-                    * (1 + jnp.cos(jnp.pi * (step - warmup_steps) / (max_step - warmup_steps)))
+                    * (
+                        1
+                        + jnp.cos(
+                            jnp.pi * (step - decay_begin_step) / (max_step - decay_begin_step)
+                        )
+                    )
                 )
-                self.assertEqual(cosine_rate, value)
+                self.assertAlmostEqual(cosine_rate, value)
 
     def test_constant_with_linear_warmup(self):
         peak_lr = 0.1
@@ -205,7 +237,26 @@ class ScheduleTest(absltest.TestCase):
         fn = adafactor_decay_rate(step_offset=100)
         self.assertAlmostEqual(fn(1), 0)
         self.assertAlmostEqual(fn(100), 0)
-        self.assertAlmostEqual(fn(200), 1 - (101) ** (-0.8))
+        self.assertAlmostEqual(fn(101), 0)
+        self.assertAlmostEqual(fn(200), 1 - (100) ** (-0.8))
+
+    def test_ema_schedule(self):
+        warmup_steps = 5
+        s = jax.jit(
+            schedule.ema_schedule(
+                warmup_steps=warmup_steps,
+            )
+        )
+        expected_warmup = [0.0, 1.0 / 2, 2.0 / 3, 3.0 / 4, 4.0 / 5]
+        expected_decay = 0.9999
+        for step in range(10):
+            value = s(step)
+            if step < warmup_steps:
+                # Test warmup.
+                self.assertAlmostEqual(expected_warmup[step], value)
+            else:
+                # Test inverse sqrt schedule.
+                self.assertAlmostEqual(expected_decay, value)
 
 
 if __name__ == "__main__":

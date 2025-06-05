@@ -1,7 +1,9 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests reading comprehension inputs."""
 import json
 import os
-from typing import Callable, Dict, List, Union
+from typing import Callable, Union
 
 import pytest
 from absl.testing import parameterized
@@ -17,15 +19,18 @@ from axlearn.common.input_reading_comprehension import (
     parse_examples_jsonl,
 )
 
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata/tokenizers")
+tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
+_BPE_DIR = os.path.join(tokenizers_dir, "bpe")
+_ROBERTA_BASE_VOCAB_FILE = os.path.join(_BPE_DIR, "roberta-base-vocab.json")
+_ROBERTA_BASE_MERGES_FILE = os.path.join(_BPE_DIR, "roberta-base-merges.txt")
 
 
 def build_hf_roberta_tokenizer() -> RobertaTokenizer:
     # pylint: disable=duplicate-code
     # TODO(@zhucheng_tu): Consider switching to from_pretrained().
     tokenizer = config_for_class(RobertaTokenizer).set(
-        vocab_file=os.path.join(tokenizers_dir, "bpe/roberta-base-vocab.json"),
-        merges_file=os.path.join(tokenizers_dir, "bpe/roberta-base-merges.txt"),
+        vocab_file=_ROBERTA_BASE_VOCAB_FILE,
+        merges_file=_ROBERTA_BASE_MERGES_FILE,
         # We set add_prefix_space=True for compatibility with production CGO/Rust tokenizer.
         add_prefix_space=True,
         kwargs={},
@@ -44,7 +49,7 @@ def build_hf_roberta_tokenizer() -> RobertaTokenizer:
 
 
 def dummy_reading_comprehension_inputs_simple() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -62,7 +67,7 @@ def dummy_reading_comprehension_inputs_simple() -> (
 
 
 def dummy_reading_comprehension_inputs_simple_multiple_word_answer() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -80,7 +85,7 @@ def dummy_reading_comprehension_inputs_simple_multiple_word_answer() -> (
 
 
 def dummy_reading_comprehension_inputs_simple_answer_end() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -98,7 +103,7 @@ def dummy_reading_comprehension_inputs_simple_answer_end() -> (
 
 
 def dummy_reading_comprehension_inputs_multiple_answers() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -120,7 +125,7 @@ def dummy_reading_comprehension_inputs_multiple_answers() -> (
 
 
 def dummy_reading_comprehension_inputs_no_answer() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         dict(
@@ -133,7 +138,7 @@ def dummy_reading_comprehension_inputs_no_answer() -> (
 
 
 def dummy_reading_comprehension_inputs_multiple_squad() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         # Example taken from training set of SQuAD2.0 (row 2018).
@@ -175,7 +180,7 @@ def dummy_reading_comprehension_inputs_multiple_squad() -> (
 
 
 def dummy_reading_comprehension_inputs_long() -> (
-    List[Dict[str, Union[str, List[Dict[str, Union[str, int]]]]]]
+    list[dict[str, Union[str, list[dict[str, Union[str, int]]]]]]
 ):
     reading_comprehension_inputs = [
         # Example taken from Wikipedia.
@@ -231,7 +236,7 @@ def dummy_reading_comprehension_inputs_long() -> (
 
 
 def find_start_of_document_index(
-    tokenizer: TokenizerForReadingComprehension, input_ids: List[int]
+    tokenizer: TokenizerForReadingComprehension, input_ids: list[int]
 ) -> int:
     # Find the first sep token.
     index = 0
@@ -461,12 +466,12 @@ class InputReadingComprehensionTest(parameterized.TestCase):
             "doc_stride": 128,
         },
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_convert_example_to_features_outputs(
         self,
         dataset_function: Callable,
-        expected_tokens: List[List[str]],
-        expected_token_type_ids: List[List[int]],
+        expected_tokens: list[list[str]],
+        expected_token_type_ids: list[list[int]],
         max_length: int,
         doc_stride: int,
     ):
@@ -531,7 +536,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
             "doc_stride": 128,
         },
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_convert_example_to_features_count(
         self,
         dataset_function: Callable,
@@ -568,7 +573,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
             "doc_stride": 128,
         },
     )
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_convert_example_to_features_doc_stride_overlap(
         self,
         dataset_function: Callable,
@@ -616,7 +621,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
                     rows[i]["end_positions"] + doc_stride, rows[i + 1]["end_positions"]
                 )
 
-    @pytest.mark.skipif(not os.path.exists(tokenizers_dir), reason="Missing testdata.")
+    @pytest.mark.skipif(not os.path.exists(_BPE_DIR), reason="Missing testdata.")
     def test_hf_tokenizer_for_rc(self):
         hf_tokenizer = build_hf_roberta_tokenizer()
         wrapper = (

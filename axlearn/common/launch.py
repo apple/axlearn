@@ -1,68 +1,55 @@
+# Copyright © 2023 Apple Inc.
+
 """A library with common flags to launch a trainer."""
-# pylint: disable=wrong-import-position,wrong-import-order
+
+import contextlib
+import importlib
 import os
 import sys
 
-tpu_type = os.environ.get("TPU_TYPE", "none")
+# pylint: disable-next=ungrouped-imports
+from axlearn.common import compiler_options
 
-# Set LIBTPU_INIT_ARGS before importing jax!
-libtpu_init_args = [
-    "--xla_tpu_spmd_rng_bit_generator_unsafe=1",  # SPMD partition-aware RngBitGenerator.
-    "--xla_tpu_enable_latency_hiding_scheduler=true",  # Try to schedule ops efficiently.
-    "--xla_tpu_perform_spmd_cse_prevention=false",  # b/229655601: prevent OOM on gpt2-small-repeat.
-]
-if tpu_type.startswith("v4-"):
-    libtpu_init_args += [
-        # Per maggioni@google.com, the following flags are not supported by V3.
-        "--xla_enable_async_all_gather=true",  # Allow async all-gather.
-        "--xla_enable_async_collective_permute=true",  # Allow async collective permute.
-    ]
+# pylint: disable=wrong-import-position,wrong-import-order
 
+
+instance_type = os.environ.get("TPU_TYPE", "none")
 num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
 
-if num_tpu_slices > 1:
-    # Support multiple TPU slices connected over a data center network.
-    libtpu_init_args += [
-        # For collectives across multiple slices.
-        "--xla_tpu_enable_megascale_barrier=true",
-        # Prefer async all-gather to all-reduce implementations where async-all-gather is possible.
-        "--xla_tpu_prefer_async_allgather_to_allreduce=true",
-    ]
-
-os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
-os.environ["JAX_USE_PJRT_C_API_ON_TPU"] = "true"
+# Set LIBTPU_INIT_ARGS before importing jax!
+tpu_flags_exc = None
+try:
+    # This does NOT work for Pathways. XLA flags are set on the pathways-proxy.
+    # Megascale flags have to be set on the pathways-workers as arguments.
+    libtpu_init_options = compiler_options.default_xla_options(
+        instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
+    )
+    os.environ["LIBTPU_INIT_ARGS"] = compiler_options.xla_flags_from_options(libtpu_init_options)
+except compiler_options.NotTpuError as e:
+    # Log this when setup() is called.
+    tpu_flags_exc = e
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
 # Note: this will disable other TF_CPP info and warnnings.
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 # Import jax before tensorflow else to avoid problems such as:
 # tpu_library_init_fns.inc:98] TpuEmbeddingEngine_ExecutePartitioner not available in this library.
 import jax  # jax must be imported before tensorflow!
 
-print(
-    f"jax version={jax.__version__} tpu_type={tpu_type} num_tpu_slices={num_tpu_slices}",
-    file=sys.stderr,
-)
-
-import logging as pylogging
+print(f"jax version={jax.__version__}", file=sys.stderr)
+if instance_type != "none":
+    print(f"instance_type={instance_type} num_slices={num_tpu_slices}", file=sys.stderr)
 
 from absl import flags, logging
 
+from axlearn.common.status_server import StatusHTTPServer
 from axlearn.common.utils import get_data_dir
 from axlearn.common.utils_spmd import setup as setup_spmd
 
 # pylint: enable=wrong-import-position
 
-flags.DEFINE_string(
-    "config_module",
-    None,
-    "The trainer config module. "
-    "Only configs from the module will be loaded to avoid dependency on other modules.",
-    required=True,
-)
-flags.DEFINE_string("config", None, "The trainer config name.", required=True)
 flags.DEFINE_string(
     "data_dir",
     None,
@@ -71,74 +58,94 @@ flags.DEFINE_string(
     "If 'FAKE', uses fake inputs.",
 )
 flags.DEFINE_integer("jax_profiler_port", None, "If not None, the profiler port.")
-flags.DEFINE_string(
-    "jax_backend", None, "If not None, ensures that trainer runs on the specified XLA backend."
-)
+flags.DEFINE_integer("status_port", None, "If not None, the status server port.")
+flags.DEFINE_string("jax_backend", None, "Specifies the XLA backend to use.", required=True)
 flags.DEFINE_string(
     "distributed_coordinator",
-    None,
-    "Set this None for tpu backend but it is required for multi-gpu environment",
+    os.environ.get("DISTRIBUTED_COORDINATOR", None),
+    "Distributed coordinator IP address. Must be None on tpu, otherwise required.",
 )
 flags.DEFINE_integer(
-    "num_processes", None, "Total number of hosts (nodes). Set this None for tpu backend."
-)
-flags.DEFINE_integer("process_id", None, "Host process id. Set this None for tpu backend.")
-flags.DEFINE_boolean(
-    "filter_info_logs",
+    "initialization_timeout",
     None,
-    "If None (default), info log only on process 0 on TPUs, and on all processes on GPUs. "
-    "If True, info log only on process 0. "
-    "If False, info log on all processes.",
+    "Distributed initialization timeout in seconds. If None, uses jax default.",
 )
-
+flags.DEFINE_integer(
+    "num_processes",
+    os.environ.get("NUM_PROCESSES", None),
+    "Total number of hosts (nodes). Must be None on tpu, otherwise required.",
+)
+flags.DEFINE_integer(
+    "process_id",
+    os.environ.get("PROCESS_ID", None),
+    "Rank of the current process. Must be None on tpu, otherwise required.",
+)
+flags.DEFINE_multi_string(
+    "init_module",
+    [],
+    "Zero or more init modules to import prior to setting up JAX distributed. "
+    "Each flag value should be a string containing 'module_path' or 'module_path:spec', e.g. "
+    "'axlearn.cloud.gcp.tpu_health_check' or 'axlearn.cloud.gcp.tpu_health_check:output_dir=...'.\n"
+    "The module should expose a public function `setup`, a context manager exposing pre- and post-"
+    "SPMD setup logic which is entered prior to `setup_spmd` and exited immediately afterwards.\n"
+    "The spec (if provided) will be provided to `module.setup(spec)` and therefore can be "
+    "implementation dependent. Not specifying a spec is equivalent to passing `None` to `setup`.\n"
+    "If specifying multiple modules, each `setup` context is entered in the given order.",
+)
 
 FLAGS = flags.FLAGS
 
 
+# Kept separate for easier testing.
+@contextlib.contextmanager
+def _init_context(fv: flags.FlagValues = FLAGS):
+    with contextlib.ExitStack() as ctx:
+        for module_spec in fv.init_module:
+            parts = module_spec.split(":", maxsplit=1) + [None]
+            module, spec = parts[:2]
+            ctx.enter_context(importlib.import_module(module).setup(spec))
+        yield
+
+
 def setup():
-    # Decide whether to filter logs.
-    if FLAGS.filter_info_logs is not None:
-        filter_info_logs = FLAGS.filter_info_logs
+    if tpu_flags_exc is not None:
+        logging.info("LIBTPU_INIT_FLAGS was not set. Reason: %s", tpu_flags_exc)
     else:
-        # Infer from platform. For multi-node multi-gpu environment, filtering makes it so that only
-        # one process' devices are visible, so we disable it by default.
-        filter_info_logs = FLAGS.jax_backend is None or FLAGS.jax_backend != "gpu"
+        logging.info("LIBTPU_INIT_ARGS='%s'", os.environ["LIBTPU_INIT_ARGS"])
 
-    if filter_info_logs:
-        logging.get_absl_handler().addFilter(InfoLogOnlyOnMaster())
+    with _init_context():
+        if FLAGS.jax_backend == "proxy":
+            # pylint: disable-next=import-error,import-outside-toplevel
+            import pathwaysutils  # pytype: disable=import-error
 
-    setup_spmd(
-        distributed_coordinator=FLAGS.distributed_coordinator,
-        num_processes=FLAGS.num_processes,
-        process_id=FLAGS.process_id,
-        jax_backend=FLAGS.jax_backend,
-    )
+            pathwaysutils.initialize()
+        else:
+            setup_spmd(
+                distributed_coordinator=FLAGS.distributed_coordinator,
+                num_processes=FLAGS.num_processes,
+                process_id=FLAGS.process_id,
+                jax_backend=FLAGS.jax_backend,
+                initialization_timeout=FLAGS.initialization_timeout,
+            )
 
     if FLAGS.jax_profiler_port is not None:
         # Start jax.profiler for Tensorboard and profiling in open source.
         jax.profiler.start_server(FLAGS.jax_profiler_port)
 
+    if FLAGS.status_port is not None:
+        status_server = StatusHTTPServer(FLAGS.status_port)
+        status_server.start()
+
     devices = jax.devices()
     logging.info("Devices: %s", devices)
     local_devices = jax.local_devices()
     logging.info("Local Devices: %s", local_devices)
-    if FLAGS.jax_backend is not None:
+
+    if FLAGS.jax_backend != "proxy":
         if not devices or not all(device.platform == FLAGS.jax_backend for device in devices):
             raise RuntimeError(f"Expected backend {FLAGS.jax_backend}. Got {devices}.")
+
     if FLAGS.data_dir:
         # TODO(ruoming): Get rid of --data_dir and use only env var DATA_DIR.
         os.environ["DATA_DIR"] = FLAGS.data_dir
     logging.info("DATA_DIR=%s", get_data_dir())
-
-
-class InfoLogOnlyOnMaster(pylogging.Filter):
-    """Filter to only log levels >= logging.INFO if on master process."""
-
-    def __init__(self, name=""):
-        super().__init__(name=name)
-        self._jax_pid = jax.process_index()
-
-    def filter(self, record):
-        if self._jax_pid != 0:
-            return record.levelno < logging.INFO
-        return True

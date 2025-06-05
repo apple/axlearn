@@ -1,10 +1,18 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# openai/CLIP:
+# Copyright (c) 2021 OpenAI.
+# Licensed under the MIT license.
+
 """CLIP architecture implementation.
 
 Ref: https://github.com/openai/CLIP/blob/main/clip/model.py
 """
 # pylint: disable=duplicate-code
 
-from typing import Dict, Optional, Tuple, Type, Union
+from typing import Optional, Protocol, Union
 
 import jax.numpy as jnp
 import numpy as np
@@ -23,11 +31,12 @@ from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.bert import bert_embedding_config, bert_model_config, bert_transformer_config
 from axlearn.common.config import (
     REQUIRED,
+    ConfigOr,
     FunctionConfigBase,
     InstantiableConfig,
     Required,
     config_class,
-    config_for_class,
+    maybe_instantiate,
 )
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import (
@@ -44,7 +53,7 @@ from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, S
 from axlearn.common.param_init import ConstantInitializer
 from axlearn.common.poolings import BasePoolingLayer, FirstNTokenPooling, LastNTokenPooling
 from axlearn.common.text_encoder import TEXT_EMBEDDINGS, TextEmbeddingEncoder
-from axlearn.common.utils import NestedTensor
+from axlearn.common.utils import NestedTensor, Tensor
 from axlearn.common.vision_transformer import VisionTransformer, layer_norm_config
 from axlearn.vision.mobilenets import MobileNets
 
@@ -233,14 +242,14 @@ def set_vision_encoder_config(
     num_heads: int,
     projection_dim: int,  # The projection dim for the shared image-text space.
     feed_forward_dim: Union[int, FunctionConfigBase] = scaled_hidden_dim(scale=4),
-    image_size: Tuple[int, int] = (224, 224),
-    patch_size: Tuple[int, int] = (16, 16),
+    image_size: tuple[int, int] = (224, 224),
+    patch_size: tuple[int, int] = (16, 16),
     dropout_rate: float = 0.1,
     pooler_config: BasePoolingLayer.Config = FirstNTokenPooling.default_config(),
     feed_forward_act: str = "nn.gelu",
     layer_norm_eps: float = 1e-5,
     num_cls_tokens: int = 1,
-    encoder_cls: Type[BaseLayer] = CLIPImageStreamEncoder,
+    encoder_cls: type[BaseLayer] = CLIPImageStreamEncoder,
     atten_logit_cap: Optional[float] = None,
     remat: bool = False,
 ) -> CLIPImageStreamEncoder.Config:
@@ -423,9 +432,11 @@ def set_bert_text_encoder_config(
             stack_cfg=bert_transformer_config(
                 num_layers=num_layers,
                 num_heads=num_heads,
-                base_cfg=RepeatedTransformerLayer.default_config()
-                if remat
-                else StackedTransformerLayer.default_config(),
+                base_cfg=(
+                    RepeatedTransformerLayer.default_config()
+                    if remat
+                    else StackedTransformerLayer.default_config()
+                ),
             ),
         ).encoder,
     )
@@ -443,6 +454,13 @@ def set_bert_text_encoder_config(
     return text_encoder_cfg
 
 
+class _ContrastiveLossFn(Protocol):
+    def __call__(
+        self, x_y_logits: Tensor, y_x_logits: Tensor, *, temperature: Union[Tensor, float]
+    ) -> Tensor:
+        ...
+
+
 class CLIPFusionNetwork(FusionNetwork):
     """CLIP fusion network. See also CLIPModel."""
 
@@ -452,17 +470,19 @@ class CLIPFusionNetwork(FusionNetwork):
 
         # Ref: https://arxiv.org/pdf/2103.00020.pdf pp.5 Sect. 2.5
         # Ref: https://arxiv.org/pdf/1805.01978.pdf pp.3 Eq.2 and pp.5 Sect. 3.4
-        log_logit_scale_init: InstantiableConfig = config_for_class(ConstantInitializer).set(
+        log_logit_scale_init: InstantiableConfig = ConstantInitializer.default_config().set(
             value=np.log(1 / 0.07)
         )
         temperature_max_cap: float = 100
+        contrastive_loss_fn: ConfigOr[_ContrastiveLossFn] = symmetric_contrastive_loss_from_logits
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
         self._log_logit_scale_init = cfg.log_logit_scale_init.instantiate()
+        self._contrastive_loss_fn = maybe_instantiate(cfg.contrastive_loss_fn)
 
-    def _create_layer_parameter_specs(self) -> Dict[str, ParameterSpec]:
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         param_specs = {}
         param_specs["log_logit_scale"] = ParameterSpec(
             shape=(1,),
@@ -482,7 +502,7 @@ class CLIPFusionNetwork(FusionNetwork):
                     *"output_features": A Tensor with shape [batch_size, num_sentences, dim]
 
         Returns:
-            loss: A Tensor represnting the loss
+            loss: A Tensor representing the loss
             A dictionary containing:
                 *"similarity": A Tensor representing the similarity between
                     the text and image.
@@ -506,9 +526,7 @@ class CLIPFusionNetwork(FusionNetwork):
         log_logit_scale = jnp.clip(log_logit_scale, a_max=jnp.log(cfg.temperature_max_cap))
         temperature = 1 / jnp.exp(log_logit_scale)
         similarity = contrastive_logits(x, y)
-        loss = symmetric_contrastive_loss_from_logits(
-            similarity, similarity.T, temperature=temperature
-        )
+        loss = self._contrastive_loss_fn(similarity, similarity.T, temperature=temperature)
         self.add_summary("temperature", temperature)
         # Show the first 2048 samples. As the data is randomly sampled, this is
         # an approximation of the whole datapoints.
@@ -522,7 +540,7 @@ class CLIPFusionNetwork(FusionNetwork):
 class CLIPModel(MultiStreamModel):
     """A CLIP two stream model.
 
-    This class provides a customized predict funtion.
+    This class provides a customized predict function.
 
     The predict is called during the inference. As we only need to calculate the
         StreamEncoder outputs.

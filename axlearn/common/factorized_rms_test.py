@@ -1,3 +1,5 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests factorized RMS."""
 from typing import Optional
 
@@ -10,11 +12,12 @@ from jax import numpy as jnp
 from axlearn.common import factorized_rms
 from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
 from axlearn.common.optimizer_base import (
-    NestedOptStateSpec,
+    Nested,
     OptParam,
+    OptStateSpec,
     PartitionedGradientTransformation,
 )
-from axlearn.common.optimizers import OptStateSpec, with_partition_fn
+from axlearn.common.optimizers import with_partition_fn
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import PartitionSpec, flatten_items
 
@@ -57,7 +60,7 @@ class FactorizedRMSTest(TestCase):
 
         # The 'exp' optimizer is partitioned according to the mesh_axes of parameters and
         # factorization spec.
-        exp_partition: NestedOptStateSpec = exp.partition(param_specs)
+        exp_partition: Nested[OptStateSpec] = exp.partition(param_specs)
         # Used for `count`.
         count_spec = OptStateSpec(
             dtype=jnp.int32,
@@ -111,7 +114,7 @@ class FactorizedRMSTest(TestCase):
                     count=count_spec,
                     v_row=dict(w=dummy_spec, b=dummy_spec),
                     v_col=dict(w=dummy_spec, b=dummy_spec),
-                    v=jax.tree_util.tree_map(
+                    v=jax.tree.map(
                         lambda param_spec: OptStateSpec(
                             dtype=dtype, shape=param_spec.shape, mesh_axes=param_spec.mesh_axes
                         ),
@@ -164,7 +167,7 @@ class FactorizedRMSTest(TestCase):
 
         # update() behaves the same between ref and exp.
         for step in range(10):
-            updates = jax.tree_util.tree_map(
+            updates = jax.tree.map(
                 lambda x, seed=100 + step: jax.random.normal(jax.random.PRNGKey(seed), x.shape),
                 opt_params,
             )

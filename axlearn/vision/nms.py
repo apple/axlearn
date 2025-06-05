@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# mlperf/training_results_v0.7:
+# Copyright 2018 The MLPerf Authors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Non-max Suppression example. This script does non-max suppression used in models like SSD.
 
 Code reference:
@@ -8,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import lax
 
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 _NMS_TILE_SIZE = 256
 
@@ -121,10 +129,10 @@ def _suppression_loop_body(in_args):
     box_slice *= jnp.expand_dims(1.0 - suppressed_box.astype(box_slice.dtype), 2)
 
     # Uses box_slice to update the input boxes.
-    mask = jnp.reshape((jnp.equal(jnp.arange(num_tiles), idx)).astype(boxes.dtype), [1, -1, 1, 1])
+    mask = jnp.reshape((jnp.equal(jnp.arange(num_tiles), idx)), [1, -1, 1, 1])
     boxes = jnp.tile(jnp.expand_dims(box_slice, 1), [1, num_tiles, 1, 1]) * mask + jnp.reshape(
         boxes, [batch_size, num_tiles, _NMS_TILE_SIZE, 4]
-    ) * (1 - mask)
+    ) * safe_not(mask)
     boxes = jnp.reshape(boxes, [batch_size, -1, 4])
 
     # Updates output_size.
@@ -142,7 +150,7 @@ def non_max_suppression_padded(
         are zero).
       * Boxes with higher scores can be used to suppress boxes with lower scores.
 
-    The overal design of the algorithm is to handle boxes tile-by-tile:
+    The overall design of the algorithm is to handle boxes tile-by-tile:
 
     boxes = boxes.pad_to_multiply_of(tile_size)
     num_tiles = len(boxes) // tile_size

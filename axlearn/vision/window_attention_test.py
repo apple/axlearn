@@ -1,3 +1,11 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# facebookresearch/detectron2:
+# Copyright 2019-2020, detectron2 contributors.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """Tests window attention."""
 # pylint: disable=no-self-use,too-many-lines,too-many-public-methods,invalid-name
 import jax.random
@@ -220,7 +228,7 @@ class WindowAttentionTest(TestCase, tf.test.TestCase):
             ),  # (200, 1, 1, 3), (10, 10)
         ]
     )
-    def test_window_partiton_unpartion_with_num_windows(
+    def test_window_partition_unpartition_with_num_windows(
         self,
         inputs_shape,
         num_windows,

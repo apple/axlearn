@@ -1,8 +1,11 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests samplers."""
 import jax
 import numpy as np
 from absl.testing import absltest
 
+from axlearn.common.test_utils import set_threefry_partitionable
 from axlearn.vision import samplers
 
 
@@ -48,15 +51,15 @@ class SampleTest(absltest.TestCase):
         for prng_key in prng_keys:
             num_samples += samplers.sample(
                 is_candidate=is_candidate, size=sample_size, prng_key=prng_key
-            ).astype(np.float)
+            ).astype(float)
         np.testing.assert_allclose(
             expected_prob * is_candidate, num_samples / runs, rtol=0.2, atol=0.0
         )
 
     def test_sample_size(self):
-        is_candidate1 = np.zeros(1024, dtype=np.bool)
+        is_candidate1 = np.zeros(1024, dtype=bool)
         is_candidate1[np.random.randint(low=0, high=1024, size=128)] = True
-        is_candidate2 = np.zeros(1024, dtype=np.bool)
+        is_candidate2 = np.zeros(1024, dtype=bool)
         is_candidate2[np.random.randint(low=0, high=1024, size=128)] = True
         is_candidate = np.stack([is_candidate1, is_candidate2])
 
@@ -66,9 +69,9 @@ class SampleTest(absltest.TestCase):
         np.testing.assert_array_equal(np.sum(samples, axis=-1), [32, 32])
 
     def test_sample_with_insufficient_candidates(self):
-        is_candidate1 = np.zeros(1024, dtype=np.bool)
+        is_candidate1 = np.zeros(1024, dtype=bool)
         is_candidate1[np.random.choice(np.arange(1024), size=128, replace=False)] = 1
-        is_candidate2 = np.zeros(1024, dtype=np.bool)
+        is_candidate2 = np.zeros(1024, dtype=bool)
         is_candidate2[np.random.choice(np.arange(1024), size=64, replace=False)] = 1
         is_candidate = np.stack([is_candidate1, is_candidate2])
 
@@ -83,7 +86,7 @@ class LabelSamplerTest(absltest.TestCase):
 
     def test_sample_foreground_only(self):
         labels = np.array([[1, 1, 0, -1, 0, 1]])
-        paddings = np.zeros_like(labels, dtype=np.bool)
+        paddings = np.zeros_like(labels, dtype=bool)
         prng_key = jax.random.PRNGKey(123)
         size = 2
         sampler = samplers.LabelSampler(
@@ -96,7 +99,7 @@ class LabelSamplerTest(absltest.TestCase):
 
     def test_sample_background_only(self):
         labels = np.array([[1, 1, 0, -1, 0, 0, 1]])
-        paddings = np.zeros_like(labels, dtype=np.bool)
+        paddings = np.zeros_like(labels, dtype=bool)
         prng_key = jax.random.PRNGKey(123)
         size = 2
         sampler = samplers.LabelSampler(
@@ -115,7 +118,7 @@ class LabelSamplerTest(absltest.TestCase):
         labels2[np.random.choice(np.arange(512), size=128, replace=False)] = 1
         labels2[np.random.choice(np.arange(512, 1024), size=64, replace=False)] = -1
         labels = np.stack([labels1, labels2])
-        paddings = np.zeros_like(labels, dtype=np.bool)
+        paddings = np.zeros_like(labels, dtype=bool)
         sampler = samplers.LabelSampler(
             size=64, foreground_fraction=0.25, background_label=0, ignore_label=-1
         )
@@ -138,7 +141,7 @@ class LabelSamplerTest(absltest.TestCase):
         labels2[np.random.choice(np.arange(16), size=16, replace=False)] = 1
         labels2[np.random.choice(np.arange(16, 1024), size=900, replace=False)] = -1
         labels = np.stack([labels1, labels2])
-        paddings = np.zeros_like(labels, dtype=np.bool)
+        paddings = np.zeros_like(labels, dtype=bool)
         sampler = samplers.LabelSampler(
             size=64, foreground_fraction=0.25, background_label=0, ignore_label=-1
         )
@@ -161,7 +164,7 @@ class LabelSamplerTest(absltest.TestCase):
         labels2[np.random.choice(np.arange(16), size=16, replace=False)] = 1
         labels2[np.random.choice(np.arange(16, 1024), size=42, replace=False)] = 0
         labels = np.stack([labels1, labels2])
-        paddings = np.zeros_like(labels, dtype=np.bool)
+        paddings = np.zeros_like(labels, dtype=bool)
         sampler = samplers.LabelSampler(
             size=64, foreground_fraction=0.25, background_label=0, ignore_label=-1
         )
@@ -176,6 +179,7 @@ class LabelSamplerTest(absltest.TestCase):
         )
         np.testing.assert_array_equal([14, 6], np.sum(samples.paddings, axis=-1))
 
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_exclude_ignore_and_paddings(self):
         labels = np.array([[1, 1, 0, 0, -1, 0, 1]])
         paddings = np.array([[True, False, False, False, False, True, False]])
@@ -187,5 +191,6 @@ class LabelSamplerTest(absltest.TestCase):
         np.testing.assert_array_equal(2, samples.indices.shape[-1])
         out_labels = np.take_along_axis(labels, samples.indices, axis=-1)
         np.testing.assert_array_equal(0, np.sum(out_labels == -1))
-        np.testing.assert_array_equal(0, np.sum(out_labels == paddings))
+        # Jax newer versions have a strong enforcement of shape for == operator.
+        np.testing.assert_array_equal(0, np.sum(out_labels == paddings[:, :2]))
         np.testing.assert_array_equal(False, samples.paddings)

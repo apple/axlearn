@@ -1,6 +1,13 @@
-"""Text dual encoder utils."""
-from typing import List, Optional
+# Copyright © 2023 Apple Inc.
 
+"""Text dual encoder utils."""
+from typing import Optional
+
+from axlearn.common.attention import (
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    build_remat_spec,
+)
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.bert import bert_embedding_config, bert_model_config, bert_transformer_config
 from axlearn.common.config import config_for_function
@@ -16,7 +23,7 @@ from axlearn.common.state_builder import (
 )
 from axlearn.common.text_dual_encoder import TextEmbeddingStreamEncoder
 from axlearn.common.text_encoder import TextEmbeddingEncoder
-from axlearn.huggingface.hf_module import download_hf_models_from_gs
+from axlearn.huggingface.hf_module import download_hf_models_from_remote
 
 # Initializer that is consistent with Huggingface's initialization for BERT model.
 HF_PARAM_INIT = DefaultInitializer.default_config().set(
@@ -40,6 +47,7 @@ def bert_text_embedding_stream_encoder_config(
     output_proj: Optional[Linear.Config] = Linear.default_config().set(bias=True),
     output_norm: Optional[BaseLayer.Config] = L2Norm.default_config(),
     pooler: BasePoolingLayer.Config = FirstNTokenPooling.default_config(),
+    remat: bool = False,
 ) -> TextEmbeddingStreamEncoder.Config:
     """Constructs Config for BERT-based TextEmbeddingStreamEncoder.
 
@@ -56,11 +64,13 @@ def bert_text_embedding_stream_encoder_config(
         output_norm: Optional normalization layer applied on embedding from text_encoder and after
             potential projection layer. If None, no normalization will be applied.
         pooler: Pooler of the underlying TextEmbeddingEncoder.
+        remat: If True, use RepeatedTransformerLayer instead of StackedTransformerLayer and remat
+            spec to save memory.
 
     Returns:
         BERT-based TextEmbeddingStreamEncoder Config.
     """
-    return TextEmbeddingStreamEncoder.default_config().set(
+    text_encoder_cfg = TextEmbeddingStreamEncoder.default_config().set(
         text_encoder=TextEmbeddingEncoder.default_config().set(
             pad_token_id=pad_token_id,
             encoder=bert_model_config(
@@ -75,6 +85,11 @@ def bert_text_embedding_stream_encoder_config(
                     num_layers=num_layers,
                     num_heads=num_heads,
                     layer_norm_epsilon=1e-12,
+                    base_cfg=(
+                        RepeatedTransformerLayer.default_config()
+                        if remat
+                        else StackedTransformerLayer.default_config()
+                    ),
                 ),
             ).encoder,
             pooler=pooler,
@@ -84,6 +99,11 @@ def bert_text_embedding_stream_encoder_config(
         output_norm=output_norm,
         hidden_dim=hidden_dim,
     )
+    if remat:
+        transformer_cfg = text_encoder_cfg.text_encoder.encoder.transformer
+        transformer_cfg.layer.remat_spec = build_remat_spec(transformer_cfg)
+
+    return text_encoder_cfg
 
 
 ################################################################################
@@ -133,8 +153,8 @@ def init_state_builder_config(
 def hf_pretrained_builder_config(  # pylint: disable=dangerous-default-value
     *,
     model_path: str,
-    target_scope: List[str] = [],
-    source_scope: List[str] = ["encoder"],
+    target_scope: list[str] = [],
+    source_scope: list[str] = ["encoder"],
 ) -> Builder.Config:
     """Constructs HuggingFacePreTrainedBuilder to initialize from HF models.
 
@@ -155,8 +175,7 @@ def hf_pretrained_builder_config(  # pylint: disable=dangerous-default-value
     from transformers import AutoModel
 
     def auto_from_pretrained(model_path: str):
-        if model_path.startswith("gs://"):
-            model_path = download_hf_models_from_gs(model_path)
+        model_path = download_hf_models_from_remote(model_path)
         return AutoModel.from_pretrained(model_path)
 
     builder = HuggingFacePreTrainedBuilder.default_config().set(

@@ -1,7 +1,11 @@
+# Copyright © 2023 Apple Inc.
+
 """Tests PyTorch adapter layers."""
+
 # pylint: disable=too-many-lines
 import itertools
-from typing import Optional, OrderedDict, Tuple, Type, Union, cast
+from collections import OrderedDict
+from typing import Optional, Union, cast
 
 import jax
 import numpy as np
@@ -9,6 +13,7 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
+from axlearn.common import attention_bias
 from axlearn.common.adapter_torch import (
     NEG_INF,
     AdapterCausalLmModelBuilder,
@@ -77,7 +82,7 @@ from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, WeightInitializer
 from axlearn.common.poolings import AttentionPooling as AxlearnAttentionPooling
 from axlearn.common.poolings import AveragePooling as AxlearnAveragePooling
 from axlearn.common.poolings import FirstNTokenPooling as AxlearnFirstNTokenPooling
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, set_threefry_partitionable
 from axlearn.common.utils import flatten_items
 from axlearn.common.vision_transformer import named_model_configs as axlearn_vit_configs
 from axlearn.vision.coca import set_coca_vision_encoder_config
@@ -98,17 +103,17 @@ class PreventParamBroadcastTest(TestCase):
     def test_broadcast_blocked(self):
         def load_broadcastable_params():
             linear_torch_layer = Linear(in_features=6, out_features=10)
-            linear_ajax_layer = (
+            linear_axlearn_layer = (
                 AxlearnLinear.default_config()
                 .set(input_dim=1, output_dim=1, name="axlearn")
                 .instantiate(parent=None)
             )
-            linear_ajax_layer_state = linear_ajax_layer.initialize_parameters_recursively(
+            linear_axlearn_layer_state = linear_axlearn_layer.initialize_parameters_recursively(
                 prng_key=jax.random.PRNGKey(0)
             )
 
             linear_torch_layer.load_axlearn_state_dict(
-                create_axlearn_state_dict(linear_ajax_layer_state)
+                create_axlearn_state_dict(linear_axlearn_layer_state)
             )
 
         self.assertRaises(ValueError, load_broadcastable_params)
@@ -185,7 +190,7 @@ class AttentionModulesTest(TestCase):
     def test_transformer_feed_forward_layer(
         self,
         structure: str,
-        activation: Union[str, Tuple[str, str]],
+        activation: Union[str, tuple[str, str]],
         linear_biases: bool,
         norm: str,
     ):
@@ -351,8 +356,8 @@ class AttentionModulesTest(TestCase):
 
         rng = np.random.RandomState(123)
         target = rng.randn(2, 7, target_dim).astype(np.float32)
-        attention_logit_biases = np.zeros(target.shape[:-1]).astype(bool)[:, :, None]
-        attention_logit_biases[:, -2:] = True
+        attention_logit_biases = np.zeros(target.shape[:-1]).astype(float)[:, :, None]
+        attention_logit_biases[:, -2:] = attention_bias.NEG_INF
         torch_inputs = {
             "target": torch.as_tensor(target),
             "attention_logit_biases": torch.as_tensor(attention_logit_biases),
@@ -886,9 +891,11 @@ class TransformerEmbeddingsTest(TestCase):
             jax.random.PRNGKey(0),
             state=axlearn_layer_state,
             inputs=dict(
-                inputs=jnp.asarray(input_ids),
-                token_type_ids=axlearn_token_type_ids,
-                positions=axlearn_positions,
+                input_batch=dict(
+                    inputs=jnp.asarray(input_ids),
+                    token_type_ids=axlearn_token_type_ids,
+                    positions=axlearn_positions,
+                ),
             ),
             is_training=False,
             method="forward",
@@ -906,6 +913,7 @@ class TransformerEmbeddingsTest(TestCase):
 
 
 class DecoderTest(TestCase):
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_decoder_inference(self):
         vocab_size = 13
         emb_dim = 8
@@ -968,7 +976,7 @@ class DecoderTest(TestCase):
             axlearn_layer,
             jax.random.PRNGKey(0),
             state=axlearn_layer_state,
-            inputs=dict(input_ids=jnp.asarray(input_ids)),
+            inputs=dict(input_batch=dict(input_ids=jnp.asarray(input_ids))),
             is_training=False,
             method="forward",
         )[0]
@@ -1565,7 +1573,7 @@ class AttentionPoolingTest(TestCase):
 
 class CoCaImageStreamEncoderTest(TestCase):
     @staticmethod
-    def _get_axlearn_pooler_cls(pooler_name: str) -> Type:
+    def _get_axlearn_pooler_cls(pooler_name: str) -> type:
         if pooler_name == "attention":
             return AxlearnAttentionPooling
         elif pooler_name == "average":
@@ -1576,7 +1584,7 @@ class CoCaImageStreamEncoderTest(TestCase):
             raise ValueError(f"unknown {pooler_name=}")
 
     @staticmethod
-    def _get_pytorch_pooler_cls(pooler_name: str) -> Type:
+    def _get_pytorch_pooler_cls(pooler_name: str) -> type:
         if pooler_name == "attention":
             return AttentionPooling
         elif pooler_name == "average":

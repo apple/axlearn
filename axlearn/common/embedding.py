@@ -1,4 +1,7 @@
+# Copyright © 2023 Apple Inc.
+
 """Embedding layers."""
+
 from typing import Optional
 
 from jax import numpy as jnp
@@ -7,6 +10,7 @@ from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Dropout, Embedding
 from axlearn.common.module import Module, Tensor, child_context
+from axlearn.common.utils import Nested, validate_contains_paths
 
 
 class TransformerTextEmbeddings(BaseLayer):
@@ -39,37 +43,39 @@ class TransformerTextEmbeddings(BaseLayer):
             self._add_child("norm", cfg.norm.set(input_dim=cfg.dim))
         self._add_child("dropout", cfg.dropout)
 
-    def forward(
-        self,
-        inputs: Tensor,
-        *,
-        token_type_ids: Optional[Tensor] = None,
-        positions: Optional[Tensor] = None,
-    ) -> Tensor:
+    def forward(self, input_batch: Nested[Tensor]) -> Tensor:
         """Computes input embeddings with positional embeddings.
 
         If token_type_ids is provided, we also add input type embeddings.
 
         Args:
-            inputs: arbitrary input tensor with general shape [batch_size, seq_len, ...] that
-                will be fed directly to `self.token_emb`.
-            token_type_ids: An optional int Tensor of shape [batch_size, seq_len].
-            positions: An optional int Tensor of shape [batch_size, seq_len].
-                If None, assumed to be jnp.arange(seq_len) for each sequence.
+            input_batch: A dict containing:
+                * inputs: An input tensor with general shape [batch_size, seq_len, ...] that will be
+                    fed directly to `self.token_emb`.
+                * token_type_ids: An optional int Tensor of shape [batch_size, seq_len].
+                * positions: An optional int Tensor of shape [batch_size, seq_len].
+                    If None, assumed to be jnp.arange(seq_len) for each sequence.
 
         Returns:
             A float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
+        validate_contains_paths(input_batch, paths=["inputs"])
+        inputs = input_batch["inputs"]
+        token_type_ids = input_batch.get("token_type_ids", None)
+        positions = input_batch.get("positions", None)
+
+        cfg: TransformerTextEmbeddings.Config = self.config
+
         x = self.token_emb(inputs)
-        if self.config.type_emb is not None:
+        if cfg.type_emb is not None:
             if token_type_ids is None:
                 token_type_ids = jnp.zeros_like(inputs)
             x = x + self.type_emb(token_type_ids)
-        if self.config.pos_emb is not None:
+        if cfg.pos_emb is not None:
             if positions is None:
                 positions = jnp.arange(x.shape[1])
             x += self.pos_emb(positions)
-        if self.config.norm is not None:
+        if cfg.norm is not None:
             x = self.norm(x)
         x = self.dropout(x)
         return x

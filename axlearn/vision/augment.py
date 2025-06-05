@@ -1,14 +1,31 @@
+# Copyright © 2023 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# tensorflow/models:
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# keras-team/keras:
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+#
+# facebookresearch/mvit:
+# Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
+# Licensed under the Apache License, Version 2.0 (the "License").
+
 """RandAugment policies for enhanced image preprocessing.
 
 Reference:
 https://github.com/tensorflow/models/blob/master/official/legacy/image_classification/augment.py
 """
+
 # pylint: disable=too-many-lines
 import math
-from typing import Any, List, Optional, Text, Tuple
+from collections.abc import Sequence
+from typing import Any, Optional, Union
 
 import tensorflow as tf
-from keras.layers.preprocessing import image_preprocessing as image_ops
 
 # This signifies the max integer that the controller RNN could predict for the
 # augmentation scheme.
@@ -70,7 +87,7 @@ def _convert_translation_to_transform(translations: tf.Tensor) -> tf.Tensor:
 
     Returns:
         A transformation matrix of shape (num_images, 8) to be used by
-        https://github.com/keras-team/keras/blob/v2.9.0/keras/layers/preprocessing/image_preprocessing.py#L898-L985
+        https://github.com/keras-team/keras/blob/07e13740fd181fc3ddec7d9a594d8a08666645f6/keras/layers/preprocessing/image_preprocessing.py#L898-L985
 
     Raises:
         TypeError: If
@@ -113,7 +130,7 @@ def _convert_angles_to_transform(
 
     Returns:
         A transformation matrix of shape (num_images, 8) to be used by
-        https://github.com/keras-team/keras/blob/v2.9.0/keras/layers/preprocessing/image_preprocessing.py#L898-L985
+        https://github.com/keras-team/keras/blob/07e13740fd181fc3ddec7d9a594d8a08666645f6/keras/layers/preprocessing/image_preprocessing.py#L898-L985
 
     Raises:
         TypeError: If `angles` is not rank 0 or 1.
@@ -146,14 +163,60 @@ def _convert_angles_to_transform(
     )
 
 
+# TODO(xianzhi,markblee): Avoid copying this private function from Keras.
+def _keras_image_processing_transform(
+    images: tf.Tensor,
+    transforms: Union[Sequence[float], tf.Tensor],
+    fill_mode: str = "reflect",
+    fill_value: float = 0.0,
+    interpolation: str = "bilinear",
+    output_shape: Optional[Sequence[int]] = None,
+    name: Optional[str] = None,
+) -> tf.Tensor:
+    """Applies the given transform(s) to the image(s).
+
+    Copied from
+    https://github.com/keras-team/keras/blob/v2.14.0/keras/layers/preprocessing/image_preprocessing.py#L720-L815
+    since it was removed from the public API, with minor adaptation.
+    """
+    with tf.name_scope(name or "transform"):
+        if output_shape is None:
+            output_shape = tf.shape(images)[1:3]
+            if not tf.executing_eagerly():
+                output_shape_value = tf.get_static_value(output_shape)
+                if output_shape_value is not None:
+                    output_shape = output_shape_value
+
+        output_shape = tf.convert_to_tensor(output_shape, tf.int32, name="output_shape")
+
+        if not output_shape.get_shape().is_compatible_with([2]):
+            raise ValueError(
+                f"output_shape must be a 1-D Tensor of 2 elements: new_height, new_width, "
+                f"instead got {output_shape} "
+            )
+
+        fill_value = tf.convert_to_tensor(fill_value, tf.float32, name="fill_value")
+
+        return tf.raw_ops.ImageProjectiveTransformV3(
+            images=images,
+            output_shape=output_shape,
+            fill_value=fill_value,
+            transforms=transforms,
+            fill_mode=fill_mode.upper(),
+            interpolation=interpolation.upper(),
+        )
+
+
 def transform(image: tf.Tensor, transforms) -> tf.Tensor:
-    """Prepares input data for `image_ops.transform`."""
+    """Prepares input data for `_keras_image_processing_transform`."""
     original_ndims = tf.rank(image)
     transforms = tf.convert_to_tensor(transforms, dtype=tf.float32)
     if transforms.shape.rank == 1:
         transforms = transforms[None]
     image = to_4d(image)
-    image = image_ops.transform(images=image, transforms=transforms, interpolation="nearest")
+    image = _keras_image_processing_transform(
+        images=image, transforms=transforms, interpolation="nearest"
+    )
     return from_4d(image, original_ndims)
 
 
@@ -670,13 +733,13 @@ def level_to_arg(cutout_const: float, translate_const: float):
 
 
 def parse_policy_info(
-    name: Text,
+    name: str,
     prob: float,
     level: float,
-    replace_value: List[int],
+    replace_value: list[int],
     cutout_const: float,
     translate_const: float,
-) -> Tuple[Any, float, Any]:
+) -> tuple[Any, float, Any]:
     """Return the function that corresponds to `name` and update `level` param."""
     func = NAME_TO_FUNC[name]
     args = level_to_arg(cutout_const, translate_const)[name](level)
@@ -782,7 +845,7 @@ class MixupAndCutmix:
     - Cutmix: https://arxiv.org/abs/1905.04899
 
     Code reference:
-    https://github.com/tensorflow/models/blob/master/official/vision/ops/augment.py#L2240-L2401
+    https://github.com/tensorflow/models/blob/983109490fcdd06bcea7d4c60f6a8a4b943aceda/official/vision/ops/augment.py#L2240-L2401
     https://github.com/rwightman/pytorch-image-models
     """
 
@@ -825,10 +888,10 @@ class MixupAndCutmix:
         elif not self.mixup_alpha and self.cutmix_alpha:
             self.switch_prob = 1
 
-    def __call__(self, images: tf.Tensor, labels: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+    def __call__(self, images: tf.Tensor, labels: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         return self.distort(images, labels)
 
-    def distort(self, images: tf.Tensor, labels: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
+    def distort(self, images: tf.Tensor, labels: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """Applies Mixup and/or Cutmix to batch of images and transforms labels.
 
         Args:
@@ -861,7 +924,7 @@ class MixupAndCutmix:
 
     def _cutmix(
         self, images: tf.Tensor, labels: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Applies cutmix."""
         lam = MixupAndCutmix._sample_from_beta(
             self.cutmix_alpha, self.cutmix_alpha, tf.shape(labels)
@@ -912,7 +975,7 @@ class MixupAndCutmix:
 
     def _mixup(
         self, images: tf.Tensor, labels: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Applies mixup."""
         lam = MixupAndCutmix._sample_from_beta(self.mixup_alpha, self.mixup_alpha, tf.shape(labels))
         if images.shape.rank == 4:
@@ -936,7 +999,7 @@ class MixupAndCutmix:
 
     def _update_labels(
         self, images: tf.Tensor, labels: tf.Tensor, lam: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor]:
+    ) -> tuple[tf.Tensor, tf.Tensor]:
         labels_1 = self._smooth_labels(labels)
         labels_2 = tf.reverse(labels_1, [0])
 
