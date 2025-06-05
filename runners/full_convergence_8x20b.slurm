@@ -8,12 +8,16 @@
 export AXLEARN_REMAT_LAYER=selective
 export VENV_NAME=jaxmoe
 export AXLEARN_MODEL_NAME="envy-Mistral-8x20B"
-#export JOB_ID="8x20b_16kvheads_gpu"
+# export JOB_ID="8x20b_16kvheads_gpu"
 export AXLEARN_TP_DEGREE=16
 export AXLEARN_TRAIN_BATCH_SIZE=$((8 * SLURM_NNODES))
 export AXLEARN_USE_BLOCKWISE=1
 export AXLEARN_REPEATED=1
 export AXLEARN_NUM_KV_HEADS=16
+
+export OPTIMIZER_LR_BASE=1.5
+export OPTIMIZER_LR_EXP=-5
+export OPTIMIZER_WD=0.000006
 
 # overriding above to use fp32
 # export AXLEARN_REMAT_LAYER=true
@@ -26,6 +30,7 @@ export JAX_COMPILATION_CACHE_DIR="cache/"
 mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 export CUSTOM_TAG_experiment=convergence
+export CUSTOM_TAG_lr=amith
 export RENAME_JOB=true
 export RENAME_JOB_PREFIX=rh
 
