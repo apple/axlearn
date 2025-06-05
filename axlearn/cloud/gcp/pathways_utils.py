@@ -856,6 +856,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         pod_spec = leader_pod.get("spec", {})
 
+        pod_spec["hostNetwork"] = True
+        pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+
         pod_spec["containers"] = [
             self._build_head_container(),
             self._build_pathways_proxy_container(),
