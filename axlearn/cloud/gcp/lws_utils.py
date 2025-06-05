@@ -21,6 +21,12 @@ from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
+# Kubernetes pod annotation keys. Used by TPUReplicatedJob to support multi NIC.
+# Refer to GKE TPU provisioner for more context:
+# https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
+_ANNOTATION_ADDITIONAL_NODE_NETWORKS = "tpu-provisioner.cloud.google.com/additional-node-networks"
+_ANNOTATION_NODE_SERVICE_ACCOUNT = "tpu-provisioner.cloud.google.com/node-service-account"
+
 
 class BaseLeaderWorkerTemplate(FlagConfigurable):
     """
@@ -112,6 +118,11 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         reservation: Optional[str] = None
         reservation_project: Optional[str] = None
+        enable_tpu_ici_resiliency: Optional[bool] = None
+        location_hint: Optional[str] = None
+        enable_tpu_smart_repair: bool = False
+        priority_class: Optional[str] = None
+        additional_node_networks: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -120,6 +131,19 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         flags.DEFINE_string("reservation", None, "TPU reservation.", **common_kwargs)
         flags.DEFINE_string(
             "reservation_project", None, "TPU reservation project.", **common_kwargs
+        )
+        flags.DEFINE_boolean(
+            "enable_tpu_ici_resiliency",
+            None,
+            "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
+            "not all TPU types support this flag.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "priority_class",
+            None,
+            "The GKE PriorityClass for the job.",
+            **common_kwargs,
         )
 
     @classmethod
@@ -136,6 +160,13 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         cfg.reservation_project = cfg.reservation_project or gcp_settings(
             "gke_reservation_project", required=False, fv=fv
         )
+        cfg.location_hint = gcp_settings("location_hint", required=False, fv=fv)
+        cfg.enable_tpu_smart_repair = bool(
+            gcp_settings("enable_tpu_smart_repair", required=False, fv=fv)
+        )
+        cfg.additional_node_networks = gcp_settings(
+            "additional_node_networks", required=False, fv=fv
+        )
         return cfg
 
     def __init__(self, cfg, *, bundler):
@@ -144,6 +175,8 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
+        if cfg.additional_node_networks and not cfg.service_account:
+            raise ValueError("service_account must be set if additional_node_networks is set.")
 
     def _build_container(self) -> dict:
         """Build the container to be used in the leader template
@@ -156,6 +189,8 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         env_vars = {**cfg.env_vars}
         k8s_env_vars = [dict(name=k, value=str(v)) for k, v in env_vars.items()]
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
+        if cfg.enable_tpu_ici_resiliency is not None:
+            env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
         return dict(
             name=cfg.name,
@@ -175,6 +210,45 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         if cfg.reservation_project:
             selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
+
+        if cfg.priority_class:
+            spec["priorityClassName"] = cfg.priority_class
+
+        if cfg.location_hint is not None:
+            selector.update({"cloud.google.com/gke-location-hint": str(cfg.location_hint).lower()})
+
+        if cfg.enable_tpu_smart_repair:
+            labels.update({"cloud.google.com/gke-tpu-auto-restart": "true"})
+            annotations.update(
+                {
+                    # The list of labels to be copied to node pools by tpu-provisioner.
+                    # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/main/tpu-provisioner/internal/cloud/common.go#L27-L28
+                    # pylint: disable=line-too-long
+                    "tpu-provisioner.cloud.google.com/copy-labels": "cloud.google.com/gke-tpu-auto-restart"
+                }
+            )
+
+        
+        if cfg.enable_tpu_ici_resiliency is not None:
+            selector.update(
+                {
+                    "cloud.google.com/gke-tpu-ici-resiliency": str(
+                        cfg.enable_tpu_ici_resiliency
+                    ).lower()
+                }
+            )
+        
+        # Handles additional network.
+        if cfg.additional_node_networks:
+            node_service_account = f"{cfg.service_account}@{cfg.project}.iam.gserviceaccount.com"
+            annotations.update(
+                {
+                    _ANNOTATION_ADDITIONAL_NODE_NETWORKS: cfg.additional_node_networks,
+                    _ANNOTATION_NODE_SERVICE_ACCOUNT: node_service_account,
+                }
+            )
+            spec["hostNetwork"] = True
+            spec["dnsPolicy"] = "ClusterFirstWithHostNet"
 
         spec = dict(
             nodeSelector={
