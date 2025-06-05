@@ -86,7 +86,8 @@ def default_xla_options(
             # v6e training caused by allreduce over DCN. This flag doesn't impact performance.
             xla_tpu_iova_dma_chunk_size_bytes=1048576,
             # Disable collective matmul. Collective matmul could negatively affect performance in
-            # some cases.
+            # some cases. Even in cases where collective matmul provides gains, the gains are
+            # marginal on v6e due to the high arithmetic intensity.
             xla_jf_spmd_threshold_for_windowed_einsum_mib=1000000,
         )
 
