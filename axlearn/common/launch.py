@@ -47,6 +47,7 @@ from absl import flags, logging
 from axlearn.common.status_server import StatusHTTPServer
 from axlearn.common.utils import get_data_dir
 from axlearn.common.utils_spmd import setup as setup_spmd
+from axlearn.common.utils_spmd import setup_jax_config
 
 # pylint: enable=wrong-import-position
 
@@ -115,6 +116,10 @@ def setup():
 
     with _init_context():
         if FLAGS.jax_backend == "proxy":
+            # These Jax configs are required and set in setup_spmd() which isn't
+            # called by Pathways.
+            setup_jax_config()
+
             # pylint: disable-next=import-error,import-outside-toplevel
             import pathwaysutils  # pytype: disable=import-error
 

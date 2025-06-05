@@ -11,6 +11,13 @@ import portpicker
 _jax_distributed_initialized = False
 
 
+def setup_jax_config():
+    # Use a GSPMD-friendly PRNG implementation.
+    jax.config.update("jax_default_prng_impl", "rbg")
+    # This allows replicated jax.Arrays to be used for computation on the host.
+    jax.config.update("jax_spmd_mode", "allow_all")
+
+
 def setup(
     *,
     jax_backend: str,
@@ -41,10 +48,7 @@ def setup(
             * one of num_processes or process_id is None when jax_backend is not "tpu";
             * distributed_coordinator is None when jax_backend is not "tpu" and num_processes > 1.
     """
-    # Use a GSPMD-friendly PRNG implementation.
-    jax.config.update("jax_default_prng_impl", "rbg")
-    # This allows replicated jax.Arrays to be used for computation on the host.
-    jax.config.update("jax_spmd_mode", "allow_all")
+    setup_jax_config()
 
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:
