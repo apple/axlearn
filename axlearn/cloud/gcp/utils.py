@@ -81,7 +81,8 @@ def running_from_vm() -> bool:
         capture_output=True,
         text=True,
     )
-    return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
+    return False
+    #return (out.returncode == 0) and "Metadata-Flavor: Google" in out.stdout
 
 
 def running_from_k8s() -> bool:
@@ -399,6 +400,32 @@ def delete_k8s_leaderworkerset(name: str, *, namespace: str):
             logging.info("LWS %s does not exist, no need to delete.", name)
             return
         raise
+
+def list_k8s_leaderworkerset(name: str, *, namespace: str)-> list[str] :
+    """List a K8s LWS by name, including all descendant jobs.
+    
+    Args:
+        namespace: The namespace of the K8s cluster.
+        label_selector: Comma-separated labels k=v to filter jobs
+
+    Returns:
+        A list of filtered names of existing K8s LWS.
+
+    """
+
+    # Avoid introducing a k8s dependency globally.
+    # pylint: disable-next=import-error,import-outside-toplevel
+    import kubernetes as k8s  # pytype: disable=import-error
+
+    lws_groups = k8s.client.CustomObjectsApi().list_namespaced_custom_object(
+            name=name,
+            namespace=namespace,
+            propagation_policy="Foreground",
+            **custom_leaderworkerset_kwargs(),
+        )
+    
+    return [lws.metadata.name for lws in lws_groups.items]
+
 
 
 def custom_leaderworkerset_kwargs() -> dict[str, str]:
