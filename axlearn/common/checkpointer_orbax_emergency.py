@@ -54,6 +54,11 @@ from axlearn.common.utils import Nested, Tensor, TensorSpec
 
 FLAGS = flags.FLAGS
 
+def save_axlearn_checkpoint(step: int, state, directory: str, name: str):
+  cfg = Checkpointer.default_config().set(name=name, dir=directory)
+  ckpt = cfg.instantiate(parent=None)
+  ckpt.save(step=step, state=state)
+  ckpt.wait_until_finished()
 
 @contextmanager
 def setup(spec: str):
@@ -819,6 +824,10 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         )
         time_diff = time.perf_counter() - start_t
         logging.info("Took %ss to restore emergency checkpoint from %s.", time_diff, cfg.dir)
+
+        logging.info("Saving a non-Orbax checkpoint from the restored Orbax state...")
+        save_axlearn_checkpoint(step, restored_state, cfg.dir, cfg.name)
+
         return step, restored_state
 
     def wait_until_finished(self):
