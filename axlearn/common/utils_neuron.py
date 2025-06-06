@@ -343,6 +343,7 @@ class GridSpaceBuilder:
                 )
             )
             # 8x20
+            kwargs['batch'] = 8
             grid_space.append(
                 self.create_test_config(
                     **kwargs, input_dim=8192, hidden_dim=16384, mesh_spec={"fsdp":-1, "model":16},

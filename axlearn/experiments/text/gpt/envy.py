@@ -678,10 +678,10 @@ def get_trainer_kwargs(
         raise NotImplementedError(f"Unknown model size {model_size}.")
 
     merged_trainer_kwargs = common_trainer_kwargs()
+    callback_modify_trainer_kwargs_env_vars(trainer_kwargs)
     merged_trainer_kwargs.update(
         {k: v for k, v in trainer_kwargs.items() if k not in ("model_kwargs", "learner_kwargs")}
     )
-    callback_modify_trainer_kwargs_env_vars(trainer_kwargs)
     # Update the model_kwargs
     model_kwargs: dict[str, Any] = merged_trainer_kwargs.pop("model_kwargs")
     model_kwargs.update(trainer_kwargs.get("model_kwargs", {}))
