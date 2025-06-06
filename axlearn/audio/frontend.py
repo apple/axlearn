@@ -14,6 +14,7 @@ import jax.numpy as jnp
 
 from axlearn.audio.frontend_utils import (
     WindowType,
+    cast_for_rfft,
     frame,
     frame_paddings,
     linear_to_log_mel_spectrogram,
@@ -143,14 +144,6 @@ def _fft_dtype(input_dtype: jnp.dtype) -> jnp.dtype:
         raise ValueError(f"{input_dtype=} is not supported.")
 
 
-def _cast_for_rfft(x: Tensor) -> Tensor:
-    # jnp.fft.rfft input must be float32 or float64.
-    if x.dtype in (jnp.float32, jnp.float64):
-        return x
-    else:
-        return x.astype(jnp.float32)
-
-
 class LogMelFrontend(BaseFrontend):
     """Computes Log Mel spectrogram features.
 
@@ -200,7 +193,7 @@ class LogMelFrontend(BaseFrontend):
         if cfg.fft is not None:
             self._fft = cfg.fft.set(n=fft_size).instantiate()
         else:
-            self._fft = lambda x: jnp.fft.rfft(_cast_for_rfft(x), n=fft_size)
+            self._fft = lambda x: jnp.fft.rfft(cast_for_rfft(x), n=fft_size)
 
         spectrogram = maybe_set_config(
             cfg.spectrogram,
