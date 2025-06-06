@@ -43,8 +43,6 @@ def setup(
     """
     # Use a GSPMD-friendly PRNG implementation.
     jax.config.update("jax_default_prng_impl", "rbg")
-    # This allows replicated jax.Arrays to be used for computation on the host.
-    jax.config.update("jax_spmd_mode", "allow_all")
 
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:

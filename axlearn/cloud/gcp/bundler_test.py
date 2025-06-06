@@ -180,3 +180,21 @@ class CloudBuildBundlerTest(TestCase):
             b = cfg.set(is_async=True).instantiate()
             b.wait_until_finished("test-name")
             self.assertEqual(2, mock_status.call_count)
+
+    def test_wait_until_finished_triggers_timeout(self):
+        # Tests that we raise a timeout error if wait_until_finished takes more than 1 hr.
+        cfg = self._get_test_cloud_build_bundler()
+
+        with mock.patch("time.perf_counter") as mock_perf_counter:
+            mock_perf_counter.side_effect = [0, 10, 500, 3601]
+
+            with self._mock_status(
+                None, CloudBuildStatus.PENDING, CloudBuildStatus.PENDING
+            ) as mock_status:
+                b = cfg.set(is_async=True).instantiate()
+                with self.assertRaisesRegex(
+                    TimeoutError,
+                    "Timed out waiting for CloudBuild to finish for more than 3600 seconds.",
+                ):
+                    b.wait_until_finished("test-name")
+                self.assertEqual(2, mock_status.call_count)

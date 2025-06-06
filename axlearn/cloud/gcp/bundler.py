@@ -227,19 +227,30 @@ options:
         print(subprocess.run(cmd, check=True))
         return image
 
-    def wait_until_finished(self, name: str):
+    def wait_until_finished(self, name: str, wait_timeout=3600):
         """Waits for async CloudBuild to finish by polling for status.
 
         Is a no-op if `cfg.is_async` is False.
 
         Args:
             name: Bundle name.
+            wait_timeout: Overall timeout in seconds. Defaults to 1 hour.
 
         Raises:
-            ValueError: If async build failed.
+            TimeoutError: If the build does not complete within the overall timeout.
+            ValueError: If the async build fails.
         """
+        start_time = time.perf_counter()
         cfg: CloudBuildBundler.Config = self.config
         while cfg.is_async:
+            elapsed_time = time.perf_counter() - start_time
+            if elapsed_time > wait_timeout:
+                timeout_msg = (
+                    f"Timed out waiting for CloudBuild to finish for more than "
+                    f"{wait_timeout} seconds."
+                )
+                logging.error(timeout_msg)
+                raise TimeoutError(timeout_msg)
             try:
                 build_status = get_cloud_build_status(
                     project_id=cfg.project, image_name=self.id(name), tags=[name]
