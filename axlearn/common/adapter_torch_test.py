@@ -980,12 +980,18 @@ class DecoderTest(TestCase):
             is_training=False,
             method="forward",
         )[0]
+        axlearn_logits = F(
+            axlearn_layer,
+            jax.random.PRNGKey(0),
+            state=axlearn_layer_state,
+            inputs=dict(forward_outputs=axlearn_outputs),
+            is_training=False,
+            method="compute_logits",
+        )[0]
         self.assertNestedAllClose(
             torch_outputs["hidden_states"].detach().numpy(), axlearn_outputs["hidden_states"]
         )
-        self.assertNestedAllClose(
-            torch_outputs["logits"].detach().numpy(), axlearn_outputs["logits"]
-        )
+        self.assertNestedAllClose(torch_outputs["logits"].detach().numpy(), axlearn_logits)
         # Also test extend.
         for chunk_size in [1, 6]:
             extend_logits: torch.Tensor = None
@@ -1245,12 +1251,18 @@ class CausalLmModelModulesTest(TestCase):
             torch_input_ids, target_labels=torch.as_tensor(target_labels)
         )
         self.assertNestedAllClose(
-            torch_predictions["logits"].detach().numpy(), axlearn_predictions["logits"]
-        )
-        self.assertNestedAllClose(
             torch_predictions["hidden_states"].detach().numpy(),
             axlearn_predictions["hidden_states"],
         )
+        axlearn_logits = F(
+            axlearn_model,
+            jax.random.PRNGKey(0),
+            state=axlearn_model_state,
+            inputs=dict(predictions=axlearn_predictions),
+            is_training=False,
+            method="compute_logits",
+        )[0]
+        self.assertNestedAllClose(torch_predictions["logits"].detach().numpy(), axlearn_logits)
         # Also test iterative decoding.
         extend_logits: torch.Tensor = None
         extend_hidden_states: torch.Tensor = None
@@ -1322,12 +1334,18 @@ class AdapterCausalLmModelModulesTest(TestCase):
             torch_input_ids, target_labels=torch.as_tensor(target_labels)
         )
         self.assertNestedAllClose(
-            torch_predictions["logits"].detach().numpy(), axlearn_predictions["logits"]
-        )
-        self.assertNestedAllClose(
             torch_predictions["hidden_states"].detach().numpy(),
             axlearn_predictions["hidden_states"],
         )
+        axlearn_logits = F(
+            axlearn_model,
+            jax.random.PRNGKey(0),
+            state=axlearn_model_state,
+            inputs=dict(predictions=axlearn_predictions),
+            is_training=False,
+            method="compute_logits",
+        )[0]
+        self.assertNestedAllClose(torch_predictions["logits"].detach().numpy(), axlearn_logits)
         # Also test iterative decoding.
         extend_logits: torch.Tensor = None
         extend_hidden_states: torch.Tensor = None

@@ -904,13 +904,17 @@ class ScanInContextTest(TestWithTemporaryCWD):
         num_iters = 3
 
         # Invoke with inherited state. In this case, the same state is used each iter.
-        with self._dummy_context():
+        with self._dummy_context() as ctx:
             carry, ys = self._invoke(num_iters=num_iters, xs={})
             self.assertNestedEqual(jnp.array([num_iters], dtype=carry.dtype), carry)
             self.assertNestedEqual(
                 jnp.array([[0, 10], [2, 12], [4, 14]], dtype=carry.dtype),
                 ys,
             )
+            for collection in ctx.output_collection:
+                self.assertIn("iter", collection)
+                for i in range(num_iters):
+                    self.assertIn(f"iter{i}", collection)
 
         # Invoke with explicit state. In this case, the state is unrolled.
         with self._dummy_context():
@@ -923,6 +927,19 @@ class ScanInContextTest(TestWithTemporaryCWD):
                 jnp.array([[10, 10], [12, 12], [14, 14]], dtype=carry.dtype),
                 ys,
             )
+
+        # Invoke with merge_summaries=True.
+        with self._dummy_context() as ctx:
+            carry, ys = self._invoke(num_iters=num_iters, xs={}, merge_summaries=True)
+            self.assertNestedEqual(jnp.array([num_iters], dtype=carry.dtype), carry)
+            self.assertNestedEqual(
+                jnp.array([[0, 10], [2, 12], [4, 14]], dtype=carry.dtype),
+                ys,
+            )
+            for collection in ctx.output_collection:
+                self.assertIn("iter", collection)
+                for i in range(num_iters):
+                    self.assertNotIn(f"iter{i}", collection)
 
     def test_drop_output(self):
         num_iters = 3

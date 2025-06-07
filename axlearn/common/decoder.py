@@ -7,7 +7,6 @@ from typing import Callable, Optional, Protocol, Union
 
 import jax
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec
 
 from axlearn.common import logit_modifiers
 from axlearn.common.attention import (
@@ -47,13 +46,7 @@ from axlearn.common.module import (
     current_context,
     new_output_collection,
 )
-from axlearn.common.utils import (
-    Nested,
-    NestedTensor,
-    TensorSpec,
-    validate_contains_paths,
-    with_sharding_constraint,
-)
+from axlearn.common.utils import Nested, NestedTensor, TensorSpec, validate_contains_paths
 
 
 # TODO(markblee): Remove this when we have a better solution at the decoding loop level.
@@ -543,22 +536,35 @@ class Decoder(BaseLayer):
             raise ValueError(f"Unrecognized mode {mode}.")
         x = x.data
         self._add_tensor_stats("outputs", x)
-
         if "output_norm" in self.children:
             x = self.output_norm(x)
             self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
+
+        # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
+        return dict(transformer_state=transformer_state), dict(hidden_states=x)
+
+    def compute_logits(self, forward_outputs: Nested[Tensor]) -> Tensor:
+        """Computes logits from decoder hidden states.
+
+        Args:
+            forward_outputs: A dict contains
+                hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
+
+        Returns:
+            logits: A float Tensor of shape [batch_size, target_len, num_classes], where
+                num_classes depends on the configured lm_head.
+        """
+        hidden_states = forward_outputs["hidden_states"]
         if "lm_head" in self.children:
-            logits = self.lm_head(x)
+            logits = self.lm_head(hidden_states)
         else:
             # Reuse the token embedding.
-            with child_context("emb_attend", module=self.emb):
-                logits = self.emb.attend(x)
+            with child_context("self_emb_attend", module=self):
+                logits = self.emb.attend(hidden_states)
         if self._output_logits_modifier is not None:
             logits = self._output_logits_modifier(logits)
-        logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
-        # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
-        return dict(transformer_state=transformer_state), dict(logits=logits, hidden_states=x)
+        return logits
 
     def forward(
         self,
@@ -590,8 +596,6 @@ class Decoder(BaseLayer):
         Returns:
             A dict containing:
                 hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
-                logits: A float Tensor of shape [batch_size, target_len, num_classes], where
-                    num_classes depends on the configured lm_head.
         """
         validate_contains_paths(input_batch, paths=["input_ids"])
         input_ids = input_batch["input_ids"]
@@ -659,6 +663,7 @@ class Decoder(BaseLayer):
             ),
             **kwargs,
         )
+        outputs["logits"] = self.compute_logits(outputs)
         self.add_module_output("prefill_hidden_states", outputs["hidden_states"])
         states = dict(time_step=time_step, input_ids=input_ids, **states)
         return states, outputs
@@ -716,6 +721,8 @@ class Decoder(BaseLayer):
             cached_states=cached_states,
             **kwargs,
         )
+        # TODO(axlearn-dev): Evaluate whether sharding logits during decoding is actually necessary.
+        outputs["logits"] = self.compute_logits(outputs)
         updated_states = dict(
             input_ids=updated_inputs,
             # There are some non-greedy DFS/BFS and sliding attention algorithms that

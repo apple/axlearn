@@ -115,7 +115,7 @@ class TestEncoderDecoder(TestCase):
 
         # Test values.
         def layer_output(state, layer):
-            return F(
+            (unused_loss, aux), _ = F(
                 layer,
                 inputs=dict(
                     input_batch=dict(
@@ -128,7 +128,15 @@ class TestEncoderDecoder(TestCase):
                 state=state,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(2),
-            )[0][1]["logits"]
+            )
+            return F(
+                layer,
+                inputs=dict(predictions=aux),
+                state=state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(2),
+                method="compute_logits",
+            )[0]
 
         tied_logits = layer_output(tied_head_state, tied_head)
         untied_logits = layer_output(untied_head_state, untied_head)
@@ -519,9 +527,19 @@ class TestAgainstHF(TestCase):
             require_same_tree_structure=False,
         )
 
-        # Compare outputs at non-padding positions.
-        test_logits = test_aux["logits"]
+        params_from_ref = parameters_from_torch_layer(
+            self.hf_encoder_decoder, dst_layer=self.test_encoder_decoder
+        )
+        test_logits = F(
+            self.test_encoder_decoder,
+            prng_key=jax.random.PRNGKey(123),
+            state=params_from_ref,
+            inputs=dict(predictions=test_aux),
+            is_training=False,
+            method="compute_logits",
+        )[0]
         ref_logits = utils.as_tensor(ref_outputs.logits)
+        # Compare outputs at non-padding positions.
         if target_mask is not None:
             test_logits *= target_mask[..., None]
             ref_logits *= target_mask[..., None]
@@ -554,14 +572,15 @@ class TestAgainstT5X(TestCase):
         )
         test_encoder_decoder = cfg.set(name="test").instantiate(parent=None)
 
+        test_params = parameters_from_t5x_encoder_decoder(
+            testcase["params"],
+            test_encoder_decoder,
+        )
         test_outputs, _ = F(
             test_encoder_decoder,
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
-            state=parameters_from_t5x_encoder_decoder(
-                testcase["params"],
-                test_encoder_decoder,
-            ),
+            state=test_params,
             inputs=dict(
                 input_batch=dict(
                     source=dict(
@@ -581,10 +600,17 @@ class TestAgainstT5X(TestCase):
         )
 
         # Compare.
-        test_outputs = test_outputs["logits"]
+        test_logits = F(
+            test_encoder_decoder,
+            prng_key=jax.random.PRNGKey(123),
+            is_training=False,
+            state=test_params,
+            inputs=dict(predictions=test_outputs),
+            method="compute_logits",
+        )[0]
         ref_outputs = utils.as_tensor(testcase["outputs"])
         mask = testcase["padding_mask"][..., None]
-        self.assertNestedAllClose(test_outputs * mask, ref_outputs * mask)
+        self.assertNestedAllClose(test_logits * mask, ref_outputs * mask)
 
 
 if __name__ == "__main__":

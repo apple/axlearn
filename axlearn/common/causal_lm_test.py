@@ -2,6 +2,7 @@
 
 """Tests autoregressive models."""
 
+import contextlib
 from functools import partial
 from typing import cast
 
@@ -114,7 +115,15 @@ class Gpt2TransformerTest(TestCase):
             parameters_from_ref_layer=parameters_from_torch_layer,
             require_same_tree_structure=require_same_tree_structure,
         )
-        test_logits = test_aux["logits"]
+        params_from_ref = parameters_from_torch_layer(ref_layer, dst_layer=layer)
+        test_logits = functional(
+            layer,
+            prng_key=jax.random.PRNGKey(123),
+            state=params_from_ref,
+            inputs=dict(predictions=test_aux),
+            is_training=False,
+            method="compute_logits",
+        )[0]
         ref_logits = ref_outputs.logits.detach().numpy()
         assert_allclose(test_logits, ref_logits)
 
@@ -134,82 +143,54 @@ class ModelTest(TestCase):
         )
         return causal_lm.Model.default_config().set(decoder=decoder_cfg)
 
-    def test_metrics(self):
-        model = (
-            self._model_config(vocab_size=10, seq_len=10)
-            .set(name="metrics_test")
-            .instantiate(parent=None)
+    def _get_input_batch(self, batch_size, seq_len, vocab_size):
+        input_key, target_key = jax.random.split(jax.random.PRNGKey(123))
+        input_ids = jax.random.randint(
+            input_key, shape=[batch_size, seq_len], minval=0, maxval=vocab_size
         )
+        target_labels = jax.random.randint(
+            target_key, shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        return dict(input_ids=input_ids, target_labels=target_labels)
 
+    def test_metrics_scan(self):
+        batch_size, seq_len, vocab_size = 3, 16, 10
+        scan_chunk = 8  # Note: seq_len > scan_chunk to enable scan chunk.
+
+        model_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+        test_cfg = model_cfg.clone().set(scan_chunk=scan_chunk)
+
+        model = model_cfg.set(name="ref").instantiate(parent=None)
+        test_model = test_cfg.set(name="test").instantiate(parent=None)
+
+        input_batch = self._get_input_batch(batch_size, seq_len, vocab_size)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
-        # Compute summaries after forwarding two batches.
-        # The second batch is a dummy one - should not affect metrics.
-        target_labels = jnp.array([[[1, 3, 0], [2, 3, 1]], [[0, 0, 0], [0, 0, 0]]])
-        logits = jnp.array(
-            [
-                [
-                    [
-                        [0.1, 0.9, 0.1, 0.1],  # Target 1; pred 1.
-                        [0.1, 0.1, 0.9, 0.1],  # Target 3; pred 2.
-                        [0.9, 0.1, 0.1, 0.1],  # Target 0; pred 0.
-                    ],  # Example 0.
-                    [
-                        [0.1, 0.1, 0.9, 0.1],  # Target 2; pred 2.
-                        [0.1, 0.1, 0.9, 0.1],  # Target 3; pred 2.
-                        [0.9, 0.1, 0.1, 0.1],  # Target 1; pred 0.
-                    ],  # Example 1.
-                ],  # Batch 0.
-                [
-                    [
-                        [0.1, 0.9, 0.1, 0.1],  # Target 0; pred 1.
-                        [0.1, 0.1, 0.9, 0.1],  # Target 0; pred 2.
-                        [0.9, 0.1, 0.1, 0.1],  # Target 0; pred 0.
-                    ],  # Example 0.
-                    [
-                        [0.1, 0.1, 0.9, 0.1],  # Target 0; pred 2.
-                        [0.1, 0.1, 0.9, 0.1],  # Target 0; pred 2.
-                        [0.9, 0.1, 0.1, 0.1],  # Target 0; pred 0.
-                    ],  # Example 1.
-                ],  # Batch 1.
-            ]
+
+        # Ensure that forward outputs are consistent with metrics output.
+        common_kwargs = dict(prng_key=prng_key, state=model_params, is_training=True)
+        predictions, _ = functional(
+            **common_kwargs, module=model, inputs=dict(input_batch=input_batch), method="predict"
         )
-        target_num_bytes = jnp.array([[3, 7], [0, 0]])
-        live_targets = jnp.array([[[1, 1, 0], [1, 1, 1]], [[0, 0, 0], [0, 0, 0]]])
-        accumulator = MetricAccumulator.default_config().instantiate()
-        for i in range(2):
-            _, output_collection = functional(
-                model,
-                inputs=dict(
-                    input_batch=dict(
-                        target_labels=target_labels[i],
-                        target_num_bytes=target_num_bytes[i],
-                    ),
-                    predict_outputs=dict(
-                        logits=logits[i],
-                    ),
-                ),
-                is_training=True,
-                prng_key=prng_key,
-                state=model_params,
-                method="_metrics",
-            )
-            accumulator.update(output_collection.summaries)
-        summaries = accumulator.summaries()
-        # Only the first batch should affect results.
-        loss, loss_dict = cross_entropy(
-            logits=logits[0],
-            target_labels=target_labels[0],
-            live_targets=live_targets[0],
+        metrics_inputs = dict(
+            input_batch=dict(target_labels=input_batch["target_labels"]),
+            predict_outputs=dict(hidden_states=predictions["hidden_states"]),
         )
-        self.assertEqual(2.0 / 5, summaries["accuracy"].mean)
-        self.assertAlmostEqual(loss, summaries["loss"].mean)
-        self.assertEqual(5, summaries["loss"].weight)
-        self.assertAlmostEqual(jnp.exp(loss), summaries["perplexity"].mean, places=6)
-        per_token_loss = loss_dict["per_target_loss"] * live_targets
-        total_bytes = target_num_bytes.sum()
-        bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
-        self.assertAlmostEqual(bits_per_byte, summaries["bits_per_byte"].mean)
+
+        (ref_loss, ref_metrics), _ = functional(
+            **common_kwargs,
+            module=model,
+            inputs=metrics_inputs,
+            method="_metrics",
+        )
+        (test_loss, test_metrics), _ = functional(
+            **common_kwargs,
+            module=test_model,
+            inputs=metrics_inputs,
+            method="_metrics",
+        )
+        self.assertNestedAllClose(ref_loss, test_loss)
+        self.assertNestedAllClose(ref_metrics, test_metrics)
 
     def test_segment_ids(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
@@ -225,19 +206,8 @@ class ModelTest(TestCase):
         model_cfg = causal_lm.Model.default_config().set(decoder=decoder_cfg, name="model")
         model = model_cfg.instantiate(parent=None)
 
+        input_batch = self._get_input_batch(batch_size, seq_len, vocab_size)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
-
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
-        )
-        target_labels = jax.random.randint(
-            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
-        )
-        input_batch = dict(
-            input_ids=input_ids,
-            target_labels=target_labels,
-        )
-
         model_params = ref_model.initialize_parameters_recursively(init_key)
 
         ctx = InvocationContext(
@@ -255,12 +225,6 @@ class ModelTest(TestCase):
         # Results should be the same.
         segment_ids = jnp.ones(shape=[batch_size, seq_len], dtype=jnp.int32)
         positions = jnp.broadcast_to(jnp.arange(seq_len), shape=[batch_size, seq_len])
-        input_batch = dict(
-            input_ids=input_ids,
-            target_labels=target_labels,
-            input_segment_ids=segment_ids,
-            input_positions=positions,
-        )
         ctx = InvocationContext(
             name="root",
             parent=None,
@@ -271,19 +235,17 @@ class ModelTest(TestCase):
             prng_key=prng_key,
         )
         with set_current_context(ctx):
-            loss, _ = model.forward(input_batch=input_batch)
+            loss, _ = model.forward(
+                input_batch=dict(
+                    **input_batch, input_segment_ids=segment_ids, input_positions=positions
+                )
+            )
 
         self.assertAlmostEqual(ref_loss, loss)
 
         # Use a different attention mask.
         segment_ids = jnp.broadcast_to(jnp.arange(seq_len), shape=[batch_size, seq_len])
         positions = jnp.broadcast_to(jnp.arange(seq_len), shape=[batch_size, seq_len])
-        input_batch = dict(
-            input_ids=input_ids,
-            target_labels=target_labels,
-            input_segment_ids=segment_ids,
-            input_positions=positions,
-        )
         ctx = InvocationContext(
             name="root",
             parent=None,
@@ -294,37 +256,44 @@ class ModelTest(TestCase):
             prng_key=prng_key,
         )
         with set_current_context(ctx):
-            loss, _ = model.forward(input_batch=input_batch)
+            loss, _ = model.forward(
+                input_batch=dict(
+                    **input_batch, input_segment_ids=segment_ids, input_positions=positions
+                )
+            )
         self.assertNotAlmostEqual(ref_loss, loss)
 
-    def test_forward(self):
-        batch_size, seq_len, vocab_size = 3, 10, 10
+    @parameterized.product(scan_chunk=[None, 8, 10])
+    def test_forward(self, scan_chunk):
+        batch_size, seq_len, vocab_size = 3, 16, 10
 
         model_cfg = self._model_config(vocab_size=vocab_size, seq_len=seq_len)
-        model = model_cfg.set(name="metrics_test").instantiate(parent=None)
+        model = model_cfg.set(scan_chunk=scan_chunk, name="metrics_test").instantiate(parent=None)
 
+        input_batch = self._get_input_batch(batch_size, seq_len, vocab_size)
         prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
         model_params = model.initialize_parameters_recursively(init_key)
 
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
-        )
-        target_labels = jax.random.randint(
-            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
-        )
-        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
-
         # Ensure that forward outputs are consistent with metrics output.
         common_kwargs = dict(module=model, prng_key=prng_key, state=model_params, is_training=True)
-        (loss, aux), _ = functional(
-            **common_kwargs,
-            inputs=dict(input_batch=input_batch, return_aux=True),
-        )
+        invalid_seq_len = scan_chunk and seq_len % scan_chunk != 0
+        if invalid_seq_len:
+            ctx = self.assertRaises(ValueError)
+        else:
+            ctx = contextlib.nullcontext()
+        with ctx:
+            (loss, aux), _ = functional(
+                **common_kwargs,
+                inputs=dict(input_batch=input_batch, return_aux=True),
+            )
+        if invalid_seq_len:
+            return
+
         (ref_loss, metrics), _ = functional(
             **common_kwargs,
             inputs=dict(
-                input_batch=dict(target_labels=target_labels),
-                predict_outputs=dict(logits=aux["logits"]),
+                input_batch=dict(target_labels=input_batch["target_labels"]),
+                predict_outputs=dict(hidden_states=aux["hidden_states"]),
             ),
             method="_metrics",
         )
@@ -363,11 +332,17 @@ class ModelTest(TestCase):
             target_labels = jax.random.randint(
                 target_key, shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
             )
+            hidden_states = jax.random.normal(
+                target_key, shape=[batch_size, seq_len, model_cfg.decoder.dim]
+            )
             return functional(
                 module=model,
                 prng_key=forward_key,
                 state=model.initialize_parameters_recursively(init_key),
-                inputs=dict(input_batch=dict(target_labels=target_labels), predict_outputs={}),
+                inputs=dict(
+                    input_batch=dict(target_labels=target_labels),
+                    predict_outputs=dict(hidden_states=hidden_states),
+                ),
                 method="_metrics",
                 is_training=True,
                 drop_output_collections=(),
@@ -583,6 +558,82 @@ class CrossEntropyLossMetricsTest(TestCase):
         self.assertAlmostEqual(test_loss.value(), ref_loss)
         self.assertEqual(metrics["num_targets"], live_targets.sum())
 
+    def test_metrics(self):
+        layer = (
+            causal_lm.CrossEntropyLossMetrics.default_config()
+            .set(name="metrics_test")
+            .instantiate(parent=None)
+        )
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        metric_params = layer.initialize_parameters_recursively(init_key)
+        # Compute summaries after forwarding two batches.
+        # The second batch is a dummy one - should not affect metrics.
+        target_labels = jnp.array([[[1, 3, 0], [2, 3, 1]], [[0, 0, 0], [0, 0, 0]]])
+        logits = jnp.array(
+            [
+                [
+                    [
+                        [0.1, 0.9, 0.1, 0.1],  # Target 1; pred 1.
+                        [0.1, 0.1, 0.9, 0.1],  # Target 3; pred 2.
+                        [0.9, 0.1, 0.1, 0.1],  # Target 0; pred 0.
+                    ],  # Example 0.
+                    [
+                        [0.1, 0.1, 0.9, 0.1],  # Target 2; pred 2.
+                        [0.1, 0.1, 0.9, 0.1],  # Target 3; pred 2.
+                        [0.9, 0.1, 0.1, 0.1],  # Target 1; pred 0.
+                    ],  # Example 1.
+                ],  # Batch 0.
+                [
+                    [
+                        [0.1, 0.9, 0.1, 0.1],  # Target 0; pred 1.
+                        [0.1, 0.1, 0.9, 0.1],  # Target 0; pred 2.
+                        [0.9, 0.1, 0.1, 0.1],  # Target 0; pred 0.
+                    ],  # Example 0.
+                    [
+                        [0.1, 0.1, 0.9, 0.1],  # Target 0; pred 2.
+                        [0.1, 0.1, 0.9, 0.1],  # Target 0; pred 2.
+                        [0.9, 0.1, 0.1, 0.1],  # Target 0; pred 0.
+                    ],  # Example 1.
+                ],  # Batch 1.
+            ]
+        )
+
+        target_num_bytes = jnp.array([[3, 7], [0, 0]])
+        live_targets = jnp.array([[[1, 1, 0], [1, 1, 1]], [[0, 0, 0], [0, 0, 0]]])
+        accumulator = MetricAccumulator.default_config().instantiate()
+        for i in range(2):
+            _, output_collection = functional(
+                layer,
+                inputs=dict(
+                    input_batch=dict(
+                        target_labels=target_labels[i],
+                        live_targets=live_targets[i],
+                        target_num_bytes=target_num_bytes[i],
+                    ),
+                    predict_outputs=dict(logits=logits[i]),
+                    module_outputs=None,
+                ),
+                is_training=True,
+                prng_key=prng_key,
+                state=metric_params,
+            )
+            accumulator.update(output_collection.summaries)
+        summaries = accumulator.summaries()
+        # Only the first batch should affect results.
+        loss, loss_dict = cross_entropy(
+            logits=logits[0],
+            target_labels=target_labels[0],
+            live_targets=live_targets[0],
+        )
+        self.assertEqual(2.0 / 5, summaries["accuracy"].mean)
+        self.assertAlmostEqual(loss, summaries["loss"].mean)
+        self.assertEqual(5, summaries["loss"].weight)
+        self.assertAlmostEqual(jnp.exp(loss), summaries["perplexity"].mean, places=6)
+        per_token_loss = loss_dict["per_target_loss"] * live_targets
+        total_bytes = target_num_bytes.sum()
+        bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
+        self.assertAlmostEqual(bits_per_byte, summaries["bits_per_byte"].mean)
+
 
 class CompositeLossMetricsTest(TestCase):
     """Tests CompositeLossMetrics."""
@@ -720,7 +771,7 @@ class ModelAuxLossTest(TestCase):
         )
         (ref_loss, metrics), _ = metrics_fn(
             input_batch=dict(target_labels=target_labels),
-            predict_outputs=dict(logits=aux["logits"]),
+            predict_outputs=dict(hidden_states=aux["hidden_states"]),
         )
         self.assertAlmostEqual(loss, ref_loss)
         self.assertNestedAllClose(aux["metrics"], metrics)

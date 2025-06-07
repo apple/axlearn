@@ -1145,12 +1145,17 @@ class LASDecoderModel(BaseASRDecoderModel):
             cross_attention_data=input_batch["inputs"],
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
+        with child_context("decoder_compute_logits", module=self.decoder):
+            # TODO(axlearn-dev): Logits can consume over 10GB of HBM. Therefore,
+            # optimize it with `scan`, like in `causal_lm`, if needed.
+            logits = self.decoder.compute_logits(predict_outputs)
+
         # Filter out empty source sequences.
         # [batch_size].
         is_valid_example = (1 - input_batch["paddings"]).sum(axis=-1) > 0
         live_targets = (1 - target_paddings) * is_valid_example[:, None]
         loss, loss_dict = cross_entropy(
-            logits=predict_outputs["logits"],  # [batch_size, target_len, num_classes].
+            logits=logits,  # [batch_size, target_len, num_classes].
             target_labels=target_labels,  # [batch_size, target_len].
             live_targets=live_targets,
             z_loss_scale=cfg.z_loss_scale,
