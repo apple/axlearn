@@ -39,8 +39,9 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 # The specific value is not important, as long as clients and servers use the same port.
 _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
-# Verified the backwards compatibility works.
-_PATHWAYS_IMAGE_TAG = "jax-0.5.3"
+# There is no guarantee that this image will work with newer Jax releases.
+# However this image was also tested in Maxtext with Jax 0.6.1.
+_PATHWAYS_IMAGE_TAG = "jax-0.5.3-patch060625"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -293,6 +294,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
+        # This is required for GKE Workload Identity and Mac Jax Client support.
+        # TODO(samos123): Remove this once this becomes the default.
+        proxy_env = [{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}]
+
         return [
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
@@ -301,6 +306,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
                 args=cmd_args,
+                env=proxy_env,
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
             ),
             dict(
