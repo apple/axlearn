@@ -57,27 +57,52 @@ class CompilerOptionsTest(test_utils.TestCase):
         self.assertEqual(expected, compiler_options.infer_tpu_version(tpu_type))
 
     def test_xla_performance_flags(self):
-        self.assertEqual(
-            {},
-            compiler_options.infer_xla_performance_flags(
-                mesh_shape=[4, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v6 lite"
+        def sc_offload_enabled(flags: dict[str, str]) -> bool:
+            return flags.get("xla_tpu_enable_sparse_core_collective_offload_all_gather") == "true"
+
+        self.assertFalse(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[4, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v6 lite"
+                )
             ),
         )
-        self.assertNotEqual(
-            {},
-            compiler_options.infer_xla_performance_flags(
-                mesh_shape=[64, 4], mesh_axis_names=("fsdp", "model"), device_kind="TPU v6 lite"
+        self.assertTrue(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[64, 4], mesh_axis_names=("fsdp", "model"), device_kind="TPU v6 lite"
+                )
+            )
+        )
+        self.assertTrue(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[32, 8], mesh_axis_names=("fsdp", "model"), device_kind="TPU v6 lite"
+                )
             ),
         )
-        self.assertNotEqual(
-            {},
-            compiler_options.infer_xla_performance_flags(
-                mesh_shape=[32, 8], mesh_axis_names=("fsdp", "model"), device_kind="TPU v6 lite"
+        self.assertFalse(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[64, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v5p"
+                )
             ),
         )
-        self.assertEqual(
-            {},
-            compiler_options.infer_xla_performance_flags(
-                mesh_shape=[64, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v5p"
+        self.assertTrue(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[32, 8, 1],
+                    mesh_axis_names=("fsdp", "track", "model"),
+                    device_kind="TPU v6 lite",
+                )
+            ),
+        )
+        self.assertTrue(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[16, 8, 1],
+                    mesh_axis_names=("fsdp", "track", "model"),
+                    device_kind="TPU v6 lite",
+                )
             ),
         )
