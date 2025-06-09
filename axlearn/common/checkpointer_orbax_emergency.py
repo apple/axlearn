@@ -825,7 +825,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         time_diff = time.perf_counter() - start_t
         logging.info("Took %ss to restore emergency checkpoint from %s.", time_diff, cfg.dir)
 
-        logging.info("Saving a non-Orbax checkpoint from the restored Orbax state...")
+        logging.info("Saving an AXLearn tensorstore from the restored Orbax state...")
         save_axlearn_checkpoint(step, restored_state, cfg.dir, cfg.name)
 
         return step, restored_state
