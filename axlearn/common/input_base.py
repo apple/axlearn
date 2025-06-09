@@ -306,39 +306,6 @@ class Input(Module):
         """
         raise NotImplementedError(type(self))
 
-    def _validate_and_dispatch_element_spec(
-        self, element_spec: Nested[jax.ShapeDtypeStruct]
-    ) -> Nested[jax.ShapeDtypeStruct]:
-        """Validates that leaves have shape and dtype with consistent batch dims.
-
-        If input_dispatcher is configured and requires logical-to-physical dispatch, this also
-        modifies the element specs by replacing batch dim with `feed_physical_batch_size`.
-        """
-        leaves = jax.tree.leaves(element_spec)
-        for leaf in leaves:
-            if not (hasattr(leaf, "shape") and hasattr(leaf, "dtype")):
-                raise ValueError(f"element_spec() requires Tensor-like leaves, got: {leaf}.")
-            if len(leaf.shape) == 0:
-                raise ValueError(f"Expected leaves to have ndim >= 1, got: {leaf}.")
-            if leaf.shape[0] != leaves[0].shape[0]:
-                raise ValueError(f"Expected leaves to all have same batch dim, got: {leaf}.")
-
-        # Map the feed logical batch to physical batch.
-        if "input_dispatcher" in self.children and hasattr(
-            self.input_dispatcher, "feed_physical_batch_size"
-        ):
-            feed_batch_size = self.input_dispatcher.feed_physical_batch_size
-            element_spec = jax.tree.map(
-                lambda spec: jax.ShapeDtypeStruct((feed_batch_size, *spec.shape[1:]), spec.dtype),
-                element_spec,
-            )
-        else:
-            # Ensure that we always return ShapeDtypeStructs.
-            element_spec = jax.tree.map(
-                lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), element_spec
-            )
-        return element_spec
-
     @property
     def partition_spec(self) -> PartitionSpec:
         """Returns the input partition spec for `host_to_global_device_array` and for `jit`.
