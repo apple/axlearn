@@ -1083,15 +1083,15 @@ class TrainerTest(test_utils.TestCase):
             self.assertEqual(x.shape[0], global_logical_batch_size)
 
         def check_sharding(path: str, x: Tensor):
-            # It's useful to compare normalized PartitionSpecs with `_normalized_spec`, e.g.
-            # ("data",) vs "data"; so we disable the lint.
+            # It's useful to compare normalized PartitionSpecs with `_normalized_spec_for_aval`,
+            # e.g. ("data",) vs "data"; so we disable the lint.
             # pylint: disable=protected-access
             if x.shape[0] > 1:
                 jax.debug.inspect_array_sharding(
                     x,
                     callback=lambda sharding: self.assertEqual(
-                        partition_spec._normalized_spec(x.ndim),
-                        sharding.spec._normalized_spec(x.ndim),
+                        partition_spec._normalized_spec_for_aval(x.ndim),
+                        sharding.spec._normalized_spec_for_aval(x.ndim),
                         msg=f"{path=}, {sharding=}",
                     ),
                 )

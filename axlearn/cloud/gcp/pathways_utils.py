@@ -5,12 +5,13 @@
 import copy
 import logging
 import os
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, Union
 
 from absl import flags
 
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.utils import parse_kv_flags
 from axlearn.cloud.gcp.jobset_utils import (
     _ANNOTATION_NODE_SERVICE_ACCOUNT,
     _METADATA_GOOGLE_INTERNAL_IP,
@@ -20,7 +21,11 @@ from axlearn.cloud.gcp.jobset_utils import (
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
-from axlearn.common.compiler_options import infer_tpu_type
+from axlearn.common.compiler_options import (
+    default_xla_options,
+    infer_tpu_type,
+    xla_flags_from_options,
+)
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -34,9 +39,9 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 # The specific value is not important, as long as clients and servers use the same port.
 _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
-# Oldest available is jax-0.5.1, although axlearn is using jax-0.4.38.
-# Verified the backwards compatibility works.
-_PATHWAYS_IMAGE_TAG = "jax-0.5.1"
+# There is no guarantee that this image will work with newer Jax releases.
+# However this image was also tested in Maxtext with Jax 0.6.1.
+_PATHWAYS_IMAGE_TAG = "jax-0.5.3-patch060625"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -59,6 +64,20 @@ _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 
 
+def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
+    """Attempts to convert an XLA flag string value to int, then bool.
+
+    If conversion fails, returns the original string (stripped).
+    """
+    bool_mapper = {"true": True, "false": False}
+    stripped_value_str = value.strip()
+    try:
+        return int(stripped_value_str)
+    except ValueError:
+        # Not an integer, try boolean conversion.
+        return bool_mapper.get(stripped_value_str.lower(), stripped_value_str)
+
+
 def get_pathways_tpu_version(gke_machine_type: str) -> str:
     """Map from GKE machine type to TPU version.
 
@@ -78,6 +97,35 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
     return pathways_tpu_devices[gke_machine_type.lower()]
 
 
+def get_megascale_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    """Filters XLA options for those pertaining to Megascale.
+
+    Args:
+        xla_options: A dictionary of XLA options.
+
+    Returns:
+        A dictionary containing only Megascale-related XLA options
+        (those starting with 'megascale').
+    """
+    return {k: v for k, v in xla_options.items() if k.startswith("megascale")}
+
+
+def get_xla_options(
+    xla_options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    """Filters XLA options for those starting with 'xla_'.
+
+    Args:
+        xla_options: A dictionary of XLA options.
+
+    Returns:
+        A dictionary containing only XLA-specific options (those starting with 'xla').
+    """
+    return {k: v for k, v in xla_options.items() if k.startswith("xla_")}
+
+
 class PathwaysReplicatedJob(BaseReplicatedJob):
     """Builds a replicated jobspec for Pathways on TPU, to be used with JobSet API."""
 
@@ -92,6 +140,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
+        pathways_xla_flags: list[str] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
 
@@ -99,6 +148,17 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     def define_flags(cls, fv):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        # XLA flags and megascale flags have to be passed at jobset creation time.
+        # The XLA flags automatically get passed to the pathways proxy and the
+        # Megascale flags get passed to pathways workers. A single flag is used since
+        # the implementation details could change later.
+        flags.DEFINE_list(
+            "pathways_xla_flags",
+            [],
+            "Set XLA and Megascale flags. Defaults are set by compiler_options.py. "
+            "Example: 'xla_tpu_x=24,megascale_y=true'",
+            **common_kwargs,
+        )
         flags.DEFINE_string(
             "pathways_head_cpu",
             None,
@@ -127,12 +187,28 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         super().__init__(cfg, bundler=bundler)
         self._bundler = bundler
         self._inner: TPUReplicatedJob = cfg.inner.instantiate(bundler=self._bundler)
+        pathways_cfg: PathwaysReplicatedJob.Config = self.config
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
         if cfg.inner.enable_pre_provisioner:
             raise NotImplementedError("Pre-provisioner is currently not supported")
         self._is_single_head = True
+        xla_and_mxla_options = default_xla_options(
+            instance_type=self._tpu_type,
+            num_slices=cfg.inner.accelerator.num_replicas,
+            backend="tpu",
+        )
+        pathways_xla_flags = parse_kv_flags(pathways_cfg.pathways_xla_flags, delimiter="=")
+        for k, v in pathways_xla_flags.items():
+            k = k.lstrip("--")
+            v = parse_xla_flag_value(v)
+            xla_and_mxla_options[k] = v
+
+        # Needs to be passed to pathways-proxy.
+        self._xla_options = get_xla_options(xla_and_mxla_options)
+        # Needs to be passed as command arguments to each pathways-worker.
+        self._mxla_options = get_megascale_options(xla_and_mxla_options)
 
     def _update_env_list(self, env_list: list[dict], name: str, value: str):
         for env in env_list:
@@ -211,6 +287,17 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # be connected to one pathways instance (a pathways-worker replicated job).
         pathways_instance_count = cfg.accelerator.num_replicas if self._is_single_head else 1
 
+        cmd_args = [
+            f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            f"--server_port={_PATHWAYS_PROXY_PORT}",
+            f"--gcs_scratch_location={staging_location}",
+        ]
+        cmd_args.extend(xla_flags_from_options(self._xla_options).split())
+
+        # This is required for GKE Workload Identity and Mac Jax Client support.
+        # TODO(samos123): Remove this once this becomes the default.
+        proxy_env = [{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}]
+
         return [
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
@@ -218,11 +305,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
-                args=[
-                    f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-                    f"--server_port={_PATHWAYS_PROXY_PORT}",
-                    f"--gcs_scratch_location={staging_location}",
-                ],
+                args=cmd_args,
+                env=proxy_env,
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
             ),
             dict(
@@ -391,6 +475,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
         ]
+        mega_scale_args = xla_flags_from_options(self._mxla_options).split()
+        worker_container["args"].extend(mega_scale_args)
 
         worker_container["image"] = _PATHWAYS_SERVER_IMAGE
 

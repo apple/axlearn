@@ -16,6 +16,7 @@ from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
 from axlearn.common.flash_attention.gpu_paged_attention import GPUPagedAttention
 from axlearn.common.flash_attention.tpu_attention import LegacyTPUFlashAttention, TPUSplashAttention
 from axlearn.common.flash_attention.tpu_decoding import TPUDecoding
+from axlearn.common.flash_attention.tpu_paged_attention import TPUPagedAttention
 from axlearn.common.utils import Tensor
 
 BACKENDS = dict(
@@ -34,6 +35,11 @@ BACKENDS = dict(
     ],
     cpu=[ReferenceMHA],
     xla=[ReferenceMHA],
+)
+PAGED_ATTN_BACKENDS = dict(
+    tpu=[TPUPagedAttention],
+    gpu=[GPUPagedAttention],
+    cpu=[ReferenceMHA],
 )
 
 
@@ -106,12 +112,7 @@ def flash_attention_implementation(
 
     attn_configs = BACKENDS.get(backend, [])
     if page_tables is not None and is_decoding:
-        # TODO(senyut): add TPU backend integration and integrate backend properly
-        if backend not in ("gpu", "cpu"):
-            raise NotImplementedError("Paged Attention currently only supports CPU and GPU.")
-        # Override backend as GPUPagedAttention
-        if backend == "gpu":
-            attn_configs = [GPUPagedAttention]
+        attn_configs = PAGED_ATTN_BACKENDS.get(backend, [])
 
     common_cfg = dict(
         is_decoding=is_decoding,

@@ -236,6 +236,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
                 output_with_large_mel_floor,
             ),
             output_with_correct_mel_floor,
+            rtol=6e-4,
         )
 
     @set_threefry_partitionable(False)  # TODO(Luzy): update for threefry_partitionable True
@@ -279,7 +280,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
             ref_outputs = self._jit_forward(ref_layer, inputs, paddings)
             test_outputs = self._jit_forward(layer, inputs, paddings)
 
-        self.assertAllClose(ref_outputs["outputs"], test_outputs["outputs"])
+        self.assertAllClose(ref_outputs["outputs"], test_outputs["outputs"], rtol=5e-3)
         self.assertAllClose(ref_outputs["paddings"], test_outputs["paddings"])
 
     @parameterized.product(

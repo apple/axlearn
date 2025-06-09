@@ -8,7 +8,10 @@ from absl import logging
 
 
 def should_recreate_job(
-    tier: Optional[str], reservation: Optional[str], is_pending: bool = False
+    tier: Optional[str],
+    reservation: Optional[str],
+    processor_type: Optional[str],
+    is_pending: bool = False,
 ) -> bool:
     """Decides whether the job on `tier` using `reservation` should be recreated.
 
@@ -20,11 +23,17 @@ def should_recreate_job(
     Args:
         tier: Current scheduling tier.
         reservation: Current reservation status.
+        processor_type: The processor type (tpu, cpu, etc.) used for this job. If it is None,
+            we will never recreate the job.
         is_pending: Whether the job can be recreated with minimal impact to uptime.
 
     Returns:
         A verdict of recreate or not.
     """
+    if processor_type != "tpu":
+        # We only consider recreation for TPU jobs.
+        return False
+
     if str(tier) != "0" and reservation is not None:
         logging.info(
             "Bastion tier is %s but reservation is %s. Job resources will be recreated.",

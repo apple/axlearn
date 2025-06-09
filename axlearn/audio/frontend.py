@@ -8,13 +8,13 @@
 
 import functools
 from collections.abc import Sequence
-from functools import partial
 from typing import Callable, Optional, Protocol
 
 import jax.numpy as jnp
 
 from axlearn.audio.frontend_utils import (
     WindowType,
+    cast_for_rfft,
     frame,
     frame_paddings,
     linear_to_log_mel_spectrogram,
@@ -114,7 +114,7 @@ def _log_mel_spectrogram(
     )
 
     def fn(fft: Tensor, *, dtype: jnp.dtype) -> Tensor:
-        # [batch_size, num_frames, fft_size] -> [batch_size, num_frames, fft_size // 2 + 1].
+        # [batch_size, num_frames, fft_size // 2 + 1].
         spectrogram = magnitude_spectrogram(fft, dtype=dtype)
         # Convert to log-mel. [batch, num_frames, num_filters].
         return linear_to_log_mel_spectrogram(
@@ -193,7 +193,7 @@ class LogMelFrontend(BaseFrontend):
         if cfg.fft is not None:
             self._fft = cfg.fft.set(n=fft_size).instantiate()
         else:
-            self._fft = partial(jnp.fft.fft, n=fft_size)
+            self._fft = lambda x: jnp.fft.rfft(cast_for_rfft(x), n=fft_size)
 
         spectrogram = maybe_set_config(
             cfg.spectrogram,

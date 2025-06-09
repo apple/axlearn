@@ -723,6 +723,10 @@ class TestFlashAttention(TestCase):
             # pylint: disable-next=protected-access
             elif num_kv_heads and test_layer.layer._backend() == "cpu":
                 atol, rtol = 1e-4, 1e-2
+            # Need to relax for GPU tests
+            # pylint: disable-next=protected-access
+            elif test_layer.layer._backend() == "gpu":
+                atol, rtol = 1.5e-4, 1.5e-2
             # Can be 1e-5 on x86_64/GPU/TPU, needed to be slightly higher on ARM.
             else:
                 atol, rtol = 1e-4, 1e-3

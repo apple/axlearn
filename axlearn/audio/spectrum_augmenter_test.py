@@ -217,7 +217,7 @@ class SpectrumAugmenterTest(TestCase):
             dict(inputs=inputs, paddings=paddings), is_training=True, **kwargs
         )
         # pylint: disable-next=import-outside-toplevel
-        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt  # pytype: disable=import-error
 
         _, plots = plt.subplots(outputs.shape[0], 1)
         for plot, output in zip(plots, outputs):

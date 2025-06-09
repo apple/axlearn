@@ -46,6 +46,7 @@ import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax._src.ad_checkpoint import name_p
+from jax._src.array import local_to_global_shape
 from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
@@ -816,8 +817,7 @@ def data_partition_type_to_spec(
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
 
-# TODO(markblee): Rename to `host_to_global_array` for consistency with `global_to_host_array`.
-def host_to_global_device_array(
+def host_to_global_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
     partition: Union[PartitionSpec, DataPartitionType] = DataPartitionType.FULL,
@@ -853,7 +853,7 @@ def host_to_global_device_array(
     )
     process_count = jax.process_count()
 
-    def make_gda(x: np.ndarray, partition_spec: PartitionSpec):
+    def make_array(x: np.ndarray, partition_spec: PartitionSpec):
         if partition == DataPartitionType.FULL:
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
@@ -868,7 +868,44 @@ def host_to_global_device_array(
             global_shape=global_shape,
         )
 
-    return jax.tree.map(make_gda, host_arrays, partition_specs)
+    return jax.tree.map(make_array, host_arrays, partition_specs)
+
+
+def host_to_global_specs(
+    host_arrays: Nested[jax.ShapeDtypeStruct], *, partition: PartitionSpec
+) -> Nested[jax.ShapeDtypeStruct]:
+    """Converts the given host-local specs to global array specs.
+
+    The API has the same semantics as `host_to_global_array`, which takes Tensors instead of specs.
+    Please refer to `host_to_global_array` docstring for details.
+    """
+    mesh = thread_resources.env.physical_mesh
+    partition_specs = complete_partition_spec_tree(
+        jax.tree_util.tree_structure(host_arrays),
+        data_partition_type_to_spec(partition),
+    )
+
+    def make_array_spec(x: jax.ShapeDtypeStruct, partition_spec: PartitionSpec):
+        # `local_to_global_shape` is also used by `jax.make_array_from_process_local_data`.
+        # It uses the process indices from devices in the mesh, which allows it to be compatible
+        # with the fake devices used in AOT.
+        sharding = jax.sharding.NamedSharding(mesh, partition_spec)
+        global_shape = local_to_global_shape(sharding, local_shape=x.shape)
+        # We use the sharding from `partition`, as host-local arrays do not have sharding.
+        return jax.ShapeDtypeStruct(shape=global_shape, dtype=x.dtype, sharding=sharding)
+
+    return jax.tree.map(make_array_spec, host_arrays, partition_specs)
+
+
+def host_to_global_device_array(*args, **kwargs) -> Nested[Tensor]:
+    """A deprecated alias for `host_to_global_array`.
+
+    Please use `host_to_global_array` instead.
+    """
+    logging.log_first_n(
+        logging.WARN, "host_to_global_device_array is renamed to host_to_global_array.", 1
+    )
+    return host_to_global_array(*args, **kwargs)
 
 
 # TODO(markblee): Remove partition arg.

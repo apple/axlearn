@@ -19,6 +19,8 @@ num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
 # Set LIBTPU_INIT_ARGS before importing jax!
 tpu_flags_exc = None
 try:
+    # This does NOT work for Pathways. XLA flags are set on the pathways-proxy.
+    # Megascale flags have to be set on the pathways-workers as arguments.
     libtpu_init_options = compiler_options.default_xla_options(
         instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
     )
@@ -113,6 +115,12 @@ def setup():
 
     with _init_context():
         if FLAGS.jax_backend == "proxy":
+            # AXLearn assumes rbg PRNG implementation and restore from checkpoint
+            # will fail on pathways if this isn't set. This is due shape of [4]
+            # being hardcoded here:
+            # https://github.com/apple/axlearn/blob/8bb4421e62c815ef9f1ba3679c3277b8bbc6a449/axlearn/common/trainer.py#L330
+            jax.config.update("jax_default_prng_impl", "rbg")
+
             # pylint: disable-next=import-error,import-outside-toplevel
             import pathwaysutils  # pytype: disable=import-error
 
