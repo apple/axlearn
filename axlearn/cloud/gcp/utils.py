@@ -162,16 +162,12 @@ def validate_region_matching(gcs_bucket_name: str, config_zone: str):
 
     # Compare lower-cased regions, warn if mismatched and prompt for confirmation
     if gcs_bucket_region.lower() != config_region.lower():
-        warning_message = (
-            f"Region mismatch: GCS bucket '{gcs_bucket_name}' is in '{gcs_bucket_region}', "
-            f"but the config region is '{config_region}'.\n"
-            f"Do you want to proceed despite the region mismatch? (yes/no): "
+        logging.warning(
+            "Region mismatch: GCS bucket '(%s)' is in '(%s)', " "but the config region is '(%s)'.",
+            gcs_bucket_name,
+            gcs_bucket_region,
+            config_region,
         )
-        user_response = input(warning_message).lower()
-        if user_response not in ("yes", "y"):
-            raise KeyboardInterrupt("Operation aborted by user due to region mismatch.")
-        else:
-            logging.warning("Proceeding despite region mismatch as confirmed by user.")
     else:
         logging.info(
             "Region match: GCS bucket region (%s) matches config region (%s).",

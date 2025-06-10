@@ -381,7 +381,9 @@ class BaseBastionManagedJob(FlagConfigurable):
         cfg: BaseBastionManagedJob.Config = self.config
         from_vm = running_from_vm()
 
-        validate_region_matching(gcp_settings("private_bucket"), gcp_settings("zone"))
+        output_dir = cfg.output_dir
+        bucket_name = output_dir.split("//")[1].split("/")[0]
+        validate_region_matching(bucket_name, gcp_settings("zone"))
 
         if not from_vm:
             os.environ["BASTION_TIER"] = "disabled"

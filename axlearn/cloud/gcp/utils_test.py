@@ -5,7 +5,6 @@
 import contextlib
 import os
 import tempfile
-import pytest
 from unittest import mock
 
 from absl import app
@@ -55,22 +54,18 @@ class UtilsTest(parameterized.TestCase):
             bucket_name="test-bucket0123",
             bucket_loc="us-east5",
             config_zone="us-east5-b",
-            user_input=None,
         ),
         dict(
             bucket_name="test-bucket0123",
             bucket_loc="US",
             config_zone="us-east5-b",
-            user_input="no",
         ),
         dict(
             bucket_name="test-bucket0123",
             bucket_loc="US",
             config_zone="us-east5-b",
-            user_input="yes",
         ),
     )
-    @mock.patch("builtins.input")
     @mock.patch("google.cloud.storage.Client")
     @mock.patch("axlearn.cloud.gcp.utils.logging.info")
     @mock.patch("axlearn.cloud.gcp.utils.logging.warning")
@@ -80,11 +75,9 @@ class UtilsTest(parameterized.TestCase):
         mock_logging_warning,
         mock_logging_info,
         mock_storage_client,
-        mock_input,
         bucket_name,
         bucket_loc,
         config_zone,
-        user_input,
     ):
         mock_bucket = mock.Mock()
         mock_bucket.name = bucket_name
@@ -93,9 +86,6 @@ class UtilsTest(parameterized.TestCase):
         config_region = f"{segments[0]}-{segments[1]}"
 
         mock_storage_client.return_value.get_bucket.return_value = mock_bucket
-
-        if user_input is not None:
-            mock_input.return_value = user_input
 
         if bucket_loc == config_region:
             utils.validate_region_matching(bucket_name, config_zone)
@@ -107,18 +97,15 @@ class UtilsTest(parameterized.TestCase):
             )
             mock_logging_warning.assert_not_called()
         else:
-            if user_input.lower() in ("yes", "y"):
-                utils.validate_region_matching(bucket_name, config_zone)
-                mock_logging_warning.assert_called_once_with(
-                    "Proceeding despite region mismatch as confirmed by user."
-                )
-                mock_logging_info.assert_not_called()
-            else:
-                with pytest.raises(KeyboardInterrupt) as excinfo:
-                    utils.validate_region_matching(bucket_name, config_zone)
-                assert str(excinfo.value) == "Operation aborted by user due to region mismatch."
-                mock_logging_info.assert_not_called()
-                mock_logging_warning.assert_not_called()
+            utils.validate_region_matching(bucket_name, config_zone)
+            mock_logging_warning.assert_called_once_with(
+                "Region mismatch: GCS bucket '(%s)' is in '(%s)', "
+                "but the config region is '(%s)'.",
+                bucket_name,
+                bucket_loc,
+                config_region,
+            )
+            mock_logging_info.assert_not_called()
 
     @parameterized.product(
         running_from_gcp=[False, True],
