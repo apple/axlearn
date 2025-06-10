@@ -98,7 +98,6 @@ from axlearn.common.attention_bias import (
     CausalAttentionBias,
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
-    SlidingWindowAttentionBias,
     as_attention_bias,
     causal_mask,
     make_segment_mask,
@@ -122,8 +121,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache, KVState
-from axlearn.common.kv_cache.kv_cache import KVCache
-from axlearn.common.kv_cache.sliding_window_kv_cache import SlidingWindowKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache as _KVCache
 from axlearn.common.layers import (
     Dropout,
     LayerNorm,
@@ -176,6 +174,12 @@ class ForwardMode(enum.Enum):
     FORWARD = 0
     INIT_STATES = 1
     EXTEND_STEP = 2
+
+
+# This is to prevent golden config changes for configs previously using
+# "axlearn.common.attention.KVCache".
+class KVCache(_KVCache):
+    pass
 
 
 class BaseTransformerLayer(BaseLayer):
@@ -1994,31 +1998,6 @@ class MultiheadAttention(BaseLayer):
         """The config for the default function used to compute the key scale."""
 
         return config_for_function(constant_scale_fn).set(value=1)
-
-
-def enable_sliding_window_attention(
-    cfg: MultiheadAttention.Config, sliding_window_size: int
-) -> MultiheadAttention.Config:
-    """Enable sliding window attention.
-
-    Args:
-        cfg: MultiheadAttention Config.
-        sliding_window_size: Sliding window size.
-
-    Returns:
-        The in-place modified MultiheadAttention Config with sliding window attention enabled.
-    """
-    if cfg.kv_cache is not None:
-        cache_dtype = cfg.kv_cache.cache_dtype
-    else:
-        cache_dtype = None
-    cfg.set(
-        kv_cache=SlidingWindowKVCache.default_config().set(
-            cache_dtype=cache_dtype, cached_kv_length=sliding_window_size
-        ),
-        mask=SlidingWindowAttentionBias.default_config(sliding_window_size=sliding_window_size),
-    )
-    return cfg
 
 
 def compute_gqa_logits(q_proj: Tensor, k_proj: Tensor) -> Tensor:

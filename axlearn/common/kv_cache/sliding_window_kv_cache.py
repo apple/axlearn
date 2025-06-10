@@ -2,14 +2,19 @@
 
 """A KVCache layer that Manages a fixed cached_kv_length kv_cache using a FIFO approach."""
 
+import typing
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
 
+from axlearn.common.attention_bias import SlidingWindowAttentionBias
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested, Tensor, sequence_mask
+
+if typing.TYPE_CHECKING:
+    from axlearn.common.attention import MultiheadAttention
 
 
 class SlidingWindowKVCache(BaseKVCache):
@@ -111,3 +116,28 @@ class SlidingWindowKVCache(BaseKVCache):
         return updated_state, self.Output(
             k_proj=new_key, v_proj=new_value, key_positions=new_key_positions
         )
+
+
+def enable_sliding_window_attention(
+    cfg: "MultiheadAttention.Config", sliding_window_size: int
+) -> "MultiheadAttention.Config":
+    """Enable sliding window attention.
+
+    Args:
+        cfg: MultiheadAttention Config.
+        sliding_window_size: Sliding window size.
+
+    Returns:
+        The in-place modified MultiheadAttention Config with sliding window attention enabled.
+    """
+    if cfg.kv_cache is not None:
+        cache_dtype = cfg.kv_cache.cache_dtype
+    else:
+        cache_dtype = None
+    cfg.set(
+        kv_cache=SlidingWindowKVCache.default_config().set(
+            cache_dtype=cache_dtype, cached_kv_length=sliding_window_size
+        ),
+        mask=SlidingWindowAttentionBias.default_config(sliding_window_size=sliding_window_size),
+    )
+    return cfg
