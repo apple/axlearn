@@ -73,8 +73,7 @@ def setup(
             if distributed_coordinator is None and num_processes is None and process_id is None:
                 logging.info(
                     "Skipping distributed initialization for %s backend, "
-                    "since distributed_coordinator, num_processes, and process_id "
-                    "are all None.",
+                    "since distributed_coordinator, num_processes, and process_id are all None.",
                     jax_backend,
                 )
                 return
