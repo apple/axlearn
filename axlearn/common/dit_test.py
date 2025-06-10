@@ -21,7 +21,7 @@ from absl.testing import absltest, parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
 from torch import nn
 
-from axlearn.common.attention import CausalAttentionBias, enable_sliding_window_attention
+from axlearn.common.attention import CausalAttentionBias
 from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.dit import (
     AdaptiveLayerNormModulation,
@@ -32,6 +32,7 @@ from axlearn.common.dit import (
     LabelEmbedding,
     TimeStepEmbedding,
 )
+from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
 from axlearn.common.layers import LayerNormStateless
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
