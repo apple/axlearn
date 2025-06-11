@@ -91,6 +91,10 @@ ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.ht
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
+RUN apt-get update -y && apt-get install -y libc++-19-dev
+RUN echo "no caching please"
+COPY jaxlib-0.5.3.dev20250610-cp310-cp310-manylinux2014_x86_64.whl .
+RUN pip install jaxlib-0.5.3.dev20250610-cp310-cp310-manylinux2014_x86_64.whl
 # RUN pip install -f --force-reinstall git+https://github.com/google/orbax.git@test_765598157#subdirectory=checkpoint
 
 
