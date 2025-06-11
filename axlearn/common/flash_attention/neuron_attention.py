@@ -17,6 +17,7 @@ from neuronxcc.nki.kernels.attention import flash_attn_bwd, flash_fwd
 
 from axlearn.common.attention_bias import BaseAttentionBias, CausalAttentionBias, split
 from axlearn.common.flash_attention.common import BaseFlashAttention, repeat_kv_heads
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested
 
 # pytype: enable=import-error
@@ -227,13 +228,12 @@ class NeuronFlashAttention(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         # TODO(hanzhi-zhou): neuron may error out for unsupported sequence length and head size.
         # Should we add checks for them and fallback to XLA?
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
