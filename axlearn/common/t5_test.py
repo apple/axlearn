@@ -325,6 +325,15 @@ class T5EncoderDecoderModelTest(TestCase):
             ref_inputs=ref_inputs,
             parameters_from_ref_layer=parameters_from_torch_layer,
         )
+        params_from_ref = parameters_from_torch_layer(ref, dst_layer=layer)
+        test_logits = F(
+            layer,
+            prng_key=jax.random.PRNGKey(123),
+            state=params_from_ref,
+            inputs=dict(predictions=test_aux),
+            is_training=False,
+            method="compute_logits",
+        )[0]
         # Ignore out-of-class labels, as well as padding (0) labels.
         self.assertEqual(cfg.encoder.pad_token_id, 0)
         self.assertEqual(cfg.decoder.pad_token_id, 0)
@@ -333,7 +342,7 @@ class T5EncoderDecoderModelTest(TestCase):
             test_inputs["target_labels"] < vocab_size,
         )
         self.assertNestedAllClose(
-            test_aux["logits"] * target_label_mask[:, :, None],
+            test_logits * target_label_mask[:, :, None],
             as_tensor(ref_outputs.logits) * target_label_mask[:, :, None],
             atol=1e-4,
         )
