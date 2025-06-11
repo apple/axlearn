@@ -872,8 +872,6 @@ class TPUFlashAttention(BaseFlashAttention):
         block_size = self.cfg.tpu_block_size
         if not self._check_block_size(input_batch=input_batch, block_size=block_size):
             return False
-        if self.cfg.dropout_rate != 0.0:
-            return self._log_unsupported("dropout is not supported.")
         query: Tensor = input_batch["query"]
         if jax.config.jax_default_matmul_precision == "highest" and query.dtype == jnp.bfloat16:
             # Pallas is having some trouble compiling bfloat with precision default is the highest
@@ -923,11 +921,19 @@ class TPUSplashAttention(TPUFlashAttention):
         input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
+        cfg = self.config
         bias: BaseAttentionBias = input_batch["bias"]
-        mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         value: Tensor = input_batch["value"]
+        prng_key = input_batch.get("prng_key", None)
+
+        if cfg.dropout_rate > 0.0 and prng_key is None:
+            raise ValueError(
+                "TPU SplashAttention requires a prng_key to be provided when dropout is enabled."
+            )
+
+        mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
         seg_ids = None
         if segment_id_tensor is not None:
@@ -952,19 +958,67 @@ class TPUSplashAttention(TPUFlashAttention):
             use_fused_bwd_kernel=True,
         )
         splash_mask = _to_splash_mask(mask, mask_shape=(query.shape[2], key.shape[2]))
+
+        num_heads = query.shape[1]
+        mha_mask = splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads)
+
         num_heads = query.shape[1]
         kernel = splash_attention_kernel.make_splash_mha(
-            mask=splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads),
+            mask=mha_mask,
             block_sizes=block_sizes,
             # TODO(dhwang2): support "seq" and "model" shard.
             head_shards=1,
             q_seq_shards=1,
+            dropout_rate=cfg.dropout_rate,
             interpret=self.cfg.interpret,
             residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
         )
-        kernel = jax.vmap(kernel)
-        context = kernel(q=query, k=key, v=value, segment_ids=seg_ids)
+        p_kernel = functools.partial(kernel, prng_key=prng_key)
+        vp_kernel = jax.vmap(p_kernel, axis_name="batch")
+        context = vp_kernel(q=query, k=key, v=value, segment_ids=seg_ids)
         return jnp.einsum("bnth->btnh", context)
+
+    def get_dropout_mask(
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
+    ) -> Tensor:
+        """Auxiliary function to get the dropout mask for debugging purposes.
+        It will return a boolean dropout mask of shape [batch, num_heads, seq_len, seq_len].
+        """
+        cfg = self.config
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        prng_key = input_batch.get("prng_key", None)
+
+        if cfg.dropout_rate > 0.0 and prng_key is None:
+            raise ValueError(
+                "TPU SplashAttention requires a prng_key to be provided when dropout is enabled."
+            )
+
+        # Switch num_heads and seq_len axes.
+        query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
+        key = jnp.einsum("bsnh->bnsh", key)
+
+        block_size = self.cfg.tpu_block_size
+        block_sizes = splash_attention_kernel.BlockSizes(
+            block_q=block_size,
+            block_kv=block_size,
+            block_kv_compute=block_size,
+            block_q_dkv=block_size,
+            block_kv_dkv=block_size,
+            block_kv_dkv_compute=block_size,
+            use_fused_bwd_kernel=True,
+        )
+
+        kernel = functools.partial(
+            splash_attention_kernel.get_dropout_mask,
+            prng_key=prng_key,
+            block_sizes=block_sizes,
+            dropout_rate=cfg.dropout_rate,
+        )
+        v_kernel = jax.vmap(kernel, axis_name="batch")
+        dropout_mask = v_kernel(query, key)
+        return dropout_mask
 
 
 class LegacyTPUFlashAttention(TPUFlashAttention):
@@ -981,6 +1035,8 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         key: Tensor = input_batch["key"]
         if query.dtype != key.dtype:
             return self._log_unsupported(f"{query.dtype=} != {key.dtype=}")
+        if self.cfg.dropout_rate != 0.0:
+            return self._log_unsupported("dropout is not supported.")
         logging.info("Using %s.", self.name())
         return True
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -129,6 +130,8 @@ class TestFlashAttention(TestCase):
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
         matmul_precision=[None, "highest"],
+        dropout_rate=[0.0, 0.1, 0.2],
+        head_group_size=[2, 1],
     )
     def test_forward_and_backward(
         self,
@@ -143,6 +146,8 @@ class TestFlashAttention(TestCase):
         q_dtype,
         kv_dtype,
         matmul_precision,
+        dropout_rate,
+        head_group_size,
     ):
         if jax.default_backend() == "cpu":
             # TODO(dhwang2): this has been broken for a while on CPU.
@@ -151,37 +156,48 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
         if kv_dtype == jnp.float32 and q_dtype == jnp.bfloat16:
             pytest.skip(reason="KV should not have a higher precision than Q.")
+        if dropout_rate > 0.0 and (attention_bias_type is not None or per_head_dim % 128 != 0):
+            pytest.skip(
+                reason="Dropout is only supported with SplashAttention (which requires \
+                            no bias, and per_head_dim being a multiple of 128.)"
+            )
         # pylint: disable=protected-access
         fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
+        num_kv_heads = num_heads // head_group_size
         q, k, v, bias = generate_attention_data(
             batch_size,
             int(kv_len * query_length_multiplier),
             kv_len,
             num_heads,
             per_head_dim,
+            num_kv_heads,
             mask_fn=mask,
             attention_bias_type=attention_bias_type,
             with_segment_ids=with_segment_ids,
             dtype=q_dtype,
             kv_dtype=kv_dtype,
         )
+        tpu_block_size = 128
         cfg = dict(
             interpret=jax.default_backend() == "cpu",
             softmax_scale=per_head_dim**-0.5,
-            tpu_block_size=128,
+            tpu_block_size=tpu_block_size,
+            dropout_rate=dropout_rate,
         )
         ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
         fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
+        prng_key = jax.random.PRNGKey(66)
         input_batch = dict(
             query=q,
             key=k,
             value=v,
             bias=bias,
+            prng_key=prng_key,
         )
 
         with jax.default_matmul_precision(matmul_precision) if matmul_precision else nullcontext():
             err = matmul_precision == "highest" and q_dtype == jnp.bfloat16
-            with self.assertRaises(RuntimeError) if err else nullcontext():
+            with self.assertRaises(ValueError) if err else nullcontext():
                 is_supported = fn.is_supported(input_batch=input_batch)
             if err:
                 return
@@ -198,6 +214,10 @@ class TestFlashAttention(TestCase):
 
             # Compare outputs.
             out = fn(input_batch)
+            if dropout_rate > 0.0:
+                # Get the dropout mask from pallas function as the reference.
+                dropout_mask = fn.get_dropout_mask(input_batch)
+                ref_fn = partial(ref_fn, dropout_mask=dropout_mask)
             ref_out = ref_fn(input_batch)
             self.assertNestedAllClose(out, ref_out, atol=0.05)
 
@@ -207,7 +227,7 @@ class TestFlashAttention(TestCase):
                 return f(full_batch).mean()
 
             float_inputs = dict(query=q, key=k, value=v)
-            aux_inputs = dict(bias=bias)
+            aux_inputs = dict(bias=bias, prng_key=prng_key)
             grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
             ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
             self.assertNestedAllClose(grad_out, ref_grad_out, atol=0.05)
