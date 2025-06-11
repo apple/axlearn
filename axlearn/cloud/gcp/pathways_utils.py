@@ -246,6 +246,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
         self._update_env_list(env_list, "TPU_SKIP_MDS_QUERY", "true")
+        self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
 
         env_list.append(
             {
