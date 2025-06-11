@@ -159,6 +159,9 @@ cython_debug/
 # Vscode
 .vscode/
 
+# Zed
+.zed/
+
 # Weights & Biases
 wandb/
 
