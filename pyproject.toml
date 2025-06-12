@@ -44,7 +44,6 @@ core = [
     "seqio==0.0.18",  # used for inputs
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.10.2", # for AQT, param converter and adapter.
-    "orbax-checkpoint==0.11.14", # dependency of flax so need to pin it under core.
     "prefixed==0.9.0", # For formatting file sizes, param counts, etc.
     "grain==0.2.7", # Grain input processing. 0.2.6 onwards supports macos.
 ]
@@ -59,6 +58,7 @@ apple-silicon = [
 dev = [
     "axlearn[core]",  # core
     "axlearn[audio]",  # audio tests
+    "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
     "einops==0.8.0",  # for unittests only. Do not use it in core impl because it's not thread-safe.
     "evaluate",
@@ -150,6 +150,11 @@ mmau = [
     "google-cloud-aiplatform==1.50.0",
     "transformers==4.51.3",
     "huggingface-hub==0.24.6",
+]
+# Orbax checkpointing.
+orbax = [
+    "humanize==4.10.0",
+    "orbax-checkpoint==0.11.14",
 ]
 # Audio dependencies.
 audio = [
