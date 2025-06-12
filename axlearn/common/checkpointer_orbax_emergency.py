@@ -754,7 +754,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         # including step time in total blocking time.
         start_t = time.perf_counter()
         self._get_tensor_manager(state_with_tensors).save(
-            step=step, args=ocp.args.PyTreeSave(item=state_with_tensors)
+            step=step, args=ocp.args.Composite(state=ocp.args.PyTreeSave(item=state_with_tensors))
         )
         time_diff = time.perf_counter() - start_t
         if self._composite_save_policy(step=step, evaler_summaries=self._eval_summaries):
@@ -811,7 +811,9 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
 
         restored_state_with_tensors = tensor_manager.restore(
             step=step,
-            args=ocp.args.PyTreeRestore(item=self._get_abstract_state(state_with_tensors)),
+            args=ocp.args.Composite(
+                state=ocp.args.PyTreeRestore(item=self._get_abstract_state(state_with_tensors))
+            ),
         )
         # Merge non-tensor and tensor states by replacing leaves of the non-tensor Pytree with the
         # not-None leaves of the tensor Pytree.
@@ -829,7 +831,8 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         self._non_tensor_manager.wait_until_finished()
         self._tensor_manager.wait_until_finished()
 
-    def stop(self):
+    def stop(self, *, has_exception: bool = False):
         """See `BaseCheckpointer.stop` for details."""
-        self._non_tensor_manager.stop()
-        self._tensor_manager.close()
+        self._non_tensor_manager.stop(has_exception=has_exception)
+        if self._tensor_manager:
+            self._tensor_manager.close()
