@@ -1220,9 +1220,7 @@ class Input(input_base.Input):
         """Returns the tfds element spec."""
 
         return jax.tree.map(
-            lambda tf_spec: jax.ShapeDtypeStruct(
-                shape=tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype
-            ),
+            lambda tf_spec: jax.ShapeDtypeStruct(tf_spec.shape, dtype=tf_spec.dtype.as_numpy_dtype),
             self.dataset().element_spec,
         )
 
