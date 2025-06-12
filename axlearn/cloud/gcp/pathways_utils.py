@@ -261,6 +261,30 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             }
         )
 
+        # pylint: disable=line-too-long
+        env_list.append(
+            {
+                "name": "NUM_REPLICAS",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
+                    }
+                },
+            }
+        )
+        # pylint: enable=line-too-long
+
+        env_list.append(
+            {
+                "name": "REPLICA_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+                    }
+                },
+            }
+        )
+
         head_container["env"] = env_list
 
         cpu_req = f"{float(self.config.pathways_head_cpu) * 1000}m"

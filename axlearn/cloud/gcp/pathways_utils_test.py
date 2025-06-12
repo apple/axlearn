@@ -84,6 +84,33 @@ class PathwaysReplicatedJobTest(TestCase):
                 node_selector.get(_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY),
             )
 
+            head_container = pod_spec["containers"][0]
+            env_vars = set()
+            for env_pair in head_container["env"]:
+                env_vars.add(env_pair["name"])
+                # pylint: disable=line-too-long
+                if env_pair["name"] == "NUM_REPLICAS":
+                    self.assertEqual(
+                        env_pair["valueFrom"],
+                        {
+                            "fieldRef": {
+                                "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
+                            }
+                        },
+                    )
+                # pylint: enable=line-too-long
+                if env_pair["name"] == "REPLICA_ID":
+                    self.assertEqual(
+                        env_pair["valueFrom"],
+                        {
+                            "fieldRef": {
+                                "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+                            }
+                        },
+                    )
+
+            self.assertTrue({"NUM_REPLICAS", "REPLICA_ID"}.issubset(env_vars))
+
             # Check pathways-proxy container args for XLA flags.
             proxy_container = None
             for container in pod_spec["initContainers"]:
