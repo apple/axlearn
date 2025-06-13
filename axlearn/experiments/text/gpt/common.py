@@ -722,6 +722,10 @@ def get_trainer_config_fn(
             cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
             cfg.checkpointer.keep_last_n = 3
         elif checkpointer == "OrbaxEmergencyCheckpointer":
+            # Save the data iterator
+            # Note this seems to be broken with fuji model. Seeing these errors:
+            # SentencepieceOp is stateful
+            # cfg.save_input_iterator = True
             # Prevent global dependency on Orbax.
             # pylint: disable-next=import-outside-toplevel
             from axlearn.common.checkpointer_orbax_emergency import OrbaxEmergencyCheckpointer
