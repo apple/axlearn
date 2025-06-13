@@ -83,7 +83,7 @@ ENTRYPOINT ["/opt/apache/beam/boot"]
 
 FROM base AS tpu
 
-ARG EXTRAS=
+ARG EXTRAS=orbax
 
 ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
@@ -94,7 +94,7 @@ COPY . .
 # RUN pip install -f --force-reinstall git+https://github.com/google/orbax.git@test_765598157#subdirectory=checkpoint
 # Includes 8k fix in orbax on top of 0.11.13
 # RUN pip install -U "orbax-checkpoint @ git+https://github.com/samos123/orbax.git@refs/pull/1/head#subdirectory=checkpoint"
-RUN pip install -U "orbax-checkpoint @ git+https://github.com/google/orbax.git@main#subdirectory=checkpoint"
+# RUN pip install -U "orbax-checkpoint @ git+https://github.com/google/orbax.git@main#subdirectory=checkpoint"
 
 
 ################################################################################
