@@ -647,18 +647,13 @@ class CompositeLossMetricsTest(TestCase):
                 del kwargs
                 return WeightedScalar(input_batch[self.name], 1.0), {}
 
-        class FixedLossWeights(causal_lm.CompositeLossWeights):
-            def forward(self, child_metrics):
-                del child_metrics
-                return loss_weights
-
         cfg = causal_lm.CompositeLossMetrics.default_config().set(
             name="test",
             metrics={
                 "test0": DummyMetrics.default_config(),
                 "test1": DummyMetrics.default_config(),
             },
-            loss_weights=FixedLossWeights.default_config(),
+            loss_weights=loss_weights,
         )
 
         metrics = cfg.instantiate(parent=None)
@@ -673,14 +668,17 @@ class CompositeLossMetricsTest(TestCase):
             is_training=True,
         )
         self.assertAlmostEqual(
-            loss.value(), 1.23 * loss_weights["test0"] + 3.45 * loss_weights["test1"]
+            loss.value(),
+            (1.23 * loss_weights["test0"] + 3.45 * loss_weights["test1"])
+            / (loss_weights["test0"] + loss_weights["test1"]),
         )
 
         def _aggregate(aux):
-            loss = 0.0
-            for name, loss_weight in loss_weights.items():
-                loss += loss_weight * aux[f"loss_{name}"].mean
-            return loss
+            loss_sum = weight = 0.0
+            for name in loss_weights:
+                loss_sum += aux[f"loss_{name}"].weight * aux[f"loss_{name}"].mean
+                weight += aux[f"loss_{name}"].weight
+            return loss_sum / weight
 
         self.assertAlmostEqual(loss.value(), _aggregate(aux))
 
@@ -784,7 +782,7 @@ class ModelAuxLossTest(TestCase):
             else:
                 self.assertEqual(aux["metrics"]["aux_loss"].value(), 0.0)
             self.assertEqual(
-                aux["metrics"]["cross_entropy"].value() + aux["metrics"]["aux_loss"].value(), loss
+                (aux["metrics"]["cross_entropy"] + aux["metrics"]["aux_loss"]).value(), loss
             )
         else:
             self.assertNotIn("aux_loss", aux)
@@ -862,7 +860,7 @@ class ModelAuxLossTest(TestCase):
         self.assertIn("aux_loss", summaries)
         self.assertEqual(summaries["aux_loss"].value(), 1.0)
         self.assertNestedAllClose(
-            summaries["cross_entropy_loss"].value() + summaries["aux_loss"].value(),
+            (summaries["cross_entropy_loss"] + summaries["aux_loss"]).value(),
             outputs.forward_outputs.loss,
         )
 
