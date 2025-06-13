@@ -246,6 +246,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
         self._update_env_list(env_list, "TPU_SKIP_MDS_QUERY", "true")
+        # This is required to be able to run a Jax client when using
+        # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS=true.
+        # In Jax 0.6.2 and beyond this flag can be renamed to
+        # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS as well.
+        self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
 
         env_list.append(
             {
