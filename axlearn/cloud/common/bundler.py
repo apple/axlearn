@@ -62,6 +62,7 @@ from axlearn.cloud.common.utils import (
     copy_blobs,
     get_pyproject_version,
     parse_kv_flags,
+    to_bool,
 )
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 from axlearn.common.file_system import copy, exists, makedirs
@@ -341,9 +342,17 @@ class BaseDockerBundler(Bundler):
         cfg: BaseDockerBundler.Config = super().from_spec(spec, fv=fv)
         kwargs = parse_kv_flags(spec, delimiter="=")
         cache_from = canonicalize_to_list(kwargs.pop("cache_from", None))
+        skip_bundle = to_bool(kwargs.pop("skip_bundle", False))
+        allow_dirty = to_bool(kwargs.pop("allow_dirty", False))
         # Non-config specs are treated as build args.
         build_args = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k not in cfg}
-        return cfg.set(build_args=build_args, cache_from=cache_from, **kwargs)
+        return cfg.set(
+            build_args=build_args,
+            cache_from=cache_from,
+            skip_bundle=skip_bundle,
+            allow_dirty=allow_dirty,
+            **kwargs,
+        )
 
     # pylint: disable-next=arguments-renamed
     def id(self, tag: str) -> str:
