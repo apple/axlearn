@@ -49,6 +49,64 @@ class UtilsTest(parameterized.TestCase):
         with ctx:
             utils.validate_jobset_name(name, num_workers=num_workers, num_replicas=num_replicas)
 
+    @parameterized.parameters(
+        dict(
+            bucket_name="test-bucket0123",
+            bucket_loc="us-east5",
+            config_zone="us-east5-b",
+        ),
+        dict(
+            bucket_name="test-bucket0123",
+            bucket_loc="US",
+            config_zone="us-east5-b",
+        ),
+        dict(
+            bucket_name="test-bucket0123",
+            bucket_loc="US",
+            config_zone="us-east5-b",
+        ),
+    )
+    @mock.patch("google.cloud.storage.Client")
+    @mock.patch("axlearn.cloud.gcp.utils.logging.info")
+    @mock.patch("axlearn.cloud.gcp.utils.logging.warning")
+    # pylint: disable=too-many-positional-arguments
+    def test_validate_region_matching(
+        self,
+        mock_logging_warning,
+        mock_logging_info,
+        mock_storage_client,
+        bucket_name,
+        bucket_loc,
+        config_zone,
+    ):
+        mock_bucket = mock.Mock()
+        mock_bucket.name = bucket_name
+        mock_bucket.location = bucket_loc
+        segments = config_zone.split("-")
+        config_region = f"{segments[0]}-{segments[1]}"
+
+        mock_storage_client.return_value.get_bucket.return_value = mock_bucket
+
+        if bucket_loc == config_region:
+            utils.validate_region_matching(bucket_name, config_zone)
+
+            mock_logging_info.assert_called_once_with(
+                "Region match: GCS bucket region (%s) matches config region (%s).",
+                bucket_loc,
+                config_region,
+            )
+            mock_logging_warning.assert_not_called()
+        else:
+            utils.validate_region_matching(bucket_name, config_zone)
+            mock_logging_warning.assert_called_once_with(
+                "Region mismatch: GCS bucket '(%s)' is in '(%s)', "
+                "but the config region is '(%s)'.",
+                bucket_name,
+                bucket_loc,
+                config_region,
+            )
+            mock_logging_info.assert_not_called()
+
     @parameterized.product(
         running_from_gcp=[False, True],
         raise_config_exc=[False, True],
