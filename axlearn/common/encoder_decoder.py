@@ -94,6 +94,8 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         Returns:
             A dict containing:
                 hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
+                logits: A float Tensor of shape [batch_size, target_len, num_classes], where
+                    num_classes depends on the configured lm_head.
 
         Raises:
             ValueError: If source_segment_ids and target_segment_ids are not provided together.
@@ -125,18 +127,6 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
         return decoder_output
-
-    def compute_logits(self, predictions: Nested[Tensor]) -> Tensor:
-        """Computes logits from decoder hidden states.
-
-        Args:
-            predictions: the output dict from predict(), including
-                hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
-
-        Returns:
-            logits: A float Tensor of shape [batch_size, target_len, num_classes].
-        """
-        return self.decoder.compute_logits(predictions)
 
     def compute_attention_logit_biases(self, source_ids: Tensor) -> Tensor:
         """Produces cross-attention logit biases.
@@ -170,11 +160,8 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
                     per_token_loss: A float Tensor of shape [batch_size, target_len].
         """
         validate_contains_paths(input_batch, paths=["target_labels"])
-        validate_contains_paths(predict_outputs, paths=["hidden_states"])
-        with child_context("self_decoder_compute_logits", module=self):
-            # TODO(axlearn-dev): Logits can consume over 10GB of HBM. Therefore,
-            # optimize it with `scan`, like in `causal_lm`, if needed.
-            logits = self.decoder.compute_logits(predict_outputs)
+        validate_contains_paths(predict_outputs, paths=["logits"])
+        logits: Tensor = predict_outputs["logits"]
         target_labels: Tensor = input_batch["target_labels"]
 
         num_classes = logits.shape[-1]
