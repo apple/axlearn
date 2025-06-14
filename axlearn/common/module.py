@@ -177,7 +177,6 @@ def propagate_repeated_output_collections(
     *,
     child_name_prefix: str,
     target_output_collection: OutputCollection,
-    merge_summaries: bool,
 ):
     """Propagates contents from `repeated_output_collection` to `target_target_output_collection`.
 
@@ -193,9 +192,6 @@ def propagate_repeated_output_collections(
         child_name_prefix: The child name prefix used for children to be added to
             `target_output_collection`.
         target_output_collection: The target OutputCollection.
-        merge_summaries: Whether to merge summaries or not. If set to True, summaries from the loop
-            will be merged into "iter", rather than being stored separately per iteration like
-            "iter0", "iter1", etc.
     """
     # Fill `target_output_collection[child_name_prefix]` with `repeated_output_collection`.
     child_output = target_output_collection.add_child(child_name_prefix)
@@ -211,28 +207,11 @@ def propagate_repeated_output_collections(
         first_summary_value = summary_values[0]
         assert first_summary_value.shape, "Stacked summaries should have a leading stack dimension."
         num_children = first_summary_value.shape[0]
-        if merge_summaries:
-            summaries_list = []
-            for i in range(num_children):
-                summaries_list.append(
-                    jax.tree.map(lambda x, i=i: x[i], repeated_output_collection.summaries)
-                )
-
-            summaries_0th = summaries_list[0]
-            for i in range(1, num_children):
-                summaries_0th = jax.tree.map(
-                    lambda x, y: x.accumulate(y),
-                    summaries_0th,
-                    summaries_list[i],
-                    is_leaf=lambda x: isinstance(x, Summary),
-                )
-            child_output.summaries.update(**summaries_0th)
-        else:
-            for i in range(num_children):
-                child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
-                child_i_output.summaries.update(
-                    jax.tree.map(lambda x, i=i: x[i], repeated_output_collection.summaries)
-                )
+        for i in range(num_children):
+            child_i_output = target_output_collection.add_child(f"{child_name_prefix}{i}")
+            child_i_output.summaries.update(
+                jax.tree.map(lambda x, i=i: x[i], repeated_output_collection.summaries)
+            )
 
 
 T = TypeVar("T")
@@ -1130,7 +1109,6 @@ def scan_in_context(
     child_name_prefix: str = "iter",
     unroll: Union[int, bool] = 1,
     remat_kwargs: Optional[dict[str, Any]] = None,
-    merge_summaries: bool = False,
 ) -> tuple[NestedTensor, NestedTensor]:
     """A thin wrapper around `jax.lax.scan` which is compatible with `OutputCollection`.
 
@@ -1167,9 +1145,6 @@ def scan_in_context(
                 `scan_fn = jax.checkpoint(scan_fn, **remat_kwargs)`
             Otherwise, `jax.checkpoint` is not used.
             See https://docs.jax.dev/en/latest/_autosummary/jax.checkpoint.html.
-        merge_summaries: Whether to merge summaries or not. If set to True, summaries from the loop
-            will be merged into "iter", rather than being stored separately per iteration like
-            "iter0", "iter1", etc.
 
     Returns:
         The scan outputs (carry, ys):
@@ -1226,7 +1201,6 @@ def scan_in_context(
         scan_ys.pop("output_collection"),
         child_name_prefix=child_name_prefix,
         target_output_collection=ctx.output_collection,
-        merge_summaries=merge_summaries,
     )
 
     return carry, scan_ys["y_i"]
