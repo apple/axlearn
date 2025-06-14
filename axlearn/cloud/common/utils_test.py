@@ -222,6 +222,24 @@ class UtilsTest(TestWithTemporaryCWD):
     def test_merge(self, base, overrides, expected):
         self.assertEqual(expected, utils.merge(base, overrides))
 
+    @parameterized.parameters(
+        ("true", True),
+        ("True", True),
+        ("false", False),
+        ("False", False),
+        (True, True),
+        (False, False),
+        ("yes", ValueError),
+        (1, ValueError),
+    )
+    def test_to_bool(self, value, expected):
+        if isinstance(expected, type) and issubclass(expected, Exception):
+            with self.assertRaises(expected):
+                utils.to_bool(value)
+        else:
+            result = utils.to_bool(value)
+            self.assertEqual(result, expected)
+
     def test_infer_resources(self):
         @config_class
         class DummyConfig(ConfigBase):

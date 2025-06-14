@@ -58,7 +58,7 @@ from axlearn.cloud.common.bundler import main as bundler_main
 from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
-from axlearn.cloud.common.utils import canonicalize_to_list
+from axlearn.cloud.common.utils import canonicalize_to_list, to_bool
 from axlearn.cloud.gcp.cloud_build import get_cloud_build_status
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
@@ -148,9 +148,7 @@ class CloudBuildBundler(BaseDockerBundler):
         cfg.project = cfg.project or gcp_settings("project", required=False, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
-        # The value from from_spec is a str and will result in wrong condition.
-        if isinstance(cfg.is_async, str):
-            cfg.is_async = cfg.is_async.lower() != "false"
+        cfg.is_async = to_bool(cfg.is_async)
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument
