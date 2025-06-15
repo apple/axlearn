@@ -44,6 +44,13 @@ def setup(
     # Use a GSPMD-friendly PRNG implementation.
     jax.config.update("jax_default_prng_impl", "rbg")
 
+    if jax_backend == "proxy":
+        # pylint: disable-next=import-error,import-outside-toplevel
+        import pathwaysutils  # pytype: disable=import-error
+
+        pathwaysutils.initialize()
+        return
+
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:
         init_kwargs = {}
