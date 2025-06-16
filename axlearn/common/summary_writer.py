@@ -464,7 +464,7 @@ class WandBWriter(BaseWriter):
         elif isinstance(val, enum.Enum):
             return str(val)
         elif isinstance(val, dict):
-            return type(val)({k: WandBWriter.format_config(v) for k, v in val.items()})
+            return type(val)({str(k): WandBWriter.format_config(v) for k, v in val.items()})
         elif isinstance(val, (tuple, list)):
             # wandb config stores tuple as list so no type(val)(...)
             return [WandBWriter.format_config(v) for v in val]
