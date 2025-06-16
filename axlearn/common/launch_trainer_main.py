@@ -23,7 +23,8 @@ def main(_):
         except jax.errors.JaxRuntimeError as error:
           if not elastic_manager._is_error_due_to_slice_down(error):
             raise
-          elastic_manager.wait_for_slices(timeout)
+          ten_minutes = 10 * 60
+          elastic_manager.wait_for_slices(timeout=ten_minutes)
 
 
 if __name__ == "__main__":
