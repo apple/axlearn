@@ -231,7 +231,7 @@ class RabbitMQClient(BaseQueueClient):
                 # or temporary unavailable host.
                 self._handle_publish_error()
                 attempt += 1
-                if attempt <= self._num_tries:
+                if attempt < self._num_tries:
                     time.sleep(2**attempt)
                 else:
                     logging.error(
@@ -243,7 +243,7 @@ class RabbitMQClient(BaseQueueClient):
             except Exception as e:  # pylint: disable=broad-except
                 self._handle_publish_error()
                 attempt += 1
-                if attempt <= self._num_tries:
+                if attempt < self._num_tries:
                     time.sleep(2**attempt)
                 else:
                     # Unknown errors. Don't retry. Log to avoid crashing clients.
