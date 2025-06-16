@@ -93,6 +93,18 @@ RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
 
 ################################################################################
+# Pathways-TPU container spec.                                                 #
+################################################################################
+
+FROM base AS pathways-tpu
+
+ARG EXTRAS=
+
+RUN uv pip install --prerelease=allow .[core,pathways-tpu] && uv cache clean
+RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
+COPY . .
+
+################################################################################
 # GPU container spec.                                                          #
 ################################################################################
 
