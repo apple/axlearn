@@ -81,7 +81,6 @@ from typing import Any, Callable, Generic, Optional, Sequence, TypeVar, Union
 # Our config library relies on `__attrs_post_init__` and `on_setattr=_validate_and_transform_field`
 # to apply validation on field names and values.
 import attr
-import numpy as np
 
 
 def is_named_tuple(x: Any):
@@ -227,7 +226,6 @@ register_validator(
                 float,
                 str,
                 enum.Enum,
-                np.dtype,
             ),
         )
     ),
@@ -257,6 +255,28 @@ register_validator(
     match_fn=lambda v: not isinstance(v, type) and hasattr(v, "from_pretrained"),
     validate_fn=lambda v: validate_config_field_value(v.to_dict()),
 )
+# Register other validators for convenience and backwards compat.
+# We allow these to be optional to avoid a hard dependency.
+try:
+    import numpy as np
+
+    register_validator(
+        match_fn=lambda v: isinstance(v, np.dtype),
+        validate_fn=lambda _: None,
+    )
+except ImportError:
+    pass
+
+try:
+    # As of 0.6.1, PartitionSpec is not longer a tuple.
+    import jax
+
+    register_validator(
+        match_fn=lambda v: isinstance(v, jax.sharding.PartitionSpec),
+        validate_fn=lambda _: None,
+    )
+except ImportError:
+    pass
 
 
 def validate_config_field_value(value: Any) -> None:
