@@ -303,7 +303,7 @@ class GKELeaderWorkerSet(GCPJob):
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_string("name", None, "Name of the lws.", **common_kwargs)
+        flags.DEFINE_string("name", None, "Name of the LeaderWorkerSet.", **common_kwargs)
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
