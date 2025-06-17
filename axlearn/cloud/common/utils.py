@@ -292,6 +292,19 @@ def merge(base: dict, overrides: dict):
     return base
 
 
+def to_bool(value: Any) -> bool:
+    """Converts a string representation of truth to a bool."""
+    if isinstance(value, bool):
+        return value
+    elif isinstance(value, str):
+        val_lower = value.lower()
+        if val_lower == "true":
+            return True
+        elif val_lower == "false":
+            return False
+    raise ValueError(f"Invalid truth value: '{value}'")
+
+
 _Row = list[Any]
 
 
