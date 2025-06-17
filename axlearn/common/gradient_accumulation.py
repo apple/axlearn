@@ -33,7 +33,7 @@ def _compute_minibatch_size(input_batch: Nested[Tensor], *, steps: int) -> int:
     if steps <= 0:
         raise ValueError("Accumulation steps need to be a positive integer.")
 
-    input_batch_sizes = jax.tree_leaves(jax.tree.map(lambda x: x.shape[0], input_batch))
+    input_batch_sizes = jax.tree_util.tree_leaves(jax.tree.map(lambda x: x.shape[0], input_batch))
 
     if len(input_batch_sizes) == 0:
         raise ValueError("Input batch is empty.")

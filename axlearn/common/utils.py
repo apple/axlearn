@@ -2028,7 +2028,7 @@ def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
         except KeyError as e:
             raise ValueError(
                 f"Input is expected to contain '{path}'; "
-                f"instead, it contains: '{jax.tree_structure(x)}'."
+                f"instead, it contains: '{jax.tree_util.tree_structure(x)}'."
             ) from e
 
 
