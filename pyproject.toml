@@ -110,11 +110,11 @@ tpu = [
     "axlearn[gcp]",
     "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
 ]
-# For Pathways TPU training.
+# For TPU+Pathways single-controller training
 pathways-tpu = [
     "axlearn[gcp]",
     "jax==0.5.3",  # must be >=0.4.19 for compat with v5p.
-    "pathwaysutils @ git+https://github.com/AI-Hypercomputer/pathways-utils",  # For JAX+Pathways single-controller accelerator coordinator.
+    "pathwaysutils @ git+https://github.com/AI-Hypercomputer/pathways-utils",
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
