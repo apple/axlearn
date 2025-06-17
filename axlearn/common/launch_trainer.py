@@ -147,15 +147,14 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                 f,
             )
 
-    trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
-    prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
-
     if FLAGS.jax_backend == "proxy":
         # pylint: disable-next=import-error,import-outside-toplevel
         from pathwaysutils.elastic import manager
         elastic_manager = manager.Manager()
         while True:
             try:
+                trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
+                prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
                 output = trainer.run(prng_key)
             except jax.errors.JaxRuntimeError as error:
                 if not elastic_manager._is_error_due_to_slice_down(error):
