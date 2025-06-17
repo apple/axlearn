@@ -1907,10 +1907,10 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
         ```
     """
     # pylint: disable-next=protected-access
-    #registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
+    # registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
 
-    #key_handler = registry_with_keypaths.get(type(node))
-    #if key_handler:
+    # key_handler = registry_with_keypaths.get(type(node))
+    # if key_handler:
     #    key_children, _ = key_handler.flatten_with_keys(node)
     #    return key_children
 

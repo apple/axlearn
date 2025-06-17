@@ -277,7 +277,9 @@ class SerializerTest(parameterized.TestCase):
                 f"{array_serialization.__name__}.serialization._get_metadata", lambda *_: {}
             ),
             mock.patch(f"{array_serialization.__name__}.serialization.ts_impl.ts.open", open_patch),
-            mock.patch(f"{array_serialization.__name__}.serialization.ts_impl.ts.Spec", mock.MagicMock()),
+            mock.patch(
+                f"{array_serialization.__name__}.serialization.ts_impl.ts.Spec", mock.MagicMock()
+            ),
         ):
             manager.serialize(arrays, tensorstore_specs, on_commit_callback=lambda: None)
             manager.wait_until_finished()
