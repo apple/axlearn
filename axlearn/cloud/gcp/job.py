@@ -277,7 +277,7 @@ def docker_command(
 
 
 class GKELeaderWorkerSet(GCPJob):
-    """base GKE LeaderWorkerSet interface"""
+    """Base GKE LeaderWorkerSet interface"""
 
     @config_class
     class Config(GCPJob.Config):
