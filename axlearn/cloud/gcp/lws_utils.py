@@ -145,6 +145,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "The GKE PriorityClass for the job.",
             **common_kwargs,
         )
+        
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
