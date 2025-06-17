@@ -104,10 +104,9 @@ class LayerTestCase(TestCase):
                 golden_loss, golden_grads, golden_output = golden_bwd_call(cfg.golden.layer, cfg.golden.state, cfg.golden.inputs)
 
                 #Transfer results to CPU before comparison
-                if cfg.golden.device == "neuron":
-                    golden_loss = jax.tree_map(jax.device_get, golden_loss)
-                    golden_grads = jax.tree_map(jax.device_get, golden_grads)
-                    golden_output = jax.tree_map(jax.device_get, golden_output)
+                golden_loss = jax.tree_map(jax.device_get, golden_loss)
+                golden_grads = jax.tree_map(jax.device_get, golden_grads)
+                golden_output = jax.tree_map(jax.device_get, golden_output)
 
             # print('test_loss', test_loss, 'golden_loss', golden_loss)
             # Compare losses

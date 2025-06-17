@@ -53,6 +53,7 @@ from axlearn.common.utils import (
     NestedTree,
     Tensor,
     as_tensor,
+    as_numpy_array,
     complete_partition_spec_tree,
     flatten_items,
     pop_data_dir,
@@ -68,11 +69,11 @@ _PYTEST_OPT_REGISTERED = {}
 
 
 def assert_allclose(actual, desired, atol=1e-6, rtol=1e-3, err_msg=""):
-    actual = jnp.asarray(actual).astype(np.float32)
-    desired = jnp.asarray(desired).astype(np.float32)
-    # temp workaround for seg-fault
-    actual = np.asarray(actual)
-    desired = np.asarray(desired) 
+    # actual = jnp.asarray(actual).astype(np.float32)
+    # desired = jnp.asarray(desired).astype(np.float32)
+    # temp workaround for seg-fault, OOM
+    actual = np.asarray(actual).astype(np.float32)
+    desired = np.asarray(desired).astype(np.float32)
     # Checks if 'actual' and 'desired' are within (atol + rtol * abs(desired)).
     diff: np.ndarray = np.abs(actual - desired)
     if diff.size > 0:
@@ -237,7 +238,8 @@ class TestCase(parameterized.TestCase):
             if isinstance(a_value, (np.ndarray, jnp.ndarray)) or isinstance(
                 b_value, (np.ndarray, jnp.ndarray)
             ):
-                a_value, b_value = as_tensor(a_value), as_tensor(b_value)
+                # a_value, b_value = as_tensor(a_value), as_tensor(b_value)
+                a_value, b_value = as_numpy_array(a_value), as_numpy_array(b_value)
                 self.assertEqual(a_value.dtype, b_value.dtype, msg=f"{a_name}")
                 self.assertEqual(a_value.shape, b_value.shape, msg=f"{a_name}")
                 assert_allclose(a_value, b_value, atol=atol, rtol=rtol, err_msg=f"{a_name}")
