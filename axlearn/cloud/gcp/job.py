@@ -281,7 +281,7 @@ class GKELeaderWorkerSet(GCPJob):
 
     @config_class
     class Config(GCPJob.Config):
-        """Configures GKELeaderWorkerSet
+        """Configures GKELeaderWorkerSet.
         Attributes:
             builder: A builder that returns one or more statefulset specs.
             namespace: The namespace to use within the k8s cluster.
