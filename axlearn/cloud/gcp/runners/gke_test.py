@@ -1435,6 +1435,37 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 job._pre_provisioner.delete_for.assert_called()
                 # pytype: enable=attribute-error
 
+    @parameterized.parameters(None, False, True)
+    def test_start(self, enable_pre_provisioner):
+        cfg = self._job_config(
+            command="test-command",
+            name="test-name",
+            cluster="test-cluster",
+            enable_pre_provisioner=enable_pre_provisioner,
+        )
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+
+        with mock.patch.multiple(
+            job,
+            _get_status=mock.Mock(
+                side_effect=[
+                    runner_gke.LWSRunnerJob.Status.NOT_STARTED,
+                    #runner_gke.LWSRunnerJob.Status.RUNNING,
+                ]
+            ),
+            _delete=mock.DEFAULT,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        ):
+            job._execute()
+
+            if enable_pre_provisioner:
+                # pytype: disable=attribute-error
+                job._pre_provisioner.create_for.assert_called()
+                # pytype: enable=attribute-error
+
+            job._inner.execute.assert_called()  # pytype: disable=attribute-error
+    
     def test_name_alias(self):
         """Tests that names set via flag aliases are retained."""
         with (
