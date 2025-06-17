@@ -17,6 +17,7 @@ from typing import Optional, Protocol, Union
 import jax.numpy as jnp
 import tensorflow as tf
 from jax.sharding import PartitionSpec
+from absl import logging
 
 from axlearn.common import (
     base_model,
@@ -712,14 +713,28 @@ def get_trainer_config_fn(
             cfg.evalers[name] = evaler_cfg
         # Summaries and checkpoints.
         calculated_save_every_n_steps = save_every_n_steps or min(eval_every_n_steps, 500)
-
+        logging.info("checkpointer: %s",checkpointer)
         if not checkpointer:
+            logging.info("In no checkpointer")
             cfg.checkpointer.save_policy = config_for_function(every_n_steps_and_last_policy).set(
                 n=calculated_save_every_n_steps,
                 max_step=max_step,
             )
             cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
             cfg.checkpointer.keep_last_n = 3
+        elif checkpointer == "OrbaxCheckpointer":
+            logging.info("In orbax checkpointer")
+            from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
+
+            ckpt_config: OrbaxCheckpointer.Config = (
+                OrbaxCheckpointer.default_config()
+            )
+            ckpt_config.save_policy = config_for_function(every_n_steps_and_last_policy).set(
+                n=calculated_save_every_n_steps,
+                max_step=max_step,
+            )
+            ckpt_config.keep_last_n = 3
+            cfg.checkpointer = ckpt_config
         elif checkpointer == "OrbaxEmergencyCheckpointer":
             # Prevent global dependency on Orbax.
             # pylint: disable-next=import-outside-toplevel
