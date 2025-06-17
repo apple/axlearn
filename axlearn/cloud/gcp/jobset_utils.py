@@ -549,7 +549,9 @@ class TPUReplicatedJob(SingleReplicatedJob):
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
-        volumes.append(dict(name="shared-output", emptyDir={}))
+        volumes.append(
+            dict(name="shared-output", emptyDir={"medium": "Memory", "sizeLimit": "10Gi"})
+        )
         if cfg.gcsfuse_mount:
             # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
             # prefetch is enabled.
