@@ -64,12 +64,14 @@ def named_runner_configs(
             inner=GKELeaderWorkerSet.default_config().set(
                 builder=TPULeaderWorkerTemplate.default_config(),
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
+                pre_provisioner=TPUNodePoolProvisioner.default_config(),
             )
         ),
         "gke_tpu_lws_pathways": LWSRunnerJob.default_config().set(
             inner=GKELeaderWorkerSet.default_config().set(
                 builder=PathwaysLeaderWorkerTemplate.default_config(),
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
+                pre_provisioner=TPUNodePoolProvisioner.default_config(),
             )
         ),
     }
