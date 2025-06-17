@@ -285,7 +285,7 @@ class GKELeaderWorkerSet(GCPJob):
         Attributes:
             builder: A builder that returns one or more statefulset specs.
             namespace: The namespace to use within the k8s cluster.
-            annotations: LeaderWorkerSet annotations
+            annotations: LeaderWorkerSet annotations.
         """
 
         builder: Required[BaseLeaderWorkerTemplate.Config] = REQUIRED
