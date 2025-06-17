@@ -38,12 +38,12 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         """
         Configures BaseLeaderWorker.
         Attributes:
-        name: Name of the LeaderWorkerSet
-        command: Command to be executed.
-        accelerator: Accelerator configuration.
-        env_vars: Optional env vars to set.
-        service_account: Optional service account to execute the job as.
-        output_dir: An optional GCS path to upload LWS outputs to.
+            name: Name of the LeaderWorkerSet
+            command: Command to be executed.
+            accelerator: Accelerator configuration.
+            env_vars: Optional env vars to set.
+            service_account: Optional service account to execute the job as.
+            output_dir: An optional GCS path to upload LWS outputs to.
         """
 
         name: Required[str] = REQUIRED
@@ -145,7 +145,6 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "The GKE PriorityClass for the job.",
             **common_kwargs,
         )
-        
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -212,9 +211,6 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         if cfg.reservation_project:
             selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
 
-        if cfg.priority_class:
-            spec["priorityClassName"] = cfg.priority_class
-
         if cfg.location_hint is not None:
             selector.update({"cloud.google.com/gke-location-hint": str(cfg.location_hint).lower()})
 
@@ -229,7 +225,6 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 }
             )
 
-        
         if cfg.enable_tpu_ici_resiliency is not None:
             selector.update(
                 {
@@ -238,7 +233,17 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                     ).lower()
                 }
             )
-        
+
+        spec = dict(
+            nodeSelector={
+                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                "cloud.google.com/gke-tpu-topology": system.topology,
+                **selector,
+            },
+            containers=[self._build_container()],
+            serviceAccountName=cfg.service_account,
+        )
+
         # Handles additional network.
         if cfg.additional_node_networks:
             node_service_account = f"{cfg.service_account}@{cfg.project}.iam.gserviceaccount.com"
@@ -251,15 +256,8 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             spec["hostNetwork"] = True
             spec["dnsPolicy"] = "ClusterFirstWithHostNet"
 
-        spec = dict(
-            nodeSelector={
-                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                "cloud.google.com/gke-tpu-topology": system.topology,
-                **selector,
-            },
-            containers=[self._build_container()],
-            serviceAccountName=cfg.service_account,
-        )
+        if cfg.priority_class:
+            spec["priorityClassName"] = cfg.priority_class
 
         return dict(metadata=dict(annotations=annotations, labels=labels), spec=spec)
 
