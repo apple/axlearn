@@ -13,6 +13,8 @@ export MESH_SELECTOR=${MESH:-"tpu-v6e-16"}
 export CONFIG=${CONFIG:-"fuji-7B-v3-flash-orbaxem"}
 export PROJECT_ID=$(gcloud config get project)
 
+# Example for v6e-256
+# MESH_SELECTOR=tpu-v6e-256-4 INSTANCE_TYPE=tpu-v6e-256 ./test-orbax.sh
 
 # The bundle step is needed if you run on cloudtop
 # uncomment if you use cloudtop
@@ -37,10 +39,11 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
         --instance_type=${INSTANCE_TYPE} \
         --host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp \
         --num_replicas=${NUM_REPLICAS} \
+        --priority_class=very-high \
         --bundler_spec=allow_dirty=True \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=tpu \
-        -- "python3 -c 'import jax; jax.devices()'; python3 -m axlearn.common.launch_trainer_main" \
+        -- "ulimit -n 1048576; python3 -c 'import jax; jax.devices()'; python3 -m axlearn.common.launch_trainer_main" \
           --init_module=axlearn.common.checkpointer_orbax_emergency:local_ckpt_dir=/host-tmp/checkpoints \
           --module=text.gpt.c4_trainer \
           --config=${CONFIG} \

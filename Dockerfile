@@ -94,7 +94,7 @@ COPY . .
 # RUN pip install -f --force-reinstall git+https://github.com/google/orbax.git@test_765598157#subdirectory=checkpoint
 # Includes 8k fix in orbax on top of 0.11.13
 # RUN pip install -U "orbax-checkpoint @ git+https://github.com/samos123/orbax.git@refs/pull/1/head#subdirectory=checkpoint"
-# RUN pip install -U "orbax-checkpoint @ git+https://github.com/google/orbax.git@main#subdirectory=checkpoint"
+# RUN pip install -U "orbax-checkpoint @ git+https://github.com/google/orbax.git@refs/pull/2025/head#subdirectory=checkpoint"
 
 
 ################################################################################
