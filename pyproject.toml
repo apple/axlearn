@@ -75,7 +75,7 @@ dev = [
     "scipy==1.12.0",
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
-    "timm==0.6.12",  # DiT Dependency test-only
+    #"timm==0.6.12",  # DiT Dependency test-only
     #"torch>=1.12.1",  # test-only
     #"torchvision==0.14.1",  # test-only
     "transformers==4.51.3",  # test-only
