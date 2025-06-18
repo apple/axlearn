@@ -163,6 +163,8 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                 ten_minutes = 10 * 60
                 elastic_manager.wait_for_slices(timeout=ten_minutes)
     else:
+        trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
         output = trainer.run(prng_key)
 
     measurement.record_event(measurement.Event.END_JOB)
