@@ -21,6 +21,8 @@ from axlearn.cloud.gcp.jobset_utils import (
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.tpu import infer_tpu_workers
+from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import (
     default_xla_options,
     infer_tpu_type,
@@ -209,6 +211,21 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._xla_options = get_xla_options(xla_and_mxla_options)
         # Needs to be passed as command arguments to each pathways-worker.
         self._mxla_options = get_megascale_options(xla_and_mxla_options)
+
+        # Validate pathways-head name length.
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=1,
+            num_replicas=1,
+            job_name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
+        )
+        # Validate pathways-worker name length.
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=infer_tpu_workers(self._tpu_type),
+            num_replicas=cfg.inner.accelerator.num_replicas,
+            job_name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
+        )
 
     def _update_env_list(self, env_list: list[dict], name: str, value: str):
         for env in env_list:
@@ -627,6 +644,27 @@ class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
     def __init__(self, cfg: PathwaysReplicatedJob.Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
         self._is_single_head = False
+        cfg: PathwaysMultiheadReplicatedJob.Config = self.config
+        # Validate pathways-head name length.
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=1,
+            num_replicas=cfg.inner.accelerator.num_replicas,
+            job_name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
+        )
+        # Validate pathways-worker name length.
+        # pytype: disable=wrong-arg-types
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=infer_tpu_workers(self._tpu_type),
+            # In the multi-head pathways setup, there is only one
+            # replica of replicated job per worker group. And we have
+            # num_replicas of such replicated job. So the k8s format of
+            # num_replicas is always {replica_index}-0.
+            num_replicas=f"{cfg.inner.accelerator.num_replicas}-0",
+            job_name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
+        )
+        # pytype: enable=wrong-arg-types
 
     def _get_pathways_head_address(
         self, pathways_worker_replicated_job_index: Optional[int] = None
