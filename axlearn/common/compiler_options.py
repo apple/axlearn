@@ -59,6 +59,9 @@ def default_xla_options(
             # further if you see "Allocator failed to allocate". A feature
             # to dynamically allocate may come later: b/380514965
             megascale_grpc_premap_memory_bytes=137438953472,
+            # Needed for orbax emergency checkpointer
+            megascale_jax_offset_launch_id_by_module_name=True,
+            megascale_jax_use_device_set_based_launch_id=False,
             # Flag controlling the maximum number of overlapping host offloadings.
             xla_tpu_host_transfer_overlap_limit=24,
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
