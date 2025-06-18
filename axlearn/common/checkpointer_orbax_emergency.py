@@ -693,7 +693,6 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         We defer the creation of this checkpoint manager because it requires the state dict,
         which is not present during __init__.
         """
-        logging.set_verbosity(logging.DEBUG)
         cfg: OrbaxEmergencyCheckpointer.Config = self.config
         if self._tensor_manager is not None:
             return self._tensor_manager

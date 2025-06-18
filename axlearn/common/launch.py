@@ -32,8 +32,7 @@ except compiler_options.NotTpuError as e:
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error
 # Note: this will disable other TF_CPP info and warnnings.
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "0")
-os.environ.setdefault("TPU_VMODULE", "real_program_continuator=1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 # Import jax before tensorflow else to avoid problems such as:
 # tpu_library_init_fns.inc:98] TpuEmbeddingEngine_ExecutePartitioner not available in this library.
