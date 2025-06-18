@@ -39,7 +39,6 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
         --instance_type=${INSTANCE_TYPE} \
         --host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp \
         --num_replicas=${NUM_REPLICAS} \
-        --priority_class=very-high \
         --bundler_spec=allow_dirty=True \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=tpu \
