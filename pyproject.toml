@@ -76,8 +76,8 @@ dev = [
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
     "timm==0.6.12",  # DiT Dependency test-only
-    "torch>=1.12.1",  # test-only
-    "torchvision==0.14.1",  # test-only
+    #"torch>=1.12.1",  # test-only
+    #"torchvision==0.14.1",  # test-only
     "transformers==4.51.3",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
@@ -133,7 +133,7 @@ dataflow = [
 ]
 # GPU custom kernel dependency.
 gpu = [
-    "triton==2.1.0",
+    "triton>=2.1.0",
     "jax[cuda12]==0.6.2",
     "nvidia-ml-py==12.560.30",
 ]
