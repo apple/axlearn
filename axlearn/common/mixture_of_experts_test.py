@@ -35,6 +35,7 @@ from axlearn.common.mixture_of_experts import (
     TransformerFeedForwardMoE,
     _convert_feedforward_to_moe_parameters,
     convert_dense_to_moe_parameters,
+    get_outer_batch_from_mesh,
 )
 from axlearn.common.module import functional as F
 from axlearn.common.quantized_dot_general.activation_clipping import TanhActivationClippingLayer
@@ -43,7 +44,14 @@ from axlearn.common.quantized_dot_general.layers import (
     QuantizedDotGeneral,
 )
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import get_recursively, set_recursively, shapes
+from axlearn.common.utils import (
+    HybridMeshShape,
+    MeshShape,
+    get_recursively,
+    infer_mesh_shape,
+    set_recursively,
+    shapes,
+)
 
 
 # pylint: disable=no-self-use,protected-access
@@ -844,6 +852,55 @@ class ParamConversionTest(parameterized.TestCase):
             )
             # Expect the same outputs since all experts are identical to the dense one.
             assert_allclose(outputs_dense.data, outputs_moe.data)
+
+
+class GetOuterBatchFromMeshTest(absltest.TestCase):
+    """Tests get_outer_batch_from_mesh."""
+
+    def test_mesh_shape_is_none(self):
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "model"],
+            outer_batch_axis_names=["data"],
+            mesh_shape=None,
+        )
+        self.assertIsNone(result)
+
+    def test_regular_mesh_shape(self):
+        mesh_shape: MeshShape = (2, 4, 8)
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "fsdp", "model"],
+            outer_batch_axis_names=["data", "fsdp"],
+            mesh_shape=mesh_shape,
+        )
+        self.assertEqual(result, 2 * 4)
+
+    def test_outer_batch_with_hybrid_mesh_shape(self):
+        hybrid = HybridMeshShape(ici_mesh_shape=(2, 8, 1), dcn_mesh_shape=(4, 1, 1))
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "model"],
+            outer_batch_axis_names=["data"],
+            mesh_shape=hybrid,
+        )
+        self.assertEqual(result, 2 * 4)
+
+    def test_outer_batch_with_hybrid_mesh_shape_with_raises(self):
+        hybrid = HybridMeshShape(ici_mesh_shape=(2, 4, 1), dcn_mesh_shape=(-1, 2, 1))
+        with self.assertRaisesRegex(NotImplementedError, "Unable to infer number of granules"):
+            get_outer_batch_from_mesh(
+                mesh_axis_names=["data", "fsdp", "model"],
+                outer_batch_axis_names=["data", "fsdp"],
+                mesh_shape=hybrid,
+            )
+
+    def test_outer_batch_with_infer_mesh_shape(self):
+        mesh_shape: MeshShape = (-1, 2, 4)
+        inferred_shape = infer_mesh_shape(mesh_shape, num_devices=8)
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "fsdp", "model"],
+            outer_batch_axis_names=["data", "fsdp"],
+            mesh_shape=inferred_shape,
+        )
+        self.assertEqual(result, 1 * 2)
 
 
 if __name__ == "__main__":
