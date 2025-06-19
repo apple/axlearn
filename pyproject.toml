@@ -41,7 +41,7 @@ core = [
     "toml",  # for config management
     "typing-extensions==4.12.2",
     "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
-    "seqio==0.0.18",  # used for inputs
+    "seqio==0.0.16",  # used for inputs
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.10.2", # for AQT, param converter and adapter.
     "prefixed==0.9.0", # For formatting file sizes, param counts, etc.
@@ -90,19 +90,19 @@ gcp = [
     # when loading kube config, hence failing kubernetes client authentication.
     # See also https://github.com/kubernetes-client/python/issues/2333
     "kubernetes==31.0.0",
-    "google-api-core",
-    "google-api-python-client",
-    "google-auth",
+    "google-api-core==2.25.1",
+    "google-api-python-client==2.172.0",
+    "google-auth==2.40.3",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
-    "google-cloud-storage",
-    "google-cloud-compute", # Needed for region discovery for CloudBuild API access.
-    "google-cloud-core",
-    "google-cloud-build",
+    "google-cloud-storage==2.19.0",
+    "google-cloud-compute==1.31.0", # Needed for region discovery for CloudBuild API access.
+    "google-cloud-core==2.4.3",
+    "google-cloud-build==3.31.2",
     "ml-goodput-measurement==0.0.10",
-    "pika",  # used by event queue
+    "pika==1.3.2",  # used by event queue
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
-    "tpu-info", # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
-    "prometheus-client", # For TPU monitoring from tpu-device-plugin.
+    "tpu-info==0.3.0", # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
+    "prometheus-client==0.22.1", # For TPU monitoring from tpu-device-plugin.
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
@@ -122,7 +122,7 @@ vertexai_tensorboard = [
     # Pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
     # https://github.com/googleapis/python-aiplatform/commit/4f982ab254b05fe44a9d2ed959fca2793961b56c
     "google-cloud-aiplatform[tensorboard]",
-    "tensorboard",
+    "tensorboard==2.19.0",
 ]
 # Dataflow dependencies.
 dataflow = [
