@@ -89,6 +89,7 @@ ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.ht
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
+ARG CACHE_BUSTER=1
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
 # RUN pip install -f --force-reinstall git+https://github.com/google/orbax.git@test_765598157#subdirectory=checkpoint
