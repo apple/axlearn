@@ -1,14 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
-"""An example to run offline inference for fuji.
-
-Some optimizations are ported from the not-yet open sourced inference engine so the forward pass
-performance is comparable to what we have internally.
-
-Some known issues:
-1. KVCache update isn't efficient and potentially requires copying the whole KV cache. This could
-be solved by either changing the KV cache update method or using PagedKVCache.
-"""
+"""An example to export stablehlo for fuji inference code path."""
 
 import functools
 import zlib
