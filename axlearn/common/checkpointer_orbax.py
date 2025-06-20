@@ -381,7 +381,9 @@ class OrbaxCheckpointer(BaseCheckpointer):
         finally:
             if cfg.enable_single_replica_ckpt_restoring:
                 ocp.type_handlers.register_type_handler(
-                    jax.Array, ArrayHandler(array_metadata_store=array_metadata_store_lib.Store())
+                    jax.Array,
+                    ArrayHandler(array_metadata_store=array_metadata_store_lib.Store()),
+                    override=True,
                 )
 
         restored_index = composite_state["index"]
