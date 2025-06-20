@@ -28,11 +28,11 @@ from axlearn.common.attention import (
 )
 from axlearn.common.config import ConfigBase
 from axlearn.common.inference import DataPartitionType, InferenceRunner
+from axlearn.common.module import functional as F
 from axlearn.common.state_builder import Builder, TensorStoreStateStorageBuilder
 from axlearn.common.utils import Tensor
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
 from axlearn.experiments.text.gpt.fuji import Version, get_trainer_kwargs
-from axlearn.common.module import functional as F
 
 # jax.distributed.initialize(coordinator_address="127.0.0.1:1123", num_processes=1, process_id=0)
 
@@ -206,6 +206,7 @@ stopping_cond = LengthStopingCondition(3)
 time_step = jnp.zeros((32,), dtype=jnp.int32)
 input_tokens = jnp.zeros((32, 4096), dtype=jnp.int32)
 
+
 @jax.jit
 def jit_forward(state, time_step, input_tokens):
     (init_states, init_outputs), _ = F(
@@ -234,15 +235,14 @@ def jit_decode(state, cached_states, input_tokens):
     )
     return init_states, init_outputs
 
-with inference_runner._mesh:  
+
+with inference_runner._mesh:
     params = inference_runner._inference_runner_state.model["decoder"]
     forward_lowered = jit_forward.lower(params, time_step, input_tokens)
     # forward_compiled = forward_lowered.compile()
-    
-    (init_states, _) = jit_forward.eval_shape(
-        params, time_step, input_tokens
-    )
-    
+
+    (init_states, _) = jit_forward.eval_shape(params, time_step, input_tokens)
+
     with open("prefill.stablehlo", "w") as f:
         f.write(forward_lowered.as_text("stablehlo", debug_info=True))
 
