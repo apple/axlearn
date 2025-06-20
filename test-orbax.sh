@@ -10,7 +10,7 @@ export GKE_CLUSTER=$(axlearn gcp config | grep gke_cluster | awk '{ print $3 }' 
 export INSTANCE_TYPE=${INSTANCE_TYPE:-"tpu-v6e-16"}
 # Switch to tpu-v6e-256-4 if on scale cluster
 export MESH_SELECTOR=${MESH:-"tpu-v6e-16"}
-export CONFIG=${CONFIG:-"fuji-7B-v3-flash-orbaxem"}
+export CONFIG=${CONFIG:-"fuji-7B-v3-flash-orbax"}
 export PROJECT_ID=$(gcloud config get project)
 
 # Example for v6e-256
@@ -18,17 +18,18 @@ export PROJECT_ID=$(gcloud config get project)
 
 # The bundle step is needed if you run on cloudtop
 # uncomment if you use cloudtop
-axlearn gcp bundle --name=$JOBSET_NAME \
-        --bundler_spec=allow_dirty=True \
-        --bundler_type=artifactregistry \
-        --bundler_spec=dockerfile=Dockerfile \
-        --bundler_spec=image=tpu \
-        --bundler_spec=target=tpu
+# axlearn gcp bundle --name=$JOBSET_NAME \
+#         --bundler_spec=allow_dirty=True \
+#         --bundler_type=artifactregistry \
+#         --bundler_spec=dockerfile=Dockerfile \
+#         --bundler_spec=image=tpu \
+#         --bundler_spec=target=tpu
 
 # Only enable kueue when running on scale testing cluster
 # --queue=multislice-queue \
 # --priority_class=very-high \
 # --trainer_dir=gs://tess-checkpoints-us-west1/${JOBSET_NAME}-nr-${NUM_REPLICAS}/ \
+#
 
 # Check if CONFIG ends with "orbaxem"
 if [[ "$CONFIG" == *"orbaxem"* ]]; then
@@ -54,7 +55,7 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
           --trace_at_steps=29,59,89,119,149,179,209,239,269,299,329,359,389,419,449,479,509,539,569,599,629,659,689,719
 
 else
-  echo "Running without Orbax emergency checkpointer."
+  echo "Running Orbax regular checkpointer or AXLearn native."
   axlearn gcp launch run --cluster=$GKE_CLUSTER \
         --runner_name gke_tpu_single \
         --name=$JOBSET_NAME \
@@ -63,7 +64,7 @@ else
         --bundler_spec=allow_dirty=True \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=tpu \
-        -- "python3 -c 'import jax; jax.devices()'; python3 -m axlearn.common.launch_trainer_main" \
+        -- "ulimit -n 1048576; ulimit -c 0; python3 -c 'import jax; jax.devices()'; python3 -m axlearn.common.launch_trainer_main" \
           --module=text.gpt.c4_trainer \
           --config=${CONFIG} \
           --trainer_dir=gs://${PROJECT_ID}-axlearn/${JOBSET_NAME}-nr-${NUM_REPLICAS}/ \
