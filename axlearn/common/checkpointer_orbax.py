@@ -190,11 +190,13 @@ class OrbaxCheckpointer(BaseCheckpointer):
 
         Attributes:
             keep_last_n: Keep this many past ckpts.
+            keep_every_n_steps: If set, keep a checkpoint every n steps.
             validation_type: Checkpoint validation during restore.
             async_timeout_secs: Timeout for async barrier in seconds.
         """
 
         keep_last_n: int = 1
+        keep_every_n_steps: Optional[int] = None
         validation_type: CheckpointValidationType = CheckpointValidationType.EXACT
         async_timeout_secs: int = 300
         max_concurrent_save_gb: Optional[int] = None
@@ -241,6 +243,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
             options=ocp.CheckpointManagerOptions(
                 create=True,
                 max_to_keep=cfg.keep_last_n,
+                keep_period=cfg.keep_every_n_steps,
                 enable_async_checkpointing=True,
                 step_name_format=self._name_format,
                 should_save_fn=save_fn_with_summaries,
