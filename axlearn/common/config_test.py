@@ -1027,6 +1027,7 @@ class ConfigTest(parameterized.TestCase):
 
     def test_custom_validators(self):
         try:
+            # pytype: disable=invalid-annotation
             # pylint: disable-next=import-outside-toplevel
             import jax
 
@@ -1037,6 +1038,7 @@ class ConfigTest(parameterized.TestCase):
             spec = jax.sharding.PartitionSpec("test")
             cfg = Test(partition_spec=spec)
             self.assertEqual(cfg.partition_spec, spec)
+            # pytype: enable=invalid-annotation
 
         except ImportError:
             pass
