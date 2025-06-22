@@ -218,32 +218,8 @@ class Input(Module):
 
         See also `dispatch_global_batch` for constructing a global logical batch.
         """
-        # Validate that input batches have the proper feed batch size if this is a logical feed.
-        should_validate = (
-            "input_dispatcher" in self.children
-            and self.input_dispatcher.logical_feed_index is not None
-        )
         for input_batch in it:
             input_batch = as_numpy_array(input_batch)
-            # For the first batch, validate that the per_feed_batch_size is configured properly.
-            if should_validate:
-
-                def check_per_feed_batch(x: Tensor):
-                    expected = self.input_dispatcher.feed_logical_batch_size
-                    actual = x.shape[0]
-                    # The actual batch size is allowed to be smaller than feed batch size in the
-                    # case where global batch sizes differ across paths in the batch.
-                    # In this case, we currently still configure the global_logical_batch_size to be
-                    # the maximum across paths. Note that this means we require the partition spec
-                    # to evenly divide all input paths.
-                    if actual > expected:
-                        raise ValueError(
-                            f"Expected per-feed batch size to be at most {expected}, got: {actual}"
-                        )
-
-                jax.tree.map(check_per_feed_batch, input_batch)
-                should_validate = False
-
             if "input_dispatcher" in self.children:
                 input_batch = self.input_dispatcher.logical_to_physical_batch(input_batch)
             yield input_batch
