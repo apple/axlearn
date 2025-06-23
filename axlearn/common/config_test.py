@@ -1025,6 +1025,24 @@ class ConfigTest(parameterized.TestCase):
         with self.assertRaises(ValueError):
             cfg.set_recursively([], value=20)
 
+    def test_custom_validators(self):
+        try:
+            # pytype: disable=invalid-annotation
+            # pylint: disable-next=import-outside-toplevel
+            import jax
+
+            @config_class
+            class Test(ConfigBase):
+                partition_spec: Required[jax.sharding.PartitionSpec] = REQUIRED
+
+            spec = jax.sharding.PartitionSpec("test")
+            cfg = Test(partition_spec=spec)
+            self.assertEqual(cfg.partition_spec, spec)
+            # pytype: enable=invalid-annotation
+
+        except ImportError:
+            pass
+
 
 if __name__ == "__main__":
     absltest.main()
