@@ -345,6 +345,41 @@ class TestLayerOnTrn(LayerTestCase):
     def test_fwdbwd_blockwisev2_vs_einsum(self, cfg: TestCaseConfig):
         self.helper_bwd(cfg)
 
+
+class TestDev150bUnitEP(LayerTestCase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        jax.config.update('jax_platform_name', 'cpu')
+        self.test_device = 'neuron'
+
+        self.golden_device = 'cpu'
+        self.golden = TopKGating
+
+    def create_cfg(self, test, golden=None, layer="moe"):
+        golden = self.golden if golden is None else golden
+        return create_test_config(
+            layer=layer,
+            test=test,
+            golden=golden,
+            test_device=self.test_device,
+            golden_device=self.golden_device,
+            input_dim=8192, #8192,
+            hidden_dim=4096, #4096, #4096,#16384,
+            n_experts=8,
+            n_groups=1, #8,
+            top_k=2,
+            capacity_factor=2,
+            mesh_spec={"data": -1, "fsdp": 1, "model": 1, "expert": 8}, # expert: 8
+            batch=8, #4 #8, #64
+            seq=512, #512,#8192,
+            dtype=jnp.bfloat16,
+        )[1]
+
+    def test_fwd_blockwise_vs_einsum(self):
+        jax.config.update('jax_platform_name', 'neuron')
+        self.helper_fwd(self.create_cfg(test=TopKGatingGatherBlockwise))
+
+
 class TestDev150bUnit(LayerTestCase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -362,14 +397,14 @@ class TestDev150bUnit(LayerTestCase):
             test_device=self.test_device,
             golden_device=self.golden_device,
             input_dim=8192,
-            hidden_dim=16384,
+            hidden_dim=4096,
             n_experts=8,
             n_groups=1,
             top_k=2,
             capacity_factor=2,
-            mesh_spec={"fsdp": -1, "model": 16},
+            mesh_spec={"data": -1, "fsdp": 1, "model": 1, "expert": 8},
             batch=8,
-            seq=8192,
+            seq=512,
             dtype=jnp.bfloat16,
         )[1]
 

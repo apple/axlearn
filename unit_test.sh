@@ -2,7 +2,7 @@
 set -e
 
 if [ -z "$VENV_NAME" ]; then
-	VENV_NAME=../jaxmoe
+	VENV_NAME="/shared/$USER/aws_neuron_venv_pytorch"
 fi
 
 source $VENV_NAME/bin/activate
@@ -64,7 +64,7 @@ export NEURON_CC_FLAGS="${NEURON_CC_FLAGS} --auto-cast=none"
 
 export TF_CPP_MIN_LOG_LEVEL=3
 # # JAX Cache
-# export JAX_COMPILATION_CACHE_DIR="/shared/aahila/compiler/cache/"
+# export JAX_COMPILATION_CACHE_DIR="/shared/$USER/compiler/cache/"
 # mkdir -p ${JAX_COMPILATION_CACHE_DIR}
 
 # default set to presubmit/12B/50B/150B
@@ -96,4 +96,7 @@ elif [ "$1" = "150b_blockwise_cpu" ]; then
 elif [ "$1" = "150b_blockwise_neuron" ]; then
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bInteg and test_fwd_blockwise_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwise_vs_einsum'
     pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bInteg and test_fwd_blockwisev2_vs_einsum or TestDev150bInteg and test_fwdbwd_blockwisev2_vs_einsum'
+elif [ "$1" = "150b_blockwise_neuron_ep" ]; then
+    export _USING_INDEX_EP_SHARDING=1
+    pytest -rsA --tb=short axlearn/common/mixture_of_experts_neuron_test.py -k 'TestDev150bUnitEP'
 fi
