@@ -11,11 +11,34 @@ FROM ${BASE_IMAGE} AS base
 # https://docs.docker.com/build/building/best-practices/#apt-get
 RUN apt-get update && apt-get upgrade -y && apt-get install -y curl gnupg && apt clean -y
 
+# Build Python 3.12
+RUN mkdir -p /tmp/staging
+WORKDIR /tmp/staging
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -y install build-essential zlib1g-dev libncurses5-dev libgdbm-dev \
+        libnss3-dev libssl-dev libreadline-dev libffi-dev pkg-config wget \
+        libbz2-dev liblzma-dev libsqlite3-dev uuid-dev libgdbm-compat-dev \
+        tk-dev libnsl-dev && \
+    apt clean -y && \
+    curl -o Python-3.12.11.tgz https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tgz && \
+    tar -xvf Python-3.12.11.tgz && \
+    ./Python-3.12.11/configure --enable-optimizations --with-ensurepip=install --prefix=/opt/python3.12 && \
+    make all -j8 && \
+    make altinstall -j8 && \
+    apt-get remove -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev \
+        libnss3-dev libssl-dev libreadline-dev libffi-dev pkg-config wget \
+        libbz2-dev liblzma-dev libsqlite3-dev uuid-dev libgdbm-compat-dev \
+        tk-dev libnsl-dev && \
+    apt-get autoremove -y && \
+    apt clean -y && \
+    rm -rf ./*
+
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && \
     apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli python3.10-venv && apt clean -y
+      git screen google-perftools google-cloud-cli && \
+    apt clean -y
 
 # Setup.
 RUN mkdir -p /root
@@ -26,7 +49,7 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv $VIRTUAL_ENV
+RUN /opt/python3.12/bin/python3.12 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install --upgrade pip && pip install uv flit && pip cache purge
@@ -74,7 +97,7 @@ COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
 # See: https://cloud.google.com/dataflow/docs/guides/build-container-image#use_a_custom_base_image
-COPY --from=apache/beam_python3.10_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
+COPY --from=apache/beam_python3.12_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
 ENTRYPOINT ["/opt/apache/beam/boot"]
 
 ################################################################################
