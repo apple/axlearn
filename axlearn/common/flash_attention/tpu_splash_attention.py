@@ -1,7 +1,25 @@
 # This code is adapted from the jax_ml/jax library, specifically from the
 # https://github.com/jax-ml/jax/blob/b3c49b0ecc3f24e13e54f582d8d845afa52d2a58/jax/experimental/pallas/ops/tpu/splash_attention/splash_attention_kernel.py
+# The main addition is the support of dropout which is useful for cases such as
+# multi-modal training and finetuning.
 
-"""Implementation of Sparse Flash Attention, a.k.a. "Splash" attention."""
+"""Implementation of Sparse Flash Attention, a.k.a. "Splash" attention.
+
+The main feature of Splash attention is that it enables sparse acess of inputs to reduce memory IO.
+More concretely, sparse access of kv blocks during the forward pass and sparse access of q blocks
+during the kv backward pass are supported via MaskInfo objects. They are loaded into TPU scalar
+memory units for more efficient scheduling of Pallas kernels before the actual kernel launch.
+
+On dropout support:
+The primary addition to the original implementation is the support for dropout. When enabled,
+each forward/backward function will require two additional arguments `prng_key` and
+`dropout_rate`. The dropout mask is generated within the kernel based on the global `prng_key` and
+the block indices (i.e., batch_index, head_idx, q_block_idx, kv_block_idx). An additional kernel
+is also added at the end to construct the whole dropout mask for debugging purposes.
+
+(bailin-wang) Known issue: as of version 0.5.3, directly passing the prng_key as the input leads
+to lowering error (AssertionError: key<pl>). However, if prng_key is prefetched, it works fine.
+"""
 
 # pytype: skip-file
 from __future__ import annotations
@@ -14,6 +32,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import ad_checkpoint, lax, tree_util
+from jax._src.pallas.mosaic import random as plrandom
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask as mask_lib
@@ -43,11 +62,28 @@ NN_DIM_NUMBERS = (((1,), (0,)), ((), ()))  # standard matmul
 NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))  # RHS transposed
 
 
+def _generate_blockwise_dropout_mask(
+    prng_key: jax.Array,
+    head_idx: int,
+    q_block_idx: int,
+    kv_block_idx: int,
+    q_block_size: int,
+    kv_block_size: int,
+    dropout_rate: float,
+):
+    sub_key = prng_key[...]
+    sub_key = jax.random.fold_in(sub_key, head_idx)
+    sub_key = jax.random.fold_in(sub_key, q_block_idx)
+    sub_key = jax.random.fold_in(sub_key, kv_block_idx)
+    return jax.random.bernoulli(sub_key, dropout_rate, (q_block_size, kv_block_size))
+
+
 def flash_attention_kernel(
     # Prefetched inputs
     data_next_ref,
     block_mask_ref,
     mask_next_ref,
+    prng_key: jax.Array | None,
     # Inputs
     q_ref,
     k_ref,
@@ -74,6 +110,7 @@ def flash_attention_kernel(
     v_layout: QKVLayout,
     attn_logits_soft_cap: float | None,
     mask_function: MaskFunctionType | None,
+    dropout_rate: float,
 ):
     float32 = jnp.float32
     # pylint: disable=invalid-name
@@ -163,6 +200,19 @@ def flash_attention_kernel(
         else:
             v = pl.load(v_ref, (slice(None), slice_k))
         v = v.astype(float32)
+
+        if dropout_rate > 0.0:
+            global_kv_block_idx = global_kv_index * (bkv // bkv_compute) + kv_compute_index
+            dropout_mask = _generate_blockwise_dropout_mask(
+                prng_key,
+                head_idx=h,
+                q_block_idx=i,
+                kv_block_idx=global_kv_block_idx,
+                q_block_size=bq,
+                kv_block_size=bkv_compute,
+                dropout_rate=dropout_rate,
+            )
+            s_curr = jnp.where(dropout_mask, 0.0, s_curr) / (1.0 - dropout_rate)
         o_curr = lax.dot_general(s_curr, v, sv_dims)
 
         alpha_o = pltpu.repeat(alpha, head_dim_repeats, axis=1)
@@ -195,6 +245,7 @@ def _splash_attention_forward(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None,
+    dropout_mask: jax.Array | None,
     mask_value: float,
     is_mqa: bool,
     block_sizes: BlockSizes,
@@ -202,6 +253,8 @@ def _splash_attention_forward(
     mask_function: MaskFunctionType | None,
     save_residuals: Literal[False] = False,
     attn_logits_soft_cap: float | None = None,
+    droput_rate: float = 0.0,
+    prng_key: jax.Array | None = None,
 ) -> jax.Array:
     ...
 
@@ -213,6 +266,7 @@ def _splash_attention_forward(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None,
+    dropout_mask: jax.Array | None,
     mask_value: float,
     is_mqa: bool,
     block_sizes: BlockSizes,
@@ -220,6 +274,8 @@ def _splash_attention_forward(
     mask_function: MaskFunctionType | None,
     save_residuals: Literal[True],
     attn_logits_soft_cap: float | None = None,
+    dropout_rate: float = 0.0,
+    prng_key: jax.Array | None = None,
 ) -> SplashCustomReturnType:
     ...
 
@@ -237,6 +293,8 @@ def _splash_attention_forward(
     save_residuals: bool,
     mask_function: MaskFunctionType | None,
     attn_logits_soft_cap: float | None = None,
+    dropout_rate: float = 0.0,
+    prng_key: jax.Array | None = None,
     interpret: bool = False,
 ) -> SplashCustomReturnType:
     num_q_heads, q_seq_len, head_dim = q.shape
@@ -306,29 +364,32 @@ def _splash_attention_forward(
 
     q_layout = block_sizes.q_layout
 
-    def q_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
-        del j, data_next_ref, mask_next_ref, block_mask_ref
+    def q_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+        del j, data_next_ref, mask_next_ref, block_mask_ref, prng_key
         return from_head_minor((h, i, 0), q_layout)
 
-    def out_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
-        del j, data_next_ref, mask_next_ref, block_mask_ref
+    def out_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+        del j, data_next_ref, mask_next_ref, block_mask_ref, prng_key
         return h, i, 0
 
     k_layout = block_sizes.k_layout
 
-    def k_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+    def k_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+        del prng_key
         next_j, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
         prefix = () if is_mqa else (_div(h, q_heads_per_kv_head),)
         return from_head_minor((*prefix, next_j, 0), k_layout)
 
     v_layout = block_sizes.v_layout
 
-    def v_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+    def v_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+        del prng_key
         next_j, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
         prefix = () if is_mqa else (_div(h, q_heads_per_kv_head),)
         return from_head_minor((*prefix, next_j, 0), v_layout)
 
-    def mask_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+    def mask_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+        del prng_key
         _, next_m, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
         return next_m, 0, 0
 
@@ -336,7 +397,10 @@ def _splash_attention_forward(
         del h, j  # Unused.
         return i, 0
 
-    def kv_segment_ids_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+    def kv_segment_ids_index_map(
+        h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None
+    ):
+        del prng_key
         next_j, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
         return 0, next_j
 
@@ -379,7 +443,7 @@ def _splash_attention_forward(
         q_sequence = None
         in_specs.append(None)
 
-    num_scalar_prefetch = 3
+    num_scalar_prefetch = 4
 
     out_shapes = [
         jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # m_scratch
@@ -437,6 +501,7 @@ def _splash_attention_forward(
                 k_layout=k_layout,
                 v_layout=v_layout,
                 attn_logits_soft_cap=attn_logits_soft_cap,
+                dropout_rate=dropout_rate,
                 mask_function=mask_function,
             ),
             grid_spec=pltpu.PrefetchScalarGridSpec(
@@ -455,6 +520,7 @@ def _splash_attention_forward(
             fwd_mask_info.data_next,
             fwd_mask_info.block_mask,
             fwd_mask_info.mask_next,
+            prng_key,
             q if q_layout == QKVLayout.HEAD_DIM_MINOR else q.swapaxes(-1, -2),
             k if k_layout == QKVLayout.HEAD_DIM_MINOR else k.swapaxes(-1, -2),
             v if v_layout == QKVLayout.HEAD_DIM_MINOR else v.swapaxes(-1, -2),
@@ -485,7 +551,7 @@ def _splash_attention_forward(
     return out
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9, 10, 11, 12, 13, 14))
+@partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9, 10, 11, 12, 13, 14, 16))
 def _splash_attention_custom(
     fwd_mask_info: mask_info_lib.MaskInfo,
     dq_mask_info: mask_info_lib.MaskInfo | None,
@@ -501,6 +567,8 @@ def _splash_attention_custom(
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
     attn_logits_soft_cap: float | None = None,
+    dropout_rate: float = 0.0,
+    prng_key: jax.Array | None = None,
     interpret: bool = False,
 ) -> SplashCustomReturnType:
     # The forward function does not use the dq and dkv MaskInfos, it just forwards
@@ -527,6 +595,8 @@ def _splash_attention_custom(
         save_residuals=save_residuals,
         mask_function=mask_function,
         attn_logits_soft_cap=attn_logits_soft_cap,
+        dropout_rate=dropout_rate,
+        prng_key=prng_key,
         interpret=interpret,
     )
 
@@ -546,6 +616,8 @@ def _splash_attention_fwd(
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
     attn_logits_soft_cap: float | None = None,
+    dropout_rate: float = 0.0,
+    prng_key: jax.Array | None = None,
     interpret: bool = False,
 ) -> tuple[tuple[jax.Array], SplashResidualsType,]:
     if save_residuals:
@@ -564,6 +636,8 @@ def _splash_attention_fwd(
         save_residuals=True,
         mask_function=mask_function,
         attn_logits_soft_cap=attn_logits_soft_cap,
+        dropout_rate=dropout_rate,
+        prng_key=prng_key,
         interpret=interpret,
     )
     return out, (
@@ -575,6 +649,7 @@ def _splash_attention_fwd(
         logsumexp,
         dq_mask_info,
         dkv_mask_info,
+        prng_key,
     )
 
 
@@ -907,6 +982,7 @@ def _flash_attention_dkv_kernel(
     data_next_ref,
     block_mask_ref,
     mask_next_ref,
+    prng_key,
     # Inputs
     q_ref,
     k_ref,
@@ -934,6 +1010,7 @@ def _flash_attention_dkv_kernel(
     bkv_compute: int,
     is_mqa: bool,
     attn_logits_soft_cap: float | None,
+    dropout_rate: float,
     q_layout: QKVLayout,
     k_layout: QKVLayout,
     v_layout: QKVLayout,
@@ -1018,16 +1095,33 @@ def _flash_attention_dkv_kernel(
             mask_function=mask_function,
         )
         p = jnp.exp(qk - logsumexp)
-        dv = lax.dot(p.astype(do.dtype), do, preferred_element_type=jnp.float32)
-        dv = dv.astype(dv_scratch_ref.dtype) + pl.load(dv_scratch_ref, (slice_k, slice(None)))
-        pl.store(dv_scratch_ref, (slice_k, slice(None)), dv)
-
         dp = lax.dot_general(
             v,
             do,
             NT_DIM_NUMBERS,
             preferred_element_type=jnp.float32,
         )
+        if dropout_rate > 0.0:
+            dm = _generate_blockwise_dropout_mask(
+                prng_key,
+                q_head_index,
+                q_index,
+                kv_index,
+                bq,
+                bkv_compute,
+                dropout_rate,
+            )
+
+            dpr = dp
+            dp = jnp.where(dm, 0.0, dpr / (1.0 - dropout_rate))
+            pr = jnp.where(dm, 0.0, p / (1.0 - dropout_rate))
+        else:
+            pr = p
+
+        dv = lax.dot(pr.astype(do.dtype), do, preferred_element_type=jnp.float32)
+        dv = dv.astype(dv_scratch_ref.dtype) + pl.load(dv_scratch_ref, (slice_k, slice(None)))
+        pl.store(dv_scratch_ref, (slice_k, slice(None)), dv)
+
         ds = (dp - di) * p
         if attn_logits_soft_cap is not None:
             normalized = qk_uncapped / attn_logits_soft_cap
@@ -1102,6 +1196,8 @@ def _splash_attention_bwd_dkv(
     mask_info: mask_info_lib.MaskInfo,
     mask_value: float,
     attn_logits_soft_cap: float | None,
+    dropout_rate: float,
+    prng_key: jax.Array | None,
     use_fused_bwd_kernel: bool,
     q_layout: QKVLayout,
     k_layout: QKVLayout,
@@ -1155,7 +1251,9 @@ def _splash_attention_bwd_dkv(
         data_next_ref,
         block_mask_ref,
         mask_next_ref=None,
+        prng_key=None,
     ):
+        del prng_key
         next_i, *_ = _next_nonzero(
             head_index,
             q_index,
@@ -1176,7 +1274,9 @@ def _splash_attention_bwd_dkv(
         data_next_ref,
         block_mask_ref,
         mask_next_ref=None,
+        prng_key=None,
     ):
+        del prng_key
         next_i, *_ = _next_nonzero(
             head_index,
             q_index,
@@ -1245,7 +1345,9 @@ def _splash_attention_bwd_dkv(
         data_next_ref,
         block_mask_ref,
         mask_next_ref,
+        prng_key=None,
     ):
+        del prng_key
         _, next_m, *_ = _next_nonzero(
             head_index,
             q_index,
@@ -1266,7 +1368,9 @@ def _splash_attention_bwd_dkv(
         data_next_ref,
         block_mask_ref,
         mask_next_ref=None,
+        prng_key=None,
     ):
+        del prng_key
         next_i, *_ = _next_nonzero(
             head_index,
             q_index,
@@ -1300,7 +1404,9 @@ def _splash_attention_bwd_dkv(
         data_next_ref,
         block_mask_ref,
         mask_next_ref=None,
+        prng_key=None,
     ):
+        del prng_key
         next_i, *_ = _next_nonzero(
             head_index,
             q_index,
@@ -1373,13 +1479,14 @@ def _splash_attention_bwd_dkv(
         bq=bq,
         bkv_compute=bkv_compute,
         attn_logits_soft_cap=attn_logits_soft_cap,
+        dropout_rate=dropout_rate,
         q_layout=q_layout,
         k_layout=k_layout,
         v_layout=v_layout,
         bkv=bkv,
         mask_function=mask_function,
     )
-    num_scalar_prefetch = 3
+    num_scalar_prefetch = 4
 
     kernel_name = get_kernel_name(
         dict(
@@ -1419,6 +1526,7 @@ def _splash_attention_bwd_dkv(
             mask_info.data_next,
             mask_info.block_mask,
             mask_info.mask_next,
+            prng_key,
             q if q_layout == QKVLayout.HEAD_DIM_MINOR else q.swapaxes(-1, -2),
             k if k_layout == QKVLayout.HEAD_DIM_MINOR else k.swapaxes(-1, -2),
             v if v_layout == QKVLayout.HEAD_DIM_MINOR else v.swapaxes(-1, -2),
@@ -1447,6 +1555,7 @@ def _splash_attention_bwd(
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
     attn_logits_soft_cap: float | None,
+    dropout_rate: float,
     interpret: bool,
     res: SplashResidualsType,
     do: jax.Array,
@@ -1458,6 +1567,7 @@ def _splash_attention_bwd(
     jax.Array,  # k
     jax.Array,  # v
     SegmentIds | None,  # segmend_ids
+    jax.Array | None,  # dropout mask
 ]:
     del save_residuals, residual_checkpoint_name
     if not block_sizes.has_backward_blocks:
@@ -1478,6 +1588,7 @@ def _splash_attention_bwd(
         logsumexp,
         dq_mask_info,
         dkv_mask_info,
+        prng_key,
     ) = res
 
     # di: [num_heads, q_seq_len]
@@ -1499,6 +1610,8 @@ def _splash_attention_bwd(
         mask_info=dkv_mask_info,
         mask_value=mask_value,
         attn_logits_soft_cap=attn_logits_soft_cap,
+        dropout_rate=dropout_rate,
+        prng_key=prng_key,
         use_fused_bwd_kernel=use_fused_bwd_kernel,
         q_layout=block_sizes.q_layout,
         k_layout=block_sizes.k_layout,
@@ -1508,6 +1621,8 @@ def _splash_attention_bwd(
     )
     if not use_fused_bwd_kernel:
         assert dq is None
+        # (bailin-wang): we use fused bwd kernel by default.
+        assert dropout_rate == 0.0, "dropout mask is not supported in this path"
         dq = _splash_attention_bwd_dq(
             q,
             k,
@@ -1538,6 +1653,7 @@ def _splash_attention_bwd(
         dk,  # k
         dv,  # v
         None,  # segment_ids
+        None,  # prng_key
     )
 
 
@@ -1552,6 +1668,7 @@ _splash_attention_custom.defvjp(_splash_attention_fwd, _splash_attention_bwd)
         "save_residuals",
         "mask_value",
         "attn_logits_soft_cap",
+        "dropout_rate",
         "residual_checkpoint_name",
         "mask_function",
         "interpret",
@@ -1571,10 +1688,15 @@ def _splash_attention(
     save_residuals: bool,
     mask_value: float,
     attn_logits_soft_cap: float | None,
+    dropout_rate: float,
+    prng_key: jax.Array | None = None,
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
     interpret: bool,
 ) -> SplashCustomReturnType:
+    batch_idx = lax.axis_index("batch")
+    new_prng_key = jax.random.fold_in(prng_key, batch_idx)
+    pallas_prng_key = plrandom.to_pallas_key(new_prng_key)
     return _splash_attention_custom(
         fwd_mask_info,
         dq_mask_info,
@@ -1588,6 +1710,8 @@ def _splash_attention(
         block_sizes=block_sizes,
         save_residuals=save_residuals,
         attn_logits_soft_cap=attn_logits_soft_cap,
+        dropout_rate=dropout_rate,
+        prng_key=pallas_prng_key,
         residual_checkpoint_name=residual_checkpoint_name,
         mask_function=mask_function,
         interpret=interpret,
@@ -1683,6 +1807,7 @@ def _make_splash_attention(
     save_residuals: bool = False,
     mask_value: float = DEFAULT_MASK_VALUE,
     attn_logits_soft_cap: float | None = None,
+    dropout_rate: float = 0.0,
     downcast_smem_data: bool = True,
     head_shards: int,
     q_seq_shards: int,
@@ -1745,6 +1870,7 @@ def _make_splash_attention(
         save_residuals=save_residuals,
         mask_value=mask_value,
         attn_logits_soft_cap=attn_logits_soft_cap,
+        dropout_rate=dropout_rate,
         residual_checkpoint_name=residual_checkpoint_name,
         mask_function=mask_function_fwd,
         interpret=interpret,
@@ -1759,3 +1885,90 @@ make_splash_mha_single_device = partial(
 )
 
 make_splash_mqa_single_device = partial(make_splash_mha, is_mqa=True, head_shards=1, q_seq_shards=1)
+
+
+def _get_dropout_mask_kernel(
+    prng_key: jax.Array,
+    output_ref: jax.Array,
+    *,
+    bq: int,
+    bkv_compute: int,
+    dropout_rate: float,
+):
+    h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
+    mask = _generate_blockwise_dropout_mask(
+        prng_key,
+        h,
+        i,
+        j,
+        bq,
+        bkv_compute,
+        dropout_rate,
+    )
+
+    output_ref[...] = mask
+
+
+def get_dropout_mask(
+    query: jax.Array,
+    key: jax.Array,
+    block_sizes: BlockSizes,
+    dropout_rate: float,
+    prng_key: jax.Array,
+) -> jax.Array:
+    """Generates a dropout mask for debugging purposes.
+    Args:
+        query: The query tensor of shape (num_heads, seq_len, head_dim).
+        key: The key tensor of shape (num_heads, kv_seq_len, head_dim).
+        block_sizes: The block sizes used in the attention.
+        dropout_rate: The dropout rate to use.
+        prng_key: A JAX PRNG key for generating the mask.
+    Returns:
+        A boolean mask of shape (num_heads, seq_len, seq_len) where True indicates
+        that the corresponding position should be dropped out.
+    """
+    num_heads, seq_len, _ = query.shape
+    kv_seq_len = key.shape[1]
+    batch_idx = lax.axis_index("batch")
+    prng_key = jax.random.fold_in(prng_key, batch_idx)
+    prng_key = plrandom.to_pallas_key(prng_key)
+
+    bq = block_sizes.block_q
+    bkv_compute = block_sizes.block_kv_compute
+
+    grid = (num_heads, seq_len // bq, kv_seq_len // bkv_compute)
+
+    def out_index_map(h, i, j, prng_key=None):
+        del prng_key
+        return h, i, j
+
+    num_scalar_prefetch = 1
+
+    out_shapes = [jax.ShapeDtypeStruct((num_heads, seq_len, kv_seq_len), jnp.bool_)]
+    out_specs = [pl.BlockSpec((None, bq, bkv_compute), out_index_map)]
+
+    kernel_name = "get_dropout_for_debugging"
+    with jax.named_scope(kernel_name):
+        (out,) = pl.pallas_call(
+            partial(
+                _get_dropout_mask_kernel,
+                bq=bq,
+                bkv_compute=bkv_compute,
+                dropout_rate=dropout_rate,
+            ),
+            grid_spec=pltpu.PrefetchScalarGridSpec(
+                num_scalar_prefetch=num_scalar_prefetch,
+                in_specs=[],
+                out_specs=out_specs,
+                grid=grid,
+            ),
+            compiler_params=pltpu.TPUCompilerParams(
+                dimension_semantics=("parallel", "parallel", "parallel"),
+            ),
+            out_shape=out_shapes,
+            name=kernel_name,
+            interpret=False,
+        )(
+            prng_key,
+        )
+    return out

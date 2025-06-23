@@ -1195,8 +1195,11 @@ class SpmdTrainer(Module):
                 )
             if input_batch is None:
                 # Infer global input batch shapes from input element spec.
+                host_batch = self.input.element_spec()
+                if "input_dispatcher" in self.input.children:
+                    host_batch = self.input.input_dispatcher.logical_to_physical_shapes(host_batch)
                 input_batch = host_to_global_specs(
-                    self.input.element_spec(), partition=self._train_step_input_partition_specs()
+                    host_batch, partition=self._train_step_input_partition_specs()
                 )
 
             # Rely on the instance handle to ensure that we hit the compilation cache if possible.

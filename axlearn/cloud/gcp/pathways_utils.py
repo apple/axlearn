@@ -21,6 +21,8 @@ from axlearn.cloud.gcp.jobset_utils import (
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.tpu import infer_tpu_workers
+from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import (
     default_xla_options,
     infer_tpu_type,
@@ -210,6 +212,21 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # Needs to be passed as command arguments to each pathways-worker.
         self._mxla_options = get_megascale_options(xla_and_mxla_options)
 
+        # Validate pathways-head name length.
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=1,
+            num_replicas=1,
+            job_name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
+        )
+        # Validate pathways-worker name length.
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=infer_tpu_workers(self._tpu_type),
+            num_replicas=cfg.inner.accelerator.num_replicas,
+            job_name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
+        )
+
     def _update_env_list(self, env_list: list[dict], name: str, value: str):
         for env in env_list:
             if env.get("name") == name:
@@ -246,12 +263,41 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
         self._update_env_list(env_list, "TPU_SKIP_MDS_QUERY", "true")
+        # This is required to be able to run a Jax client when using
+        # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS=true.
+        # In Jax 0.6.2 and beyond this flag can be renamed to
+        # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS as well.
+        self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
 
         env_list.append(
             {
                 "name": "HOST_ADDRESS",
                 "valueFrom": {
                     "fieldRef": {"fieldPath": "metadata.labels['jobset.sigs.k8s.io/coordinator']"}
+                },
+            }
+        )
+
+        # pylint: disable=line-too-long
+        env_list.append(
+            {
+                "name": "NUM_REPLICAS",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
+                    }
+                },
+            }
+        )
+        # pylint: enable=line-too-long
+
+        env_list.append(
+            {
+                "name": "REPLICA_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+                    }
                 },
             }
         )
@@ -598,6 +644,27 @@ class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
     def __init__(self, cfg: PathwaysReplicatedJob.Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
         self._is_single_head = False
+        cfg: PathwaysMultiheadReplicatedJob.Config = self.config
+        # Validate pathways-head name length.
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=1,
+            num_replicas=cfg.inner.accelerator.num_replicas,
+            job_name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
+        )
+        # Validate pathways-worker name length.
+        # pytype: disable=wrong-arg-types
+        validate_jobset_name(
+            name=cfg.inner.name,
+            num_workers=infer_tpu_workers(self._tpu_type),
+            # In the multi-head pathways setup, there is only one
+            # replica of replicated job per worker group. And we have
+            # num_replicas of such replicated job. So the k8s format of
+            # num_replicas is always {replica_index}-0.
+            num_replicas=f"{cfg.inner.accelerator.num_replicas}-0",
+            job_name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
+        )
+        # pytype: enable=wrong-arg-types
 
     def _get_pathways_head_address(
         self, pathways_worker_replicated_job_index: Optional[int] = None

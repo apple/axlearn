@@ -84,6 +84,33 @@ class PathwaysReplicatedJobTest(TestCase):
                 node_selector.get(_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY),
             )
 
+            head_container = pod_spec["containers"][0]
+            env_vars = set()
+            for env_pair in head_container["env"]:
+                env_vars.add(env_pair["name"])
+                # pylint: disable=line-too-long
+                if env_pair["name"] == "NUM_REPLICAS":
+                    self.assertEqual(
+                        env_pair["valueFrom"],
+                        {
+                            "fieldRef": {
+                                "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
+                            }
+                        },
+                    )
+                # pylint: enable=line-too-long
+                if env_pair["name"] == "REPLICA_ID":
+                    self.assertEqual(
+                        env_pair["valueFrom"],
+                        {
+                            "fieldRef": {
+                                "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+                            }
+                        },
+                    )
+
+            self.assertTrue({"NUM_REPLICAS", "REPLICA_ID"}.issubset(env_vars))
+
             # Check pathways-proxy container args for XLA flags.
             proxy_container = None
             for container in pod_spec["initContainers"]:
@@ -232,6 +259,34 @@ class PathwaysReplicatedJobTest(TestCase):
             self.assertIn(new_mxla_flag_key, actual_mxla_options)
             self.assertEqual(actual_mxla_options[new_mxla_flag_key], expected_new_mxla_value_parsed)
 
+    def test_validate_head_name(self):
+        with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="a" * 40,
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            with self.assertRaisesRegex(
+                ValueError, r"pathways-head-1-1-abcde exceeds max \(63\) by 1 chars."
+            ):
+                _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+    def test_validate_worker_name(self):
+        with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="a" * 38,
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            with self.assertRaisesRegex(
+                ValueError, r"pathways-worker-1-2-abcde exceeds max \(63\) by 1 chars."
+            ):
+                _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
 
 class PathwaysMultiheadReplicatedJobTest(TestCase):
     """Tests PathwaysMultiheadReplicatedJob."""
@@ -296,3 +351,31 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
                     self.assertEqual(replicated_job["replicas"], num_replicas)
                 elif replicated_job_name.startswith("pathways-worker"):
                     self.assertEqual(replicated_job["replicas"], 1)
+
+    def test_validate_head_name(self):
+        with self._job_config(CloudBuildBundler, 2) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="a" * 40,
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+        with self.assertRaisesRegex(
+            ValueError, r"pathways-head-1-1-abcde exceeds max \(63\) by 1 chars."
+        ):
+            _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+    def test_validate_worker_name(self):
+        with self._job_config(CloudBuildBundler, 2) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="a" * 36,
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+        with self.assertRaisesRegex(
+            ValueError, r"pathways-worker-2-0-2-abcde exceeds max \(63\) by 1 chars."
+        ):
+            _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
