@@ -22,24 +22,26 @@ def setup(
     """Sets up the JAX environment for SPMD.
 
     Args:
-        jax_backend: The distributed backend, which can be "cpu", "gpu", or "tpu".
-        distributed_coordinator: The distributed coordinator address (in the form of <host>:<port>).
-            Needed only for `jax_backend != "tpu"` and `num_processes > 1`. Otherwise, the
-            coordinator will be configured automatically when `num_processes` and `process_id` are
-            provided.
-        num_processes: The number of processes. Needed only if distributed initialization is desired
-            for `jax_backend != "tpu"`.
-        process_id: The process ID (the process rank). Needed only if distributed initialization is
-            desired for `jax_backend != "tpu"`.
-        initialization_timeout: The jax distributed initialization timeout in seconds. If None, uses
-            jax default.
+        jax_backend: The distributed backend. Can be "cpu", "gpu", "tpu", or "proxy".
+        distributed_coordinator: The distributed coordinator address (e.g., "<host>:<port>").
+            If jax_backend is "tpu", this may be automatically inferred by JAX.
+            If jax_backend is "proxy", this is ignored.
+        num_processes: The number of processes.
+            If jax_backend is "tpu", this may be automatically inferred by JAX.
+            If jax_backend is "proxy", this is ignored.
+        process_id: The process ID (the process rank).
+            If jax_backend is "tpu", this may be automatically inferred by JAX.
+            If jax_backend is "proxy", this is ignored.
+        initialization_timeout: The jax distributed initialization timeout in seconds.
+            If None, uses jax default.
+            If jax_backend is "proxy", this is ignored.
 
     Raises:
         ValueError: If any of the following conditions are met:
-            * distributed_coordinator, num_processes, or process_id are not None when
-                jax_backend is "tpu";
-            * one of num_processes or process_id is None when jax_backend is not "tpu";
-            * distributed_coordinator is None when jax_backend is not "tpu" and num_processes > 1.
+            * `jax_backend` not in ("tpu", "proxy") and (`num_processes` is None or `process_id` is
+                None).
+            * `jax_backend` not in ("tpu", "proxy"), `num_processes` > 1, and
+                `distributed_coordinator` is None.
     """
     # Use a GSPMD-friendly PRNG implementation.
     jax.config.update("jax_default_prng_impl", "rbg")
