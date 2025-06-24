@@ -63,12 +63,15 @@ from axlearn.experiments.audio.conformer.common import (
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 
-def source_config(is_training: bool, split: str) -> InstantiableConfig[BuildDatasetFn]:
+def source_config(
+    is_training: bool, split: str, max_source_len: int
+) -> InstantiableConfig[BuildDatasetFn]:
     """Builds a source dataset config for librispeech.
 
     Args:
         is_training: Whether source is for training.
         split: Dataset split.
+        max_source_len: Max speech length.
 
     Returns:
         A config that instantiates to a data source.
@@ -78,7 +81,7 @@ def source_config(is_training: bool, split: str) -> InstantiableConfig[BuildData
         def fake_asr_source(is_training: bool):
             def fn():
                 text_ds = fake_text_source(is_training=is_training)()
-                speech_ds = fake_speech_source(is_training=is_training)()
+                speech_ds = fake_speech_source(is_training=is_training, max_len=max_source_len)()
                 return tf.data.Dataset.zip((speech_ds, text_ds)).map(lambda s, t: {**s, **t})
 
             return fn
@@ -317,7 +320,7 @@ def _input_fn(is_training: bool, split: str, eos_id: Optional[int] = None) -> In
         global_batch_size = 2048 if is_training else 512
 
     return Input.default_config().set(
-        source=source_config(is_training=is_training, split=split),
+        source=source_config(is_training=is_training, split=split, max_source_len=max_source_len),
         processor=config_for_function(asr_input).set(
             max_source_len=max_source_len,
             max_target_len=max_target_len,

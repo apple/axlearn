@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for vision attention layers."""
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -8,9 +10,11 @@ import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
 
+from axlearn.common.attention import BaseScaleQK
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.utils import Tensor
 from axlearn.vision.attention import WindowedAttention, WindowedSelfAttentionLayer, get_rel_pos_emb
 
 
@@ -44,6 +48,14 @@ def get_rel_pos_torch(q_size, k_size, rel_pos):
     relative_coords = (q_coords - k_coords) + (k_size - 1) * max(q_size / k_size, 1.0)
 
     return rel_pos_resized[relative_coords.long()]
+
+
+class ScaleNoOp(BaseScaleQK):
+    """Dummy Scale{Query|Key} layer that does not scale the projection."""
+
+    def forward(self, proj: Tensor, *, positions: Optional[Tensor]) -> Tensor:
+        """Scales the projected queries."""
+        return proj
 
 
 class RelativePositionTest(TestCase, tf.test.TestCase):
@@ -167,6 +179,20 @@ class WindowedAttentionLayerTest(TestCase, tf.test.TestCase):
 
         ref_data_shape = (batch_size, target_len, model_dim)
         self.assertEqual(outputs.data.shape, ref_data_shape)
+
+        noscale_attention_cfg = attention_cfg.clone(
+            query_scale=ScaleNoOp.default_config(), key_scale=ScaleNoOp.default_config()
+        )
+        noscale_attention_layer_cfg = attention_layer_cfg.clone(attention=noscale_attention_cfg)
+        noscale_attention_layer = noscale_attention_layer_cfg.instantiate(parent=None)
+        noscale_outputs, _ = F(
+            noscale_attention_layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=attention_state,
+            inputs=dict(target=target),
+        )
+        self.assertNotAllClose(outputs.data, noscale_outputs.data)
 
 
 if __name__ == "__main__":

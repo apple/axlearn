@@ -6,26 +6,24 @@ import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from axlearn.open_api.mock_utils import mock_anthropic_package, mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
-mock_anthropic_package()
+with mock_utils.mock_openai_package(), mock_utils.mock_anthropic_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.anthropic import (
+        AnthropicClient,
+        _convert_openai_messages_to_anthropic,
+        _convert_openai_tools_to_anthropic,
+        _system_parallel_tools_prompt,
+    )
+    from axlearn.open_api.common import ValidationError
 
-_module_root = "axlearn"
-
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.anthropic import (
-    AnthropicClient,
-    _convert_openai_messages_to_anthropic,
-    _convert_openai_tools_to_anthropic,
-    _system_parallel_tools_prompt,
-)
-from axlearn.open_api.common import ValidationError
+_MODULE_ROOT = "axlearn"
 
 # pylint: enable=wrong-import-position
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package, mock_utils.mock_anthropic_package)
 class TestAnthropicClient(unittest.IsolatedAsyncioTestCase):
     """Unit test for class AnthropicClient."""
 
@@ -38,8 +36,8 @@ class TestAnthropicClient(unittest.IsolatedAsyncioTestCase):
         client._client = AsyncMock()
         return client
 
-    @patch(f"{_module_root}.open_api.anthropic._convert_openai_messages_to_anthropic")
-    @patch(f"{_module_root}.open_api.anthropic._convert_openai_tools_to_anthropic")
+    @patch(f"{_MODULE_ROOT}.open_api.anthropic._convert_openai_messages_to_anthropic")
+    @patch(f"{_MODULE_ROOT}.open_api.anthropic._convert_openai_tools_to_anthropic")
     async def test_async_generate(self, mock_convert_tools, mock_convert_messages):
         mock_convert_messages.return_value = "converted_messages"
         mock_convert_tools.return_value = "converted_tools"
@@ -67,6 +65,7 @@ class TestAnthropicClient(unittest.IsolatedAsyncioTestCase):
         )
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package, mock_utils.mock_anthropic_package)
 class TestConvertOpenAIMessagesToAnthropic(unittest.TestCase):
     """Unit tests for _convert_openai_messages_to_anthropic."""
 
@@ -182,6 +181,7 @@ class TestConvertOpenAIMessagesToAnthropic(unittest.TestCase):
         self.assertEqual(result, [{"role": "assistant", "content": "Here is your answer."}])
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package, mock_utils.mock_anthropic_package)
 class TestConvertOpenAIToolsToAnthropic(unittest.TestCase):
     """Unit tests for _convert_openai_tools_to_anthropic."""
 

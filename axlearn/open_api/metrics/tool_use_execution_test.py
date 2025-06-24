@@ -8,17 +8,17 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 from absl.testing import parameterized
 
-from axlearn.open_api.mock_utils import mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.common import EvalGeneratorType
-from axlearn.open_api.metrics.tool_use_execution import metric_fn
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.common import EvalGeneratorType
+    from axlearn.open_api.metrics.tool_use_execution import metric_fn
 
 # pylint: enable=wrong-import-position
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestToolUseExecution(parameterized.TestCase):
     """Unit tests for tool_use_execution."""
 

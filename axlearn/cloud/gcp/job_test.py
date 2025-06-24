@@ -1,219 +1,65 @@
 # Copyright © 2023 Apple Inc.
 
-"""Tests jobs by launching commands on TPUs/VMs.
-
-    python3 -m axlearn.cloud.gcp.job_test TPUJobTest.test_execute_from_local \
-        --tpu_type=v4-8 --project=my-project --zone=my-zone
-
-    python3 -m axlearn.cloud.gcp.job_test CPUJobTest.test_execute_from_local \
-        --project=my-project --zone=my-zone
-
-"""
+"""Tests jobs by launching commands on TPUs/VMs."""
 # pylint: disable=protected-access
 
-import atexit
-import contextlib
-import os
-import subprocess
-import sys
-from typing import Optional, Union
+from typing import Optional, cast
 from unittest import mock
 
-import pytest
-from absl import flags, logging
-from absl.testing import absltest, parameterized
+from absl import flags
+from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
-from axlearn.cloud.common.utils import configure_logging, generate_job_name
+from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import bundler, job, jobset_utils
-from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler, GCSTarBundler
-from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import CPUJob, TPUQRMJob, _kill_ssh_agent, _start_ssh_agent
-from axlearn.cloud.gcp.jobset_utils_test import mock_settings
-from axlearn.cloud.gcp.test_utils import mock_gcp_settings
-from axlearn.cloud.gcp.tpu import create_queued_tpu, delete_queued_tpu, infer_tpu_type, qrm_resource
-from axlearn.cloud.gcp.utils import common_flags, get_credentials
-from axlearn.cloud.gcp.vm import create_vm, delete_vm
+from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
+from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
-
-
-@contextlib.contextmanager
-def mock_job(module_name: str):
-    with mock.patch(f"{module_name}.get_credentials", return_value=None):
-        yield
-
-
-def _private_flags():
-    common_flags()
-    flags.DEFINE_string("tpu_type", "v4-8", "TPU type to test with")
-
 
 FLAGS = flags.FLAGS
 
 
-class DummyRemoteTPUJob(TPUQRMJob):
-    """A dummy TPU job."""
-
-    def _execute(self) -> Union[subprocess.CompletedProcess, subprocess.Popen]:
-        """Provisions a TPU and launches a command."""
-        cfg: TPUQRMJob.Config = self.config
-        bundle_id = self._bundler.bundle(cfg.name)
-        resource = qrm_resource(get_credentials())
-        create_queued_tpu(
-            cfg.name,
-            resource,
-            tpu_type=infer_tpu_type(cfg.accelerator.instance_type),
-            bundler_type=self._bundler.TYPE,
-        )
-        out = self._execute_remote_cmd(
-            f"{self._bundler.install_command(bundle_id)} && {cfg.command}",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        delete_queued_tpu(cfg.name, resource)
-        return out[0]
-
-
-@pytest.mark.tpu
-@pytest.mark.gs_login
-class TPUJobTest(TestCase):
-    """Tests TPUJob."""
-
-    def test_execute_from_local(self):
-        jobname = generate_job_name()
-        resource = qrm_resource(get_credentials())
-        atexit.register(delete_queued_tpu, jobname, resource)
-        project = gcp_settings("project")
-        zone = gcp_settings("zone")
-        cfg: DummyRemoteTPUJob.Config = DummyRemoteTPUJob.default_config().set(
-            name=jobname,
-            project=project,
-            zone=zone,
-            max_tries=1,
-            retry_interval=60,
-            bundler=GCSTarBundler.default_config(),
-            command="pip list",
-        )
-        cfg.accelerator.instance_type = FLAGS.instance_type
-        out = cfg.instantiate().execute()
-        self.assertIn("axlearn", out.stdout)
-
-
-class DummyBastionJob(CPUJob):
-    """A dummy CPU job."""
-
-    @config_class
-    class Config(CPUJob.Config):
-        # Type of VM.
-        vm_type: str
-        # Disk size in GB.
-        disk_size: int
-
-    def _execute(self) -> subprocess.CompletedProcess:
-        """Provisions and launches a command on a VM."""
-        cfg: DummyBastionJob.Config = self.config
-        self._bundler.bundle(cfg.name)
-        create_vm(
-            cfg.name,
-            vm_type=cfg.vm_type,
-            disk_size=cfg.disk_size,
-            bundler_type=self._bundler.TYPE,
-            credentials=get_credentials(),
-        )
-        return self._execute_remote_cmd(
-            cfg.command,
-            detached=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-
-@pytest.mark.gs_login
-class CPUJobTest(TestCase):
-    """Tests CPUJob."""
-
-    def test_execute_from_local(self):
-        jobname = generate_job_name()
-        atexit.register(delete_vm, jobname, credentials=get_credentials())
-        cfg = DummyBastionJob.default_config().set(
-            name=jobname,
-            project=gcp_settings("project"),
-            zone=gcp_settings("zone"),
-            max_tries=1,
-            retry_interval=60,
-            bundler=GCSTarBundler.default_config(),
-            vm_type="n2-standard-2",
-            disk_size=64,
-            command=f"mkdir -p /tmp/{jobname} && ls /tmp/",
-        )
-        out = cfg.instantiate().execute()
-        self.assertIn(jobname, out.stdout)
-
-
-class UtilTest(TestCase):
-    """Tests util functions."""
-
-    def test_ssh_agent(self):
-        old_environ = os.environ.copy()
-        try:
-            os.environ.pop("SSH_AGENT_PID", None)
-            os.environ.pop("SSH_AUTH_SOCK", None)
-            self.assertIsNone(os.getenv("SSH_AGENT_PID"))
-            self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
-            _start_ssh_agent()
-            if sys.platform == "linux":
-                self.assertRegex(
-                    os.getenv("SSH_AUTH_SOCK", ""),
-                    r"/tmp/ssh-.+/agent.(\d+)",
-                )
-            elif sys.platform == "darwin":
-                self.assertRegex(
-                    os.getenv("SSH_AUTH_SOCK", ""),
-                    r"/var/folders/[\w/]+//ssh-.+/agent.(\d+)",
-                )
-            self.assertTrue(os.path.exists(os.getenv("SSH_AUTH_SOCK")))
-            self.assertRegex(os.getenv("SSH_AGENT_PID", ""), r"\d+")
-            _kill_ssh_agent()
-            self.assertIsNone(os.getenv("SSH_AGENT_PID"))
-            self.assertIsNone(os.getenv("SSH_AUTH_SOCK"))
-        finally:
-            os.environ.clear()
-            os.environ.update(old_environ)
-
-
 class TPUGKEJobTest(TestCase):
-    @contextlib.contextmanager
+    """Tests GKEJob with TPU."""
+
+    def run(self, result=None):
+        # Run tests under mock user and settings.
+        self._settings = default_mock_settings()
+        with mock_gcp_settings(
+            [jobset_utils.__name__, bundler.__name__],
+            settings=self._settings,
+        ):
+            return super().run(result)
+
     def _job_config(
         self,
+        *,
+        command: str,
         bundler_cls: type[Bundler],
-        reservation: Optional[str] = None,
-        service_account: Optional[str] = None,
-        enable_pre_provisioner: Optional[bool] = None,
-        host_mount_spec: Optional[list[str]] = None,
         priority_class: Optional[str] = None,
-        gcsfuse_mount_spec: Optional[str] = None,
-    ):
-        with mock_gcp_settings(
-            [job.__name__, jobset_utils.__name__, bundler.__name__], mock_settings()
-        ):
-            fv = flags.FlagValues()
-            job.TPUGKEJob.define_flags(fv)
-            if reservation:
-                fv.set_default("reservation", reservation)
-            if service_account:
-                fv.set_default("service_account", service_account)
-            if host_mount_spec:
-                fv.set_default("host_mount_spec", host_mount_spec)
-            if gcsfuse_mount_spec:
-                fv.set_default("gcsfuse_mount_spec", gcsfuse_mount_spec)
-            fv.mark_as_parsed()
-            cfg = job.TPUGKEJob.from_flags(fv)
-            cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
-            cfg.accelerator.instance_type = "tpu-v4-8"
-            cfg.enable_pre_provisioner = enable_pre_provisioner
-            cfg.builder.priority_class = priority_class
-            yield cfg
+        **kwargs,
+    ) -> tuple[job.GKEJob.Config, Bundler.Config]:
+        fv = flags.FlagValues()
+        cfg = job.GKEJob.default_config().set(
+            builder=jobset_utils.TPUReplicatedJob.default_config()
+        )
+        define_flags(cfg, fv)
+        for key, value in kwargs.items():
+            if value is not None:
+                # Use setattr rather than set_default to set flags.
+                setattr(fv, key, value)
+        fv.name = "fake-name"
+        fv.output_dir = "FAKE"
+        fv.instance_type = "tpu-v4-8"
+        fv.mark_as_parsed()
+        from_flags(cfg, fv, command=command)
+        # Test that retries are configured on fv by default.
+        self.assertIsNotNone(fv["max_tries"].default)
+        self.assertIsNotNone(fv["retry_interval"].default)
+        cfg.builder.priority_class = priority_class
+        bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+        return cfg, bundler_cfg
 
     @parameterized.product(
         reservation=[None, "test"],
@@ -227,7 +73,7 @@ class TPUGKEJobTest(TestCase):
         reservation,
         service_account,
         enable_pre_provisioner,
-        bundler_cls,
+        bundler_cls: type[Bundler],
         wrap_bundler,
     ):
         class WrappedBundler(Bundler):
@@ -235,73 +81,69 @@ class TPUGKEJobTest(TestCase):
             class Config(Bundler.Config):
                 inner: Required[Bundler.Config] = REQUIRED
 
-        settings = mock_settings()
-        with self._job_config(
-            bundler_cls,
+        cfg, bundler_cfg = self._job_config(
+            command="test-command",
+            bundler_cls=bundler_cls,
             reservation=reservation,
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
-        ) as cfg:
-            self.assertEqual(cfg.builder.reservation, reservation or settings["gke_reservation"])
-            self.assertEqual(
-                cfg.service_account,
-                service_account or settings.get("k8s_service_account", "default"),
-            )
-            self.assertEqual(cfg.enable_pre_provisioner, enable_pre_provisioner)
-            self.assertEqual(cfg.builder.location_hint, settings["location_hint"])
-            # Should work with wrapped bundlers.
-            if wrap_bundler:
-                cfg.bundler = WrappedBundler.default_config().set(inner=cfg.bundler)
-            # Should be instantiable.
-            cfg.set(
-                project="test-project",
-                zone="test-zone",
-                command="",
-                max_tries=1,
-                retry_interval=1,
-                name="test",
-                env_vars={"a": "1"},
-                output_dir="FAKE",
-            )
-            gke_job: job.TPUGKEJob = cfg.instantiate()
+        )
+        self.assertIsInstance(cfg.builder, jobset_utils.TPUReplicatedJob.Config)
+        cfg.builder = cast(jobset_utils.TPUReplicatedJob.Config, cfg.builder)
 
-            # Instantiating should propagate fields.
-            final_config: job.TPUGKEJob.Config = gke_job.config
-            inner_config: jobset_utils.TPUReplicatedJob.Config = gke_job._builder.config
-            for key, value in final_config.items():
-                if key not in ("klass", "bundler") and key in inner_config.keys():
-                    self.assertEqual(value, getattr(inner_config, key), msg=key)
-            self.assertEqual("v4-8", gke_job._builder._tpu_type)  # pytype: disable=attribute-error
+        self.assertEqual(cfg.name, cfg.builder.name)
+        self.assertEqual(cfg.project, self._settings["project"])
+        self.assertEqual(cfg.zone, self._settings["zone"])
+        self.assertEqual(cfg.builder.reservation, reservation or self._settings["gke_reservation"])
+        self.assertEqual(
+            cfg.builder.service_account,
+            service_account or self._settings.get("k8s_service_account", "default"),
+        )
+        self.assertEqual(cfg.builder.location_hint, self._settings["location_hint"])
+        self.assertEqual(cfg.builder.enable_pre_provisioner, enable_pre_provisioner)
+        # Should work with wrapped bundlers.
+        if wrap_bundler:
+            bundler_cfg = WrappedBundler.default_config().set(inner=bundler_cfg)
+        gke_job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        self.assertEqual("v4-8", gke_job._builder._tpu_type)  # pytype: disable=attribute-error
+
+    def test_delete(self):
+        patch_delete = mock.patch(f"{job.__name__}.delete_k8s_jobset")
+        with patch_delete as mock_delete:
+            cfg, _ = self._job_config(command="test-command", bundler_cls=CloudBuildBundler)
+            gke_job = cfg.instantiate(bundler=mock.Mock())
+            gke_job._delete()  # pylint: disable=protected-access
+            mock_delete.assert_called()
 
 
 class GPUGKEJobTest(TestCase):
-    @contextlib.contextmanager
-    def _job_config(
-        self,
-        bundler_cls: type[Bundler],
-        service_account: Optional[str] = None,
-        queue: Optional[str] = None,
-        num_replicas: Optional[int] = None,
-        env_vars: Optional[dict] = None,
-    ):
+    """Tests GKEJob with GPUs."""
+
+    def run(self, result=None):
+        # Run tests under mock user and settings.
+        self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [job.__name__, jobset_utils.__name__, bundler.__name__], mock_settings()
+            [jobset_utils.__name__, bundler.__name__],
+            settings=self._settings,
         ):
-            fv = flags.FlagValues()
-            job.GPUGKEJob.define_flags(fv)
-            if service_account:
-                fv.set_default("service_account", service_account)
-            if num_replicas:
-                fv.set_default("num_replicas", num_replicas)
-            fv.mark_as_parsed()
-            cfg = job.GPUGKEJob.from_flags(fv)
-            cfg.bundler = bundler_cls.from_spec([], fv=fv).set(image="test-image")
-            cfg.accelerator.instance_type = "gpu-a3-highgpu-8g-256"
-            cfg.queue = queue
-            cfg.command = "test-command"
-            cfg.env_vars = env_vars if env_vars is not None else {}
-            cfg.max_tries = 999
-            yield cfg
+            return super().run(result)
+
+    def _job_config(
+        self, *, command: str, bundler_cls: type[Bundler], **kwargs
+    ) -> tuple[job.GKEJob.Config, Bundler.Config]:
+        fv = flags.FlagValues()
+        cfg = job.GKEJob.default_config().set(
+            builder=jobset_utils.A3HighReplicatedJob.default_config()
+        )
+        define_flags(cfg, fv)
+        for key, value in kwargs.items():
+            if value is not None:
+                # Use setattr rather than set_default to set flags.
+                setattr(fv, key, value)
+        fv.mark_as_parsed()
+        cfg = from_flags(cfg, fv, command=command)
+        bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+        return cfg, bundler_cfg
 
     @parameterized.product(
         service_account=[None, "sa"],
@@ -309,47 +151,41 @@ class GPUGKEJobTest(TestCase):
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         wrap_bundler=[False, True],
         num_replicas=[None, 1, 2],
-        env_vars=[None, {"a": "b"}],
+        instance_type=["gpu-a3-highgpu-8g-256"],
     )
     def test_instantiate(
-        self, service_account, bundler_cls, wrap_bundler, num_replicas, env_vars, queue
+        self, *, service_account, bundler_cls, wrap_bundler, num_replicas, queue, instance_type
     ):
         class WrappedBundler(Bundler):
             @config_class
             class Config(Bundler.Config):
                 inner: Required[Bundler.Config] = REQUIRED
 
-        settings = mock_settings()
-        with self._job_config(
-            bundler_cls,
+        command = "test-command"
+        settings = default_mock_settings()
+        cfg, bundler_cfg = self._job_config(
+            command=command,
+            bundler_cls=bundler_cls,
+            instance_type="gpu-a3-highgpu-8g-256",
             service_account=service_account,
-            env_vars=env_vars,
             num_replicas=num_replicas,
             queue=queue,
-        ) as cfg:
-            self.assertEqual(
-                cfg.service_account,
-                service_account or settings.get("k8s_service_account", "default"),
-            )
-            # Should work with wrapped bundlers.
-            if wrap_bundler:
-                cfg.bundler = WrappedBundler.default_config().set(inner=cfg.bundler)
-            # Should be instantiable.
-            cfg.set(
-                project="test-project",
-                zone="test-zone",
-                command="",
-                max_tries=1,
-                retry_interval=1,
-                name="test",
-            )
-            gke_job: job.GPUGKEJob = cfg.instantiate()
-            job_cfg: job.GPUGKEJob.Config = gke_job.config
-            self.assertEqual("gpu-a3-highgpu-8g-256", job_cfg.accelerator.instance_type)
-            if num_replicas is None:
-                self.assertEqual(1, job_cfg.accelerator.num_replicas)
-            else:
-                self.assertEqual(num_replicas, job_cfg.accelerator.num_replicas)
+        )
+        self.assertEqual(
+            cfg.builder.service_account,
+            service_account or settings.get("k8s_service_account", "default"),
+        )
+        # Should work with wrapped bundlers.
+        if wrap_bundler:
+            bundler_cfg = WrappedBundler.default_config().set(inner=bundler_cfg)
+        # Should be instantiable.
+        gke_job: job.GKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        job_cfg: job.GKEJob.Config = gke_job.config
+
+        # Command/instance_type should be read by the builder.
+        self.assertEqual(command, job_cfg.builder.command)
+        self.assertEqual(instance_type, job_cfg.builder.accelerator.instance_type)
+        self.assertEqual(num_replicas or 1, job_cfg.builder.accelerator.num_replicas)
 
     @parameterized.product(
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
@@ -360,19 +196,18 @@ class GPUGKEJobTest(TestCase):
         bundler_cls,
         queue: Optional[str] = None,
     ):
-        with self._job_config(bundler_cls, queue=queue) as cfg:
-            gke_job: job.GPUGKEJob = cfg.set(name="test").instantiate()
-            # pylint: disable-next=protected-access
-            jobset = gke_job._build_jobset()
-            jobset_annotations = jobset["metadata"]["annotations"]
-            self.assertEqual(jobset["metadata"]["name"], cfg.name)
-            if queue is None:
-                self.assertNotIn("kueue.x-k8s.io/queue-name", jobset_annotations)
-            else:
-                self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)
-
-
-if __name__ == "__main__":
-    _private_flags()
-    configure_logging(logging.INFO)
-    absltest.main()
+        cfg, bundler_cfg = self._job_config(
+            command="",
+            bundler_cls=bundler_cls,
+            instance_type="gpu-a3-highgpu-8g-256",
+            queue=queue,
+        )
+        gke_job: job.GKEJob = cfg.set(name="test").instantiate(bundler=bundler_cfg.instantiate())
+        # pylint: disable-next=protected-access
+        jobset = gke_job._build_jobset()
+        jobset_annotations = jobset["metadata"]["annotations"]
+        self.assertEqual(jobset["metadata"]["name"], cfg.name)
+        if queue is None:
+            self.assertNotIn("kueue.x-k8s.io/queue-name", jobset_annotations)
+        else:
+            self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)

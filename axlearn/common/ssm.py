@@ -29,7 +29,6 @@ from typing import NamedTuple, Optional, Union
 
 import jax
 import jax.ad_checkpoint
-from einops import rearrange, repeat
 from jax import numpy as jnp
 from jax._src.mesh import thread_resources
 from jax.experimental.shard_map import shard_map
@@ -44,6 +43,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.ein_ops import rearrange, repeat
 from axlearn.common.layers import Conv1D, GroupNorm, Linear, MultiLinear, NormType, RMSNorm
 from axlearn.common.module import Module
 from axlearn.common.param_init import FanAxes, Initializer, Shape, constant_initializer, uniform

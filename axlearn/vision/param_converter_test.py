@@ -11,6 +11,7 @@ from axlearn.common.attention import LearnedPositionalEmbedding
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_converter_test import BaseParamConverterTest, torch_output_to_dict
+from axlearn.common.test_utils import set_threefry_partitionable
 from axlearn.common.text_encoder import ENCODED_HIDDEN_STATES
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import as_tensor
@@ -216,6 +217,7 @@ class HFClipTest(BaseParamConverterTest):
         ).instantiate(parent=None)
 
     @parameterized.parameters([False, True])
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_clip_model(self, remat):
         batch = 3
         layer = self._hf_clip_model(remat=remat)
@@ -295,3 +297,10 @@ class HFClipTest(BaseParamConverterTest):
             ),
         )
         self.assertNestedAllClose(expected, actual)
+
+    def test_clip_layer_kv_cache_exists(self):
+        hf_layer = hf_clip.CLIPEncoderLayer(self.clip_cfg.vision_config)
+        params = parameters_from_torch_layer(hf_layer)
+        self.assertIn("self_attention", params)
+        self.assertIn("attention", params["self_attention"])
+        self.assertIn("kv_cache", params["self_attention"]["attention"])

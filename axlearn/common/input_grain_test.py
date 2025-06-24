@@ -3,7 +3,8 @@
 """Tests grain inputs."""
 
 import copy
-from typing import Callable, Optional
+from functools import partial
+from typing import Optional, Protocol
 
 import grain.python as grain
 import jax
@@ -20,16 +21,17 @@ from axlearn.common.input_fake import fake_grain_source
 from axlearn.common.input_grain import (
     BuildDatasetFn,
     Dataset,
+    DispatchConfig,
     Input,
-    _set_read_config_recursively,
+    RaggedTensor,
     maybe_to_iter_dataset,
     pad_for_evaluation,
+    per_feed_batch,
     prefetch_dataset,
     rekey,
     sample_from_datasets,
     shard_dataset,
     shard_dataset_with_proportion,
-    trim_and_pack_dataset,
     unbatch,
 )
 from axlearn.common.test_utils import TestCase
@@ -46,8 +48,8 @@ def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
 
 
 class _PlusOne(grain.MapTransform):
-    def map(self, x: int) -> int:
-        return x + 1
+    def map(self, element: int) -> int:
+        return element + 1
 
 
 class UtilsTest(TestCase):
@@ -307,58 +309,26 @@ class UtilsTest(TestCase):
             ds = unbatch(maybe_to_iter_dataset(ds))
             list(ds)
 
-    @parameterized.parameters(
-        dict(
-            feature_lens={"input_ids": 5},
-            expected=[
+    def test_unbatch_ragged(self):
+        # Test unbatching with ragged tensors.
+        ds = fake_grain_source(
+            [
                 {
-                    "input_ids": np.array([1, 2, 3, 4, 5]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0]),
+                    "x": np.array([1, 2, 3]),
+                    "y": np.array([1, 2, 3]),
+                    "z": RaggedTensor(
+                        [
+                            np.array([1, 2, 3, 4]),
+                            np.array([5, 6, 7, 8]),
+                            np.array([9, 10, 11, 12]),
+                        ]
+                    ),
                 },
-                {
-                    "input_ids": np.array([11, 12, 13, 14, 7]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0]),
-                },
-                {
-                    "input_ids": np.array([8, 0, 0, 0, 0]),
-                    "input_ids_segment_ids": np.array([1, 0, 0, 0, 0]),
-                    "input_ids_positions": np.array([0, 0, 0, 0, 0]),
-                },
-            ],
-        ),
-        dict(
-            feature_lens={"input_ids": 6},
-            expected=[
-                {
-                    "input_ids": np.array([1, 2, 3, 4, 5, 6]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2, 2]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0, 1]),
-                },
-                {
-                    "input_ids": np.array([11, 12, 13, 14, 7, 8]),
-                    "input_ids_segment_ids": np.array([1, 1, 1, 1, 2, 3]),
-                    "input_ids_positions": np.array([0, 1, 2, 3, 0, 0]),
-                },
-            ],
-        ),
-    )
-    def test_packing(self, feature_lens: dict, expected: list):
-        examples = [
-            {"input_ids": np.array([1, 2, 3, 4])},
-            {"input_ids": np.array([5, 6])},
-            {"input_ids": np.array([11, 12, 13, 14])},
-            {"input_ids": np.array([7])},
-            {"input_ids": np.array([8])},
-        ]
-
-        def cast_ints(example):
-            return jax.tree.map(lambda x: x.astype(np.int32), example)
-
-        ds = fake_grain_source(examples)
-        ds = trim_and_pack_dataset(maybe_to_iter_dataset(ds), feature_lengths=feature_lens)
-        self.assertNestedEqual(cast_ints(expected), cast_ints(list(iter(ds))))
+            ]
+        )
+        ds = unbatch(maybe_to_iter_dataset(ds))
+        ds = iter(ds)
+        self.assertNestedEqual({"x": 1, "y": 1, "z": np.array([1, 2, 3, 4])}, next(ds))
 
     def test_rekey(self):
         # Test rekey with repeat, dropping original inputs.
@@ -424,55 +394,68 @@ class UtilsTest(TestCase):
         ds = pad_for_evaluation(ds, per_feed_batch_size=5)
         self._test_checkpointing(iter(ds))
 
+    @parameterized.parameters(
+        dict(num_shards=2, shard_index=0),
+        dict(num_shards=2, shard_index=1),
+    )
+    def test_per_feed_batch(self, num_shards: int, shard_index: int):
+        input_dispatcher = InputDispatcher.default_config().set(
+            global_logical_batch_size=10,
+            num_physical_feeds=num_shards,
+            physical_feed_index=shard_index,
+        )
+
+        # Test against map ds.
+        def map_source(dispatch_config):
+            map_ds = fake_grain_source(list(range(10)))
+            map_ds = map_ds.map(lambda x: x + 1)
+            return per_feed_batch(
+                map_ds, global_batch_size=10, dispatch_config=dispatch_config, drop_remainder=False
+            )
+
+        # Configure dispatch.
+        cfg = Input.default_config().set(source=map_source, input_dispatcher=input_dispatcher)
+        x = cfg.set(name="test").instantiate(parent=None)
+        # Should use the per-feed batch size.
+        self.assertNestedEqual([np.array([1, 2, 3, 4, 5]), np.array([6, 7, 8, 9, 10])], list(x))
+
+        # Test against iter ds.
+        def iter_source(dispatch_config):
+            iter_ds = fake_grain_source(list(range(10)))
+            iter_ds = maybe_to_iter_dataset(iter_ds)
+            iter_ds = iter_ds.map(lambda x: x + 1)
+            return per_feed_batch(
+                iter_ds, global_batch_size=10, dispatch_config=dispatch_config, drop_remainder=False
+            )
+
+        cfg = Input.default_config().set(source=iter_source, input_dispatcher=input_dispatcher)
+        x = cfg.set(name="test").instantiate(parent=None)
+        # Should use the per-feed batch size.
+        self.assertNestedEqual([np.array([1, 2, 3, 4, 5]), np.array([6, 7, 8, 9, 10])], list(x))
+
+
+class _PerProcessFn(Protocol):
+    """Processes per-host data."""
+
+    def __call__(self, ds: Dataset, *, dispatch_config: DispatchConfig) -> Dataset:
+        ...
+
 
 class InputTest(parameterized.TestCase):
     """Tests Input module."""
-
-    def test_set_read_config_recursively(self):
-        read_config = dict(num_shards=4, shard_index=2)
-
-        # Should return False if no `shard_dataset`.
-        ds = range_dataset(start=0, stop=10, seed=123)
-        self.assertFalse(_set_read_config_recursively(ds, **read_config))
-
-        shard_ds = shard_dataset(ds, process_index=0, process_count=2)
-        ds = shard_ds.shuffle().repeat(num_epochs=1)
-        ds = ds.batch(1)
-        ds = prefetch_dataset(
-            maybe_to_iter_dataset(ds),
-            multiprocessing_options=grain.MultiprocessingOptions(num_workers=1),
-        )
-
-        # Should return True if we set successfully.
-        # pylint: disable=protected-access
-        self.assertTrue(_set_read_config_recursively(ds, **read_config))
-        self.assertEqual(shard_ds._start, read_config["shard_index"])
-        self.assertEqual(shard_ds._step, read_config["num_shards"])
-
-        # Should fail if we iterate and then attempt to set.
-        self.assertEqual(read_config["shard_index"], shard_ds[0])
-        with self.assertRaisesRegex(ValueError, "after iterating"):
-            _set_read_config_recursively(ds, **read_config)
 
     def _input_config(
         self,
         source_ds: Dataset,
         *,
-        per_process: Optional[Callable[[Dataset], Dataset]] = None,
-        process_index: Optional[int] = None,
-        process_count: Optional[int] = None,
+        per_process: Optional[_PerProcessFn] = None,
     ):
-        if process_index is None:
-            process_index = jax.process_index()
-        if process_count is None:
-            process_count = jax.process_count()
-
         def ds_fn() -> BuildDatasetFn:
-            def source():
+            def source(dispatch_config):
                 ds = source_ds
-                ds = shard_dataset(ds, process_index=process_index, process_count=process_count)
+                ds = shard_dataset(ds, dispatch_config=dispatch_config)
                 if callable(per_process):
-                    ds = per_process(ds)
+                    ds = per_process(ds, dispatch_config=dispatch_config)
                 ds = prefetch_dataset(
                     maybe_to_iter_dataset(ds),
                     multiprocessing_options=grain.MultiprocessingOptions(num_workers=1),
@@ -499,23 +482,34 @@ class InputTest(parameterized.TestCase):
     )
     def test_input(self, process_index: int, process_count: int):
         epoch_len, num_epochs = 10, 2
+        ds = range_dataset(start=0, stop=epoch_len, seed=123).map(lambda x: {"x": x})
         cfg = self._input_config(
-            range_dataset(start=0, stop=epoch_len, seed=123),
-            per_process=lambda ds: ds.shuffle().repeat(num_epochs),
-            process_count=process_count,
-            process_index=process_index,
+            ds,
+            per_process=lambda ds, **_: ds.shuffle().repeat(num_epochs).batch(1),
+        )
+        cfg.input_dispatcher = InputDispatcher.default_config().set(
+            global_logical_batch_size=process_count,
+            num_physical_feeds=process_count,
+            physical_feed_index=process_index,
         )
         grain_input: Input = cfg.instantiate(parent=None)
         examples = list(grain_input)
         num_examples = num_epochs * epoch_len
 
+        expected = list(range(10))
+
         # If loading on a single process.
         if process_count == 1:
             self.assertEqual(num_examples, len(examples))
-            # First epoch.
-            self.assertEqual([4, 3, 2, 9, 0, 1, 8, 6, 7, 5], examples[:10])
+            first_epoch = [x["x"] for x in examples[:10]]
+            second_epoch = [x["x"] for x in examples[10:]]
+
+            # First epoch. Order will be shuffled.
+            self.assertNotEqual(expected, first_epoch)
+            self.assertSameElements(expected, first_epoch)
             # Check that second epoch uses a different shuffle.
-            self.assertEqual([3, 7, 1, 8, 2, 6, 9, 4, 5, 0], examples[10:])
+            self.assertNotEqual(first_epoch, second_epoch)
+            self.assertSameElements(expected, second_epoch)
 
         else:
             shard_options = grain.ShardOptions(shard_index=process_index, shard_count=process_count)
@@ -527,7 +521,8 @@ class InputTest(parameterized.TestCase):
             # Only the source examples assigned to this process should appear.
             start, end = even_split(epoch_len, shard_options)
             self.assertSameElements(
-                list(range(epoch_len))[slice(process_index, None, process_count)], examples
+                list(range(epoch_len))[slice(process_index, None, process_count)],
+                [x["x"] for x in examples],
             )
 
     @parameterized.parameters(
@@ -565,9 +560,10 @@ class InputTest(parameterized.TestCase):
     def test_batches(self):
         """Test that we validate per-feed logical batch size."""
 
+        global_batch_size = 4
         process_count, process_index = 2, 0
         dispatcher = InputDispatcher.default_config().set(
-            global_logical_batch_size=4,
+            global_logical_batch_size=global_batch_size,
             num_physical_feeds=process_count,
             physical_feed_index=process_index,
         )
@@ -575,27 +571,42 @@ class InputTest(parameterized.TestCase):
         # batch of 2.
         cfg = self._input_config(
             range_dataset(start=0, stop=10, seed=123).shuffle().repeat(num_epochs=1),
-            per_process=lambda ds: ds.batch(2),
-            process_count=process_count,
-            process_index=process_index,
+            per_process=partial(per_feed_batch, global_batch_size=global_batch_size),
         )
         cfg.input_dispatcher = dispatcher
         grain_input: Input = cfg.instantiate(parent=None)
         batch = next(grain_input.batches(iter(grain_input)))
         self.assertEqual(batch.shape[0], grain_input.input_dispatcher.feed_logical_batch_size)
 
-        # Try with the incorrect batching.
-        cfg = self._input_config(
-            range_dataset(start=0, stop=10, seed=123).shuffle().repeat(num_epochs=1),
-            per_process=lambda ds: ds.batch(4),
-            process_count=process_count,
-            process_index=process_index,
+    @parameterized.parameters(
+        # Should produce a per-feed batch of 2, taking every `num_shards` example.
+        dict(num_shards=2, shard_index=0, expected=[0, 2]),
+        dict(num_shards=2, shard_index=1, expected=[1, 3]),
+    )
+    def test_dispatch_cpu(self, num_shards: int, shard_index: int, expected: list):
+        global_batch_size = num_shards * 2
+        dispatcher = InputDispatcher.default_config().set(
+            global_logical_batch_size=global_batch_size,
+            num_physical_feeds=num_shards,
+            physical_feed_index=shard_index,
         )
-        cfg.input_dispatcher = dispatcher
-        grain_input: Input = cfg.instantiate(parent=None)
 
-        with self.assertRaisesRegex(ValueError, "per-feed batch"):
-            next(grain_input.batches(iter(grain_input)))
+        # Dispatch requires examples to be dicts.
+        ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": x})
+        # Each process produces feed_logical_batch_size.
+        cfg = self._input_config(
+            ds.repeat(num_epochs=None),
+            per_process=partial(per_feed_batch, global_batch_size=global_batch_size),
+        )
+        cfg.partition_spec = PartitionSpec("x")
+        cfg.input_dispatcher = dispatcher
+
+        grain_input: Input = cfg.instantiate(parent=None)
+        for batch in grain_input:
+            # Each batch produces data corresponding to the current shard.
+            self.assertEqual(list(batch.keys()), ["input_ids"])
+            self.assertEqual(batch["input_ids"].tolist(), expected)
+            break
 
     # TODO(markblee): Parameterize dispatcher.
     @pytest.mark.tpu
@@ -615,26 +626,21 @@ class InputTest(parameterized.TestCase):
         batch_sharding = max(1, logical_batch_size // 2)
 
         dispatcher = InputDispatcher.default_config().set(
-            global_logical_batch_size=logical_batch_size,
-            num_physical_feeds=process_count,
-            physical_feed_index=process_index,
+            global_logical_batch_size=logical_batch_size
         )
         # Dispatch requires examples to be dicts.
         ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": x})
         # Each process produces feed_logical_batch_size.
         cfg = self._input_config(
-            ds.repeat(num_epochs=None),
-            per_process=lambda ds: ds.batch(1),  # Half of the processes will produce padding.
-            process_count=process_count,
-            process_index=process_index,
+            ds.repeat(num_epochs=1),
+            per_process=lambda ds, **_: ds.batch(1),  # Half of the processes will produce padding.
         )
         cfg.partition_spec = PartitionSpec("x")
         cfg.input_dispatcher = dispatcher
 
         with jax.sharding.Mesh(np.array(jax.devices()).reshape(batch_sharding, -1), ("x", "y")):
             grain_input: Input = cfg.instantiate(parent=None)
-            it = iter(grain_input)
-            for batch in grain_input.batches(it):
+            for batch in grain_input:
                 physical_batch = host_to_global_device_array(batch)
                 batch = grain_input.dispatch_global_batch(physical_batch)
 
@@ -643,7 +649,10 @@ class InputTest(parameterized.TestCase):
                 # Should be sharded along batch axes.
                 self.assertEqual(batch["input_ids"].sharding.spec, cfg.partition_spec)
                 # Should contain the right ids.
-                self.assertEqual([0, 1, 2, 3], replicate_to_local_data(batch)["input_ids"].tolist())
+                self.assertEqual(
+                    list(range(logical_batch_size)),
+                    replicate_to_local_data(batch)["input_ids"].tolist(),
+                )
                 break
 
     def test_element_spec(self):
@@ -656,9 +665,7 @@ class InputTest(parameterized.TestCase):
         ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": np.array(x)})
         cfg = self._input_config(
             ds.repeat(num_epochs=None),
-            per_process=lambda ds: ds.batch(2),
-            process_count=4,
-            process_index=0,
+            per_process=lambda ds, **_: ds.batch(2),
         )
         grain_input: Input = cfg.instantiate(parent=None)
         self.assertEqual(

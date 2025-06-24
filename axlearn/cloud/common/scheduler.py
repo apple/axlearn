@@ -13,7 +13,8 @@ import dataclasses
 import datetime
 import queue
 from collections.abc import Mapping, Sequence
-from typing import Any, NamedTuple, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, NamedTuple, Optional, Protocol
 
 from absl import logging
 
@@ -158,11 +159,16 @@ class BaseScheduler(Configurable):
                 The entries will be ordered by descending scheduling priorities (not necessarily
                 JobMetadata.priority), where the higher priority jobs will be scheduled before
                 lower priority ones. The jobs not getting scheduled will also be ordered.
+            unused_limits: Unused resources compared to the limits. Depends on the specific
+                implementation of scheduler and resource management, "unused resource" might not
+                always be something reasonable or available. Thus, this field is optional.
+                Set it to "None" when the scheduler subclass decides not to report unused limits.
         """
 
         project_limits: ProjectResourceMap[int]
         project_usages: ProjectResourceMap[int]
         job_verdicts: dict[str, JobVerdict]
+        unused_limits: Optional[Sequence[ResourceMap[int]]] = None
 
     def schedule(
         self,
@@ -393,7 +399,112 @@ class TierScheduler(BaseScheduler):
             project_limits=_recursively_to_dict(project_usages),
             project_usages=_recursively_to_dict(project_usages),
             job_verdicts=_recursively_to_dict(job_verdicts),
+            unused_limits=_recursively_to_dict(resource_limits),
         )
+
+
+class ReporterFn(Protocol):
+    def __call__(
+        self,
+        *,
+        schedule_results: BaseScheduler.ScheduleResults,
+        resource_limits: Sequence[ResourceMap],
+        project_quotas: ProjectResourceMap,
+        project_jobs: ProjectJobs,
+        verbosity: int,
+    ):
+        """A callable that handles schedule inputs and results."""
+
+
+def logging_reporter(
+    *,
+    schedule_results: BaseScheduler.ScheduleResults,
+    resource_limits: Sequence[ResourceMap],
+    project_quotas: ProjectResourceMap,
+    project_jobs: ProjectJobs,
+    verbosity: int,
+):
+    """An implementation of ReporterFn which logs schedule verdicts by associating them
+    with schedule inputs."""
+    if verbosity < 1:
+        return
+
+    # Log the job verdicts.
+    logging.info("")
+    logging.info("==Begin scheduling report")
+    logging.info("Total resource limits: %s", resource_limits)
+    for project_id, project_job_queue in project_jobs.items():
+        logging.info(
+            "Verdicts for Project [%s] Quota [%s] Effective limits [%s]:",
+            project_id,
+            project_quotas.get(project_id, {}),
+            schedule_results.project_limits.get(project_id, {}),
+        )
+        for job_name, job_metadata in project_job_queue:
+            job_verdict = schedule_results.job_verdicts[job_name]
+            logging.info(
+                "Job %s: Resources [%s] Over limits [%s] Should Run? [%s] Metadata [%s]",
+                job_name,
+                job_metadata.resources,
+                job_verdict.over_limits,
+                job_verdict.should_run(),
+                job_verdict.metadata,
+            )
+    logging.info("==End of scheduling report")
+    logging.info("")
+
+
+def composite_reporter(reporters: Sequence[ConfigOr[ReporterFn]]) -> ReporterFn:
+    """Composite a list of inner ReporterFn into one ReporterFn. Execute inner ones in parallel."""
+    if not reporters:
+        raise ValueError(f"Got empty {reporters=} to composite.")
+
+    reporters = [maybe_instantiate(reporter) for reporter in reporters]
+    if len(reporters) == 1:
+        return reporters[0]
+
+    def report_fn(**kwargs):
+        # Parallel reporter execution.
+        with ThreadPoolExecutor() as executor:
+            list(executor.map(lambda func: func(**kwargs), reporters))
+
+    return report_fn
+
+
+class ReportingScheduler(BaseScheduler):
+    """A scheduler that wraps an inner scheduler (e.g. TierScheduler).
+
+    It delegates the scheduling responsibility to the inner scheduler, and handles reporting of
+    shedule inputs and schedule results.
+    """
+
+    @config_class
+    class Config(BaseScheduler.Config):
+        # Inner schedule to which the scheduling responsibility is delegated.
+        inner: BaseScheduler.Config = TierScheduler.default_config()
+        # Reporter function to handle customized reporting.
+        reporter: Required[ConfigOr[ReporterFn]] = REQUIRED
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        cfg = self.config
+        self._inner: BaseScheduler = cfg.inner.instantiate()
+        self._reporter: ReporterFn = maybe_instantiate(cfg.reporter)
+
+    def schedule(
+        self,
+        **kwargs,
+    ) -> BaseScheduler.ScheduleResults:
+        """Delegate the scheduling logic to inner scheduler and handles the reporting logic.
+
+        See `BaseScheduler.schedule` for details of the interface.
+        "kwargs" are used for more explicit and convenient delegation.
+        """
+        schedule_results = self._inner.schedule(**kwargs)
+
+        # Handle reports.
+        self._reporter(schedule_results=schedule_results, **kwargs)
+        return schedule_results
 
 
 class JobScheduler(Configurable):
@@ -460,33 +571,6 @@ class JobScheduler(Configurable):
             project_jobs=project_jobs,
             verbosity=verbosity,
         )
-
-        # Log the job verdicts.
-        # TODO(markblee): Move to util/reuse this block if we have multiple scheduler
-        # implementations.
-        if verbosity > 0:
-            logging.info("")
-            logging.info("==Begin scheduling report")
-            logging.info("Total resource limits: %s", resource_limits)
-            for project_id, project_job_queue in project_jobs.items():
-                logging.info(
-                    "Verdicts for Project [%s] Quota [%s] Effective limits [%s]:",
-                    project_id,
-                    project_quotas.get(project_id, {}),
-                    schedule_results.project_limits.get(project_id, {}),
-                )
-                for job_name, job_metadata in project_job_queue:
-                    job_verdict = schedule_results.job_verdicts[job_name]
-                    logging.info(
-                        "Job %s: Resources [%s] Over limits [%s] Should Run? [%s] Metadata [%s]",
-                        job_name,
-                        jobs[job_name].resources,
-                        job_verdict.over_limits,
-                        job_verdict.should_run(),
-                        job_verdict.metadata,
-                    )
-            logging.info("==End of scheduling report")
-            logging.info("")
 
         # Construct mock verdicts allowing everything to be scheduled.
         if dry_run:

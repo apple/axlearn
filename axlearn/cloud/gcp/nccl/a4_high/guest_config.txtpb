@@ -1,0 +1,88 @@
+# proto-file: guest_config_checker.proto
+# proto-message: guest_config_checker.GuestConfigValidatorConfig
+
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_CROSS_NIC"
+  value: "0"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_NET_GDR_LEVEL"
+  value: "PIX"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_P2P_NET_CHUNKSIZE"
+  value: "131072"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_P2P_PCI_CHUNKSIZE"
+  value: "131072"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_P2P_NVL_CHUNKSIZE"
+  value: "524288"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_NVLS_CHUNKSIZE"
+  value: "524288"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_IB_GID_INDEX"
+  value: "3"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_IB_ADAPTIVE_ROUTING"
+  value: "1"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_IB_QPS_PER_CONNECTION"
+  value: "4"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_IB_TC"
+  value: "52"
+}
+env_var {
+  check_policy: POLICY_ENFORCED
+  name: "NCCL_IB_FIFO_TC"
+  value: "84"
+}
+
+# Required items.
+env_var {
+  check_policy: POLICY_REQUIRED
+  name: "LD_LIBRARY_PATH"
+}
+
+attention_keyword: "NCCL"
+attention_keyword: "FASTRAK"
+attention_keyword: "GPUDIRECTTCPX"
+attention_keyword_check_policy: POLICY_RECOMMENDED
+attention_keyword_check_level: CHECK_STRICT
+
+unattention_keyword: "NCCL_VERSION"
+unattention_keyword: "NV_LIBNCCL"
+unattention_keyword: "NCCL_TESTS"
+unattention_keyword: "NCCL_GRAPH_DUMP_FILE"
+unattention_keyword: "NCCL_TOPO_DUMP_FILE"
+unattention_keyword: "NCCL_DEBUG"
+unattention_keyword: "NCCL_DEBUG_FILE"
+unattention_keyword: "NCCL_DEBUG_SUBSYS"
+unattention_keyword: "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE"
+unattention_keyword: "NCCL_TUNER_CONFIG_PATH"
+unattention_keyword: "NCCL_NET_PLUGIN_TELEMETRY_MODE"
+unattention_keyword: "NCCL_IB_TELEMETRY_PLUGIN"
+unattention_keyword: "NCCL_GPUVIZ"
+unattention_keyword: "NCCL_NET"
+
+cpu_affinity_check_policy: POLICY_RECOMMENDED
+cpu_affinity_check_level: CHECK_DISABLED

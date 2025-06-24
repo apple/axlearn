@@ -11,7 +11,6 @@ import numpy as np
 import torch
 import torch.nn.functional as torchF
 from absl.testing import absltest, parameterized
-from einops import rearrange
 
 from axlearn.common import utils
 from axlearn.common.attention import (
@@ -23,6 +22,7 @@ from axlearn.common.attention import (
     QLinear,
 )
 from axlearn.common.attention_bias import CausalAttentionBias
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import Linear
 from axlearn.common.lora import (
     LoraFusedQKVAdapter,
@@ -266,7 +266,7 @@ class LoraFusedQKVLinearTest(TestCase):
         # Compute extend_step.
         (cached_states, _), _ = F(
             layer,
-            inputs=dict(time_step=None, query=query, attention_logit_biases=None),
+            inputs=dict(time_step=None, query=query),
             is_training=False,
             state=layer_params,
             prng_key=prng_key,
@@ -277,7 +277,6 @@ class LoraFusedQKVLinearTest(TestCase):
             step_inputs = dict(
                 cached_states=cached_states,
                 query=query[:, i : i + 1],
-                attention_logit_biases=None,
             )
             (cached_states, step_outs), _ = F(
                 layer,

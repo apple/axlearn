@@ -58,6 +58,7 @@ from axlearn.common.utils import (
     canonicalize_per_param_dtype,
     count_model_params,
     flatten_items,
+    host_to_global_specs,
     match_regex_rules,
     thread_stack_traces,
 )
@@ -240,6 +241,7 @@ class SpmdTrainer(Module):
         self._device_monitor = maybe_instantiate(cfg.device_monitor)
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
+        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
 
         if cfg.model.dtype is None:
             raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
@@ -348,6 +350,7 @@ class SpmdTrainer(Module):
                     model=self.model,
                     model_param_partition_specs=model_param_partition_specs,
                 )
+        self._maybe_record_event(measurement.Event.END_ACCELERATOR_INIT)
 
     @property
     def step(self):
@@ -366,6 +369,8 @@ class SpmdTrainer(Module):
         return self._trainer_state_partition_specs
 
     def _train_step_input_partition_specs(self):
+        # Note that subclasses may override this method to set a partition spec for pjit which is
+        # different from that of the input partition spec.
         return self.input.partition_spec
 
     def model_params_for_eval(self):
@@ -579,37 +584,49 @@ class SpmdTrainer(Module):
                 output = None
                 stop_trace_step = None
 
-                for input_batch in self.input.batches(self._input_iter):
-                    self._maybe_record_event(measurement.Event.START_STEP, self._step)
-                    logging.log_first_n(
-                        logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
-                    )
+                input_iterator = self.input.batches(self._input_iter)
+                while True:
+                    self._maybe_record_event(measurement.Event.START_DATA_LOADING)
+                    try:
+                        input_batch = next(input_iterator)
+                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
+                        logging.log_first_n(
+                            logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
+                        )
 
-                    # Stop or start tracing if necessary.
-                    stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
+                        # Stop or start tracing if necessary.
+                        stop_trace_step = self._maybe_stop_or_start_tracing(stop_trace_step, output)
 
-                    self._step = self._step + 1
-                    self.vlog(3, "Start step %s", self.step)
-                    output = self._run_step(
-                        utils.host_to_global_device_array(
-                            input_batch,
-                            partition=self._train_step_input_partition_specs(),
-                        ),
-                        force_run_evals=(
-                            force_run_eval_sets_at_max_step if self.step >= cfg.max_step else None
-                        ),
-                    )
-                    self.vlog(3, "Done step %s", self.step)
-                    num_steps += 1
-                    if num_steps % 100 == 0:
-                        now = time.perf_counter()
-                        average_step_time = (now - start_time) / num_steps
-                        self._step_log("Average step time: %s seconds", average_step_time)
-                        self.summary_writer(self.step, {"average_step_time": average_step_time})
-                        num_steps = 0
-                        start_time = now
-                    if self.step >= cfg.max_step:
-                        self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
+                        self._step = self._step + 1
+                        self.vlog(3, "Start step %s", self.step)
+                        self._maybe_record_event(measurement.Event.START_STEP, self._step)
+                        output = self._run_step(
+                            utils.host_to_global_device_array(
+                                input_batch,
+                                partition=self._train_step_input_partition_specs(),
+                            ),
+                            force_run_evals=(
+                                force_run_eval_sets_at_max_step
+                                if self.step >= cfg.max_step
+                                else None
+                            ),
+                        )
+                        self.vlog(3, "Done step %s", self.step)
+                        num_steps += 1
+                        if num_steps % 100 == 0:
+                            now = time.perf_counter()
+                            average_step_time = (now - start_time) / num_steps
+                            self._step_log("Average step time: %s seconds", average_step_time)
+                            self.summary_writer(self.step, {"average_step_time": average_step_time})
+                            num_steps = 0
+                            start_time = now
+                        if self.step >= cfg.max_step:
+                            self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
+                            break
+                    except StopIteration:
+                        # Add END_DATA_LOADING event here to close the unpaired START_DATA_LOADING
+                        # event.
+                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         break
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
@@ -837,7 +854,8 @@ class SpmdTrainer(Module):
         """Prepares training.
 
         This function does the following to prepare the training procedure:
-        1. Restores trainer state from checkpoint.
+        1. Restores the trainer state from a checkpoint. If no checkpoint exists,
+           initializes a new trainer state using the provided prng_key.
         2. Initializes step to zero if it's not in the checkpoint.
         3. Returns early if max_steps has been reached.
         4. Otherwise Jits self._train_step.
@@ -849,6 +867,7 @@ class SpmdTrainer(Module):
             A boolean indicating whether the model training should start. If not, return
                 None from the `run` function.
         """
+        self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
         cfg = self.config
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
@@ -881,6 +900,7 @@ class SpmdTrainer(Module):
             return False
 
         self._jit_train_step = self._pjit_train_step()
+        self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
@@ -1021,12 +1041,24 @@ class SpmdTrainer(Module):
             mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
         if not with_xsc:
+            self._maybe_record_event(
+                measurement.Event.START_CUSTOM_BADPUT_EVENT,
+                custom_badput_event_type="COMPILATION_NO_XSC",
+            )
             self._compiled_train_step = self.compile_train_step(
                 trainer_state=trainer_state, input_batch=input_batch, compiler_options=options
+            )
+            self._maybe_record_event(
+                measurement.Event.END_CUSTOM_BADPUT_EVENT,
+                custom_badput_event_type="COMPILATION_NO_XSC",
             )
             return self._compiled_train_step
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
 
+        self._maybe_record_event(
+            measurement.Event.START_CUSTOM_BADPUT_EVENT,
+            custom_badput_event_type="COMPILATION_WITH_XSC",
+        )
         compiled_jit_train_step_fn = self.compile_train_step(
             trainer_state=trainer_state,
             input_batch=input_batch,
@@ -1034,6 +1066,10 @@ class SpmdTrainer(Module):
             | infer_xsc_compiler_options(
                 halt_on_detection=True, repeat_count=1, device_kind=device_kind
             ),
+        )
+        self._maybe_record_event(
+            measurement.Event.END_CUSTOM_BADPUT_EVENT,
+            custom_badput_event_type="COMPILATION_WITH_XSC",
         )
         return compiled_jit_train_step_fn
 
@@ -1091,6 +1127,9 @@ class SpmdTrainer(Module):
         force_runs: Optional[set[str]] = None,
     ) -> dict[str, Any]:
         """Runs evaluations and returns the corresponding summaries."""
+        self._maybe_record_event(
+            measurement.Event.START_CUSTOM_BADPUT_EVENT, custom_badput_event_type="EVAL"
+        )
         evaler_summaries = {}
         # Note: we will use the same eval key as the training keys of the future step,
         # which should be okay.
@@ -1104,6 +1143,9 @@ class SpmdTrainer(Module):
                 force_run=bool(force_runs is not None and evaler_name in force_runs),
             )
             evaler_summaries[evaler_name] = summaries
+        self._maybe_record_event(
+            measurement.Event.END_CUSTOM_BADPUT_EVENT, custom_badput_event_type="EVAL"
+        )
         return evaler_summaries
 
     def _pjit_train_step(self) -> jax.stages.Wrapped:
@@ -1152,9 +1194,14 @@ class SpmdTrainer(Module):
                     self.trainer_state_specs,
                 )
             if input_batch is None:
-                # Infer input batch shapes from input element spec.
-                # N.B. in a multi-process setting these will be host-local (per process).
-                input_batch = self.input.element_spec()
+                # Infer global input batch shapes from input element spec.
+                host_batch = self.input.element_spec()
+                if "input_dispatcher" in self.input.children:
+                    host_batch = self.input.input_dispatcher.logical_to_physical_shapes(host_batch)
+                input_batch = host_to_global_specs(
+                    host_batch, partition=self._train_step_input_partition_specs()
+                )
+
             # Rely on the instance handle to ensure that we hit the compilation cache if possible.
             jit_train_step = self._jit_train_step or self._pjit_train_step()
             # Note(Jan 2022):

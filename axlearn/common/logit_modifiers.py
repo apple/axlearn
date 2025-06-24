@@ -15,7 +15,8 @@ values of `p`.
 
 Reference: <https://github.com/google-research/t5x/blob/79998013/t5x/binary_search.py>
 """
-from typing import Callable, Literal
+from functools import partial
+from typing import Callable, Literal, Union
 
 import jax
 from jax import numpy as jnp
@@ -64,7 +65,7 @@ def scale_by(temperature: float, *, min_temperature: float = 1e-4) -> LogitsToLo
     return fn
 
 
-def top_p_logits(p: float) -> LogitsToLogitsFn:
+def top_p_logits(p: Union[float, Tensor]) -> LogitsToLogitsFn:
     """Build a function that returns logits suitably normalized for top-p sampling.
 
     The minimum number of logits so that the total probability mass >= p will be
@@ -78,12 +79,16 @@ def top_p_logits(p: float) -> LogitsToLogitsFn:
     Ref: <https://github.com/google-research/t5x/blob/79998013/t5x/binary_search.py#L227>
 
     Args:
-        p: The total cumulative probability to consider for sampling.
+        p: The total cumulative probability to consider for sampling as a scaler or a 1D tensor
+            with a leading batch dimension.
 
     Returns:
         A logits-to-logits function.
     """
-    assert 0.0 < p <= 1.0, "`p` must be in (0, 1]."
+    if isinstance(p, float) and not 0.0 < p <= 1.0:
+        raise ValueError("`p` must be in (0, 1].")
+    elif not isinstance(p, float) and p.ndim != 1:
+        raise ValueError("`p` must be a scalar or a 1D tensor.")
 
     def fn(logits: Tensor) -> Tensor:
         probs = jax.nn.softmax(logits, axis=-1)
@@ -97,17 +102,19 @@ def top_p_logits(p: float) -> LogitsToLogitsFn:
             reducible_probs = jnp.swapaxes(reducible_probs, -1, -2)
             reduce_axis = reducible_probs.ndim - 2
 
-        def predicate(float32_query: Tensor) -> Tensor:
+        def predicate(float32_query: Tensor, top_p: Union[float, Tensor]) -> Tensor:
             float32_query = jnp.expand_dims(float32_query, reduce_axis)
             # [..., 1, float32_query.shape[-1]]
             probability_mass = jnp.sum(
                 jnp.where(reducible_probs >= float32_query, reducible_probs, 0.0),
                 axis=reduce_axis,
             )
-            return probability_mass < p
+            if not isinstance(top_p, float):
+                top_p = top_p.reshape((top_p.shape[0], *(1,) * (probability_mass.ndim - 1)))
+            return probability_mass < top_p
 
         batched_shape = logits.shape[:-1]  # All but the last axis are batched.
-        threshold = _float32_binary_search(batched_shape, predicate=predicate)
+        threshold = _float32_binary_search(batched_shape, predicate=partial(predicate, top_p=p))
         return jnp.where(probs >= jnp.expand_dims(threshold, -1), logits, NEG_INF)
 
     return fn

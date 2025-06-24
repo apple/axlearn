@@ -14,7 +14,7 @@ from axlearn.common.config import config_class
 from axlearn.common.layers import BaseClassificationHead, RedirectToSharedModule, get_activation_fn
 from axlearn.common.module import Module
 from axlearn.common.poolings import BasePoolingLayer
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class SpladePooling(BasePoolingLayer):
@@ -91,6 +91,6 @@ class SpladePooling(BasePoolingLayer):
             splade_output = jnp.log1p(get_activation_fn(cfg.splade_activation_fn)(x))
         elif cfg.splade_mode == "sum":
             splade_output = jnp.log1p(get_activation_fn(cfg.splade_activation_fn)(x))
-            splade_output *= 1 - paddings  # Set padded values to 0.
+            splade_output *= safe_not(paddings)  # Set padded values to 0.
             splade_output = jnp.sum(splade_output, axis=1, keepdims=True)
         return splade_output

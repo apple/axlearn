@@ -11,8 +11,10 @@ from typing import Optional
 from absl import flags, logging
 
 from axlearn.cloud.common.bastion import _BASTION_SERIALIZED_JOBSPEC_ENV_VAR, deserialize_jobspec
+from axlearn.cloud.common.utils import FlagConfigurable
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.job import AcceleratorConfig, GKEJob, TPUGKEJob
+from axlearn.cloud.gcp.job import GKEJob
+from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
     construct_node_pool_name,
@@ -21,16 +23,19 @@ from axlearn.cloud.gcp.node_pool import (
 )
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import infer_tpu_type
-from axlearn.common.config import REQUIRED, Configurable, Required, config_class
+from axlearn.common.config import REQUIRED, Required, config_class
 
 FLAGS = flags.FLAGS
 
+# TODO(muyang_yu): avoid listing job types one by one.
+_INFERENCE_JOBS = (FlinkTPUGKEJob,)
 
-class NodePoolProvisioner(Configurable):
+
+class NodePoolProvisioner(FlagConfigurable):
     """Node pool provisioner."""
 
     @config_class
-    class Config(Configurable.Config):
+    class Config(FlagConfigurable.Config):
         """Configures node pool provisioning.
 
         Attributes:
@@ -53,14 +58,12 @@ class NodePoolProvisioner(Configurable):
         wait_timeout: int = 30 * 60
 
     @classmethod
-    def from_flags(cls, fv: flags.FlagValues) -> Config:
-        cfg = super().default_config()
-
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
+        cfg: NodePoolProvisioner.Config = super().from_flags(fv, **kwargs)
         cfg.project = gcp_settings("project", fv=fv)
         cfg.zone = gcp_settings("zone", fv=fv)
         cfg.cluster = gcp_settings("gke_cluster", fv=fv)
         cfg.service_account_email = gcp_settings("service_account_email", required=False, fv=fv)
-
         return cfg
 
     def create_for(self, job: GKEJob):
@@ -75,16 +78,19 @@ class NodePoolProvisioner(Configurable):
 class TPUNodePoolProvisioner(NodePoolProvisioner):
     """TPU node pool provisioner."""
 
-    def create_for(self, job: TPUGKEJob):
+    def create_for(self, job: GKEJob):
         """Creates named node pools for the job."""
 
-        if not isinstance(job, TPUGKEJob):
-            raise TypeError(f"Expected TPUGKEJob, got {type(job)}.")
-
         cfg: TPUNodePoolProvisioner.Config = self.config
-        job_cfg: TPUGKEJob.Config = job.config
-        acc_cfg: AcceleratorConfig = job_cfg.accelerator
+        job_cfg: GKEJob.Config = job.config
         builder_cfg: TPUReplicatedJob.Config = job_cfg.builder
+
+        # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
+        # TPUGKEJob implementation and internals.
+        if not isinstance(builder_cfg, TPUReplicatedJob.Config):
+            raise TypeError(f"Expected {TPUReplicatedJob.Config}, got {type(builder_cfg)}.")
+
+        acc_cfg = builder_cfg.accelerator
         reservation = builder_cfg.reservation
         location_hint = builder_cfg.location_hint
         enable_tpu_ici_resiliency = builder_cfg.enable_tpu_ici_resiliency
@@ -137,6 +143,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             additional_labels_list.append(additional_labels)
 
         start_time = time.perf_counter()
+        topology = None if isinstance(job, _INFERENCE_JOBS) else job_sys_property.topology
         create_node_pools(
             node_pool_names,
             project=cfg.project,
@@ -145,7 +152,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             pre_provisioner_id=cfg.name,
             num_nodes_per_pool=job_sys_property.vms_per_slice,
             machine_type=job_sys_property.gce_machine_type,
-            topology=job_sys_property.topology,
+            topology=topology,
             use_spot_vm=use_spot_vm,
             reservation=reservation,
             location_hint=location_hint,
@@ -161,17 +168,19 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             "%s node pools for %s creation took %s seconds", num_node_pools, cfg.name, elapsed_time
         )
 
-    def delete_for(self, job: TPUGKEJob):
+    def delete_for(self, job: GKEJob):
         """Deletes node pools of the job."""
 
-        if not isinstance(job, TPUGKEJob):
-            raise TypeError(f"Expected TPUGKEJob, got {type(job)}.")
-
         cfg: TPUNodePoolProvisioner.Config = self.config
-        job_cfg: TPUGKEJob.Config = job.config
-        acc_cfg: AcceleratorConfig = job_cfg.accelerator
-        num_node_pools = acc_cfg.num_replicas
+        job_cfg: GKEJob.Config = job.config
+        builder_cfg: TPUReplicatedJob.Config = job_cfg.builder
 
+        # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
+        # TPUGKEJob implementation and internals.
+        if not isinstance(builder_cfg, TPUReplicatedJob.Config):
+            raise TypeError(f"Expected {TPUReplicatedJob.Config}, got {type(builder_cfg)}.")
+
+        num_node_pools = builder_cfg.accelerator.num_replicas
         node_pool_names = []
 
         for i in range(num_node_pools):

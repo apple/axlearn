@@ -8,14 +8,13 @@
 
 import functools
 from collections.abc import Sequence
-from functools import partial
 from typing import Callable, Optional, Protocol
 
-import einops
 import jax.numpy as jnp
 
 from axlearn.audio.frontend_utils import (
     WindowType,
+    cast_for_rfft,
     frame,
     frame_paddings,
     linear_to_log_mel_spectrogram,
@@ -27,6 +26,7 @@ from axlearn.audio.frontend_utils import (
     pre_emphasis,
     windowing,
 )
+from axlearn.common import ein_ops
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import (
     REQUIRED,
@@ -86,9 +86,22 @@ class BaseFrontend(BaseLayer):
 
 
 def _log_mel_spectrogram(
-    *, num_filters: int, sample_rate: int, fft_size: int, mel_floor: float
+    *,
+    num_filters: int,
+    sample_rate: int,
+    fft_size: int,
+    mel_floor: float,
+    lower_edge_hertz: float = 125.0,
+    upper_edge_hertz: Optional[float] = None,
 ) -> StageFn:
     """Returns a StageFn that computes Log Mel spectrogram."""
+    if upper_edge_hertz is None:
+        # When sample_rate=16k, upper_edge_hertz=7600 like Lingvo.
+        # If your filterbank has bins or filters close to Nyquist (e.g., a triangle filter peaking
+        # at 7900–8100 Hz), any response beyond 8000 Hz will wrap around and alias back into
+        # the signal.
+        # Reducing the upper edge to ~95% of Nyquist (e.g., 7600 Hz) creates a safety margin.
+        upper_edge_hertz = 0.95 * (sample_rate // 2)
 
     # Mel filterbank, used to convert magnitude spectrogram to mel spectrogram. Only needs to be
     # constructed once.
@@ -96,12 +109,12 @@ def _log_mel_spectrogram(
         num_filters=num_filters,
         num_spectrogram_bins=fft_size // 2 + 1,
         sample_rate=sample_rate,
-        lower_edge_hertz=125.0,
-        upper_edge_hertz=7600.0,
+        lower_edge_hertz=lower_edge_hertz,
+        upper_edge_hertz=upper_edge_hertz,
     )
 
     def fn(fft: Tensor, *, dtype: jnp.dtype) -> Tensor:
-        # [batch_size, num_frames, fft_size] -> [batch_size, num_frames, fft_size // 2 + 1].
+        # [batch_size, num_frames, fft_size // 2 + 1].
         spectrogram = magnitude_spectrogram(fft, dtype=dtype)
         # Convert to log-mel. [batch, num_frames, num_filters].
         return linear_to_log_mel_spectrogram(
@@ -180,7 +193,7 @@ class LogMelFrontend(BaseFrontend):
         if cfg.fft is not None:
             self._fft = cfg.fft.set(n=fft_size).instantiate()
         else:
-            self._fft = partial(jnp.fft.fft, n=fft_size)
+            self._fft = lambda x: jnp.fft.rfft(cast_for_rfft(x), n=fft_size)
 
         spectrogram = maybe_set_config(
             cfg.spectrogram,
@@ -240,8 +253,10 @@ class LogMelFrontend(BaseFrontend):
         outputs = self._spectrogram(self._fft(frames), dtype=_fft_dtype(frames.dtype))
         if self._output_transformation is not None:
             outputs = self._output_transformation(outputs)
-        outputs = outputs * (1 - einops.rearrange(frames_paddings, "b t -> b t 1"))
-        return dict(outputs=einops.rearrange(outputs, "b t f -> b t f 1"), paddings=frames_paddings)
+        outputs = outputs * (1 - ein_ops.rearrange(frames_paddings, "b t -> b t 1"))
+        return dict(
+            outputs=ein_ops.rearrange(outputs, "b t f -> b t f 1"), paddings=frames_paddings
+        )
 
     @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]):

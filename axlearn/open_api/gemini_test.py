@@ -7,30 +7,29 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
-from axlearn.open_api.mock_utils import mock_openai_package, mock_vertexai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
-mock_vertexai_package()
+mock_utils.mock_vertexai_package()
 
-
-_module_root = "axlearn"
-
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.common import ValidationError
-from axlearn.open_api.gemini import (
-    GeminiClient,
-    _convert_openai_messages_to_gemini,
-    _format_tool_message,
-)
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.common import ValidationError
+    from axlearn.open_api.gemini import (
+        GeminiClient,
+        _convert_openai_messages_to_gemini,
+        _format_tool_message,
+    )
 
 # pylint: enable=wrong-import-position
 
+_MODULE_ROOT = "axlearn"
 
+
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
     """Unit test for class GeminiClient."""
 
-    @patch(f"{_module_root}.open_api.gemini._init_vertexai")
+    @patch(f"{_MODULE_ROOT}.open_api.gemini._init_vertexai")
     def _create_gemini_client(
         self,
         mock_init_vertexai=None,
@@ -42,8 +41,8 @@ class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
         client._client = AsyncMock()
         return client
 
-    @patch(f"{_module_root}.open_api.gemini._convert_openai_messages_to_gemini")
-    @patch(f"{_module_root}.open_api.gemini._convert_openai_tools_to_gemini")
+    @patch(f"{_MODULE_ROOT}.open_api.gemini._convert_openai_messages_to_gemini")
+    @patch(f"{_MODULE_ROOT}.open_api.gemini._convert_openai_tools_to_gemini")
     async def test_async_generate(self, mock_convert_tools, mock_convert_messages):
         mock_convert_messages.return_value = "converted_messages"
         mock_convert_tools.return_value = "converted_tools"
@@ -72,6 +71,7 @@ class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(processed_message["tool_calls"][0]["function"]["name"]) <= 32)
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestConvertOpenAIMessagesToGemini(unittest.TestCase):
     """Unit tests for _convert_openai_messages_to_gemini."""
 

@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from numpy.typing import ArrayLike
@@ -23,6 +23,7 @@ from numpy.typing import ArrayLike
 from axlearn.audio import frontend_utils
 from axlearn.audio.frontend_utils import (
     WindowType,
+    cast_for_rfft,
     frame,
     frame_paddings,
     linear_to_log_mel_spectrogram,
@@ -35,12 +36,12 @@ from axlearn.audio.frontend_utils import (
     windowing,
 )
 from axlearn.audio.test_utils import fake_audio
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import as_tensor
 
 
 def _magnitude_spectrogram_from_audio(x, fft_size):
-    return magnitude_spectrogram(jnp.fft.fft(x, n=fft_size), dtype=x.dtype)
+    return magnitude_spectrogram(jnp.fft.rfft(x, n=fft_size), dtype=x.dtype)
 
 
 class FrameTest(parameterized.TestCase, tf.test.TestCase):
@@ -293,8 +294,11 @@ def _ref_framer(*, inputs: ArrayLike, paddings: ArrayLike, frame_size: int, fram
     https://github.com/tensorflow/lingvo/blob/4a9097a212622d99d7f8e2379804dbffdc44a97f/lingvo/tasks/asr/frontend.py#L404
     """
     outputs = tf.signal.frame(inputs, frame_size, frame_step, pad_end=True)
-    output_paddings = tf.signal.frame(paddings, frame_size, frame_step, pad_end=True)
-    output_paddings = tf.reduce_max(output_paddings, axis=2)
+    # tf.signal.frame doesn't support bool tensor.
+    output_paddings = tf.signal.frame(
+        tf.cast(paddings, tf.int8), frame_size, frame_step, pad_end=True
+    )
+    output_paddings = tf.cast(tf.reduce_max(output_paddings, axis=2), tf.bool)
     # Note: tf.signal.frame appends more padding than necessary.
     num_frames = frontend_utils.num_frames(
         inputs.shape[1], frame_size=frame_size, hop_size=frame_step
@@ -390,14 +394,13 @@ def _ref_log_mel_spectrogram(
 
 
 class ShardedFftTest(TestCase):
-    def test_fft(self):
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
+    @set_threefry_partitionable(False)  # TODO(Luzy): update for threefry_partitionable True
+    def test_fft(self, dtype):
         input_shape = (8, 800, 400)
         fft_size = 512
         inputs = jax.random.uniform(
-            jax.random.PRNGKey(123),
-            shape=input_shape,
-            minval=-32768.0,
-            maxval=32768.0,
+            jax.random.PRNGKey(123), shape=input_shape, minval=-32768.0, maxval=32768.0, dtype=dtype
         )
         with Mesh(
             mesh_utils.create_device_mesh((len(jax.devices()), 1)), ("data", "model")
@@ -410,10 +413,14 @@ class ShardedFftTest(TestCase):
             fft_fn = jax.jit(
                 sharded_fft(n=fft_size, partition_spec=PartitionSpec("data", None, None))
             )
-            ref_ffts = jax.jit(jnp.fft.fft, static_argnames="n")(inputs, n=fft_size)
+            ref_ffts = jax.jit(jnp.fft.rfft, static_argnames="n")(cast_for_rfft(inputs), n=fft_size)
             test_ffts = fft_fn(inputs)
 
-        assert_allclose(ref_ffts, test_ffts)
+        assert_allclose(ref_ffts, test_ffts, rtol=1e-3)
         # Run the following on gpu.
         jax.debug.inspect_array_sharding(test_ffts, callback=print)
         jax.debug.inspect_array_sharding(ref_ffts, callback=print)
+
+
+if __name__ == "__main__":
+    absltest.main()

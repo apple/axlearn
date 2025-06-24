@@ -127,6 +127,14 @@ class BaseQueueClient(Configurable):
         raise NotImplementedError(type(self))
 
 
+def is_rabbit_mq_configured() -> bool:
+    """Returns True iff RabbitMQ secrets are configured."""
+    return (
+        os.getenv("RABBITMQ_USER", None) is not None
+        and os.getenv("RABBITMQ_PASSWORD", None) is not None
+    )
+
+
 class RabbitMQClient(BaseQueueClient):
     """Implementation of BaseQueueClient using RabbitMQ.
 
@@ -195,7 +203,6 @@ class RabbitMQClient(BaseQueueClient):
             try:
                 # Ensure connection is established before publishing.
                 if not self._channel or not self._connection:
-                    logging.error("RabbitMQ publisher channel is closed, reconnecting...")
                     self.connect()
 
                 # Setting durable=True ensures that the queue will survive.
@@ -222,25 +229,30 @@ class RabbitMQClient(BaseQueueClient):
                 # Only retry on recoverable exceptions.
                 # AMQPConnectionError is assumed to be related to network issues,
                 # or temporary unavailable host.
-                logging.error(
-                    "Failed to publish event: %s. Error: %s. Attempt: %d",
-                    message,
-                    str(e),
-                    attempt,
-                )
                 self._handle_publish_error()
                 attempt += 1
-                if attempt <= self._num_tries:
+                if attempt < self._num_tries:
                     time.sleep(2**attempt)
+                else:
+                    logging.error(
+                        "Failed to publish event: %s after %d attempts. Error: %s.",
+                        message,
+                        attempt,
+                        str(e),
+                    )
             except Exception as e:  # pylint: disable=broad-except
-                # Unknown errors. Don't retry. Log to avoid crashing clients.
-                logging.error(
-                    "Unknown error. Failed to publish event: %s. Error: %s.", message, str(e)
-                )
                 self._handle_publish_error()
                 attempt += 1
-                if attempt <= self._num_tries:
+                if attempt < self._num_tries:
                     time.sleep(2**attempt)
+                else:
+                    # Unknown errors. Don't retry. Log to avoid crashing clients.
+                    logging.error(
+                        "Unknown error. Failed to publish event: %s after %d attempts. Error: %s.",
+                        message,
+                        attempt,
+                        str(e),
+                    )
 
     def _handle_publish_error(self):
         """Handle publish errors with retrying on connection issue."""

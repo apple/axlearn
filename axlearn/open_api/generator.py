@@ -93,7 +93,7 @@ async def generate_from_requests(
         gen_requests=gen_requests, **cfg.decode_parameters
     )
     # Parses responses.
-    if n > 1:
+    if fv.repeat_requests_for_n and n > 1:
         responses = flatten_responses(responses)
 
     return responses

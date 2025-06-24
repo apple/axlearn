@@ -10,10 +10,9 @@
 
 import enum
 import math
-from functools import partial
 from typing import Callable, Union
 
-import einops
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax._src.mesh import thread_resources
@@ -21,6 +20,7 @@ from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from numpy.typing import ArrayLike
 
+from axlearn.common import ein_ops
 from axlearn.common.utils import Tensor
 
 
@@ -154,7 +154,8 @@ def frame(x: Tensor, *, frame_size: int, hop_size: int, pad_value: int = 0) -> T
     Returns:
         Windows of shape `[..., num_windows, frame_size]` via frames on the last axis.
     """
-    x, ps = einops.pack([x], "* s")  # Ensure rank 2.
+    orig_shape = x.shape
+    x = jnp.reshape(x, (-1, orig_shape[-1]))  # Ensure rank 2.
 
     def flatten_size(frames, window, hop_size):
         return frames * hop_size - hop_size + window
@@ -171,21 +172,40 @@ def frame(x: Tensor, *, frame_size: int, hop_size: int, pad_value: int = 0) -> T
 
     # For optimization, the index will be created at the chunk level, rather than for every sample.
     chunk_size = math.gcd(frame_size, hop_size)
-    chunk_x = einops.rearrange(x, "b (t c) -> b t c", c=chunk_size)
-    num_chunk = chunk_x.shape[1]
+    backend = jax.default_backend()
+    if backend == "tpu":
+        # Starting from chunk_size=2, chunking becomes faster than advanced indexing.
+        # As the chunk size increases, the performance improves further, and by chunk_size=80,
+        # chunking is approximately 100 times faster.
+        use_advanced_index = chunk_size <= 1
+    elif backend == "gpu":
+        # Starting from chunk_size=2, chunking becomes faster than advanced indexing.
+        # As the chunk size increases, the performance improves further, and by chunk_size=80,
+        # chunking is approximately 3 times faster.
+        use_advanced_index = chunk_size <= 1
+    else:
+        # On CPU, chunking does not reduce floating-point operations compared to advanced
+        # indexing. As a result, chunking introduces pure overhead (~5%).
+        use_advanced_index = True
 
-    frame_ratio = frame_size // chunk_size
-    hop_ratio = hop_size // chunk_size
-    assert flatten_size(output_size, frame_ratio, hop_ratio) == num_chunk
+    if use_advanced_index:
+        idx = hop_size * jnp.arange(output_size)[:, None] + jnp.arange(frame_size)[None, :]
+        frame_x = x[..., idx]
+    else:
+        chunk_x = ein_ops.rearrange(x, "b (t c) -> b t c", c=chunk_size)
+        num_chunk = chunk_x.shape[1]
 
-    in_frame_indices = jnp.arange(frame_ratio)[jnp.newaxis, :]
-    out_frame_indices = (jnp.arange(output_size) * hop_ratio)[:, jnp.newaxis]
-    frame_x = chunk_x[:, out_frame_indices + in_frame_indices, :]
-    frame_x = einops.rearrange(
-        frame_x, "b ow iw c-> b ow (iw c)", ow=output_size, iw=frame_ratio, c=chunk_size
-    )
-    y = einops.unpack(frame_x, ps, "* f d")[0]
-    return y
+        frame_ratio = frame_size // chunk_size
+        hop_ratio = hop_size // chunk_size
+        assert flatten_size(output_size, frame_ratio, hop_ratio) == num_chunk
+
+        in_frame_indices = jnp.arange(frame_ratio)[jnp.newaxis, :]
+        out_frame_indices = (jnp.arange(output_size) * hop_ratio)[:, jnp.newaxis]
+        frame_x = chunk_x[:, out_frame_indices + in_frame_indices, :]
+        frame_x = ein_ops.rearrange(
+            frame_x, "b ow iw c-> b ow (iw c)", ow=output_size, iw=frame_ratio, c=chunk_size
+        )
+    return jnp.reshape(frame_x, (*orig_shape[:-1], *frame_x.shape[-2:]))  # Restore orig_shape[:-1].
 
 
 def frame_paddings(paddings: Tensor, *, frame_size: int, hop_size: int) -> Tensor:
@@ -272,15 +292,13 @@ def magnitude_spectrogram(ffts: Tensor, *, dtype: jnp.dtype) -> Tensor:
     """Computes magnitude of the spectrogram from the FFT matrix.
 
     Args:
-        ffts: FFT of input audio frames of shape `[..., num_frames, fft_size]`.
+        ffts: FFT of input audio frames of shape `[..., num_frames, fft_size // 2 + 1]`.
         dtype: dtype of output tensor.
 
     Returns:
-        A spectrogram of shape `[..., num_frames, num_spectrogram_bins=fft_size // 2 + 1]`.
+        A spectrogram of shape `[..., num_frames, fft_size // 2 + 1]`.
     """
     out = jnp.abs(ffts)
-    fft_size = ffts.shape[-1]
-    out = out[..., : fft_size // 2 + 1]
     return out.astype(dtype)
 
 
@@ -385,8 +403,25 @@ def sharded_fft(n: int, partition_spec: PartitionSpec) -> Callable[[Tensor], Ten
         A callable that computes FFT.
     """
     return shard_map(
-        partial(jnp.fft.fft, n=n),
+        lambda x: jnp.fft.rfft(cast_for_rfft(x), n=n),
         mesh=thread_resources.env.physical_mesh,
         in_specs=partition_spec,
         out_specs=partition_spec,
     )
+
+
+def cast_for_rfft(x: Tensor) -> Tensor:
+    """Casts the input tensor to a valid dtype for jnp.fft.rfft if necessary.
+
+    jnp.fft.rfft requires the input to be of dtype float32 or float64.
+
+    Args:
+        x: Input tensor of arbitrary dtype.
+
+    Returns:
+        A tensor of dtype float32 or float64, suitable for jnp.fft.rfft.
+    """
+    if x.dtype in (jnp.float32, jnp.float64):
+        return x
+    else:
+        return x.astype(jnp.float32)

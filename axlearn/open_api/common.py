@@ -172,7 +172,6 @@ class Generator(Configurable):
 
     async def _async_generate_from_request(
         self,
-        client: BaseClient,
         *,
         request: dict[str, Any],
         **kwargs,
@@ -192,6 +191,9 @@ class Generator(Configurable):
         """
         cfg: Generator.Config = self.config
         async with self._semaphore:
+            # Number of clients equals to semaphore's capacity, thus there should be at least one
+            # free client available at this moment.
+            client = self._clients.pop()
             non_rate_limit_retries = 0
             rate_limit_retries = 0
             while True:
@@ -226,6 +228,9 @@ class Generator(Configurable):
                         )
                         break
 
+            # Return client back to the stack of free clients.
+            self._clients.append(client)
+
             request["response"] = response
             return request
 
@@ -251,13 +256,10 @@ class Generator(Configurable):
         tasks = []
         # Run async requests for each prompt with limited concurrency.
         for index, request in enumerate(gen_requests):
-            client_index = index % cfg.concurrency
             if "async_index" in request:
                 raise ValueError("Please do not add key async_index in the data.")
             request["async_index"] = index
-            client: BaseClient = self._clients[client_index]
             task = self._async_generate_from_request(
-                client=client,
                 request=request,
                 **kwargs,
             )

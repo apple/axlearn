@@ -78,8 +78,6 @@ ttl_bucket = "ttl-30d-us-central2"
 labels = "v4-tpu"
 # (Optional) Used for pushing docker images.
 docker_repo = "us-docker.pkg.dev/my-gcp-project/axlearn"
-# (Optional) Configure whether to use on-demand or reserved TPUs.
-reserved_tpu = true
 # (Optional) Configure a default Dockerfile to use when launching jobs with docker.
 default_dockerfile = "Dockerfile"
 # (Optional) Enable VertexAI Tensorboard support during training.

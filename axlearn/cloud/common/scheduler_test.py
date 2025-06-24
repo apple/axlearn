@@ -5,24 +5,29 @@
 
 import collections
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Iterable, Optional, Sequence, Union
 from unittest import mock
 
 from absl.testing import absltest, parameterized
 
-from axlearn.cloud.common.quota import QuotaInfo, UserQuotaInfo
+from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import (
+    BaseScheduler,
     JobMetadata,
     JobQueue,
     JobScheduler,
     ProjectJobSorter,
+    ReporterFn,
+    ReportingScheduler,
     TierScheduler,
     _compute_total_limits,
     _job_verdict,
     _normalize_quotas,
     _recursively_to_dict,
+    composite_reporter,
 )
-from axlearn.common.config import config_for_function
+from axlearn.cloud.common.types import ResourceMap
+from axlearn.common.config import ConfigOr, InstantiableConfig, config_for_function
 from axlearn.common.test_utils import TestCase
 
 
@@ -106,6 +111,9 @@ class UtilsTest(TestCase):
         y = collections.defaultdict(lambda: collections.defaultdict(list))
         y["a"]["b"].extend([1, 2, 3])
         self.assertEqual(x, _recursively_to_dict(y))
+
+        # Test "None" as input.
+        self.assertIsNone(_recursively_to_dict(None))
 
     @parameterized.parameters(
         dict(
@@ -569,10 +577,23 @@ class TierSchedulerTest(parameterized.TestCase):
         # Check that the order of jobs in `job_verdicts` matches that in `expected_tiers`.
         self.assertEqual(list(job_verdicts.keys()), list(expected_tiers.keys()))
 
+    @parameterized.parameters(
+        {"unused_limits": None},
+        {"unused_limits": [{"v4": 4}, {"v4": 8}]},
+    )
+    def test_schedule_result(self, unused_limits: Optional[Sequence[ResourceMap[int]]]):
+        schedule_result = BaseScheduler.ScheduleResults(
+            project_limits={"a": {"v4": 5}, "b": {"unknown": 0, "v4": 1}},
+            project_usages={"a": {"v4": 5}, "b": {"unknown": 0, "v4": 1}},
+            job_verdicts={"a1": True, "a2": False, "b1": False, "b2": True},
+            unused_limits=_recursively_to_dict(unused_limits),
+        )
+        self.assertEqual(schedule_result.unused_limits, unused_limits)
+
 
 def _mock_get_resource_limits(*args):
     del args
-    return UserQuotaInfo(
+    return QuotaInfo(
         total_resources=[{"v4": 15, "v3": 8, "v5": 5}],
         project_resources={
             "project1": {"v4": 10, "v5": 5},
@@ -587,21 +608,62 @@ def mock_quota_config():
     return _mock_get_resource_limits
 
 
+def _dummy_reporter_cfg_impl(**kwargs):
+    pass
+
+
+def _dummy_reporter_as_cfg() -> InstantiableConfig[ReporterFn]:
+    """Returns a reporter as an instantiable config of ReporterFn."""
+
+    def reporter_factory(dummy_arg) -> ReporterFn:
+        # Using wrapper to make lookup of mocked function dynamic.
+        def wrapper(**kwargs):
+            _dummy_reporter_cfg_impl(**kwargs)
+
+        return wrapper
+
+    return config_for_function(reporter_factory).set(dummy_arg="dummy_arg_val")
+
+
+def _dummy_reporter_fn_impl(**kwargs):
+    pass
+
+
+def _dummy_reporter_as_fn() -> ReporterFn:
+    """Returns a reporter as a ReporterFn."""
+
+    # A wrapper is needed because in the tests below, we need to mock _impl(),
+    # and maybe_instantiate(MagicMockObj) would result in infinite loop.
+    def wrapper(**kwargs):
+        _dummy_reporter_fn_impl(**kwargs)
+
+    return wrapper
+
+
 class TestJobScheduler(parameterized.TestCase):
     """Tests JobScheduler."""
 
-    @parameterized.parameters(False, True)
-    def test_init(self, dry_run: bool):
-        cfg = JobScheduler.default_config().set(
-            quota=config_for_function(mock_quota_config),
-        )
+    @parameterized.product(
+        dry_run=[False, True],
+        # Make sure calling various reporter without mock works fine.
+        reporter=[None, _dummy_reporter_as_cfg(), _dummy_reporter_as_fn()],
+    )
+    def test_init(
+        self,
+        dry_run: bool,
+        reporter: Optional[ConfigOr[ReporterFn]],
+    ):
+        # Initial scheduler set up.
+        quota = config_for_function(mock_quota_config)
+        if reporter:
+            cfg = JobScheduler.default_config().set(
+                quota=quota,
+                scheduler=ReportingScheduler.default_config().set(reporter=reporter),
+            )
+        else:
+            cfg = JobScheduler.default_config().set(quota=quota)
 
-        # Test initialization.
-        sched: JobScheduler = cfg.instantiate()
-        # pylint: disable-next=protected-access
-        self.assertEqual(sched._quota(), _mock_get_resource_limits())
-
-        # Test scheduling.
+        # Set up candidate jobs.
         yesterday = datetime.now() - timedelta(days=1)
         jobs = {
             # Should be deprioritized in favor of b, since it's using part of p2's v4 quota.
@@ -647,20 +709,31 @@ class TestJobScheduler(parameterized.TestCase):
                 resources={"v3": 2},
             ),
         }
-        results = sched.schedule(jobs, dry_run=dry_run, verbosity=1)
 
-        # Get verdicts by job name.
-        job_verdicts = results.job_verdicts
+        # Test initialization.
+        sched: JobScheduler = cfg.instantiate()
+        # pylint: disable-next=protected-access
+        self.assertEqual(sched._quota(), _mock_get_resource_limits())
+
+        # Test scheduling. Get schedule results.
+        results = sched.schedule(jobs, dry_run=dry_run, verbosity=1)
+        # Get expected results.
         if dry_run:
             # All of the jobs should be scheduled, regardless.
-            expected = {"a": True, "b": True, "c": True, "d": True, "e": True, "f": True}
+            expected_verdicts = {"a": True, "b": True, "c": True, "d": True, "e": True, "f": True}
+            expected_unused_limits = None
         else:
-            expected = {"a": False, "b": True, "c": True, "d": False, "e": True, "f": True}
+            expected_verdicts = {"a": False, "b": True, "c": True, "d": False, "e": True, "f": True}
+            expected_unused_limits = [{"v4": 10, "v3": 0, "v5": 3}]
 
         self.assertEqual(
-            expected,
-            {job_name: job_verdict.should_run() for job_name, job_verdict in job_verdicts.items()},
+            expected_verdicts,
+            {
+                job_name: job_verdict.should_run()
+                for job_name, job_verdict in results.job_verdicts.items()
+            },
         )
+        self.assertEqual(expected_unused_limits, results.unused_limits)
 
     def test_leftover(self):
         quota_info = QuotaInfo(
@@ -670,6 +743,7 @@ class TestJobScheduler(parameterized.TestCase):
                 "project_b": {"gpu": 1},
                 "project_c": {"gpu": 1},
             },
+            project_membership={},
         )
         cfg = JobScheduler.default_config().set(
             quota=config_for_function(lambda: lambda *args: quota_info),
@@ -770,3 +844,86 @@ class TestJobScheduler(parameterized.TestCase):
             {"project_a": {"gpu": 1}, "project_b": {"gpu": 6}, "project_c": {"gpu": 5}},
             results.project_usages,
         )
+
+    @parameterized.product(
+        [
+            # Test no reporter.
+            {"reporter": None, "expect_report_as_cfg": False, "expect_report_as_fn": False},
+            # Test using reporter without composition.
+            {
+                "reporter": _dummy_reporter_as_cfg(),
+                "expect_report_as_cfg": True,
+                "expect_report_as_fn": False,
+            },
+            {
+                "reporter": _dummy_reporter_as_fn(),
+                "expect_report_as_cfg": False,
+                "expect_report_as_fn": True,
+            },
+            # Test using reporter with composition.
+            {
+                "reporter": [_dummy_reporter_as_cfg()],
+                "expect_report_as_cfg": True,
+                "expect_report_as_fn": False,
+            },
+            {
+                "reporter": [_dummy_reporter_as_fn()],
+                "expect_report_as_cfg": False,
+                "expect_report_as_fn": True,
+            },
+            {
+                "reporter": [_dummy_reporter_as_cfg(), _dummy_reporter_as_fn()],
+                "expect_report_as_cfg": True,
+                "expect_report_as_fn": True,
+            },
+        ],
+        lazy_instantiate=[True, False],
+    )
+    def test_scheduler_result_reporter(
+        self,
+        reporter: Optional[Union[ConfigOr[ReporterFn], Sequence[ConfigOr[ReporterFn]]]],
+        expect_report_as_cfg: bool,
+        expect_report_as_fn: bool,
+        lazy_instantiate: bool,
+    ):
+        quota = config_for_function(mock_quota_config)
+        if reporter:
+            if isinstance(reporter, Iterable):
+                if lazy_instantiate:
+                    reporter = config_for_function(composite_reporter).set(reporters=reporter)
+                else:
+                    reporter = composite_reporter(reporters=reporter)
+            scheduler_config = ReportingScheduler.default_config().set(reporter=reporter)
+            cfg = JobScheduler.default_config().set(quota=quota, scheduler=scheduler_config)
+        else:
+            cfg = JobScheduler.default_config().set(quota=quota)
+        # Job details don't matter here.
+        jobs = {
+            "dummy_job": JobMetadata(
+                user_id="e",
+                project_id="project3",
+                creation_time=datetime.now(),
+                resources={"v5": 2},
+            ),
+        }
+
+        with (
+            mock.patch(f"{__name__}.TierScheduler.schedule") as mock_tier_schedule,
+            mock.patch(f"{__name__}._dummy_reporter_cfg_impl") as mock_reporter_as_cfg,
+            mock.patch(f"{__name__}._dummy_reporter_fn_impl") as mock_reporter_as_fn,
+        ):
+            scheduler_instance: JobScheduler = cfg.instantiate()
+            scheduler_instance.schedule(jobs, verbosity=1)
+
+            # Check that TierScheduler is triggered as inner scheduler.
+            mock_tier_schedule.assert_called_once()
+            # Check that customized reporter is triggered on-demand.
+            if expect_report_as_cfg:
+                mock_reporter_as_cfg.assert_called_once()
+            else:
+                mock_reporter_as_cfg.assert_not_called()
+
+            if expect_report_as_fn:
+                mock_reporter_as_fn.assert_called_once()
+            else:
+                mock_reporter_as_fn.assert_not_called()

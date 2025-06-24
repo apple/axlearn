@@ -10,12 +10,12 @@ import numpy as np
 import pytest
 import torch
 from absl.testing import parameterized
-from einops import rearrange, repeat
 from jax.experimental import mesh_utils
 from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec
 from torch.nn import functional as F
 
+from axlearn.common.ein_ops import rearrange, repeat
 from axlearn.common.ssm_kernels.ssd_kernels import _ssd_backward, _ssd_forward, ssd, ssd_linear_scan
 from axlearn.common.test_utils import TestCase, assert_allclose
 
@@ -125,9 +125,8 @@ def ssd_chunk_tri(X, A, B, C, chunk_size=16, initial_states=None):
     assert X.shape[1] % chunk_size == 0
 
     # Rearrange into blocks/chunks
-    X, A, B, C = [rearrange(x, "b (c l) ... -> b c l ...", l=chunk_size) for x in (X, A, B, C)]
-
-    A = rearrange(A, "b c l h -> b h c l")
+    X, B, C = [rearrange(x, "b (c l) h d -> b c l h d", l=chunk_size) for x in (X, B, C)]
+    A = rearrange(A, "b (c l) h -> b h c l", l=chunk_size)
     A_cumsum = torch.cumsum(A, dim=-1)
 
     # 1. Compute the output for each intra-chunk (diagonal blocks)

@@ -3,6 +3,7 @@
 """Test event queue publishing in GCP."""
 
 import os
+from unittest import mock
 
 from absl import flags
 
@@ -15,6 +16,11 @@ from axlearn.common.test_utils import TestWithTemporaryCWD
 
 class EventQueueTest(TestWithTemporaryCWD):
     """Test Event Queue functions."""
+
+    def run(self, result=None):
+        # Run tests under mock env.
+        with mock.patch("os.environ", {"RABBITMQ_USER": "test", "RABBITMQ_PASSWORD": "test"}):
+            return super().run(result)
 
     def test_event_queue_from_config(self):
         temp_dir = os.path.realpath(self._temp_root.name)

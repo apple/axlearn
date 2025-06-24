@@ -83,5 +83,23 @@ class TestCaseTest(test_utils.TestCase):
             mocks["tearDown"].assert_called_once()
 
 
+class SetThreefryTest(parameterized.TestCase):
+    @parameterized.parameters(True, False)
+    def test_set_threefry_partitionable(self, on: bool):
+        @test_utils.set_threefry_partitionable(on=on)
+        def fn():
+            assert jax.threefry_partitionable.value is on
+
+        fn()
+
+    @test_utils.set_threefry_partitionable(True)
+    def test_set_true(self):
+        assert jax.threefry_partitionable.value is True
+
+    @test_utils.set_threefry_partitionable(False)
+    def test_set_false(self):
+        assert jax.threefry_partitionable.value is False
+
+
 if __name__ == "__main__":
     absltest.main()

@@ -33,8 +33,8 @@ from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.rnn import BaseRNNCell, IdentityCell, LSTMCell
-from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import Nested, NestedTensor, Tensor, shapes
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
+from axlearn.common.utils import Nested, NestedTensor, Tensor, safe_not, shapes
 
 _NEG_INF = -1.0e7
 
@@ -59,7 +59,7 @@ class UtilsTest(TestCase):
                     [
                         [0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
                     ]
-                ),
+                ).astype(jnp.bool),
                 lengths=jnp.asarray([[4]]),
             ),
             blank_id=0,
@@ -85,7 +85,7 @@ class UtilsTest(TestCase):
                         [0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
                         [0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
                     ]
-                ),
+                ).astype(jnp.bool),
                 lengths=jnp.asarray([[4], [4]]),
             ),
             blank_id=0,
@@ -111,7 +111,7 @@ class UtilsTest(TestCase):
                         [[0, 0, 0, 0, 0, 0, 0, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1, 1, 1]],
                         [[0, 0, 0, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
                     ]
-                ),
+                ).astype(jnp.bool),
                 lengths=jnp.asarray([[[7], [3]], [[3], [0]]]),
             ),
             blank_id=0,
@@ -137,7 +137,7 @@ class UtilsTest(TestCase):
                         [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]],
                         [[0, 0, 0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1, 1, 1, 1, 1]],
                     ]
-                ),
+                ).astype(jnp.bool),
                 lengths=jnp.asarray([[[6], [6]], [[6], [3]]]),
             ),
             blank_id=3,
@@ -170,7 +170,7 @@ class ValidCtcSeqTest(TestCase):
         logits = jax.random.normal(
             prng_key, (batch_size, input_lengths, vocab_size), dtype=jnp.float32
         )
-        paddings = jnp.zeros((batch_size, input_lengths), dtype=np.int32)
+        paddings = jnp.zeros((batch_size, input_lengths), dtype=jnp.bool)
         target_labels = jax.random.randint(
             prng_key,
             shape=(batch_size, target_lengths),
@@ -178,7 +178,7 @@ class ValidCtcSeqTest(TestCase):
             maxval=vocab_size - 1,
             dtype=jnp.int32,
         )
-        target_paddings = jnp.zeros(shape=(batch_size, target_lengths), dtype=jnp.int32)
+        target_paddings = jnp.zeros(shape=(batch_size, target_lengths), dtype=jnp.bool)
         return logits, paddings, target_labels, target_paddings
 
     def test_label_longer_than_input(self):
@@ -406,7 +406,7 @@ class CTCDecoderModelTest(TestCase):
             [batch_size, 1, 1],
         )
         # [batch_size, max_seq_len].
-        paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(inputs.dtype)
+        paddings = jnp.arange(max_seq_len) >= seq_len[:, None]
 
         # Generate different padding data.
         padding_data = jax.random.normal(
@@ -466,7 +466,7 @@ class CTCDecoderModelTest(TestCase):
             target_key, [batch_size, max_seq_len], minval=0, maxval=vocab_size
         )
         # [batch_size, max_seq_len].
-        paddings = (jnp.arange(max_seq_len) >= input_lengths[:, None]).astype(target_labels.dtype)
+        paddings = jnp.arange(max_seq_len) >= input_lengths[:, None]
         # Map padding targets out-of-vocab.
         target_labels = jnp.where(
             jnp.arange(max_seq_len) >= target_lengths[:, None], -1, target_labels
@@ -526,6 +526,7 @@ class CTCDecoderModelTest(TestCase):
         msg = f"mismatch in {name}: {summary_collection[name]} vs {value}"
         self.assertEqual(summary_collection[name], value, msg)
 
+    @set_threefry_partitionable(False)  # TODO(yongqiang): update for threefry_partitionable True
     def test_forward_summary(self):
         input_dim, vocab_size = 16, 20
         cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
@@ -551,12 +552,12 @@ class CTCDecoderModelTest(TestCase):
             target_key, [batch_size, max_seq_len], minval=0, maxval=vocab_size
         )
         # [batch_size, max_seq_len].
-        paddings = (jnp.arange(max_seq_len) >= input_lengths[:, None]).astype(target_labels.dtype)
+        paddings = jnp.arange(max_seq_len) >= input_lengths[:, None]
         # Map padding targets out-of-vocab.
         target_labels = jnp.where(
             jnp.arange(max_seq_len) >= target_lengths[:, None], -1, target_labels
         )
-        target_paddings = jnp.where(target_labels == -1, 1, 0)
+        target_paddings = target_labels == -1
         input_batch = dict(inputs=inputs, paddings=paddings, target_labels=target_labels)
         _, output_collections = F(
             layer,
@@ -568,11 +569,11 @@ class CTCDecoderModelTest(TestCase):
         summaries = output_collections.summaries
         # 6 out of 8 examples are valid, therefore the average example weight is 0.75
         self._check_summary(summaries, "loss/example_weight", WeightedScalar(0.75, 8))
-        self._check_summary(summaries, "loss/ctc_loss", WeightedScalar(6972.1353, 6))
+        self._check_summary(summaries, "loss/ctc_loss", WeightedScalar(6972.135, 6))
         self._check_summary(summaries, "loss/invalid_seq_percent", 0.25)
         total_ctc_loss = summaries["loss/ctc_loss"].weight * summaries["loss/ctc_loss"].mean
-        num_valid_frames = jnp.sum((1 - paddings) * per_example_weight[:, None])
-        num_valid_labels = jnp.sum((1 - target_paddings) * per_example_weight[:, None])
+        num_valid_frames = jnp.sum(safe_not(paddings) * per_example_weight[:, None])
+        num_valid_labels = jnp.sum(safe_not(target_paddings) * per_example_weight[:, None])
         num_valid_examples = jnp.sum(per_example_weight)
         self._check_summary(
             summaries,
@@ -633,7 +634,7 @@ class CTCDecoderModelTest(TestCase):
         # [batch_size, max_seq_len, dim].
         inputs = jax.random.normal(input_key, [batch_size, max_seq_len, cfg.input_dim]) * 1000
         # [batch_size, max_seq_len].
-        paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(jnp.int32)
+        paddings = jnp.arange(max_seq_len) >= seq_len[:, None]
 
         @functools.partial(jax.jit, static_argnames=("method", "modify_logits", "num_decodes"))
         def jit_method(inputs, prng_key, method, modify_logits=False, num_decodes=None):
@@ -676,7 +677,7 @@ class CTCDecoderModelTest(TestCase):
         log_probs += paddings[..., None] * NEG_INF
         log_probs = jnp.pad(log_probs, ((0, 0), (0, 1), (0, 0)), constant_values=NEG_INF)
         paddings_extended = jnp.pad(paddings, ((0, 0), (0, 1)), constant_values=1)
-        eos_log_probs = (1 - paddings_extended[:, :, None]) * NEG_INF
+        eos_log_probs = safe_not(paddings_extended)[:, :, None] * NEG_INF
         ref_log_probs = jnp.concatenate([log_probs, eos_log_probs], axis=-1)
 
         # Sequences have shape [batch_size, max_seq_len].
@@ -699,7 +700,7 @@ class CTCDecoderModelTest(TestCase):
         ref_scores = ref_scores[..., :-1, :]
 
         # Aggregate scores [batch_size].
-        ref_scores = jnp.squeeze(ref_scores, axis=-1) * (1 - paddings)
+        ref_scores = jnp.squeeze(ref_scores, axis=-1) * safe_not(paddings)
         ref_scores = jnp.sum(ref_scores, axis=-1)
 
         # Sample decode top decode should match.
@@ -738,7 +739,7 @@ class CTCDecoderModelTest(TestCase):
         # [batch_size, max_seq_len, dim].
         inputs = jax.random.normal(input_key, [batch_size, max_seq_len, cfg.input_dim]) * 1000
         # [batch_size, max_seq_len].
-        paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(jnp.int32)
+        paddings = jnp.arange(max_seq_len) >= seq_len[:, None]
 
         @functools.partial(jax.jit, static_argnames=("method", "logits_modifier", "num_decodes"))
         def jit_method(inputs, prng_key, method, logits_modifier=None, num_decodes=None):
@@ -785,6 +786,7 @@ class CTCDecoderModelTest(TestCase):
         )
         self.assertNestedAllClose(greedy_outputs.scores[:, 0], beam_search_outputs.scores[:, 0])
 
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_prefix_merger(self):
         # Use a small vocab_size to encourage similar prefixes.
         input_dim, vocab_size, num_decodes = 6, 3, 4
@@ -803,7 +805,7 @@ class CTCDecoderModelTest(TestCase):
         # [batch_size, max_seq_len, dim].
         inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim]) * 1000
         # [batch_size, max_seq_len].
-        paddings = (jnp.arange(max_seq_len) >= seq_len[:, None]).astype(jnp.int32)
+        paddings = jnp.arange(max_seq_len) >= seq_len[:, None]
 
         @functools.partial(jax.jit, static_argnames=("method", "prefix_merger", "num_decodes"))
         def jit_method(inputs, prng_key, method, prefix_merger=None, num_decodes=None):
@@ -945,7 +947,7 @@ class CTCDecoderModelTest(TestCase):
                 [0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
                 [0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
             ]
-        )
+        ).astype(jnp.bool)
         scores = jnp.array(
             [
                 [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
@@ -991,7 +993,7 @@ class CTCDecoderModelTest(TestCase):
                     [[0, 0, 0, 0, 1, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1, 1, 1]],
                     [[0, 0, 0, 0, 0, 1, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1, 1, 1]],
                 ]
-            ),
+            ).astype(jnp.bool),
         )
         self.assertNestedEqual(outputs.scores, jnp.array([[28, 28], [36, 36]]))
 
@@ -1157,6 +1159,7 @@ class TransducerDecoderModelTest(TestCase):
         ),
         (jnp.array([[9, 11, 8, 5, 2, -1, -1, -1]]), True),
     )
+    @set_threefry_partitionable(False)  # TODO(Luzy): update for threefry_partitionable True
     def test_forward(self, target_labels, tile_input):
         """Tests that loss computation excludes empty sequence, and respects paddings."""
         am_dim, bos_id = 4, 1
@@ -1276,7 +1279,7 @@ class TransducerDecoderModelTest(TestCase):
                     ],
                 ]
             )
-            am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+            am_paddings = jnp.arange(max_src_len)[None, :] >= src_len[:, None]
             expected_decodes = dict(
                 raw_sequences=jnp.array(
                     [
@@ -1333,7 +1336,7 @@ class TransducerDecoderModelTest(TestCase):
                             [0, 0, 0, 1, 1, 1, 1],
                         ],
                     ]
-                ),
+                ).astype(jnp.bool),
                 probabilities=jnp.array(
                     [
                         [1, 0, 0, 0],
@@ -1349,7 +1352,7 @@ class TransducerDecoderModelTest(TestCase):
             src_len = jnp.array([3, 4])
             # [batch_size, max_src_len, am_dim].
             am_data = jnp.zeros([batch_size, max_src_len, am_dim])
-            am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+            am_paddings = jnp.arange(max_src_len)[None, :] >= src_len[:, None]
             expected_decodes = dict(
                 raw_sequences=jnp.array(
                     [
@@ -1382,7 +1385,7 @@ class TransducerDecoderModelTest(TestCase):
                             [0, 1, 1, 1, 1, 1, 1],
                         ],
                     ]
-                ),
+                ).astype(jnp.bool),
                 probabilities=jnp.array(
                     [
                         [0.8**3, 0.2, 0.8 * 0.2, 0.8**2 * 0.2],
@@ -1395,7 +1398,7 @@ class TransducerDecoderModelTest(TestCase):
             src_len = jnp.array([3, 4])
             # [batch_size, max_src_len, am_dim].
             am_data = jnp.zeros([batch_size, max_src_len, am_dim])
-            am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+            am_paddings = jnp.arange(max_src_len)[None, :] >= src_len[:, None]
             expected_decodes = dict(
                 raw_sequences=jnp.array(
                     [
@@ -1408,7 +1411,7 @@ class TransducerDecoderModelTest(TestCase):
                         [[1, 1, 1, 1, 1], [0, 0, 0, 0, 1], [0, 0, 1, 1, 1], [0, 0, 0, 1, 1]],
                         [[1, 1, 1, 1, 1], [0, 1, 1, 1, 1], [0, 0, 0, 0, 1], [0, 0, 1, 1, 1]],
                     ]
-                ),
+                ).astype(jnp.bool),
                 probabilities=jnp.array(
                     [
                         [
@@ -1498,7 +1501,7 @@ class TransducerDecoderModelTest(TestCase):
         src_len = jnp.array([2, 5, 0])
         # [batch_size, src_len, am_dim].
         am_data = jax.random.normal(jax.random.PRNGKey(312), [batch_size, max_src_len, am_dim])
-        am_paddings = (jnp.arange(max_src_len)[None, :] >= src_len[:, None]).astype(jnp.int32)
+        am_paddings = jnp.arange(max_src_len)[None, :] >= src_len[:, None]
         # Test beam_search_decode.
         beam_search_outputs, _ = F(
             layer,
@@ -1515,7 +1518,7 @@ class TransducerDecoderModelTest(TestCase):
         # src_len = 0 for the 3rd example.
         self.assertNestedEqual(
             beam_search_outputs.paddings[2],
-            jnp.ones((num_decodes, max_decode_len), dtype=jnp.int32),
+            jnp.ones((num_decodes, max_decode_len), dtype=jnp.bool),
         )
         # The decoding finishes with the eos token.
         self.assertNestedEqual(
@@ -1644,7 +1647,7 @@ class LASDecoderModelTest(TestCase):
         # [batch_size, max_seq_len, dim].
         inputs = jax.random.normal(input_key, [batch_size, max_src_len, cfg.input_dim]) * 1000
         # [batch_size, max_seq_len].
-        paddings = (jnp.arange(max_src_len) >= src_len[:, None]).astype(jnp.int32)
+        paddings = jnp.arange(max_src_len) >= src_len[:, None]
         prefix = jax.random.randint(
             prefix_key,
             shape=[batch_size, max_tgt_len],

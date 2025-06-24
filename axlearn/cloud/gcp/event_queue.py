@@ -16,6 +16,7 @@ from axlearn.cloud.common.event_queue import (
     BaseQueueClient,
     RabbitMQClient,
     is_publish_job_event_configured,
+    is_rabbit_mq_configured,
 )
 from axlearn.cloud.gcp.config import gcp_settings
 
@@ -32,8 +33,12 @@ def event_queue_from_config(
         A configured `RabbitMQClient.Config` object if the event queue is configured.
         Returns `None` if the event queue is not configured.
     """
-    if not is_publish_job_event_configured(
-        gcp_settings(CONFIGURED_KEY_JOB_EVENT_QUEUE_ID, required=False, fv=flag_values)
+    if (
+        not is_publish_job_event_configured(
+            gcp_settings(CONFIGURED_KEY_JOB_EVENT_QUEUE_ID, required=False, fv=flag_values)
+        )
+        # RabbitMQ requires some auth env variables which can be left unset for local debugging.
+        or not is_rabbit_mq_configured()
     ):
         return None
 

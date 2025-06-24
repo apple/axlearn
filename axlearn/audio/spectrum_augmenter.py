@@ -12,13 +12,14 @@
 
 from typing import Optional
 
+import chex
 import jax
 import jax.numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class MaskSampler(BaseLayer):
@@ -119,7 +120,9 @@ class MaskSampler(BaseLayer):
             masks = masks * (jnp.arange(max_num_masks) < num_masks)[..., None]
 
         # Reduce over max_num_masks axis.
-        return jnp.max(masks, axis=1)
+        masks = jnp.max(masks, axis=1)
+        chex.assert_type(masks, jnp.bool)
+        return masks
 
 
 class SpectrumAugmenter(BaseLayer):
@@ -166,13 +169,13 @@ class SpectrumAugmenter(BaseLayer):
         )
         # [batch_size, num_frames].
         time_masks = self.time_mask_sampler(
-            input_lengths=jnp.sum(1 - paddings, axis=1),
+            input_lengths=jnp.sum(safe_not(paddings), axis=1),
             max_length=num_frames,
         )
 
         # [batch_size, 1, num_freq, 1].
-        freq_keep = 1 - freq_masks[:, None, :, None]
+        freq_keep = safe_not(freq_masks)[:, None, :, None]
         # [batch_size, num_frames, 1, 1].
-        time_keep = 1 - time_masks[:, :, None, None]
+        time_keep = safe_not(time_masks)[:, :, None, None]
 
         return inputs * freq_keep * time_keep

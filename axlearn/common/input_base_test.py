@@ -6,7 +6,6 @@ from functools import partial
 from typing import Callable, Union
 
 import jax
-import jax.test_util
 import numpy as np
 import pytest
 from absl.testing import parameterized
@@ -14,6 +13,7 @@ from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 
 from axlearn.common.input_base import Input, PathAndRank, partition_by_path_rank
+from axlearn.common.input_dispatch import BaseInputDispatcher, InputDispatcher, SpmdInputDispatcher
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import Nested, PartitionSpec, Tensor, tree_paths
 
@@ -123,7 +123,7 @@ def dispatch_and_check_sharding(
     @partial(pjit, in_shardings=None)
     def fn(input_batch):
         output_batch = ds.dispatch_global_batch(input_batch)
-        jax.tree_map(check_sharding, tree_paths(output_batch), output_batch)
+        jax.tree.map(check_sharding, tree_paths(output_batch), output_batch)
         return output_batch
 
     fn.lower(input_batch).compile()
@@ -183,4 +183,48 @@ class InputTest(TestCase):
                     "target_labels": PartitionSpec("data", "seq"),
                     "target_num_bytes": PartitionSpec("data"),
                 },
+            )
+
+    @parameterized.parameters(
+        dict(
+            dispatcher=SpmdInputDispatcher,
+            # No change with SpmdInputDispatcher (it directly maps logical to logical).
+            expected={
+                "x": jax.ShapeDtypeStruct((4, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((4,), dtype=jnp.int32),
+            },
+        ),
+        dict(
+            dispatcher=InputDispatcher,
+            # InputDispatcher pads to the feed physical shape.
+            expected={
+                "x": jax.ShapeDtypeStruct((8, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((8,), dtype=jnp.int32),
+            },
+        ),
+    )
+    @pytest.mark.for_8_devices
+    def test_element_spec(
+        self,
+        dispatcher: type[BaseInputDispatcher],
+        expected: Nested[jax.ShapeDtypeStruct],
+    ):
+        # pylint: disable=protected-access
+        input_cfg: Input.Config = Input.default_config().set(
+            name="test",
+            partition_spec=PartitionSpec("data"),
+            input_dispatcher=dispatcher.default_config().set(
+                global_logical_batch_size=4,
+            ),
+        )
+
+        with jax.make_mesh((4, 2), ("data", "model")):
+            ds: Input = input_cfg.instantiate(parent=None)
+
+            element_spec = {
+                "x": jax.ShapeDtypeStruct((4, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((4,), dtype=jnp.int32),
+            }
+            self.assertNestedEqual(
+                expected, ds.input_dispatcher.logical_to_physical_shapes(element_spec)
             )

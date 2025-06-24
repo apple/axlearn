@@ -3,6 +3,7 @@
 """Layers for computing training time metrics."""
 
 from axlearn.common.base_layer import BaseLayer
+from axlearn.common.metrics import WeightedScalar
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -18,7 +19,7 @@ class BaseLossMetrics(BaseLayer):
         *,
         predict_outputs: Nested[Tensor],
         module_outputs: Nested[Tensor],
-    ) -> tuple[Tensor, Nested[Tensor]]:
+    ) -> tuple[WeightedScalar, dict[str, WeightedScalar | Tensor]]:
         """Computes metrics from inputs and predictions.
 
         Args:
@@ -28,5 +29,7 @@ class BaseLossMetrics(BaseLayer):
 
         Returns:
             A tuple (loss, metrics).
+                loss: A WeightedScalar loss. Callers should call loss.value() for gradient.
+                metrics: A dict containing auxiliary losses and metrics.
         """
         raise NotImplementedError(type(self))

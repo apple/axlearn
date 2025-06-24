@@ -67,6 +67,7 @@ from axlearn.common.config import (
     Required,
     config_class,
     config_for_function,
+    maybe_instantiate,
 )
 from axlearn.common.module import Module, child_context, new_output_collection, scan_in_context
 from axlearn.common.utils import (
@@ -108,6 +109,12 @@ class Repeat(BaseLayer):
         # if the loop is competely unrolled or left completely rolled.
         # If None, defaults to 1 (same as jax.lax.scan's default value).
         unroll: Optional[Union[bool, int]] = None
+        # remat: Whether to apply `jax.checkpoint` to the scanned function for memory-efficient
+        # training. If True, wraps the scan body function with `jax.checkpoint` to trade
+        # increased compute for reduced memory usage by recomputing intermediate activations
+        # during backward pass.
+        # The default is None for backward compatibility, but it’s recommended to set it to True.
+        remat_in_scan: Optional[bool] = None
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -203,6 +210,15 @@ class Repeat(BaseLayer):
                 initializer=cfg.num_layers,
             )
 
+            if cfg.remat_in_scan:
+                remat_kwargs = dict(
+                    prevent_cse=False,
+                    policy=maybe_instantiate(cfg.remat_spec.policy)
+                    if cfg.remat_spec is not None
+                    else None,
+                )
+            else:
+                remat_kwargs = None
             carry, ys = scan_in_context(
                 fn,
                 carry=carry,
@@ -214,6 +230,7 @@ class Repeat(BaseLayer):
                 drop_output=self._drop_output,
                 child_name_prefix="layer",
                 unroll=cfg.unroll if cfg.unroll is not None else 1,
+                remat_kwargs=remat_kwargs,
             )
 
         self.get_invocation_context().output_collection.update(layer_output_collection)

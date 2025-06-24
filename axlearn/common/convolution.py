@@ -6,15 +6,15 @@ from collections.abc import Sequence
 from typing import Literal, Optional, Union
 
 import chex
-import einops
 import jax
 from jax import numpy as jnp
 
+from axlearn.common import ein_ops
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import nowrap
 from axlearn.common.param_init import FanAxes
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 # The padding type for jax.lax.conv_general_dilated API. Either the strings ‘SAME’, or ‘VALID’, or
 # 'CAUSAL' or a sequence of n (low, high) integer pairs that give the padding to apply before and
@@ -24,12 +24,16 @@ ConvPaddingType = Union[str, Sequence[tuple[int, int]]]
 SUPPORT_CONV_PADDING = ("SAME", "VALID", "CAUSAL")
 
 
+# TODO(yuanliu939): Make this take `BaseConv.Config` directly.
 def _check_conv_cfg(
     *,
     window: Sequence[int],
     strides: Sequence[int],
     padding: ConvPaddingType,
     dilation: Optional[Sequence[int]],
+    input_dim: int,
+    output_dim: int,
+    num_input_dim_groups: int,
 ):
     if any(w < 1 for w in window):
         raise ValueError(f"window ({window}) must be a positive integer.")
@@ -48,13 +52,36 @@ def _check_conv_cfg(
     if dilation is not None and any(d < 1 for d in dilation):
         raise ValueError(f"dilation ({dilation}) must be a positive integer.")
 
+    if input_dim % num_input_dim_groups != 0:
+        raise ValueError(
+            f"input_dim ({input_dim}) must be divisible by "
+            f"num_input_dim_groups({num_input_dim_groups})."
+        )
+
+    if output_dim % num_input_dim_groups != 0:
+        raise ValueError(
+            f"output_dim ({output_dim}) must be divisible by "
+            f"num_input_dim_groups({num_input_dim_groups})."
+        )
+
 
 class BaseConv(BaseLayer):
     """Base class for convolution layers."""
 
     @config_class
     class Config(BaseLayer.Config):
+        """Config class for BaseConv."""
+
         input_dim: Required[int] = REQUIRED  # Input feature dim.
+        # The number of groups in which the input is split along the channel axis.
+        # input_dim and output_dim must both be divisible by num_input_dim_groups. For example,
+        # - At num_input_dim_groups=1, all inputs are convolved to all outputs (the default).
+        # - At num_input_dim_groups=2, the operation is equivalent to concatenating two conv layers
+        #   side by side, each seeing half the input and producing half the output channels.
+        # - At num_input_dim_groups=input_dim, each input channel is convolved with its own
+        #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
+        #   where K is a positive integer, the operation is also known as a "depthwise convolution".
+        num_input_dim_groups: int = 1
 
     # pylint: disable-next=no-self-use
     def _compute_fan_axes(self, name: str, parameter_spec: ParameterSpec) -> Optional[FanAxes]:
@@ -273,6 +300,7 @@ def compute_conv_paddings(
         ValueError: If anchor is not between left_time_padding and right_time_padding.
     """
     chex.assert_rank(in_paddings, 2)
+    chex.assert_type(in_paddings, jnp.bool)
     dilation = dilation or 1
     conv_padding = conv_explicit_padding(
         window=(window,), strides=(stride,), padding=conv_padding, dilation=(dilation,)
@@ -324,15 +352,6 @@ class Conv1D(BaseConv):
         padding: ConvPaddingType = ((0, 0),)
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
-        # The number of groups in which the input is split along the channel axis.
-        # input_dim and output_dim must both be divisible by num_input_dim_groups. For example,
-        # - At num_input_dim_groups=1, all inputs are convolved to all outputs (the default).
-        # - At num_input_dim_groups=2, the operation is equivalent to concatenating two conv layers
-        #   side by side, each seeing half the input and producing half the output channels.
-        # - At num_input_dim_groups=input_dim, each input channel is convolved with its own
-        #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
-        #   where K is a positive integer, the operation is also known as a "depthwise convolution".
-        num_input_dim_groups: Optional[int] = 1
         # The convolution dilation, indicating dilation factor applied to the weight. It is also
         # known as atrous convolution or dilated convolution. If None, assume 1.
         dilation: Optional[int] = None
@@ -351,6 +370,9 @@ class Conv1D(BaseConv):
             strides=(cfg.strides,),
             padding=cfg.padding,
             dilation=(dilation,),
+            input_dim=cfg.input_dim,
+            output_dim=cfg.output_dim,
+            num_input_dim_groups=cfg.num_input_dim_groups,
         )
         if cfg.padding not in SUPPORT_CONV_PADDING:
             left, right = cfg.padding[0]
@@ -454,7 +476,7 @@ class Conv1DWithPadding(Conv1D):
         cfg = self.config
         chex.assert_rank(x, paddings.ndim + 1)
         # Apply padding to the input.
-        x = x * (1 - paddings[..., None])
+        x = x * safe_not(paddings)[..., None]
 
         # Apply Conv1D.
         output = super().forward(x)
@@ -495,15 +517,6 @@ class Conv2D(BaseConv):
         dilation: Optional[tuple[int, int]] = None
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
-        # The number of groups in which the input is split along the channel axis.
-        # input_dim and output_dim must both be divisible by num_input_dim_groups. For example,
-        # - At num_input_dim_groups=1, all inputs are convolved to all outputs (the default).
-        # - At num_input_dim_groups=2, the operation is equivalent to concatenating two conv layers
-        #   side by side, each seeing half the input and producing half the output channels.
-        # - At num_input_dim_groups=input_dim, each input channel is convolved with its own
-        #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
-        #   where K is a positive integer, the operation is also known as a "depthwise convolution".
-        num_input_dim_groups: Optional[int] = 1
 
     @classmethod
     def default_config(cls):
@@ -514,7 +527,13 @@ class Conv2D(BaseConv):
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         _check_conv_cfg(
-            window=cfg.window, strides=cfg.strides, padding=cfg.padding, dilation=cfg.dilation
+            window=cfg.window,
+            strides=cfg.strides,
+            padding=cfg.padding,
+            dilation=cfg.dilation,
+            input_dim=cfg.input_dim,
+            output_dim=cfg.output_dim,
+            num_input_dim_groups=cfg.num_input_dim_groups,
         )
         params = dict(
             weight=ParameterSpec(
@@ -680,7 +699,7 @@ class Conv2DWith1DPadding(Conv2D):
         cfg = self.config
         # Apply padding to the input.
         assert len(x.shape) == len(paddings.shape) + 2
-        x = x * (1 - paddings[..., None, None])
+        x = x * safe_not(paddings)[..., None, None]
 
         # Apply Conv2D.
         output = super().forward(x)
@@ -725,16 +744,6 @@ class Conv3D(BaseConv):
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
 
-        # The number of groups in which the input is split along the channel axis.
-        # input_dim and output_dim must both be divisible by num_input_dim_groups. For example,
-        # - At num_input_dim_groups=1, all inputs are convolved to all outputs (the default).
-        # - At num_input_dim_groups=2, the operation is equivalent to concatenating two conv layers
-        #   side by side, each seeing half the input and producing half the output channels.
-        # - At num_input_dim_groups=input_dim, each input channel is convolved with its own
-        #   set of filters (of size output_dim / input_dim); if further output_dim == K * input_dim,
-        #   where K is a positive integer, the operation is also known as a "depthwise convolution".
-        num_input_dim_groups: Optional[int] = 1
-
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
@@ -744,7 +753,13 @@ class Conv3D(BaseConv):
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         _check_conv_cfg(
-            window=cfg.window, strides=cfg.strides, padding=cfg.padding, dilation=cfg.dilation
+            window=cfg.window,
+            strides=cfg.strides,
+            padding=cfg.padding,
+            dilation=cfg.dilation,
+            input_dim=cfg.input_dim,
+            output_dim=cfg.output_dim,
+            num_input_dim_groups=cfg.num_input_dim_groups,
         )
         params = dict(
             weight=ParameterSpec(
@@ -1278,6 +1293,7 @@ def compute_conv_transpose_paddings(
     """
 
     chex.assert_rank(in_paddings, 2)
+    chex.assert_type(in_paddings, jnp.bool)
     conv_padding = conv_transpose_explicit_padding(
         window=(window,), strides=(stride,), padding=conv_padding, dilation=(dilation,)
     )
@@ -1309,7 +1325,7 @@ def compute_conv_transpose_paddings(
     # |0 0 1 1| ->  |0 * 0 * 1 * 1|
     def dilate_paddings(paddings):
         most, last = jnp.split(paddings, [paddings.shape[1] - 1], axis=1)
-        dilated = einops.repeat(most, "b t -> b (t s)", s=stride)
+        dilated = ein_ops.repeat(most, "b t -> b (t s)", s=stride)
         return jnp.concatenate([dilated, last], axis=1)
 
     in_paddings = dilate_paddings(in_paddings)
@@ -1347,7 +1363,6 @@ class Conv1DTranspose(BaseConv):
         dilation: int = 1  # Dilation for dilated Convolution.
         output_dim: Required[int] = REQUIRED  # Output feature dim.
         bias: bool = True  # Whether to add a bias.
-
         # An optional integer in the range of [0, window)
         # that specifies the anchor position within the convolution window that is used to
         # determine output paddings. Specifically, the output token is valid iff the input token
@@ -1368,10 +1383,13 @@ class Conv1DTranspose(BaseConv):
             strides=(cfg.strides,),
             padding=cfg.padding,
             dilation=(cfg.dilation,),
+            input_dim=cfg.input_dim,
+            output_dim=cfg.output_dim,
+            num_input_dim_groups=cfg.num_input_dim_groups,
         )
         params = dict(
             weight=ParameterSpec(
-                shape=(cfg.window, cfg.input_dim, cfg.output_dim),
+                shape=(cfg.window, cfg.input_dim // cfg.num_input_dim_groups, cfg.output_dim),
                 mesh_axes=cfg.param_partition_spec,
                 factorization=FactorizationSpec(axes=(None, "row", "col")),
             )
@@ -1396,7 +1414,7 @@ class Conv1DTranspose(BaseConv):
         if paddings is not None:
             chex.assert_rank(x, paddings.ndim + 1)
             # Apply padding to the input.
-            x = x * (1 - paddings[..., None])
+            x = x * safe_not(paddings)[..., None]
 
         output = self._conv(
             x=x, strides=(cfg.strides,), padding=conv_padding, dilation=(cfg.dilation,)
@@ -1426,13 +1444,15 @@ class Conv1DTranspose(BaseConv):
         dilation: Sequence[int],
     ) -> Tensor:
         cfg = self.config
-        output = jax.lax.conv_transpose(
+        output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
-            strides=strides,
+            window_strides=(1,),
             padding=padding,
+            lhs_dilation=strides,
             rhs_dilation=dilation,
             dimension_numbers=("NWC", "WIO", "NWC"),
+            feature_group_count=cfg.num_input_dim_groups,
         )
         if cfg.bias:
             output += self.parameters["bias"]
@@ -1490,12 +1510,18 @@ class Conv2DTranspose(BaseConv):
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         _check_conv_cfg(
-            window=cfg.window, strides=cfg.strides, padding=cfg.padding, dilation=cfg.dilation
+            window=cfg.window,
+            strides=cfg.strides,
+            padding=cfg.padding,
+            dilation=cfg.dilation,
+            input_dim=cfg.input_dim,
+            output_dim=cfg.output_dim,
+            num_input_dim_groups=cfg.num_input_dim_groups,
         )
         if cfg.transpose_kernel:
-            io_shape = (cfg.output_dim, cfg.input_dim)
+            io_shape = (cfg.output_dim, cfg.input_dim // cfg.num_input_dim_groups)
         else:
-            io_shape = (cfg.input_dim, cfg.output_dim)
+            io_shape = (cfg.input_dim // cfg.num_input_dim_groups, cfg.output_dim)
         params = dict(
             weight=ParameterSpec(
                 shape=tuple(cfg.window) + io_shape,
@@ -1525,14 +1551,25 @@ class Conv2DTranspose(BaseConv):
         dilation: Sequence[int],
     ) -> Tensor:
         cfg = self.config
-        output = jax.lax.conv_transpose(
+
+        rhs = self.parameters["weight"]
+        # Since `jax.lax.conv_general_dilated` does not support transpose_kernel yet,
+        # we transpose kernel here.
+        if cfg.transpose_kernel:
+            # Flip spatial dims
+            rhs = jnp.flip(rhs, axis=(0, 1))
+            # Swap input / output channel axes
+            rhs = rhs.swapaxes(2, 3)
+
+        output = jax.lax.conv_general_dilated(
             lhs=x,
-            rhs=self.parameters["weight"],
-            strides=strides,
+            rhs=rhs,
+            window_strides=(1, 1),
             padding=padding,
+            lhs_dilation=strides,
             rhs_dilation=dilation,
             dimension_numbers=("NHWC", "HWIO", "NHWC"),
-            transpose_kernel=cfg.transpose_kernel,
+            feature_group_count=cfg.num_input_dim_groups,
         )
         if cfg.bias:
             output += self.parameters["bias"]
@@ -1597,7 +1634,7 @@ class Conv2DTransposeWith1DPadding(Conv2DTranspose):
         cfg = self.config
         # Apply padding to the input.
         assert len(x.shape) == len(paddings.shape) + 2
-        x = x * (1 - paddings[..., None, None])
+        x = x * safe_not(paddings)[..., None, None]
 
         # Apply Conv2D.
         output = super().forward(x)
@@ -1640,11 +1677,17 @@ class Conv3DTranspose(BaseConv):
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
         _check_conv_cfg(
-            window=cfg.window, strides=cfg.strides, padding=cfg.padding, dilation=cfg.dilation
+            window=cfg.window,
+            strides=cfg.strides,
+            padding=cfg.padding,
+            dilation=cfg.dilation,
+            input_dim=cfg.input_dim,
+            output_dim=cfg.output_dim,
+            num_input_dim_groups=cfg.num_input_dim_groups,
         )
         params = dict(
             weight=ParameterSpec(
-                shape=cfg.window + (cfg.input_dim, cfg.output_dim),
+                shape=cfg.window + (cfg.input_dim // cfg.num_input_dim_groups, cfg.output_dim),
                 mesh_axes=cfg.param_partition_spec,
                 factorization=FactorizationSpec(axes=(None, None, None, "row", "col")),
             )
@@ -1671,13 +1714,15 @@ class Conv3DTranspose(BaseConv):
         dilation: Sequence[int],
     ) -> Tensor:
         cfg = self.config
-        output = jax.lax.conv_transpose(
+        output = jax.lax.conv_general_dilated(
             lhs=x,
             rhs=self.parameters["weight"],
-            strides=strides,
+            window_strides=(1, 1, 1),
             padding=padding,
+            lhs_dilation=strides,
             rhs_dilation=dilation,
             dimension_numbers=("NHWDC", "HWDIO", "NHWDC"),
+            feature_group_count=cfg.num_input_dim_groups,
         )
         if cfg.bias:
             output += self.parameters["bias"]
@@ -1749,7 +1794,7 @@ class StackOverTime(BaseLayer):
             raise ValueError(f"stride should be greater than 1, but got {cfg.stride}.")
 
         # For the last partial frame.
-        inputs = inputs * (1 - paddings)[:, :, None]
+        inputs = inputs * safe_not(paddings)[:, :, None]
 
         padding = cfg.padding
         if isinstance(padding, str):

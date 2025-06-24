@@ -3,35 +3,48 @@
 """Helper utilities for launching jobs."""
 
 import collections
+import inspect
 import json
 import re
 import shlex
-from typing import Any, Optional, Protocol
+from typing import Optional, Protocol
 
 from absl import flags
 
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobStatus
-from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.types import ResourceType
-from axlearn.cloud.common.utils import Table
-from axlearn.cloud.gcp.tpu import TpuInfo, list_tpu_info, tpu_resource
-from axlearn.cloud.gcp.utils import get_credentials, list_k8s_jobsets
+from axlearn.cloud.common.utils import Table, define_flags
+from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.utils import GCPAPI, list_k8s_jobsets
+from axlearn.common.config import ConfigBase
 
 
-def serialized_flags_for_job(fv: flags.FlagValues, job: type[Job]) -> list[str]:
-    """Returns a list of serialized flags --flag=value used by the input job.
+def infer_module_qualname(cls: type) -> str:
+    """Infers the fully-qualified name of `cls.__module__`.
+
+    Using `cls.__module__` naively may return "__main__".
+    """
+    module = inspect.getmodule(cls)
+    if module is None:
+        raise ValueError(f"Unable to get module for {cls}.")
+    module_spec = module.__spec__  # pytype: disable=attribute-error
+    return module_spec.name
+
+
+def serialized_flags_for_config(cfg: ConfigBase, fv: flags.FlagValues) -> list[str]:
+    """Returns a list of serialized flags --flag=value used by the config.
 
     Args:
-        fv: Flag values to extract from.
-        job: Job to extract flags for.
+        cfg: Config to extract from.
+        fv: Flag values to define flags on.
 
     Returns:
         A sequence of --flag=value strings.
     """
     # Save flags values corresponding to our job.
     launch_fv = flags.FlagValues()
-    job.define_flags(launch_fv)
+    define_flags(cfg, launch_fv)
 
     # Convert the user-supplied flags into a space-separated string, which is forwarded to the
     # command executed by bastion. Only flags which are used by the runner are forwarded.
@@ -44,26 +57,60 @@ def serialized_flags_for_job(fv: flags.FlagValues, job: type[Job]) -> list[str]:
     return filtered
 
 
-def match_by_regex(match_regex: dict[str, str], gcp_api: str):
-    """Matches action and instance type by regex.
+def infer_gcp_api(fv: flags.FlagValues = flags.FLAGS) -> str:
+    """Infers `gcp_api` from flags or settings."""
+
+    if getattr(fv, "gcp_api", None) is not None:
+        return fv.gcp_api.lower()
+    # The return value depends on --zone, so cannot be set as the default value of fv.gcp_api.
+    return gcp_settings(
+        "launch_gcp_api", default=GCPAPI.GKE.lower(), required=False, fv=fv
+    )  # pytype: disable=bad-return-type
+
+
+class Matcher(Protocol):
+    """Matches a launcher using `action` and `flag_values`."""
+
+    def __call__(self, *, action: str, flag_values: flags.FlagValues) -> bool:
+        pass
+
+
+def match_gcp_api(gcp_api: str):
+    """Matches against `gcp_api` in a case-insensitive manner."""
+
+    def fn(*, action: str, flag_values: flags.FlagValues) -> bool:
+        del action
+        requested_gcp_api = infer_gcp_api(flag_values)
+        return requested_gcp_api.lower() == gcp_api.lower()
+
+    return fn
+
+
+def match_by_regex(match_regex: dict[str, str]):
+    """Matches flag values by regex.
+
+    Args
+        kwargs: A dict mapping flag names to value regex.
 
     For example:
 
-        match_regex={'start': 'pat1', 'list': 'pat2'}
+        match_regex={'instance_type': 'tpu-*', 'job_type': 'default'}
 
-    ... means that the launcher will be used if action is 'start' and --instance_type regex matches
-    'pat1', or if action is 'list' and --instance_type regex matches 'pat2'. The launcher will not
-    be invoked for any other action.
+    ... will return True if --instance_type regex matches 'tpu-*' and --job_type matches 'default'.
+    If a flag does not exist or is None, the match will return False instead of raising.
     """
-    match_gcp_api = gcp_api
 
-    def fn(*, action: str, instance_type: str, gcp_api: str) -> bool:
-        """Returns True iff the launcher supports the given action and instance_type."""
-        return (
-            gcp_api.lower() == match_gcp_api.lower()
-            and action in match_regex
-            and bool(re.match(match_regex[action], instance_type))
-        )
+    def fn(*, action: str, flag_values: flags.FlagValues) -> bool:
+        """Returns True iff the launcher matches the given flag values."""
+
+        for flag, regex in match_regex.items():
+            if flag == "action":
+                value = action
+            else:
+                value = getattr(flag_values, flag, "")
+            if value is None or not re.fullmatch(regex, value):
+                return False
+        return True
 
     return fn
 
@@ -165,59 +212,6 @@ def project_usage_table(jobs: dict[str, BastionJob]) -> Table:
     return _usage_table(usage_by_project)
 
 
-def with_qrm_tpu_state(fn: JobsToTableFn) -> JobsToTableFn:
-    """Amends the table with column(s) pertaining to state of QRM TPUs.
-
-    Jobs for which no TPU state exists will be assigned "PENDING" state.
-    """
-
-    def table_fn(jobs: dict[str, BastionJob]) -> Table:
-        table: Table = fn(jobs)
-        tpu_state = _qrm_tpu_state_from_jobs(jobs)
-        table.add_col("QRM_STATE", tpu_state["job_name_to_states"].values())
-        return table
-
-    return table_fn
-
-
-def _qrm_tpu_state_from_jobs(
-    jobs: dict[str, BastionJob], tpu_infos: Optional[list[TpuInfo]] = None
-) -> dict[str, Any]:
-    """Retrieves QRM TPU states for the given jobs."""
-    if tpu_infos is None:
-        tpu_infos = list_tpu_info(tpu_resource(get_credentials()))
-
-    tpu_infos = {tpu_info.name: tpu_info for tpu_info in tpu_infos}
-    tpu_to_job_name = {}
-    job_name_to_states = collections.defaultdict(set)
-
-    # Gather TPU states for each job.
-    for job in jobs.values():
-        tpu_names = [job.spec.name]
-
-        # In the multislice case, tpu_names come from job_name-<slice>.
-        # TODO(markblee): Don't rely on parsing flags.
-        if matches := re.search(r"--(?:num_slices|num_replicas)[= ](\d+)", job.spec.command):
-            num_replicas = int(matches[1])
-            if num_replicas > 1:
-                tpu_names = [f"{job.spec.name}-{slice_idx}" for slice_idx in range(num_replicas)]
-
-        # Gather unique TPU states for the given job.
-        for tpu_name in tpu_names:
-            if tpu_name in tpu_infos:
-                tpu_to_job_name[tpu_name] = job.spec.name
-                tpu_state = tpu_infos[tpu_name].state or "UNKNOWN"
-            else:
-                tpu_state = "PENDING"
-            job_name_to_states[job.spec.name].add(tpu_state)
-
-    return dict(
-        running_tpu_infos=tpu_infos,
-        running_tpu_to_job_name=tpu_to_job_name,
-        job_name_to_states=job_name_to_states,
-    )
-
-
 def with_k8s_jobset_state(fn: JobsToTableFn, *, namespace: str) -> JobsToTableFn:
     """Amends the table with column(s) pertaining to state of GKE Jobsets.
 
@@ -280,6 +274,7 @@ def _parse_resource_flags_from_command(command: str) -> flags.FlagValues:
     return fv
 
 
+# TODO(ethanli,markblee): Avoid making assumptions about flags being used.
 def validate_resource_flags(original_command: str, updated_command: str):
     """Raise an exception if the resource flags are different
     in the original and updated commands."""

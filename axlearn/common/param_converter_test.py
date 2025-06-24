@@ -40,8 +40,10 @@ from axlearn.common.deberta_test import (
 )
 from axlearn.common.deberta_test import build_cfg as deberta_build_cfg
 from axlearn.common.deberta_test import build_model_config as deberta_build_model_config
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import (
     BaseClassificationHead,
+    Conv3D,
     Embedding,
     L2Norm,
     LayerNorm,
@@ -109,6 +111,10 @@ class BaseParamConverterTest(TestCase):
         if test_torch_to_axlearn:
             params_from_ref_layer = torch_to_axlearn(ref_layer, dst_layer=test_layer)
             self.assertNestedAllClose(params_from_ref_layer, params)
+            self.assertEqual(
+                jax.tree_util.tree_structure(params_from_ref_layer),
+                jax.tree_util.tree_structure(params),
+            )
         test_outputs, _ = F(
             test_layer,
             is_training=True,
@@ -204,6 +210,29 @@ class ParameterTest(BaseParamConverterTest):
             test_inputs=[inputs],
             ref_inputs=as_torch_tensor(inputs),
         )
+        self.assertNestedAllClose(out, hf_out)
+
+    @parameterized.product(test_torch_to_axlearn=[True, False], bias=[True, False])
+    def test_conv3d(self, test_torch_to_axlearn, bias):
+        b, t, h, w, c, out_c, k = 2, 3, 4, 5, 6, 8, 3
+        cfg = Conv3D.default_config().set(
+            input_dim=c, output_dim=out_c, window=(k, k, k), bias=bias
+        )
+        layer = cfg.set(name="convert_test").instantiate(parent=None)
+        hf_layer = torch.nn.Conv3d(c, out_c, k, bias=bias)
+
+        inputs = jax.random.uniform(
+            jax.random.PRNGKey(1), shape=(b, t, h, w, c), minval=-10, maxval=10
+        )
+        hf_inputs = rearrange(inputs, "b t h w c -> b c t h w")
+        out, hf_out = self._compute_layer_outputs(
+            test_layer=layer,
+            ref_layer=hf_layer,
+            test_inputs=[inputs],
+            ref_inputs=as_torch_tensor(hf_inputs),
+            test_torch_to_axlearn=test_torch_to_axlearn,
+        )
+        hf_out = rearrange(hf_out, "b c t h w -> b t h w c")
         self.assertNestedAllClose(out, hf_out)
 
     @parameterized.parameters(True, False)

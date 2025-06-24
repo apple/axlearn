@@ -738,7 +738,9 @@ We can then test a simple `v4-8` command:
 ```bash
 # Run a dummy command on v4-8.
 # Note: the "'...'" quotes are important.
-axlearn gcp tpu start --name=$USER-test --tpu_type=v4-8 -- python3 -c "'import jax; print(jax.devices())'"
+axlearn gcp launch start --runner_name=gke_tpu_single --name=$USER-test --instance_type=tpu-v4-8 \
+    --bundler_spec=image=tpu --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=tpu -- \
+    python3 -c "'import jax; print(jax.devices())'"
 ```
 
 This provisions a v4-8 TPU, installs `axlearn` on it, and runs the `python3` command that comes after `--`. As the job is running, any logs from the command will be synced to GCS. Once the job is completed, the TPU resources will be torn down.
@@ -758,7 +760,9 @@ We've already packaged the ResNet on ImageNet example for you, which can be laun
 OUTPUT_DIR=gs://path/to/$USER/experiments/resnet50-$(date +%F)
 DATA_DIR=gs://path/to/tensorflow_datasets
 
-axlearn gcp tpu start --tpu_type=v4-8 --output_dir=$OUTPUT_DIR -- \
+axlearn gcp launch start --runner_name=gke_tpu_single --name=$USER-test --instance_type=tpu-v4-8 \
+    --bundler_spec=image=tpu --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=tpu \
+    --output_dir=$OUTPUT_DIR -- \
     python3 -m axlearn.common.launch_trainer_main \
     --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
     --trainer_dir=$OUTPUT_DIR --data_dir=$DATA_DIR --jax_backend=tpu
@@ -769,7 +773,9 @@ If you have been following along with the code, assuming you have a file `axlear
 OUTPUT_DIR=gs://path/to/$USER/experiments/resnet50-$(date +%F)
 DATA_DIR=gs://path/to/tensorflow_datasets
 
-axlearn gcp tpu start --tpu_type=v4-8 --output_dir=$OUTPUT_DIR -- \
+axlearn gcp launch start --runner_name=gke_tpu_single --name=$USER-test --instance_type=tpu-v4-8 \
+    --bundler_spec=image=tpu --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=tpu \
+    --output_dir=$OUTPUT_DIR -- \
     python3 -m axlearn.common.launch_trainer_main \
 -   --module=vision.resnet.imagenet_trainer --config=ResNet-50 \
 +   --module=tutorial --config=ResNet-50 \

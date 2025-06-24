@@ -36,6 +36,20 @@ class MaskTest(test_utils.TestCase):
         out_mask = bool_mask.astype(jnp.int32)
         self.assertEqual(out_mask.tolist(), expected)
 
+    @parameterized.parameters(
+        [0, [[1, 0, 0, 0, 0], [1, 1, 0, 0, 0], [1, 1, 1, 0, 0]]],
+        [2, [[1, 1, 1, 0, 0], [0, 1, 1, 1, 0], [0, 0, 1, 1, 1]]],
+        [4, [[0, 0, 1, 1, 1], [0, 0, 0, 1, 1], [0, 0, 0, 0, 1]]],
+    )
+    def test_sliding_window_mask_with_time_step(self, time_step, expected):
+        mask_fn = sliding_window_causal_mask(sliding_window_size=2)
+        target_len, source_len = 3, 5
+        target_positions = jnp.arange(target_len)[:, None] + time_step
+        source_positions = jnp.arange(source_len)[None, :]
+        bool_mask = mask_fn(target_positions, source_positions)
+        out_mask = bool_mask.astype(jnp.int32)
+        self.assertEqual(out_mask.tolist(), expected)
+
 
 class AttentionBiasTest(test_utils.TestCase):
     @parameterized.parameters(

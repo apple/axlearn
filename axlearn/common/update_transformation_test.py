@@ -2,6 +2,7 @@
 """Tests for update_transformation.py."""
 import dataclasses
 from collections.abc import Sequence
+from typing import Any, NamedTuple
 
 import chex
 import jax
@@ -10,22 +11,35 @@ from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 import axlearn.common
-from axlearn.common import optimizers, test_utils
+from axlearn.common import optimizers, schedule, test_utils
 from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_for_function, maybe_instantiate
-from axlearn.common.module import (
-    InvocationContext,
-    functional,
-    new_output_collection,
-    set_current_context,
+from axlearn.common.learner import Learner
+from axlearn.common.module import InvocationContext
+from axlearn.common.module import functional as F
+from axlearn.common.module import new_output_collection, set_current_context
+from axlearn.common.optimizer_base import (
+    NestedOptParam,
+    OptParam,
+    PartitionedGradientTransformation,
 )
-from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
 from axlearn.common.update_transformation import (
+    ConditionalUpdateTransformation,
+    ForwardOutputs,
+    OverrideInplaceUpdateTransformation,
     Updates,
     UpdateTransformation,
     WrappedPartitionedGradientTransformation,
 )
-from axlearn.common.utils import Nested, Tensor, VDict
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    NestedTree,
+    PartitionSpec,
+    Tensor,
+    VDict,
+    tree_paths,
+)
 
 
 class UpdateTransformationTest(test_utils.TestCase):
@@ -121,7 +135,7 @@ class UpdateTransformationTest(test_utils.TestCase):
         self.assertNestedAllClose(actual_specs, expected_specs)
 
         # Check that the final update and optimizer state updates are the same.
-        actual_update, actual_output_collection = functional(
+        actual_update, actual_output_collection = F(
             module=update_transformation,
             prng_key=None,
             state=actual_init,
@@ -166,7 +180,7 @@ def mock_params() -> Nested[Tensor]:
     )
 
 
-def mock_updates(state_param_none: bool = True) -> axlearn.common.update_transformation.Updates:
+def mock_updates(state_param_none: bool = True) -> Updates:
     """Create an updates object with various semi-reasonable values."""
     model_params = mock_params()
     if state_param_none:
@@ -186,7 +200,7 @@ def mock_updates(state_param_none: bool = True) -> axlearn.common.update_transfo
         more_state=jnp.arange(3, dtype=jnp.int32),
         do_not_update=optax.MaskedNode(),
     )
-    updates = axlearn.common.update_transformation.Updates(
+    updates = Updates(
         opt_params=opt_params, delta_updates=delta_updates, inplace_updates=inplace_updates
     )
     return updates
@@ -263,6 +277,180 @@ class UpdatesTest(test_utils.TestCase):
 
         chex.assert_trees_all_equal_structs(actual, expected)
         self.assertNestedAllClose(actual, expected)
+
+
+class OverrideInplaceUpdateTransformationTest(test_utils.TestCase):
+    """Tests for `OverrideInplaceUpdateTransformation`."""
+
+    def test_override_inplace_update_transformation(self):
+        learning_rate = config_for_function(schedule.constant_schedule).set(value=0.1)
+        transformation = config_for_function(optimizers.adamw_optimizer).set(
+            learning_rate=learning_rate, b1=0.9, b2=0.95, eps=1e-7
+        )
+        cfg = OverrideInplaceUpdateTransformation.default_config().set(
+            name="tmp", transformation=transformation, rules=[".*weight"]
+        )
+        update_transformation: UpdateTransformation = cfg.instantiate(parent=None)
+
+        updates = mock_updates()
+        param_specs = updates.param_specs()
+        actual_init = update_transformation.init(updates.opt_params)
+        actual_specs = update_transformation.create_state_partition_specs(param_specs)
+
+        # `weight` should be filtered from both init states and specs.
+        jax.tree.map(lambda path: self.assertNotIn("weight", path), tree_paths(actual_init))
+        jax.tree.map(lambda path: self.assertNotIn("weight", path), tree_paths(actual_specs))
+
+        actual_update, _ = F(
+            module=update_transformation,
+            prng_key=None,
+            state=actual_init,
+            inputs=[updates],
+            method="__call__",
+            is_training=True,
+        )
+
+        # `weight` should be in both `inplace_updates` and `delta_updates`.
+        out = jax.tree.map(lambda path: "weight" in path, tree_paths(actual_update.delta_updates))
+        self.assertTrue(jax.tree.reduce(lambda a, b: a or b, out))
+        out = jax.tree.map(lambda path: "weight" in path, tree_paths(actual_update.inplace_updates))
+        self.assertTrue(jax.tree.reduce(lambda a, b: a or b, out))
+
+
+class LearnerStep(NamedTuple):
+    state: Any
+    model_params: Any
+
+
+class ConditionalUpdateTransformationTest(test_utils.TestCase):
+    """Tests for `OverrideInplaceUpdateTransformation`."""
+
+    @parameterized.parameters("adamw", "chained")
+    def test_conditional_update_transformation(self, optimizer_type):
+        def get_learner_from_su(should_update_schedule_fn=None):
+            if optimizer_type in ("adamw", "chained"):
+                optimizer_cfg = config_for_function(optimizers.adamw_optimizer).set(
+                    learning_rate=0.1,
+                    b1=0.9,
+                    b2=0.99,
+                    eps=1e-5,
+                    weight_decay=0,
+                )
+            if optimizer_type == "chained":
+                optimizer_cfg = config_for_function(optimizers.chain).set(
+                    args=[
+                        config_for_function(optimizers.clip_by_global_norm).set(max_norm=10),
+                        optimizer_cfg,
+                    ]
+                )
+            optimizer_cfg = ConditionalUpdateTransformation.default_config().set(
+                inner=optimizer_cfg,
+                update_schedule=should_update_schedule_fn,
+            )
+            cfg = Learner.default_config().set(
+                name="test",
+                optimizer=optimizer_cfg,
+            )
+            cfg.ema.decay = None  # ema is not supported if we use conditional update
+            learner: Learner = cfg.instantiate(parent=None)
+            return learner
+
+        # learner updates at step 0 and step 2 (step is 0-based)
+        learner = get_learner_from_su(should_update_schedule_fn=lambda step: step % 2 == 0)
+        # learner2 is a regular learner
+        learner2 = get_learner_from_su()
+        v_spec = ParameterSpec(
+            dtype=jnp.float32,
+            shape=(4,),
+            mesh_axes=PartitionSpec("model"),
+            factorization=None,
+            weight_decay_scale=1.0,
+        )
+        param_specs = dict(v_all=v_spec)
+        model_params = dict(v_all=jnp.asarray([1, -2, 3, -4], dtype=jnp.float32))
+
+        def opt_params_from_model_params(
+            model_params: NestedTensor, param_specs: NestedTree
+        ) -> NestedOptParam:
+            """Returns a tree of OptParam for Learner.{init,update}."""
+            return jax.tree.map(
+                lambda param, spec: OptParam(
+                    value=param,
+                    factorization_spec=spec.factorization if spec is not None else None,
+                    weight_decay_scale=spec.weight_decay_scale if spec is not None else 1.0,
+                ),
+                model_params,
+                param_specs,
+            )
+
+        params = opt_params_from_model_params(model_params, param_specs=param_specs)
+        params2 = opt_params_from_model_params(model_params, param_specs=param_specs)
+
+        state = learner.init(model_params=params)
+        state2 = learner2.init(model_params=params)
+
+        def loss_fn(model_params, inputs):
+            del inputs
+            m = model_params["v_all"]
+            loss = -1 * (jnp.arange(1, 5) * m).sum()
+            output_collection = new_output_collection()
+            return ForwardOutputs(
+                loss=loss,
+                aux={},
+                output_collection=output_collection,
+            )
+
+        learner_steps, learner2_steps = [], []
+        for step in range(3):
+            assert state["optimizer"]["should_update"].count.item() == step
+            fwd_bwd_outputs, output_collection = F(
+                learner,
+                method="forward_and_backward",
+                state=state,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(123),
+                inputs=dict(
+                    fn=loss_fn,
+                    opt_params=params,
+                    inputs=dict(
+                        input_batch={},
+                    ),
+                ),
+            )
+            fwd_bwd_outputs2, output_collection2 = F(
+                learner2,
+                method="forward_and_backward",
+                state=state2,
+                is_training=True,
+                prng_key=jax.random.PRNGKey(123),
+                inputs=dict(
+                    fn=loss_fn,
+                    opt_params=params2,
+                    inputs=dict(
+                        input_batch={},
+                    ),
+                ),
+            )
+            state = output_collection.state_updates
+            model_params = fwd_bwd_outputs.backward_outputs.updated_params
+            params = opt_params_from_model_params(model_params, param_specs)
+            learner_steps.append(LearnerStep(state=state, model_params=model_params))
+
+            state2 = output_collection2.state_updates
+            model_params2 = fwd_bwd_outputs2.backward_outputs.updated_params
+            params2 = opt_params_from_model_params(model_params2, param_specs)
+            learner2_steps.append(LearnerStep(state=state2, model_params=model_params2))
+
+        def check_state_and_model_params_equal(step1, step2):
+            self.assertNestedAllClose(
+                step1.state["optimizer"]["inner"], step2.state["optimizer"]["inner"]
+            )
+            self.assertNestedAllClose(step1.model_params["v_all"], step2.model_params["v_all"])
+
+        # Check no updates during "off" step
+        check_state_and_model_params_equal(learner_steps[0], learner_steps[1])
+        # Check optimizer state correctly accumulates across steps
+        check_state_and_model_params_equal(learner_steps[2], learner2_steps[1])
 
 
 if __name__ == "__main__":

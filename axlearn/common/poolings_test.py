@@ -20,7 +20,7 @@ from axlearn.common.poolings import (
     MaxPooling,
     PoolingWithProjection,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import shapes
 
 
@@ -101,7 +101,7 @@ class PoolingTest(TestCase):
         # test w/ mask
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -143,6 +143,7 @@ class PoolingTest(TestCase):
             )
 
     @parameterized.parameters((jnp.float32), (jnp.bfloat16))
+    @set_threefry_partitionable(False)  # TODO(marblee): update for threefry_partitionable True
     def test_max_pooling(self, dtype):
         atol = 5e-3 if dtype == jnp.bfloat16 else 1e-6
         batch_size = 2
@@ -179,7 +180,7 @@ class PoolingTest(TestCase):
         # test w/ mask
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -193,6 +194,7 @@ class PoolingTest(TestCase):
         assert_allclose(outputs, outputs_expected, atol=atol)
 
     @parameterized.parameters(itertools.product([1, 2, 3, 4, 5], [jnp.float32, jnp.bfloat16]))
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_first_n_pooling(self, n, dtype):
         atol = 5e-3 if dtype == jnp.bfloat16 else 1e-6
         batch_size = 2
@@ -228,7 +230,7 @@ class PoolingTest(TestCase):
         # Test w/ mask.
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -248,7 +250,7 @@ class PoolingTest(TestCase):
         assert_allclose(outputs, outputs_expected, atol=atol)
 
         # Test w/ all zero masks.
-        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]))
+        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]), jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -298,7 +300,7 @@ class PoolingTest(TestCase):
         # Test w/ mask.
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -314,7 +316,7 @@ class PoolingTest(TestCase):
 
         # Test w/ specific mask.
         inputs = jax.random.normal(input_key, [3, 3, input_dim])
-        paddings = jnp.asarray([[0, 0, 1], [0, 0, 1], [0, 0, 0]], dtype=jnp.int32)
+        paddings = jnp.asarray([[0, 0, 1], [0, 0, 1], [0, 0, 0]], dtype=jnp.bool)
         outputs, _ = F(
             pooler,
             inputs=utils.cast_floats((inputs, paddings), dtype),
@@ -330,7 +332,7 @@ class PoolingTest(TestCase):
         inputs = jnp.asarray(
             [[[0.1, 0.2, 0.3], [0.2, 0.3, 0.4]], [[0.4, 0.5, 0.6], [0.7, 0.8, 0.9]]]
         )
-        paddings = jnp.asarray([[0, 1], [0, 0]], dtype=jnp.int32)
+        paddings = jnp.asarray([[0, 1], [0, 0]], dtype=jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -407,7 +409,7 @@ class PoolingTest(TestCase):
         # Test w/ mask.
         paddings = jnp.hstack(
             [jnp.zeros((inputs.shape[0], inputs.shape[1] - 1)), jnp.ones((inputs.shape[0], 1))]
-        )
+        ).astype(jnp.bool)
 
         outputs, _ = F(
             pooler,
@@ -422,7 +424,7 @@ class PoolingTest(TestCase):
         self.assertEqual(outputs.dtype, dtype)
 
         # Test w/ all zero masks.
-        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]))
+        paddings = jnp.ones((inputs.shape[0], inputs.shape[1]), jnp.bool)
 
         outputs, _ = F(
             pooler,

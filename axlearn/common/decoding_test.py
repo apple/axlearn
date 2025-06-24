@@ -1554,7 +1554,7 @@ class DecodeTest(parameterized.TestCase):
         )
 
         # Compare against expected.
-        target = jnp.asarray(jax.tree_map(vocab.tokenizer.piece_to_id, expected))
+        target = jnp.asarray(jax.tree.map(vocab.tokenizer.piece_to_id, expected))
         self.assertTrue(jnp.all(sequences == target))
 
         # Check that the token scores are 0 for pad_id tokens.

@@ -29,6 +29,7 @@ https://github.com/facebookresearch/fairseq/blob/d871f6169f8185837d1c11fb28da56a
 from enum import Enum, unique
 from typing import NamedTuple, Optional
 
+import chex
 import jax.nn
 import jax.numpy as jnp
 
@@ -46,7 +47,7 @@ from axlearn.common.param_init import (
     constant_initializer,
 )
 from axlearn.common.schedule import as_schedule_fn
-from axlearn.common.utils import Nested, NestedTensor, Tensor
+from axlearn.common.utils import Nested, NestedTensor, Tensor, safe_not
 
 _einsum_dims = "abcdefwxyz"
 
@@ -61,7 +62,7 @@ def compute_code_histogram(onehots: Tensor, paddings: Tensor) -> Tensor:
     Returns:
         Histogram of the quantized codes of shape [num_codebooks, codebook_size].
     """
-    onehots = onehots * (1 - paddings)[..., None, None]
+    onehots = onehots * safe_not(paddings)[..., None, None]
     # [num_codebooks, codebook_size].
     histogram = jnp.sum(onehots, axis=tuple(range(onehots.ndim - 2)))
     return histogram
@@ -70,7 +71,7 @@ def compute_code_histogram(onehots: Tensor, paddings: Tensor) -> Tensor:
 def compute_code_pplx(onehots: Tensor, paddings: Tensor) -> tuple[Tensor, Tensor]:
     """Computes pplx and entropy of the quantized codes distribution."""
     histogram = compute_code_histogram(onehots, paddings)
-    normalizer = jnp.sum(1 - paddings)
+    normalizer = jnp.sum(safe_not(paddings))
     # [num_codebooks, codebook_size].
     probs = histogram / jnp.maximum(normalizer, 1.0)
     log_probs = jnp.log(jnp.maximum(1.0e-30, probs))
@@ -254,11 +255,11 @@ def _apply_paddings(*, outputs: BaseQuantizer.Output, paddings: Tensor) -> BaseQ
     Returns:
         padded_outputs: BaseQuantizer.Output.
     """
-
+    chex.assert_type(paddings, jnp.bool)
     # ids are padded with -1.
-    ids_paddings = paddings[:, :, None].astype(outputs.ids.dtype)
+    ids_paddings = paddings[:, :, None]
     ids = outputs.ids * (1 - ids_paddings) + (-1) * ids_paddings
-    quantized_vectors = outputs.quantized_vectors * (1 - paddings)[:, :, None, None]
+    quantized_vectors = outputs.quantized_vectors * safe_not(paddings)[:, :, None, None]
     return BaseQuantizer.Output(
         ids=ids,
         quantized_vectors=quantized_vectors,
@@ -286,7 +287,7 @@ def _add_codebook_summaries(*, context: InvocationContext, onehots: Tensor, padd
     pplx, entropy = compute_code_pplx(onehots=onehots, paddings=paddings)
     batch_size = paddings.shape[0]
 
-    num_frames = jnp.sum(1 - paddings)
+    num_frames = jnp.sum(safe_not(paddings))
     context.add_summary(
         "codebook/num_frames",
         WeightedScalar(num_frames.astype(jnp.float32) / batch_size, batch_size),
@@ -400,9 +401,7 @@ class RandomVectorQuantizer(BaseQuantizer):
             quantized_vectors=quantized_vectors,
         )
 
-        onehots = _ids_to_onehots(
-            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
-        )
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
         _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
@@ -506,7 +505,7 @@ class KmeansVectorQuantizer(BaseQuantizer):
 
         # Compute mean squared errors between q_vecs and inputs on non-padded frames.
         # Number of valid frames * input_dim.
-        num_frames = jnp.sum(1 - paddings)
+        num_frames = jnp.sum(safe_not(paddings))
         denominator = jnp.maximum(num_frames * input_dim, 1)
         # Eq.3 of VQ-VAE paper https://arxiv.org/pdf/1711.00937.pdf.
         # The codebook is optimized by kmeans_loss only.
@@ -517,14 +516,16 @@ class KmeansVectorQuantizer(BaseQuantizer):
         )
         kmeans_loss = (
             jnp.sum(
-                (q_vecs - jax.lax.stop_gradient(inputs_to_loss)) ** 2 * (1 - paddings)[:, :, None]
+                (q_vecs - jax.lax.stop_gradient(inputs_to_loss)) ** 2
+                * safe_not(paddings)[:, :, None]
             )
             / denominator
         )
         # The inputs receive gradients from commitment_loss.
         commitment_loss = (
             jnp.sum(
-                (inputs_to_loss - jax.lax.stop_gradient(q_vecs)) ** 2 * (1 - paddings)[:, :, None]
+                (inputs_to_loss - jax.lax.stop_gradient(q_vecs)) ** 2
+                * safe_not(paddings)[:, :, None]
             )
             / denominator
         )
@@ -537,7 +538,7 @@ class KmeansVectorQuantizer(BaseQuantizer):
         # Note that gradient on quantized_vectors is not propagated to the codebook.
         quantized_vectors = inputs + jax.lax.stop_gradient(q_vecs - inputs)
         # We need this to stop gradients on the padded inputs.
-        quantized_vectors = quantized_vectors * (1 - paddings)[:, :, None]
+        quantized_vectors = quantized_vectors * safe_not(paddings)[:, :, None]
 
         outputs = self.Output(
             # [batch_size, seq_len, num_codebooks].
@@ -548,9 +549,7 @@ class KmeansVectorQuantizer(BaseQuantizer):
             ),
             loss=total_loss,
         )
-        onehots = _ids_to_onehots(
-            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
-        )
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
         _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         return outputs
 
@@ -642,13 +641,12 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
             outputs = _apply_paddings(outputs=outputs, paddings=paddings)
         else:
             # [batch_size, seq_len, 1].
-            mask = (1 - paddings)[:, :, None].astype(ids.dtype)
-            ids = ids * mask + (-1) * (1 - mask)
+            mask = safe_not(paddings)[:, :, None]
+            ids = ids * mask + (-1) * safe_not(mask)
             # TODO(dhwang2): optimize memory by scan for long context training.
             # [batch_size, seq_len, num_codebooks, vocab_size].
             onehots = _ids_to_onehots(ids, codebook_size=cfg.codebook_size, dtype=inputs.dtype)
             # We need this to stop gradients on the padded frames.
-            mask = mask.astype(inputs.dtype)
             onehots = onehots * mask[:, :, :, None]
             # [batch_size, seq_len, num_codebooks, vocab_size].
             y_soft = jax.nn.softmax(logits, axis=-1)
@@ -668,9 +666,7 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
                 quantized_vectors=quantized_vectors,
             )
 
-        onehots = _ids_to_onehots(
-            outputs.ids, codebook_size=cfg.codebook_size, dtype=paddings.dtype
-        )
+        onehots = _ids_to_onehots(outputs.ids, codebook_size=cfg.codebook_size, dtype=jnp.int32)
         _add_codebook_summaries(context=current_context(), onehots=onehots, paddings=paddings)
         if self.is_training:
             self.add_module_output("probs", y_soft)

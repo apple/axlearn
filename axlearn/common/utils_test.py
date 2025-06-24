@@ -8,6 +8,7 @@ import enum
 import sys
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
+from functools import partial
 from typing import Any, NamedTuple, Optional, Union
 from unittest import mock
 
@@ -25,8 +26,12 @@ from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
 from axlearn.common import learner, optimizers, serialization, struct, utils
+from axlearn.common.aot_compilation import get_devices_for_topology, reshape_devices
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import (
+    REQUIRED,
+    ConfigBase,
+    Required,
     config_class,
     config_for_function,
     maybe_instantiate,
@@ -76,9 +81,12 @@ from axlearn.common.utils import (
     get_data_dir,
     get_recursively,
     host_to_global_device_array,
+    host_to_global_specs,
     infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    non_empty_leaf_merge_fn,
+    own_fields,
     per_param_dtype_by_path,
     prune_empty,
     prune_tree,
@@ -89,6 +97,7 @@ from axlearn.common.utils import (
     set_data_dir,
     set_recursively,
     split_prng_key,
+    tree_merge,
     tree_paths,
     validate_contains_paths,
     validate_float_dtype,
@@ -867,8 +876,66 @@ class TreeUtilsTest(TestCase):
         with self.assertRaisesRegex(ValueError, "^Argument key has leaf with non-JAX type"):
             check_jax_type(pretty_named_args={"key": "1"})
 
+    def test_prune_tree(self):
+        in_tree = {
+            "a": {
+                "b": {"d": "test"},
+                "c": {
+                    "b": None,
+                    "e": VDict({"ee": 123}),
+                },
+            },
+            "f": 345,
+        }
+        # Prune by path.
+        result = prune_tree(in_tree, lambda k, _: "b" in k)
+        self.assertEqual({"a": {"c": {"e": VDict({"ee": 123})}}, "f": 345}, result)
+        # VDict should be preserved.
+        self.assertIsInstance(result["a"]["c"]["e"], VDict)
+        # Prune by path with prefix/separator.
+        self.assertEqual(
+            {"a": {"c": {"b": None, "e": {"ee": 123}}}, "f": 345},
+            prune_tree(in_tree, lambda k, _: k == "prefix:a:b", prefix="prefix", separator=":"),
+        )
+        # Prune by value.
+        self.assertEqual(
+            {"a": {"b": {"d": "test"}, "c": {"b": None, "e": VDict()}}},
+            prune_tree(in_tree, lambda _, v: isinstance(v, int)),
+        )
+
+    def test_tree_merge(self):
+        default_merge = partial(tree_merge, leaf_merge_fn=non_empty_leaf_merge_fn)
+        primary = {"a": {"b": {}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": ()}
+        out = default_merge(primary, secondary={"a": {"b": {"c": 1}}})
+        self.assertEqual(
+            out, {"a": {"b": {"c": 1}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": ()}
+        )
+        # Test preserving VDict.
+        self.assertIsInstance(out["a"]["c"], VDict)
+
+        with self.assertRaises(ValueError):
+            default_merge(primary, secondary={"a": {"b": 1}})
+        with self.assertRaises(ValueError):
+            default_merge(primary, secondary={"a": {"c": {"e": 456}}})
+
+        expected = {"a": {"b": {}, "c": VDict({"e": 456}), "g": {"e": 123}}, "empty": ()}
+        # It's ok to merge VDict with dict.
+        out = tree_merge(primary, secondary={"a": {"c": {"e": 456}}}, leaf_merge_fn=lambda f, s: s)
+        self.assertEqual(out, expected)
+        out = tree_merge(
+            primary, secondary={"a": {"c": VDict({"e": 456})}}, leaf_merge_fn=lambda f, s: s
+        )
+        self.assertEqual(out, expected)
+
+        # Non-empty leaves overrides empty leaves.
+        out = default_merge(primary, secondary={"empty": 1})
+        self.assertEqual(out, {"a": {"b": {}, "c": VDict({"e": 123}), "g": {"e": 123}}, "empty": 1})
+
+        out = default_merge(primary, secondary={"a": {"g": {"e": None}}})
+        self.assertEqual(out, primary)
+
     @parameterized.parameters(
-        dict(lengths=[3, 4], dtype=None, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
+        dict(lengths=[3, 4], dtype=jnp.bool, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[3, 4], dtype=jnp.int32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[3, 4], dtype=jnp.float32, expected=[[1, 1, 1, 0, 0], [1, 1, 1, 1, 0]]),
         dict(lengths=[[3], [4]], dtype=jnp.int32, expected=[[[1, 1, 1, 0, 0]], [[1, 1, 1, 1, 0]]]),
@@ -877,8 +944,20 @@ class TreeUtilsTest(TestCase):
     def test_sequence_mask(self, lengths, dtype, expected):
         max_len = 5
         mask = utils.sequence_mask(lengths=jnp.array(lengths), max_len=max_len, dtype=dtype)
-        expected = jnp.array(expected).astype(dtype if dtype else jnp.int32)
+        expected = jnp.array(expected).astype(dtype)
         self.assertNestedAllClose(mask, expected)
+
+    @parameterized.parameters(
+        dict(mask=[True, False], expected=[False, True]),
+        dict(mask=[[False, True], [True, False]], expected=[[True, False], [False, True]]),
+        dict(mask=[1, 0], expected=[False, True]),
+        dict(mask=[10, 0], expected=[False, True]),
+        dict(mask=[1.0, 0.0], expected=[False, True]),
+    )
+    def test_safe_not(self, mask, expected):
+        inverted_mask = utils.safe_not(jnp.array(mask))
+        self.assertEqual(inverted_mask.dtype, jnp.bool)
+        self.assertEqual(inverted_mask.tolist(), expected)
 
     def test_prune_empty_state(self):
         state = {
@@ -1450,36 +1529,6 @@ class MatchRegexRulesTest(TestCase):
         self.assertEqual("d", match_regex_rules("layer/scale", rules=rules, default_value="d"))
 
 
-class PruneTreeTest(TestCase):
-    """Tests prune_tree."""
-
-    def test(self):
-        in_tree = {
-            "a": {
-                "b": {"d": "test"},
-                "c": {
-                    "b": None,
-                    "e": 123,
-                },
-            },
-            "f": 345,
-        }
-        # Prune by path.
-        self.assertEqual(
-            {"a": {"c": {"e": 123}}, "f": 345}, prune_tree(in_tree, lambda k, _: "b" in k)
-        )
-        # Prune by path with prefix/separator.
-        self.assertEqual(
-            {"a": {"c": {"b": None, "e": 123}}, "f": 345},
-            prune_tree(in_tree, lambda k, _: k == "prefix:a:b", prefix="prefix", separator=":"),
-        )
-        # Prune by value.
-        self.assertEqual(
-            {"a": {"b": {"d": "test"}, "c": {"b": None}}},
-            prune_tree(in_tree, lambda _, v: isinstance(v, int)),
-        )
-
-
 @dataclasses.dataclass(frozen=True)
 class DummyDevice:
     """Mock device for testing."""
@@ -1973,6 +2022,47 @@ class HostToGlobalArrayTest(TestCase):
             self.assertNestedAllClose(np.concatenate(local_data, axis=0), global_x)
 
 
+class HostToGlobalSpecsTest(TestCase):
+    @parameterized.parameters(
+        dict(
+            partition_spec=PartitionSpec(
+                ("data", "model"),
+            ),
+            expect_num_feeds=8,
+        ),
+        dict(partition_spec=PartitionSpec("data"), expect_num_feeds=4),
+    )
+    # TODO(kcruise,markblee): Add support for AOT test in CI.
+    @pytest.mark.skip(reason="Requires jax[tpu] for AOT.")
+    def test_host_to_global_specs(self, partition_spec, expect_num_feeds):
+        mesh_shape, topology, num_slices = (-1, 8), "v5p-32", 2
+        devices, num_per_slice = get_devices_for_topology(topology, topology_num_slices=num_slices)
+        devices, mesh_shape = reshape_devices(
+            devices=devices,
+            mesh_shape=mesh_shape,
+            devices_per_slice=num_per_slice,
+            num_slices=num_slices,
+        )
+        with jax.sharding.Mesh(np.asarray(devices), ("data", "model")) as mesh:
+            process_count = max(d.process_index for d in devices.flat) + 1
+            self.assertEqual(8, process_count)  # Should have 8 for v5p-32 x 2.
+
+            input_batch = {
+                "x": jax.ShapeDtypeStruct((4, 8), dtype=jnp.int32),
+                "y": jax.ShapeDtypeStruct((2, 8), dtype=jnp.int32),
+            }
+            actual = host_to_global_specs(input_batch, partition=partition_spec)
+
+            sharding = jax.NamedSharding(mesh, spec=partition_spec)
+            expected = jax.tree.map(
+                lambda x: jax.ShapeDtypeStruct(
+                    (x.shape[0] * expect_num_feeds, *x.shape[1:]), sharding=sharding, dtype=x.dtype
+                ),
+                input_batch,
+            )
+            self.assertNestedEqual(expected, actual)
+
+
 class ValidateContainsPathsTest(TestCase):
     @parameterized.parameters(
         # Missing path.
@@ -2075,6 +2165,22 @@ class TestRematPolicy(TestCase):
         )
         # We have one more recompute of f for remat during backward.
         self.assertEqual(str(remat_backward).count(" dot_general"), 5)
+
+
+class TestOwnFields(TestCase):
+    """Tests the own_fields method."""
+
+    def test_own_fields(self):
+        @config_class
+        class ConfigParent(ConfigBase):
+            parent_field: Required[int] = REQUIRED
+
+        @config_class
+        class ConfigChild(ConfigParent):
+            child_field1: Required[int] = REQUIRED
+            child_field2: Required[int] = REQUIRED
+
+        self.assertSameElements(("child_field1", "child_field2"), own_fields(ConfigChild()))
 
 
 if __name__ == "__main__":

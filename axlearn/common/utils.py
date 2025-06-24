@@ -27,6 +27,7 @@ import traceback
 import types
 from collections.abc import Mapping, Sequence
 from enum import Enum
+from functools import cache
 from typing import (
     Any,
     Callable,
@@ -39,22 +40,24 @@ from typing import (
     runtime_checkable,
 )
 
+import attr
 import jax
-import jax.flatten_util
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax._src.ad_checkpoint import name_p
+from jax._src.array import local_to_global_shape
 from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.ad_checkpoint import Offloadable, Recompute, Saveable
-from jax.core import Primitive
 from jax.experimental import mesh_utils, multihost_utils
+from jax.extend.core import Primitive
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
 from axlearn.common.config import (
+    ConfigBase,
     ConfigOr,
     FunctionConfigBase,
     config_for_function,
@@ -133,7 +136,11 @@ class TensorSpec:
     @property
     def sharding(self) -> jax.sharding.Sharding:
         mesh = thread_resources.env.physical_mesh
-        return jax.sharding.NamedSharding(mesh, self.mesh_axes, memory_kind=self.memory_kind)
+        return jax.sharding.NamedSharding(
+            mesh,
+            PartitionSpec() if self.mesh_axes is None else self.mesh_axes,
+            memory_kind=self.memory_kind,
+        )
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
@@ -405,7 +412,7 @@ def tree_paths(
         Note that None is not considered a leaf by jax.tree_util, hence also preserved by
         tree_paths.
     """
-    return jax.tree_util.tree_map_with_path(
+    return jax.tree.map_with_path(
         lambda kp, _: separator.join(_key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
     )
 
@@ -810,8 +817,7 @@ def data_partition_type_to_spec(
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
 
-# TODO(markblee): Rename to `host_to_global_array` for consistency with `global_to_host_array`.
-def host_to_global_device_array(
+def host_to_global_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
     partition: Union[PartitionSpec, DataPartitionType] = DataPartitionType.FULL,
@@ -847,7 +853,7 @@ def host_to_global_device_array(
     )
     process_count = jax.process_count()
 
-    def make_gda(x: np.ndarray, partition_spec: PartitionSpec):
+    def make_array(x: np.ndarray, partition_spec: PartitionSpec):
         if partition == DataPartitionType.FULL:
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
@@ -862,7 +868,44 @@ def host_to_global_device_array(
             global_shape=global_shape,
         )
 
-    return jax.tree.map(make_gda, host_arrays, partition_specs)
+    return jax.tree.map(make_array, host_arrays, partition_specs)
+
+
+def host_to_global_specs(
+    host_arrays: Nested[jax.ShapeDtypeStruct], *, partition: PartitionSpec
+) -> Nested[jax.ShapeDtypeStruct]:
+    """Converts the given host-local specs to global array specs.
+
+    The API has the same semantics as `host_to_global_array`, which takes Tensors instead of specs.
+    Please refer to `host_to_global_array` docstring for details.
+    """
+    mesh = thread_resources.env.physical_mesh
+    partition_specs = complete_partition_spec_tree(
+        jax.tree_util.tree_structure(host_arrays),
+        data_partition_type_to_spec(partition),
+    )
+
+    def make_array_spec(x: jax.ShapeDtypeStruct, partition_spec: PartitionSpec):
+        # `local_to_global_shape` is also used by `jax.make_array_from_process_local_data`.
+        # It uses the process indices from devices in the mesh, which allows it to be compatible
+        # with the fake devices used in AOT.
+        sharding = jax.sharding.NamedSharding(mesh, partition_spec)
+        global_shape = local_to_global_shape(sharding, local_shape=x.shape)
+        # We use the sharding from `partition`, as host-local arrays do not have sharding.
+        return jax.ShapeDtypeStruct(shape=global_shape, dtype=x.dtype, sharding=sharding)
+
+    return jax.tree.map(make_array_spec, host_arrays, partition_specs)
+
+
+def host_to_global_device_array(*args, **kwargs) -> Nested[Tensor]:
+    """A deprecated alias for `host_to_global_array`.
+
+    Please use `host_to_global_array` instead.
+    """
+    logging.log_first_n(
+        logging.WARN, "host_to_global_device_array is renamed to host_to_global_array.", 1
+    )
+    return host_to_global_array(*args, **kwargs)
 
 
 # TODO(markblee): Remove partition arg.
@@ -1159,7 +1202,7 @@ def per_param_dtype_by_path(
     """
 
     def fn(
-        tree: Union[Nested[Tensor], Nested[TensorSpec]]
+        tree: Union[Nested[Tensor], Nested[TensorSpec]],
     ) -> Union[Nested[Tensor], Nested[TensorSpec]]:
         if update_rules is None:
             return jax.tree.map(lambda x: default_dtype, tree_paths(tree))
@@ -1214,7 +1257,7 @@ def cast_floats_per_param(
 
 
 def canonicalize_per_param_dtype(
-    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]]
+    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]],
 ) -> ConfigOr[PerParamFn[jnp.dtype]]:
     """Canonicalize the input `param_dtype` to a consistent format of
     `ConfigOr[PerParamFn[jnp.dtype]]`, which handles three possible cases:
@@ -1375,7 +1418,8 @@ def prune_tree(
         The pruned copy of the input tree.
     """
     if isinstance(in_tree, dict):
-        out_tree = {}
+        # Use type() so that if in_tree is a VDict, out_tree is also a VDict.
+        out_tree = type(in_tree)()
         for k, v in in_tree.items():
             path = _concat(prefix=prefix, suffix=k, separator=separator)
             v = prune_tree(v, should_prune, prefix=path, separator=separator)
@@ -1383,6 +1427,58 @@ def prune_tree(
                 out_tree[k] = v
         in_tree = out_tree
     return in_tree
+
+
+def non_empty_leaf_merge_fn(primary: Any, secondary: Any):
+    """This function chooses the non-empty leaf. If both leaves are non-empty, an error
+    will be raised.
+    """
+    is_primary_empty = False
+    is_secondary_empty = False
+    try:
+        is_primary_empty = len(primary) == 0
+        is_secondary_empty = len(secondary) == 0
+    except TypeError:
+        # A TypeError will be raised if primary/secondary don't have length,
+        # e.g. if they are scalars.
+        pass
+    if primary is None or is_primary_empty:
+        return secondary
+    if secondary is None or is_secondary_empty:
+        return primary
+    raise ValueError(
+        f"Encountered incompatible subtree leaves: {primary=}, {secondary=}. Specify "
+        "a custom override function to resolve incompatible subtree merges."
+    )
+
+
+def tree_merge(
+    primary: Nested[Any],
+    *,
+    secondary: Nested[Any],
+    leaf_merge_fn: Callable[[Any, Any], Any],
+) -> Nested[Any]:
+    """Merge `secondary` into `primary`. The result contains deep copies of subtrees from both.
+
+    Two trees are mergable if there does not exists a path in `secondary` that is a subpath of any
+    path in `primary`. If there are identical path with different leaves, `leaf_merge_fn` is used to
+    determine which leaf is kept in the resulting tree.
+    """
+    if isinstance(primary, dict) ^ isinstance(secondary, dict):
+        raise ValueError(f"Trying to merge incompatible subtrees: {primary=}, {secondary=}")
+    # Use the override function if primary or secondary is a leaf.
+    if not (isinstance(primary, dict) or isinstance(secondary, dict)):
+        return copy.deepcopy(leaf_merge_fn(primary, secondary))
+    # Use type() so that if primary is a VDict, out_tree is also a VDict.
+    out_tree = type(primary)(primary)
+    for k in secondary:
+        if k in primary:
+            out_tree[k] = tree_merge(
+                primary[k], secondary=secondary[k], leaf_merge_fn=leaf_merge_fn
+            )
+        else:
+            out_tree[k] = copy.deepcopy(secondary[k])
+    return out_tree
 
 
 @dataclasses.dataclass
@@ -1612,11 +1708,11 @@ def create_hybrid_device_mesh(
         A np.ndarray of JAX devices with `ici_mesh_shape * dcn_mesh_shape` as its shape that can be
         fed into jax.sharding.Mesh for hybrid parallelism.
     """
-    attr = "process_index" if process_is_granule else "slice_index"
-    assert hasattr(devices[0], attr)
+    device_attr = "process_index" if process_is_granule else "slice_index"
+    assert hasattr(devices[0], device_attr)
     granule_dict = collections.defaultdict(list)
     for dev in devices:
-        granule_dict[getattr(dev, attr)].append(dev)
+        granule_dict[getattr(dev, device_attr)].append(dev)
     granules = list(granule_dict[key] for key in sorted(granule_dict.keys()))
     if np.prod(mesh_shape.dcn_mesh_shape) != len(granules):
         raise ValueError(
@@ -1672,13 +1768,13 @@ def create_device_mesh(
     # Check if the devices are part of a multi-granule configuration.
     # <https://github.com/google/jax/blob/b81b79c1b0d2ec/jax/experimental/mesh_utils.py#L313>
     device_platform = devices[0].platform
-    attr = "process_index" if device_platform != "tpu" else "slice_index"
-    is_multi_granule_env = hasattr(devices[0], attr)
+    device_attr = "process_index" if device_platform != "tpu" else "slice_index"
+    is_multi_granule_env = hasattr(devices[0], device_attr)
     if not all(el.platform == device_platform for el in devices):
         raise NotImplementedError(f"Not all devices had platform: {device_platform}.")
 
     num_granules = (
-        max(getattr(el, attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
+        max(getattr(el, device_attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
     )
     num_devices = len(devices)
     assert num_devices % num_granules == 0, "Number of devices should divide number of granules."
@@ -1749,7 +1845,7 @@ def create_device_mesh(
     return create_hybrid_device_mesh(
         mesh_shape,
         devices=devices,
-        process_is_granule=attr == "process_index",
+        process_is_granule=device_attr == "process_index",
     )
 
 
@@ -1891,7 +1987,7 @@ class DeviceUsage:
     hbm_memory_bandwidth_utilization: Optional[float] = None
 
 
-def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] = None) -> Tensor:
+def sequence_mask(*, lengths: Tensor, max_len: int, dtype: jnp.dtype = jnp.bool) -> Tensor:
     """Computes a mask over sequence positions for each given length.
 
     Args:
@@ -1902,15 +1998,26 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] =
     Returns:
         Tensor [..., T]. 1 is valid and 0 is padding.
     """
-    if dtype is None:
-        dtype = lengths.dtype
-
     prefix_axis = tuple(range(lengths.ndim))
     # [..., T]
     sequence = jnp.expand_dims(jnp.arange(max_len), axis=prefix_axis)
     # [..., 1]
     lengths = lengths[..., jnp.newaxis]
     return (sequence < lengths).astype(dtype)
+
+
+def safe_not(mask: Tensor) -> Tensor:
+    """Inverts a boolean mask.
+
+    Commonly used to switch between paddings and mask.
+
+    Args:
+        mask: A boolean tensor.
+
+    Returns:
+        A boolean tensor of the same shape.
+    """
+    return ~(mask.astype(jnp.bool))
 
 
 def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
@@ -1939,3 +2046,18 @@ def prune_empty(in_tree: Nested[Tensor]) -> Nested[Tensor]:
     """
     # Note that falsey values or empty Tensors are not considered empty.
     return prune_tree(in_tree, lambda _, v: isinstance(v, dict) and not v)
+
+
+def own_fields(cfg: ConfigBase) -> Sequence[str]:
+    """Returns fields that are defined by `cfg`, rather than any of its ancestors."""
+
+    bases = cfg.__class__.__bases__
+    if len(bases) > 1:
+        raise ValueError(f"Configs should not use multiple inheritance: {bases}")
+
+    @cache
+    def get_base_keys(base: type):
+        return attr.fields_dict(base)
+
+    base_keys = get_base_keys(bases[0])
+    return [k for k in cfg.keys() if k not in base_keys]

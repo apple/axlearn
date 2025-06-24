@@ -5,28 +5,27 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from axlearn.open_api.mock_utils import mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
-
-# pylint: disable=wrong-import-position
-
-from axlearn.open_api.common import BaseClient
-from axlearn.open_api.registry import (
-    _OPEN_API_CLIENTS_CLASS,
-    _OPEN_API_CLIENTS_MODULE_CLASS,
-    ClientRegistry,
-)
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.common import BaseClient
+    from axlearn.open_api.registry import (
+        _OPEN_API_CLIENTS_CLASS,
+        _OPEN_API_CLIENTS_MODULE_CLASS,
+        ClientRegistry,
+    )
 
 # pylint: enable=wrong-import-position
 
-_module_root = "axlearn"
+_MODULE_ROOT = "axlearn"
 
 
 class MockClient(BaseClient):
     """A mock of open api client."""
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestClientRegistry(unittest.TestCase):
     """Unit tests for ClientRegistry."""
 
@@ -34,7 +33,7 @@ class TestClientRegistry(unittest.TestCase):
         # Clear the client registry before each test
         _OPEN_API_CLIENTS_CLASS.clear()
 
-    @patch(f"{_module_root}.open_api.registry.importlib.import_module")
+    @patch(f"{_MODULE_ROOT}.open_api.registry.importlib.import_module")
     def test_load_client_cls_existing_client(self, mock_import_module):
         # Mock the import and getattr functions
         mock_module = MagicMock()
@@ -70,7 +69,7 @@ class TestClientRegistry(unittest.TestCase):
         self.assertIn("mockclient", _OPEN_API_CLIENTS_CLASS)
         self.assertEqual(_OPEN_API_CLIENTS_CLASS["mockclient"], MockClient)
 
-    @patch(f"{_module_root}.open_api.registry.logging.warning")
+    @patch(f"{_MODULE_ROOT}.open_api.registry.logging.warning")
     def test_register_existing_client(self, mock_warning):
         _OPEN_API_CLIENTS_CLASS["mockclient"] = BaseClient
 

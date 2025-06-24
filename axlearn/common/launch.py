@@ -19,6 +19,8 @@ num_tpu_slices = int(os.environ.get("NUM_TPU_SLICES", 1))
 # Set LIBTPU_INIT_ARGS before importing jax!
 tpu_flags_exc = None
 try:
+    # This does NOT work for Pathways. XLA flags are set on the pathways-proxy.
+    # Megascale flags have to be set on the pathways-workers as arguments.
     libtpu_init_options = compiler_options.default_xla_options(
         instance_type=instance_type, num_slices=num_tpu_slices, backend="tpu"
     )
@@ -112,13 +114,25 @@ def setup():
         logging.info("LIBTPU_INIT_ARGS='%s'", os.environ["LIBTPU_INIT_ARGS"])
 
     with _init_context():
-        setup_spmd(
-            distributed_coordinator=FLAGS.distributed_coordinator,
-            num_processes=FLAGS.num_processes,
-            process_id=FLAGS.process_id,
-            jax_backend=FLAGS.jax_backend,
-            initialization_timeout=FLAGS.initialization_timeout,
-        )
+        if FLAGS.jax_backend == "proxy":
+            # AXLearn assumes rbg PRNG implementation and restore from checkpoint
+            # will fail on pathways if this isn't set. This is due shape of [4]
+            # being hardcoded here:
+            # https://github.com/apple/axlearn/blob/8bb4421e62c815ef9f1ba3679c3277b8bbc6a449/axlearn/common/trainer.py#L330
+            jax.config.update("jax_default_prng_impl", "rbg")
+
+            # pylint: disable-next=import-error,import-outside-toplevel
+            import pathwaysutils  # pytype: disable=import-error
+
+            pathwaysutils.initialize()
+        else:
+            setup_spmd(
+                distributed_coordinator=FLAGS.distributed_coordinator,
+                num_processes=FLAGS.num_processes,
+                process_id=FLAGS.process_id,
+                jax_backend=FLAGS.jax_backend,
+                initialization_timeout=FLAGS.initialization_timeout,
+            )
 
     if FLAGS.jax_profiler_port is not None:
         # Start jax.profiler for Tensorboard and profiling in open source.
@@ -132,8 +146,11 @@ def setup():
     logging.info("Devices: %s", devices)
     local_devices = jax.local_devices()
     logging.info("Local Devices: %s", local_devices)
-    if not devices or not all(device.platform == FLAGS.jax_backend for device in devices):
-        raise RuntimeError(f"Expected backend {FLAGS.jax_backend}. Got {devices}.")
+
+    if FLAGS.jax_backend != "proxy":
+        if not devices or not all(device.platform == FLAGS.jax_backend for device in devices):
+            raise RuntimeError(f"Expected backend {FLAGS.jax_backend}. Got {devices}.")
+
     if FLAGS.data_dir:
         # TODO(ruoming): Get rid of --data_dir and use only env var DATA_DIR.
         os.environ["DATA_DIR"] = FLAGS.data_dir

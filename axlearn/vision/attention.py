@@ -214,6 +214,18 @@ class WindowedAttention(MultiheadAttention):
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
         self.vlog(3, "atten.k_proj=%s", k_proj.sum())
         self.vlog(3, "atten.v_proj=%s", v_proj.sum())
+
+        # Scale query and key.
+        key_positions = jnp.arange(k_proj.shape[1])[None, :]
+        kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
+
+        q_proj, k_proj = self._scale_qk(
+            q_proj=q_proj,
+            k_proj=k_proj,
+            query_positions=query_positions,
+            key_positions=key_positions,
+        )
+
         logits = self._compute_logits(q_proj, k_proj)
 
         if cfg.use_rel_pos_emb:
@@ -241,8 +253,6 @@ class WindowedAttention(MultiheadAttention):
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
         outputs = self._remat_name(o_proj, "o_proj")
-        key_positions = jnp.arange(k_proj.shape[1])[None]
-        kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
         return_aux = return_aux or set()
         return self.Output(
             data=outputs,

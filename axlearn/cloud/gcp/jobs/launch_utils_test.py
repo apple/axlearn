@@ -4,7 +4,6 @@
 # pylint: disable=protected-access
 
 import contextlib
-import dataclasses
 import json
 from datetime import datetime
 from types import SimpleNamespace
@@ -17,31 +16,48 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobMetadata, JobSpec, JobState, JobStatus
 from axlearn.cloud.common.job import Job
-from axlearn.cloud.common.utils import Table
+from axlearn.cloud.common.utils import FlagConfigurable, Table, define_flags
 from axlearn.cloud.gcp.jobs import launch_utils
+from axlearn.cloud.gcp.jobs.launch import BaseBastionManagedJob, _JobType
 from axlearn.cloud.gcp.jobs.launch_utils import (
     _parse_resource_flags_from_command,
+    infer_module_qualname,
     jobs_table,
     match_by_regex,
+    match_gcp_api,
     project_usage_table,
-    serialized_flags_for_job,
+    serialized_flags_for_config,
     user_usage_table,
     validate_resource_flags,
     with_k8s_jobset_state,
-    with_qrm_tpu_state,
 )
-from axlearn.cloud.gcp.tpu import TpuInfo
 from axlearn.cloud.gcp.utils import GCPAPI
+from axlearn.common.config import config_class
 
 
 class TestUtils(parameterized.TestCase):
     """Tests util functions."""
 
-    def test_serialized_flags_for_job(self):
+    def test_infer_module_qualname(self):
+        self.assertEqual(
+            "axlearn.cloud.gcp.jobs.launch", infer_module_qualname(BaseBastionManagedJob)
+        )
+
+    def test_serialized_flags_for_config(self):
         fv = flags.FlagValues()
         flags.DEFINE_string("test_discarded", None, "Test discarded flag", flag_values=fv)
 
+        class Child(FlagConfigurable):
+            @classmethod
+            def define_flags(cls, fv):
+                flags.DEFINE_string("test_inner", "inner", "Inner flag", flag_values=fv)
+
         class DummyJob(Job):
+            @config_class
+            class Config(Job.Config):
+                # Test that child configs are also included.
+                inner: FlagConfigurable.Config = Child.default_config()
+
             @classmethod
             def define_flags(cls, fv):
                 flags.DEFINE_string("test_kept", "value", "Test kept flag", flag_values=fv)
@@ -52,76 +68,89 @@ class TestUtils(parameterized.TestCase):
                     flag_values=fv,
                 )
 
-        DummyJob.define_flags(fv)
+        define_flags(DummyJob.default_config(), fv)
         self.assertEqual(
-            ["--test_kept=value", "--test_multi=value1", "--test_multi=value2"],
-            serialized_flags_for_job(fv, job=DummyJob),
+            [
+                "--test_kept=value",
+                "--test_multi=value1",
+                "--test_multi=value2",
+                "--test_inner=inner",
+            ],
+            serialized_flags_for_config(DummyJob.default_config(), fv),
         )
 
     @parameterized.parameters(
-        # Matches any "start" command.
-        dict(
-            matcher=match_by_regex(match_regex=dict(start=".*"), gcp_api=GCPAPI.QRM.value),
-            cases=[
-                dict(action="start", instance_type="", gcp_api=GCPAPI.QRM.value, expected=True),
-                dict(
-                    action="start",
-                    instance_type="test type",
-                    gcp_api=GCPAPI.QRM.value,
-                    expected=True,
-                ),
-                # Missing matcher for list.
-                dict(action="list", instance_type="", gcp_api=GCPAPI.QRM.value, expected=False),
-                # Does not match GKE.
-                dict(action="start", instance_type="", gcp_api=GCPAPI.GKE.value, expected=False),
-                # Matches both upper/lowercase.
-                dict(
-                    action="start",
-                    instance_type="v4-8",
-                    gcp_api=GCPAPI.QRM.value.lower(),
-                    expected=True,
-                ),
-            ],
-        ),
+        # Matches both upper/lowercase.
+        dict(gcp_api=GCPAPI.GKE.value.lower(), expected=True),
+        dict(gcp_api=GCPAPI.GKE.value.upper(), expected=True),
+        dict(gcp_api="other", expected=False),
+    )
+    def test_match_gcp_api(self, gcp_api: str, expected):
+        fv = flags.FlagValues()
+        flags.DEFINE_string("gcp_api", gcp_api, "", flag_values=fv)
+        fv.mark_as_parsed()
+        self.assertEqual(expected, match_gcp_api(GCPAPI.GKE.value)(action="start", flag_values=fv))
+
+    @parameterized.parameters(
         # Matches TPU types.
         dict(
             matcher=match_by_regex(
-                match_regex=dict(start=r"v(\d)+.*-(\d)+", list="tpu"),
-                gcp_api=GCPAPI.GKE.value,
+                match_regex=dict(instance_type=r"v(\d)+.*-(\d)+", job_type=_JobType.DEFAULT.value),
             ),
             cases=[
-                dict(action="start", instance_type="v4-8", gcp_api=GCPAPI.GKE.value, expected=True),
                 dict(
-                    action="start",
-                    instance_type="v5litepod-16",
-                    gcp_api=GCPAPI.GKE.value,
-                    expected=True,
-                ),
-                dict(action="start", instance_type="tpu", gcp_api=GCPAPI.GKE.value, expected=False),
-                dict(action="list", instance_type="tpu", gcp_api=GCPAPI.GKE.value, expected=True),
-                # Does not match QRM.
-                dict(
-                    action="start", instance_type="v4-8", gcp_api=GCPAPI.QRM.value, expected=False
-                ),
-                # Matches both upper/lowercase.
-                dict(
-                    action="start",
                     instance_type="v4-8",
-                    gcp_api=GCPAPI.GKE.value.lower(),
+                    job_type=_JobType.DEFAULT.value,
                     expected=True,
+                ),
+                dict(
+                    instance_type="v5litepod-16",
+                    job_type=_JobType.DEFAULT.value,
+                    expected=True,
+                ),
+                dict(
+                    instance_type="tpu",
+                    job_type=_JobType.DEFAULT.value,
+                    expected=False,
+                ),
+                dict(
+                    instance_type="v4-8",
+                    job_type=_JobType.FLINK.value,
+                    expected=False,
+                ),
+            ],
+        ),
+        dict(
+            matcher=match_by_regex(
+                match_regex=dict(
+                    action="list", instance_type=".*", job_type=_JobType.DEFAULT.value
+                ),
+            ),
+            cases=[
+                dict(
+                    instance_type="v4-8",
+                    job_type=_JobType.DEFAULT.value,
+                    action="list",
+                    expected=True,
+                ),
+                dict(
+                    instance_type="v4-8",
+                    job_type=_JobType.DEFAULT.value,
+                    action="start",
+                    expected=False,
                 ),
             ],
         ),
     )
     def test_match_by_regex(self, matcher, cases):
         for case in cases:
+            fv = flags.FlagValues()
+            flags.DEFINE_string("instance_type", case["instance_type"], "", flag_values=fv)
+            flags.DEFINE_string("job_type", case["job_type"], "", flag_values=fv)
+            fv.mark_as_parsed()
             self.assertEqual(
                 case["expected"],
-                matcher(
-                    action=case["action"],
-                    instance_type=case["instance_type"],
-                    gcp_api=case["gcp_api"],
-                ),
+                matcher(action=case.get("action", "start"), flag_values=fv),
             )
 
     @parameterized.parameters(
@@ -286,53 +315,6 @@ class TestListUtils(parameterized.TestCase):
             project_usage_table(self._mock_jobs),
         )
 
-    def test_with_qrm_tpu_state(self):
-        mock_states = {"job_000": "ACTIVE", "job_001": "DELETING", "job_100": ""}
-        mock_qrm_tpus = [
-            TpuInfo(name=job_name, accelerator_type="", state=state, metadata={})
-            for job_name, state in mock_states.items()
-        ]
-        with mock.patch.multiple(
-            launch_utils.__name__,
-            tpu_resource=mock.DEFAULT,
-            get_credentials=mock.DEFAULT,
-            list_tpu_info=mock.Mock(return_value=mock_qrm_tpus),
-        ):
-            table = with_qrm_tpu_state(jobs_table)(self._mock_jobs)
-            expected = [
-                [{mock_states.get(job_name, "PENDING") or "UNKNOWN"}]
-                for job_name in self._mock_jobs
-            ]
-            self.assertEqual(expected, table.get_col("QRM_STATE"))
-
-    @parameterized.parameters(
-        "--num_slices=2",
-        "--num_slices 2",
-        "--num_replicas 2",
-    )
-    def test_with_qrm_tpu_state_replicas(self, replica_flag):
-        # Test a job with multislice.
-        job = self._mock_jobs["job_000"]
-        mock_jobs = {
-            "job_000": dataclasses.replace(
-                job,
-                spec=dataclasses.replace(job.spec, command=f"{job.spec.command} {replica_flag}"),
-            )
-        }
-        mock_states = {"job_000-0": "ACTIVE", "job_000-1": "PENDING"}
-        mock_qrm_tpus = [
-            TpuInfo(name=job_name, accelerator_type="", state=state, metadata={})
-            for job_name, state in mock_states.items()
-        ]
-        with mock.patch.multiple(
-            launch_utils.__name__,
-            tpu_resource=mock.DEFAULT,
-            get_credentials=mock.DEFAULT,
-            list_tpu_info=mock.Mock(return_value=mock_qrm_tpus),
-        ):
-            table = with_qrm_tpu_state(jobs_table)(mock_jobs)
-            self.assertEqual([[{"ACTIVE", "PENDING"}]], table.get_col("QRM_STATE"))
-
     def test_with_k8s_jobset_state(self):
         mock_k8s_jobsets = {
             "job_000": [
@@ -343,7 +325,9 @@ class TestListUtils(parameterized.TestCase):
             "job_100": [SimpleNamespace()],
         }
         with mock.patch(f"{launch_utils.__name__}.list_k8s_jobsets", return_value=mock_k8s_jobsets):
-            table = with_k8s_jobset_state(jobs_table, namespace="default")(self._mock_jobs)
+            table = with_k8s_jobset_state(jobs_table, namespace=_JobType.DEFAULT.value)(
+                self._mock_jobs
+            )
             expected = {
                 "job_000": {"active": 1, "ready": 2, "failed": 0, "succeeded": 0},
                 "job_001": {"active": 0, "ready": 0, "failed": 1, "succeeded": 0},

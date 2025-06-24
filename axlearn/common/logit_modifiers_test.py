@@ -64,6 +64,28 @@ class TestLogitsTransforms(TestCase):
                     # Should be including this value.
                     self.assertAlmostEqual(modified_eg[ix], eg[ix], delta=1e-6)
 
+    def test_top_p_modifier_batched_p(self):
+        """Test top_p_modifier with a tensor p."""
+        batch_size = 3
+        vocab_size = 13
+        p = jnp.array([1e-4, 0.1, 0.9])
+        logits = -jax.random.uniform(
+            jax.random.PRNGKey(1), shape=(batch_size, vocab_size), dtype=jnp.float32
+        )
+        top_p_modified_logits = top_p_logits(p)(logits)
+        for idx, (eg, modified_eg) in enumerate(zip(logits, top_p_modified_logits)):
+            probs = jax.nn.softmax(eg, axis=-1)
+            sorted_p, sorted_ix = jax.lax.top_k(probs, k=len(probs))
+            cumulative_prob = 0
+            for prob, ix in zip(sorted_p, sorted_ix):
+                if cumulative_prob >= p[idx]:
+                    # These were outside of the top-p mass, should be neg inf.
+                    self.assertAlmostEqual(modified_eg[ix], decoding.NEG_INF)
+                else:
+                    cumulative_prob += prob
+                    # Should be including this value.
+                    self.assertAlmostEqual(modified_eg[ix], eg[ix], delta=1e-6)
+
     @parameterized.parameters(1, 10, 17)
     def test_top_k_modifier(self, k: int):
         batch_size = 5

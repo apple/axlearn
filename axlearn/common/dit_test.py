@@ -21,7 +21,8 @@ from absl.testing import absltest, parameterized
 from timm.models.vision_transformer import Attention, Mlp, PatchEmbed
 from torch import nn
 
-from axlearn.common.attention_bias import NEG_INF, CausalAttentionBias, SlidingWindowAttentionBias
+from axlearn.common.attention import CausalAttentionBias
+from axlearn.common.attention_bias import NEG_INF
 from axlearn.common.dit import (
     AdaptiveLayerNormModulation,
     DiTAttentionLayer,
@@ -31,6 +32,7 @@ from axlearn.common.dit import (
     LabelEmbedding,
     TimeStepEmbedding,
 )
+from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
 from axlearn.common.layers import LayerNormStateless
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
@@ -447,7 +449,6 @@ class TestDiTAttn(parameterized.TestCase):
                 shift=jnp.asarray(shift),
                 scale=jnp.asarray(scale),
                 gate=jnp.asarray(gate),
-                attention_logit_biases=None,
             ),
             state=layer_params,
             is_training=False,
@@ -664,8 +665,8 @@ class TestDiTAttn(parameterized.TestCase):
         if causal_type == "causal":
             layer_cfg.attention.mask = CausalAttentionBias.default_config()
         elif causal_type == "sliding_window":
-            layer_cfg.attention.mask = SlidingWindowAttentionBias.default_config(
-                sliding_window_size=10
+            layer_cfg.attention = enable_sliding_window_attention(
+                layer_cfg.attention, sliding_window_size=10
             )
 
         layer = layer_cfg.instantiate(parent=None)
@@ -679,7 +680,6 @@ class TestDiTAttn(parameterized.TestCase):
                 shift=shift,
                 scale=scale,
                 gate=gate,
-                attention_logit_biases=None,
             ),
             state=layer_params,
             is_training=False,
@@ -777,8 +777,8 @@ class TestDiTBlock(parameterized.TestCase):
         if causal_type == "causal":
             layer_cfg.attention.attention.mask = CausalAttentionBias.default_config()
         elif causal_type == "sliding_window":
-            layer_cfg.attention.attention.mask = SlidingWindowAttentionBias.default_config(
-                sliding_window_size=10
+            layer_cfg.attention.attention = enable_sliding_window_attention(
+                layer_cfg.attention.attention, sliding_window_size=10
             )
 
         layer = layer_cfg.instantiate(parent=None)

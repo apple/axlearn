@@ -87,15 +87,6 @@ def _compute_metrics(
 
 
 class ClassificationMetricCalculatorTest(parameterized.TestCase):
-    def setUp(self):
-        """
-        Explicitly set `jax_enable_memories` to avoid the following JAX error:
-        ```Memory kinds passed to jax.jit does not match memory kind on the respective arg.
-        Got pjit memory kind: None, arg memory kind: unpinned_host for arg shape: ...```
-        """
-
-        jax.config.update("jax_enable_memories", True)
-
     @parameterized.parameters(
         # Test case for multiple precision, recall level
         {

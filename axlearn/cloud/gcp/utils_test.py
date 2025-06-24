@@ -41,13 +41,13 @@ class UtilsTest(parameterized.TestCase):
         dict(name="a/b", num_workers=1, num_replicas=1, ok=False),
         dict(name="-ab", num_workers=1, num_replicas=1, ok=False),
     )
-    def test_validate_k8s_name(self, name, num_workers, num_replicas, ok):
+    def test_validate_jobset_name(self, name, num_workers, num_replicas, ok):
         if ok:
             ctx = contextlib.nullcontext()
         else:
             ctx = self.assertRaisesRegex(ValueError, "Job name")
         with ctx:
-            utils.validate_k8s_name(name, num_workers=num_workers, num_replicas=num_replicas)
+            utils.validate_jobset_name(name, num_workers=num_workers, num_replicas=num_replicas)
 
     @parameterized.product(
         running_from_gcp=[False, True],

@@ -8,6 +8,7 @@
 
 from typing import Callable, Optional, Union
 
+import chex
 import jax
 import jax.numpy as jnp
 import optax
@@ -37,7 +38,7 @@ from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module, child_context
 from axlearn.common.rnn import BaseRNNCell, LSTMCell
 from axlearn.common.transducer import Transducer, log_probs_from_blank_and_tokens
-from axlearn.common.utils import Nested, Tensor, vectorized_tree_map
+from axlearn.common.utils import Nested, Tensor, safe_not, vectorized_tree_map
 
 
 def _is_valid_ctc_seq(
@@ -311,9 +312,9 @@ class CTCDecoderModel(BaseASRDecoderModel):
             we have not subtracted the log-partition function.
         """
         inputs = input_batch["inputs"]
-        paddings = input_batch["paddings"]
+        paddings: Tensor = input_batch["paddings"]
         logits = self.lm_head(inputs)
-        return logits * (1 - paddings[..., None])
+        return logits * safe_not(paddings)[..., None]
 
     def _loss_summaries(
         self,
@@ -441,7 +442,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         # Add a dummy EOS token:
         # eos_log_probs[b, t, :] = 0 if paddings_extended[b, t] else NEG_INF.
         paddings_extended = jnp.pad(paddings, ((0, 0), (0, 1)), constant_values=1)
-        eos_log_probs = (1 - paddings_extended[:, :, None]) * NEG_INF
+        eos_log_probs = safe_not(paddings_extended)[:, :, None] * NEG_INF
         # [batch_size, num_frames + 1, vocab_size + 1].
         log_probs = jnp.concatenate([log_probs, eos_log_probs], axis=-1)
         # Apply logits modifier after (e.g. if applying top-k, don't factor in padding scores).
@@ -498,7 +499,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         max_decode_len = paddings.shape[-1] + 1
         beam_search_outputs = beam_search_decode(
             inputs=jnp.zeros_like(paddings),
-            time_step=jnp.zeros(paddings.shape[0], dtype=paddings.dtype),
+            time_step=jnp.zeros(paddings.shape[0], dtype=jnp.int32),
             cache={"time_step": jnp.array(0)},
             tokens_to_scores=self._tokens_to_scores(input_batch, num_decodes=num_decodes),
             num_decodes=num_decodes,
@@ -539,7 +540,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         max_decode_len = paddings.shape[-1] + 1
         sample_decode_outputs = sample_decode(
             inputs=jnp.zeros_like(paddings),
-            time_step=jnp.zeros(paddings.shape[0], dtype=paddings.dtype),
+            time_step=jnp.zeros(paddings.shape[0], dtype=jnp.int32),
             cache={"time_step": jnp.array(0)},
             tokens_to_scores=self._tokens_to_scores(
                 input_batch, num_decodes=num_decodes, logits_modifier=logits_modifier
@@ -590,7 +591,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
         # [batch, num_frames, 1].
         scores = jnp.take_along_axis(log_probs, sequences[:, 0, :, None], axis=-1)
         # [batch, 1].
-        scores = jnp.sum(jnp.squeeze(scores, axis=-1) * (1 - paddings), axis=1, keepdims=True)
+        scores = jnp.sum(jnp.squeeze(scores, axis=-1) * safe_not(paddings), axis=1, keepdims=True)
 
         return DecodeOutputs(
             raw_sequences=sequences,
@@ -601,7 +602,7 @@ class CTCDecoderModel(BaseASRDecoderModel):
 
     def _postprocess_outputs(self, *, sequences: Tensor, paddings: Tensor, scores: Tensor):
         cfg: CTCDecoderModel.Config = self.config
-        live_mask = 1 - paddings[:, None, :]
+        live_mask = safe_not(paddings)[:, None, :]
         # Drop dummy decode position and mask outputs corresponding to padding frames.
         sequences = sequences[..., :-1] * live_mask
         # If given per-token scores, sum non-padding scores along sequence dim.
@@ -664,7 +665,7 @@ def _map_label_sequences(
         jnp.cumsum(indicators, axis=-1) * indicators - 1, max_decode_len, dtype=inputs.dtype
     )
     sequences = jnp.einsum("...nm,...n->...m", dispatch, inputs)
-    paddings = (jnp.arange(max_decode_len) >= lens).astype(inputs.dtype)
+    paddings = jnp.arange(max_decode_len) >= lens
     if pad_id != 0:
         sequences = jnp.where(paddings, pad_id, sequences)
     return dict(sequences=sequences, paddings=paddings, lengths=lens)
@@ -831,6 +832,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
         # [batch, src_max_len, joint_dim].
         am_data = self.am_proj(input_batch["inputs"])
         am_paddings: Tensor = input_batch["paddings"]
+        chex.assert_type(am_paddings, jnp.bool)
         target_labels: Tensor = input_batch["target_labels"]
         target_paddings: Tensor = _compute_target_paddings(target_labels, vocab_size=cfg.vocab_size)
 
@@ -1254,7 +1256,7 @@ class LASDecoderModel(BaseASRDecoderModel):
                 eos_id=dec_cfg.eos_token_id,
             )
             # Drop dummy decode position and mask outputs corresponding to padding.
-            sequences = beam_search_outputs.sequences * (1 - paddings)
+            sequences = beam_search_outputs.sequences * safe_not(paddings)
         return DecodeOutputs(
             raw_sequences=beam_search_outputs.sequences,
             sequences=sequences,
@@ -1306,9 +1308,9 @@ class LASDecoderModel(BaseASRDecoderModel):
             )
 
             # Drop dummy decode position and mask outputs corresponding to padding.
-            sequences = sample_decode_outputs.sequences * (1 - paddings)
+            sequences = sample_decode_outputs.sequences * safe_not(paddings)
             # [batch_size, num_decodes].
-            scores = jnp.sum(sample_decode_outputs.token_scores * (1 - paddings), axis=-1)
+            scores = jnp.sum(sample_decode_outputs.token_scores * safe_not(paddings), axis=-1)
         return DecodeOutputs(
             raw_sequences=sample_decode_outputs.sequences,
             sequences=sequences,

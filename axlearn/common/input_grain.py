@@ -31,6 +31,7 @@ On `repeat` and `shuffle`:
 """
 
 import sys
+from dataclasses import dataclass
 from typing import Any, Callable, Optional, Protocol, Sequence, TypeVar, Union, runtime_checkable
 
 import grain.python as grain
@@ -41,8 +42,6 @@ from absl import logging
 from array_record.python.array_record_data_source import PathLikeOrFileInstruction
 from grain._src.python.data_loader import _determine_worker_count
 from grain._src.python.dataset import dataset as dataset_base
-from grain._src.python.dataset.transformations import packing
-from grain._src.python.dataset.transformations import slice as slice_dataset
 from jax.experimental import multihost_utils
 
 from axlearn.common import input_base, utils
@@ -62,6 +61,10 @@ SequenceOr = Union[Sequence[_T], _T]
 Tensor = np.ndarray
 # Same as `input_tf_data.PadExampleFn`.
 PadExampleFn = Callable[[Any], Any]
+
+
+class RaggedTensor(list):
+    pass
 
 
 @runtime_checkable
@@ -88,10 +91,41 @@ ExampleToExampleFn = Union[
 ]
 
 
+@dataclass
+class DispatchConfig:
+    """Specifies the feed read configs.
+
+    Similar to `PartitionSpec`, it specifies host-partitioning along each mesh dimension. Specifying
+    a subset of leading mesh dims implies that the remaining trailing dims are all replicated (i.e.
+    correspond to a single shard).
+
+    Attributes:
+        shard_index: Indices indicating the index of the feed along each mesh dimension.
+        num_shards: Number of feeds along each mesh dimension.
+    """
+
+    shard_index: Sequence[int]
+    num_shards: Sequence[int]
+
+    def __post_init__(self):
+        if not isinstance(self.shard_index, Sequence):
+            self.shard_index = [self.shard_index]
+        if not isinstance(self.num_shards, Sequence):
+            self.num_shards = [self.num_shards]
+        if len(self.shard_index) != len(self.num_shards):
+            raise ValueError(f"{len(self.shard_index)=} should match {len(self.num_shards)=}.")
+        if len(self.num_shards) < 1:
+            raise ValueError(f"{self.num_shards=} cannot be empty.")
+        if not all(0 <= idx < count for idx, count in zip(self.shard_index, self.num_shards)):
+            raise ValueError(
+                f"Each {self.shard_index=} should be between 0 and {self.num_shards=}, exclusive."
+            )
+
+
 class BuildDatasetFn(Protocol):
     """A function to create a grain data source."""
 
-    def __call__(self) -> Dataset:
+    def __call__(self, dispatch_config: DispatchConfig) -> Dataset:
         ...
 
 
@@ -100,9 +134,29 @@ def _copy_tree(x: _T) -> _T:
     return jax.tree.map(lambda v: v, x)
 
 
+def _ragged_batch_size(tensor: Union[Tensor, RaggedTensor]) -> int:  # type: ignore
+    """Determines the batch_size of the (optionally ragged) tensor.
+
+    Ragged tensor are represented as list of np.ndarray.
+
+    Args:
+        tensor: A tensor, which could be an Tensor or RaggedTensor.
+
+    Returns:
+        batch_size of the tensor.
+    """
+    if isinstance(tensor, RaggedTensor):
+        return len(tensor)
+    elif hasattr(tensor, "shape"):
+        return tensor.shape[0]
+    else:
+        raise NotImplementedError(type(tensor))
+
+
 def array_record_dataset(
     paths: Union[PathLikeOrFileInstruction, Sequence[PathLikeOrFileInstruction]],
     *,
+    data_source_cls: type[grain.ArrayRecordDataSource] = grain.ArrayRecordDataSource,
     seed: Optional[int],
 ) -> Dataset:
     """Builds an ArrayRecord dataset.
@@ -114,13 +168,13 @@ def array_record_dataset(
         paths: One or more array record paths, each of which can be a pathlike (e.g. string)
             or tfds `FileInstruction`. When reading subsets or a large number of files prefer to
             pass `FileInstruction`s.
+        data_source_cls: A class reference to a subclass of ArrayRecordDataSource.
         seed: Seed for any downstream transformations (e.g. `shuffle` or `random_map`).
 
     Returns:
         An ArrayRecord dataset.
     """
-
-    source = grain.ArrayRecordDataSource(paths)
+    source = data_source_cls(paths)
     ds = grain.MapDataset.source(source)
     if seed is not None:
         ds = ds.seed(seed)
@@ -208,7 +262,14 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
                     continue  # Parent produced an empty batch, continue.
 
                 # Make sure all leaves have same batch dim.
-                if not all(leaves[0].shape[0] == x.shape[0] for x in leaves[1:]):
+                if not all(
+                    _ragged_batch_size(leaves[0]) == _ragged_batch_size(x) for x in leaves[1:]
+                ):
+                    # Convert RaggedTensors back to lists, so that `shapes` can traverse into leaf
+                    # np.arrays for a more interpretable message.
+                    example = jax.tree.map(
+                        lambda x: list(x) if isinstance(x, RaggedTensor) else x, example
+                    )
                     raise ValueError(
                         f"Expected all leaves to have same batch dim: {utils.shapes(example)}"
                     )
@@ -216,7 +277,9 @@ class _UnbatchDatasetIterator(grain.DatasetIterator):
 
             leaves, structure = self._current_batch
             assert len(leaves) > 0, self._current_batch
-            batch_size = leaves[0].shape[0]  # All leaves have same batch size due to check above.
+            batch_size = _ragged_batch_size(
+                leaves[0]
+            )  # All leaves have same batch size due to check above.
             if batch_size == 0 and self._skip_empty_batch:
                 example = None
             else:
@@ -369,53 +432,6 @@ def _ensure_iter_dataset(ds: Dataset):
         )
 
 
-def trim_and_pack_dataset(ds: Dataset, *, feature_lengths: utils.Nested[int]) -> Dataset:
-    """Similar to `seqio.trim_and_pack_dataset`.
-
-    Different from `seqio.trim_and_pack_dataset`, elements may be packed out of order if doing so
-    produces less padding. Further, elements may be truncated (with remainder dropped). See
-    `SingleBinPackIterDataset` in `grain` or test cases for details.
-
-    Args:
-        ds: A Dataset containing keys in `feature_lengths`.
-        feature_lengths: A (nested) mapping from of feature key to target length.
-            Packing will happen across 0th dimension. Features must be array-like.
-
-    Returns:
-        A Dataset with packed features. Similar to `seqio.trim_and_pack_dataset`, packing introduces
-        additional fields for each feature:
-        - `{feature}_segment_ids`: segment IDs for each packed example, where 0's represent padding;
-        - `{feature}_positions`: positions for each segment, where 0's represent padding.
-    """
-    _ensure_iter_dataset(ds)
-    return packing.SingleBinPackIterDataset(parent=ds, length_struct=feature_lengths)
-
-
-class _ShardDataset(slice_dataset.SliceMapDataset):
-    """A thin wrapper of SliceMapDataset that allows setting read config after instantiation.
-
-    This is used in `Input` for input dispatch.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._iterated = False
-
-    def set_read_config(self, *, num_shards: int, shard_index: int):
-        """Sets the shard index and count.
-
-        The API follows that of `tfds_read_config`.
-        """
-        if self._iterated:
-            raise ValueError("Attempting to `set_read_config` after iterating.")
-        self._start = shard_index
-        self._step = num_shards
-
-    def __getitem__(self, index):
-        self._iterated = True
-        return super().__getitem__(index)
-
-
 class _ProportionalSliceMapDataset(dataset_base.MapDataset[_T]):
     """Slices a MapDataset given the integer proportions."""
 
@@ -464,33 +480,23 @@ class _ProportionalSliceMapDataset(dataset_base.MapDataset[_T]):
         return f"_ProportionalSliceMapDataset[{self._range_start}:{self._range_end}:{self._period}]"
 
 
-def shard_dataset(
-    ds: Dataset,
-    *,
-    process_count: Optional[int] = None,
-    process_index: Optional[int] = None,
-) -> Dataset:
+def shard_dataset(ds: Dataset, dispatch_config: DispatchConfig) -> Dataset:
     """A convenience wrapper around `ds.slice`.
 
-    Specifically, each process reads `ds[process_index::process_count]`.
-    E.g., if the dataset has 10 elements split among 4 processes, process 0,1 get 3 each, and
-    process 2,3 get 2 each.
+    Specifically, each feed reads `ds[shard_index::num_shards]`.
+    E.g., if the dataset has 10 elements split among 4 feeds, feed 0,1 get 3 each, and feed 2,3 get
+    2 each.
 
     Args:
         ds: A Dataset.
-        process_count: Number of processes. If None, infers from `jax.process_count()`.
-        process_index: Process index. If None, infers from `jax.process_index()`.
+        dispatch_config: A dispatch config. See `DispatchConfig`.
 
     Returns:
         A sharded (sliced) dataset.
     """
-    if process_count is None:
-        process_count = jax.process_count()
-    if process_index is None:
-        process_index = jax.process_index()
-    if not 0 <= process_index < process_count:
-        raise ValueError(f"{process_index=} should be between 0 and {process_count=}, exclusive.")
-    return _ShardDataset(parent=ds, sl=slice(process_index, None, process_count))
+    if not len(dispatch_config.shard_index) == len(dispatch_config.num_shards) == 1:
+        raise NotImplementedError(dispatch_config)
+    return ds.slice(slice(dispatch_config.shard_index[0], None, dispatch_config.num_shards[0]))
 
 
 def shard_dataset_with_proportion(
@@ -688,17 +694,23 @@ def pad_for_evaluation(
     return ds
 
 
-def _set_read_config_recursively(source: Dataset, **kwargs) -> bool:
-    """Sets **kwargs on all `shard_dataset` in `source`."""
-    if isinstance(source, _ShardDataset):
-        logging.info("Setting read config on %s", source)
-        source.set_read_config(**kwargs)
-        return True
+def per_feed_batch(
+    ds: Dataset, *, global_batch_size: int, dispatch_config: DispatchConfig, **kwargs
+):
+    """Produces per-feed batches along dim=0.
 
-    for parent in source.parents:
-        if _set_read_config_recursively(parent, **kwargs):
-            return True
-    return False
+    Args:
+        global_batch_size: Global batch along dim=0.
+        dispatch_config: Dispatch config.
+        kwargs: Forwarded to `ds.batch`.
+
+    Returns:
+        A Dataset batched according to the feed batch size along dim=0.
+    """
+    num_shards = dispatch_config.num_shards[0]
+    if global_batch_size % num_shards != 0:
+        raise ValueError(f"{global_batch_size=} should be divisible by {num_shards=}")
+    return ds.batch(global_batch_size // num_shards, **kwargs)
 
 
 class Input(input_base.Input):
@@ -725,14 +737,12 @@ class Input(input_base.Input):
         return self._source
 
     def dataset(self) -> grain.IterDataset:
-        ds = self._source()
         if "input_dispatcher" in self.children:
-            if not _set_read_config_recursively(ds, **self.input_dispatcher.feed_read_config()):
-                raise ValueError(
-                    f"Failed to set read config on {ds}. "
-                    f"Please make sure to call {shard_dataset.__name__} if using input dispatch."
-                )
-        return maybe_to_iter_dataset(ds)
+            # TODO(markblee): Generalize to support ndim>1.
+            read_config = self.input_dispatcher.feed_read_config()
+        else:
+            read_config = dict(shard_index=[jax.process_index()], num_shards=[jax.process_count()])
+        return maybe_to_iter_dataset(self._source(DispatchConfig(**read_config)))
 
     def element_spec(self) -> utils.Nested[jax.ShapeDtypeStruct]:
         """Infers the element spec.

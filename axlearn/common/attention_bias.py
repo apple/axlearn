@@ -33,14 +33,13 @@ from typing import (
     final,
 )
 
-import einops
 import jax
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
 from axlearn.common import struct
 from axlearn.common.config import ClassConfigBase, ConfigOr, config_for_class, maybe_instantiate
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 NEG_INF = -1e15
 
@@ -526,8 +525,9 @@ class MaskFnAttentionBias(BoolAttentionBias):
             raise ValueError(
                 f"{target_positions.shape=} or {source_positions.shape=} is not rank 2."
             )
-        target_positions = einops.rearrange(target_positions, "b t -> b t 1")
-        source_positions = einops.rearrange(source_positions, "b s -> b 1 s")
+
+        target_positions = jnp.expand_dims(target_positions, axis=2)  # [batch, target_length, 1]
+        source_positions = jnp.expand_dims(source_positions, axis=1)  # [batch, 1, source_length]
         return self.mask(target_positions, source_positions)  # pylint: disable=not-callable
 
     @classmethod
@@ -668,7 +668,9 @@ class SlidingWindowAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-
 
     @classmethod
     # pylint: disable-next=arguments-renamed
-    def default_config(cls, sliding_window_size: int) -> ClassConfigBase[MaskFnAttentionBias]:
+    def default_config(
+        cls, sliding_window_size: int
+    ) -> ClassConfigBase["SlidingWindowAttentionBias"]:
         return config_for_class(SlidingWindowAttentionBias).set(
             mask=sliding_window_causal_mask(sliding_window_size=sliding_window_size),
             sliding_window_size=sliding_window_size,
@@ -784,7 +786,7 @@ def bool_to_bias(mask: OpT) -> OpT:
         return None
     if mask.dtype != jnp.bool:
         raise ValueError("mask must be a Boolean tensor.")
-    return (~mask) * NEG_INF
+    return safe_not(mask) * NEG_INF
 
 
 def _make_bool_segment_mask(*, source_segments: Tensor, target_segments: Tensor) -> Tensor:

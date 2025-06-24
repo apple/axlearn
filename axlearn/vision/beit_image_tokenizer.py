@@ -182,7 +182,7 @@ class BEiTImageVQKD(BaseLayer):
         # encoded_outputs shape [batch_size, seq_len, codebook_dim]
         encoded_outputs = self.output_proj(encoded_features)
         encoded_outputs = self.l2norm(encoded_outputs)
-        paddings = jnp.zeros(encoded_outputs.shape[:2])
+        paddings = jnp.zeros(encoded_outputs.shape[:2], jnp.bool)
         quantized_output = self.quantizer(inputs=encoded_outputs, paddings=paddings)
         # quantized_output.quantized_vectors shape [batch_size, seq_len, 1, codebook_dim]
         # quantized_output.ids in shape [batch_size, seq_len, 1]
@@ -190,7 +190,7 @@ class BEiTImageVQKD(BaseLayer):
             quantized_output.ids,
             num_classes=self.config.quantizer.codebook_size,
             axis=-1,
-            dtype=paddings.dtype,
+            dtype=jnp.int32,
         )
         return jnp.squeeze(quantized_output.ids, axis=-1), {
             "quantized_vectors": jnp.squeeze(quantized_output.quantized_vectors, axis=-2),

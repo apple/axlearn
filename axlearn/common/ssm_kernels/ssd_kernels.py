@@ -29,11 +29,11 @@ from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
-from einops import rearrange, repeat
 from jax import lax
 from jax._src.lax.control_flow import for_loop
 from jax.experimental import pallas as pl
 
+from axlearn.common.ein_ops import rearrange, repeat
 from axlearn.common.utils import Tensor
 
 

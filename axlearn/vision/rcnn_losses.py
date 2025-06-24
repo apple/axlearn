@@ -17,7 +17,7 @@ from axlearn.common.loss import (
     huber_loss,
     sigmoid_cross_entropy_with_logits,
 )
-from axlearn.common.module import NestedTensor, Tensor
+from axlearn.common.utils import NestedTensor, Tensor, safe_not
 
 
 class RPNMetric(BaseLayer):
@@ -61,18 +61,18 @@ class RPNMetric(BaseLayer):
         Returns:
             A Tensor represents the final loss. `None` is returned if `labels` is None.
         """
-        score_loss_normalizer = jnp.sum(~paddings) + self.config.normalizer_eps
+        score_loss_normalizer = jnp.sum(safe_not(paddings)) + self.config.normalizer_eps
         true_scores = labels["rpn_score_targets"]
         pred_scores = outputs["rpn_scores"]
         score_loss = (
             jnp.sum(
                 sigmoid_cross_entropy_with_logits(logits=pred_scores, targets=true_scores)
-                * ~paddings
+                * safe_not(paddings)
             )
             / score_loss_normalizer
         )
         # Box weights to only apply loss on positive samples.
-        box_weights = (~paddings) & (true_scores > 0)
+        box_weights = safe_not(paddings) & (true_scores > 0)
         box_loss_normalizer = jnp.sum(box_weights) + self.config.normalizer_eps
         true_boxes = labels["rpn_box_targets"]
         pred_boxes = outputs["rpn_boxes"]
@@ -136,11 +136,11 @@ class RCNNDetectionMetric(BaseLayer):
         score_loss = cross_entropy(
             logits=outputs["class_scores"],
             target_labels=labels["class_targets"],
-            live_targets=~paddings,
+            live_targets=safe_not(paddings),
         )[1]["cross_entropy_loss"]
 
         # Box weights to only apply loss on positive samples.
-        box_weights = (~paddings) & (labels["class_targets"] > 0)
+        box_weights = safe_not(paddings) & (labels["class_targets"] > 0)
         box_loss_normalizer = jnp.sum(box_weights) + self.config.normalizer_eps
         true_boxes = labels["box_targets"]
         # [batch, num_proposals, num_classes * 4]

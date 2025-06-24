@@ -267,8 +267,21 @@ class DisentangledSelfAttention(MultiheadAttention):
         # https://github.com/microsoft/DeBERTa/blob/771f5822798da4bef5147edfe2a4d0e82dd39bac/DeBERTa/deberta/disentangled_attention.py#L85
         cfg = self.config
         q_scale = (1 + len(cfg.attention_type)) ** -0.5
+        q_proj = self.scale_query(q_proj * q_scale, positions=None)
+        k_proj = self.scale_key(k_proj, positions=None)
         # [batch, num_heads, target_length, source_length].
-        return super()._compute_logits(q_proj * q_scale, k_proj)
+        return super()._compute_logits(q_proj, k_proj)
+
+    def _scale_qk(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        query_positions: Tensor,
+        key_positions: Tensor,
+    ):
+        # Do not scale q/k here as _attention_scores expects unscaled q/k.
+        return q_proj, k_proj
 
     def _disentangled_attention_bias(
         self,

@@ -19,6 +19,7 @@ from axlearn.common.conformer import (
     LConvLayer,
     RepeatedConformerLayer,
     compute_attention_logit_biases,
+    set_double_shard_weights_config,
 )
 from axlearn.common.module import functional as F
 from axlearn.common.t5 import T5RelativePositionalEmbedding
@@ -270,6 +271,60 @@ class ConformerLayerTest(TestCase):
                         if query - left_context <= key <= query + right_context:
                             expected[i, 0, query, key] = 1
             assert_allclose(jnp.exp(logit_bias), expected, atol=1e-6, rtol=1e-6)
+
+    @parameterized.product(
+        batch_axis_names=("data", ("replica", "data", "fsdp")),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
+        seq_axis_names=("seq",),
+    )
+    def test_set_double_shard_weights_config(
+        self,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
+        seq_axis_names,
+    ):
+        dim, num_heads = 6, 2
+        cfg = ConformerLayer.default_config().set(name="conformer", input_dim=dim)
+        cfg.self_attention.attention.num_heads = num_heads
+        set_double_shard_weights_config(
+            cfg,
+            batch_axis_names=batch_axis_names,
+            fsdp_axis_names=fsdp_axis_names,
+            tp_axis_names=tp_axis_names,
+            seq_axis_names=seq_axis_names,
+        )
+
+        def check_ff(ff_layer):
+            self.assertSequenceEqual(
+                ff_layer.linear1.param_partition_spec, (fsdp_axis_names, tp_axis_names)
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear2.param_partition_spec, (tp_axis_names, fsdp_axis_names)
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear1.output_partition_spec,
+                (batch_axis_names, seq_axis_names, tp_axis_names),
+            )
+            self.assertSequenceEqual(
+                ff_layer.linear2.output_partition_spec,
+                (batch_axis_names, seq_axis_names, tp_axis_names),
+            )
+
+        check_ff(cfg.ff_start)
+        check_ff(cfg.ff_end)
+
+        self_atten = cfg.self_attention.attention
+        input_linear = self_atten.input_linear
+        # Shard weights.
+        self.assertSequenceEqual(
+            input_linear.layer.param_partition_spec,
+            (fsdp_axis_names, tp_axis_names, None),
+        )
+        self.assertSequenceEqual(
+            self_atten.output_linear.param_partition_spec, (fsdp_axis_names, tp_axis_names, None)
+        )
 
 
 if __name__ == "__main__":

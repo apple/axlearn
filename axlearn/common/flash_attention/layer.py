@@ -14,11 +14,8 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention
 from axlearn.common.attention_bias import BaseAttentionBias
-from axlearn.common.config import REQUIRED, ConfigBase, ConfigModifier, Required, config_class
-from axlearn.common.flash_attention.utils import (
-    MultiHeadAttentionImpl,
-    flash_attention_implementation,
-)
+from axlearn.common.config import ConfigBase, ConfigModifier, config_class
+from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor, with_sharding_constraint
 
@@ -44,15 +41,13 @@ class FlashAttention(GroupedQueryAttention):
     class Config(GroupedQueryAttention.Config):
         """Configures FlashAttention."""
 
-        # Deprecated. Use `mask=causal_mask` instead.
-        # If True, applies additional optimizations in the FlashAttention kernels.
-        # Causal attention can still be used when False, by passing logit biases.
-        # TODO (apghml) remove this in favor of `mask`.
-        causal: bool = False
         # The block size used to tile attention computation (for TPU only).
         # Should be less than the target sequence length and a multiple of 128 on TPU.
         # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.
         tpu_block_size: int = 512
+        # The default GPU block-size of 128 works on most accelerators
+        # NVIDIA Blackwell (B200) requires a smaller block-size
+        gpu_block_size: Optional[int] = None
 
         # SPMD partition specs:
         # B - batch dim,
@@ -156,16 +151,31 @@ class FlashAttention(GroupedQueryAttention):
         v_proj: Tensor,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
+        """Computes attention context and probs.
+
+        Note: KV cache may cast k_proj/v_proj in lower precision, so flash attention kernel must
+        cast them to q_proj.dtype.
+
+        Args:
+            mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
+                details.
+            q_proj: [batch_size, target_length, num_heads, per_head_dim].
+            k_proj: [batch_size, source_length, num_heads, per_head_dim].
+            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+            attention_logit_biases: See ``On attention logit biases`` in the file comments.
+
+        Returns:
+            The context of shape [batch_size, target_length, num_heads, per_head_dim],
+            and probs of shape [batch, num_heads, target_length, source_length].
+        """
         cfg: FlashAttention.Config = self.config
         backend = self._backend()
 
+        orig_k_proj = k_proj
+        orig_v_proj = v_proj
         # Repeats key/value heads dim if necessary.
         k_proj = self._maybe_repeat_kv_heads(k_proj)
         v_proj = self._maybe_repeat_kv_heads(v_proj)
-
-        batch, target_len, num_heads, _ = q_proj.shape
-        _, source_len, _, _ = k_proj.shape
-
         attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
         # Note: prefill (INIT_STATE) is not is_decoding because query and key have the same shape.
@@ -173,22 +183,36 @@ class FlashAttention(GroupedQueryAttention):
         # an extend_step even if we aren't in decoding. A more robust method could instead directly
         # look at whether we need gradients or not, which could be done by adding a custom_vjp.
         is_decoding = mode == ForwardMode.EXTEND_STEP
-        jit_attn: MultiHeadAttentionImpl = flash_attention_implementation(
+        jit_attn = flash_attention_implementation(
             backend=backend,
+            query=q_proj,
+            key=k_proj,
+            value=v_proj,
+            bias=attention_logit_biases,
             softmax_scale=1.0,
             is_decoding=is_decoding,
-            block_size=cfg.tpu_block_size,
+            # TODO(hanzhi-zhou): Refactor backend specific config passing.
+            tpu_block_size=cfg.tpu_block_size,
+            gpu_block_size=cfg.gpu_block_size or 128,
             dropout_rate=cfg.dropout.rate,
         )
+        if jit_attn is None:
+            # Fall back to standard attention if no backend kernels are supported.
+            return super()._compute_attention(
+                mode=mode,
+                q_proj=q_proj,
+                k_proj=orig_k_proj,
+                v_proj=orig_v_proj,
+                attention_logit_biases=attention_logit_biases,
+            )
+
+        batch, target_len, num_heads, _ = q_proj.shape
+        _, source_len, _, _ = k_proj.shape
 
         attention_logit_biases_spec = self._logit_biases_spec(attention_logit_biases)
         attention_logit_biases = with_sharding_constraint(
             attention_logit_biases, attention_logit_biases_spec
         )
-
-        # Scale query and key.
-        q_proj = self.scale_query(q_proj)
-        k_proj = self.scale_key(k_proj)
 
         # Constrain input to conform to partitioned MHA expectations.
         q_proj = with_sharding_constraint(q_proj, cfg.mha_dim_to_partition_spec["btnh"])
@@ -197,21 +221,22 @@ class FlashAttention(GroupedQueryAttention):
 
         # We need to manually partition pallas | jax-triton calls.
         # Note: shard_map doesn't support kwargs.
+        input_batch_specs = {
+            # Q [batch_size, seq_len, num_heads, per_head_dim].
+            "query": cfg.mha_dim_to_partition_spec["btnh"],
+            # KV [batch_size, seq_len, repeated_num_heads, per_head_dim].
+            # repeated_num_heads should be divided evenly by the n axis.
+            "key": cfg.mha_dim_to_partition_spec["bsnh"],
+            "value": cfg.mha_dim_to_partition_spec["bsnh"],
+            # PRNG Key
+            "prng_key": PartitionSpec(None),
+            # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
+            "bias": attention_logit_biases_spec,
+        }
         partitioned_mha = shard_map(
             jit_attn,
             mesh=thread_resources.env.physical_mesh,
-            in_specs=(
-                # Q [batch_size, seq_len, num_heads, per_head_dim].
-                cfg.mha_dim_to_partition_spec["btnh"],
-                # KV [batch_size, seq_len, repeated_num_heads, per_head_dim].
-                # repeated_num_heads should be divided evenly by the n axis.
-                cfg.mha_dim_to_partition_spec["bsnh"],
-                cfg.mha_dim_to_partition_spec["bsnh"],
-                # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
-                attention_logit_biases_spec,
-                # PRNG Key.
-                PartitionSpec(None),
-            ),
+            in_specs=(input_batch_specs,),
             # O [batch_size, seq_len, num_heads, per_head_dim].
             out_specs=cfg.mha_dim_to_partition_spec["btnh"],
             # Disables a checking pass which jax can't apply when there's a triton | pallas
@@ -219,15 +244,18 @@ class FlashAttention(GroupedQueryAttention):
             check_rep=False,
         )
 
+        # Note: we use dropout layer's prng_key so the dropout result is identical to
+        # using self.dropout.forward because we will produce identical mask.
+        input_batch = {
+            "query": q_proj,
+            "key": k_proj,
+            "value": v_proj,
+            "prng_key": self.dropout.get_prng_key(),
+            "bias": attention_logit_biases,
+        }
         outputs = with_sharding_constraint(
             partitioned_mha(
-                # Note: we use dropout layer's prng_key so the dropout result is identical to
-                # using self.dropout.forward because we will produce identical mask.
-                q_proj,
-                k_proj,
-                v_proj,
-                attention_logit_biases,
-                self.dropout.get_prng_key(),
+                input_batch,
             ),
             cfg.output_dim_to_partition_spec["btnh"],
         )
@@ -288,16 +316,18 @@ def default_output_dim_to_partition_spec(
 
 
 class FlashBlockSizeModifier(ConfigModifier):
-    """Modified the tpu_block_size config of FlashAttention."""
+    """Modifies the tpu_block_size or gpu_block_size config of FlashAttention."""
 
     @config_class
     class Config(ConfigModifier.Config):
         """Configures FlashBlockSizeModifier."""
 
-        tpu_block_size: Required[int] = REQUIRED
+        tpu_block_size: Optional[int] = 512
+        gpu_block_size: Optional[int] = None
 
     def __call__(self, cfg: ConfigBase) -> ConfigBase:
         tpu_block_size = self.config.tpu_block_size
+        gpu_block_size = self.config.gpu_block_size
 
         def is_flash_config(cfg):
             return isinstance(cfg, FlashAttention.Config)
@@ -306,6 +336,7 @@ class FlashBlockSizeModifier(ConfigModifier):
             if is_flash_config(value):
                 value = cast(FlashAttention.Config, value)
                 value.tpu_block_size = tpu_block_size
+                value.gpu_block_size = gpu_block_size
 
         def enter_fn(_, value, default_kv):
             return None if is_flash_config(value) else default_kv

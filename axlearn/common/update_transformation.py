@@ -16,19 +16,38 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Sequence
-from typing import Any, Callable, Literal, Optional, Protocol, Union
+from typing import Any, Callable, Literal, NamedTuple, Optional, Protocol, Union, cast
 
 import jax
+import jax.numpy as jnp
 import optax
+from absl import logging
 from jax.sharding import PartitionSpec
 
 from axlearn.common import struct
 from axlearn.common.base_layer import ParameterSpec
-from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigOr,
+    InstantiableConfig,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 from axlearn.common.learner_base import LearnerModule
 from axlearn.common.module import Module, OutputCollection
-from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.optimizer_base import OptParam, OptStateSpec, PartitionedGradientTransformation
+from axlearn.common.utils import (
+    Nested,
+    Tensor,
+    flatten_items,
+    match_regex_rules,
+    non_empty_leaf_merge_fn,
+    prune_empty,
+    prune_tree,
+    tree_merge,
+    tree_paths,
+)
 
 
 class UpdateTransformation(LearnerModule):
@@ -89,6 +108,95 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
         # Optimizer state from a PartitionedGradientTransformation may be a tuple, so we have to
         # assign it via the parent.
         self.get_invocation_context().set_state_update(optimizer_state)
+        return dataclasses.replace(updates, delta_updates=param_updates)
+
+
+class _ShouldUpdateState(NamedTuple):
+    count: Tensor  # Number of steps.
+
+
+class ConditionalUpdateTransformation(UpdateTransformation):
+    """A wrapper around a `UpdateTransformation` to conditionally allow or skip
+    parameter and optimizer state updates based on `update_schedule`.
+
+    Specifically,
+    - If `update_schedule` evaluates to False/zero, the delta updates will be set to 0 and
+        the inner optimizer state will not change.
+    - If `update_schedule` evaluates to True/non-zero, the param and state updates from the
+        inner optimizer will be applied.
+    - The update schedule step count will always be incremented.
+
+    In-place parameter updates from `inner` are not supported.
+    """
+
+    @config_class
+    class Config(UpdateTransformation.Config):
+        # The wrapped UpdateTransformation
+        inner: Required[InstantiableConfig] = REQUIRED
+        # A function that takes as input an int32 scalar tensor, and returns a bool scalar tensor
+        update_schedule: Optional[Callable[[Union[int, Tensor]], Union[bool, Tensor]]] = None
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module] = None):
+        super().__init__(cfg, parent=parent)
+        inner = cfg.inner
+        if not isinstance(inner, LearnerModule.Config):
+            inner = WrappedPartitionedGradientTransformation.default_config().set(
+                transformation=inner
+            )
+        self.inner = cast(UpdateTransformation, self._add_child("inner", inner))
+        self._update_schedule = cfg.update_schedule
+        if self._update_schedule is None:
+            self._update_schedule = lambda step: True
+
+    def create_state_partition_specs(
+        self, model_param_specs: Nested[ParameterSpec]
+    ) -> Nested[PartitionSpec]:
+        specs = self.inner.create_state_partition_specs(model_param_specs)
+        should_update_specs = _ShouldUpdateState(
+            count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
+        )
+        return {"should_update": should_update_specs, "inner": specs}
+
+    def init(self, model_params: Nested[OptParam]) -> Nested[Tensor]:
+        state = self.inner.init(model_params)
+        should_update_state = _ShouldUpdateState(count=jnp.zeros([], jnp.int32))
+        return {"should_update": should_update_state, "inner": state}
+
+    def transform_update(self, updates: Updates) -> Updates:
+        curr_step = self.state["should_update"].count
+        should_update = self._update_schedule(curr_step)
+
+        inplace_updates = prune_tree(
+            prune_empty(updates.inplace_updates), lambda _, v: v == optax.MaskedNode()
+        )
+        if inplace_updates:
+            raise NotImplementedError(
+                "`inplace_updates` are not supported when ConditionalUpdateTransformation "
+                f"is used. Got: {inplace_updates}. Consider moving state updates into "
+                "CompositeLearner or other sub-learners."
+            )
+
+        prev_state = self.state["inner"]
+        # Backward and optimizer state computation need to be carried out
+        # regardless of should_update value.
+        new_updates = self.inner.transform_update(updates=updates)
+        new_state = self.get_invocation_context().get_state_updates()["inner"]
+
+        def real_transform(_):
+            return new_updates.delta_updates, new_state
+
+        def stop_transform(_):
+            return jax.tree_map(jnp.zeros_like, updates.delta_updates), prev_state
+
+        # We do the computation regardless of the should_update value, so we could have
+        # equally used jnp.where() here instead.
+        param_updates, optimizer_state = jax.lax.cond(
+            should_update, real_transform, stop_transform, operand=None
+        )
+
+        should_update_state = _ShouldUpdateState(count=optax.safe_int32_increment(curr_step))
+        self.add_state_update("should_update", should_update_state)
+        self.add_state_update("inner", optimizer_state)
         return dataclasses.replace(updates, delta_updates=param_updates)
 
 
@@ -252,7 +360,7 @@ def mask_tree(tree: dict, *, keep: dict, mask_value: Any) -> dict:
 
     Returns:
         A masked tree the same structure as tree, the leaf is masked as MaskNode() if
-         the corresponding keep leaf is False.
+            the corresponding keep leaf is False.
 
     """
     # For sub-learner optimizer state, only the subset of parameters
@@ -263,3 +371,83 @@ def mask_tree(tree: dict, *, keep: dict, mask_value: Any) -> dict:
         tree,
         is_leaf=lambda x: x is None,
     )
+
+
+class OverrideInplaceUpdateTransformation(WrappedPartitionedGradientTransformation):
+    """An update transformation that provides rules to override inplace updates.
+
+    This update transformation moves gradients that match rules in `delta_updates` to
+    `inplace_updates`, then applies `PartionedGradientTransformation.update`. Also, optimizer
+    states won't be created for parameters that match these rules.
+    """
+
+    @config_class
+    class Config(WrappedPartitionedGradientTransformation.Config):
+        """Configures `OverrideInplaceUpdateTransformation`.
+
+        Attributes:
+            rules: list of regex rules to match.
+        """
+
+        rules: Required[Sequence[str]] = REQUIRED
+
+    def _is_passthrough(self, params: Nested[Any]) -> Nested[bool]:
+        """Gets a pytree of bools with True indicating a parameter or gradient is passthrough.
+
+        Passthrough parameters are parameters that do not match the rules and follow the same
+        semantic as a regular `WrappedPartitionedGradientTransformation`.
+        """
+        cfg: OverrideInplaceUpdateTransformation.Config = self.config
+        rules = [(rule, False) for rule in cfg.rules]
+        return jax.tree.map(
+            lambda path: match_regex_rules(path, rules=rules, default_value=True),
+            tree_paths(params),
+        )
+
+    def _keep_passthrough(self, params: Nested[Any]) -> Nested[Any]:
+        """Given a pytree of params, keeps only the passthrough params."""
+        return mask_tree(params, keep=self._is_passthrough(params), mask_value=optax.MaskedNode())
+
+    def create_state_partition_specs(
+        self, model_param_specs: Nested[ParameterSpec]
+    ) -> Union[Nested[PartitionSpec], tuple[Nested[PartitionSpec]],]:
+        return self.transformation.partition(self._keep_passthrough(model_param_specs))
+
+    def init(self, model_params: Nested[OptParam]) -> Nested[Tensor] | tuple[Nested[Tensor], ...]:
+        return self.transformation.init(self._keep_passthrough(model_params))
+
+    def transform_update(self, updates: Updates) -> Updates:
+        is_passthrough = self._is_passthrough(updates.delta_updates)
+        override_inplace_updates = mask_tree(
+            updates.delta_updates,
+            keep=jax.tree.map(lambda x: not x, is_passthrough),
+            mask_value=optax.MaskedNode(),
+        )
+        for path, value in flatten_items(override_inplace_updates):
+            logging.info(
+                "Applying inplace_updates instead of delta_updates for %s: %s%s.",
+                path,
+                str(value.dtype),
+                str(value.shape),
+            )
+
+        passthrough_updates = super().transform_update(
+            updates.mask(lambda _: is_passthrough, fields=["delta_updates", "opt_params"])
+        )
+
+        # Merge inplace updates back to `delta_updates` to make sure `delta_updates` has the same
+        # tree structure as updates.opt_params, which is required by `Learner`. This won't affect
+        # optimization result since `inplace_updates` will take priority.
+        return dataclasses.replace(
+            updates,
+            delta_updates=tree_merge(
+                passthrough_updates.delta_updates,
+                secondary=override_inplace_updates,
+                leaf_merge_fn=non_empty_leaf_merge_fn,
+            ),
+            inplace_updates=tree_merge(
+                updates.inplace_updates,
+                secondary=override_inplace_updates,
+                leaf_merge_fn=non_empty_leaf_merge_fn,
+            ),
+        )

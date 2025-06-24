@@ -109,6 +109,7 @@ class AudioSummary(Summary):
             )
 
     def value(self) -> Tensor:
+        """Returns the audio tensor in shape [t, c], with floating-point values in [-1.0, 1.0]"""
         val = self._value
         # tf.summary.audio takes a tensor representing audio data with shape [k, t, c],
         # where k is the number of audio clips, t is the number of frames, and c is
@@ -116,9 +117,8 @@ class AudioSummary(Summary):
         # max_outputs=1 in tf_summary.audio
         if val.ndim == 1:
             # Add the audio clips and channels dimension.
-            return val[None, :, None]
-        # Add the audio clips dimension.
-        return val[None, :, :]
+            return val[:, None]
+        return val
 
     def accumulate(self, other: Summary) -> Summary:
         return self

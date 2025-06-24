@@ -114,7 +114,7 @@ def partition_by_path_rank(
                 "specify `PartitionSpec.UNCONSTRAINED` explicitly."
             )
 
-        return jax.tree_map(maybe_constrain, tree_paths(input_batch), input_batch)
+        return jax.tree.map(maybe_constrain, tree_paths(input_batch), input_batch)
 
     return fn
 
@@ -167,6 +167,8 @@ class Input(Module):
                 batch during `dispatch_global_batch`.
         """
 
+        # TODO(markblee): Consider allowing PartitionSpec to be a tree-prefix of the input batch,
+        # which is more flexible but potentially complicates dispatch.
         partition_spec: Optional[PartitionSpec] = None
         input_dispatcher: Optional[InputDispatcher.Config] = None
         input_partitioner: Optional[ConfigOr[InputPartitionFn]] = None
@@ -216,27 +218,8 @@ class Input(Module):
 
         See also `dispatch_global_batch` for constructing a global logical batch.
         """
-        # Validate that input batches have the proper feed batch size if this is a logical feed.
-        should_validate = (
-            "input_dispatcher" in self.children
-            and self.input_dispatcher.logical_feed_index is not None
-        )
         for input_batch in it:
             input_batch = as_numpy_array(input_batch)
-            # For the first batch, validate that the per_feed_batch_size is configured properly.
-            if should_validate:
-
-                def check_per_feed_batch(x: Tensor):
-                    expected = self.input_dispatcher.feed_logical_batch_size
-                    actual = x.shape[0]
-                    if expected != actual:
-                        raise ValueError(
-                            f"Expected per-feed batch size to be {expected}, got: {actual}"
-                        )
-
-                jax.tree.map(check_per_feed_batch, input_batch)
-                should_validate = False
-
             if "input_dispatcher" in self.children:
                 input_batch = self.input_dispatcher.logical_to_physical_batch(input_batch)
             yield input_batch

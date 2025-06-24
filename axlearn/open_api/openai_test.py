@@ -7,20 +7,19 @@ import json
 import unittest
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
-from axlearn.open_api.mock_utils import mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_openai_package()
+_MODULE_ROOT = "axlearn"
 
-_module_root = "axlearn"
-
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.common import ClientRateLimitError, Generator, ValidationError
-from axlearn.open_api.openai import OpenAIClient
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.common import ClientRateLimitError, Generator, ValidationError
+    from axlearn.open_api.openai import OpenAIClient
 
 # pylint: enable=wrong-import-position
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestOpenAIClient(unittest.IsolatedAsyncioTestCase):
     """Unit tests for class OpenAIClient."""
 
@@ -72,6 +71,7 @@ class TestOpenAIClient(unittest.IsolatedAsyncioTestCase):
         )
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
     """Unit test for async_generate_from_requests."""
 
@@ -87,7 +87,7 @@ class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
         self.open_api._clients = [MagicMock(), MagicMock()]
 
     @patch(
-        f"{_module_root}.open_api.common.Generator._async_generate_from_request",
+        f"{_MODULE_ROOT}.open_api.common.Generator._async_generate_from_request",
         new_callable=AsyncMock,
     )
     async def test_async_generate_from_requests(self, mock_async_generate_from_request):
@@ -113,7 +113,7 @@ class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
 
         # Check if async_generate_from_request is called correctly.
         calls = [
-            unittest.mock.call(client=ANY, request=ANY, **self.open_api.config.decode_parameters)
+            unittest.mock.call(request=ANY, **self.open_api.config.decode_parameters)
             for _ in range(len(mock_requests))
         ]
         mock_async_generate_from_request.assert_has_calls(
@@ -121,6 +121,7 @@ class TestOpenAIAsyncGenerateFromRequests(unittest.IsolatedAsyncioTestCase):
         )  # Ensure each request is processed
 
 
+@mock_utils.safe_mocks(mock_utils.mock_openai_package)
 class TestOpenAI(unittest.IsolatedAsyncioTestCase):
     """Unit tests for the OpenAIClient class focusing
     on the async_generate_from_request method."""
@@ -142,9 +143,7 @@ class TestOpenAI(unittest.IsolatedAsyncioTestCase):
     async def test_async_generate_from_request_success(self):
         """Test that async_generate_from_request returns a successful response."""
         self.open_api._clients[0].async_generate = AsyncMock(return_value="success response")
-        result = await self.open_api._async_generate_from_request(
-            self.open_api._clients[0], request=self.request
-        )
+        result = await self.open_api._async_generate_from_request(request=self.request)
         self.assertEqual(result["response"], "success response")
 
     async def test_async_generate_from_request_failure_with_retries(self):
@@ -152,9 +151,7 @@ class TestOpenAI(unittest.IsolatedAsyncioTestCase):
         self.open_api._clients[0].async_generate = AsyncMock(
             side_effect=[Exception("Error"), "success response"]
         )
-        result = await self.open_api._async_generate_from_request(
-            self.open_api._clients[0], request=self.request
-        )
+        result = await self.open_api._async_generate_from_request(request=self.request)
         self.assertEqual(result["response"], "success response")
         self.assertEqual(self.open_api._clients[0].async_generate.call_count, 2)
 
@@ -164,9 +161,7 @@ class TestOpenAI(unittest.IsolatedAsyncioTestCase):
             side_effect=[ClientRateLimitError("Rate limiting"), "success response"]
         )
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            result = await self.open_api._async_generate_from_request(
-                self.open_api._clients[0], request=self.request
-            )
+            result = await self.open_api._async_generate_from_request(request=self.request)
             mock_sleep.assert_awaited()
             self.assertEqual(result["response"], "success response")
 
@@ -185,15 +180,13 @@ class TestOpenAI(unittest.IsolatedAsyncioTestCase):
         open_api._clients[0].async_generate = AsyncMock(side_effect=[Exception("Error")])
         open_api._semaphore = asyncio.Semaphore(1)
         with self.assertRaises(ValueError):
-            await open_api._async_generate_from_request(open_api._clients[0], request=self.request)
+            await open_api._async_generate_from_request(request=self.request)
             self.assertEqual(open_api._clients[0].async_generate.call_count, 1)
 
     async def test_async_generate_from_request_exceeds_allowed_max_retries(self):
         """Test the behavior when the number of retries exceeds the max allowed."""
         self.open_api._clients[0].async_generate = AsyncMock(side_effect=Exception("Error"))
-        result = await self.open_api._async_generate_from_request(
-            self.open_api._clients[0], request=self.request
-        )
+        result = await self.open_api._async_generate_from_request(request=self.request)
         self.assertEqual(
             result["response"],
             json.dumps({"error": "Exceed max retries of non rate limiting error."}),

@@ -5,6 +5,7 @@ import jax
 import numpy as np
 from absl.testing import absltest
 
+from axlearn.common.test_utils import set_threefry_partitionable
 from axlearn.vision import samplers
 
 
@@ -178,6 +179,7 @@ class LabelSamplerTest(absltest.TestCase):
         )
         np.testing.assert_array_equal([14, 6], np.sum(samples.paddings, axis=-1))
 
+    @set_threefry_partitionable(False)  # TODO(markblee): update for threefry_partitionable True
     def test_exclude_ignore_and_paddings(self):
         labels = np.array([[1, 1, 0, 0, -1, 0, 1]])
         paddings = np.array([[True, False, False, False, False, True, False]])

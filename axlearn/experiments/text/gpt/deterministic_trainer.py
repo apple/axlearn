@@ -7,11 +7,12 @@ from typing import Callable
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.input_tf_data import tfds_dataset
 from axlearn.experiments.text.common import vocab
-from axlearn.experiments.text.gpt import honeycrisp
+from axlearn.experiments.text.gpt import gala, honeycrisp
 from axlearn.experiments.text.gpt.common import REPLACE_NEWLINES_WITH, tfds_input
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn, with_overrides
 
 _SENTENCEPIECE_MODEL_NAME = {
+    32 * 1024: "bpe_32k_c4.model",
     48 * 1024: "bpe_48k_honeycrisp.model",
 }
 
@@ -20,6 +21,13 @@ _TRAINING_DATASETS = {
         dataset_name="pajama_honeycrisp_15t_202408072230",
         vocab_size=48 * 1024,
         max_sequence_length=4096,
+        model_versions=(honeycrisp,),
+    ),
+    "pajama-2t-32k": dict(
+        dataset_name="pajama_gala_4k_2t_20241127",
+        vocab_size=32 * 1024,
+        max_sequence_length=4096,
+        model_versions=(gala,),
     ),
 }
 
@@ -72,11 +80,15 @@ def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     """Returns a mapping from trainer config names to TrainerConfigFn's."""
     config_map = {}
     for training_dataset_name, dataset_info in _TRAINING_DATASETS.items():
-        for model_name, trainer_config_fn in honeycrisp.trainer_configs(
-            _train_input_source_fn(**dataset_info), _eval_input_sources
-        ).items():
-            config_map[f"{model_name}-{training_dataset_name}"] = with_overrides(
-                trainer_config_fn,
-                save_input_iterator=True,
-            )
+        for model_version in dataset_info["model_versions"]:
+            for model_name, trainer_config_fn in model_version.trainer_configs(
+                _train_input_source_fn(**dataset_info), _eval_input_sources
+            ).items():
+                if "flash" not in model_name:
+                    # Don't create deterministic versions of non-flash configs.
+                    continue
+                config_map[f"{model_name}-{training_dataset_name}"] = with_overrides(
+                    trainer_config_fn,
+                    save_input_iterator=True,
+                )
     return config_map

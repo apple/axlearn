@@ -4,18 +4,18 @@
 import unittest
 from unittest.mock import patch
 
-from axlearn.open_api.mock_utils import mock_huggingface_hub_package, mock_openai_package
+from axlearn.open_api import mock_utils
 
-mock_huggingface_hub_package()
-mock_openai_package()
-
-# pylint: disable=wrong-import-position
-from axlearn.open_api.eval_set import mmau
-from axlearn.open_api.eval_set.mmau import _load_requests_from_local_dir
+# Mock openai to avoid unnecessary dependency on openai library.
+with mock_utils.mock_openai_package():
+    # pylint: disable=wrong-import-position
+    from axlearn.open_api.eval_set import mmau
+    from axlearn.open_api.eval_set.mmau import _load_requests_from_local_dir
 
 # pylint: enable=wrong-import-position
 
 
+@mock_utils.safe_mocks(mock_utils.mock_huggingface_hub_package)
 class TestMMAUEvalSet(unittest.TestCase):
     """Unit tests for mmau eval set."""
 

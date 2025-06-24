@@ -1,0 +1,109 @@
+# proto-file: config_proto/tuner_config.proto
+# proto-message: TunerConfigs
+#
+
+# Default A3+ tuning configuration.
+#
+# NOTE all max values are exclusive
+
+#
+# Tuner API v2 and above.
+#
+#
+# 2-node rail-aligned config
+communicator_configs {
+  node_range: {
+    min: 2
+    max: 3 # exclusive
+  }
+  rank_per_node_range: {
+    min: 1
+    max: 2 # exclusive
+  }
+  coll_configs: {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_SIMPLE num_channel: 2 }
+    }
+  }
+  # Configures the rest of collective types.
+  coll_configs: {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 2 }
+    }
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 65536
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE num_channel: 4 }
+    }
+  }
+}
+
+# 2-node 8 ranks per node case
+communicator_configs {
+  node_range: {
+    min: 2
+    max: 3 # exclusive
+  }
+  rank_per_node_range: {
+    min: 8 # only 8 gpus per node case
+  }
+  coll_configs: {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_SIMPLE }
+    }
+  }
+  # Configures the rest of collective types.
+  coll_configs: {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE }
+    }
+  }
+}
+# small scale(3-6 node) 8 ranks per node case
+communicator_configs {
+  node_range: {
+    min: 3
+    max: 7 # exclusive
+  }
+  rank_per_node_range: {
+    min: 8 # only 8 gpus per node case
+  }
+  coll_configs: {
+    coll_type: COLL_ALL_REDUCE
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+        max: 2097152
+      }
+      coll_tuning_spec: { algorithm: ALGO_TREE protocol: PROTO_SIMPLE }
+    }
+  }
+  # Configures the rest of collective types.
+  coll_configs: {
+    coll_type: COLL_DEFAULT
+    msg_size_tuning_rules {
+      per_rank_message_size: {
+        min: 0
+      }
+      coll_tuning_spec: { algorithm: ALGO_RING protocol: PROTO_SIMPLE }
+    }
+  }
+}

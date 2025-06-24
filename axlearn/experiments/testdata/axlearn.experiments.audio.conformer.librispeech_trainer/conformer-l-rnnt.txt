@@ -520,6 +520,7 @@ model.encoder.feature.frontend.pre_emphasis.coeff: 0.97
 model.encoder.feature.frontend.pre_emphasis.fn: 'axlearn.audio.frontend._pre_emphasis'
 model.encoder.feature.frontend.sample_rate: 16000
 model.encoder.feature.frontend.spectrogram.fn: 'axlearn.audio.frontend._log_mel_spectrogram'
+model.encoder.feature.frontend.spectrogram.lower_edge_hertz: 125.0
 model.encoder.feature.klass: 'axlearn.audio.encoder_asr.SpeechFeatureLayer'
 model.encoder.feature.output_dim: 512
 model.encoder.feature.subsampler.activation: 'nn.relu'

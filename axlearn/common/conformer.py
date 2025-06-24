@@ -17,8 +17,9 @@ https://arxiv.org/abs/2005.08100
 https://github.com/tensorflow/lingvo/blob/d2f1e1b3cccdac8f73ae20f86afb03560b1c176d/lingvo/core/conformer_layer.py
 """
 
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, Sequence, Union
 
+import chex
 from jax import numpy as jnp
 
 from axlearn.common.attention import (
@@ -27,6 +28,8 @@ from axlearn.common.attention import (
     TransformerAttentionLayer,
     TransformerFeedForwardLayer,
     scaled_hidden_dim,
+    set_attention_partition_specs,
+    set_feed_forward_partition_specs,
 )
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
@@ -41,7 +44,7 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module
 from axlearn.common.repeat import Repeat
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 
 class LConvLayer(BaseLayer):
@@ -123,6 +126,7 @@ class LConvLayer(BaseLayer):
             The output feature of shape [batch, seq_len, input_dim].
         """
         cfg = self.config
+        chex.assert_type(paddings, jnp.bool)
         x = self.linear1_norm(inputs)
         activations = [
             get_activation_fn(activation)(self.children[f"linear1_{i}"](x))
@@ -132,7 +136,7 @@ class LConvLayer(BaseLayer):
         x = activations[0] * activations[1]
         # We need to clear padded positions in 'x' before feeding into `conv` to ensure padding
         # doesn't affect results.
-        x = self.conv(x * jnp.expand_dims(1 - paddings, axis=-1))
+        x = self.conv(x * jnp.expand_dims(safe_not(paddings), axis=-1))
         x = self.conv_norm(x, paddings=paddings)
         x = get_activation_fn(cfg.conv_activation)(x)
         x = self.linear2(x)
@@ -310,6 +314,46 @@ class ConformerLayer(BaseLayer):
         x = self.ff_end(x)
         x = self.norm(x)
         return x
+
+
+def set_double_shard_weights_config(
+    cfg: ConformerLayer.Config,
+    *,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
+    fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
+    tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
+):
+    """Sets `cfg` to shard FFN and attention weights over both fsdp and tp axes.
+
+    Similar to set_double_shard_weights_config() in attention.py
+
+    Args:
+        cfg: A ConformerLayer layer config to apply sharding spec to.
+        batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
+        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
+        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+    """
+    set_attention_partition_specs(
+        cfg.self_attention.attention,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+    )
+    set_feed_forward_partition_specs(
+        cfg.ff_start,
+        batch_axis_names=batch_axis_names,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+        seq_axis_names=seq_axis_names,
+    )
+    set_feed_forward_partition_specs(
+        cfg.ff_end,
+        batch_axis_names=batch_axis_names,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+        seq_axis_names=seq_axis_names,
+    )
 
 
 class ConformerRepeat(Repeat):

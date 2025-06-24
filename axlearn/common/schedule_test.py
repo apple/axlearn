@@ -78,13 +78,30 @@ class ScheduleTest(parameterized.TestCase):
             else:
                 self.assertEqual(0.001, value)
 
+    def test_segment_wise(self):
+        s = jax.jit(schedule.segment_wise(segment_steps=[100, 100], segments=[0.1, 0.01, 0.001]))
+        for step in range(0, 301, 1):
+            value = s(step)
+            if step < 1:
+                self.assertEqual(0, value)
+            elif step <= 100:
+                self.assertEqual(0.1, value)
+            elif step <= 200:
+                self.assertEqual(0.01, value)
+            else:
+                self.assertEqual(0.001, value)
+
+    def test_segment_wise_errors(self):
+        with self.assertRaisesRegex(ValueError, "Unexpected length"):
+            schedule.segment_wise(segment_steps=[100, 100], segments=[0.1, 0.01])
+
     def test_decay_bias_correction(self):
         decay = 0.999
         s = schedule.decay_bias_correction(decay)
         samples = [3, 4, 1, 2, 4, 6, 8, 9]
         moment = 0
         for i, sample in enumerate(samples):
-            decay_i = s(i)
+            decay_i = s(i + 1)  # step starts from 1.
             moment = (1 - decay_i) * sample + decay_i * moment
             # Initially moment is an approximation of the mean value.
             self.assertAlmostEqual(moment, sum(samples[: i + 1]) / (i + 1), places=2)
@@ -125,12 +142,12 @@ class ScheduleTest(parameterized.TestCase):
             )
         )
         decay_begin_step = max(warmup_steps, decay_begin_step or 0)
-        for step in range(0, 301, 50):
+        for step in range(1, 301, 50):
             value = s(step)
-            if step < warmup_steps:
+            if step <= warmup_steps:
                 # Test linear warmup.
                 self.assertEqual(peak_lr * step / warmup_steps, value)
-            elif warmup_steps <= step <= decay_begin_step:
+            elif warmup_steps < step <= decay_begin_step:
                 # Test constant
                 self.assertEqual(peak_lr, value)
             else:
@@ -220,7 +237,8 @@ class ScheduleTest(parameterized.TestCase):
         fn = adafactor_decay_rate(step_offset=100)
         self.assertAlmostEqual(fn(1), 0)
         self.assertAlmostEqual(fn(100), 0)
-        self.assertAlmostEqual(fn(200), 1 - (101) ** (-0.8))
+        self.assertAlmostEqual(fn(101), 0)
+        self.assertAlmostEqual(fn(200), 1 - (100) ** (-0.8))
 
     def test_ema_schedule(self):
         warmup_steps = 5
