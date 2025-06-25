@@ -19,6 +19,7 @@ from jax.experimental import pallas as pl
 from axlearn.common.attention import compute_gqa_context, compute_gqa_logits, softmax_with_biases
 from axlearn.common.attention_bias import BaseAttentionBias, MaskFn, SegmentIdAttentionBias
 from axlearn.common.config import Configurable, config_class
+from axlearn.common.kv_cache.paged_kv_cache import reconstruct_kv
 from axlearn.common.layers import dropout
 from axlearn.common.utils import Nested, Tensor, validate_contains_paths
 
@@ -424,6 +425,7 @@ class ReferenceMHA(BaseFlashAttention):
         dropout_mask: Optional[Tensor] = None,
     ):
         # We apply the scale factor before the attention biases.
+        logging.info("Using %s", self.name())
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         value: Tensor = input_batch["value"]
@@ -510,33 +512,3 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
     if dtype == jnp.bfloat16:
         return jax.lax.Precision.DEFAULT
     raise ValueError(f"Unsupported dtype {dtype}")
-
-
-def reconstruct_kv(page_tables: Tensor, pages: Tensor) -> Tensor:
-    """Retrieve key/value from page tables given pages.
-
-    Ported from
-    https://github.com/jax-ml/jax/blob/1594d2f30fdbfebf693aba4a2b264e4a3e52acc6/tests/pallas/tpu_paged_attention_kernel_test.py#L62
-
-    Args:
-        page_tables: [batch_size, pages_per_sequence], specifying page indices.
-        pages: [num_kv_heads, total_num_pages, page_size, head_dim], k/v pages.
-
-    Returns:
-        Retrieved actual key / value of shape [batch_size, kv_seq_len, n_kv_heads, head_dim]
-    """
-
-    def fn(page_tables: Tensor, pages: Tensor) -> Tensor:
-        # page_tables: (pages_per_sequence)
-        # pages: (n_kv_heads, total_pages, page_size, head_dim)
-        head_dim = pages.shape[-1]
-        out = pages.at[page_tables].get(mode="fill", fill_value=0.0)
-        return out.reshape(-1, head_dim)
-
-    with_batch = jax.vmap(fn, (0, None), 0)
-    attn_fn = jax.vmap(with_batch, (None, 0), 1)
-
-    out = attn_fn(page_tables, pages)
-    out = jnp.swapaxes(out, 1, 2)
-
-    return out

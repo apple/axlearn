@@ -43,6 +43,7 @@ from jax._src.cudnn.fused_attention_stablehlo import (
 )
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
+from jax.experimental.pallas.triton import TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -66,16 +67,6 @@ from axlearn.common.flash_attention.common import (
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Nested, Tensor
-
-
-class NoPopDict(dict):
-    """A dict that doesn't delete after pop.
-
-    Used to workaround https://github.com/jax-ml/jax/issues/25714.
-    """
-
-    def pop(self, *args, **kwargs):
-        return super().get(*args, **kwargs)
 
 
 def _segment_mask(
@@ -415,7 +406,7 @@ def _flash_attention_impl(
         grid=grid_,
         in_specs=in_specs,
         out_specs=out_specs,
-        compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+        compiler_params=TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -744,7 +735,7 @@ def _mha_backward(
             name=kernel.__name__,
             debug=debug,
             interpret=interpret,
-            compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+            compiler_params=TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
         )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta, index_offset, index_offset_size)
 
     dk, dv = call_kernel(
