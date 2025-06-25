@@ -20,6 +20,7 @@ import jax.numpy as jnp
 from absl import logging
 from jax import lax
 from jax.experimental import pallas as pl
+from jax.experimental.pallas.triton import TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -29,7 +30,6 @@ from axlearn.common.attention_bias import (
     split,
 )
 from axlearn.common.flash_attention.common import BasePagedAttention, get_gpu_dot_precision
-from axlearn.common.flash_attention.gpu_attention import NoPopDict
 from axlearn.common.flash_attention.gpu_decoding import _get_sm_count as get_sm_count
 from axlearn.common.utils import Nested, Tensor
 
@@ -274,7 +274,7 @@ def _paged_attention_unbatched(
         ],
         debug=debug,
         interpret=interpret,
-        compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+        compiler_params=TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
         name=f"paged_attention_{block_h=}_{pages_per_compute_block=}",
     )(q_reshaped, key, value, page_tables, bias_reshaped, lengths)
 
