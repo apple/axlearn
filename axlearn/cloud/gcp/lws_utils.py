@@ -3,6 +3,7 @@
 """Utilities for building LeaderWorkerSet specs"""
 
 import logging
+import os
 from typing import Any, Optional, Sequence
 
 from absl import flags
@@ -15,6 +16,7 @@ from axlearn.cloud.common.utils import (
     parse_kv_flags,
 )
 from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import get_default_env
 from axlearn.common.compiler_options import infer_tpu_type
@@ -76,6 +78,9 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
             "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -123,6 +128,8 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         enable_tpu_smart_repair: bool = False
         priority_class: Optional[str] = None
         additional_node_networks: Optional[str] = None
+        # This config is made Optional for backwards compatibility
+        enable_pre_provisioner: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -204,15 +211,33 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
     def _build_pod(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        annotations, labels, selector = {}, {}, {}
-        if cfg.reservation:
-            logging.info("Using reservation=%s", cfg.reservation)
-            selector.update({"cloud.google.com/reservation-name": cfg.reservation})
-        if cfg.reservation_project:
-            selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
+        annotations, labels, selector, tolerations = {}, {}, {}, []
 
+        tier = os.environ.get("BASTION_TIER", None)
+        if tier == "0" and cfg.reservation is not None:
+            logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
+            selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+            if cfg.reservation_project:
+                selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
+            labels.update({"bastion-tier": "reserved"})
         if cfg.location_hint is not None:
             selector.update({"cloud.google.com/gke-location-hint": str(cfg.location_hint).lower()})
+        elif tier != "disabled":
+            logging.info("Found tier=%s in env. Using spot quota", tier)
+            selector.update({"cloud.google.com/gke-spot": "true"})
+            tolerations.append(
+                {
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "Equal",
+                    "value": "true",
+                    "effect": "NoSchedule",
+                }
+            )
+            labels.update({"bastion-tier": "spot"})
+
+        if cfg.enable_pre_provisioner:
+            # Used by pre-provisioner.
+            selector.update({PRE_PROVISIONER_LABEL: cfg.name})
 
         if cfg.enable_tpu_smart_repair:
             labels.update({"cloud.google.com/gke-tpu-auto-restart": "true"})
@@ -240,6 +265,7 @@ class TPULeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 "cloud.google.com/gke-tpu-topology": system.topology,
                 **selector,
             },
+            tolerations=tolerations,
             containers=[self._build_container()],
             serviceAccountName=cfg.service_account,
         )
