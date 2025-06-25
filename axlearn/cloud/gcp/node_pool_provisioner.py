@@ -16,6 +16,7 @@ from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import GKEJob
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
 from axlearn.cloud.gcp.node_pool import (
     construct_node_pool_name,
     create_node_pools,
@@ -87,14 +88,17 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
-        if not isinstance(builder_cfg, TPUReplicatedJob.Config):
-            raise TypeError(f"Expected {TPUReplicatedJob.Config}, got {type(builder_cfg)}.")
+        if not isinstance(builder_cfg, TPUReplicatedJob.Config, BaseLeaderWorkerTemplate.Config):
+            raise TypeError(
+                f"Expected {(TPUReplicatedJob.Config, BaseLeaderWorkerTemplate.Config)}, "
+                f"got {type(builder_cfg)}."
+            )
 
         acc_cfg = builder_cfg.accelerator
-        reservation = builder_cfg.reservation
-        location_hint = builder_cfg.location_hint
-        enable_tpu_ici_resiliency = builder_cfg.enable_tpu_ici_resiliency
-        enable_tpu_smart_repair = builder_cfg.enable_tpu_smart_repair
+        reservation = builder_cfg.inner.reservation
+        location_hint = builder_cfg.inner.location_hint
+        enable_tpu_ici_resiliency = builder_cfg.inner.enable_tpu_ici_resiliency
+        enable_tpu_smart_repair = builder_cfg.inner.enable_tpu_smart_repair
         tpu_type = infer_tpu_type(acc_cfg.instance_type)
         job_sys_property = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
         num_node_pools = acc_cfg.num_replicas
