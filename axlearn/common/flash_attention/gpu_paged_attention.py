@@ -17,6 +17,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+from absl import logging
 from jax import lax
 from jax.experimental import pallas as pl
 
@@ -150,21 +151,13 @@ def _paged_attention_kernel(
         m_ref[...] = m_i
 
 
-def _largest_divisor_leq(x: int, y: int):
-    if x < y:
-        x, y = y, x
-    root = int(math.isqrt(x))
-    best = None
-
-    for d in range(1, root + 1):
-        if x % d:
-            continue
-        big = x // d
-        if big < y:
-            return big
-        if d < y:
-            best = d
-    return best
+def _largest_divisor_leq(x: int, y: int) -> int:
+    """Find the largest divisor of x <= y."""
+    # Note: x and y are small. We can just iterate.
+    for i in range(y, 0, -1):
+        if x % i == 0:
+            return i
+    return 1
 
 
 def _paged_attention_unbatched(
@@ -203,7 +196,6 @@ def _paged_attention_unbatched(
     max_k_split = pl.cdiv(total_num_pages, pages_per_compute_block)
     k_splits = min(max_k_split, good_k_split_for_sm_util)
     k_splits = _largest_divisor_leq(pages_per_sequence, k_splits)
-    assert k_splits is not None
     assert (
         pages_per_sequence % k_splits == 0
     ), f"{pages_per_sequence=} must be divisible by {k_splits=}."
@@ -323,6 +315,7 @@ class GPUPagedAttention(BasePagedAttention):
             )
 
             return False
+        logging.info("Using %s", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
