@@ -7,13 +7,13 @@ name = "axlearn"
 version = "0.1.7"
 description = "AXLearn"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 # Production dependencies.
 # Minimal requirments for axlearn/common/config.py.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
+    "numpy>=1.26.4",  # verified with tensorflow 2.14 RaggedTensor
 ]
 
 [project.optional-dependencies]
@@ -135,7 +135,7 @@ dataflow = [
 gpu = [
     "triton>=2.1.0",
     "jax[cuda12]==0.6.2",
-    "nvidia-ml-py==12.560.30",
+    "nvidia-ml-py>=12.560.30",
 ]
 # Open API inference.
 open_api = [
@@ -172,11 +172,11 @@ axlearn = "axlearn.cli:main"
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39']
+target-version = ['py310', 'py312']
 
 [tool.ruff]
 line-length = 100
-target-version = 'py39'
+target-version = ['py310', 'py312']
 
 [tool.pytest.ini_options]
 addopts = "-rs -s -p no:warnings --junitxml=test-results/testing.xml"

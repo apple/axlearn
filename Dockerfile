@@ -128,7 +128,10 @@ RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/com
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-RUN uv pip install .[core,gpu] && uv cache clean
+# Install the custom TensorFlow wheel with CUDA 12.8 support
+COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/tensorrt-llm-testing/tensorflow:latest \
+    /wheels /wheels
+RUN uv pip install .[core,gpu] /wheels/tensorflow-2.19.0-cp312-cp312-linux_x86_64.whl && uv cache clean
 COPY . .
 
 ################################################################################
