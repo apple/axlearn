@@ -82,7 +82,12 @@ def build_sliding_window_mask(
     block_k: int,
     sliding_window_size: int,
 ) -> np.ndarray:
-    """Like build_mask(sliding_window_causal_mask(sliding_window_size)), but much faster."""
+    """Same as build_mask(sliding_window_causal_mask(sliding_window_size), **kwargs).
+
+    This function is much faster than `build_mask` for sliding window mask, because it doesn't need
+    to compute `mask_fn` on each block_q x block_k tile. Therefore, the speed up is proportional to
+    block_q x block_k.
+    """
     num_q_blocks = pl.cdiv(q_seq_len, block_q)
     num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
     block_mask_map = np.tri(num_q_blocks, num_kv_blocks, dtype=np.bool_)
