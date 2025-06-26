@@ -41,7 +41,7 @@ core = [
     "toml",  # for config management
     "typing-extensions==4.12.2",
     "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
-    "seqio==0.0.19",  # used for inputs
+    "seqio==0.0.18",  # used for inputs
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.10.2", # for AQT, param converter and adapter.
     "prefixed==0.9.0", # For formatting file sizes, param counts, etc.
@@ -90,26 +90,26 @@ gcp = [
     # when loading kube config, hence failing kubernetes client authentication.
     # See also https://github.com/kubernetes-client/python/issues/2333
     "kubernetes==31.0.0",
-    "google-api-core==2.25.1",
-    "google-api-python-client==2.172.0",
-    "google-auth==2.40.3",
+    "google-api-core==2.24.1",
+    "google-api-python-client==2.109.0",
+    "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
-    "google-cloud-storage==2.19.0",
-    "google-cloud-compute==1.31.0", # Needed for region discovery for CloudBuild API access.
-    "google-cloud-core==2.4.3",
-    "google-cloud-build==3.31.2",
+    "google-cloud-storage==2.16.0",
+    "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
+    "google-cloud-core==2.3.3",
+    "google-cloud-build==3.24.1",
     "ml-goodput-measurement==0.0.10",
     "pika==1.3.2",  # used by event queue
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
-    "tpu-info==0.3.0", # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
-    "prometheus-client==0.22.1", # For TPU monitoring from tpu-device-plugin.
+    "tpu-info==0.2.0", # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
+    "prometheus-client==0.21.0", # For TPU monitoring from tpu-device-plugin.
 ]
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
     "jax[tpu]==0.6.2",  # must be >=0.4.19 for compat with v5p.
-    "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
+    "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.,
     "libtpu==0.0.17",
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.

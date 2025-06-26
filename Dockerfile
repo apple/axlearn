@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
-ARG BASE_IMAGE=ubuntu:22.04
+ARG BASE_IMAGE=ubuntu:24.04
 
 FROM ${BASE_IMAGE} AS base
 
@@ -11,33 +11,11 @@ FROM ${BASE_IMAGE} AS base
 # https://docs.docker.com/build/building/best-practices/#apt-get
 RUN apt-get update && apt-get upgrade -y && apt-get install -y curl gnupg && apt clean -y
 
-# Build Python 3.12
-RUN mkdir -p /tmp/staging
-WORKDIR /tmp/staging
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get -y install build-essential zlib1g-dev libncurses5-dev libgdbm-dev \
-        libnss3-dev libssl-dev libreadline-dev libffi-dev pkg-config wget \
-        libbz2-dev liblzma-dev libsqlite3-dev uuid-dev libgdbm-compat-dev \
-        tk-dev libnsl-dev && \
-    apt clean -y && \
-    curl -o Python-3.12.11.tgz https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tgz && \
-    tar -xvf Python-3.12.11.tgz && \
-    ./Python-3.12.11/configure --enable-optimizations --with-ensurepip=install --prefix=/opt/python3.12 && \
-    make all -j8 && \
-    make altinstall -j8 && \
-    apt-get remove -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev \
-        libnss3-dev libssl-dev libreadline-dev libffi-dev pkg-config wget \
-        libbz2-dev liblzma-dev libsqlite3-dev uuid-dev libgdbm-compat-dev \
-        tk-dev libnsl-dev && \
-    apt-get autoremove -y && \
-    apt clean -y && \
-    rm -rf ./*
-
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && \
     apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen google-perftools google-cloud-cli && \
+      git screen google-perftools google-cloud-cli python3.12-venv && \
     apt clean -y
 
 # Setup.
@@ -49,7 +27,7 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN /opt/python3.12/bin/python3.12 -m venv $VIRTUAL_ENV
+RUN python3.12 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install --upgrade pip && pip install uv flit && pip cache purge
@@ -108,7 +86,7 @@ FROM base AS tpu
 
 ARG EXTRAS=
 
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
+ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/libtpu_releases.html,https://storage.googleapis.com/axlearn-wheels/wheels.html"
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
@@ -122,16 +100,13 @@ COPY . .
 FROM base AS gpu
 
 # TODO(markblee): Support extras.
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_cuda_releases.html,https://storage.googleapis.com/axlearn-wheels/wheels.html"
 # Enable the CUDA repository and install the required libraries (libnvrtc.so)
-RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
+RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-# Install the custom TensorFlow wheel with CUDA 12.8 support
-COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/tensorrt-llm-testing/tensorflow:latest \
-    /wheels /wheels
-RUN uv pip install .[core,gpu] /wheels/tensorflow-2.19.0-cp312-cp312-linux_x86_64.whl && uv cache clean
+RUN uv pip install .[core,gpu] && uv cache clean
 COPY . .
 
 ################################################################################
