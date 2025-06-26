@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import pytest
 from absl.testing import parameterized
 
-from axlearn.common.attention_bias import causal_mask, sliding_window_causal_mask
+from axlearn.common.attention_bias import causal_mask
 from axlearn.common.flash_attention.common import (
     BaseFlashAttention,
     BasePagedAttention,
@@ -103,9 +103,9 @@ class DecodingTest(TestCase):
             pytest.skip(reason="TPU kernel requires head dim divides 128 for double buffering.")
 
         softmax_scale = per_head_dim**-0.5
-        mask_fn = causal_mask
+        data_args = dict(mask_fn=causal_mask)
         if window_len > 0:
-            mask_fn = sliding_window_causal_mask(window_len)
+            data_args = dict(sliding_window_sz=window_len)
         cfg = dict(
             softmax_scale=softmax_scale,
             interpret=(jax.default_backend() == "cpu"),
@@ -118,11 +118,11 @@ class DecodingTest(TestCase):
             num_heads=num_heads,
             per_head_dim=per_head_dim,
             num_kv_heads=num_heads // kv_head_factor,
-            mask_fn=mask_fn,
             attention_bias_type=attention_bias_type,
             dtype=input_dtype,
             query_offset=seq_len - padding - 1,
             page_size=page_size,
+            **data_args,
         )
         input_batch = dict(
             query=q,
@@ -189,9 +189,9 @@ class DecodingTest(TestCase):
         self.assertEqual(num_heads % kv_head_factor, 0)
         assert num_heads % kv_head_factor == 0
         softmax_scale = per_head_dim**0.5
-        mask_fn = causal_mask
+        data_args = dict(mask_fn=causal_mask)
         if window_len > 0:
-            mask_fn = sliding_window_causal_mask(window_len)
+            data_args = dict(sliding_window_sz=window_len)
         cfg = dict(
             softmax_scale=softmax_scale,
             interpret=(jax.default_backend() == "cpu"),
@@ -204,10 +204,10 @@ class DecodingTest(TestCase):
             num_heads,
             per_head_dim,
             num_kv_heads=num_heads // kv_head_factor,
-            mask_fn=mask_fn,
             attention_bias_type=attention_bias_type,
             dtype=input_dtype,
             query_offset=seq_len - padding - 1,
+            **data_args,
         )
         input_batch = dict(
             query=q,
