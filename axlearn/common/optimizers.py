@@ -2007,7 +2007,7 @@ def adastar_optimizer(
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
         step_inc = optax.safe_int32_increment(state)
 
-        def _update2(u: Tensor, param: OptParam, weight_decay_scale: float):
+        def _update2(u: Tensor, param: OptParam, weight_decay_scale: float = 1.0):
             lr_scaled_updates = learning_rate * u
             updates_with_wd = lr_scaled_updates + weight_decay * param.value * weight_decay_scale
             schedule_scale = update_schedule(step_inc)
@@ -2021,16 +2021,26 @@ def adastar_optimizer(
                 )
             return -schedule_scale * updates_with_wd
 
-        weight_decay_scales = _weight_decay_scales(
-            params, per_param_scale=weight_decay_per_param_scale
-        )
-        updates2 = jax.tree.map(
-            lambda u, p, wds: None if u is None else _update2(u, param=p, weight_decay_scale=wds),
-            updates,
-            params,
-            weight_decay_scales,
-            is_leaf=lambda x: x is None,
-        )
+        if weight_decay_per_param_scale is not None:
+            weight_decay_scales = _weight_decay_scales(
+                params, per_param_scale=weight_decay_per_param_scale
+            )
+            updates2 = jax.tree.map(
+                lambda u, p, wds: None
+                if u is None
+                else _update2(u, param=p, weight_decay_scale=wds),
+                updates,
+                params,
+                weight_decay_scales,
+                is_leaf=lambda x: x is None,
+            )
+        else:
+            updates2 = jax.tree.map(
+                lambda u, p: None if u is None else _update2(u, param=p),
+                updates,
+                params,
+                is_leaf=lambda x: x is None,
+            )
         return updates2, step_inc
 
     # Stage 1.
