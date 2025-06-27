@@ -142,9 +142,7 @@ mesh_rules[1][1].config_modifiers[0].mesh_shape[4]: 1
 mesh_rules[1][1].config_modifiers[0].mesh_shape[5]: 1
 mesh_rules[1][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematSpecModifier'
 mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: False
-mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].fn: 'axlearn.common.utils.offload_dots_saveable'
-mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: 'pinned_host'
-mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_src: 'device'
+mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy']: 'axlearn.experiments.text.gpt.fuji.offload_dots_saveable_policy'
 mesh_rules[1][1].config_modifiers[2].grad_acc_steps: 4
 mesh_rules[1][1].config_modifiers[2].klass: 'axlearn.common.trainer_config_modifier.GradientAccumulationModifier'
 mesh_rules[1][1].config_modifiers[2].metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
@@ -159,9 +157,7 @@ mesh_rules[2][1].config_modifiers[0].mesh_shape[4]: 1
 mesh_rules[2][1].config_modifiers[0].mesh_shape[5]: 1
 mesh_rules[2][1].config_modifiers[1].klass: 'axlearn.common.trainer_config_modifier.RematSpecModifier'
 mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['prevent_cse']: False
-mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].fn: 'axlearn.common.utils.offload_dots_saveable'
-mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: 'pinned_host'
-mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_src: 'device'
+mesh_rules[2][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy']: 'axlearn.experiments.text.gpt.fuji.offload_dots_saveable_policy'
 mesh_rules[2][1].klass: 'axlearn.common.trainer_config_modifier.ChainConfigModifier'
 mesh_rules[3][0]: 'tpu-v5litepod-256-4'
 mesh_rules[3][1].config_modifiers[0].klass: 'axlearn.common.trainer_config_modifier.MeshShapeModifier'
