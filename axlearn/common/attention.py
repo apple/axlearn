@@ -1498,6 +1498,26 @@ class MultiheadAttention(BaseLayer):
         # If None, uses KVCache.default_config().
         kv_cache: Optional[BaseKVCache.Config] = None
 
+        # Sets whether key and value should be scaled before `extend_step` or after.
+        # If False or None, the following code sequence will apply.
+        # ```python
+        # q, k, v = i_proj(...)
+        # k, v = kv_cache.extend_step(k, v)
+        # k, v = scale_kv(k, v)
+        # ```
+        #
+        # If True, the following code sequence will apply.
+        # ```python
+        # q, k, v = i_proj(...)
+        # k, v = scale_kv(k, v)
+        # k, v = kv_cache.extend_step(k, v)
+        # ```
+        #
+        # Generally, scaling k and v before storing them into the KV cache (i.e. extend_step) leads
+        # to better inference performance. However, this might be incompatible to some KV sharing
+        # architectures that have different scaling factors for KV-shared layers.
+        scale_kv_before_cache_update: Optional[bool] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -1619,13 +1639,14 @@ class MultiheadAttention(BaseLayer):
             ValueError: If key & value are an invalid combination.
             ValueError: If `mode` is unsupported.
         """
+        cfg: MultiheadAttention.Config = self.config
+        has_external_kv_state = kv_state is not None
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 f"key and value must be both None or both set, key:{type(key)}, value:{type(value)}"
             )
-        if kv_state is not None:
-            # KV cache sharing branch.
+        if has_external_kv_state:  # KV cache sharing branch.
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
             # Note: self.i_proj must be QLinear, and KVCache must be no-op.
@@ -1645,15 +1666,36 @@ class MultiheadAttention(BaseLayer):
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
 
+        if cfg.scale_kv_before_cache_update:
+            if has_external_kv_state:
+                # TODO(hanzhi-zhou): Relax this restriction. Some KV sharing models support this if
+                # KV-shared layers don't have their own KV normalization layers.
+                raise ValueError(
+                    "KV sharing (e.g. when kv_state is not None) is not supported if "
+                    "scale_kv_before_cache_update=True."
+                )
+            q_proj = self._remat_name(q_proj, "q_proj")
+            k_proj = self._remat_name(k_proj, "k_proj")
+            v_proj = self._remat_name(v_proj, "v_proj")
+
+            # Scale query and key.
+            q_proj, k_proj = self._scale_qk(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                query_positions=query_positions,
+                key_positions=query_positions,
+            )
+
         if mode == ForwardMode.FORWARD:
             new_cached_states = dict()
-            key_positions = jnp.arange(k_proj.shape[1])[None]
-            kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
+            kv_state = KVState(
+                k_proj=k_proj, v_proj=v_proj, key_positions=jnp.arange(k_proj.shape[1])[None]
+            )
         elif mode in (ForwardMode.EXTEND_STEP, ForwardMode.INIT_STATES):
             assert cached_states is not None
             step_len = live_step_len if live_step_len is not None else q_proj.shape[1]
             new_cached_states = dict(time_step=time_step + step_len)
-            if kv_state is None:
+            if not has_external_kv_state:
                 # In prefill, init_states already called self.kv_cache.init_states.
                 with child_context("kv_cache_extend_step", module=self.kv_cache):
                     new_cached_states["kv_cache"], kv_cache_output = self.kv_cache.extend_step(
@@ -1664,7 +1706,6 @@ class MultiheadAttention(BaseLayer):
                         live_step_len=live_step_len,
                     )
                 if mode == ForwardMode.EXTEND_STEP:
-                    k_proj, v_proj, key_positions = kv_cache_output
                     kv_state = KVState(*kv_cache_output)
                 else:
                     # During prefill, q/k/v_proj are the same as in the forward pass.
@@ -1679,31 +1720,34 @@ class MultiheadAttention(BaseLayer):
                 # so that i_proj will use shared KV and update it.
                 #
                 # Here we pack the `k_proj` and `v_proj` (possibly updated by i_proj),
-                # and the same `key_positions`, into `kv_state`.
-                key_positions = kv_state.key_positions
-                kv_state = KVState(k_proj, v_proj, key_positions)
+                # leaving other fields unchanged.
+                kv_state = kv_state._replace(k_proj=k_proj, v_proj=v_proj)
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
 
-        q_proj = self._remat_name(q_proj, "q_proj")
-        k_proj = self._remat_name(k_proj, "k_proj")
-        v_proj = self._remat_name(v_proj, "v_proj")
-
-        # Scale query and key.
-        q_proj, k_proj = self._scale_qk(
-            q_proj=q_proj,
-            k_proj=k_proj,
-            query_positions=query_positions,
-            key_positions=key_positions,
-        )
+        if not cfg.scale_kv_before_cache_update:
+            q_proj = self._remat_name(q_proj, "q_proj")
+            k_proj = self._remat_name(kv_state.k_proj, "k_proj")
+            # Scale query and key.
+            q_proj, scaled_k_proj = self._scale_qk(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                query_positions=query_positions,
+                key_positions=kv_state.key_positions,
+            )
+            kv_state = kv_state._replace(
+                k_proj=scaled_k_proj, v_proj=self._remat_name(kv_state.v_proj, "v_proj")
+            )
 
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
-        self.vlog(3, "atten.k_proj=%s", k_proj.sum())
-        self.vlog(3, "atten.v_proj=%s", v_proj.sum())
+        self.vlog(3, "atten.k_proj=%s", kv_state.k_proj.sum())
+        self.vlog(3, "atten.v_proj=%s", kv_state.v_proj.sum())
         attention_logit_biases = as_attention_bias(attention_logit_biases)
         if self._mask_tpl is not None:
             attention_logit_biases += self._mask_tpl.instantiate(
-                target_positions=query_positions, source_positions=key_positions, dtype=q_proj.dtype
+                target_positions=query_positions,
+                source_positions=kv_state.key_positions,
+                dtype=q_proj.dtype,
             )
         if segment_ids is not None:
             assert mode == ForwardMode.FORWARD, "segment_ids must be None in inference."
@@ -1711,10 +1755,12 @@ class MultiheadAttention(BaseLayer):
         context, probs = self._compute_attention(
             mode=mode,
             q_proj=q_proj,
-            k_proj=k_proj,
-            v_proj=v_proj,
+            kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
         )
+        if not cfg.scale_kv_before_cache_update:
+            # This is to maintain the existing behavior of sending pre-scaled K to the next layer.
+            kv_state = kv_state._replace(k_proj=k_proj)
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
 
@@ -1747,8 +1793,7 @@ class MultiheadAttention(BaseLayer):
         *,
         mode: ForwardMode,
         q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
+        kv_state: KVState,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
@@ -1757,8 +1802,8 @@ class MultiheadAttention(BaseLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             q_proj: [batch_size, target_length, num_heads, per_head_dim].
-            k_proj: [batch_size, source_length, num_heads, per_head_dim].
-            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+            kv_state: The KV State dataclass containing k_proj, v_proj, key_positions, and optional
+                attributes such as page_indices.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
 
         Returns:
@@ -1766,6 +1811,11 @@ class MultiheadAttention(BaseLayer):
             and probs of shape [batch, num_heads, target_length, source_length].
         """
         del mode
+        # Not all subclasses have kv_cache.
+        if hasattr(self, "kv_cache"):
+            k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
+        else:
+            k_proj, v_proj = kv_state.k_proj, kv_state.v_proj
         # KV cache may cast them in lower precision.
         k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
@@ -2132,12 +2182,12 @@ class SigmoidAttention(MultiheadAttention):
         *,
         mode: ForwardMode,
         q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
+        kv_state: KVState,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
         del mode
+        k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
         cfg = self.config
         # KV cache may cast them in lower precision.
         k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)

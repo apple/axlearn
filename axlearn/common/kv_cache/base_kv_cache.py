@@ -18,11 +18,13 @@ class KVState(NamedTuple):
         k_proj: [batch, source_length, num_kv_heads, per_head_dim], Projected key tensor.
         v_proj: [batch, source_length, num_kv_heads, per_head_dim], Projected value tensor.
         key_positions: [batch, source_length], Positions of the keys in the batch.
+        page_indices: [batch, max_pages_per_request], optional page indices for batched requests.
     """
 
     k_proj: Tensor
     v_proj: Tensor
     key_positions: Tensor
+    page_indices: Optional[Tensor] = None
 
 
 class BaseKVCache(BaseLayer):
@@ -104,3 +106,13 @@ class BaseKVCache(BaseLayer):
                 KV cache, resulting in a length of `source_length`.
         """
         raise NotImplementedError(type(self))
+
+    @classmethod
+    def maybe_normalize_kv(cls, kv_state: KVState) -> tuple[Tensor, Tensor]:
+        """Normalize the KV shape if they're not already normalized.
+
+        Returns:
+            A tuple of [k_proj, v_proj], each with shape [batch_size, seq_len, kv_heads, head_dim].
+        """
+        assert kv_state.page_indices is None
+        return kv_state.k_proj, kv_state.v_proj

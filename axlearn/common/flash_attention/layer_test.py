@@ -2,9 +2,11 @@
 
 """Tests FlashAttention layers."""
 
-# pylint: disable=ungrouped-imports
 import math
 import os
+
+# pylint: disable=ungrouped-imports
+from typing import Optional
 from unittest import mock
 
 from jax.sharding import PartitionSpec
@@ -28,13 +30,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common.attention import (
-    Dropout,
-    GroupedQKVLinear,
-    GroupedQueryAttention,
-    KVCache,
-    QKVLinear,
-)
+from axlearn.common.attention import Dropout, GroupedQKVLinear, GroupedQueryAttention, QKVLinear
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     CompositeAttentionBias,
@@ -53,6 +49,8 @@ from axlearn.common.flash_attention.layer import (
     default_mha_dim_to_partition_spec,
     default_output_dim_to_partition_spec,
 )
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
@@ -114,6 +112,7 @@ def _prepare_layers(
     set_layer_bias_recursively=False,
     tpu_block_size=512,
     dropout_rate=0.0,
+    page_size=None,
 ):
     hidden_dim = num_heads * per_head_dim
     kwargs = dict(
@@ -130,18 +129,24 @@ def _prepare_layers(
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
 
     if inference:
+        # ref cfh only uses non-paged kv cache for simplicity
         ref_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
+    mha_spec = default_mha_dim_to_partition_spec(mesh_axis_names)
+    if page_size is not None:
+        model_axis = "model" if "model" in mesh_axis_names else None
+        mha_spec["nbph"] = PartitionSpec(model_axis, None, None, None)
     test_cfg = (
         FlashAttention.default_config()
         .set(**kwargs)
         .set(
-            mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
+            mha_dim_to_partition_spec=mha_spec,
             output_dim_to_partition_spec=default_output_dim_to_partition_spec(mesh_axis_names),
             tpu_block_size=tpu_block_size,
         )
     )
     if inference:
-        test_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
+        kv_cache_class = PagedKVCache if page_size is not None else KVCache
+        test_cfg.set(kv_cache=kv_cache_class.default_config().set(cache_dtype=jnp.bfloat16))
 
     ref_cfg.set(mask=mask)
     test_cfg.set(mask=mask)
@@ -374,6 +379,15 @@ class TestFlashAttention(TestCase):
             per_head_dim=128,
             mesh=(1, 2, 1, 2, 2),
             mesh_axis_names=("data", "seq", "expert", "fsdp", "model"),
+        ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=8,
+            num_kv_heads=None,
+            per_head_dim=128,
+            mesh=(1, 8),
+            mesh_axis_names=("data", "model"),
         ),
     ]
 
@@ -742,6 +756,7 @@ class TestFlashAttention(TestCase):
         _TEST_CONFIGS,
         attn_type=["causal", "sliding_window"],
         use_bias=[True, False],
+        page_size=[None, 16],
         dtype=[jnp.float32, jnp.bfloat16],
     )
     def test_extend_step(
@@ -755,16 +770,11 @@ class TestFlashAttention(TestCase):
         mesh_axis_names,
         attn_type,
         use_bias,
+        page_size: Optional[int],  # None means not using PagedKVCache
         dtype,
     ):
-        print(
-            f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
-            f"per_head_dim={per_head_dim}, mesh={mesh}, mesh_axis_names={mesh_axis_names}, \n"
-            f"attn_type={attn_type}"
-        )
-
         # Limit generation length to 16 to save test time.
-        seq_len = 16
+        seq_len = 16 if page_size is None else max(16, page_size)
 
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
@@ -772,6 +782,12 @@ class TestFlashAttention(TestCase):
         named_sharding = dict(zip(mesh_axis_names, mesh))
         if "seq" in named_sharding and named_sharding["seq"] > 1:
             pytest.skip(reason="Unsupported seq dim sharding for decoding.")
+        if (
+            math.prod(mesh) > 1
+            and page_size is not None
+            and math.prod(mesh) != named_sharding.get("model", 1)
+        ):
+            pytest.skip(reason="Paged attention only supports model sharding.")
 
         if attn_type == "full":
             mask = None
@@ -787,6 +803,7 @@ class TestFlashAttention(TestCase):
                 per_head_dim=per_head_dim,
                 mesh_axis_names=mesh_axis_names,
                 mask=mask,
+                page_size=page_size,
                 inference=True,
             )
 
@@ -847,15 +864,45 @@ class TestFlashAttention(TestCase):
             )
             self.assertIsNone(initial_output)
             self.assertIsNone(ref_inital_output)
-            if dtype is jnp.float32:
+            if page_size is not None:
+                # Populate the kv_pages and page_indices.
+                max_pages_each_request = (seq_len + page_size - 1) // page_size
+                # First page is the padding page.
+                num_global_pages = batch * max_pages_each_request + 1
+                page_indices = jnp.arange(1, num_global_pages).reshape(
+                    (batch, max_pages_each_request)
+                )
                 # Float32 inference still uses bfloat16 kv cache.
+                page_dtype = jnp.bfloat16 if dtype is jnp.float32 else dtype
                 for k in ["key", "value"]:
-                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
-                    self.assertEqual(initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                    initial_state["kv_cache"][k] = jnp.zeros(
+                        shape=[
+                            test_layer.i_proj.num_kv_heads,
+                            num_global_pages,
+                            page_size,
+                            per_head_dim,
+                        ],
+                        dtype=page_dtype,
+                    )
+                initial_state["kv_cache"]["page_indices"] = page_indices
+
+                if dtype is jnp.float32:
+                    # Float32 inference still uses bfloat16 kv cache.
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                else:
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
             else:
-                for k in ["key", "value"]:
-                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
-                    self.assertEqual(initial_state["kv_cache"][k].dtype, dtype)
+                if dtype is jnp.float32:
+                    # Float32 inference still uses bfloat16 kv cache.
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                        self.assertEqual(initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                else:
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
+                        self.assertEqual(initial_state["kv_cache"][k].dtype, dtype)
 
             # Prepare decoding inputs.
             inputs = dict(

@@ -439,6 +439,7 @@ class TPUPagedAttention(BasePagedAttention):
                 f"Head dimension has to be a multiple of 128 for double-buffering DMA, "
                 f"got {key.shape[-1]}"
             )
+        logging.info("Using %s", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
@@ -479,6 +480,8 @@ class TPUPagedAttention(BasePagedAttention):
             mask_fn = mask.mask
         lengths = mask.target_positions[:, -1] + 1
         lengths = jnp.broadcast_to(jnp.asarray(lengths), (batch_size,))
+        # Length going out-of-bound may trigger a device halt.
+        lengths = jnp.minimum(lengths, pages_per_sequence * page_size)
 
         bias = explicit_bias.value()
         bias_spec = None

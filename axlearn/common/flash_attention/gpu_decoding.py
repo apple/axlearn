@@ -49,6 +49,7 @@ from absl import logging
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import check_compute_capability
 from jax.experimental import pallas as pl
+from jax.experimental.pallas.triton import TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -58,7 +59,6 @@ from axlearn.common.attention_bias import (
     split,
 )
 from axlearn.common.flash_attention.common import BaseSingleStepDecoding, get_gpu_dot_precision
-from axlearn.common.flash_attention.gpu_attention import NoPopDict
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -250,7 +250,7 @@ def _decode_attn_unbatched(
             pl.BlockSpec((None, None, block_h), lambda kv_h, q_h, k: (kv_h, k, q_h)),  # l
             pl.BlockSpec((None, None, block_h), lambda kv_h, q_h, k: (kv_h, k, q_h)),  # m
         ],
-        compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+        compiler_params=TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
         out_shape=[
             jax.ShapeDtypeStruct(
                 shape=(num_kvheads, k_splits, *q.shape[1:]), dtype=jnp.float32
