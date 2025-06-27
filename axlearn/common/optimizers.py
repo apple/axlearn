@@ -2022,7 +2022,7 @@ def adastar_optimizer(
             params, per_param_scale=weight_decay_per_param_scale
         )
         updates2 = jax.tree.map(
-            lambda u, p, s: None if u is None else _update2(u, param=p, weight_decay_scale=s),
+            lambda u, p, wds: None if u is None else _update2(u, param=p, weight_decay_scale=wds),
             updates,
             params,
             weight_decay_scales,
