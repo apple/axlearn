@@ -1811,12 +1811,15 @@ def adastar_optimizer(
         weight_decay: (float) optional rate at which to decay weights. Note that weight_decay
             is decoupled from `learning_rate` but is subject to `update_schedule`. This is
             similar to adamw_adamw_decoupled_optimizer and different from adafactor_optimizer.
+        weight_decay_per_param_scale: (optional) a Callable that returns a tree with same structure
+            as the params PyTree, where each leaf is a float representing the per-param decay scale.
+            The scale will be applied on top of the global decay rate:
+            effective_decay_rate = global_decay_rate * per_param_scale.
+            If None, all leaves will have a scale of 1.
         update_schedule: an update schedule, which is applied to scale both the learning rate
             and the weight decay.
         verbosity: The verbosity level of summaries. When verbosity > 0, adds update norms and
             param-update correlation stats to summaries.
-        weight_decay_per_param_scale: The per-param decay scale. The scale
-            will be applied on top of the global decay rate.
 
     Returns:
         A PartitionedGradientTransformation representing an Adafactor optimizer.
