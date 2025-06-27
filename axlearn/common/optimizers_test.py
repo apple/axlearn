@@ -1380,6 +1380,12 @@ class OptimizerTest(TestCase):
                 eps=eps,
                 update_schedule=update_schedule,
                 weight_decay=weight_decay,
+                weight_decay_per_param_scale=config_for_function(per_param_scale_by_path).set(
+                    scale_by_path=[
+                        ("(.*/)?w", 0.1),
+                    ],
+                    description="weight_decay_scale",
+                ),
             ),
             test_opt=adastar_optimizer(
                 learning_rate=learning_rate,
@@ -1396,6 +1402,12 @@ class OptimizerTest(TestCase):
                 update_ema_debias=None,
                 weight_decay=weight_decay,
                 update_schedule=update_schedule,
+                weight_decay_per_param_scale=config_for_function(per_param_scale_by_path).set(
+                    scale_by_path=[
+                        ("(.*/)?w", 0.1),
+                    ],
+                    description="weight_decay_scale",
+                ),
             ),
         )
 
@@ -1439,6 +1451,12 @@ class OptimizerTest(TestCase):
                 weight_decay_scale_by_learning_rate_exponent=1.0,
                 weight_decay=weight_decay / learning_rate,
                 factored=False,
+                weight_decay_per_param_scale=config_for_function(per_param_scale_by_path).set(
+                    scale_by_path=[
+                        ("(.*/)?w", 0.1),
+                    ],
+                    description="weight_decay_scale",
+                ),
             ),
             test_opt=adastar_optimizer(
                 learning_rate=learning_rate,
@@ -1457,6 +1475,12 @@ class OptimizerTest(TestCase):
                 update_ema_debias=False,
                 weight_decay=weight_decay,
                 update_schedule=update_schedule,
+                weight_decay_per_param_scale=config_for_function(per_param_scale_by_path).set(
+                    scale_by_path=[
+                        ("(.*/)?w", 0.1),
+                    ],
+                    description="weight_decay_scale",
+                ),
             ),
         )
 
@@ -1467,7 +1491,7 @@ class OptimizerTest(TestCase):
                     w=OptParam(
                         value=jnp.asarray([[0, 10, 2, -3], [1, -3, 2, 4]], dtype=jnp.float32),
                         factorization_spec=None,
-                        weight_decay_scale=1.0,
+                        weight_decay_scale=None,
                     )
                 )
             )
@@ -1498,6 +1522,7 @@ class OptimizerTest(TestCase):
             ),
             clipping_threshold=1.0,
             weight_decay=3e-4,
+            weight_decay_per_param_scale=0.1,
         ),
         dict(
             learning_rate=0.01,
@@ -1509,6 +1534,7 @@ class OptimizerTest(TestCase):
             ),
             clipping_threshold=None,  # no update clipping.
             weight_decay=3e-4,
+            weight_decay_per_param_scale=0.3,
         ),
     )
     def test_adastar_summaries(
@@ -1520,6 +1546,7 @@ class OptimizerTest(TestCase):
         update_schedule,
         clipping_threshold,
         weight_decay,
+        weight_decay_per_param_scale,
     ):
         test_opt = adastar_optimizer(
             learning_rate=learning_rate,
@@ -1539,6 +1566,12 @@ class OptimizerTest(TestCase):
             weight_decay=weight_decay,
             update_schedule=update_schedule,
             verbosity=1,
+            weight_decay_per_param_scale=config_for_function(per_param_scale_by_path).set(
+                scale_by_path=[
+                    ("(.*/)?w", weight_decay_per_param_scale),
+                ],
+                description="weight_decay_scale",
+            ),
         )
 
         def _compute_updates(opt) -> Tensor:
@@ -1547,7 +1580,7 @@ class OptimizerTest(TestCase):
                     w=OptParam(
                         value=jnp.asarray([[0, 10, 2, -3], [1, -3, 2, 4]], dtype=jnp.float32),
                         factorization_spec=None,
-                        weight_decay_scale=1.0,
+                        weight_decay_scale=None,
                     )
                 )
             )
@@ -1591,6 +1624,10 @@ class OptimizerTest(TestCase):
                     *[f"layer/{i}/w/corr_param_smoothed_updates" for i in range(2)],
                 },
                 context.output_collection.summaries,
+            )
+            assert_allclose(
+                context.output_collection.summaries["weight_decay_rate"],
+                learning_rate * weight_decay * weight_decay_per_param_scale,
             )
 
     def test_covariance_and_rms(self):
