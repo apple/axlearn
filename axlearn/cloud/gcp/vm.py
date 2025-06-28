@@ -376,7 +376,7 @@ def list_disk_images(creds: Credentials) -> list[str]:
     )
     image_names = []
     for el in images["items"]:
-        if "ubuntu-2004" in el["name"] and "arm" not in el["name"]:
+        if "ubuntu-2204" in el["name"] and "arm" not in el["name"]:
             image_names.append(el["name"])
     return [f"projects/{image_project}/global/images/{name}" for name in image_names]
 
