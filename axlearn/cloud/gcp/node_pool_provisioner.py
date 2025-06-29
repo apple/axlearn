@@ -95,10 +95,10 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             )
 
         acc_cfg = builder_cfg.accelerator
-        reservation = builder_cfg.inner.reservation
-        location_hint = builder_cfg.inner.location_hint
-        enable_tpu_ici_resiliency = builder_cfg.inner.enable_tpu_ici_resiliency
-        enable_tpu_smart_repair = builder_cfg.inner.enable_tpu_smart_repair
+        reservation = builder_cfg.reservation
+        location_hint = builder_cfg.location_hint
+        enable_tpu_ici_resiliency = builder_cfg.enable_tpu_ici_resiliency
+        enable_tpu_smart_repair = builder_cfg.enable_tpu_smart_repair
         tpu_type = infer_tpu_type(acc_cfg.instance_type)
         job_sys_property = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
         num_node_pools = acc_cfg.num_replicas

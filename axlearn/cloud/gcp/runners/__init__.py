@@ -19,7 +19,6 @@ from axlearn.cloud.gcp.jobset_utils import (
     A4HighReplicatedJob,
     TPUReplicatedJob,
 )
-from axlearn.cloud.gcp.lws_utils import TPULeaderWorkerTemplate
 from axlearn.cloud.gcp.node_pool_provisioner import TPUNodePoolProvisioner
 from axlearn.cloud.gcp.pathways_utils import (
     PathwaysLeaderWorkerTemplate,
@@ -60,19 +59,12 @@ def named_runner_configs(
                 builder=PathwaysMultiheadReplicatedJob.default_config()
             ),
         ),
-        "gke_tpu_lws": LWSRunnerJob.default_config().set(
-            inner=GKELeaderWorkerSet.default_config().set(
-                builder=TPULeaderWorkerTemplate.default_config(),
-                annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
-                pre_provisioner=TPUNodePoolProvisioner.default_config(),
-            )
-        ),
         "gke_tpu_lws_pathways": LWSRunnerJob.default_config().set(
             inner=GKELeaderWorkerSet.default_config().set(
                 builder=PathwaysLeaderWorkerTemplate.default_config(),
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
-                pre_provisioner=TPUNodePoolProvisioner.default_config(),
-            )
+            ),
+            # pre_provisioner=TPUNodePoolProvisioner.default_config(),
         ),
     }
 

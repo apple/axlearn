@@ -985,7 +985,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         return dict(
             name=cfg.name,
-            image=self._bundler.id(cfg.name),
+            image="",
             command=["bash", "-c", cfg.command],
             imagePullPolicy="Always",
         )
