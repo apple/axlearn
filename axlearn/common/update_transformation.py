@@ -186,7 +186,7 @@ class ConditionalUpdateTransformation(UpdateTransformation):
             return new_updates.delta_updates, new_state
 
         def stop_transform(_):
-            return jax.tree_map(jnp.zeros_like, updates.delta_updates), prev_state
+            return jax.tree_util.tree_map(jnp.zeros_like, updates.delta_updates), prev_state
 
         # We do the computation regardless of the should_update value, so we could have
         # equally used jnp.where() here instead.
