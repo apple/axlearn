@@ -17,6 +17,7 @@ from axlearn.cloud.gcp.jobset_utils import (
 from axlearn.cloud.gcp.node_pool_provisioner import TPUNodePoolProvisioner
 from axlearn.cloud.gcp.pathways_utils import PathwaysMultiheadReplicatedJob, PathwaysReplicatedJob
 from axlearn.cloud.gcp.runners.base import BaseRunnerJob
+from axlearn.cloud.gcp.runners.dataflow import DataflowRunnerJob
 from axlearn.cloud.gcp.runners.gke import FlinkGKERunnerJob, GKERunnerJob
 from axlearn.common.config import config_for_function
 
@@ -50,6 +51,7 @@ def named_runner_configs(
                 builder=PathwaysMultiheadReplicatedJob.default_config()
             ),
         ),
+        "dataflow_tpu": DataflowRunnerJob.default_config().set(),
     }
 
     # Get the GPU runners from the helper function
