@@ -27,7 +27,14 @@ from axlearn.cloud.gcp.utils import (
     delete_k8s_leaderworkerset,
     delete_k8s_service,
 )
-from axlearn.common.config import REQUIRED, ConfigBase, ConfigOr, Required, config_class, maybe_instantiate
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigBase,
+    ConfigOr,
+    Required,
+    config_class,
+    maybe_instantiate,
+)
 from axlearn.common.utils import Nested
 
 
@@ -327,7 +334,7 @@ class GKELeaderWorkerSet(GCPJob):
         # This is not fully blocking; after the call returns there can be a delay before
         # everything is deleted.
         delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
-        delete_k8s_service(cfg.name+"-service", namespace=cfg.namespace)
+        delete_k8s_service(cfg.name + "-service", namespace=cfg.namespace)
 
     def _build_leaderworkerset(self) -> Nested[Any]:
         """
@@ -376,11 +383,13 @@ def exclusive_topology_annotations_leaderworkerset() -> dict:
     rules added that will ensure that they are fully scheduled on the same pod-slice
     node-pools.
     """
-    return {"leaderworkerset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
+    return {
+        "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology": "cloud.google.com/gke-nodepool"
+    }
 
 
-class Service():
-    """ Service interface"""
+class Service:
+    """Service interface"""
 
     @config_class
     class Config(ConfigBase):
@@ -390,7 +399,7 @@ class Service():
             namespace: The namespace to use within the k8s cluster.
             annotations: LeaderWorkerSet annotations
         """
-        
+
         name: Required[str] = None
         # protocol: Optional[str] = "TCP"
         # port: Required[str] = "8000"
@@ -406,22 +415,20 @@ class Service():
         super().set_defaults(fv)
         fv.set_default("name", fv.name or generate_job_name())
 
-
-    def __init__(self,cfg: Config):
-        #super().__init__(cfg)
-        cfg = cfg
-        # name = cfg.name+"-service"
+    def __init__(self, cfg: Config):
+        # super().__init__(cfg)
+        name = cfg.name + "-service"
         # protocol = "TCP"
         # port = "8000"
         # targetPort = "8000"
-
+        print(name)
         logging.info("service class init")
-        #self._bundler = bundler
+        # self._bundler = bundler
         # This instantiatees a builder for constructing replicated job specs, which will be managed
         # together under the leaderworkerset represented by this class.
         # Note the distinction from bundlers, which are responsible for bundling any code assets
         # required to run the job.
-        #self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)
+        # self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)
 
     def _delete(self):
         cfg: Service.Config = self.config
@@ -431,35 +438,36 @@ class Service():
 
         delete_k8s_service(cfg.name, namespace=cfg.namespace)
 
-    def _build_service(self,cfg) -> Nested[Any]:
+    def _build_service(self, cfg) -> Nested[Any]:
         """
         Builds a config for a Service
 
         Returns:
             A nested dict corresponding to a k8s Service config
         """
-        #cfg: Service.Config = self.config
+        # cfg: Service.Config = self.config
         logging.info("service class build")
-        #annotations = maybe_instantiate(self.cfg.annotations or {})
+        # annotations = maybe_instantiate(self.cfg.annotations or {})
 
-        return dict(     
-        metadata=k8s.client.V1ObjectMeta(name=cfg.name+"-service"),
-        spec=k8s.client.V1ServiceSpec(
-        selector={"app": cfg.name},
-        ports=[k8s.client.V1ServicePort(
-            protocol="TCP",
-            port=8000,
-            target_port=8000,
-        )],
-        type="ClusterIP"  # or "NodePort" or "LoadBalancer"
-    ))  
+        return dict(
+            metadata=k8s.client.V1ObjectMeta(name=cfg.name + "-service"),
+            spec=k8s.client.V1ServiceSpec(
+                selector={"app": cfg.name},
+                ports=[
+                    k8s.client.V1ServicePort(
+                        protocol="TCP",
+                        port=8000,
+                        target_port=8000,
+                    )
+                ],
+                type="ClusterIP",  # or "NodePort" or "LoadBalancer"
+            ),
+        )
 
-    def execute(self,cfg):
-        #cfg: Service.Config = self.config
+    def execute(self, cfg):
+        # cfg: Service.Config = self.config
         logging.info("service class execute")
         service = self._build_service(cfg)
         logging.info("Submitting service body=%s ", service)
         v1 = k8s.client.CoreV1Api()
         return v1.create_namespaced_service(namespace="default", body=service)
-        
-
