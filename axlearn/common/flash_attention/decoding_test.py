@@ -130,6 +130,7 @@ class DecodingTest(TestCase):
             value=v,
             page_tables=page_tables,
             bias=bias,
+            logit_sink=None,
         )
 
         fn = decoding_fn.default_config().set(**cfg).instantiate()
@@ -214,6 +215,7 @@ class DecodingTest(TestCase):
             key=k,
             value=v,
             bias=bias,
+            logit_sink=None,
         )
         fn = decoding_fn.default_config().set(**cfg).instantiate()
         is_supported = fn.is_supported(input_batch=input_batch)
@@ -230,9 +232,9 @@ class DecodingTest(TestCase):
         self.assertTrue(is_supported)
 
         o = fn(input_batch)
-        with jax.default_matmul_precision(
-            "highest"
-        ) if input_dtype is jnp.float32 else nullcontext():
+        with (
+            jax.default_matmul_precision("highest") if input_dtype is jnp.float32 else nullcontext()
+        ):
             o_ref = ReferenceMHA.default_config().set(**cfg).instantiate()(input_batch)
 
         if input_dtype not in (jnp.float16, jnp.bfloat16, jnp.float32):

@@ -184,12 +184,17 @@ class FlashAttention(GroupedQueryAttention):
         # an extend_step even if we aren't in decoding. A more robust method could instead directly
         # look at whether we need gradients or not, which could be done by adding a custom_vjp.
         is_decoding = mode == ForwardMode.EXTEND_STEP
+
+        # Get logit sink parameter if configured.
+        logit_sink = self.parameters.get("sink", None)
+
         jit_attn = flash_attention_implementation(
             backend=backend,
             query=q_proj,
             key=k_proj,
             value=v_proj,
             bias=attention_logit_biases,
+            logit_sink=logit_sink,
             softmax_scale=1.0,
             is_decoding=is_decoding,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
@@ -239,6 +244,8 @@ class FlashAttention(GroupedQueryAttention):
             "prng_key": PartitionSpec(None),
             # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
             "bias": attention_logit_biases_spec,
+            # Logit sink values of shape [num_heads].
+            "logit_sink": PartitionSpec("model") if logit_sink is not None else PartitionSpec(None),
             # PagedKVCache's page indices.
             "page_tables": cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None)),
         }
@@ -261,6 +268,7 @@ class FlashAttention(GroupedQueryAttention):
             "value": v_proj,
             "prng_key": self.dropout.get_prng_key(),
             "bias": attention_logit_biases,
+            "logit_sink": logit_sink,
             "page_tables": page_indices,
         }
         outputs = with_sharding_constraint(

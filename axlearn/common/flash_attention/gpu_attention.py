@@ -28,6 +28,7 @@ Compared to the implementation in the JAX repo, we made the following enhancemen
 * Support dropout.
 * Support arbitrary mask function like Pytorch FlexAttention.
 """
+
 import functools
 from collections.abc import Sequence
 from typing import Any, Optional, Tuple
@@ -843,9 +844,14 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
                     "cuDNN doesn't support sliding window with explicit bias "
                     "without folding it into explicit bias."
                 )
-
         if explicit_bias.has_value() and not self._allow_explicit_bias:
             return self._log_unsupported("we don't allow explicit bias at this stage.")
+
+        logit_sink = input_batch.get("logit_sink", None)
+        # TODO(c_lan): Add logit sink support.
+        if logit_sink is not None:
+            return self._log_unsupported("cuDNN doesn't support logit sink.")
+
         logging.info("Using %s.", self.name())
         return True
 
@@ -934,6 +940,11 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         # it by reducing the block size along sequence dim. Support it when needed.
         if head_dim > 128:
             return self._log_unsupported(f"{head_dim=} > 128")
+
+        logit_sink = input_batch.get("logit_sink", None)
+        if logit_sink is not None:
+            return self._log_unsupported("PallasGPUFlashAttention doesn't support logit sink.")
+
         logging.info("Using %s.", self.name())
         return True
 
