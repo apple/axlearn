@@ -64,7 +64,7 @@ def named_runner_configs(
                 builder=PathwaysLeaderWorkerTemplate.default_config(),
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
             ),
-            # pre_provisioner=TPUNodePoolProvisioner.default_config(),
+            pre_provisioner=TPUNodePoolProvisioner.default_config(),
         ),
     }
 
