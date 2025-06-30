@@ -847,7 +847,6 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
     def _build_pod(self) -> dict:
         cfg: PathwaysLeaderWorkerTemplate.Config = self.config
-        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, tolerations = {}, {}, {}, []
 
         tier = os.environ.get("BASTION_TIER", None)
@@ -898,8 +897,6 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         spec = dict(
             nodeSelector={
-                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                "cloud.google.com/gke-tpu-topology": system.topology,
                 **selector,
             },
             tolerations=tolerations,
@@ -931,6 +928,13 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pod_spec = worker_pod.get("spec", {})
 
         pod_spec["containers"] = [self._build_pathways_worker_container()]
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        pod_spec["nodeSelector"].update(
+            {
+                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                "cloud.google.com/gke-tpu-topology": system.topology,
+            }
+        )
 
         worker_pod["spec"] = pod_spec
 
@@ -1000,6 +1004,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pod_spec["hostNetwork"] = True
         pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
 
+        pod_spec["nodeSelector"].update(
+            {
+                _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+            }
+        )
+
         pod_spec["containers"] = [
             self._build_head_container(),
             self._build_pathways_proxy_container(),
@@ -1012,6 +1022,10 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
     def __call__(self) -> Nested[Any]:
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
+            subGroupPolicy=dict(
+                subGroupSize=system.vms_per_slice,
+                subGroupPolicyType="LeaderExcluded",
+            ),
             size=system.vms_per_slice + 1,
             leaderTemplate=self.build_leader_pod(),
             workerTemplate=self.build_worker_pod(),
