@@ -169,7 +169,7 @@ class LengthStopingCondition:
 # StackedTransformer is faster when doing inference.
 # Note: you can change the number of layers in fuji.py.
 model_cfg = get_trainer_kwargs(
-    "3B", vocab_size=32000, version=Version.V3, flash_attention=False, use_stacked=True
+    "test", vocab_size=32000, version=Version.V3, flash_attention=False, use_stacked=True
 )["model_cfg"]
 # Groupde QKV linear has better sharding support.
 model_cfg = replace_layer_config_recursively(
@@ -195,8 +195,8 @@ print(inference_runner_cfg)
 inference_runner = inference_runner_cfg.instantiate(parent=None)
 prng_key = jax.random.PRNGKey(0)
 stopping_cond = LengthStopingCondition(3)
-time_step = jnp.zeros((32,), dtype=jnp.int32)
-input_tokens = jnp.zeros((32, 4096), dtype=jnp.int32)
+time_step = jnp.zeros((8,), dtype=jnp.int32)
+input_tokens = jnp.zeros((8, 512), dtype=jnp.int32)
 
 
 @jax.jit
@@ -228,23 +228,41 @@ def jit_decode(state, cached_states, input_tokens):
     return init_states, init_outputs
 
 
-with inference_runner._mesh:
-    params = inference_runner._inference_runner_state.model["decoder"]
-    forward_lowered = jit_forward.lower(params, time_step, input_tokens)
-    # forward_compiled = forward_lowered.compile()
+def export_stablehlo():
+    with inference_runner._mesh:
+        params = inference_runner._inference_runner_state.model["decoder"]
+        forward_lowered = jit_forward.lower(params, time_step, input_tokens)
 
-    (init_states, _) = jit_forward.eval_shape(params, time_step, input_tokens)
+        (init_states, _) = jit_forward.eval_shape(params, time_step, input_tokens)
 
-    with open("prefill.stablehlo", "w") as f:
-        f.write(forward_lowered.as_text("stablehlo", debug_info=True))
+        with open("prefill.stablehlo", "w") as f:
+            f.write(forward_lowered.as_text("stablehlo", debug_info=True))
 
-    cached_states = {
-        "transformer_state": init_states["transformer_state"],
-        "time_step": time_step,
-        # extend_step needs cached_inputs to compute self_attention_biases.
-        "input_ids": input_tokens,
-    }
+        cached_states = {
+            "transformer_state": init_states["transformer_state"],
+            "time_step": time_step,
+            # extend_step needs cached_inputs to compute self_attention_biases.
+            "input_ids": input_tokens,
+        }
 
-    decode_lowered = jit_decode.lower(params, cached_states, jnp.zeros((32, 1), dtype=jnp.int32))
-    with open("decode.stablehlo", "w") as f:
-        f.write(decode_lowered.as_text("stablehlo", debug_info=True))
+        decode_lowered = jit_decode.lower(params, cached_states, jnp.zeros((8, 1), dtype=jnp.int32))
+        with open("decode.stablehlo", "w") as f:
+            f.write(decode_lowered.as_text("stablehlo", debug_info=True))
+
+
+def run():
+    with inference_runner._mesh:
+        params = inference_runner._inference_runner_state.model["decoder"]
+        (init_states, _) = jit_forward(params, time_step, input_tokens)
+        cached_states = {
+            "transformer_state": init_states["transformer_state"],
+            "time_step": time_step,
+            # extend_step needs cached_inputs to compute self_attention_biases.
+            "input_ids": input_tokens,
+        }
+        result = jit_decode(params, cached_states, jnp.zeros((8, 1), dtype=jnp.int32))
+        print(result)
+
+
+if __name__ == "__main__":
+    run()
