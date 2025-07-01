@@ -89,7 +89,9 @@ ARG EXTRAS=
 ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/libtpu_releases.html,https://storage.googleapis.com/axlearn-wheels/wheels.html"
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
-RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
+RUN uv pip install --prerelease=allow .[core,tpu] && uv pip uninstall tensorflow && \
+  uv pip install --index-url https://storage.googleapis.com/axlearn-wheels/wheels.html tensorflow && \
+  uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
 
@@ -106,7 +108,9 @@ RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/com
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-RUN uv pip install .[core,gpu] && uv cache clean
+RUN uv pip install .[core,gpu] && uv pip uninstall tensorflow && \
+  uv pip install --index-url https://storage.googleapis.com/axlearn-wheels/wheels.html tensorflow && \
+  uv cache clean
 COPY . .
 
 ################################################################################
