@@ -951,6 +951,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 f"--server_port={_PATHWAYS_PROXY_PORT}",
                 f"--gcs_scratch_location={staging_location}",
             ],
+            env=[{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}],
             ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
         )
 
