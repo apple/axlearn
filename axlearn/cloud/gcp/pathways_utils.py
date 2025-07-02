@@ -24,14 +24,13 @@ from axlearn.cloud.gcp.jobset_utils import (
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
-from axlearn.cloud.gcp.tpu import infer_tpu_workers, get_default_env
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import (
     default_xla_options,
     infer_tpu_type,
     xla_flags_from_options,
 )
-from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -999,6 +998,10 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 {
                     "name": "JAX_PLATFORMS",
                     "value": "proxy",
+                },
+                {
+                    "name": "JAX_BACKEND_PLATFORMS",
+                    "value": f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
                 },
             ],
             imagePullPolicy="Always",
