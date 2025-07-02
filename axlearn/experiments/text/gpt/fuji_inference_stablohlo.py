@@ -4,7 +4,7 @@
 
 import functools
 import zlib
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -13,7 +13,9 @@ from axlearn.common.attention import (
     BaseLayer,
     FusedGroupedQKVLinear,
     GroupedQKVLinear,
+    KVCache,
     Module,
+    MultiheadAttention,
     TransformerFeedForwardLayer,
     TransformerLayer,
     set_attention_partition_specs,
@@ -26,7 +28,21 @@ from axlearn.common.utils import Tensor
 from axlearn.experiments.text.gpt.common import MESH_AXIS_NAMES, mesh_shape_from_axes
 from axlearn.experiments.text.gpt.fuji import Version, get_trainer_kwargs
 
-# jax.distributed.initialize(coordinator_address="127.0.0.1:1123", num_processes=1, process_id=0)
+
+def set_attribute_recursively(
+    cfg: ConfigBase, *, target_cls: Module, attributes: dict[str, Any]
+) -> ConfigBase:
+    if isinstance(cfg, target_cls.Config):
+        raise ValueError("The target cls cannot be the root of the input model config.")
+
+    def enter_fn(_, child, default_kv):
+        if isinstance(child, target_cls.Config):
+            for k, v in attributes.items():
+                setattr(child, k, v)
+        return default_kv
+
+    cfg.visit(visit_fn=lambda k, v: None, enter_fn=enter_fn)
+    return cfg
 
 
 def set_inference_partition_spec(cfg: ConfigBase) -> ConfigBase:
@@ -180,12 +196,19 @@ model_cfg = replace_layer_config_recursively(
 model_cfg = set_inference_partition_spec(model_cfg)
 model_cfg.decoder.emb.token_emb.param_partition_spec = ("model", ("expert", "fsdp", "seq"))
 
+inference_dtype = jnp.float32
+
+model_cfg = set_attribute_recursively(
+    model_cfg,
+    target_cls=MultiheadAttention,
+    attributes=dict(kv_cache=KVCache.default_config().set(cache_dtype=inference_dtype)),
+)
 
 inference_runner_cfg = InferenceRunner.default_config().set(
     mesh_shape=mesh_shape_from_axes(model=1),
     mesh_axis_names=MESH_AXIS_NAMES,
     model=model_cfg,
-    inference_dtype=jnp.float32,
+    inference_dtype=inference_dtype,
     input_batch_partition_spec=DataPartitionType.REPLICATED,
     init_state_builder=DummyBuilder.default_config().set(dir="dummy"),
     name="runner",
@@ -265,4 +288,5 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    # run()
+    export_stablehlo()
