@@ -991,6 +991,16 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             name=cfg.name,
             image=self._bundler.id(cfg.name),
             command=["bash", "-c", cfg.command],
+            env=[
+                {
+                    "name": "XCLOUD_ENVIRONMENT",
+                    "value": "GCP",
+                },
+                {
+                    "name": "JAX_PLATFORMS",
+                    "value": "proxy",
+                },
+            ],
             imagePullPolicy="Always",
         )
 
@@ -1004,11 +1014,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pod_spec["hostNetwork"] = True
         pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
 
-        pod_spec["nodeSelector"].update(
-            {
-                _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
-            }
-        )
+        pod_spec["nodeSelector"] = {
+            _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+        }
 
         pod_spec["containers"] = [
             self._build_head_container(),
