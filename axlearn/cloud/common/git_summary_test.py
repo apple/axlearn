@@ -70,9 +70,9 @@ class GitSummaryTest(parameterized.TestCase):
                 + (
                     (
                         f"&& git remote add origin {remote} "
-                        "&& git config branch.$(git branch --show-current).remote origin "
-                        "&& git config branch.$(git branch --show-current).merge refs/heads/"
-                        "$(git branch --show-current)"
+                        "&& git config branch.$(git rev-parse --abbrev-ref HEAD).remote origin "
+                        "&& git config branch.$(git rev-parse --abbrev-ref HEAD).merge refs/heads/"
+                        "$(git rev-parse --abbrev-ref HEAD)"
                     )
                     if remote
                     else ""
