@@ -981,6 +981,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 f"--instance_type={pathways_tpu_version}:{system.topology}",
                 f"--gcs_scratch_location={staging_location}",
             ],
+            ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
         )
 
     def _build_head_container(self) -> dict:
