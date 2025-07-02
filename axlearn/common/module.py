@@ -597,6 +597,8 @@ def _wrap_method_with_auto_child_context(*, method_fn: Callable, method_name: st
         try:
             return method_fn_in_context(self, *args, **kwargs)
         except TypeError as e:
+            # pylint: disable-next=logging-not-lazy
+            logging.warning("!!!!!" + traceback.format_exc())
             # Make it easier to see what call triggered the error in CI.
             # When running in an environment like TPUs where stack summaries are available,
             # this is unecessary and we would have slightly cleaner summaries without it.
