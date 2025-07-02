@@ -384,7 +384,7 @@ def get_trainer_kwargs(
             max_sequence_length=max_sequence_length,
             train_batch_size=gbs,
             max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_shape=mesh_shape_from_axes(data=1, fsdp=256),
             mesh_rules=(
                 # Step time:
                 # v1 on tpu-v4-1024 (512 chips):            3.03s
@@ -637,6 +637,9 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "70B":
+        import jax
+
+        gbs = len(jax.devices())
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
@@ -652,9 +655,9 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=gbs,#train_batch_size,
             max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_shape=mesh_shape_from_axes(data=1, fsdp=256),
             mesh_rules=(
                 # TPU V5e maximum per device batch is 1.
                 # with all activation offloading, HBM usage: 14.6GB/chip.
@@ -683,7 +686,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
