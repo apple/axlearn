@@ -1000,8 +1000,8 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                     "value": "proxy",
                 },
                 {
-                    "name": "JAX_BACKEND_PLATFORMS",
-                    "value": f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
+                    "name": "JAX_BACKEND_TARGET",
+                    "value": f"grpc://$(LWS_LEADER_ADDRESS):{_PATHWAYS_PROXY_PORT}",
                 },
             ],
             imagePullPolicy="Always",
