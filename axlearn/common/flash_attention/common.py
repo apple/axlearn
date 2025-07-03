@@ -74,6 +74,30 @@ def build_mask(
         return pool.submit(worker).result()
 
 
+def build_sliding_window_mask(
+    *,
+    q_seq_len: int,
+    kv_seq_len: int,
+    block_q: int,
+    block_k: int,
+    sliding_window_size: int,
+) -> np.ndarray:
+    """Same as build_mask(sliding_window_causal_mask(sliding_window_size), **kwargs).
+
+    This function is much faster than `build_mask` for sliding window mask, because it doesn't need
+    to compute `mask_fn` on each block_q x block_k tile. Therefore, the speed up is proportional to
+    block_q x block_k.
+    """
+    num_q_blocks = pl.cdiv(q_seq_len, block_q)
+    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
+    block_mask_map = np.tri(num_q_blocks, num_kv_blocks, dtype=np.bool_)
+    for i in range(0, q_seq_len, block_q):
+        for j in range(0, kv_seq_len, block_k):
+            if i - (j + block_k - 1) > sliding_window_size:
+                block_mask_map[i // block_q, j // block_k] = False
+    return block_mask_map
+
+
 class KVOffsetInfo(NamedTuple):
     """Records the block index of non-empty KV blocks.
 
