@@ -1,5 +1,5 @@
 # ML Goodput Monitoring
-AxLearn supports automatic measurement and upload of a wide range of workload
+AXLearn supports automatic measurement and upload of a wide range of workload
 metrics using the **ML Goodput Measurement** library. This includes:
 * **Goodput** and **Badput Breakdown**
 * **Step Metrics** (Ideal Step Time, Step Time Deviation, Last Productive Step etc.)
@@ -97,7 +97,7 @@ Goodput/Badput metrics of a previous workload along with your current workload.
 
 ### How to Monitor Cumulative Goodput Metrics
 
-To enable Goodput recording and monitoring on AxLearn, follow the example below.
+To enable Goodput recording and monitoring on AXLearn, follow the example below.
 
 
 ```bash
@@ -133,11 +133,11 @@ axlearn gcp launch run --instance_type=tpu-v5litepod-16 \
 ### Visualize on Tensorboard
 
 1. Requires packages: `tensorboard-plugin-profile`, `tensorflow` and `tensorboard`.
-2. Use the Tensorboard URL on AxLearn logs to view all metrics in one location.
+2. Use the Tensorboard URL on AXLearn logs to view all metrics in one location.
 
 ### Enabling Google Cloud Monitoring
 
-By default, when Goodput monitoring is enabled via the recorder, AxLearn automatically pushes metrics to Google Cloud Monitoring.
+By default, when Goodput monitoring is enabled via the recorder, AXLearn automatically pushes metrics to Google Cloud Monitoring.
 
 -   **Cumulative Metrics** are enabled by default when you specify the `recorder_type`.
     To disable this, you would need to set `enable_gcp_goodput_metrics` to `False` in

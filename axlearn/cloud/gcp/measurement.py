@@ -4,7 +4,7 @@
 
     Example:
 
-    # Enable Goodput when launching an AxLearn training job
+    # Enable Goodput when launching an AXLearn training job
     axlearn gcp launch run --instance_type=tpu-v5litepod-16 \
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
@@ -13,7 +13,6 @@
         --recorder_spec=name=my-run-with-goodput \
         --recorder_spec=upload_dir=my-output-directory/summaries \
         --recorder_spec=upload_interval=30 \
-        --recorder_spec=enable_rolling_window_goodput_monitoring=True \
         --recorder_spec=rolling_window_size=86400,259200,432000
 
 """
@@ -43,22 +42,13 @@ class GoodputRecorder(measurement.Recorder):
         Attributes:
             upload_dir: Directory to store metrics for the monitor.
             upload_interval: Time interval (seconds) for monitoring uploads.
-            enable_gcp_goodput_metrics: Whether to upload metrics to Google Cloud Monitoring.
-            enable_pathways_goodput: Whether to enable goodput calculations specific to Pathways.
-            include_badput_breakdown: Whether to include a detailed breakdown of badput sources.
-            enable_rolling_window_goodput_monitoring: Enables goodput/badput monitoring over
-                rolling time windows.
             rolling_window_size: A sequence of integers defining the rolling window sizes in
                 seconds.
         """
 
         upload_dir: Required[str] = REQUIRED
         upload_interval: Required[int] = REQUIRED
-        enable_gcp_goodput_metrics: bool = True
-        enable_pathways_goodput: bool = False
-        include_badput_breakdown: bool = True
-        enable_rolling_window_goodput_monitoring: bool = False
-        rolling_window_size: Sequence[int] = ()
+        rolling_window_size: Sequence[int] = []
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues) -> "GoodputRecorder":
@@ -70,15 +60,8 @@ class GoodputRecorder(measurement.Recorder):
         - upload_dir: The directory to write Tensorboard data to.
         - upload_interval: The time interval in seconds at which to query and upload data
             to Tensorboard.
-        - enable_rolling_window_goodput_monitoring: Whether to enable rolling window Goodput
-            monitoring.
         - rolling_window_size: Comma-separated list of integers representing rolling window
             sizes in seconds.
-        - enable_gcp_goodput_metrics: Whether to upload Goodput metrics to GCM.
-        - enable_pathways_goodput: Whether to enable Pathways-specific Goodput
-        calculations.
-        - include_badput_breakdown: Whether to include a detailed breakdown of
-            badput events in the monitoring.
         """
         cfg: measurement.Recorder.Config = cls.default_config()
         parsed_flags = parse_kv_flags(fv.recorder_spec, delimiter="=")
@@ -90,8 +73,7 @@ class GoodputRecorder(measurement.Recorder):
             parsed_flags["rolling_window_size"] = [
                 int(x) for x in parsed_flags["rolling_window_size"].split(",")
             ]
-        cfg = maybe_set_config(cfg, **parsed_flags)
-        return cfg.instantiate()
+        return maybe_set_config(cfg, **parsed_flags).instantiate()
 
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -121,9 +103,9 @@ class GoodputRecorder(measurement.Recorder):
         try:
             if record_event_start:
                 record_event_start(*args, **kwargs)
-        except (TypeError, ValueError, RuntimeError) as e:
+        except RuntimeError as e:
             logging.warning(
-                "Failed to record start of event %s. Error: %s", event.name, e, exc_info=True
+                "Failed to record start of event %s. Error: %s", event.value, e, exc_info=True
             )
 
         try:
@@ -132,9 +114,9 @@ class GoodputRecorder(measurement.Recorder):
             try:
                 if record_event_end:
                     record_event_end(*args, **kwargs)
-            except (TypeError, ValueError, RuntimeError) as e:
+            except RuntimeError as e:
                 logging.warning(
-                    "Failed to record end of event %s. Error: %s", event.name, e, exc_info=True
+                    "Failed to record end of event %s. Error: %s", event.value, e, exc_info=True
                 )
 
     @contextlib.contextmanager
@@ -157,8 +139,8 @@ class GoodputRecorder(measurement.Recorder):
             return
         try:
             if self._monitor is None:
-                gcp_options = goodput_monitoring.GCPOptions(
-                    enable_gcp_goodput_metrics=self.config.enable_gcp_goodput_metrics,
+                pathways_enabled = (
+                    hasattr(flags.FLAGS, "jax_backend") and flags.FLAGS.jax_backend == "proxy"
                 )
                 self._monitor = goodput_monitoring.GoodputMonitor(
                     job_name=self.config.name,
@@ -166,9 +148,8 @@ class GoodputRecorder(measurement.Recorder):
                     tensorboard_dir=self.config.upload_dir,
                     upload_interval=self.config.upload_interval,
                     monitoring_enabled=True,
-                    pathway_enabled=self.config.enable_pathways_goodput,
-                    include_badput_breakdown=self.config.include_badput_breakdown,
-                    gcp_options=gcp_options,
+                    pathway_enabled=pathways_enabled,
+                    include_badput_breakdown=True,
                 )
 
             self._monitor.start_goodput_uploader(*args, **kwargs)
@@ -182,11 +163,14 @@ class GoodputRecorder(measurement.Recorder):
     @contextlib.contextmanager
     def maybe_monitor_rolling_window_goodput(self):
         """Monitor rolling window goodput if enabled."""
-        if not self.config.enable_rolling_window_goodput_monitoring or jax.process_index() != 0:
+        if not self.config.rolling_window_size or jax.process_index() != 0:
             yield
             return
         try:
             if self._rolling_window_monitor is None:
+                pathways_enabled = (
+                    hasattr(flags.FLAGS, "jax_backend") and flags.FLAGS.jax_backend == "proxy"
+                )
                 rolling_window_tensorboard_dir = os.path.join(
                     self.config.upload_dir, f"rolling_window_{self.config.name}"
                 )
@@ -196,7 +180,7 @@ class GoodputRecorder(measurement.Recorder):
                     tensorboard_dir=rolling_window_tensorboard_dir,
                     upload_interval=self.config.upload_interval,
                     monitoring_enabled=True,
-                    pathway_enabled=self.config.enable_pathways_goodput,
+                    pathway_enabled=pathways_enabled,
                     include_badput_breakdown=True,
                 )
             self._rolling_window_monitor.start_rolling_window_goodput_uploader(

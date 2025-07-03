@@ -16,59 +16,90 @@ from axlearn.common.config import RequiredFieldMissingError
 class GoodputRecorderTest(parameterized.TestCase):
     """Tests GoodputRecorder."""
 
-    def test_from_flags_with_spec(self):
-        """Tests that flags are correctly parsed."""
-        fv = flags.FlagValues()
-        measurement.define_flags(flag_values=fv)
-        fv.set_default(
-            "recorder_spec",
-            [
+    def setUp(self):
+        super().setUp()
+        self.mock_flags = mock.MagicMock(spec=flags.FlagValues)
+        self.mock_flags.jax_backend = None
+        self.patch_flags_global = mock.patch.object(flags, "FLAGS", new=self.mock_flags)
+        self.patch_flags_global.start()
+
+    def tearDown(self):
+        super().tearDown()
+        self.patch_flags_global.stop()
+
+    @parameterized.parameters(
+        dict(
+            recorder_spec=[
                 "name=test-name",
                 "upload_dir=/test/path",
                 "upload_interval=15",
-                "enable_rolling_window_goodput_monitoring=True",
+            ],
+            expected_rolling_window_size=[],
+        ),
+        dict(
+            recorder_spec=[
+                "name=test-name",
+                "upload_dir=/test/path",
+                "upload_interval=15",
                 "rolling_window_size=1,2,3",
             ],
-        )
-        fv.mark_as_parsed()
-        recorder = GoodputRecorder.from_flags(fv)
+            expected_rolling_window_size=[1, 2, 3],
+        ),
+    )
+    def test_from_flags(
+        self,
+        recorder_spec,
+        expected_rolling_window_size,
+    ):
+        """Tests that flags are correctly parsed into the config."""
+        mock_fv = mock.MagicMock(spec=flags.FlagValues)
+        mock_fv.recorder_spec = recorder_spec
+        mock_fv.jax_backend = "tpu"
+
+        recorder = GoodputRecorder.from_flags(mock_fv)
+
         self.assertEqual("test-name", recorder.config.name)
         self.assertEqual("/test/path", recorder.config.upload_dir)
         self.assertEqual(15, recorder.config.upload_interval)
-        self.assertTrue(recorder.config.enable_rolling_window_goodput_monitoring)
-        self.assertEqual([1, 2, 3], recorder.config.rolling_window_size)
+        self.assertEqual(expected_rolling_window_size, recorder.config.rolling_window_size)
 
     def test_from_flags_missing_required(self):
         """Tests that missing required flags raise an error."""
-        fv = flags.FlagValues()
-        measurement.define_flags(flag_values=fv)
-        fv.set_default("recorder_spec", ["name=test-name"])  # Missing upload_dir/interval
-        fv.mark_as_parsed()
+        mock_fv = mock.MagicMock(spec=flags.FlagValues)
+        mock_fv.recorder_spec = ["name=test-name"]  # Missing upload_dir/interval
+        mock_fv.jax_backend = "tpu"
         with self.assertRaisesRegex(RequiredFieldMissingError, "upload_dir"):
-            GoodputRecorder.from_flags(fv)
+            GoodputRecorder.from_flags(mock_fv)
 
     @mock.patch("jax.process_index", return_value=0)
     def test_record_event_context_manager(self, _):
         """Tests the record_event context manager."""
-        recorder = GoodputRecorder(GoodputRecorder.default_config().set(name="test"))
-        with mock.patch("ml_goodput_measurement.goodput.GoodputRecorder") as mock_recorder:
-            mock_instance = mock_recorder.return_value
+        cfg = GoodputRecorder.default_config().set(
+            name="test",
+            upload_dir="/tmp/test",
+            upload_interval=1,
+        )
+        recorder = GoodputRecorder(cfg)
+        with mock.patch("ml_goodput_measurement.goodput.GoodputRecorder") as mock_recorder_cls:
+            mock_instance = mock_recorder_cls.return_value
             with recorder.record_event(measurement.Event.JOB):
                 pass
-            mock_recorder.assert_called_once()
+            mock_recorder_cls.assert_called_once()
             mock_instance.record_job_start_time.assert_called_once()
             mock_instance.record_job_end_time.assert_called_once()
 
+    @parameterized.parameters(
+        dict(is_pathways_job=False, mock_jax_backend="tpu"),
+        dict(is_pathways_job=True, mock_jax_backend="proxy"),
+    )
     @mock.patch("jax.process_index", return_value=0)
-    def test_maybe_monitor_goodput(self, _):
+    def test_maybe_monitor_goodput(self, _, is_pathways_job, mock_jax_backend):
         """Tests the maybe_monitor_goodput context manager."""
+        self.mock_flags.jax_backend = mock_jax_backend
         cfg = GoodputRecorder.default_config().set(
             name="test-monitor",
             upload_dir="/test",
             upload_interval=30,
-            enable_gcp_goodput_metrics=True,
-            enable_pathways_goodput=False,
-            include_badput_breakdown=True,
         )
         recorder = GoodputRecorder(cfg)
 
@@ -84,40 +115,74 @@ class GoodputRecorderTest(parameterized.TestCase):
                 tensorboard_dir="/test",
                 upload_interval=30,
                 monitoring_enabled=True,
-                pathway_enabled=False,
+                pathway_enabled=is_pathways_job,
                 include_badput_breakdown=True,
-                gcp_options=mock.ANY,
             )
-            # Verify the start and stop methods were called.
             mock_monitor_instance.start_goodput_uploader.assert_called_once()
             mock_monitor_instance.stop_goodput_uploader.assert_called_once()
 
+    @parameterized.parameters(
+        dict(
+            is_rolling_window_enabled=True,
+            rolling_window_size=[10, 20],
+            is_pathways_job=False,
+            mock_jax_backend="tpu",
+        ),
+        dict(
+            is_rolling_window_enabled=False,
+            rolling_window_size=[],
+            is_pathways_job=False,
+            mock_jax_backend="tpu",
+        ),
+        dict(
+            is_rolling_window_enabled=True,
+            rolling_window_size=[50],
+            is_pathways_job=True,
+            mock_jax_backend="proxy",
+        ),
+    )
     @mock.patch("jax.process_index", return_value=0)
-    def test_maybe_monitor_rolling_window(self, _):
+    def test_maybe_monitor_rolling_window(
+        self,
+        mock_process_index,
+        is_rolling_window_enabled,
+        rolling_window_size,
+        is_pathways_job,
+        mock_jax_backend,
+    ):  # pylint: disable=unused-argument
         """Tests the rolling window monitoring context manager."""
+        self.mock_flags.jax_backend = mock_jax_backend
         cfg = GoodputRecorder.default_config().set(
             name="test-rolling",
             upload_dir="/test",
             upload_interval=30,
-            enable_rolling_window_goodput_monitoring=True,
-            rolling_window_size=[10, 20],
+            rolling_window_size=rolling_window_size,
         )
         recorder = GoodputRecorder(cfg)
 
         with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_monitor_cls:
             mock_monitor_instance = mock_monitor_cls.return_value
+            if not is_rolling_window_enabled:
+                with recorder.maybe_monitor_rolling_window_goodput():
+                    pass
+                mock_monitor_cls.assert_not_called()
+                return
             with recorder.maybe_monitor_rolling_window_goodput():
                 pass
 
-            # Verify that GoodputMonitor was instantiated for rolling window.
-            mock_monitor_cls.assert_called_once()
-            self.assertEqual(
-                "/test/rolling_window_test-rolling",
-                mock_monitor_cls.call_args.kwargs["tensorboard_dir"],
+            mock_monitor_cls.assert_called_once_with(
+                job_name="test-rolling",
+                logger_name="goodput_logger_test-rolling",
+                tensorboard_dir="/test/rolling_window_test-rolling",
+                upload_interval=30,
+                monitoring_enabled=True,
+                pathway_enabled=is_pathways_job,
+                include_badput_breakdown=True,
             )
 
-            # Verify the correct the start and stop methods were called.
-            mock_monitor_instance.start_rolling_window_goodput_uploader.assert_called_with([10, 20])
+            mock_monitor_instance.start_rolling_window_goodput_uploader.assert_called_with(
+                rolling_window_size
+            )
             mock_monitor_instance.stop_rolling_window_goodput_uploader.assert_called_once()
 
     @mock.patch("jax.process_index", return_value=1)
@@ -125,6 +190,7 @@ class GoodputRecorderTest(parameterized.TestCase):
         self, mock_process_index
     ):  # pylint: disable=unused-argument
         """Tests that monitoring is skipped on non-zero process indices."""
+        self.mock_flags.jax_backend = "tpu"
         cfg = GoodputRecorder.default_config().set(
             name="test", upload_dir="/test", upload_interval=30
         )
@@ -136,8 +202,13 @@ class GoodputRecorderTest(parameterized.TestCase):
                 pass
             mock_monitor_cls.assert_not_called()
 
-            # Test maybe_monitor_rolling_window_goodput
-            recorder.config.enable_rolling_window_goodput_monitoring = True
-            with recorder.maybe_monitor_rolling_window_goodput():
+            cfg_rolling = GoodputRecorder.default_config().set(
+                name="test-rolling-skip",
+                upload_dir="/test",
+                upload_interval=30,
+                rolling_window_size=[10, 20],
+            )
+            recorder_rolling = GoodputRecorder(cfg_rolling)
+            with recorder_rolling.maybe_monitor_rolling_window_goodput():
                 pass
             mock_monitor_cls.assert_not_called()
