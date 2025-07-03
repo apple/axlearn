@@ -11,7 +11,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import define_flags, from_flags
-from axlearn.cloud.gcp import bundler, job, jobset_utils, lws_utils
+from axlearn.cloud.gcp import bundler, job, jobset_utils, pathways_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -220,7 +220,7 @@ class TPUGKELeaderWorkerSet(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [lws_utils.__name__, bundler.__name__],
+            [pathways_utils.__name__, bundler.__name__],
             settings=self._settings,
         ):
             return super().run(result)
@@ -234,7 +234,7 @@ class TPUGKELeaderWorkerSet(TestCase):
     ) -> tuple[job.GKELeaderWorkerSet.Config, Bundler.Config]:
         fv = flags.FlagValues()
         cfg = job.GKELeaderWorkerSet.default_config().set(
-            builder=lws_utils.TPULeaderWorkerTemplate.default_config()
+            builder=pathways_utils.PathwaysLeaderWorkerTemplate.default_config()
         )
         define_flags(cfg, fv)
         for key, value in kwargs.items():
@@ -275,8 +275,8 @@ class TPUGKELeaderWorkerSet(TestCase):
             num_replicas=1,
         )
 
-        self.assertIsInstance(cfg.builder, lws_utils.TPULeaderWorkerTemplate.Config)
-        cfg.builder = cast(lws_utils.TPULeaderWorkerTemplate.Config, cfg.builder)
+        self.assertIsInstance(cfg.builder, pathways_utils.PathwaysLeaderWorkerTemplate.Config)
+        cfg.builder = cast(pathways_utils.PathwaysLeaderWorkerTemplate.Config, cfg.builder)
 
         self.assertEqual(cfg.name, cfg.builder.name)
         self.assertEqual(cfg.project, self._settings["project"])
