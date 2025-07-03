@@ -380,6 +380,7 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
         ):
             _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
+
 class PathwaysLeaderWorkerTemplateTest(TestCase):
     """Test PathwaysLeaderWorkerTemplate."""
 
@@ -387,9 +388,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
     def _job_config(self, bundler_cls: type[Bundler], **kwargs):
         with mock_gcp_settings([lws_utils.__name__, bundler.__name__]):
             fv = flags.FlagValues()
-            cfg = pathways_utils.PathwaysLeaderWorkerTemplate.default_config().set(
-                inner=lws_utils.TPULeaderWorkerTemplate.default_config()
-            )
+            cfg = pathways_utils.PathwaysLeaderWorkerTemplate.default_config()
             define_flags(cfg, fv)
             fv.set_default("name", "fake-name")
             fv.set_default("instance_type", "tpu-v6e-16")
@@ -408,7 +407,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 CloudBuildBundler,
             ) as (cfg, bundler_cfg),
         ):
-            cfg.inner.set(
+            cfg.set(
                 reservation_project="test-project",
                 name="test",
                 command="test_command",
@@ -427,7 +426,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 CloudBuildBundler,
             ) as (cfg, bundler_cfg),
         ):
-            cfg.inner.set(
+            cfg.set(
                 reservation_project="test-project",
                 name="test",
                 command="test_command",
@@ -447,7 +446,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 CloudBuildBundler,
             ) as (cfg, bundler_cfg),
         ):
-            cfg.inner.set(
+            cfg.set(
                 reservation_project="test-project",
                 name="test",
                 command="test_command",
