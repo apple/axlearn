@@ -229,21 +229,6 @@ def _update(x: dict, updates: dict):
     x.update(updates)
 
 
-class CompositeLossWeights(Module):
-    """Computes loss weights."""
-
-    def forward(self, child_metrics: dict[str, tuple[Tensor, Nested[Tensor]]]) -> dict[str, Tensor]:
-        """Computes per-child loss weights from child metrics.
-
-        Args:
-            child_metrics: A mapping from child name to (child_loss, child_metrics).
-
-        Returns:
-            A mapping from child name to loss weight.
-        """
-        raise NotImplementedError(type(self))
-
-
 class CompositeLossMetrics(BaseLossMetrics):
     """Computes a composite loss from multiple child metrics."""
 
@@ -253,14 +238,14 @@ class CompositeLossMetrics(BaseLossMetrics):
 
         Attributes:
             metrics: A mapping from child name to metrics config.
-            loss_weights: A `CompositeLossWeights` implementation.
+            loss_weights: A mapping from child name to its weight.
                 If None, all weights are considered 1.
             flatten_metrics: Whether to flatten summaries and metrics from each child. If None,
                 defaults to True.
         """
 
         metrics: Required[dict[str, BaseLossMetrics.Config]] = REQUIRED
-        loss_weights: Optional[CompositeLossWeights.Config] = None
+        loss_weights: Optional[dict[str, float]] = None
         flatten_metrics: Optional[bool] = None
 
     def __init__(self, cfg, *, parent):
@@ -269,10 +254,6 @@ class CompositeLossMetrics(BaseLossMetrics):
         self._metrics: dict[str, BaseLossMetrics] = {}
         for name, child in cfg.metrics.items():
             self._metrics[name] = self._add_child(name, child)
-        if cfg.loss_weights is not None:
-            self.loss_weights: CompositeLossMetrics = self._add_child(
-                "loss_weights", cfg.loss_weights
-            )
 
     def forward(
         self,
@@ -296,19 +277,21 @@ class CompositeLossMetrics(BaseLossMetrics):
                 module_outputs=module_outputs,
             )
 
-        if "loss_weights" in self.children:
-            loss_weights: dict[str, Tensor] = self.loss_weights(all_child_metrics)
-        else:
-            loss_weights = None
-
+        loss_weights = cfg.loss_weights
         losses = []
         metrics = {}
         for name, (child_loss, child_metrics) in all_child_metrics.items():
-            # Downstream wants unweighted losses.
-            child_metrics[f"loss_{name}"] = child_loss
             if loss_weights is not None and loss_weights.get(name, None) is not None:
-                child_loss = WeightedScalar(child_loss.mean * loss_weights[name], child_loss.weight)
+                # Multiply loss_weights only to child_loss.weight. Note that child_loss.mean can be
+                # interpreted as the result of:
+                # child_loss.mean = (child_loss.mean * child_loss.weight * loss_weights[name])
+                #                  / (child_loss.weight * loss_weights[name])
+                # For reference, the total loss is computed as:
+                # total_loss = sum(each_loss_weight * each_loss * num_each_samples)
+                #             / sum(each_loss_weight * num_each_samples)
+                child_loss = WeightedScalar(child_loss.mean, child_loss.weight * loss_weights[name])
             losses.append(child_loss)
+            child_metrics[f"loss_{name}"] = child_loss
 
             ctx = self.get_invocation_context()
 
@@ -322,13 +305,13 @@ class CompositeLossMetrics(BaseLossMetrics):
             if not losses:
                 return WeightedScalar(0.0, 0.0)
 
-            # For backward compatibility, aggregation is done using sum(each.mean) instead of
-            # sum(each.mean * each.weight) / sum(each.weight).
-            loss = weight = 0.0
+            loss_sum = weight = 0.0
             for each in losses:
-                loss += each.mean
+                loss_sum += each.mean * each.weight
                 weight += each.weight
-            return WeightedScalar(loss, weight)
+            # Note: weight = loss_weights * num_samples, so can be smaller than 1.
+            eps = 1e-8
+            return WeightedScalar(loss_sum / jnp.maximum(weight, eps), weight)
 
         loss = _aggregate(losses)
         return loss, metrics
