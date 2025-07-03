@@ -334,7 +334,7 @@ class GKELeaderWorkerSet(GCPJob):
         # This is not fully blocking; after the call returns there can be a delay before
         # everything is deleted.
         delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
-        delete_k8s_service(cfg.name + "-service", namespace=cfg.namespace)
+        # delete_k8s_service(cfg.name + "-service", namespace=cfg.namespace)
 
     def _build_leaderworkerset(self) -> Nested[Any]:
         """

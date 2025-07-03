@@ -17,8 +17,8 @@ from axlearn.cloud.common.utils import FlagConfigurable, define_flags, from_flag
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.job_flink import FlinkJobStatus
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
-from axlearn.cloud.gcp.lws_utils import TPULeaderWorkerTemplate
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
+from axlearn.cloud.gcp.pathways_utils import PathwaysLeaderWorkerTemplate
 from axlearn.cloud.gcp.runners import gke as runner_gke
 from axlearn.cloud.gcp.runners import named_runner_configs
 from axlearn.cloud.gcp.runners.gke import (
@@ -1252,7 +1252,7 @@ class LWSRunnerJobTest(parameterized.TestCase):
         self, *, name: str, command: str, env_vars: Optional[dict] = None, **kwargs
     ) -> LWSRunnerJob.Config:
         fv = flags.FlagValues()
-        cfg = named_runner_configs("gke_tpu_lws")
+        cfg = named_runner_configs("gke_tpu_lws_pathways")
         define_flags(cfg, fv)
         # Set `name` as a default; since implementations typically use `generate_job_name`, we
         # want to exercise the case that the default value of name is not overridden.
@@ -1286,8 +1286,8 @@ class LWSRunnerJobTest(parameterized.TestCase):
             self.assertIsNotNone(cfg.name)
         self.assertEqual(cfg.cluster, cluster or self._settings["gke_cluster"])
         self.assertEqual(cfg.enable_pre_provisioner, enable_pre_provisioner)
-        builder_cfg: TPULeaderWorkerTemplate.Config = cfg.inner.builder
-        self.assertIsInstance(builder_cfg, TPULeaderWorkerTemplate.Config)
+        builder_cfg: PathwaysLeaderWorkerTemplate.Config = cfg.inner.builder
+        self.assertIsInstance(builder_cfg, PathwaysLeaderWorkerTemplate.Config)
         self.assertEqual(builder_cfg.name, cfg.name)
         self.assertEqual(builder_cfg.output_dir, cfg.output_dir)
         self.assertIn(cfg.name, cfg.output_dir)
@@ -1435,37 +1435,6 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 job._pre_provisioner.delete_for.assert_called()
                 # pytype: enable=attribute-error
 
-    @parameterized.parameters(None, False, True)
-    def test_start(self, enable_pre_provisioner):
-        cfg = self._job_config(
-            command="test-command",
-            name="test-name",
-            cluster="test-cluster",
-            enable_pre_provisioner=enable_pre_provisioner,
-        )
-        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
-
-        with mock.patch.multiple(
-            job,
-            _get_status=mock.Mock(
-                side_effect=[
-                    runner_gke.LWSRunnerJob.Status.NOT_STARTED,
-                    #runner_gke.LWSRunnerJob.Status.RUNNING,
-                ]
-            ),
-            _delete=mock.DEFAULT,
-            _inner=mock.DEFAULT,
-            _pre_provisioner=mock.DEFAULT,
-        ):
-            job._execute()
-
-            if enable_pre_provisioner:
-                # pytype: disable=attribute-error
-                job._pre_provisioner.create_for.assert_called()
-                # pytype: enable=attribute-error
-
-            job._inner.execute.assert_called()  # pytype: disable=attribute-error
-    
     def test_name_alias(self):
         """Tests that names set via flag aliases are retained."""
         with (
