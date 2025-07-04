@@ -792,6 +792,7 @@ def get_trainer_kwargs(
                                             names_which_can_be_saved="|".join(
                                                 [
                                                     RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.O_PROJ.value,
                                                     RematRegexSavePatterns.LINEAR1_X.value,
                                                 ]
                                             ),
