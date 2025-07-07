@@ -1005,6 +1005,10 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                     "name": "JAX_BACKEND_TARGET",
                     "value": f"grpc://$(LWS_LEADER_ADDRESS):{_PATHWAYS_PROXY_PORT}",
                 },
+                {
+                    "name": "TEST_UNDECLARED_OUTPUTS_DIR",
+                    "value": "true",
+                },
             ],
             imagePullPolicy="Always",
         )
