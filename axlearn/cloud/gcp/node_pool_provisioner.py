@@ -91,9 +91,11 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
         # TPUGKEJob implementation and internals.
         if not isinstance(
             builder_cfg,
-            (TPUReplicatedJob.Config,
-            BaseLeaderWorkerTemplate.Config,
-            PathwaysLeaderWorkerTemplate.Config),
+            (
+                TPUReplicatedJob.Config,
+                BaseLeaderWorkerTemplate.Config,
+                PathwaysLeaderWorkerTemplate.Config,
+            ),
         ):
             raise TypeError(
                 "Expected"
