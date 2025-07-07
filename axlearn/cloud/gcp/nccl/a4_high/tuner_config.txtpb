@@ -828,7 +828,6 @@ communicator_configs {
 communicator_configs {
   node_range: {
     min: 33
-    max: 65  # exclusive
   }
   rank_per_node_range: {
     min: 1
@@ -870,7 +869,6 @@ communicator_configs {
 communicator_configs {
   node_range: {
     min: 33
-    max: 65  # exclusive
   }
   rank_per_node_range: {
     min: 4
