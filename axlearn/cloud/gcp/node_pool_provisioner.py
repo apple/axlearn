@@ -91,9 +91,9 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
         # TPUGKEJob implementation and internals.
         if not isinstance(
             builder_cfg,
-            TPUReplicatedJob.Config,
+            (TPUReplicatedJob.Config,
             BaseLeaderWorkerTemplate.Config,
-            PathwaysLeaderWorkerTemplate.Config,
+            PathwaysLeaderWorkerTemplate.Config),
         ):
             raise TypeError(
                 "Expected"
@@ -191,7 +191,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
         if not isinstance(
-            builder_cfg, TPUReplicatedJob.Config, PathwaysLeaderWorkerTemplate.Config
+            builder_cfg, (TPUReplicatedJob.Config, PathwaysLeaderWorkerTemplate.Config)
         ):
             raise TypeError(
                 f"Expected {(TPUReplicatedJob.Config,PathwaysLeaderWorkerTemplate.Config)}"
