@@ -98,7 +98,7 @@ gcp = [
     "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
     "google-cloud-build==3.24.1",
-    "ml-goodput-measurement==0.0.10",
+    "ml-goodput-measurement==0.0.12",
     "pika==1.3.2",  # used by event queue
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
     "tpu-info==0.2.0", # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
