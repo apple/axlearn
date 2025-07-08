@@ -83,7 +83,7 @@ ENTRYPOINT ["/opt/apache/beam/boot"]
 
 FROM base AS tpu
 
-ARG EXTRAS=orbax
+ARG EXTRAS=
 
 ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
@@ -91,7 +91,6 @@ ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.ht
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
-RUN pip install -U "orbax-checkpoint @ git+https://github.com/google/orbax.git@refs/pull/2074/head#subdirectory=checkpoint"
 
 ################################################################################
 # GPU container spec.                                                          #
