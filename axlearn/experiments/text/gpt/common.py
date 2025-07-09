@@ -231,7 +231,7 @@ def model_config(
     pad_token_id: Optional[int] = None,
     eos_token_id: Optional[int] = None,
     ffn_layer_types: Optional[Sequence[Literal["dense", "sparse"]]] = None,
-    expert_cfg: TransformerFeedForwardMoE = TransformerFeedForwardMoE.default_config(),
+    expert_cfg: TransformerFeedForwardMoE.Config = TransformerFeedForwardMoE.default_config(),
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
