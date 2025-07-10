@@ -1045,6 +1045,7 @@ class Bastion(Configurable):
                     env_vars=env_vars,
                 )
             except Exception as e:  # pylint: disable=broad-exception-caught
+                job.command_proc = None
                 logging.warning(
                     "Failed to start command for the job %s: %s with error: %s",
                     job.spec.name,
@@ -1053,7 +1054,7 @@ class Bastion(Configurable):
                 )
 
             if job.command_proc is None:
-                # If failed to start command, moving the job to CLEARNING directly.
+                # If failed to start command, moving the job to CLEANING directly.
                 self._append_to_job_history(
                     job, msg="Failed to start job command", state=JobLifecycleState.CLEANING
                 )
