@@ -295,6 +295,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
             "--temporary_flags_for_debugging=temporary_flag_for_debugging_pipe_break_on_missing_keepalive=true",
+            # This should be made configurable
+            f"--num_elastic_slices={cfg.accelerator.num_replicas}",
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
@@ -566,14 +568,19 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         annotations.update(
             {"alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
         )
+        # Default value for suspend and resume.
+        # References:
+        # https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L651
+        # backoffLimit = system.vms_per_slice * 4
+
+        # This backoffLimit is just for verifying elastic fast-resume
+        large_number = 1000
+        backoffLimit = system.vms_per_slice * 4 * large_number
 
         spec = dict(
             parallelism=system.vms_per_slice,
             completions=system.vms_per_slice,
-            # Default value for suspend and resume.
-            # References:
-            # https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L651
-            backoffLimit=system.vms_per_slice * 4,
+            backoffLimit=backoffLimit,
             template=self._build_pathways_worker_pod(pathways_worker_replicated_job_index),
         )
         worker_job = dict(

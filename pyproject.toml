@@ -114,7 +114,7 @@ tpu = [
 pathways-tpu = [
     "axlearn[gcp]",
     "jax==0.5.3",  # must be >=0.4.19 for compat with v5p.
-    "pathwaysutils==0.1.1",
+    "pathwaysutils @ git+https://github.com/AI-Hypercomputer/pathways-utils",
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
