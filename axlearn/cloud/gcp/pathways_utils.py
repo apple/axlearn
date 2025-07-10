@@ -429,6 +429,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         annotations = _LoadBalancer(
             jobset_name=cfg.name, replicated_job_name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME
         ).metadata
+        annotations.update(
+            {
+                "alpha.jobset.sigs.k8s.io/exclusive-topology": "kubernetes.io/hostname",
+            }
+        )
         spec = dict(
             parallelism=1,
             completions=1,

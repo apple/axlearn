@@ -249,6 +249,7 @@ def get_trainer_kwargs(
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
+    train_batch_size = 32
 
     # Whether to use grouped query attention.
     num_kv_heads = None
@@ -392,6 +393,25 @@ def get_trainer_kwargs(
                 # tpu-v4-(1024|2048).
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
+                (
+                    "tpu-v5litepod-32",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=32)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                        ],
+                    ),
+                ),
                 (
                     "tpu-v5litepod-256",
                     ChainConfigModifier.default_config().set(
