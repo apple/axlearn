@@ -3,6 +3,7 @@
 """Utilities to launch a trainer."""
 
 import json
+import logging as py_logging
 import os
 from typing import Any, Optional
 
@@ -15,6 +16,8 @@ from axlearn.common.config import TrainerConfigFn
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape
 from axlearn.experiments import get_named_trainer_config
+
+py_logging.raiseException = True
 
 # Trainer-specific flags.
 flags.DEFINE_string(
@@ -159,8 +162,24 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                 f,
             )
 
-    trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
-    prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
-    output = trainer.run(prng_key)
-    measurement.record_event(measurement.Event.END_JOB)
+    def run() -> Any:
+        trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
+        output = trainer.run(prng_key)
+        measurement.record_event(measurement.Event.END_JOB)
+        return output
+
+    if FLAGS.jax_backend == "proxy":
+        # pylint: disable-next=import-error,import-outside-toplevel
+        from pathwaysutils.elastic import manager
+        elastic_manager = manager.Manager()
+        max_retries = 5
+        timeout = 10 * 60  # ten minutes
+        run = elastic_manager.pause_resume(
+            max_retries=max_retries,
+            timeout=timeout,
+        )(run)
+
+    output = run()
+
     return output
