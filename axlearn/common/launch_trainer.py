@@ -148,9 +148,41 @@ def _run_trainer_impl(trainer_config: SpmdTrainer.Config) -> Any:
                 f,
             )
 
-    trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
-    prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
-    return trainer.run(prng_key)
+    if FLAGS.jax_backend == "proxy":
+        # pylint: disable-next=import-error,import-outside-toplevel
+        from pathwaysutils.elastic import manager
+        elastic_manager = manager.Manager()
+        while True:
+            try:
+                trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
+                prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
+                output = trainer.run(prng_key)
+                break
+            except jax.errors.JaxRuntimeError as error:
+                if not elastic_manager.is_error_due_to_slice_down(error):
+                    raise
+                try:
+                    logging.info("Trying to clean up ongoing traces")
+                    jax.profiler.stop_trace()
+                    logging.info("Successfully cleaned up ongoing traces")
+                except (RuntimeError, ValueError) as e:
+                  logging.info("No ongoing traces to clean up")
+                except Exception as e:
+                  logging.exception("Error trying to clean up ongoing traces")
+                  raise
+
+                jax.clear_caches()
+                for array in jax.live_arrays():
+                  array.delete()
+
+                ten_minutes = 10 * 60
+                elastic_manager.wait_for_slices(timeout=ten_minutes)
+    else:
+        trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
+        output = trainer.run(prng_key)
+
+    return output
 
 
 def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
