@@ -16,11 +16,13 @@ from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.job import GKEJob
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
 from axlearn.cloud.gcp.node_pool import (
     construct_node_pool_name,
     create_node_pools,
     delete_node_pools,
 )
+from axlearn.cloud.gcp.pathways_utils import PathwaysLeaderWorkerTemplate
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -87,8 +89,21 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
-        if not isinstance(builder_cfg, TPUReplicatedJob.Config):
-            raise TypeError(f"Expected {TPUReplicatedJob.Config}, got {type(builder_cfg)}.")
+        if not isinstance(
+            builder_cfg,
+            (
+                TPUReplicatedJob.Config,
+                BaseLeaderWorkerTemplate.Config,
+                PathwaysLeaderWorkerTemplate.Config,
+            ),
+        ):
+            raise TypeError(
+                "Expected"
+                + f"{TPUReplicatedJob.Config}"
+                + f"{BaseLeaderWorkerTemplate.Config}"
+                + f"{PathwaysLeaderWorkerTemplate.Config},"
+                + f"got {type(builder_cfg)}."
+            )
 
         acc_cfg = builder_cfg.accelerator
         reservation = builder_cfg.reservation
@@ -177,8 +192,13 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
-        if not isinstance(builder_cfg, TPUReplicatedJob.Config):
-            raise TypeError(f"Expected {TPUReplicatedJob.Config}, got {type(builder_cfg)}.")
+        if not isinstance(
+            builder_cfg, (TPUReplicatedJob.Config, PathwaysLeaderWorkerTemplate.Config)
+        ):
+            raise TypeError(
+                f"Expected {(TPUReplicatedJob.Config,PathwaysLeaderWorkerTemplate.Config)}"
+                + f"got {type(builder_cfg)}."
+            )
 
         num_node_pools = builder_cfg.accelerator.num_replicas
         node_pool_names = []

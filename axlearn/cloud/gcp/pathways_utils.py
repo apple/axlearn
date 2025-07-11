@@ -12,6 +12,7 @@ from absl import flags
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import parse_kv_flags
+from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.jobset_utils import (
     _ANNOTATION_NODE_SERVICE_ACCOUNT,
     _METADATA_GOOGLE_INTERNAL_IP,
@@ -20,8 +21,10 @@ from axlearn.cloud.gcp.jobset_utils import (
     TPUReplicatedJob,
     _LoadBalancer,
 )
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
+from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
-from axlearn.cloud.gcp.tpu import infer_tpu_workers
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import (
     default_xla_options,
@@ -64,6 +67,15 @@ _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
+_ANNOTATION_ADDITIONAL_NODE_NETWORKS = "tpu-provisioner.cloud.google.com/additional-node-networks"
+
+
+def get_pathways_head_address(job_name: str) -> str:
+    """Returns the address of the pathways head pod."""
+    # There will be only one pathways-head pod, so it is already 0-0.
+    # First 0 means the first replicatedJob of pathways-head,
+    # the second 0 means the first pod in the replicatedJob.
+    return f"{job_name}-{_PATHWAYS_HEAD_REPLICATED_JOB_NAME}-0-0.{job_name}"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
@@ -709,3 +721,316 @@ class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
             )
 
         return replicated_jobs
+
+
+class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
+    """Builds a LeaderWorkerTemplate spec for TPUs"""
+
+    @config_class
+    class Config(BaseLeaderWorkerTemplate.Config):
+        """Configures PathwaysLeaderWorkerTemplate
+        Attributes:
+            reservation: If specified, the TPU reservation name. This is not necessarily specific to
+                GKE and can be the same as e.g. the QRM reservation.
+                https://cloud.google.com/sdk/gcloud/reference/alpha/compute/tpus/reservations/list
+            reservation_project: GCP project to which the TPU reservation belongs. This is needed
+                for shared reservations. If specified, the TPU provisioner will instead use the
+                full reservation name for reservation affinity in the format:
+                "projects/<reservation_project>/reservations/<reservation>"
+                https://github.com/GoogleCloudPlatform/ai-on-gke/blob/889ec98f9b9a7aec05eb0f9890ada1f4c59b6159/tpu-provisioner/internal/cloud/gke.go#L328-L334
+        """
+
+        reservation: Optional[str] = None
+        reservation_project: Optional[str] = None
+        enable_tpu_ici_resiliency: Optional[bool] = None
+        location_hint: Optional[str] = None
+        enable_tpu_smart_repair: bool = False
+        priority_class: Optional[str] = None
+        additional_node_networks: Optional[str] = None
+        # This config is made Optional for backwards compatibility
+        enable_pre_provisioner: Optional[bool] = None
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("reservation", None, "TPU reservation.", **common_kwargs)
+        flags.DEFINE_string(
+            "reservation_project", None, "TPU reservation project.", **common_kwargs
+        )
+        flags.DEFINE_boolean(
+            "enable_tpu_ici_resiliency",
+            None,
+            "Whether to enable TPU ICI resiliency. If None, the decision is left to GCP, as "
+            "not all TPU types support this flag.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "priority_class",
+            None,
+            "The GKE PriorityClass for the job.",
+            **common_kwargs,
+        )
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
+        cfg: PathwaysLeaderWorkerTemplate.Config = super().from_flags(fv, **kwargs)
+        default_env = get_default_env(
+            tpu_type=infer_tpu_type(fv.instance_type),
+            num_tpu_slices=fv.num_replicas,
+            job_name=cfg.name,
+        )
+        # NOTE: we allow fv.env flags to override the defaults.
+        cfg.env_vars = {**default_env, **cfg.env_vars, **parse_kv_flags(fv.env)}
+        cfg.reservation = cfg.reservation or gcp_settings("gke_reservation", required=False, fv=fv)
+        cfg.reservation_project = cfg.reservation_project or gcp_settings(
+            "gke_reservation_project", required=False, fv=fv
+        )
+        cfg.location_hint = gcp_settings("location_hint", required=False, fv=fv)
+        cfg.enable_tpu_smart_repair = bool(
+            gcp_settings("enable_tpu_smart_repair", required=False, fv=fv)
+        )
+        cfg.additional_node_networks = gcp_settings(
+            "additional_node_networks", required=False, fv=fv
+        )
+        return cfg
+
+    def __init__(self, cfg, *, bundler):
+        super().__init__(cfg, bundler=bundler)
+        self._bundler = bundler
+        self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
+        if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
+            raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
+
+    def _build_pathways_worker_container(self) -> dict:
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+        # pylint: disable-next=protected-access
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        env_vars = {**cfg.env_vars}
+        k8s_env_vars = [dict(name=k, value=str(v)) for k, v in env_vars.items()]
+        resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
+        if cfg.enable_tpu_ici_resiliency is not None:
+            env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
+
+        args = [
+            f"--server_port={_PATHWAYS_WORKER_PORT}",
+            "--resource_manager_address=$(LWS_LEADER_ADDRESS):"
+            + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+        ]
+        ports = []
+        ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
+
+        return dict(
+            name=cfg.name,
+            image=_PATHWAYS_SERVER_IMAGE,
+            resources=resources,
+            args=args,
+            env=k8s_env_vars,
+            ports=ports,
+            imagePullPolicy="Always",
+        )
+
+    def _build_pod(self) -> dict:
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+        annotations, labels, selector, tolerations = {}, {}, {}, []
+
+        tier = os.environ.get("BASTION_TIER", None)
+        if tier == "0" and cfg.reservation is not None:
+            logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
+            selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+            if cfg.reservation_project:
+                selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
+            labels.update({"bastion-tier": "reserved"})
+        if cfg.location_hint is not None:
+            selector.update({"cloud.google.com/gke-location-hint": str(cfg.location_hint).lower()})
+        elif tier != "disabled":
+            logging.info("Found tier=%s in env. Using spot quota", tier)
+            selector.update({"cloud.google.com/gke-spot": "true"})
+            tolerations.append(
+                {
+                    "key": "cloud.google.com/gke-spot",
+                    "operator": "Equal",
+                    "value": "true",
+                    "effect": "NoSchedule",
+                }
+            )
+            labels.update({"bastion-tier": "spot"})
+
+        if cfg.enable_pre_provisioner:
+            # Used by pre-provisioner.
+            selector.update({PRE_PROVISIONER_LABEL: cfg.name})
+
+        if cfg.enable_tpu_smart_repair:
+            labels.update({"cloud.google.com/gke-tpu-auto-restart": "true"})
+            annotations.update(
+                {
+                    # The list of labels to be copied to node pools by tpu-provisioner.
+                    # https://github.com/GoogleCloudPlatform/ai-on-gke/blob/main/tpu-provisioner/internal/cloud/common.go#L27-L28
+                    # pylint: disable=line-too-long
+                    "tpu-provisioner.cloud.google.com/copy-labels": "cloud.google.com/gke-tpu-auto-restart"
+                }
+            )
+
+        if cfg.enable_tpu_ici_resiliency is not None:
+            selector.update(
+                {
+                    "cloud.google.com/gke-tpu-ici-resiliency": str(
+                        cfg.enable_tpu_ici_resiliency
+                    ).lower()
+                }
+            )
+
+        spec = dict(
+            nodeSelector={
+                **selector,
+            },
+            tolerations=tolerations,
+            serviceAccountName=cfg.service_account,
+        )
+
+        # Handles additional network.
+        if cfg.additional_node_networks:
+            node_service_account = f"{cfg.service_account}@{cfg.project}.iam.gserviceaccount.com"
+            annotations.update(
+                {
+                    _ANNOTATION_ADDITIONAL_NODE_NETWORKS: cfg.additional_node_networks,
+                    _ANNOTATION_NODE_SERVICE_ACCOUNT: node_service_account,
+                }
+            )
+            spec["hostNetwork"] = True
+            spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+
+        if cfg.priority_class:
+            spec["priorityClassName"] = cfg.priority_class
+
+        return dict(metadata=dict(annotations=annotations, labels=labels), spec=spec)
+
+    def build_worker_pod(self) -> dict:
+        # pylint: disable-next=protected-access
+        pod = self._build_pod()
+        worker_pod = copy.deepcopy(pod)
+
+        pod_spec = worker_pod.get("spec", {})
+
+        pod_spec["containers"] = [self._build_pathways_worker_container()]
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        pod_spec["nodeSelector"].update(
+            {
+                "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+                "cloud.google.com/gke-tpu-topology": system.topology,
+            }
+        )
+
+        worker_pod["spec"] = pod_spec
+
+        return worker_pod
+
+    def _build_pathways_proxy_container(self) -> dict:
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+        staging_location = f"{cfg.output_dir}/pathways-staging"
+
+        return dict(
+            name=_PATHWAYS_PROXY_CONTAINER_NAME,
+            image=_PATHWAYS_PROXY_IMAGE,
+            args=[
+                f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+                f"--server_port={_PATHWAYS_PROXY_PORT}",
+                f"--gcs_scratch_location={staging_location}",
+            ],
+            env=[{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}],
+            ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
+        )
+
+    def _build_pathways_rm_container(self) -> dict:
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+        staging_location = f"{cfg.output_dir}/pathways-staging"
+
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
+
+        return dict(
+            name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
+            image=_PATHWAYS_SERVER_IMAGE,
+            env=[
+                {
+                    "name": "TPU_SKIP_MDS_QUERY",
+                    "value": "true",
+                },
+                {
+                    "name": "HOST_ADDRESS",
+                    "value": "$(LWS_LEADER_ADDRESS)",
+                },
+            ],
+            args=[
+                f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
+                "--node_type=resource_manager",
+                "--instance_count=1",
+                f"--instance_type={pathways_tpu_version}:{system.topology}",
+                f"--gcs_scratch_location={staging_location}",
+            ],
+            ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
+        )
+
+    def _build_head_container(self) -> dict:
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+
+        return dict(
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            command=["bash", "-c", cfg.command],
+            env=[
+                {
+                    "name": "XCLOUD_ENVIRONMENT",
+                    "value": "GCP",
+                },
+                {
+                    "name": "JAX_PLATFORMS",
+                    "value": "proxy",
+                },
+                {
+                    "name": "JAX_BACKEND_TARGET",
+                    "value": f"grpc://$(LWS_LEADER_ADDRESS):{_PATHWAYS_PROXY_PORT}",
+                },
+                {
+                    "name": "TEST_UNDECLARED_OUTPUTS_DIR",
+                    "value": "true",
+                },
+            ],
+            imagePullPolicy="Always",
+        )
+
+    def build_leader_pod(self) -> Nested[Any]:
+        # pylint: disable-next=protected-access
+        pod = self._build_pod()
+        leader_pod = copy.deepcopy(pod)
+
+        pod_spec = leader_pod.get("spec", {})
+
+        pod_spec["hostNetwork"] = True
+        pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+
+        pod_spec["nodeSelector"] = {
+            _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+        }
+
+        pod_spec["containers"] = [
+            self._build_head_container(),
+            self._build_pathways_proxy_container(),
+            self._build_pathways_rm_container(),
+        ]
+
+        leader_pod["spec"] = pod_spec
+        return leader_pod
+
+    def __call__(self) -> Nested[Any]:
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        return dict(
+            subGroupPolicy=dict(
+                subGroupSize=system.vms_per_slice,
+                subGroupPolicyType="LeaderExcluded",
+            ),
+            size=system.vms_per_slice + 1,
+            leaderTemplate=self.build_leader_pod(),
+            workerTemplate=self.build_worker_pod(),
+        )
