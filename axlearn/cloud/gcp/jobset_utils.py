@@ -9,6 +9,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 from urllib.parse import urlparse
+import re
 
 from absl import flags
 
@@ -84,6 +85,7 @@ class GCSFuseMount(VolumeMount):
             can wait to get a response from the server before timing out. Setting it to 0s means no
             limit.
         read_only: Whether the mount should be read-only.
+        mount_options: Comma-separated GCS FUSE mount options.
     """
 
     gcs_path: str
@@ -94,6 +96,7 @@ class GCSFuseMount(VolumeMount):
     ephemeral_gb: str = "5Gi"
     shared_memory: str = "1Gi"
     http_client_timeout: str = "0s"
+    mount_options: str = ""
 
 
 @dataclass(kw_only=True)
@@ -298,7 +301,21 @@ class SingleReplicatedJob(BaseReplicatedJob):
         # pylint: disable=missing-kwoa
         # pytype: disable=missing-parameter
         if fv.gcsfuse_mount_spec:
-            cfg.gcsfuse_mount = GCSFuseMount(**parse_kv_flags(fv.gcsfuse_mount_spec, delimiter="="))
+            specs = []
+            # This regex splits by comma, but only if the comma is not inside double quotes.
+            quote_aware_splitter = re.compile(r',(?=(?:[^"]*"[^"]*")*[^"]*$)')
+            for spec_group in fv.gcsfuse_mount_spec:
+                specs.extend(quote_aware_splitter.split(spec_group))
+            
+            # Parse the specs into a dictionary. This will preserve quotes in the values.
+            parsed_args = parse_kv_flags(specs, delimiter="=")
+
+            # If mount_options was parsed, remove the outer quotes from its value.
+            if "mount_options" in parsed_args:
+                parsed_args["mount_options"] = parsed_args["mount_options"].strip('"\'')
+
+            # Create the GCSFuseMount object with the cleaned arguments.
+            cfg.gcsfuse_mount = GCSFuseMount(**parsed_args)
         if fv.host_mount_spec:
             cfg.host_mounts = [
                 HostMount(**parse_kv_flags(item.split(","), delimiter="="))
@@ -563,6 +580,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
             )
             # Parse GCSFuseMount path into bucket, prefix.
             parsed = urlparse(cfg.gcsfuse_mount.gcs_path)
+            gcsMountOptions = cfg.gcsfuse_mount.mount_options or f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}"
             # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
             # Caveat: --implicit-dirs might have negative impacts on i/o performance. See
             # https://github.com/googlecloudplatform/gcsfuse/blob/master/docs/semantics.md .
@@ -578,7 +596,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
                         volumeAttributes=dict(
                             bucketName=parsed.netloc,
                             # pylint: disable=line-too-long
-                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
+                            mountOptions=gcsMountOptions,
                             gcsfuseMetadataPrefetchOnMount="false",  # Improves first-time read.
                             disableMetrics="false",  # Enables GCSFuse metrics by default.
                         ),

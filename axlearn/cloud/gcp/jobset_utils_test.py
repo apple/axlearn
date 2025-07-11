@@ -106,6 +106,47 @@ class TPUReplicatedJobTest(TestCase):
             self.assertIn("key1", cfg.env_vars)
             self.assertEqual(cfg.env_vars["key1"], "value1")
 
+    @parameterized.named_parameters(
+        {
+            "testcase_name": "basic_spec_no_mount_options",
+            "spec": ["gcs_path=gs://a/b,mount_path=/c"],
+            "expected_gcs_path": "gs://a/b",
+            "expected_mount_path": "/c",
+            "expected_mount_options": "", 
+        },
+        {
+            "testcase_name": "complex_spec_with_quoted_mount_options",
+            "spec": [
+                'gcs_path=gs://a/b,mount_path=/c,mount_options="implicit-dirs,foo=bar,baz=qux"'
+            ],
+            "expected_gcs_path": "gs://a/b",
+            "expected_mount_path": "/c",
+            "expected_mount_options": "implicit-dirs,foo=bar,baz=qux", 
+        },
+        {
+            "testcase_name": "spec_with_empty_mount_options",
+            "spec": ['gcs_path=gs://a/b,mount_path=/c,mount_options=""'],
+            "expected_gcs_path": "gs://a/b",
+            "expected_mount_path": "/c",
+            "expected_mount_options": "",
+        },
+    )
+    def test_gcsfuse_mount_spec_parsing(
+        self,
+        spec: list[str],
+        expected_gcs_path: str,
+        expected_mount_path: str,
+        expected_mount_options: str,
+    ):
+        """Tests that gcsfuse_mount_spec is parsed correctly."""
+        with self._job_config(
+            ArtifactRegistryBundler, gcsfuse_mount_spec=spec
+        ) as (cfg, _):
+            self.assertIsNotNone(cfg.gcsfuse_mount)
+            self.assertEqual(cfg.gcsfuse_mount.gcs_path, expected_gcs_path)
+            self.assertEqual(cfg.gcsfuse_mount.mount_path, expected_mount_path)
+            self.assertEqual(cfg.gcsfuse_mount.mount_options, expected_mount_options)
+
     def test_validate_jobset_name(self):
         with (
             self.assertRaisesRegex(ValueError, "invalid"),
