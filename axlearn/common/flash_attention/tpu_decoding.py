@@ -36,11 +36,13 @@ from axlearn.common.attention_bias import (
     BaseAttentionBias,
     MaskFn,
     MaskFnAttentionBias,
+    SlidingWindowAttentionBias,
     split,
 )
 from axlearn.common.flash_attention.common import (
     BaseSingleStepDecoding,
     build_mask,
+    build_sliding_window_mask,
     get_tpu_dot_precision,
     query_iterator_indices,
 )
@@ -201,13 +203,18 @@ class TPUDecoding(BaseSingleStepDecoding):
         padding = -1
         with jax.ensure_compile_time_eval():
             if mask_fn is not None:
-                bool_mask = build_mask(
-                    mask_fn,
+                mask_args = dict(
                     q_seq_len=padded_kv_seq_len,
                     kv_seq_len=padded_kv_seq_len,
                     block_q=block_size,
                     block_k=block_size,
                 )
+                if isinstance(mask, SlidingWindowAttentionBias):
+                    bool_mask = build_sliding_window_mask(
+                        **mask_args, sliding_window_size=mask.sliding_window_size
+                    )
+                else:
+                    bool_mask = build_mask(mask_fn, **mask_args)
                 offset, _ = query_iterator_indices(bool_mask, padding=padding)
             else:
                 padded_num_kv_blocks = pl.cdiv(padded_kv_seq_len, block_size)
