@@ -624,24 +624,10 @@ class SpmdTrainer(Module):
 
                         self._step = self._step + 1
                         self.vlog(3, "Start step %s", self.step)
-<<<<<<< HEAD
-                        self._maybe_record_event(measurement.Event.START_STEP, self._step)
-                        output = self._run_step(
-                            utils.host_to_global_array(
-                                input_batch,
-                                partition=self._train_step_input_partition_specs(),
-                            ),
-                            force_run_evals=(
-                                force_run_eval_sets_at_max_step
-                                if self.step >= cfg.max_step
-                                else None
-                            ),
-=======
                         step_events_manager = (
                             self._recorder.record_event(measurement.Event.STEP, self.step)
                             if self._recorder
                             else contextlib.nullcontext()
->>>>>>> 3755939 (Add workload hang monitoring & rolling window goodput support)
                         )
                         with step_events_manager:
                             output = self._run_step(
