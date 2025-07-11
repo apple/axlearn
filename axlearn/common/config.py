@@ -300,11 +300,10 @@ def validate_config_field_value(value: Any) -> None:
 
     # No validators matched.
     if not matched:
-        pass
-        # raise InvalidConfigValueError(
-        #    f'Invalid config value type {type(value)} for value "{value}". '
-        #    f"Consider registering a custom validator with `{register_validator.__name__}`."
-        # )
+        raise InvalidConfigValueError(
+            f'Invalid config value type {type(value)} for value "{value}". '
+            f"Consider registering a custom validator with `{register_validator.__name__}`."
+        )
 
 
 def _validate_and_transform_field(instance, attribute, value):
