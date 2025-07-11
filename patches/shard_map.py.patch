@@ -1,0 +1,27 @@
+--- shard_map_orig.py	2025-06-18 01:27:00.782665547 +0000
++++ shard_map.py	2025-06-18 01:26:06.798346281 +0000
+@@ -1793,10 +1793,10 @@
+ ) -> tuple[core.JaxprEqn, core.JaxprEqn, Sequence[bool], Sequence[bool],
+            list[core.Var]]:
+   jaxpr, mesh = eqn.params['jaxpr'], eqn.params['mesh']
+-  auto = eqn.params['auto']
+-  with _extend_axis_env(mesh, auto):
++  manual_axes = frozenset()
++  with (_extend_axis_env(mesh, manual_axes), use_abstract_mesh(_as_manual_mesh(mesh, manual_axes))):
+     jaxpr_known, jaxpr_staged, unks_out, inst_out, num_res = \
+-        pe.partial_eval_jaxpr_custom(jaxpr, unks_in, inst_in, False, False, saveable)
++      pe.partial_eval_jaxpr_custom(jaxpr, unks_in, inst_in, False, False, saveable)
+   num_out_primals = len(jaxpr_known.outvars) - num_res
+   in_fwd = pe._jaxpr_forwarding(jaxpr_known)[num_out_primals:]
+   out_vars, res_vars = split_list(jaxpr_known.outvars, [num_out_primals])
+@@ -1804,8 +1804,8 @@
+   out_fwd = [idx_map.get(id(v)) for v in res_vars]
+   which = [f1 is None and f2 is None for f1, f2 in zip(in_fwd, out_fwd)]
+   mesh = eqn.params['mesh']
+-  with (_extend_axis_env(mesh, auto),
+-        use_abstract_mesh(_as_manual_mesh(mesh, auto))):
++  with (_extend_axis_env(mesh, manual_axes),
++        use_abstract_mesh(_as_manual_mesh(mesh, frozenset()))):
+     jaxpr_known = pe.prune_jaxpr_outputs(jaxpr_known, [True] * num_out_primals + which)
+     jaxpr_known, jaxpr_staged = _add_reshapes(which, jaxpr_known, jaxpr_staged)
+   jaxpr_known = core.remove_named_axis_effects(jaxpr_known, mesh.axis_names)
