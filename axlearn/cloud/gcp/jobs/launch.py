@@ -780,6 +780,6 @@ def _wrapped_usage(
 
 
 if __name__ == "__main__":
-    configure_logging(logging.INFO)
+    configure_logging(logging.DEBUG)
     _private_flags()
     app.run(main)

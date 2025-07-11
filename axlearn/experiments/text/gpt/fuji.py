@@ -15,6 +15,8 @@ import functools
 import itertools
 from typing import Any, List, NamedTuple, Optional, Union
 
+import jax
+from absl import logging
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -252,7 +254,6 @@ def get_trainer_kwargs(
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
-
     # Whether to use grouped query attention.
     num_kv_heads = None
     if version in (Version.V3, Version.V3_TIKTOKEN):
@@ -813,6 +814,67 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "150B":
+        ##################################################################################
+        max_sequence_length = MAX_SEQUENCE_LENGTH[Version.V2]  # 4096
+
+        # model_parallelism * fsdp == num_chips_in_trillium (256)
+        model_parallelism = 4
+        fsdp = 64
+
+        current_pdbs = 0.5
+        train_batch_size = int(current_pdbs * len(jax.devices()))
+
+        # 16k * 4096 = 64M
+        tokens_per_batch = int(train_batch_size * max_sequence_length)
+
+        # 32M tokens is the max global tokens we can train on.
+        # We must modify either the pdbs or the model sharding to accommodate 128 slices.
+        if tokens_per_batch > 32 * (1024**2):
+            tokens_per_batch = 32 * (1024**2)
+            # if we want to modify the pdbs:
+            current_pdbs = 0.25
+
+            # otherwise we can modify the model sharding.
+            # model_parallelism = 8
+            # fsdp = 32
+
+        # 32M tokens is the max global tokens we can train on.
+        assert tokens_per_batch <= 32 * (1024**2)
+        assert fsdp * model_parallelism == 256
+
+        # 1 / model_parallelism = 1 / 4 = 0.25
+        min_pdbs = 1 / model_parallelism
+        max_pdbs = 1
+
+        # More than 1 pdbs causes an OOM.
+        assert current_pdbs < max_pdbs
+        assert current_pdbs >= min_pdbs
+
+        # maximum number of devices we can use this config on =
+        # train_batch_size // min_pdbs = 4096 / 0.25 = 16384
+        max_devices = int(train_batch_size // min_pdbs)
+
+        assert isinstance(train_batch_size, int)
+        assert isinstance(tokens_per_batch, int)
+
+        logging.info(
+            (
+                "******* DEBUGGING: max_sequence_length: %s, model_parallelism: %s,"
+                " fsdp: %s, current_pdbs: %s, train_batch_size: %s,"
+                " tokens_per_batch: %s, min_pdbs: %s, max_pdbs: %s, max_devices: %s"
+            ),
+            max_sequence_length,
+            model_parallelism,
+            fsdp,
+            current_pdbs,
+            train_batch_size,
+            tokens_per_batch,
+            min_pdbs,
+            max_pdbs,
+            max_devices,
+        )
+        ##################################################################################
+
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
@@ -828,8 +890,9 @@ def get_trainer_kwargs(
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
-            max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4),
+            max_step=100_000,  # max_step,
+            save_every_n_steps=20,
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=fsdp, model=model_parallelism),
             mesh_rules=(
                 (
                     # Target per-device token count = 4k.
@@ -971,6 +1034,12 @@ def trainer_configs(
         if model_size not in TOTAL_TOKENS[version]:  # This combination does not exist.
             continue
         vocab_size = VOCAB_SIZE[version]
+        logging.info(
+            "******* DEBUGGING: version: %s, model_size: %s, flash_attention: %s",
+            version,
+            model_size,
+            flash_attention,
+        )
         config_name = make_config_name(
             arch=arch,
             model_size=model_size,

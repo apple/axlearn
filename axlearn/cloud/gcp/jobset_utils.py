@@ -4,7 +4,6 @@
 
 import io
 import logging
-import math
 import os
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
@@ -27,10 +26,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
-from axlearn.cloud.gcp.system_characteristics import (
-    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
-    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
-)
+from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import infer_tpu_type
@@ -451,15 +447,17 @@ class TPUReplicatedJob(SingleReplicatedJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
+        env_vars["TPU_LIBRARY_PATH"] = "/root/libtpu.so"
+
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
-        # Set request memory by host machine type.
-        machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
-            system.gce_machine_type, None
-        )
-        if machine_memory_gi is not None:
-            request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
-            resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
-            resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
+        # # Set request memory by host machine type.
+        # machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
+        #     system.gce_machine_type, None
+        # )
+        # if machine_memory_gi is not None:
+        #     request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
+        #     resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
+        #     resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
 
         k8s_env_vars = [dict(name=k, value=str(v)) for k, v in env_vars.items()]
         k8s_env_vars.append(
@@ -509,8 +507,8 @@ class TPUReplicatedJob(SingleReplicatedJob):
         interval_s = 60
         sync_command = f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done"
         resources = {
-            "requests": {"cpu": "100m", "memory": "128Mi"},
-            "limits": {"cpu": "500m", "memory": "256Mi"},
+            # "requests": {"cpu": "100m", "memory": "128Mi"},
+            # "limits": {"cpu": "500m", "memory": "256Mi"},
         }
         return dict(
             name="output-uploader",
