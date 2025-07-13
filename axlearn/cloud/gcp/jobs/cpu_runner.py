@@ -117,7 +117,7 @@ class CPURunnerJob(CPUJob):
             "https://cloud.google.com/compute/docs/general-purpose-machines",
             **common_kwargs,
         )
-        flags.DEFINE_integer("disk_size", 64, "Disk size of the VM in GB.", **common_kwargs)
+        flags.DEFINE_integer("disk_size", 128, "Disk size of the VM in GB.", **common_kwargs)
         flags.DEFINE_bool(
             "retain_vm",
             False,
