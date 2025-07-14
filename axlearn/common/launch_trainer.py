@@ -162,13 +162,18 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                     raise
                 try:
                     logging.info("Trying to clean up ongoing traces")
-                    jax.stop_trace()
+                    jax.profiler.stop_trace()
                     logging.info("Successfully cleaned up ongoing traces")
-                except ValueError as e:
-                  logging.info("No ongoing traces to clean up", exc_info=True)
+                except (RuntimeError, ValueError) as e:
+                  logging.info("No ongoing traces to clean up")
                 except Exception as e:
                   logging.exception("Error trying to clean up ongoing traces")
                   raise
+
+                jax.clear_caches()
+                for array in jax.live_arrays():
+                  array.delete()
+
                 ten_minutes = 10 * 60
                 elastic_manager.wait_for_slices(timeout=ten_minutes)
     else:
