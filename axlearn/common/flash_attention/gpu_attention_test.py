@@ -271,7 +271,7 @@ def test_sliding_window_mask(
 
     cfg = dict(
         softmax_scale=q.shape[-1] ** -0.5,
-        interpret=jax.default_backend() == "cpu"
+        interpret=jax.default_backend() == "cpu",
     )
 
     # Override B200 block size for Pallas kernels only
