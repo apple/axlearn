@@ -175,8 +175,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
-        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
-        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "16")
+        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "64")
 
     @classmethod
     def default_config(cls):
