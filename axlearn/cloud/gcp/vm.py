@@ -380,7 +380,7 @@ def list_disk_images(creds: Credentials) -> list[str]:
             .execute()
         )
         for el in images["items"]:
-            if "ubuntu-2004" in el["name"] and "arm" not in el["name"]:
+            if "ubuntu-2204" in el["name"] and "arm" not in el["name"]:
                 image_names.append(el["name"])
 
         next_page_token = images.get("nextPageToken")

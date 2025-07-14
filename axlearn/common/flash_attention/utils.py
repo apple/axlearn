@@ -50,6 +50,7 @@ def flash_attention_implementation(
     key: Tensor,
     value: Tensor,
     bias: BaseAttentionBias,
+    logit_sink: Optional[Tensor] = None,
     softmax_scale: float = 1.0,
     is_decoding: bool = False,
     tpu_block_size: int = 512,
@@ -77,6 +78,7 @@ def flash_attention_implementation(
             for paged attention; a physical-page layout where each value page
             has exactly `page_size` tokens.
         bias: Attention bias to apply.
+        logit_sink: An optional Tensor of shape [num_heads].
         softmax_scale: A scalar value applied to the logits before softmax.
         is_decoding: Whether it is in decoding.
         tpu_block_size: The size of the computation-block unit for 'tpu' backend.
@@ -128,6 +130,7 @@ def flash_attention_implementation(
         value=value,
         page_tables=page_tables,
         bias=bias,
+        logit_sink=logit_sink,
     )
     for cfg in attn_configs:
         attn_fn = cfg.default_config().set(**common_cfg).instantiate()

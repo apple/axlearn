@@ -242,6 +242,7 @@ class BaseFlashAttention(Configurable):
         self._validate_input_batch(input_batch)
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
         if query.shape[0] != key.shape[0]:
             raise ValueError(
                 f"Expects query batch size {query.shape[0]} to be equal to key batch size "
@@ -256,6 +257,11 @@ class BaseFlashAttention(Configurable):
             raise ValueError(
                 f"Expects query num heads {query.shape[2]} to be divisible by num key heads "
                 f"{key.shape[2]}"
+            )
+        if logit_sink is not None and logit_sink.shape[0] != query.shape[2]:
+            raise ValueError(
+                f"Expects logit sink num heads {logit_sink.shape[0]} to be equal to "
+                f"num query heads {query.shape[2]}."
             )
         return True
 
@@ -305,6 +311,8 @@ class BaseSingleStepDecoding(BaseFlashAttention):
             return self._log_unsupported(f"{query.shape[1]=} != 1")
         if self.cfg.dropout_rate != 0.0:
             raise ValueError("Dropout rate cannot be set for decoding!")
+        if input_batch["logit_sink"] is not None:
+            return self._log_unsupported("logit_sink is not supported.")
         return True
 
 
@@ -454,13 +462,16 @@ class ReferenceMHA(BaseFlashAttention):
         key: Tensor = input_batch["key"]
         value: Tensor = input_batch["value"]
         bias: BaseAttentionBias = input_batch["bias"]
-        query *= self.cfg.softmax_scale
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
         page_tables = input_batch.get("page_tables", None)
+
+        query *= self.cfg.softmax_scale
+
         if page_tables is not None:
             key = reconstruct_kv(page_tables, key)
             value = reconstruct_kv(page_tables, value)
         logits = compute_gqa_logits(query, key)
-        probs = softmax_with_biases(logits, bias.value())
+        probs = softmax_with_biases(logits, bias.value(), logit_sink)
         if self.cfg.dropout_rate > 0:
             probs = dropout(
                 probs,
