@@ -504,7 +504,8 @@ def mixture_train_input_source(
                 config_for_function(input_tf_data.tfds_dataset).set(
                     dataset_name=component.name,
                     split=component.split,
-                    train_shuffle_buffer_size=64 * component.shuffle_buffer_size,
+                    # train_shuffle_buffer_size=64 * component.shuffle_buffer_size,
+                    train_shuffle_buffer_size=0,
                     read_config=tfds_read_config(),
                 )
             )
