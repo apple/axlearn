@@ -5866,6 +5866,308 @@ class BottleNeckAdapterTransformerLayerTest(TestCase):
         assert outputs.data.shape == (2, 3, 32)
 
 
+class LogitSinkTest(TestCase):
+    """Tests logit_sink functionality in MultiheadAttention."""
+
+    def test_logit_sink_basic_functionality(self):
+        """Test that logit_sink is properly applied in softmax computation."""
+        model_dim = 16
+        num_heads = 4
+        batch_size = 2
+        seq_len = 6
+
+        # Create attention layer with logit_sink enabled
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test_attention",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            logit_sink=True,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        # Check that sink parameter exists and has correct shape
+        self.assertIn("sink", layer_params)
+        self.assertEqual(layer_params["sink"].shape, (num_heads,))
+
+        # Test forward pass
+        query = jax.random.normal(
+            jax.random.PRNGKey(0), [batch_size, seq_len, model_dim], dtype=jnp.float32
+        )
+
+        outputs, _ = F(
+            layer,
+            inputs=dict(query=query, return_aux={"probs"}),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+        )
+
+        # Check output shapes
+        self.assertEqual(outputs.data.shape, (batch_size, seq_len, model_dim))
+        self.assertEqual(outputs.probs.shape, (batch_size, num_heads, seq_len, seq_len))
+
+        # Check that probabilities sum to less than 1.0.
+        prob_sums = jnp.sum(outputs.probs, axis=-1)
+        np.testing.assert_array_less(prob_sums, 1.0)
+
+    def test_logit_sink_vs_no_logit_sink(self):
+        """Test that logit_sink affects attention probabilities."""
+        model_dim = 8
+        num_heads = 2
+        batch_size = 1
+        seq_len = 4
+
+        # Create two identical layers, one with logit_sink, one without
+        base_cfg = attention.MultiheadAttention.default_config().set(
+            name="test_attention",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+
+        layer_no_sink = base_cfg.set(logit_sink=False).instantiate(parent=None)
+        layer_with_sink = base_cfg.set(logit_sink=True).instantiate(parent=None)
+
+        # Initialize with same parameters (except sink)
+        init_key = jax.random.PRNGKey(123)
+        params_no_sink = layer_no_sink.initialize_parameters_recursively(prng_key=init_key)
+        params_with_sink = layer_with_sink.initialize_parameters_recursively(prng_key=init_key)
+
+        # Copy non-sink parameters to ensure they're identical
+        for key in params_no_sink:
+            if key in params_with_sink:
+                params_with_sink[key] = params_no_sink[key]
+
+        # Set sink to non-zero values to see effect
+        params_with_sink["sink"] = jnp.array([1.0, -0.5], dtype=jnp.float32)
+
+        query = jax.random.normal(
+            jax.random.PRNGKey(0), [batch_size, seq_len, model_dim], dtype=jnp.float32
+        )
+
+        # Get outputs from both layers
+        outputs_no_sink, _ = F(
+            layer_no_sink,
+            inputs=dict(query=query, return_aux={"probs"}),
+            state=params_no_sink,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+        )
+
+        outputs_with_sink, _ = F(
+            layer_with_sink,
+            inputs=dict(query=query, return_aux={"probs"}),
+            state=params_with_sink,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+        )
+
+        # Probabilities should be different due to logit sink
+        self.assertFalse(jnp.allclose(outputs_no_sink.probs, outputs_with_sink.probs, atol=1e-6))
+
+        prob_sums = jnp.sum(outputs_with_sink.probs, axis=-1)
+        np.testing.assert_array_less(prob_sums, 1.0)
+
+        prob_sums = jnp.sum(outputs_no_sink.probs, axis=-1)
+        np.testing.assert_allclose(prob_sums, 1.0, rtol=1e-5)
+
+    @parameterized.parameters(
+        dict(
+            model_dim=8,
+            num_heads=2,
+            batch_size=1,
+            seq_len=4,
+            sink_values=[0.5, -1.0],
+        ),
+        dict(
+            model_dim=16,
+            num_heads=4,
+            batch_size=2,
+            seq_len=6,
+            sink_values=[1.0, -0.5, 0.0, 0.2],
+        ),
+    )
+    def test_logit_sink_with_attention_biases(
+        self, model_dim, num_heads, batch_size, seq_len, sink_values
+    ):
+        """Test logit_sink works correctly with attention biases."""
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test_attention",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            logit_sink=True,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        # Set sink values
+        layer_params["sink"] = jnp.array(sink_values, dtype=jnp.float32)
+
+        query = jax.random.normal(
+            jax.random.PRNGKey(0), [batch_size, seq_len, model_dim], dtype=jnp.float32
+        )
+
+        # Create causal attention biases
+        attention_logit_biases = attention_bias.make_causal_biases(seq_len)
+
+        outputs, _ = F(
+            layer,
+            inputs=dict(
+                query=query, attention_logit_biases=attention_logit_biases, return_aux={"probs"}
+            ),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+        )
+
+        # Check that causal masking is still applied (upper triangle should be ~0)
+        probs = outputs.probs[0, 0]  # First batch, first head
+        upper_triangle = jnp.triu(probs, k=1)
+        self.assertTrue(jnp.all(upper_triangle < 1e-6))
+
+        # Check that probabilities still sum to less than 1
+        prob_sums = jnp.sum(outputs.probs, axis=-1)
+        np.testing.assert_array_less(prob_sums, 1.0)
+
+    def test_logit_sink_parameter_initialization(self):
+        """Test that logit_sink parameters are initialized correctly."""
+        model_dim = 12
+        num_heads = 3
+
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test_attention",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            logit_sink=True,
+        )
+        layer = cfg.instantiate(parent=None)
+
+        # Check parameter specs
+        param_specs = layer.create_parameter_specs_recursively()
+        self.assertIn("sink", param_specs)
+        sink_spec = param_specs["sink"]
+        self.assertEqual(sink_spec.shape, (num_heads,))
+        self.assertEqual(sink_spec.mesh_axes, ("model",))
+        self.assertEqual(sink_spec.weight_decay_scale, 0.0)
+
+    def test_logit_sink_disabled_by_default(self):
+        """Test that logit_sink is disabled by default."""
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test_attention",
+            query_dim=8,
+            key_dim=8,
+            value_dim=8,
+            num_heads=2,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        # Should not have sink parameter when logit_sink is None/False
+        self.assertNotIn("sink", layer_params)
+
+    @parameterized.parameters(
+        dict(dtype=jnp.float32),
+        dict(dtype=jnp.bfloat16),
+        dict(dtype=jnp.float16),
+    )
+    def test_logit_sink_with_different_dtypes(self, dtype):
+        """Test logit_sink works with different data types."""
+        model_dim = 8
+        num_heads = 2
+        batch_size = 1
+        seq_len = 3
+
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test_attention",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            logit_sink=True,
+            dtype=dtype,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        query = jax.random.normal(
+            jax.random.PRNGKey(0), [batch_size, seq_len, model_dim], dtype=dtype
+        )
+
+        outputs, _ = F(
+            layer,
+            inputs=dict(query=query, return_aux={"probs"}),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(456),
+        )
+
+        # Check output dtype matches input
+        self.assertEqual(outputs.data.dtype, dtype)
+        prob_sums = jnp.sum(outputs.probs, axis=-1)
+        np.testing.assert_array_less(prob_sums, 1.0)
+
+    @parameterized.parameters(
+        dict(use_attention_biases=False),
+        dict(use_attention_biases=True),
+    )
+    def test_softmax_with_biases_logit_sink(self, use_attention_biases):
+        """Test the softmax_with_biases function with logit_sink in various scenarios."""
+        batch_size = 2
+        num_heads = 3
+        seq_len = 4
+        logit_sink_values = [1.0, -0.5, 0.0]
+
+        # Create test logits
+        logits = jax.random.normal(
+            jax.random.PRNGKey(0), [batch_size, num_heads, seq_len, seq_len], dtype=jnp.float32
+        )
+
+        # Create logit sink
+        logit_sink = jnp.array(logit_sink_values, dtype=jnp.float32)
+
+        # Create attention biases if needed
+        attention_logit_biases = None
+        if use_attention_biases:
+            attention_logit_biases = attention_bias.make_causal_biases(seq_len)
+        else:
+            attention_logit_biases = None
+
+        # Test without logit sink
+        probs_no_sink = attention.softmax_with_biases(
+            logits, attention_logit_biases=attention_logit_biases
+        )
+
+        # Test with logit sink
+        probs_with_sink = attention.softmax_with_biases(
+            logits, attention_logit_biases=attention_logit_biases, logit_sink=logit_sink
+        )
+
+        # Both should have same shape
+        self.assertEqual(probs_no_sink.shape, probs_with_sink.shape)
+
+        # Check causal masking is applied (upper triangle should be ~0)
+        if use_attention_biases:
+            upper_triangle = jnp.triu(probs_with_sink[0, 0], k=1)
+            self.assertTrue(jnp.all(upper_triangle < 1e-6))
+
+        prob_sums = jnp.sum(probs_with_sink, axis=-1)
+        np.testing.assert_array_less(prob_sums, 1.0)
+
+        prob_sums = jnp.sum(probs_no_sink, axis=-1)
+        np.testing.assert_allclose(prob_sums, 1.0, rtol=1e-5)
+
+        # Results should be different
+        self.assertFalse(jnp.allclose(probs_no_sink, probs_with_sink, atol=1e-6))
+
+
 if __name__ == "__main__":
     with utils.numeric_checks(True):
         absltest.main()

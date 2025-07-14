@@ -44,11 +44,13 @@ class GoodputRecorder(measurement.Recorder):
             upload_interval: Time interval (seconds) for monitoring uploads.
             rolling_window_size: A sequence of integers defining the rolling window sizes in
                 seconds.
+            jax_backend: Jax backend type to infer Pathways environment.
         """
 
         upload_dir: Required[str] = REQUIRED
         upload_interval: Required[int] = REQUIRED
         rolling_window_size: Sequence[int] = []
+        jax_backend: Optional[str] = None
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues) -> "GoodputRecorder":
@@ -62,6 +64,7 @@ class GoodputRecorder(measurement.Recorder):
             to Tensorboard.
         - rolling_window_size: Comma-separated list of integers representing rolling window
             sizes in seconds.
+        - jax_backend: The type of jax backend.
         """
         cfg: measurement.Recorder.Config = cls.default_config()
         parsed_flags = parse_kv_flags(fv.recorder_spec, delimiter="=")
@@ -80,6 +83,8 @@ class GoodputRecorder(measurement.Recorder):
         self._recorder: Optional[goodput.GoodputRecorder] = None
         self._monitor: Optional[goodput_monitoring.GoodputMonitor] = None
         self._rolling_window_monitor: Optional[goodput_monitoring.GoodputMonitor] = None
+        self._job_name = cfg.name
+        self._logger_name = f"goodput_logger_{cfg.name}"
 
     @contextlib.contextmanager
     def record_event(self, event: measurement.Event, *args, **kwargs):
@@ -89,8 +94,8 @@ class GoodputRecorder(measurement.Recorder):
             if jax.process_index() == 0:
                 logging.info("Lazily instantiating goodput recorder.")
             self._recorder = goodput.GoodputRecorder(
-                job_name=self.config.name,
-                logger_name=f"goodput_logger_{self.config.name}",
+                job_name=self._job_name,
+                logger_name=self._logger_name,
                 logging_enabled=(jax.process_index() == 0),
             )
 
@@ -139,16 +144,13 @@ class GoodputRecorder(measurement.Recorder):
             return
         try:
             if self._monitor is None:
-                pathways_enabled = (
-                    hasattr(flags.FLAGS, "jax_backend") and flags.FLAGS.jax_backend == "proxy"
-                )
                 self._monitor = goodput_monitoring.GoodputMonitor(
-                    job_name=self.config.name,
-                    logger_name=f"goodput_logger_{self.config.name}",
+                    job_name=self._job_name,
+                    logger_name=self._logger_name,
                     tensorboard_dir=self.config.upload_dir,
                     upload_interval=self.config.upload_interval,
                     monitoring_enabled=True,
-                    pathway_enabled=pathways_enabled,
+                    pathway_enabled=self.config.jax_backend == "proxy",
                     include_badput_breakdown=True,
                 )
 
@@ -168,19 +170,16 @@ class GoodputRecorder(measurement.Recorder):
             return
         try:
             if self._rolling_window_monitor is None:
-                pathways_enabled = (
-                    hasattr(flags.FLAGS, "jax_backend") and flags.FLAGS.jax_backend == "proxy"
-                )
                 rolling_window_tensorboard_dir = os.path.join(
                     self.config.upload_dir, f"rolling_window_{self.config.name}"
                 )
                 self._rolling_window_monitor = goodput_monitoring.GoodputMonitor(
-                    job_name=self.config.name,
-                    logger_name=f"goodput_logger_{self.config.name}",
+                    job_name=self._job_name,
+                    logger_name=self._logger_name,
                     tensorboard_dir=rolling_window_tensorboard_dir,
                     upload_interval=self.config.upload_interval,
                     monitoring_enabled=True,
-                    pathway_enabled=pathways_enabled,
+                    pathway_enabled=self.config.jax_backend == "proxy",
                     include_badput_breakdown=True,
                 )
             self._rolling_window_monitor.start_rolling_window_goodput_uploader(

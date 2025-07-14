@@ -122,7 +122,7 @@ class SpmdTrainer(Module):
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
         # TODO(markblee): Deprecate this field in favor of `input.input_partitioner`.
-        batch_axis_names: Union[str, Sequence[str]] = "data"
+        batch_axis_names: Optional[Union[str, Sequence[str]]] = "data"
 
         # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
         #
@@ -300,66 +300,64 @@ class SpmdTrainer(Module):
             self._xsc_check_policy: Optional[Callable[[int], bool]] = xsc_check_policy
             self._compiled_train_step: Optional[jax.stages.Compiled] = None
 
-            # Create all children within the mesh context so that utils.input_partition_spec() works
-            # properly.
-            with self.mesh():
-                self.input: Input = self._add_child(
-                    "input",
-                    maybe_set_config(
-                        cfg.input,
-                        partition_spec=PartitionSpec(cfg.batch_axis_names),
-                        is_training=True,
-                    ),
+        # Create all children within the mesh context so that utils.input_partition_spec() works
+        # properly.
+        with self.mesh():
+            if cfg.batch_axis_names is not None:
+                cfg.input = maybe_set_config(
+                    cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
                 )
-                # Start from the beginning of the input dataset by default.
-                self._input_iter = iter(self.input.dataset())
-                cfg.summary_writer.dir = cfg.summary_writer.dir or os.path.join(
-                    cfg.dir, "summaries", "train_train"
-                )
-                self._add_child("summary_writer", cfg.summary_writer)
-                self._add_child("model", cfg.model)
-                self._add_child("learner", cfg.learner)
-                cfg.checkpointer.dir = cfg.checkpointer.dir or os.path.join(cfg.dir, "checkpoints")
-                self._add_child("checkpointer", cfg.checkpointer)
-                if cfg.init_state_builder is not None:
-                    self._add_child("init_state_builder", cfg.init_state_builder)
+            self.input: Input = self._add_child(
+                "input", maybe_set_config(cfg.input, is_training=True)
+            )
+            # Start from the beginning of the input dataset by default.
+            self._input_iter = iter(self.input.dataset())
+            cfg.summary_writer.dir = cfg.summary_writer.dir or os.path.join(
+                cfg.dir, "summaries", "train_train"
+            )
+            self._add_child("summary_writer", cfg.summary_writer)
+            self._add_child("model", cfg.model)
+            self._add_child("learner", cfg.learner)
+            cfg.checkpointer.dir = cfg.checkpointer.dir or os.path.join(cfg.dir, "checkpoints")
+            self._add_child("checkpointer", cfg.checkpointer)
+            if cfg.init_state_builder is not None:
+                self._add_child("init_state_builder", cfg.init_state_builder)
 
-                self._model_param_specs = self.model.create_parameter_specs_recursively()
-                model_param_partition_specs = jax.tree.map(
-                    lambda spec: spec.mesh_axes, self._model_param_specs
+            self._model_param_specs = self.model.create_parameter_specs_recursively()
+            model_param_partition_specs = jax.tree.map(
+                lambda spec: spec.mesh_axes, self._model_param_specs
+            )
+            for name, spec in utils.flatten_items(self._model_param_specs):
+                self._step_log("Model param spec: %s=%s", name, spec)
+            self._learner_state_partition_specs = self.learner.create_state_partition_specs(
+                self._model_param_specs
+            )
+            for name, spec in utils.flatten_items(self._learner_state_partition_specs):
+                self._step_log("Learner state spec: %s=%s", name, spec)
+            self._trainer_state_specs = TrainerState(
+                prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
+                model=self._model_param_specs,
+                learner=self._learner_state_partition_specs,
+            )
+            self._trainer_state_partition_specs: TrainerState = jax.tree.map(
+                lambda spec: spec.sharding, self._trainer_state_specs
+            )
+            # Create evalers, which depend on model_param_partition_specs.
+            self._evalers = {}
+            for evaler_name, evaler_cfg in cfg.evalers.items():
+                evaler_cfg.summary_writer.dir = evaler_cfg.summary_writer.dir or os.path.join(
+                    cfg.dir, "summaries", evaler_name
                 )
-                for name, spec in utils.flatten_items(self._model_param_specs):
-                    self._step_log("Model param spec: %s=%s", name, spec)
-                self._learner_state_partition_specs = self.learner.create_state_partition_specs(
-                    self._model_param_specs
-                )
-                for name, spec in utils.flatten_items(self._learner_state_partition_specs):
-                    self._step_log("Learner state spec: %s=%s", name, spec)
-                self._trainer_state_specs = TrainerState(
-                    prng_key=ParameterSpec(
-                        dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)
-                    ),
-                    model=self._model_param_specs,
-                    learner=self._learner_state_partition_specs,
-                )
-                self._trainer_state_partition_specs: TrainerState = jax.tree.map(
-                    lambda spec: spec.sharding, self._trainer_state_specs
-                )
-                # Create evalers, which depend on model_param_partition_specs.
-                self._evalers = {}
-                for evaler_name, evaler_cfg in cfg.evalers.items():
-                    evaler_cfg.summary_writer.dir = evaler_cfg.summary_writer.dir or os.path.join(
-                        cfg.dir, "summaries", evaler_name
-                    )
+                if cfg.batch_axis_names is not None:
                     maybe_set_config(
                         evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
                     )
-                    self._evalers[evaler_name] = self._add_child(
-                        evaler_name,
-                        evaler_cfg,
-                        model=self.model,
-                        model_param_partition_specs=model_param_partition_specs,
-                    )
+                self._evalers[evaler_name] = self._add_child(
+                    evaler_name,
+                    evaler_cfg,
+                    model=self.model,
+                    model_param_partition_specs=model_param_partition_specs,
+                )
 
     @property
     def step(self):
@@ -614,7 +612,7 @@ class SpmdTrainer(Module):
                             input_batch = next(input_iterator)
 
                         logging.log_first_n(
-                            logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
+                            logging.INFO, "host_input_batch=%s", 3, utils.shapes(input_batch)
                         )
 
                         # Stop or start tracing if necessary.
@@ -629,7 +627,7 @@ class SpmdTrainer(Module):
                         )
                         with step_events_manager:
                             output = self._run_step(
-                                utils.host_to_global_device_array(
+                                utils.host_to_global_array(
                                     input_batch,
                                     partition=self._train_step_input_partition_specs(),
                                 ),
@@ -1121,6 +1119,7 @@ class SpmdTrainer(Module):
             A dict containing 'loss' and 'aux' outputs. If force_run_evals is a set,
             force run the evalers in the set and return 'evaler_summaries' output.
         """
+        logging.log_first_n(logging.INFO, "global_input_batch=%s", 3, utils.shapes(input_batch))
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             run_with_xsc = self._xsc_check_policy and self._xsc_check_policy(self.step)
             compiled_train_step_fn = self._get_compiled_train_step_fn(

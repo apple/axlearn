@@ -16,17 +16,6 @@ from axlearn.common.config import RequiredFieldMissingError
 class GoodputRecorderTest(parameterized.TestCase):
     """Tests GoodputRecorder."""
 
-    def setUp(self):
-        super().setUp()
-        self.mock_flags = mock.MagicMock(spec=flags.FlagValues)
-        self.mock_flags.jax_backend = None
-        self.patch_flags_global = mock.patch.object(flags, "FLAGS", new=self.mock_flags)
-        self.patch_flags_global.start()
-
-    def tearDown(self):
-        super().tearDown()
-        self.patch_flags_global.stop()
-
     @parameterized.parameters(
         dict(
             recorder_spec=[
@@ -35,6 +24,7 @@ class GoodputRecorderTest(parameterized.TestCase):
                 "upload_interval=15",
             ],
             expected_rolling_window_size=[],
+            expected_jax_backend=None,
         ),
         dict(
             recorder_spec=[
@@ -42,14 +32,17 @@ class GoodputRecorderTest(parameterized.TestCase):
                 "upload_dir=/test/path",
                 "upload_interval=15",
                 "rolling_window_size=1,2,3",
+                "jax_backend=proxy",
             ],
             expected_rolling_window_size=[1, 2, 3],
+            expected_jax_backend="proxy",
         ),
     )
     def test_from_flags(
         self,
         recorder_spec,
         expected_rolling_window_size,
+        expected_jax_backend,
     ):
         """Tests that flags are correctly parsed into the config."""
         mock_fv = mock.MagicMock(spec=flags.FlagValues)
@@ -62,6 +55,7 @@ class GoodputRecorderTest(parameterized.TestCase):
         self.assertEqual("/test/path", recorder.config.upload_dir)
         self.assertEqual(15, recorder.config.upload_interval)
         self.assertEqual(expected_rolling_window_size, recorder.config.rolling_window_size)
+        self.assertEqual(expected_jax_backend, recorder.config.jax_backend)
 
     def test_from_flags_missing_required(self):
         """Tests that missing required flags raise an error."""
@@ -91,15 +85,16 @@ class GoodputRecorderTest(parameterized.TestCase):
     @parameterized.parameters(
         dict(is_pathways_job=False, mock_jax_backend="tpu"),
         dict(is_pathways_job=True, mock_jax_backend="proxy"),
+        dict(is_pathways_job=False, mock_jax_backend=None),
     )
     @mock.patch("jax.process_index", return_value=0)
     def test_maybe_monitor_goodput(self, _, is_pathways_job, mock_jax_backend):
         """Tests the maybe_monitor_goodput context manager."""
-        self.mock_flags.jax_backend = mock_jax_backend
         cfg = GoodputRecorder.default_config().set(
             name="test-monitor",
             upload_dir="/test",
             upload_interval=30,
+            jax_backend=mock_jax_backend,
         )
         recorder = GoodputRecorder(cfg)
 
@@ -151,12 +146,12 @@ class GoodputRecorderTest(parameterized.TestCase):
         mock_jax_backend,
     ):  # pylint: disable=unused-argument
         """Tests the rolling window monitoring context manager."""
-        self.mock_flags.jax_backend = mock_jax_backend
         cfg = GoodputRecorder.default_config().set(
             name="test-rolling",
             upload_dir="/test",
             upload_interval=30,
             rolling_window_size=rolling_window_size,
+            jax_backend=mock_jax_backend,
         )
         recorder = GoodputRecorder(cfg)
 
@@ -190,7 +185,6 @@ class GoodputRecorderTest(parameterized.TestCase):
         self, mock_process_index
     ):  # pylint: disable=unused-argument
         """Tests that monitoring is skipped on non-zero process indices."""
-        self.mock_flags.jax_backend = "tpu"
         cfg = GoodputRecorder.default_config().set(
             name="test", upload_dir="/test", upload_interval=30
         )

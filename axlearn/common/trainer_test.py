@@ -1216,6 +1216,26 @@ class TrainerTest(test_utils.TestCase):
         """Tests input dispatch with some padding feeds. Requires process_count > 1."""
         self._test_input_dispatch(multiple, backend="tpu")
 
+    def test_optional_batch_axes(self):
+        """Tests that we can omit batch_axis_names."""
+        mesh_shape = (jax.device_count(), 1)
+        global_logical_batch_size = mesh_shape[0]
+        partition_spec = PartitionSpec("model")  # Something other than "data".
+
+        # Explicitly set a partition spec on input.
+        input_cfg = self._dummy_input_checking_input(global_logical_batch_size)
+        input_cfg.partition_spec = partition_spec
+
+        cfg = self._trainer_config(input_cfg)
+        cfg.batch_axis_names = None
+        cfg.max_step = 3
+        cfg.mesh_shape = mesh_shape
+        cfg.model = self._dummy_input_checking_model(
+            global_logical_batch_size, partition_spec=partition_spec
+        )
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        self.assertEqual(partition_spec, trainer.input.partition_spec)
+
 
 class SelectMeshConfigTest(test_utils.TestCase):
     def test_select_mesh_config(self):

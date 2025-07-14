@@ -611,13 +611,21 @@ def apply_attention_logit_biases(
     return logits + attention_logit_biases.astype(logits.dtype)
 
 
-def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor] = None) -> Tensor:
+def softmax_with_biases(
+    logits: Tensor,
+    attention_logit_biases: Optional[Tensor] = None,
+    logit_sink: Optional[Tensor] = None,
+) -> Tensor:
     """Computes softmax with optional masking.
 
     Args:
         logits: A Tensor of any shape.
         attention_logit_biases: A Tensor that is broadcastable with logits.
             See ``On attention logit biases`` in the file comments.
+        logit_sink: Optional logit sink values of shape [num_heads]. When provided,
+            an additional "sink" logit is added to the QK logits to absorb excess
+            attention mass. This is applied after the logit biases, so the logit
+            biases have no effect on logit sinks.
 
     Returns:
         A Tensor of same shape and dtype as logits.
@@ -628,9 +636,29 @@ def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor]
     if logits_dtype in (jnp.bfloat16, jnp.float16):
         # Avoid computing softmax in 16-bit floats.
         logits = logits.astype(jnp.float32)
-    probs = jax.nn.softmax(logits, axis=-1)
+
+    if logit_sink is not None:
+        # Broadcast logit_sink from [num_heads] to [batch, num_heads, target_len, 1].
+        logit_sink_expanded = jnp.broadcast_to(
+            logit_sink[None, :, None, None], (*logits.shape[:-1], 1)
+        )
+        # Concatenate sink logits to the original logits
+        logits_with_sink = jnp.concatenate([logit_sink_expanded, logits], axis=-1)
+
+        # Compute softmax over logits + sink
+        probs_with_sink = jax.nn.softmax(logits_with_sink, axis=-1)
+
+        # Extract probabilities for original tokens (excluding sink)
+        probs = probs_with_sink[..., 1:]
+
+        # Note: The probabilities sum to less than 1 since some mass went to the sink.
+        # This is the intended behavior for logit sinks - they absorb excess attention mass.
+    else:
+        probs = jax.nn.softmax(logits, axis=-1)
+
     if probs.dtype != logits_dtype:
         probs = probs.astype(logits_dtype)
+
     check_numerics(probs)
     return probs
 
@@ -1518,6 +1546,9 @@ class MultiheadAttention(BaseLayer):
         # architectures that have different scaling factors for KV-shared layers.
         scale_kv_before_cache_update: Optional[bool] = None
 
+        # If true, use learnable logit sinks.
+        logit_sink: Optional[bool] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -1563,6 +1594,20 @@ class MultiheadAttention(BaseLayer):
 
         kv_cache = cfg.kv_cache or KVCache.default_config()
         self._add_child("kv_cache", kv_cache)
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        params = {}
+        if cfg.logit_sink:
+            initializer = ConstantInitializer.default_config().set(value=0.0).instantiate()
+            params["sink"] = ParameterSpec(
+                shape=(cfg.num_heads,),
+                mesh_axes=("model",),
+                initializer=initializer,
+                dtype=cfg.dtype,
+                weight_decay_scale=0.0,
+            )
+        return params
 
     def output_dim(self):
         cfg = self.config
@@ -1821,7 +1866,10 @@ class MultiheadAttention(BaseLayer):
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
-        probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases.value())
+        logit_sink = self.parameters.get("sink", None)
+        probs = softmax_with_biases(
+            logits, attention_logit_biases=attention_logit_biases.value(), logit_sink=logit_sink
+        )
         probs = self.dropout(probs)
         context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
@@ -4230,6 +4278,7 @@ def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
+    *,
     save_pattern: SavePattern = RematRegexSavePatterns.NATIVE_ATTENTION.value,
     offload_pattern: SavePattern = None,
     offload_dst: str = "pinned_host",

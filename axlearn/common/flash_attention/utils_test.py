@@ -186,6 +186,7 @@ class TestFlashAttention(TestCase):
                     value=value,
                     prng_key=prng_key,
                     bias=bias,
+                    logit_sink=None,
                 )
                 ref_out = ref_fn(input_batch)
                 test_out = test_fn(input_batch)
@@ -286,6 +287,7 @@ class TestFlashAttention(TestCase):
                     value=value_for_forward,
                     prng_key=prng_key,
                     bias=bias,
+                    logit_sink=None,
                 )
                 fwd_out = fwd_fn(forward_batch)
                 # Limit generation length to 16 to save test time.
@@ -317,6 +319,7 @@ class TestFlashAttention(TestCase):
                         prng_key=prng_key,
                         page_tables=page_tables,
                         bias=bias_step,
+                        logit_sink=None,
                     )
                     decoding_out = decode_fn(
                         input_batch=decode_batch,

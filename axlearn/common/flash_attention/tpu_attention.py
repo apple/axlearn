@@ -926,6 +926,7 @@ class TPUSplashAttention(TPUFlashAttention):
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         value: Tensor = input_batch["value"]
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
         prng_key = input_batch.get("prng_key", None)
 
         if cfg.dropout_rate > 0.0 and prng_key is None:
@@ -957,7 +958,9 @@ class TPUSplashAttention(TPUFlashAttention):
             # and 1.14x in 539.5b.
             use_fused_bwd_kernel=True,
         )
-        splash_mask = _to_splash_mask(mask, mask_shape=(query.shape[2], key.shape[2]))
+        splash_mask = _to_splash_mask(
+            mask, mask_shape=(query.shape[2], key.shape[2]), q_seq_shards=1
+        )
 
         num_heads = query.shape[1]
         mha_mask = splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads)
@@ -973,7 +976,7 @@ class TPUSplashAttention(TPUFlashAttention):
             interpret=self.cfg.interpret,
             residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
         )
-        p_kernel = functools.partial(kernel, prng_key=prng_key)
+        p_kernel = functools.partial(kernel, prng_key=prng_key, logit_sink=logit_sink)
         vp_kernel = jax.vmap(p_kernel, axis_name="batch")
         context = vp_kernel(q=query, k=key, v=value, segment_ids=seg_ids)
         return jnp.einsum("bnth->btnh", context)
@@ -1037,6 +1040,9 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
             return self._log_unsupported(f"{query.dtype=} != {key.dtype=}")
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
+        logit_sink = input_batch.get("logit_sink", None)
+        if logit_sink is not None:
+            return self._log_unsupported("LegacyTPUFlashAttention doesn't support logit sink.")
         logging.info("Using %s.", self.name())
         return True
 

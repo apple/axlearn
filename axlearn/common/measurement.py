@@ -50,10 +50,6 @@ class Recorder(Configurable):
         """Converts flags to a recorder."""
         raise NotImplementedError(cls)
 
-    def record(self, event: Event, *args, **kwargs):
-        """DEPRECATED: Records a single point-in-time event."""
-        raise NotImplementedError(type(self))
-
     @contextlib.contextmanager
     def record_event(self, event: Event, *args, **kwargs):
         """A context manager to record the start and end of an event."""
@@ -133,19 +129,6 @@ def initialize(fv: flags.FlagValues):
             "Recorder %s is already initialized, ignoring initialize().",
             global_recorder,
         )
-
-
-def record_event(event: Event):
-    """Records a global event."""
-    # pylint: disable=unused-argument
-    if global_recorder and hasattr(global_recorder, "record_event"):
-        logging.log_first_n(
-            logging.WARNING,
-            "Global record_event call is deprecated, use the context managers instead",
-            1,
-        )
-    else:
-        logging.log_first_n(logging.INFO, "No recorder configured, ignoring events.", 1)
 
 
 def start_monitoring():

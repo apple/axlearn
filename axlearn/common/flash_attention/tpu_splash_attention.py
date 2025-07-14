@@ -19,6 +19,18 @@ is also added at the end to construct the whole dropout mask for debugging purpo
 
 (bailin-wang) Known issue: as of version 0.5.3, directly passing the prng_key as the input leads
 to lowering error (AssertionError: key<pl>). However, if prng_key is prefetched, it works fine.
+
+On logit sink:
+The implementation extends the online softmax algorithm to support additional sink logits that
+participate in the max and sum computations but do not contribute to the output. When enabled,
+the `logit_sink` parameter provides per-head scalar values that are incorporated into the
+softmax normalization as follows: the running maximum is initialized with the sink value, and
+at each step, the sink's contribution is added to the normalization sum (denominator) as
+exp(logit_sink - running_max). The sink does not contribute to the numerator of the
+attention-weighted sum, as it has no corresponding value. In the backward pass, gradients for
+the sink logits are computed as the negative sum of their attention weights multiplied by the
+output gradients, reflecting their role in the normalization term without direct output
+contribution.
 """
 
 # pytype: skip-file
@@ -45,7 +57,6 @@ from jax.experimental.pallas.ops.tpu.splash_attention.splash_attention_kernel im
     QKVLayout,
     SegmentIds,
     SplashCustomReturnType,
-    SplashResidualsType,
     _apply_mask_and_soft_cap,
     _div,
     _next_nonzero,
@@ -60,6 +71,20 @@ NUM_SUBLANES = 8
 # We predefine some useful dimension numbers for dot_general
 NN_DIM_NUMBERS = (((1,), (0,)), ((), ()))  # standard matmul
 NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))  # RHS transposed
+
+# Redefine SplashResidualsType to include logit_sink
+SplashResidualsType = tuple[
+    jax.Array,  # q
+    jax.Array,  # k
+    jax.Array,  # v
+    SegmentIds | None,  # segment_ids
+    jax.Array,  # out
+    jax.Array,  # logsumexp
+    mask_info_lib.MaskInfo | None,  # dq_mask_info
+    mask_info_lib.MaskInfo | None,  # dkv_mask_info
+    jax.Array | None,  # prng_key
+    jax.Array | None,  # logit_sink
+]
 
 
 def _generate_blockwise_dropout_mask(
@@ -92,6 +117,7 @@ def flash_attention_kernel(
     kv_segment_ids_ref,
     mask_ref,
     q_sequence_ref,
+    logit_sink_ref: jax.Array | None,
     # Outputs
     m_scratch_ref,
     l_scratch_ref,
@@ -125,7 +151,12 @@ def flash_attention_kernel(
     @pl.when(j == 0)
     def init():
         o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
-        m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
+        if logit_sink_ref is not None:
+            # Initialize running max with logit_sink_ref.
+            sink_value = logit_sink_ref[h].astype(jnp.float32)
+            m_scratch_ref[...] = jnp.full_like(m_scratch_ref, sink_value)
+        else:
+            m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
         l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
 
     global_kv_index, _, should_run, should_not_mask = _next_nonzero(
@@ -175,7 +206,7 @@ def flash_attention_kernel(
 
         qk = apply_mask_and_soft_cap()
 
-        m_curr = qk.max(axis=-1)[:, None]  # pytype: disable=attribute-error
+        m_curr = qk.max(axis=-1)[:, None]
         assert m_curr.shape == (bq, 1)
         m_next = jnp.maximum(m_prev, m_curr)
         assert m_next.shape == (bq, NUM_LANES)
@@ -188,6 +219,10 @@ def flash_attention_kernel(
         assert s_curr.shape == (bq, bkv_compute)
 
         l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
+        # Add sink contribution to normalization sum.
+        if logit_sink_ref is not None:
+            sink_value = logit_sink_ref[h].astype(qk.dtype)
+            l_curr = l_curr + jnp.exp(sink_value - m_next[:, 0:1])
         assert l_curr.shape == (bq, NUM_LANES)
 
         alpha = jnp.exp(m_prev - m_next)
@@ -245,6 +280,7 @@ def _splash_attention_forward(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None,
+    logit_sink: jax.Array | None,
     dropout_mask: jax.Array | None,
     mask_value: float,
     is_mqa: bool,
@@ -253,7 +289,7 @@ def _splash_attention_forward(
     mask_function: MaskFunctionType | None,
     save_residuals: Literal[False] = False,
     attn_logits_soft_cap: float | None = None,
-    droput_rate: float = 0.0,
+    dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
 ) -> jax.Array:
     ...
@@ -266,6 +302,7 @@ def _splash_attention_forward(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None,
+    logit_sink: jax.Array | None,
     dropout_mask: jax.Array | None,
     mask_value: float,
     is_mqa: bool,
@@ -286,6 +323,7 @@ def _splash_attention_forward(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None,
+    logit_sink: jax.Array | None,
     mask_value: float,
     is_mqa: bool,
     block_sizes: BlockSizes,
@@ -315,7 +353,7 @@ def _splash_attention_forward(
     partial_mask_blocks = fwd_mask_info.partial_mask_blocks
     if partial_mask_blocks is not None and jnp.dtype(partial_mask_blocks.dtype) != np.bool_:
         raise ValueError(
-            "partial_mask_blocks must be of type np.bool_ but got" f" {partial_mask_blocks.dtype}"
+            f"partial_mask_blocks must be of type np.bool_ but got {partial_mask_blocks.dtype}"
         )
 
     if len(k.shape) != expected_kv_rank:
@@ -337,14 +375,18 @@ def _splash_attention_forward(
         )
 
     if k.shape != v.shape:
-        raise ValueError(
-            f"Expected 'key' {k.shape} and 'value' {v.shape} to have the same" " shape."
-        )
+        raise ValueError(f"Expected 'key' {k.shape} and 'value' {v.shape} to have the same shape.")
 
     if bkv % bkv_compute:
         raise ValueError(f"{bkv=} must be a multiple of {bkv_compute=}.")
     if bkv_compute % NUM_LANES:
         raise ValueError(f"{bkv_compute=} must be a multiple of {NUM_LANES}.")
+
+    if logit_sink is not None and logit_sink.shape[0] != num_q_heads:
+        raise ValueError(
+            f"Expected number of logit_sink head to be {num_q_heads}. "
+            f"Instead got {logit_sink.shape[0]}."
+        )
 
     kv_seq_len = k.shape[kv_seq_len_dimension]
 
@@ -353,8 +395,7 @@ def _splash_attention_forward(
     if segment_ids is not None:
         if segment_ids.q.shape != (q_seq_len,):
             raise ValueError(
-                "Invalid shape for q segment_ids: "
-                f"{segment_ids.q.shape}. Expected: {(q_seq_len,)}"
+                f"Invalid shape for q segment_ids: {segment_ids.q.shape}. Expected: {(q_seq_len,)}"
             )
         if segment_ids.kv.shape != (kv_seq_len,):
             raise ValueError(
@@ -364,17 +405,41 @@ def _splash_attention_forward(
 
     q_layout = block_sizes.q_layout
 
-    def q_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+    def q_index_map(
+        h,
+        i,
+        j,
+        data_next_ref,
+        block_mask_ref,
+        mask_next_ref=None,
+        prng_key=None,
+    ):
         del j, data_next_ref, mask_next_ref, block_mask_ref, prng_key
         return from_head_minor((h, i, 0), q_layout)
 
-    def out_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+    def out_index_map(
+        h,
+        i,
+        j,
+        data_next_ref,
+        block_mask_ref,
+        mask_next_ref=None,
+        prng_key=None,
+    ):
         del j, data_next_ref, mask_next_ref, block_mask_ref, prng_key
         return h, i, 0
 
     k_layout = block_sizes.k_layout
 
-    def k_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+    def k_index_map(
+        h,
+        i,
+        j,
+        data_next_ref,
+        block_mask_ref,
+        mask_next_ref=None,
+        prng_key=None,
+    ):
         del prng_key
         next_j, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
         prefix = () if is_mqa else (_div(h, q_heads_per_kv_head),)
@@ -382,13 +447,29 @@ def _splash_attention_forward(
 
     v_layout = block_sizes.v_layout
 
-    def v_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+    def v_index_map(
+        h,
+        i,
+        j,
+        data_next_ref,
+        block_mask_ref,
+        mask_next_ref=None,
+        prng_key=None,
+    ):
         del prng_key
         next_j, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
         prefix = () if is_mqa else (_div(h, q_heads_per_kv_head),)
         return from_head_minor((*prefix, next_j, 0), v_layout)
 
-    def mask_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None):
+    def mask_index_map(
+        h,
+        i,
+        j,
+        data_next_ref,
+        block_mask_ref,
+        mask_next_ref=None,
+        prng_key=None,
+    ):
         del prng_key
         _, next_m, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
         return next_m, 0, 0
@@ -398,7 +479,13 @@ def _splash_attention_forward(
         return i, 0
 
     def kv_segment_ids_index_map(
-        h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None, prng_key=None
+        h,
+        i,
+        j,
+        data_next_ref,
+        block_mask_ref,
+        mask_next_ref=None,
+        prng_key=None,
     ):
         del prng_key
         next_j, *_ = _next_nonzero(h, i, j, data_next_ref, block_mask_ref, mask_next_ref)
@@ -441,6 +528,12 @@ def _splash_attention_forward(
         in_specs.append(pl.BlockSpec((bq, NUM_LANES), q_segment_ids_index_map))
     else:
         q_sequence = None
+        in_specs.append(None)
+
+    if logit_sink is not None:
+        logit_sink = logit_sink.astype(jnp.float32)
+        in_specs.append(pl.BlockSpec(memory_space=pltpu.SMEM))
+    else:
         in_specs.append(None)
 
     num_scalar_prefetch = 4
@@ -528,6 +621,7 @@ def _splash_attention_forward(
             kv_segment_ids,
             fwd_mask_info.partial_mask_blocks,
             q_sequence,
+            logit_sink,
         )
 
     (
@@ -551,7 +645,7 @@ def _splash_attention_forward(
     return out
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(7, 8, 9, 10, 11, 12, 13, 14, 16))
+@partial(jax.custom_vjp, nondiff_argnums=(8, 9, 10, 11, 12, 13, 14, 15, 17))
 def _splash_attention_custom(
     fwd_mask_info: mask_info_lib.MaskInfo,
     dq_mask_info: mask_info_lib.MaskInfo | None,
@@ -560,6 +654,7 @@ def _splash_attention_custom(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None,
+    logit_sink: jax.Array | None,
     save_residuals: bool,
     mask_value: float,
     is_mqa: bool,
@@ -588,6 +683,7 @@ def _splash_attention_custom(
         k,
         v,
         segment_ids,
+        logit_sink,
         mask_value=mask_value,
         is_mqa=is_mqa,
         block_sizes=block_sizes,
@@ -609,6 +705,7 @@ def _splash_attention_fwd(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None,
+    logit_sink: jax.Array | None,
     save_residuals: bool,
     mask_value: float,
     is_mqa: bool,
@@ -629,6 +726,7 @@ def _splash_attention_fwd(
         k,
         v,
         segment_ids,
+        logit_sink,
         mask_value=mask_value,
         is_mqa=is_mqa,
         block_sizes=block_sizes,
@@ -650,6 +748,7 @@ def _splash_attention_fwd(
         dq_mask_info,
         dkv_mask_info,
         prng_key,
+        logit_sink,
     )
 
 
@@ -728,6 +827,9 @@ def _flash_attention_dq_kernel(
             bq=bq,
             mask_function=mask_function,
         )
+
+        # The logsumexp already accounts for logit sink contribution from forward pass
+        # So we just use the regular qk for computing attention probabilities
         p = jnp.exp(qk - logsumexp)
         dp_dims = NT_DIM_NUMBERS if v_layout == HEAD_DIM_MINOR else NN_DIM_NUMBERS
         dp = lax.dot_general(
@@ -798,9 +900,7 @@ def _splash_attention_bwd_dq(
         )
 
     if k.shape != v.shape:
-        raise ValueError(
-            f"Expected 'key' {k.shape} and 'value' {v.shape} to have the same" " shape."
-        )
+        raise ValueError(f"Expected 'key' {k.shape} and 'value' {v.shape} to have the same shape.")
 
     if bkv % NUM_LANES:
         raise ValueError(f"{bkv=} must be a multiple of {NUM_LANES}.")
@@ -1227,9 +1327,7 @@ def _splash_attention_bwd_dkv(
         )
 
     if k.shape != v.shape:
-        raise ValueError(
-            f"Expected 'key' {k.shape} and 'value' {v.shape} to have the same" " shape."
-        )
+        raise ValueError(f"Expected 'key' {k.shape} and 'value' {v.shape} to have the same shape.")
 
     q_heads_per_kv_head = num_q_heads // num_kv_heads
 
@@ -1566,8 +1664,9 @@ def _splash_attention_bwd(
     jax.Array,  # q
     jax.Array,  # k
     jax.Array,  # v
-    SegmentIds | None,  # segmend_ids
-    jax.Array | None,  # dropout mask
+    SegmentIds | None,  # segment_ids
+    jax.Array | None,  # logit_sink
+    jax.Array | None,  # prng_key
 ]:
     del save_residuals, residual_checkpoint_name
     if not block_sizes.has_backward_blocks:
@@ -1589,12 +1688,36 @@ def _splash_attention_bwd(
         dq_mask_info,
         dkv_mask_info,
         prng_key,
+        logit_sink,
     ) = res
 
     # di: [num_heads, q_seq_len]
     di = jnp.einsum(
         "hsd,hsd->hs", o.astype(jnp.float32), do.astype(jnp.float32)
     )  # pytype: disable=attribute-error
+
+    # Compute logit sink gradients
+    # The gradient of logit sink comes from its contribution to the softmax normalization.
+    # Since the sink doesn't contribute to the output (no corresponding values),
+    # its gradient is: d_logit_sink = -sum_over_positions(sink_attention_weight * di)
+    #
+    # The sink attention weight at each position is: exp(logit_sink - logsumexp)
+    # So: d_logit_sink = -sum_i(exp(logit_sink - logsumexp[i]) * di[i])
+
+    if logit_sink is not None:
+        # Compute sink attention weights: exp(logit_sink - logsumexp)
+        # Shape: logit_sink is (num_heads,), logsumexp is (num_heads, seq_len)
+        # We need to broadcast logit_sink to (num_heads, seq_len) for computation
+        logit_sink_expanded = jnp.expand_dims(logit_sink, axis=-1)  # (num_heads, 1)
+        sink_attention_weights = jnp.exp(logit_sink_expanded - logsumexp)  # (num_heads, seq_len)
+
+        # Gradient is: -sum_over_seq_len(sink_attention_weight * di)
+        # di shape: (num_heads, seq_len), sink_attention_weights shape: (num_heads, seq_len)
+        d_logit_sink = -jnp.sum(sink_attention_weights * di, axis=-1)  # (num_heads,)
+        d_logit_sink = d_logit_sink.astype(logit_sink.dtype)
+    else:
+        d_logit_sink = None
+
     dq, dk, dv = _splash_attention_bwd_dkv(
         q,
         k,
@@ -1648,11 +1771,12 @@ def _splash_attention_bwd(
     return (
         None,  # fwd_mask_info
         None,  # dq_mask_info
-        None,  # dvk_mak_info
+        None,  # dkv_mask_info
         dq,  # q
         dk,  # k
         dv,  # v
         None,  # segment_ids
+        d_logit_sink,  # logit_sink gradient
         None,  # prng_key
     )
 
@@ -1682,6 +1806,7 @@ def _splash_attention(
     k: jax.Array,
     v: jax.Array,
     segment_ids: SegmentIds | None = None,
+    logit_sink: jax.Array | None = None,
     *,
     is_mqa: bool,
     block_sizes: BlockSizes | None,
@@ -1705,6 +1830,7 @@ def _splash_attention(
         k,
         v,
         segment_ids,
+        logit_sink,
         mask_value=mask_value,
         is_mqa=is_mqa,
         block_sizes=block_sizes,

@@ -84,12 +84,3 @@ class UtilsTest(parameterized.TestCase):
         ) as mock_start_monitoring:
             measurement.start_monitoring()
             mock_start_monitoring.assert_called_once()
-
-    def test_record_event_context_manager(self):
-        mock_recorder = mock.MagicMock()
-        mock_recorder.record_event.return_value = contextlib.nullcontext()
-
-        with mock_recorder.record_event(measurement.Event.STEP, 123):
-            pass
-
-        mock_recorder.record_event.assert_called_once_with(measurement.Event.STEP, 123)

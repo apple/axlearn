@@ -69,7 +69,7 @@ def _test_forward_and_backward(
     backward_tol_fn: Callable = _default_tol_fn,
 ):
     float_batch = dict(query=q, key=k, value=v)
-    aux_batch = dict(prng_key=jax.random.PRNGKey(44), bias=bias)
+    aux_batch = dict(prng_key=jax.random.PRNGKey(44), bias=bias, logit_sink=None)
     input_batch = {**float_batch, **aux_batch}
     ref_fn = jax.jit(ref_fn)
     test_fn = jax.jit(test_fn)
@@ -159,7 +159,9 @@ def test_triton_fwd_only_against_ref(
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, prng_key=jax.random.PRNGKey(43), bias=bias)
+    input_batch = dict(
+        query=q, key=k, value=v, prng_key=jax.random.PRNGKey(43), bias=bias, logit_sink=None
+    )
     chex.assert_equal(test_fn.is_supported(input_batch), True)
     o = test_fn(input_batch)
     o_ref = ref_fn(input_batch)
@@ -223,7 +225,7 @@ def test_triton_against_xla_ref(
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
     chex.assert_equal(test_fn.is_supported(input_batch), True)
 
     def forward_tol_fn(backend, dtype):
@@ -272,7 +274,7 @@ def test_sliding_window_mask(
         interpret=jax.default_backend() == "cpu",
     )
     test_fn = test_cls.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
     if test_cls is CuDNNGPUFlashAttention and use_segment_ids:
         chex.assert_equal(test_fn.is_supported(input_batch), False)
         test_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
@@ -321,7 +323,7 @@ def test_cudnn_against_triton_ref(
 
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
     chex.assert_equal(test_fn.is_supported(input_batch), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
@@ -398,6 +400,7 @@ def test_cudnn_dropout_against_xla_dropout(
                     jnp.eye(per_head_dim, dtype=dtype)[None, :, None], qkv_shape
                 ),
                 bias=bias,
+                logit_sink=None,
             ),
         )
         == 0.0
@@ -410,7 +413,7 @@ def test_cudnn_dropout_against_xla_dropout(
     q = jax.random.normal(k1, qkv_shape, dtype=dtype)
     k = jax.random.normal(k2, qkv_shape, dtype=dtype)
     v = jax.random.normal(k3, qkv_shape, dtype=dtype)
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
     chex.assert_equal(test_fn.is_supported(input_batch), True)
 
     ref_fn = functools.partial(
@@ -461,7 +464,7 @@ def test_cudnn_seqlen_head_support(
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
     chex.assert_equal(test_fn.is_supported(input_batch), True)
 
     _test_forward_and_backward(
@@ -479,6 +482,7 @@ def test_cudnn_dropout_determinism():
         key=k,
         value=v,
         bias=bias,
+        logit_sink=None,
     )
     fn = CuDNNGPUFlashAttention.default_config().set(dropout_rate=0.1).instantiate()
 
@@ -491,6 +495,7 @@ def test_cudnn_dropout_determinism():
             key=k,
             value=v,
             bias=bias,
+            logit_sink=None,
         )
         return fn(input_batch).mean()
 
