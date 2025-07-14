@@ -20,6 +20,7 @@ dependencies = [
 # Core dependencies needed for jax based training and evaluation.
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 core = [
+    "apache-beam==2.55.1",
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
@@ -31,7 +32,7 @@ core = [
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
     "protobuf>=3.20.3",
-    "tensorboard-plugin-profile==2.15.1",
+    "tensorboard-plugin-profile==2.19.9",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
     "tensorflow==2.17.1",
     "tensorflow-datasets>=4.9.2",
