@@ -62,7 +62,7 @@ def test_fwd_against_ref(
     # Compare outputs.
     test_fn = NeuronFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
     o = test_fn(input_batch)
     o_ref = ref_fn(input_batch)
     if input_dtype == jnp.float16:

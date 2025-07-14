@@ -130,6 +130,47 @@ TOTAL_TOKENS = {
     },
 }
 
+
+def offload_dots_saveable_policy(*_, **__):
+    """A rematerialization policy function used in RematSpec to offload dot_general_p
+    operations from device to pinned host memory.
+
+    Args:
+        *_: Ignored positional arguments.
+        **__: Ignored keyword arguments.
+
+    Returns:
+        A policy function that offloads dot_general_p from device to pinned host
+    memory.
+    """
+    return config_for_function(extended_checkpoint_policies.offload_dots_saveable).set(
+        offload_src="device", offload_dst="pinned_host"
+    )
+
+
+def offload_attention_proj_policy(*_, **__):
+    """A rematerialization policy function used in RematSpec to offload attention
+    projection intermediates during model execution.
+
+    Args:
+        *_: Ignored positional arguments.
+        **__: Ignored keyword arguments.
+
+    Returns:
+        A checkpoint policy function that offloads native attention projection intermediates
+        from device to pinned host memory, enabling memory-efficient training with checkpoint
+        support.
+    """
+    return config_for_function(
+        extended_checkpoint_policies.save_and_offload_only_these_names_regex
+    ).set(
+        names_which_can_be_saved=None,
+        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
+        offload_src="device",
+        offload_dst="pinned_host",
+    )
+
+
 # Llama3 uses 16m tokens after 2.87T tokens.
 # https://arxiv.org/pdf/2407.21783
 TOKENS_PER_BATCH = {
@@ -258,18 +299,7 @@ def get_trainer_kwargs(
     rope_theta = ROPE_THETA[version]
 
     trn2_config = _generate_trn2_custom_configs(model_size, version=version)
-    offload_dots_saveable_policy = config_for_function(
-        extended_checkpoint_policies.offload_dots_saveable
-    ).set(offload_src="device", offload_dst="pinned_host")
-    # To make it work better with v3 8k sequence length.
-    offload_attention_proj_policy = config_for_function(
-        extended_checkpoint_policies.save_and_offload_only_these_names_regex
-    ).set(
-        names_which_can_be_saved=None,
-        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
-        offload_src="device",
-        offload_dst="pinned_host",
-    )
+
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
     if model_size == "test":
