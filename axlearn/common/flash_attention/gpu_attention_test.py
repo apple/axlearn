@@ -274,7 +274,8 @@ def test_sliding_window_mask(
         interpret=jax.default_backend() == "cpu",
     )
 
-    # Override B200 block size for Pallas kernels only
+    # The memory layout of B200 is different than previous GPU generations
+    # and requires a smaller block size to work with Pallas kernels
     if jax.default_backend() == "gpu" and test_cls is PallasGPUFlashAttention:
         if "NVIDIA B200" in jax.devices("gpu")[0].device_kind:
             cfg["gpu_block_size"] = 64
