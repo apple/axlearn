@@ -277,7 +277,7 @@ def test_sliding_window_mask(
     # Override B200 block size for Pallas kernels only
     if jax.default_backend() == "gpu" and test_cls is PallasGPUFlashAttention:
         if "NVIDIA B200" in jax.devices("gpu")[0].device_kind:
-            cfg['gpu_block_size'] = 64
+            cfg["gpu_block_size"] = 64
 
     test_fn = test_cls.default_config().set(**cfg).instantiate()
     input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
