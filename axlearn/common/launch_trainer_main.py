@@ -13,7 +13,6 @@ def main(_):
     launch.setup()
     trainer_config = launch_trainer.get_trainer_config()
     trainer_config.set(recorder=config_for_function(lambda: measurement.global_recorder))
-    measurement.start_monitoring()
     launch_trainer.run_trainer(trainer_config)
 
 
