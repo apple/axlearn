@@ -1112,6 +1112,46 @@ class BastionTest(parameterized.TestCase):
                 updated_job.state, JobState(status=JobStatus.CLEANING, metadata={"tier": 1})
             )
 
+    @mock.patch("subprocess.Popen")
+    def test_active_command_malformed(self, mock_popen):
+        """If the command is malformed, bastion should gracefully move the job to CLEANING state."""
+        job = Job(
+            spec=new_jobspec(
+                name="test_job",
+                command="command",
+                cleanup_command="cleanup",
+                metadata=JobMetadata(
+                    user_id="test_user",
+                    project_id="test_job",
+                    creation_time=datetime.now(),
+                    resources={"v4": 8},
+                ),
+            ),
+            state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 1}),
+            command_proc=None,  # Initially, command is None.
+            cleanup_proc=None,
+        )
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _upload_job_state=mock.DEFAULT,
+        )
+        mock_popen.side_effect = ValueError("Command malformed")
+
+        with patch_fns, self._patch_bastion(None) as mock_bastion:
+            # Initially, job should have no command.
+            self.assertIsNone(job.command_proc)
+
+            # Run single update step to start the job.
+            updated_job = mock_bastion._update_single_job(job)
+
+            # Command failed to be started.
+            self.assertIsNone(updated_job.command_proc)
+
+            # Job state should be CLEANING.
+            self.assertEqual(
+                updated_job.state, JobState(status=JobStatus.CLEANING, metadata={"tier": 1})
+            )
+
     # pylint: disable-next=too-many-branches
     def test_update_jobs(self):
         """Tests the global update step."""
