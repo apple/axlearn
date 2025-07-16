@@ -20,7 +20,7 @@ dependencies = [
 # Core dependencies needed for jax based training and evaluation.
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 core = [
-    "apache-beam==2.55.1",
+    "pipdeptree",
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
