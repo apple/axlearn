@@ -252,8 +252,7 @@ def get_trainer_kwargs(
     tokens_per_batch = TOKENS_PER_BATCH[version]
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
-    # train_batch_size = tokens_per_batch // max_sequence_length
-    train_batch_size = len(jax.devices())
+    train_batch_size = tokens_per_batch // max_sequence_length
 
     # Whether to use grouped query attention.
     num_kv_heads = None
