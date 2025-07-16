@@ -53,6 +53,7 @@ class SlidingWindowKVCache(BaseKVCache):
         v_proj: Tensor,
         key_positions: Tensor,
         live_step_len: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
         """Updates the sliding window KV cache per extend step.
 
@@ -70,6 +71,7 @@ class SlidingWindowKVCache(BaseKVCache):
             * output: The output k_proj, v_proj, and key_positions, which are merged with
                 KV cache, resulting in a length of `cached_kv_length + step_size`.
         """
+        assert page_pool is None
         cfg = self.config
         cached_key: Tensor = cached_states["key"]
         cached_value: Tensor = cached_states["value"]

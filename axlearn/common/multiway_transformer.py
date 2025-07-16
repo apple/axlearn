@@ -96,6 +96,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Optional[Nested[Tensor]], Optional[Tensor]]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
@@ -110,6 +111,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
                 biases.
             cached_states: Optional NestedTensor as produced by `prefill_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
+            page_pool: See file-level docstring of `attention.py`.
 
         Returns:
             An optional NestedTensor of cache states, depending on `mode`.
@@ -120,6 +122,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         Raises:
             ValueError: If `mode` is unsupported.
         """
+        assert page_pool is None  # Not supported.
         cfg = self.config
         if isinstance(data, Tensor):
             self.vlog(3, "transformer.input=%s", data.sum())
