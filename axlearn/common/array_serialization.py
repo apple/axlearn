@@ -417,7 +417,7 @@ async def _async_deserialize(
     async def cb(index: array.Index, device: jax.Device):
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
-        requested_bytes = serialization.estimate_read_memory_footprint(t, restricted_domain)
+        requested_bytes = serialization.ts_impl.estimate_read_memory_footprint(t, restricted_domain)
         # Limit the bytes read for every shard.
         await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
@@ -478,7 +478,8 @@ async def _async_deserialize(
         await byte_limiter.release_bytes(requested_bytes)
         return result
 
-    return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
+    # pylint: disable-next=protected-access
+    return await serialization.ts_impl._create_async_array_from_callback(shape, in_sharding, cb)
 
 
 # Reference:
@@ -560,7 +561,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # pylint: disable-next=redefined-outer-name
         async def _run_serializer():
             future_writer = jax.tree.map(
-                serialization.async_serialize, arrays, tensorstore_specs, commit_futures
+                serialization.ts_impl.async_serialize, arrays, tensorstore_specs, commit_futures
             )
             return await asyncio.gather(*future_writer)
 
