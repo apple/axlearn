@@ -41,7 +41,7 @@ _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
 # However this image was also tested in Maxtext with Jax 0.6.1.
-_PATHWAYS_IMAGE_TAG = "jax-0.5.3-patch060625"
+_PATHWAYS_IMAGE_TAG = "jax-0.6.2"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
