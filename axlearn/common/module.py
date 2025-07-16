@@ -1002,6 +1002,8 @@ class _Functional:
     context: InvocationContext = struct.field(pytree_node=True)
     # Whether to require that context.parent is current_context().
     require_parent: bool = struct.field(pytree_node=False)
+    # Whether to copy the argument pytrees to prevent method_fn from mutating the original.
+    copy_args_tree: bool = struct.field(pytree_node=False, default=True)
 
     def __call__(self, *args, **kwargs) -> tuple[Any, OutputCollection]:
         """Invokes method_fn in a pure functional fashion.
@@ -1024,13 +1026,14 @@ class _Functional:
         call = getattr(self.method_fn, "__qualname__", None) or getattr(self.method_fn, "__name__")
         logging.vlog(1, "functional: %s.%s (*%s, **%s)", call, self.method_fn, args, kwargs)
 
-        # Copy to prevent method_fn from mutating the original.
         # Some badly behaved tests call F() with an InvocationContext.state that contains
         # circular references.
         # This results in a cryptic error that doesn't make the root cause obvious.
         # So we raise a clearer error explicitly.
         raise_for_cycles(dict(context=self.context, args=args, kwargs=kwargs))
-        context, args, kwargs = jax.tree.map(lambda x: x, (self.context, args, kwargs))
+        context = self.context
+        if self.copy_args_tree:
+            context, args, kwargs = jax.tree.map(lambda x: x, (self.context, args, kwargs))
 
         with set_current_context(context, require_parent=self.require_parent):
             # pylint: disable-next=not-an-iterable,not-a-mapping,not-callable
@@ -1047,6 +1050,7 @@ def functional(
     method: str = "forward",
     is_training: bool,
     drop_output_collections: Sequence[str] = ("module_outputs",),
+    copy_args_tree: bool = True,
 ) -> tuple[Any, OutputCollection]:
     """Invokes <module>.<method> in a pure functional fashion.
 
@@ -1065,6 +1069,8 @@ def functional(
         is_training: Whether the invocation should run in the training mode.
         drop_output_collections: The output collection types to drop.
             Defaults to dropping all module outputs.
+        copy_args_tree: Whether to copy the `inputs` pytree to prevent method_fn from mutating the
+            original. Defaults to True.
 
     Returns:
         (method_outputs, output_collection), where
@@ -1092,7 +1098,9 @@ def functional(
         args = inputs
     method_fn = getattr(module, method)
 
-    fn = _Functional(context=context, method_fn=method_fn, require_parent=True)
+    fn = _Functional(
+        context=context, method_fn=method_fn, require_parent=True, copy_args_tree=copy_args_tree
+    )
     method_outputs, output_collection = fn(*args, **kwargs)
 
     for output_collection_type in drop_output_collections:

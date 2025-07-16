@@ -84,6 +84,7 @@ class BaseKVCache(BaseLayer):
         v_proj: Tensor,
         key_positions: Tensor,
         live_step_len: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Output]:
         """Updates the KV cache per extend step.
 
@@ -96,8 +97,9 @@ class BaseKVCache(BaseLayer):
             k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             key_positions: An optional Tensor of shape [1|batch, step_length].
-            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
-                in the file docstring for details.
+            live_step_len: An optional Tensor of shape [batch]. See file-level docstring of
+                `attention.py`
+            page_pool: See file-level docstring of `attention.py`.
 
         Returns:
             A tuple (updated_state, output):

@@ -133,6 +133,7 @@ class PagedKVCache(KVCache):
         v_proj: Tensor,
         key_positions: Tensor,
         live_step_len: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], KVCache.Output]:
         """Extend the cache with the new key and value.
 
@@ -166,6 +167,7 @@ class PagedKVCache(KVCache):
             raise ValueError(f"{k_proj.shape[1]=} != {key_positions.shape[1]=}")
 
         if "page_indices" not in cached_states:
+            assert page_pool is None
             # Prefill, return kv cache directly
             cached_states["key"] = k_proj
             cached_states["value"] = v_proj
@@ -177,8 +179,21 @@ class PagedKVCache(KVCache):
 
         # kv_pages shape: [num_heads, max_pages_global, page_size, head_dim]. Also refer to
         # https://github.com/jax-ml/jax/blob/main/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py#L388
-        k_pages: Tensor = cached_states["key"]
-        v_pages: Tensor = cached_states["value"]
+        if page_pool is not None:
+            # We use `group_info` to index into `page_pool` to get the paged KV pool for this
+            # layer.
+            group_info = cached_states["group_info"]
+            # HACK(hanzhi-zhou): we store the indices as dict keys to workaround them being
+            # converted to tracers.
+            group_idx = list(group_info["group_idx"].keys())[0]
+            repeat_idx = list(group_info["repeat_idx"].keys())[0]
+            pool = page_pool[group_idx][repeat_idx]
+            k_pages: Tensor = pool.k_pages  # type: ignore
+            v_pages: Tensor = pool.v_pages  # type: ignore
+        else:
+            k_pages: Tensor = cached_states["key"]
+            v_pages: Tensor = cached_states["value"]
+
         assert k_pages.shape == v_pages.shape
 
         batch = page_indices.shape[0]
@@ -220,11 +235,18 @@ class PagedKVCache(KVCache):
             v_pages, page_indices, key_positions, v_proj.astype(v_pages.dtype)
         )
 
-        updated_state = dict(
-            key=updated_k_pages,
-            value=updated_v_pages,
-            page_indices=page_indices,
-        )
+        if page_pool is not None:
+            page_pool[group_idx][repeat_idx] = type(pool)(updated_k_pages, updated_v_pages)
+
+            # Updates are already performed through mutable arrays above. We don't perform state
+            # updates through `updated_state`.
+            updated_state = dict(key=None, value=None, page_indices=None)
+        else:
+            updated_state = dict(
+                key=updated_k_pages,
+                value=updated_v_pages,
+                page_indices=page_indices,
+            )
 
         assert updated_k_pages.shape == k_pages.shape
         assert updated_v_pages.shape == v_pages.shape
