@@ -985,17 +985,25 @@ def trainer_configs(
     """
     arch = "fuji"
     config_map = {}
-    for version, model_size, flash_attention in itertools.product(
-        Version, MODEL_SIZES, [True, False]
+    for version, model_size, flash_attention, checkpointer in itertools.product(
+        Version, MODEL_SIZES, [True, False], ["", "OrbaxEmergencyCheckpointer", "OrbaxRegularCheckpointer"],
     ):
         if model_size not in TOTAL_TOKENS[version]:  # This combination does not exist.
             continue
         vocab_size = VOCAB_SIZE[version]
+        current_suffix_parts = []
+        if flash_attention:
+            current_suffix_parts.append("-flash")
+        if checkpointer == "OrbaxEmergencyCheckpointer":
+            current_suffix_parts.append("-orbaxem")
+        elif checkpointer == "OrbaxRegularCheckpointer":
+            current_suffix_parts.append("-orbax")
+        current_suffix = "".join(current_suffix_parts)
         config_name = make_config_name(
             arch=arch,
             model_size=model_size,
             version=f"v{version.value}",
-            suffix="-flash" if flash_attention else "",
+            suffix=current_suffix,
         )
         kwargs = get_trainer_kwargs(
             model_size, vocab_size=vocab_size, version=version, flash_attention=flash_attention
@@ -1010,6 +1018,7 @@ def trainer_configs(
             evalers=evaler_config_dict(
                 eval_input_sources(vocab_size=vocab_size, max_sequence_length=max_sequence_length),
             ),
+            checkpointer=checkpointer,
             **kwargs,
         )
 
