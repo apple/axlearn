@@ -31,6 +31,7 @@ from axlearn.common.attention_bias import (
 )
 from axlearn.common.flash_attention.common import BasePagedAttention, get_gpu_dot_precision
 from axlearn.common.flash_attention.gpu_decoding import _get_sm_count as get_sm_count
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -301,9 +302,10 @@ class GPUPagedAttention(BasePagedAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BasePagedAttention.is_supported`."""
-        if not super().is_supported(input_batch):
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
         key: Tensor = input_batch["key"]
         if not self._check_block_size(input_batch, block_size=self.cfg.gpu_block_size):

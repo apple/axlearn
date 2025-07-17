@@ -6,7 +6,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.attention_bias import causal_mask
 from axlearn.common.flash_attention.common import (
@@ -23,6 +23,8 @@ from axlearn.common.flash_attention.test_utils import (
 )
 from axlearn.common.flash_attention.tpu_decoding import TPUDecoding
 from axlearn.common.flash_attention.tpu_paged_attention import TPUPagedAttention
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
 from axlearn.common.test_utils import TestCase, Tolerance
 
 if jax.default_backend() == "gpu":
@@ -109,7 +111,6 @@ class DecodingTest(TestCase):
         cfg = dict(
             softmax_scale=softmax_scale,
             interpret=(jax.default_backend() == "cpu"),
-            is_decoding=True,
         )
         q, k, v, page_tables, bias = generate_paged_attention_data(
             batch_size=batch_size,
@@ -134,7 +135,7 @@ class DecodingTest(TestCase):
         )
 
         fn = decoding_fn.default_config().set(**cfg).instantiate()
-        is_supported = fn.is_supported(input_batch=input_batch)
+        is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=PagedKVCache)
         self.assertTrue(is_supported)
 
         o = fn(input_batch=input_batch)
@@ -196,7 +197,6 @@ class DecodingTest(TestCase):
         cfg = dict(
             softmax_scale=softmax_scale,
             interpret=(jax.default_backend() == "cpu"),
-            is_decoding=True,
         )
         q, k, v, bias = generate_attention_data(
             batch_size,
@@ -218,7 +218,7 @@ class DecodingTest(TestCase):
             logit_sink=None,
         )
         fn = decoding_fn.default_config().set(**cfg).instantiate()
-        is_supported = fn.is_supported(input_batch=input_batch)
+        is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=KVCache)
         if seq_len % 512 != 0 and decoding_fn is TPUDecoding:
             self.assertFalse(is_supported)
             return
@@ -249,3 +249,7 @@ class DecodingTest(TestCase):
             o_ref,
             tolerance_map=self.tolerance_map[input_dtype],
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

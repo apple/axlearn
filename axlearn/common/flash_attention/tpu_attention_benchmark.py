@@ -38,6 +38,9 @@ from axlearn.common.flash_attention.test_utils import (
     generate_paged_attention_data,
 )
 from axlearn.common.flash_attention.utils import flash_attention_implementation
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
 
 _BENCHMARK_CONFIGS = {
     "1.2b": dict(
@@ -91,28 +94,17 @@ def _benchmark(
     num_heads: int,
     per_head_dim: int,
     num_kv_heads: Optional[int] = None,
-    is_decoding: bool = False,
+    kv_cache_type: Optional[type[BaseKVCache]] = KVCache,
     causal: bool = True,
     use_bias: bool = False,
     sliding_window_size: Optional[int] = None,
     page_size: Optional[int] = None,
 ):
     """Benchmarks TPU FlashAttention vs reference impl."""
-    q, k, v, bias = generate_attention_data(
-        batch_size,
-        1 if is_decoding else seq_len,
-        seq_len,
-        num_heads,
-        per_head_dim,
-        num_kv_heads or num_heads,
-        mask_fn=causal_mask if causal and not sliding_window_size else None,
-        sliding_window_sz=sliding_window_size,
-        attention_bias_type="4d" if use_bias else None,
-        query_offset=seq_len - 1 if is_decoding else 0,
-    )
-    page_tables = None
-    if page_size is not None:
-        assert is_decoding
+    if not (kv_cache_type is None or kv_cache_type in (KVCache, PagedKVCache)):
+        raise NotImplementedError(f"This benchmark doesn't support {kv_cache_type=} yet.")
+    if kv_cache_type == PagedKVCache:
+        assert page_size is not None
         q, k, v, page_tables, bias = generate_paged_attention_data(
             batch_size=batch_size,
             query_len=1,
@@ -126,12 +118,27 @@ def _benchmark(
             attention_bias_type="4d" if use_bias else None,
             query_offset=seq_len - 1,
         )
+    else:
+        is_decoding = kv_cache_type == KVCache
+        q, k, v, bias = generate_attention_data(
+            batch_size,
+            1 if is_decoding else seq_len,
+            seq_len,
+            num_heads,
+            per_head_dim,
+            num_kv_heads or num_heads,
+            mask_fn=causal_mask if causal and not sliding_window_size else None,
+            sliding_window_sz=sliding_window_size,
+            attention_bias_type="4d" if use_bias else None,
+            query_offset=seq_len - 1 if is_decoding else 0,
+        )
+        page_tables = None
 
     softmax_scale = q.shape[-1] ** 0.5
     # Get fwd & bwd timing information when softmax scaling applied before calling the kernel.
     ref_mha_impl = (
         ReferenceMHA.default_config()
-        .set(softmax_scale=softmax_scale, tpu_block_size=block_size, is_decoding=is_decoding)
+        .set(softmax_scale=softmax_scale, tpu_block_size=block_size)
         .instantiate()
     )
     mha_impl = flash_attention_implementation(
@@ -142,15 +149,16 @@ def _benchmark(
         bias=bias,
         softmax_scale=softmax_scale,
         tpu_block_size=block_size,
-        is_decoding=is_decoding,
+        kv_cache_type=kv_cache_type,
         page_tables=page_tables,
     )
 
     input_batch = dict(query=q, key=k, value=v, bias=bias, page_tables=page_tables)
     ref_fwd_time = _time_call(lambda: ref_mha_impl(input_batch))
     flash_fwd_time = _time_call(lambda: mha_impl(input_batch))
+    print(f"ref_fwd:{ref_fwd_time:.4f}s, flash_fwd:{flash_fwd_time:.4f}s")
 
-    if not is_decoding:
+    if kv_cache_type is None:
 
         def grad_ref(float_inputs, aux_inputs):
             full_batch = {**float_inputs, **aux_inputs}
@@ -166,9 +174,6 @@ def _benchmark(
         ref_bwd_time = _time_call(lambda: ref_grad_fn(float_inputs, aux_inputs)["query"])
         flash_grad_fn = jax.jit(jax.grad(grad_test, argnums=0))
         flash_bwd_time = _time_call(lambda: flash_grad_fn(float_inputs, aux_inputs)["query"])
-
-    print(f"ref_fwd:{ref_fwd_time:.4f}s, flash_fwd:{flash_fwd_time:.4f}s")
-    if not is_decoding:
         print(f"ref_bwd:{ref_bwd_time:.4f}s, flash_bwd:{flash_bwd_time:.4f}s\n")
 
 
@@ -182,6 +187,6 @@ if __name__ == "__main__":
             seq_len=1024 * 8,
             block_size=4 * 128,
             sliding_window_size=4096,
-            is_decoding=True,
+            kv_cache_type=KVCache,
             **cfg,
         )

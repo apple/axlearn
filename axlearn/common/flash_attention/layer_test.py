@@ -6,7 +6,6 @@ import math
 import os
 
 # pylint: disable=ungrouped-imports
-from typing import Optional
 from unittest import mock
 
 from jax.sharding import PartitionSpec
@@ -51,6 +50,7 @@ from axlearn.common.flash_attention.layer import (
 )
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
+from axlearn.common.kv_cache.sliding_window_kv_cache import SlidingWindowKVCache
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
@@ -108,13 +108,15 @@ def _prepare_layers(
     per_head_dim,
     mesh_axis_names,
     mask,
+    kv_cache=KVCache.default_config(),
     inference=False,
     set_layer_bias_recursively=False,
     tpu_block_size=512,
     dropout_rate=0.0,
-    page_size=None,
 ):
     hidden_dim = num_heads * per_head_dim
+    cache_dtype = jnp.bfloat16 if inference else None
+    kv_cache = kv_cache.set(cache_dtype=cache_dtype)
     kwargs = dict(
         query_dim=hidden_dim,
         key_dim=hidden_dim,
@@ -125,16 +127,16 @@ def _prepare_layers(
         input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
         if num_kv_heads is not None
         else QKVLinear.default_config(),
+        kv_cache=kv_cache,
     )
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
 
-    if inference:
-        # ref cfh only uses non-paged kv cache for simplicity
-        ref_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
     mha_spec = default_mha_dim_to_partition_spec(mesh_axis_names)
-    if page_size is not None:
+    if kv_cache.klass == PagedKVCache:
         model_axis = "model" if "model" in mesh_axis_names else None
         mha_spec["nbph"] = PartitionSpec(model_axis, None, None, None)
+        # ref cfh only uses non-paged kv cache for simplicity
+        ref_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=cache_dtype))
     test_cfg = (
         FlashAttention.default_config()
         .set(**kwargs)
@@ -144,9 +146,6 @@ def _prepare_layers(
             tpu_block_size=tpu_block_size,
         )
     )
-    if inference:
-        kv_cache_class = PagedKVCache if page_size is not None else KVCache
-        test_cfg.set(kv_cache=kv_cache_class.default_config().set(cache_dtype=jnp.bfloat16))
 
     ref_cfg.set(mask=mask)
     test_cfg.set(mask=mask)
@@ -756,9 +755,7 @@ class TestFlashAttention(TestCase):
 
     @parameterized.product(
         _TEST_CONFIGS,
-        attn_type=["causal", "sliding_window"],
-        use_bias=[True, False],
-        page_size=[None, 16],
+        attn_type=["causal", "sliding_window", "paged"],
         dtype=[jnp.float32, jnp.bfloat16],
     )
     def test_extend_step(
@@ -771,13 +768,8 @@ class TestFlashAttention(TestCase):
         mesh,
         mesh_axis_names,
         attn_type,
-        use_bias,
-        page_size: Optional[int],  # None means not using PagedKVCache
         dtype,
     ):
-        # Limit generation length to 16 to save test time.
-        seq_len = 16 if page_size is None else max(16, page_size)
-
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
@@ -786,19 +778,26 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Unsupported seq dim sharding for decoding.")
         if (
             math.prod(mesh) > 1
-            and page_size is not None
+            and attn_type == "paged"
             and math.prod(mesh) != named_sharding.get("model", 1)
         ):
             pytest.skip(reason="Paged attention only supports model sharding.")
 
-        if attn_type == "full":
-            mask = None
-        elif attn_type == "causal":
+        if attn_type == "causal":
             mask = CausalAttentionBias.default_config()
+            kv_cache = KVCache.default_config()
         elif attn_type == "sliding_window":
             mask = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
+            kv_cache = SlidingWindowKVCache.default_config().set(cached_kv_length=4)
+        elif attn_type == "paged":
+            mask = CausalAttentionBias.default_config()
+            kv_cache = PagedKVCache.default_config()
         else:
             raise ValueError(f"Not supported attn_type {attn_type}.")
+
+        page_size = 16 if attn_type == "paged" else None
+        # Limit generation length to 16 to save test time.
+        seq_len = 16 if page_size is None else max(16, page_size)
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -807,7 +806,7 @@ class TestFlashAttention(TestCase):
                 per_head_dim=per_head_dim,
                 mesh_axis_names=mesh_axis_names,
                 mask=mask,
-                page_size=page_size,
+                kv_cache=kv_cache,
                 inference=True,
             )
 
@@ -818,12 +817,6 @@ class TestFlashAttention(TestCase):
                 dtype=dtype,
             )
             causal_bias = None
-            if use_bias:
-                causal_bias = jax.random.normal(
-                    jax.random.PRNGKey(0),
-                    [batch, num_heads, seq_len, seq_len],
-                    dtype=dtype,
-                )
             kv_state = None
             return_aux = None
 
@@ -937,15 +930,7 @@ class TestFlashAttention(TestCase):
             for t in range(seq_len):
                 cur_query = jnp.expand_dims(query[:, t, :], axis=1)
                 inputs["query"] = cur_query
-                if use_bias:
-                    inputs["attention_logit_biases"] = jnp.expand_dims(
-                        causal_bias[:, :, t, :], axis=2
-                    )
                 ref_inputs["query"] = cur_query
-                if use_bias:
-                    ref_inputs["attention_logit_biases"] = jnp.expand_dims(
-                        causal_bias[:, :, t, :], axis=2
-                    )
                 ref_extend_step_outputs, _ = extend_one_step(params, ref_inputs, ref_layer)
                 ref_inputs["cached_states"] = ref_extend_step_outputs[0]
                 ref_decoder_output = ref_decoder_output.at[t].set(

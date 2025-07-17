@@ -46,6 +46,7 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested, Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
@@ -71,7 +72,7 @@ def _to_splash_mask(
 
     # Because mask.mask() may use jnp ops. e.g. jnp.logical_and.
     with jax.ensure_compile_time_eval():
-        # This code is reached only when `is_decoding == False` (i.e., forward and prefill) and
+        # This code is reached only when `kv_cache_type=None` (i.e., forward and prefill) and
         # `target_len == source_len` (i.e., self-attention) (see `check_tpu_splash_attention`).
         # `target_positions` and `source_positions` are always in the range [0, seq_len].
         target_positions = np.arange(mask_shape[0])[None, :, None]
@@ -863,11 +864,10 @@ class TPUFlashAttention(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
         block_size = self.cfg.tpu_block_size
         if not self._check_block_size(input_batch=input_batch, block_size=block_size):
@@ -896,9 +896,10 @@ class TPUSplashAttention(TPUFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(input_batch):
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
         bias: BaseAttentionBias = input_batch["bias"]
         _, _, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
@@ -1030,9 +1031,10 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(input_batch):
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]

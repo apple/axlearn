@@ -46,6 +46,8 @@ from axlearn.common.flash_attention.common import (
     get_tpu_dot_precision,
     query_iterator_indices,
 )
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -144,12 +146,14 @@ class TPUDecoding(BaseSingleStepDecoding):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
+
+        if kv_cache_type != KVCache:
+            return self._log_unsupported(f"{kv_cache_type=}")
 
         block_size = self.cfg.tpu_block_size
         key: Tensor = input_batch["key"]
