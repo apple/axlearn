@@ -2,6 +2,7 @@
 """Runtime and compiler options for JAX/XLA."""
 
 import math
+import os
 
 # This module must not depend on any jax/axlearn modules so that
 # importing this module does not result in initializing jax.
@@ -24,6 +25,15 @@ def default_xla_options(
     or converted to flags using `xla_flags_from_options` and passed to
     `LIBTPU_INIT_ARGS` (only works on TPU) or `XLA_FLAGS` (works on any platform including TPU)
     before importing jax.
+
+    Environment variable overrides:
+        XLA options can be overridden using the XLA_OPTIONS_OVERRIDE environment variable.
+        The format is a comma-separated list of key=value pairs:
+
+        Example: XLA_OPTIONS_OVERRIDE="xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction
+        =false, megascale_grpc_premap_memory_bytes=34359738368"
+
+        Values are used as-is (strings) and validated by the existing validation logic.
 
     Args:
         instance_type: A specifier for the ML accelerator. E.g., "tpu-v5p-2048".
@@ -157,6 +167,9 @@ def default_xla_options(
             megascale_grpc_enable_xor_tracer="false",
         )
 
+    # Apply environment variable overrides
+    options = _apply_overrides_from_env(options)
+
     # Validate options. Will never fail if this function is implemented correctly.
     for k, v in options.items():
         try:
@@ -166,6 +179,69 @@ def default_xla_options(
             assert v in [True, False, "true", "false", "megachip_tccontrol", "10m"], (k, v)
 
     return options
+
+
+def _apply_overrides_from_env(
+    options: dict[str, Union[str, bool, int]]
+) -> dict[str, Union[str, bool, int]]:
+    """Apply environment variable overrides to XLA options.
+
+    Reads the XLA_OPTIONS_OVERRIDE environment variable and parses it as a comma-separated
+    list of key=value pairs to override XLA options.
+
+    Args:
+        options: The original XLA options dictionary.
+
+    Returns:
+        A new dictionary with environment variable overrides applied.
+    """
+    override_env = os.environ.get("XLA_OPTIONS_OVERRIDE")
+    if not override_env:
+        return options
+
+    overridden_options = options.copy()
+    try:
+        # Parse comma-separated key=value pairs
+        for pair in override_env.split(","):
+            if not pair:
+                continue
+
+            if "=" not in pair:
+                logging.warning("Invalid XLA option override format (missing '='): %s", pair)
+                continue
+
+            key, value = pair.split("=", 1)  # Split only on first '=' in case value contains '='
+            key = key.strip()
+            value = value.strip()
+
+            if not key:
+                logging.warning("Empty key in XLA option override: %s", pair)
+                continue
+
+            # Log the override
+            if key in overridden_options:
+                logging.info(
+                    "Overriding XLA option %s: %s -> %s",
+                    key,
+                    overridden_options[key],
+                    value,
+                )
+            else:
+                logging.info(
+                    "Adding new XLA option %s: %s",
+                    key,
+                    value,
+                )
+
+            overridden_options[key] = value
+
+    # pylint: disable-next=broad-exception-caught
+    except Exception as e:
+        logging.error("Error parsing XLA_OPTIONS_OVERRIDE: %s", e)
+        # Return original options on parse error
+        return options
+
+    return overridden_options
 
 
 def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:
