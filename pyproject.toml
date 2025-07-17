@@ -94,7 +94,8 @@ gcp = [
     "google-api-python-client==2.109.0",
     "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
-    "google-cloud-storage==2.16.0",
+    "google-cloud-storage==2.19.0",
+    "google-cloud-storage-control==1.4.0",
     "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
     "google-cloud-build==3.24.1",
@@ -120,7 +121,7 @@ vertexai_tensorboard = [
     "setuptools==65.7.0",
     # Pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
     # https://github.com/googleapis/python-aiplatform/commit/4f982ab254b05fe44a9d2ed959fca2793961b56c
-    "google-cloud-aiplatform[tensorboard]==1.61.0",
+    "google-cloud-aiplatform[tensorboard]==1.92.0",
     "tensorboard",
 ]
 # Dataflow dependencies.
@@ -154,7 +155,7 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.11.15",
+    "orbax-checkpoint==0.11.19"
 ]
 # Audio dependencies.
 audio = [
