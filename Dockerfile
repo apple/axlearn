@@ -39,7 +39,7 @@ RUN pip install --upgrade pip && pip install uv flit && pip cache purge
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN uv pip install .[core,dev,grain,gcp,vertexai_tensorboard,open_api] && uv cache clean
+RUN uv pip install --prerelease=allow .[core,dev,grain,gcp,vertexai_tensorboard,open_api] && uv cache clean
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
@@ -58,7 +58,7 @@ FROM base AS bastion
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
-RUN uv pip install .[core,gcp,vertexai_tensorboard] && uv cache clean
+RUN uv pip install --prerelease=allow .[core,gcp,vertexai_tensorboard] && uv cache clean
 
 ################################################################################
 # Dataflow container spec.                                                     #
@@ -69,7 +69,7 @@ FROM base AS dataflow
 # Beam workers default to creating a new virtual environment on startup. Instead, we want them to
 # pickup the venv setup above. An alternative is to install into the global environment.
 ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
-RUN uv pip install .[core,gcp,dataflow] && uv cache clean
+RUN uv pip install --prerelease=allow .[core,gcp,dataflow] && uv cache clean
 COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
@@ -105,7 +105,7 @@ RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/com
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-RUN uv pip install .[core,gpu] && uv cache clean
+RUN uv pip install --prerelease=allow .[core,gpu] && uv cache clean
 COPY . .
 
 ################################################################################
