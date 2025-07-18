@@ -76,6 +76,11 @@ On `positions`:
 * When the accompanying argument is `query`, the `positions` argument is named as
   `query_position`. Similarly, when the argument `target`, it is named as `target_positions`.
 
+On `page_pool`:
+* If not None, stores the external paged KV pool possibly shared by multiple
+  layers. Additionally, `cached_states` will not contain KV state. Instead, it will
+  contain indices used to index into `page_pool`.
+
 TODO(changlan): Merge the use of `positions` and `time_step` to reduce cognitive complexity.
 
 """
@@ -317,6 +322,7 @@ class BaseTransformerLayer(BaseLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[NestedTensor, Output]:
         """Computes incremental outputs.
 
@@ -335,6 +341,7 @@ class BaseTransformerLayer(BaseLayer):
             cross_attention_logit_biases: An optional Tensor of shape
                 [..., target_step_length, source_length], where `target_step_length` must match
                 the shape of `data`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             (updated_cached_states, output), where:
@@ -1653,6 +1660,7 @@ class MultiheadAttention(BaseLayer):
         query_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Optional[Output]]:
         """Computes attention for the given query, key, value, and attention logit biases.
 
@@ -1672,6 +1680,7 @@ class MultiheadAttention(BaseLayer):
             query_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A tuple (cached_states, output):
@@ -1749,6 +1758,7 @@ class MultiheadAttention(BaseLayer):
                         v_proj=v_proj,
                         key_positions=query_positions,
                         live_step_len=live_step_len,
+                        page_pool=page_pool,
                     )
                 if mode == ForwardMode.EXTEND_STEP:
                     kv_state = KVState(*kv_cache_output)
@@ -2042,6 +2052,7 @@ class MultiheadAttention(BaseLayer):
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -2068,6 +2079,7 @@ class MultiheadAttention(BaseLayer):
                 The biases should already include causal masking for decoding, plus other biases
                 if necessary.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -2083,6 +2095,7 @@ class MultiheadAttention(BaseLayer):
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
             return_aux=return_aux,
+            page_pool=page_pool,
         )
 
     @staticmethod
@@ -2640,6 +2653,7 @@ class TransformerAttentionLayer(BaseLayer):
         target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Optional[Nested[Tensor]], Optional[Output]]:
         """Computes either self-attention or cross-attention for the given target and source.
 
@@ -2654,6 +2668,7 @@ class TransformerAttentionLayer(BaseLayer):
             target_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A tuple (cached_states, output):
@@ -2709,6 +2724,7 @@ class TransformerAttentionLayer(BaseLayer):
                     target,
                     **kv_kwargs,
                     attention_logit_biases=attention_logit_biases,
+                    page_pool=page_pool,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
@@ -2841,6 +2857,7 @@ class TransformerAttentionLayer(BaseLayer):
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -2858,6 +2875,7 @@ class TransformerAttentionLayer(BaseLayer):
                 attention_logit_biases should have already taken care of causal masking for
                 decoding, plus other maskings necessary.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -2874,6 +2892,7 @@ class TransformerAttentionLayer(BaseLayer):
             cached_states=cached_states,
             attention_logit_biases=attention_logit_biases,
             return_aux=return_aux,
+            page_pool=page_pool,
         )
 
 
@@ -3196,6 +3215,7 @@ class TransformerLayer(BaseTransformerLayer):
         target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Optional[NestedTensor], Optional[BaseTransformerLayer.Output]]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
@@ -3212,6 +3232,7 @@ class TransformerLayer(BaseTransformerLayer):
             target_positions: See ``positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A tuple (cached_states, output):
@@ -3273,6 +3294,7 @@ class TransformerLayer(BaseTransformerLayer):
                 source=self_attention_kv_state,
                 attention_logit_biases=self_attention_logit_biases,
                 return_aux=self_attention_return_aux,
+                page_pool=page_pool,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
@@ -3979,6 +4001,7 @@ class _TransformerRepeat(Repeat):
                 assert value.shape[0] == cfg.num_layers, f"{path}={shapes(value)}"
 
         def layer_fn(carry, x_i):
+            x_i, page_pool = x_i
             if mode == ForwardMode.FORWARD:
                 layer_states, layer_outputs = None, self.layer(**carry, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
@@ -3990,7 +4013,10 @@ class _TransformerRepeat(Repeat):
             elif mode == ForwardMode.EXTEND_STEP:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.extend_step(
-                    cached_states=x_i, **carry, **layer_kwargs
+                    cached_states=x_i,
+                    **carry,
+                    **layer_kwargs,
+                    page_pool=page_pool,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
@@ -4005,6 +4031,7 @@ class _TransformerRepeat(Repeat):
                 return carry, ys
 
             ys.update({k: v for k, v in layer_outputs._asdict().items() if k not in carry})
+            ys["page_pool"] = page_pool
             return {k: getattr(layer_outputs, k) for k in carry}, ys
 
         if cfg.carry is None:
@@ -4013,10 +4040,16 @@ class _TransformerRepeat(Repeat):
             layer_kwargs["data"] = data
             carry = {k: layer_kwargs.pop(k) for k in cfg.carry}
 
-        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=carry, xs=cached_states)
+        page_pool = layer_kwargs.pop("page_pool", None)
+        repeat_outputs: Repeat.Output = self._run(
+            layer_fn, carry=carry, xs=(cached_states, page_pool)
+        )
         carry = repeat_outputs.carry
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
+        out_page_pool = ys.pop("page_pool", None)
+        if page_pool is not None and out_page_pool is not None:
+            page_pool[:] = out_page_pool  # type: ignore
 
         if cache_init:
             assert ys == {}
