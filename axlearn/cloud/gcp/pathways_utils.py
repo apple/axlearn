@@ -43,7 +43,7 @@ _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
 # However this image was also tested in Maxtext with Jax 0.6.1.
-_PATHWAYS_IMAGE_TAG = "jax-0.5.3-patch060625"
+_PATHWAYS_IMAGE_TAG = "jax-0.6.2"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -177,8 +177,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
-        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
-        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "16")
+        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "64")
 
     @classmethod
     def default_config(cls):
@@ -337,6 +337,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
+            # This should be made configurable
+            f"--num_elastic_slices={cfg.accelerator.num_replicas}"
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
@@ -446,6 +448,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         annotations = _LoadBalancer(
             jobset_name=cfg.name, replicated_job_name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME
         ).metadata
+        annotations.update(
+            {
+                "alpha.jobset.sigs.k8s.io/exclusive-topology": "kubernetes.io/hostname",
+            }
+        )
         spec = dict(
             parallelism=1,
             completions=1,
@@ -468,6 +475,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         container = self._inner._build_container()
 
         worker_container = copy.deepcopy(container)
+        worker_container["name"] = "pathways-worker"
+
         env_list = worker_container.get("env", [])
 
         pathways_head_address = self._get_pathways_head_address(
@@ -598,14 +607,19 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         annotations.update(
             {"alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
         )
+        # Default value for suspend and resume.
+        # References:
+        # https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L651
+        # backoffLimit = system.vms_per_slice * 4
+
+        # This backoffLimit is just for verifying elastic fast-resume
+        large_number = 1000
+        backoffLimit = system.vms_per_slice * 4 * large_number
 
         spec = dict(
             parallelism=system.vms_per_slice,
             completions=system.vms_per_slice,
-            # Default value for suspend and resume.
-            # References:
-            # https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L651
-            backoffLimit=system.vms_per_slice * 4,
+            backoffLimit=backoffLimit,
             template=self._build_pathways_worker_pod(pathways_worker_replicated_job_index),
         )
         worker_job = dict(

@@ -15,6 +15,7 @@ import functools
 import itertools
 from typing import Any, List, NamedTuple, Optional, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -67,7 +68,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
 
-MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
+MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "150B")
 
 
 class Version(enum.Enum):
@@ -113,6 +114,7 @@ TOTAL_TOKENS = {
         "test": 2 * (1024**4),  # 2T tokens
         "7B": 2 * (1024**4),  # 2T tokens
         "70B": 2 * (1024**4),  # 2T tokens
+        "150B": 2 * (1024**4),  # 2T tokens
     },
     Version.V3: {
         "test": 15 * (1024**4),  # 15T tokens
@@ -120,6 +122,7 @@ TOTAL_TOKENS = {
         "3B": 15 * (1024**4),  # 15T tokens
         "7B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "150B": 2 * (1024**4),  # 2T tokens
     },
     Version.V3_TIKTOKEN: {
         "test": 15 * (1024**4),  # 15T tokens
@@ -127,6 +130,7 @@ TOTAL_TOKENS = {
         "3B": 15 * (1024**4),  # 15T tokens
         "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "150B": 2 * (1024**4),  # 2T tokens
     },
 }
 
@@ -408,8 +412,9 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=32,
             max_step=max_step,
+            save_every_n_steps=1000000,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
                 # Step time:
@@ -422,6 +427,24 @@ def get_trainer_kwargs(
                 # tpu-v4-(1024|2048).
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
+                (
+                    "tpu-v5litepod-32-2",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 (
                     "tpu-v5litepod-256",
                     ChainConfigModifier.default_config().set(
@@ -834,6 +857,55 @@ def get_trainer_kwargs(
                             ),
                             *trn2_config.module_modifications,
                             *trn2_config.partition_spec_modifications,
+                        ],
+                    ),
+                ),
+            ),
+        )
+    elif model_size == "150B":
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=80,
+                hidden_dim=128 * 96,
+                num_heads=96,
+                # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                num_kv_heads=None if version == Version.V1 else 8,
+                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
+                rope_theta=rope_theta,
+                shared_lm_head=False,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size, # number of devices times 4 chips per device times 4096 samples per chip # train_batch_size,
+            max_step=10_000, # max_step,
+            save_every_n_steps=1000,
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4),
+            mesh_rules=(
+                (
+                    # Target per-device token count = 4k.
+                    # PDBS = 0.5 at 8k context.
+                    # Each slice can train a batch size of 128.
+                    "tpu-v6e-256.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=save_and_offload_only_these_names_regex(
+                                            names_which_can_be_offloaded=".*input",
+                                            names_which_can_be_saved=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),

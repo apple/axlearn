@@ -452,14 +452,6 @@ class TPUReplicatedJob(SingleReplicatedJob):
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
-        # Set request memory by host machine type.
-        machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(
-            system.gce_machine_type, None
-        )
-        if machine_memory_gi is not None:
-            request_memory_gi = machine_memory_gi * _MEMORY_REQUEST_PERCENTAGE
-            resources["limits"]["memory"] = f"{machine_memory_gi}Gi"
-            resources["requests"] = {"memory": f"{math.floor(request_memory_gi)}Gi"}
 
         k8s_env_vars = [dict(name=k, value=str(v)) for k, v in env_vars.items()]
         k8s_env_vars.append(
@@ -508,10 +500,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
         sync_command = f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done"
-        resources = {
-            "requests": {"cpu": "100m", "memory": "128Mi"},
-            "limits": {"cpu": "500m", "memory": "256Mi"},
-        }
+        resources = {}
         return dict(
             name="output-uploader",
             image="google/cloud-sdk:alpine",
