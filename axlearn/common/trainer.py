@@ -1219,15 +1219,18 @@ class SpmdTrainer(Module):
         state: TrainerState,
         input_batch: dict[str, Any],
     ) -> tuple[TrainerState, NestedTensor]:
+        def train_cast(in_tree):
+            per_param_train_dtype = self._per_param_train_dtype(in_tree)
+            return utils.cast_floats_per_param(in_tree, per_param_train_dtype)
+
+        # Cast before dispatching to speed up matmul and decrease memory imprint.
+        input_batch = train_cast(input_batch)
+
         # Shard and (possibly) dispatch the input batch.
         input_batch = self.input.dispatch_global_batch(input_batch)
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
-
-        def train_cast(in_tree):
-            per_param_train_dtype = self._per_param_train_dtype(in_tree)
-            return utils.cast_floats_per_param(in_tree, per_param_train_dtype)
 
         # A nested tree of booleans.
         should_compute_gradients = self.learner.should_update_with_optimizers(state.model)
@@ -1246,7 +1249,9 @@ class SpmdTrainer(Module):
                 prng_key=inputs["forward_key"],
                 output_collection=model_output_collection,
             ):
-                loss, aux = self.model(input_batch=train_cast(inputs["input_batch"]))
+                # Copy tree to avoid tracer leaks when input_batch is changed by the model.
+                input_batch_copy = jax.tree.map(lambda x: x, inputs["input_batch"])
+                loss, aux = self.model(input_batch=input_batch_copy)
             return ForwardOutputs(loss=loss, aux=aux, output_collection=model_output_collection)
 
         # `grads` are computed for `model_parameters_grad`.
