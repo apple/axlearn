@@ -18,23 +18,8 @@ env_var {
 }
 env_var {
   check_policy: POLICY_ENFORCED
-  name: "NCCL_P2P_PCI_CHUNKSIZE"
-  value: "131072"
-}
-env_var {
-  check_policy: POLICY_ENFORCED
-  name: "NCCL_P2P_NVL_CHUNKSIZE"
-  value: "524288"
-}
-env_var {
-  check_policy: POLICY_ENFORCED
   name: "NCCL_NVLS_CHUNKSIZE"
   value: "524288"
-}
-env_var {
-  check_policy: POLICY_ENFORCED
-  name: "NCCL_IB_GID_INDEX"
-  value: "3"
 }
 env_var {
   check_policy: POLICY_ENFORCED
