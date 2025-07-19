@@ -9,6 +9,8 @@ from absl import flags
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import AcceleratorConfig, FlagConfigurable, accelerator_flags
 from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.jobset_utils import TPUJobBuilder
+from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -85,3 +87,16 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         A nested dict corresponding to a LeaderWorkerTemplate config.
         """
         raise NotImplementedError(type(self))
+
+
+class TPULeaderWorkerTemplate(TPUJobBuilder):
+    """Builds a LeaderWorkerTemplate spec for a generic TPU workload"""
+
+    Config = TPUJobBuilder.Config
+
+    def __call__(self) -> Sequence[Nested[Any]]:
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        return dict(
+            size=system.vms_per_slice,
+            workerTemplate=self._build_pod(),
+        )
