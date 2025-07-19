@@ -308,12 +308,12 @@ class SingleReplicatedJob(BaseReplicatedJob):
         return cfg
 
 
-class TPUReplicatedJob(SingleReplicatedJob):
-    """Builds a replicated jobspec for TPU, to be used with JobSet API."""
+class TPUJobBuilder(SingleReplicatedJob):
+    """Common base class for TPU Specs"""
 
     @config_class
     class Config(SingleReplicatedJob.Config):
-        """Configures TPUReplicatedJob.
+        """Configures TPUJobBuilder.
 
         Attributes:
             reservation: If specified, the TPU reservation name. This is not necessarily specific to
@@ -380,7 +380,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg: TPUReplicatedJob.Config = super().from_flags(fv, **kwargs)
+        cfg: TPUJobBuilder.Config = super().from_flags(fv, **kwargs)
         default_env = get_default_env(
             tpu_type=infer_tpu_type(fv.instance_type),
             num_tpu_slices=fv.num_replicas,
@@ -404,7 +404,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         if cfg.output_dir is None:
             raise ValueError("cfg.output_dir is required.")
         self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
@@ -433,7 +433,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         volume_mounts = [self._output_volume_mount]
 
@@ -503,7 +503,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         output_volume_mount = output_volume_mount or self._output_volume_mount
         dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
@@ -538,7 +538,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         Returns:
             A nested dict corresponding to a k8s Pod template, including the pod metadata and spec.
         """
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
@@ -726,6 +726,12 @@ class TPUReplicatedJob(SingleReplicatedJob):
             metadata=dict(annotations=annotations, labels=labels),
             spec=spec,
         )
+
+
+class TPUReplicatedJob(TPUJobBuilder):
+    """Builds a replicated job spec for a generic TPU job to be used with the JobSet API"""
+
+    Config = TPUJobBuilder.Config
 
     def __call__(self) -> Sequence[Nested[Any]]:
         """See `BaseReplicatedJob` docstring for details."""
