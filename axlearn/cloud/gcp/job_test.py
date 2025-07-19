@@ -213,7 +213,7 @@ class GPUGKEJobTest(TestCase):
             self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)
 
 
-class TPUGKELeaderWorkerSet(TestCase):
+class TPUGKELeaderWorkerSetTest(TestCase):
     """Tests GKELeaderWorkerSet with TPU."""
 
     def run(self, result=None):
