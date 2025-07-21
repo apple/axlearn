@@ -89,6 +89,8 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
     wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
     /bin/bash miniconda.sh -b -p /opt/conda
     source /opt/conda/etc/profile.d/conda.sh
+    # Accept conda ToS to allow conda env creation
+    conda tos accept
     conda create -y -n py310 python=3.10
     conda activate py310
     conda info --envs
