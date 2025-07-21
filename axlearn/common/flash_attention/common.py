@@ -19,7 +19,9 @@ from jax.experimental import pallas as pl
 from axlearn.common.attention import compute_gqa_context, compute_gqa_logits, softmax_with_biases
 from axlearn.common.attention_bias import BaseAttentionBias, MaskFn, SegmentIdAttentionBias
 from axlearn.common.config import Configurable, config_class
-from axlearn.common.kv_cache.paged_kv_cache import reconstruct_kv
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache, reconstruct_kv
 from axlearn.common.layers import dropout
 from axlearn.common.utils import Nested, Tensor, validate_contains_paths
 
@@ -143,7 +145,6 @@ class BaseFlashAttention(Configurable):
         """Configures BaseFlashAttention.
 
         Attributes:
-            is_decoding: Whether we're in decoding/inference mode.
             softmax_scale: Scale factor to apply to QK.
             dropout_rate: Dropout rate for attention probs.
             interpret: Whether to use interpret mode for Pallas kernels.
@@ -151,7 +152,6 @@ class BaseFlashAttention(Configurable):
             gpu_block_size: Block size for GPU pallas kernels.
         """
 
-        is_decoding: bool = False
         softmax_scale: float = 1.0
         dropout_rate: float = 0.0
         interpret: bool = False
@@ -182,10 +182,7 @@ class BaseFlashAttention(Configurable):
 
     # Note: Positional arguments are used since some use cases require positional-only args,
     # such as functional transformations.
-    def __call__(
-        self,
-        input_batch: Nested[Tensor | BaseAttentionBias],
-    ) -> Tensor:
+    def __call__(self, input_batch: Nested[Tensor | BaseAttentionBias]) -> Tensor:
         """Computes attention context.
 
         Note: This method is called inside jax.shard_map, so query has the per-device shape.
@@ -226,11 +223,13 @@ class BaseFlashAttention(Configurable):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """Returns whether the attention kernel supports the given configuration.
 
         Args:
             input_batch: A dict contains input entries, see __call__ for details.
+            kv_cache_type: KV cache type. If None, it is on a forward pass.
 
         Returns:
             True if the current configuration is supported. False otherwise.
@@ -239,6 +238,7 @@ class BaseFlashAttention(Configurable):
             ValueError: If the given configuration doesn't logically make sense, e.g. if the
                 shapes of q/k/v do not satisfy the requirement of a standard attention.
         """
+        del kv_cache_type
         self._validate_input_batch(input_batch)
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
@@ -291,21 +291,16 @@ class BaseFlashAttention(Configurable):
 class BaseSingleStepDecoding(BaseFlashAttention):
     """Wraps the common checks for single step decoding kernels."""
 
-    @classmethod
-    def default_config(cls) -> BaseFlashAttention.Config:
-        cfg: BaseFlashAttention.Config = super().default_config()
-        cfg.is_decoding = True
-        return cfg
-
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(input_batch):
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
-        if not self.cfg.is_decoding:
-            return self._log_unsupported("is_decoding=False.")
+        if kv_cache_type not in (KVCache, PagedKVCache):
+            return self._log_unsupported(f"{kv_cache_type=}")
         query: Tensor = input_batch["query"]
         if query.shape[1] != 1:
             return self._log_unsupported(f"{query.shape[1]=} != 1")
@@ -340,18 +335,20 @@ class BasePagedAttention(BaseSingleStepDecoding):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """Returns whether paged attention kernel supports the given config.
 
         Args:
             input_batch: A dict contains input entries, see __call__ for details.
+            kv_cache_type: KV cache type. If None, it is on a forward pass.
 
         Returns:
             True if the current configuration is supported in paged attention. False otherwise.
         """
         self._validate_input_batch(input_batch)
-        if not self.cfg.is_decoding:
-            return self._log_unsupported("is_decoding=False.")
+        if kv_cache_type != PagedKVCache:
+            return self._log_unsupported(f"{kv_cache_type=}")
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         page_tables: Tensor = input_batch["page_tables"]
@@ -484,17 +481,18 @@ class ReferenceMHA(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         # @TODO(senyut): Refactor support check.
-        if input_batch.get("page_tables") is None:
-            return BaseFlashAttention.is_supported(
-                self,
-                input_batch=input_batch,
+        if kv_cache_type == PagedKVCache:
+            assert input_batch.get("page_tables") is not None
+            return BasePagedAttention.is_supported(
+                self, input_batch=input_batch, kv_cache_type=kv_cache_type
             )
-        return BasePagedAttention.is_supported(
-            self,
-            input_batch=input_batch,
-        )
+        else:
+            return BaseFlashAttention.is_supported(
+                self, input_batch=input_batch, kv_cache_type=kv_cache_type
+            )
 
 
 def get_cpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:

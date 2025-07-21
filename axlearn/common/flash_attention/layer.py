@@ -179,11 +179,7 @@ class FlashAttention(GroupedQueryAttention):
             v_proj = self._maybe_repeat_kv_heads(v_proj)
         attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
-        # Note: prefill (INIT_STATE) is not is_decoding because query and key have the same shape.
-        # Note: this is a heuristic and it is possible (although not currently common) to do
-        # an extend_step even if we aren't in decoding. A more robust method could instead directly
-        # look at whether we need gradients or not, which could be done by adding a custom_vjp.
-        is_decoding = mode == ForwardMode.EXTEND_STEP
+        kv_cache_type = self._get_kv_cache_type(mode)
 
         # Get logit sink parameter if configured.
         logit_sink = self.parameters.get("sink", None)
@@ -196,7 +192,7 @@ class FlashAttention(GroupedQueryAttention):
             bias=attention_logit_biases,
             logit_sink=logit_sink,
             softmax_scale=1.0,
-            is_decoding=is_decoding,
+            kv_cache_type=kv_cache_type,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
             gpu_block_size=cfg.gpu_block_size or 128,
@@ -284,6 +280,14 @@ class FlashAttention(GroupedQueryAttention):
             cfg.output_dim_to_partition_spec["bnts"],
         )
         return outputs, output_probs
+
+    def _get_kv_cache_type(self, mode: ForwardMode):
+        # Note: prefill (INIT_STATE) is not decoding because query and key have the same shape.
+        # Note: this is a heuristic and it is possible (although not currently common) to do
+        # an extend_step even if we aren't in decoding. A more robust method could instead directly
+        # look at whether we need gradients or not, which could be done by adding a custom_vjp.
+        is_decoding = mode == ForwardMode.EXTEND_STEP
+        return type(self.kv_cache) if is_decoding else None
 
 
 def default_mha_dim_to_partition_spec(
