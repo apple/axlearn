@@ -151,7 +151,9 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
         # pylint: disable-next=import-error,import-outside-toplevel
         from pathwaysutils.elastic import manager
         elastic_manager = manager.Manager()
-        while True:
+
+        max_retry_attempts = 5
+        for retry_attempt in range(max_retry_attempts):
             try:
                 trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
                 prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
@@ -170,9 +172,9 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
                   logging.exception("Error trying to clean up ongoing traces")
                   raise
 
-                jax.clear_caches()
-                for array in jax.live_arrays():
-                  array.delete()
+                # jax.clear_caches()
+                # for array in jax.live_arrays():
+                #   array.delete()
 
                 ten_minutes = 10 * 60
                 elastic_manager.wait_for_slices(timeout=ten_minutes)

@@ -321,7 +321,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
             # This should be made configurable
-            f"--num_elastic_slices={cfg.accelerator.num_replicas}"
+            f"--num_elastic_slices={cfg.accelerator.num_replicas}",
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
@@ -358,6 +358,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--instance_count={pathways_instance_count}",
                     f"--instance_type={pathways_tpu_version}:{system.topology}",
                     f"--gcs_scratch_location={staging_location}",
+                    "--alsologtostderr",
                 ],
             ),
         ]
