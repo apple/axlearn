@@ -611,13 +611,21 @@ def apply_attention_logit_biases(
     return logits + attention_logit_biases.astype(logits.dtype)
 
 
-def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor] = None) -> Tensor:
+def softmax_with_biases(
+    logits: Tensor,
+    attention_logit_biases: Optional[Tensor] = None,
+    logit_sink: Optional[Tensor] = None,
+) -> Tensor:
     """Computes softmax with optional masking.
 
     Args:
         logits: A Tensor of any shape.
         attention_logit_biases: A Tensor that is broadcastable with logits.
             See ``On attention logit biases`` in the file comments.
+        logit_sink: Optional logit sink values of shape [num_heads]. When provided,
+            an additional "sink" logit is added to the QK logits to absorb excess
+            attention mass. This is applied after the logit biases, so the logit
+            biases have no effect on logit sinks.
 
     Returns:
         A Tensor of same shape and dtype as logits.
@@ -628,9 +636,29 @@ def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor]
     if logits_dtype in (jnp.bfloat16, jnp.float16):
         # Avoid computing softmax in 16-bit floats.
         logits = logits.astype(jnp.float32)
-    probs = jax.nn.softmax(logits, axis=-1)
+
+    if logit_sink is not None:
+        # Broadcast logit_sink from [num_heads] to [batch, num_heads, target_len, 1].
+        logit_sink_expanded = jnp.broadcast_to(
+            logit_sink[None, :, None, None], (*logits.shape[:-1], 1)
+        )
+        # Concatenate sink logits to the original logits
+        logits_with_sink = jnp.concatenate([logit_sink_expanded, logits], axis=-1)
+
+        # Compute softmax over logits + sink
+        probs_with_sink = jax.nn.softmax(logits_with_sink, axis=-1)
+
+        # Extract probabilities for original tokens (excluding sink)
+        probs = probs_with_sink[..., 1:]
+
+        # Note: The probabilities sum to less than 1 since some mass went to the sink.
+        # This is the intended behavior for logit sinks - they absorb excess attention mass.
+    else:
+        probs = jax.nn.softmax(logits, axis=-1)
+
     if probs.dtype != logits_dtype:
         probs = probs.astype(logits_dtype)
+
     check_numerics(probs)
     return probs
 
@@ -1498,6 +1526,29 @@ class MultiheadAttention(BaseLayer):
         # If None, uses KVCache.default_config().
         kv_cache: Optional[BaseKVCache.Config] = None
 
+        # Sets whether key and value should be scaled before `extend_step` or after.
+        # If False or None, the following code sequence will apply.
+        # ```python
+        # q, k, v = i_proj(...)
+        # k, v = kv_cache.extend_step(k, v)
+        # k, v = scale_kv(k, v)
+        # ```
+        #
+        # If True, the following code sequence will apply.
+        # ```python
+        # q, k, v = i_proj(...)
+        # k, v = scale_kv(k, v)
+        # k, v = kv_cache.extend_step(k, v)
+        # ```
+        #
+        # Generally, scaling k and v before storing them into the KV cache (i.e. extend_step) leads
+        # to better inference performance. However, this might be incompatible to some KV sharing
+        # architectures that have different scaling factors for KV-shared layers.
+        scale_kv_before_cache_update: Optional[bool] = None
+
+        # If true, use learnable logit sinks.
+        logit_sink: Optional[bool] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -1543,6 +1594,20 @@ class MultiheadAttention(BaseLayer):
 
         kv_cache = cfg.kv_cache or KVCache.default_config()
         self._add_child("kv_cache", kv_cache)
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        params = {}
+        if cfg.logit_sink:
+            initializer = ConstantInitializer.default_config().set(value=0.0).instantiate()
+            params["sink"] = ParameterSpec(
+                shape=(cfg.num_heads,),
+                mesh_axes=("model",),
+                initializer=initializer,
+                dtype=cfg.dtype,
+                weight_decay_scale=0.0,
+            )
+        return params
 
     def output_dim(self):
         cfg = self.config
@@ -1619,13 +1684,14 @@ class MultiheadAttention(BaseLayer):
             ValueError: If key & value are an invalid combination.
             ValueError: If `mode` is unsupported.
         """
+        cfg: MultiheadAttention.Config = self.config
+        has_external_kv_state = kv_state is not None
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 f"key and value must be both None or both set, key:{type(key)}, value:{type(value)}"
             )
-        if kv_state is not None:
-            # KV cache sharing branch.
+        if has_external_kv_state:  # KV cache sharing branch.
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
             # Note: self.i_proj must be QLinear, and KVCache must be no-op.
@@ -1645,15 +1711,36 @@ class MultiheadAttention(BaseLayer):
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
 
+        if cfg.scale_kv_before_cache_update:
+            if has_external_kv_state:
+                # TODO(hanzhi-zhou): Relax this restriction. Some KV sharing models support this if
+                # KV-shared layers don't have their own KV normalization layers.
+                raise ValueError(
+                    "KV sharing (e.g. when kv_state is not None) is not supported if "
+                    "scale_kv_before_cache_update=True."
+                )
+            q_proj = self._remat_name(q_proj, "q_proj")
+            k_proj = self._remat_name(k_proj, "k_proj")
+            v_proj = self._remat_name(v_proj, "v_proj")
+
+            # Scale query and key.
+            q_proj, k_proj = self._scale_qk(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                query_positions=query_positions,
+                key_positions=query_positions,
+            )
+
         if mode == ForwardMode.FORWARD:
             new_cached_states = dict()
-            key_positions = jnp.arange(k_proj.shape[1])[None]
-            kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
+            kv_state = KVState(
+                k_proj=k_proj, v_proj=v_proj, key_positions=jnp.arange(k_proj.shape[1])[None]
+            )
         elif mode in (ForwardMode.EXTEND_STEP, ForwardMode.INIT_STATES):
             assert cached_states is not None
             step_len = live_step_len if live_step_len is not None else q_proj.shape[1]
             new_cached_states = dict(time_step=time_step + step_len)
-            if kv_state is None:
+            if not has_external_kv_state:
                 # In prefill, init_states already called self.kv_cache.init_states.
                 with child_context("kv_cache_extend_step", module=self.kv_cache):
                     new_cached_states["kv_cache"], kv_cache_output = self.kv_cache.extend_step(
@@ -1664,7 +1751,6 @@ class MultiheadAttention(BaseLayer):
                         live_step_len=live_step_len,
                     )
                 if mode == ForwardMode.EXTEND_STEP:
-                    k_proj, v_proj, key_positions = kv_cache_output
                     kv_state = KVState(*kv_cache_output)
                 else:
                     # During prefill, q/k/v_proj are the same as in the forward pass.
@@ -1679,31 +1765,34 @@ class MultiheadAttention(BaseLayer):
                 # so that i_proj will use shared KV and update it.
                 #
                 # Here we pack the `k_proj` and `v_proj` (possibly updated by i_proj),
-                # and the same `key_positions`, into `kv_state`.
-                key_positions = kv_state.key_positions
-                kv_state = KVState(k_proj, v_proj, key_positions)
+                # leaving other fields unchanged.
+                kv_state = kv_state._replace(k_proj=k_proj, v_proj=v_proj)
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
 
-        q_proj = self._remat_name(q_proj, "q_proj")
-        k_proj = self._remat_name(k_proj, "k_proj")
-        v_proj = self._remat_name(v_proj, "v_proj")
-
-        # Scale query and key.
-        q_proj, k_proj = self._scale_qk(
-            q_proj=q_proj,
-            k_proj=k_proj,
-            query_positions=query_positions,
-            key_positions=key_positions,
-        )
+        if not cfg.scale_kv_before_cache_update:
+            q_proj = self._remat_name(q_proj, "q_proj")
+            k_proj = self._remat_name(kv_state.k_proj, "k_proj")
+            # Scale query and key.
+            q_proj, scaled_k_proj = self._scale_qk(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                query_positions=query_positions,
+                key_positions=kv_state.key_positions,
+            )
+            kv_state = kv_state._replace(
+                k_proj=scaled_k_proj, v_proj=self._remat_name(kv_state.v_proj, "v_proj")
+            )
 
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
-        self.vlog(3, "atten.k_proj=%s", k_proj.sum())
-        self.vlog(3, "atten.v_proj=%s", v_proj.sum())
+        self.vlog(3, "atten.k_proj=%s", kv_state.k_proj.sum())
+        self.vlog(3, "atten.v_proj=%s", kv_state.v_proj.sum())
         attention_logit_biases = as_attention_bias(attention_logit_biases)
         if self._mask_tpl is not None:
             attention_logit_biases += self._mask_tpl.instantiate(
-                target_positions=query_positions, source_positions=key_positions, dtype=q_proj.dtype
+                target_positions=query_positions,
+                source_positions=kv_state.key_positions,
+                dtype=q_proj.dtype,
             )
         if segment_ids is not None:
             assert mode == ForwardMode.FORWARD, "segment_ids must be None in inference."
@@ -1711,10 +1800,12 @@ class MultiheadAttention(BaseLayer):
         context, probs = self._compute_attention(
             mode=mode,
             q_proj=q_proj,
-            k_proj=k_proj,
-            v_proj=v_proj,
+            kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
         )
+        if not cfg.scale_kv_before_cache_update:
+            # This is to maintain the existing behavior of sending pre-scaled K to the next layer.
+            kv_state = kv_state._replace(k_proj=k_proj)
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
 
@@ -1747,8 +1838,7 @@ class MultiheadAttention(BaseLayer):
         *,
         mode: ForwardMode,
         q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
+        kv_state: KVState,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
@@ -1757,8 +1847,8 @@ class MultiheadAttention(BaseLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             q_proj: [batch_size, target_length, num_heads, per_head_dim].
-            k_proj: [batch_size, source_length, num_heads, per_head_dim].
-            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+            kv_state: The KV State dataclass containing k_proj, v_proj, key_positions, and optional
+                attributes such as page_indices.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
 
         Returns:
@@ -1766,12 +1856,20 @@ class MultiheadAttention(BaseLayer):
             and probs of shape [batch, num_heads, target_length, source_length].
         """
         del mode
+        # Not all subclasses have kv_cache.
+        if hasattr(self, "kv_cache"):
+            k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
+        else:
+            k_proj, v_proj = kv_state.k_proj, kv_state.v_proj
         # KV cache may cast them in lower precision.
         k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
-        probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases.value())
+        logit_sink = self.parameters.get("sink", None)
+        probs = softmax_with_biases(
+            logits, attention_logit_biases=attention_logit_biases.value(), logit_sink=logit_sink
+        )
         probs = self.dropout(probs)
         context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
@@ -2132,12 +2230,12 @@ class SigmoidAttention(MultiheadAttention):
         *,
         mode: ForwardMode,
         q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
+        kv_state: KVState,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
         del mode
+        k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
         cfg = self.config
         # KV cache may cast them in lower precision.
         k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
@@ -4180,6 +4278,7 @@ def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
+    *,
     save_pattern: SavePattern = RematRegexSavePatterns.NATIVE_ATTENTION.value,
     offload_pattern: SavePattern = None,
     offload_dst: str = "pinned_host",

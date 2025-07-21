@@ -19,6 +19,7 @@ from jax.experimental import pallas as pl
 from axlearn.common.attention import compute_gqa_context, compute_gqa_logits, softmax_with_biases
 from axlearn.common.attention_bias import BaseAttentionBias, MaskFn, SegmentIdAttentionBias
 from axlearn.common.config import Configurable, config_class
+from axlearn.common.kv_cache.paged_kv_cache import reconstruct_kv
 from axlearn.common.layers import dropout
 from axlearn.common.utils import Nested, Tensor, validate_contains_paths
 
@@ -71,6 +72,30 @@ def build_mask(
     # and we can safely perform any compile time evaluations.
     with ThreadPoolExecutor(1) as pool:
         return pool.submit(worker).result()
+
+
+def build_sliding_window_mask(
+    *,
+    q_seq_len: int,
+    kv_seq_len: int,
+    block_q: int,
+    block_k: int,
+    sliding_window_size: int,
+) -> np.ndarray:
+    """Same as build_mask(sliding_window_causal_mask(sliding_window_size), **kwargs).
+
+    This function is much faster than `build_mask` for sliding window mask, because it doesn't need
+    to compute `mask_fn` on each block_q x block_k tile. Therefore, the speed up is proportional to
+    block_q x block_k.
+    """
+    num_q_blocks = pl.cdiv(q_seq_len, block_q)
+    num_kv_blocks = pl.cdiv(kv_seq_len, block_k)
+    block_mask_map = np.tri(num_q_blocks, num_kv_blocks, dtype=np.bool_)
+    for i in range(0, q_seq_len, block_q):
+        for j in range(0, kv_seq_len, block_k):
+            if i - (j + block_k - 1) > sliding_window_size:
+                block_mask_map[i // block_q, j // block_k] = False
+    return block_mask_map
 
 
 class KVOffsetInfo(NamedTuple):
@@ -217,6 +242,7 @@ class BaseFlashAttention(Configurable):
         self._validate_input_batch(input_batch)
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
         if query.shape[0] != key.shape[0]:
             raise ValueError(
                 f"Expects query batch size {query.shape[0]} to be equal to key batch size "
@@ -231,6 +257,11 @@ class BaseFlashAttention(Configurable):
             raise ValueError(
                 f"Expects query num heads {query.shape[2]} to be divisible by num key heads "
                 f"{key.shape[2]}"
+            )
+        if logit_sink is not None and logit_sink.shape[0] != query.shape[2]:
+            raise ValueError(
+                f"Expects logit sink num heads {logit_sink.shape[0]} to be equal to "
+                f"num query heads {query.shape[2]}."
             )
         return True
 
@@ -280,6 +311,8 @@ class BaseSingleStepDecoding(BaseFlashAttention):
             return self._log_unsupported(f"{query.shape[1]=} != 1")
         if self.cfg.dropout_rate != 0.0:
             raise ValueError("Dropout rate cannot be set for decoding!")
+        if input_batch["logit_sink"] is not None:
+            return self._log_unsupported("logit_sink is not supported.")
         return True
 
 
@@ -424,17 +457,21 @@ class ReferenceMHA(BaseFlashAttention):
         dropout_mask: Optional[Tensor] = None,
     ):
         # We apply the scale factor before the attention biases.
+        logging.info("Using %s", self.name())
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         value: Tensor = input_batch["value"]
         bias: BaseAttentionBias = input_batch["bias"]
-        query *= self.cfg.softmax_scale
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
         page_tables = input_batch.get("page_tables", None)
+
+        query *= self.cfg.softmax_scale
+
         if page_tables is not None:
             key = reconstruct_kv(page_tables, key)
             value = reconstruct_kv(page_tables, value)
         logits = compute_gqa_logits(query, key)
-        probs = softmax_with_biases(logits, bias.value())
+        probs = softmax_with_biases(logits, bias.value(), logit_sink)
         if self.cfg.dropout_rate > 0:
             probs = dropout(
                 probs,
@@ -510,33 +547,3 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
     if dtype == jnp.bfloat16:
         return jax.lax.Precision.DEFAULT
     raise ValueError(f"Unsupported dtype {dtype}")
-
-
-def reconstruct_kv(page_tables: Tensor, pages: Tensor) -> Tensor:
-    """Retrieve key/value from page tables given pages.
-
-    Ported from
-    https://github.com/jax-ml/jax/blob/1594d2f30fdbfebf693aba4a2b264e4a3e52acc6/tests/pallas/tpu_paged_attention_kernel_test.py#L62
-
-    Args:
-        page_tables: [batch_size, pages_per_sequence], specifying page indices.
-        pages: [num_kv_heads, total_num_pages, page_size, head_dim], k/v pages.
-
-    Returns:
-        Retrieved actual key / value of shape [batch_size, kv_seq_len, n_kv_heads, head_dim]
-    """
-
-    def fn(page_tables: Tensor, pages: Tensor) -> Tensor:
-        # page_tables: (pages_per_sequence)
-        # pages: (n_kv_heads, total_pages, page_size, head_dim)
-        head_dim = pages.shape[-1]
-        out = pages.at[page_tables].get(mode="fill", fill_value=0.0)
-        return out.reshape(-1, head_dim)
-
-    with_batch = jax.vmap(fn, (0, None), 0)
-    attn_fn = jax.vmap(with_batch, (None, 0), 1)
-
-    out = attn_fn(page_tables, pages)
-    out = jnp.swapaxes(out, 1, 2)
-
-    return out

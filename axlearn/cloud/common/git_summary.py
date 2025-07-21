@@ -104,17 +104,20 @@ class GitSummaryMembers(enum.Enum):
     commit = GitSummaryMember(
         label="git-commit", file=".git.commit", cmd=("git", "rev-parse", "HEAD")
     )
+    # For retrieving a git branch, use rev-parse instead of ``git branch --show_current``
+    # Since the latter is not supported on older git versions (was introduced in git version 2.22.0)
     branch = GitSummaryMember(
         label="git-branch",
         file=".git.branch",
-        cmd=("git", "branch", "--show-current"),
+        cmd=("git", "rev-parse", "--abbrev-ref", "HEAD"),
         indicator_label=False,
     )
     remote = GitSummaryMember(
         label="git-remote",
         file=".git.remote",
         # get remote url where branch is tracked (if any)
-        cmd="git remote get-url $(git config --get branch.$(git branch --show-current).remote) "
+        cmd="git remote get-url $(git config --get"
+        " branch.$(git rev-parse --abbrev-ref HEAD).remote) "
         "|| git remote get-url origin "  # fallback to origin
         "|| git config --get-regexp 'remote.*.url' | head -n 1 | cut -d= -f2",  # or 1st remote
         required=False,  # remote is not always available

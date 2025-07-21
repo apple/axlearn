@@ -122,7 +122,7 @@ class SpmdTrainer(Module):
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
         # TODO(markblee): Deprecate this field in favor of `input.input_partitioner`.
-        batch_axis_names: Union[str, Sequence[str]] = "data"
+        batch_axis_names: Optional[Union[str, Sequence[str]]] = "data"
 
         # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
         #
@@ -297,11 +297,12 @@ class SpmdTrainer(Module):
         # Create all children within the mesh context so that utils.input_partition_spec() works
         # properly.
         with self.mesh():
+            if cfg.batch_axis_names is not None:
+                cfg.input = maybe_set_config(
+                    cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
+                )
             self.input: Input = self._add_child(
-                "input",
-                maybe_set_config(
-                    cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names), is_training=True
-                ),
+                "input", maybe_set_config(cfg.input, is_training=True)
             )
             # Start from the beginning of the input dataset by default.
             self._input_iter = iter(self.input.dataset())
@@ -341,9 +342,10 @@ class SpmdTrainer(Module):
                 evaler_cfg.summary_writer.dir = evaler_cfg.summary_writer.dir or os.path.join(
                     cfg.dir, "summaries", evaler_name
                 )
-                maybe_set_config(
-                    evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
-                )
+                if cfg.batch_axis_names is not None:
+                    maybe_set_config(
+                        evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
+                    )
                 self._evalers[evaler_name] = self._add_child(
                     evaler_name,
                     evaler_cfg,
@@ -591,7 +593,7 @@ class SpmdTrainer(Module):
                         input_batch = next(input_iterator)
                         self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         logging.log_first_n(
-                            logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
+                            logging.INFO, "host_input_batch=%s", 3, utils.shapes(input_batch)
                         )
 
                         # Stop or start tracing if necessary.
@@ -601,7 +603,7 @@ class SpmdTrainer(Module):
                         self.vlog(3, "Start step %s", self.step)
                         self._maybe_record_event(measurement.Event.START_STEP, self._step)
                         output = self._run_step(
-                            utils.host_to_global_device_array(
+                            utils.host_to_global_array(
                                 input_batch,
                                 partition=self._train_step_input_partition_specs(),
                             ),
@@ -1089,6 +1091,7 @@ class SpmdTrainer(Module):
             A dict containing 'loss' and 'aux' outputs. If force_run_evals is a set,
             force run the evalers in the set and return 'evaler_summaries' output.
         """
+        logging.log_first_n(logging.INFO, "global_input_batch=%s", 3, utils.shapes(input_batch))
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             run_with_xsc = self._xsc_check_policy and self._xsc_check_policy(self.step)
             compiled_train_step_fn = self._get_compiled_train_step_fn(

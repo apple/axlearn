@@ -12,7 +12,7 @@ from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
-from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention
+from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention, KVState
 from axlearn.common.attention_bias import BaseAttentionBias
 from axlearn.common.config import ConfigBase, ConfigModifier, config_class
 from axlearn.common.flash_attention.utils import flash_attention_implementation
@@ -147,8 +147,7 @@ class FlashAttention(GroupedQueryAttention):
         *,
         mode: ForwardMode,
         q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
+        kv_state: KVState,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
@@ -160,8 +159,8 @@ class FlashAttention(GroupedQueryAttention):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             q_proj: [batch_size, target_length, num_heads, per_head_dim].
-            k_proj: [batch_size, source_length, num_heads, per_head_dim].
-            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+            kv_state: The KV State dataclass containing k_proj, v_proj, key_positions, and optional
+                attributes such as page_indices.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
 
         Returns:
@@ -171,11 +170,13 @@ class FlashAttention(GroupedQueryAttention):
         cfg: FlashAttention.Config = self.config
         backend = self._backend()
 
-        orig_k_proj = k_proj
-        orig_v_proj = v_proj
+        k_proj, v_proj = kv_state.k_proj, kv_state.v_proj
+        page_indices = kv_state.page_indices
+
         # Repeats key/value heads dim if necessary.
-        k_proj = self._maybe_repeat_kv_heads(k_proj)
-        v_proj = self._maybe_repeat_kv_heads(v_proj)
+        if page_indices is None:
+            k_proj = self._maybe_repeat_kv_heads(k_proj)
+            v_proj = self._maybe_repeat_kv_heads(v_proj)
         attention_logit_biases = attention_logit_biases.astype(q_proj.dtype)
 
         # Note: prefill (INIT_STATE) is not is_decoding because query and key have the same shape.
@@ -183,41 +184,52 @@ class FlashAttention(GroupedQueryAttention):
         # an extend_step even if we aren't in decoding. A more robust method could instead directly
         # look at whether we need gradients or not, which could be done by adding a custom_vjp.
         is_decoding = mode == ForwardMode.EXTEND_STEP
+
+        # Get logit sink parameter if configured.
+        logit_sink = self.parameters.get("sink", None)
+
         jit_attn = flash_attention_implementation(
             backend=backend,
             query=q_proj,
             key=k_proj,
             value=v_proj,
             bias=attention_logit_biases,
+            logit_sink=logit_sink,
             softmax_scale=1.0,
             is_decoding=is_decoding,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
             gpu_block_size=cfg.gpu_block_size or 128,
             dropout_rate=cfg.dropout.rate,
+            page_tables=page_indices,
         )
         if jit_attn is None:
             # Fall back to standard attention if no backend kernels are supported.
             return super()._compute_attention(
                 mode=mode,
                 q_proj=q_proj,
-                k_proj=orig_k_proj,
-                v_proj=orig_v_proj,
                 attention_logit_biases=attention_logit_biases,
+                kv_state=kv_state,  # Use the original kv_state.
             )
 
         batch, target_len, num_heads, _ = q_proj.shape
-        _, source_len, _, _ = k_proj.shape
+        if page_indices is None:
+            _, source_len, _, _ = k_proj.shape
+        else:
+            source_len = k_proj.shape[1] * page_indices.shape[-1]
 
         attention_logit_biases_spec = self._logit_biases_spec(attention_logit_biases)
         attention_logit_biases = with_sharding_constraint(
             attention_logit_biases, attention_logit_biases_spec
         )
 
+        # When using paged attention, k/v_proj have different format.
+        kv_partition = "bsnh" if page_indices is None else "nbph"
+
         # Constrain input to conform to partitioned MHA expectations.
         q_proj = with_sharding_constraint(q_proj, cfg.mha_dim_to_partition_spec["btnh"])
-        k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec["bsnh"])
-        v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec["bsnh"])
+        k_proj = with_sharding_constraint(k_proj, cfg.mha_dim_to_partition_spec[kv_partition])
+        v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec[kv_partition])
 
         # We need to manually partition pallas | jax-triton calls.
         # Note: shard_map doesn't support kwargs.
@@ -226,12 +238,16 @@ class FlashAttention(GroupedQueryAttention):
             "query": cfg.mha_dim_to_partition_spec["btnh"],
             # KV [batch_size, seq_len, repeated_num_heads, per_head_dim].
             # repeated_num_heads should be divided evenly by the n axis.
-            "key": cfg.mha_dim_to_partition_spec["bsnh"],
-            "value": cfg.mha_dim_to_partition_spec["bsnh"],
+            "key": cfg.mha_dim_to_partition_spec[kv_partition],
+            "value": cfg.mha_dim_to_partition_spec[kv_partition],
             # PRNG Key
             "prng_key": PartitionSpec(None),
             # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
             "bias": attention_logit_biases_spec,
+            # Logit sink values of shape [num_heads].
+            "logit_sink": PartitionSpec("model") if logit_sink is not None else PartitionSpec(None),
+            # PagedKVCache's page indices.
+            "page_tables": cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None)),
         }
         partitioned_mha = shard_map(
             jit_attn,
@@ -252,6 +268,8 @@ class FlashAttention(GroupedQueryAttention):
             "value": v_proj,
             "prng_key": self.dropout.get_prng_key(),
             "bias": attention_logit_biases,
+            "logit_sink": logit_sink,
+            "page_tables": page_indices,
         }
         outputs = with_sharding_constraint(
             partitioned_mha(
