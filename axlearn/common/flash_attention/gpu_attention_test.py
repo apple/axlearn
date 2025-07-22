@@ -492,6 +492,7 @@ def test_cudnn_dropout_determinism():
         logit_sink=None,
     )
     fn = CuDNNGPUFlashAttention.default_config().set(dropout_rate=0.1).instantiate()
+    chex.assert_equal(fn.is_supported(input_batch, kv_cache_type=None), True)
 
     outputs = []
     grads = []
