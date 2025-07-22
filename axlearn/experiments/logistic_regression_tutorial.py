@@ -9,19 +9,10 @@ on synthetic 2D data for binary classification.
 # ============================================================================
 # Step 1: Create the Tutorial File
 # ============================================================================
-
-# conda create -n axlearn python=3.10
-# conda deactivate # Don't need base env activated
-# conda activate axlearn
-
-# git clone https://github.com/apple/axlearn
-# cd axlearn
-
-# pip install -e '.[core,apple-silicon]' # for macOS/M-chip
-# or, else
-# pip install -e '.[core]' # for macOS/Intel-chip and Linux
-
-# Start training locally using CPU and synthetic data.
+#
+# Install AXLearn following the documentation before training logistic regression model locally
+# using CPU and synthetic data.
+#
 # mkdir -p /tmp/logistic_regression_test
 # rm -rf /tmp/logistic_regression_test/*
 # python -m axlearn.common.launch_trainer_main \
@@ -106,17 +97,17 @@ class LogisticRegressionModel(BaseModel):
 
     @config_class
     class Config(BaseModel.Config):
-        model: Required[InstantiableConfig] = REQUIRED
+        backbone: Required[InstantiableConfig] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
-        self._add_child("model", cfg.model)
+        self._add_child("backbone", cfg.backbone)
         self._add_child("metric", ClassificationMetric.default_config().set(num_classes=2))
 
     def predict(self, input_batch: NestedTensor) -> NestedTensor:
-        logits = self.model(input_batch["features"])
+        logits = self.backbone(input_batch["features"])
         return {"logits": logits}
 
     def forward(self, input_batch: NestedTensor) -> tuple[Tensor, NestedTensor]:
@@ -165,7 +156,7 @@ def build_input_config(is_training: bool, global_batch_size: int = 32) -> Input.
 
 def logistic_regression_trainer() -> trainer.SpmdTrainer.Config:
     model_cfg = LogisticRegressionModel.default_config().set(
-        model=Linear.default_config().set(
+        backbone=Linear.default_config().set(
             input_dim=2,
             output_dim=1,
             bias=True,
