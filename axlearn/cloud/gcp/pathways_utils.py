@@ -64,6 +64,10 @@ _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
+# The back off limit of pathways pods.
+# Note that the head pod will back of exact this many times.
+# While workers will share #workers * _PATHWAYS_BACK_OFF_LIMIT total times.
+_PATHWAYS_BACK_OFF_LIMIT = 32
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
@@ -449,7 +453,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         spec = dict(
             parallelism=1,
             completions=1,
-            backoffLimit=0,
+            backoffLimit=_PATHWAYS_BACK_OFF_LIMIT,
             template=self._build_pathways_head_pod(),
         )
         head_job = dict(
@@ -605,7 +609,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             # Default value for suspend and resume.
             # References:
             # https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L651
-            backoffLimit=system.vms_per_slice * 4,
+            backoffLimit=system.vms_per_slice * _PATHWAYS_BACK_OFF_LIMIT,
             template=self._build_pathways_worker_pod(pathways_worker_replicated_job_index),
         )
         worker_job = dict(
