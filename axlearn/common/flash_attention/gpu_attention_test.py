@@ -398,6 +398,13 @@ def test_cudnn_dropout_against_xla_dropout(
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
+    q = jax.random.normal(k1, qkv_shape, dtype=dtype)
+    k = jax.random.normal(k2, qkv_shape, dtype=dtype)
+    v = jax.random.normal(k3, qkv_shape, dtype=dtype)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
+    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
+
     dropout_mask = (
         test_fn(
             dict(
@@ -415,13 +422,6 @@ def test_cudnn_dropout_against_xla_dropout(
     # Clear the compilation cache to reset cudnn RNG offset, so the next invocation will generate
     # the same mask.
     jax.clear_caches()
-
-    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
-    q = jax.random.normal(k1, qkv_shape, dtype=dtype)
-    k = jax.random.normal(k2, qkv_shape, dtype=dtype)
-    v = jax.random.normal(k3, qkv_shape, dtype=dtype)
-    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
-    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
 
     ref_fn = functools.partial(
         ref_fn,

@@ -811,7 +811,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             # key/value to be even.
             if not self._check_block_size(input_batch, block_size=2):
                 return False
-        if kv_cache_type == KVCache:
+        elif kv_cache_type == KVCache:
             if query.shape[1] > 1:
                 return self._log_unsupported("multi-step decoding is not supported.")
             if not key.shape[1] % 2 == 0:
