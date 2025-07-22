@@ -29,6 +29,7 @@ from axlearn.common.attention_bias import (
     split,
 )
 from axlearn.common.flash_attention.common import BasePagedAttention
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -425,9 +426,10 @@ class TPUPagedAttention(BasePagedAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BasePagedAttention.is_supported`."""
-        if not super().is_supported(input_batch=input_batch):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
 
         key: Tensor = input_batch["key"]

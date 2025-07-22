@@ -199,7 +199,7 @@ class TestFlashAttention(TestCase):
         with jax.default_matmul_precision(matmul_precision) if matmul_precision else nullcontext():
             err = matmul_precision == "highest" and q_dtype == jnp.bfloat16
             with self.assertRaises(ValueError) if err else nullcontext():
-                is_supported = fn.is_supported(input_batch=input_batch)
+                is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
             if err:
                 return
 
@@ -207,7 +207,7 @@ class TestFlashAttention(TestCase):
                 # Check splash attention is used when it should be.
                 self.assertEqual(fallback_to_legacy, True)
                 fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
-                legacy_supported = fn.is_supported(input_batch=input_batch)
+                legacy_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
                 if q_dtype != kv_dtype:
                     self.assertEqual(legacy_supported, False)
                     return
@@ -292,7 +292,7 @@ class TestFlashAttention(TestCase):
         )
 
         # Check if the kernel supports this configuration
-        is_supported = fn.is_supported(input_batch=input_batch)
+        is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
         if not is_supported:
             pytest.skip(reason="Configuration not supported by TPUSplashAttention")
 
@@ -353,7 +353,7 @@ class TestFlashAttention(TestCase):
 
         # This should raise a ValueError due to shape mismatch
         with self.assertRaises(ValueError):
-            fn.is_supported(input_batch=input_batch)
+            fn.is_supported(input_batch=input_batch, kv_cache_type=None)
 
 
 if __name__ == "__main__":
