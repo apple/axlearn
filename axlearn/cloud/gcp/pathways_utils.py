@@ -894,7 +894,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
     def _build_head_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self._inner.config
-
+        cpu_req = f"{float(self.config.pathways_head_cpu) * 1000}m"
+        mem_req = f"{self.config.pathways_head_mem}Gi"
+        resources = {
+            "requests": {"cpu": cpu_req, "memory": mem_req},
+            "limits": {"cpu": cpu_req, "memory": mem_req},
+        }
         return dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
@@ -918,6 +923,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 },
             ],
             imagePullPolicy="Always",
+            resources=resources,
         )
 
     def build_leader_pod(self) -> Nested[Any]:
