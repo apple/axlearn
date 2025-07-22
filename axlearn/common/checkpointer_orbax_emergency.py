@@ -22,6 +22,7 @@ import orbax.checkpoint as ocp
 import orbax.checkpoint.experimental.emergency.checkpoint_manager as oecp
 import tensorflow as tf
 from absl import flags, logging
+from etils import epath
 from jax._src.distributed import global_state
 from jax._src.mesh import thread_resources
 from jax.experimental.array_serialization import serialization
@@ -297,6 +298,33 @@ def _init_consistent_proc_ids(
         local_proc_info.cur_proc_id = (
             int(os.environ["MEGASCALE_SLICE_ID"]) * num_proc_per_slice + worker_id
         )
+        # De-hardcode
+        use_replicator_service = True
+        if use_replicator_service:
+            replicator_file = "replicator.yaml"
+            temp_file = replicator_file + ".tmp"
+            replicator_file = epath.Path(local_ckpt_dir) / replicator_file
+            temp_file = epath.Path(local_ckpt_dir) / temp_file
+            num_nodes = jax.process_count()
+            nodes_per_slice = num_nodes // num_slices
+            node_rank = jax.process_index()
+            peer_ranks = []
+            for i in range(num_slices):
+                peer = node_rank % nodes_per_slice + i * nodes_per_slice
+                if peer != node_rank:
+                    peer_ranks.append(peer)
+            run_name = os.environ.get("HOSTNAME").split("job")[0].rstrip("-")
+
+            replicator_yaml = f"""job-name: {run_name}
+          framework: orbax
+          assume-data-parallelism: 2
+          node-rank: {node_rank}
+          nodes: {num_nodes}
+          peer-ranks: {peer_ranks}
+          backup-interval-minutes: 30"""
+
+            temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
+            os.rename(temp_file, replicator_file)
     elif jax_backend == "gpu":
         if local_address is None:
             raise ValueError(
@@ -581,7 +609,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         local_save_policy: InstantiableConfig[CheckpointPolicy] = config_for_function(
             every_n_steps_policy
         ).set(n=10)
-        local_dir: str = "/host-tmp/checkpoints"
+        local_dir: str = "/checkpoint"
         trainer_dir: Required[str] = REQUIRED
         non_tensor_async_timeout_secs: int = 300
         async_timeout_secs: int = 3600

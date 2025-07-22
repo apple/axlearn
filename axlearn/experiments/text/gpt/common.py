@@ -790,7 +790,7 @@ def get_trainer_config_fn(
                 n=calculated_save_every_n_steps,
                 max_step=max_step,
             )
-            ckpt_config.local_dir = "/host-tmp/checkpoints"
+            ckpt_config.local_dir = "/checkpoint"
             ckpt_config.keep_every_n_steps = min(max_step, keep_every_n_steps)
             ckpt_config.keep_last_n = 3
             ckpt_config.replica_axis_index = 1
