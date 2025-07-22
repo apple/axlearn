@@ -606,6 +606,7 @@ class RAttention(FlashAttention):
         query_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Optional[FlashAttention.Output]]:
         """Forward function for RAttention.
 
@@ -661,6 +662,7 @@ class RAttention(FlashAttention):
                         v_proj=v_proj,
                         key_positions=query_positions,
                         live_step_len=live_step_len,
+                        page_pool=page_pool,
                     )
                     if mode == ForwardMode.EXTEND_STEP:
                         full_k_proj, full_v_proj, key_positions, _ = swa_cache_output
