@@ -294,6 +294,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
+            "--temporary_flags_for_debugging=temporary_flag_for_debugging_pipe_break_on_missing_keepalive=true",
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
@@ -331,6 +332,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--instance_type={pathways_tpu_version}:{system.topology}",
                     f"--gcs_scratch_location={staging_location}",
                     "--alsologtostderr",
+                    "--temporary_flags_for_debugging=temporary_flag_for_debugging_pipe_break_on_missing_keepalive=true",
                 ],
             ),
         ]
@@ -485,6 +487,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address={pathways_head_address}:"
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+            "--temporary_flags_for_debugging=temporary_flag_for_debugging_pipe_break_on_missing_keepalive=true",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
