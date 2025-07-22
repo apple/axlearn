@@ -377,8 +377,10 @@ class ResidualLinearAttention(BaseLayer):
         query: Union[Tensor, TensorSpec],
         qkv_proj: Optional[BaseQKVLinear.Output] = None,
         cached_states: Optional[NestedTensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Optional[Tensor]], Tensor]:
         """Forward function for linear attention."""
+        assert page_pool is None
         # Initialize states.
         cfg = self.config
         if qkv_proj is None:
@@ -453,12 +455,14 @@ class ResidualLinearAttention(BaseLayer):
         cached_states: Nested[Tensor],
         query: Tensor,
         qkv_proj: BaseQKVLinear.Output,
+        **kwargs,
     ) -> tuple[Nested[Tensor], Tensor]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             query=query,
             qkv_proj=qkv_proj,
             cached_states=cached_states,
+            **kwargs,
         )
 
 
