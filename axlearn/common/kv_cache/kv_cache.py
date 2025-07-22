@@ -38,11 +38,13 @@ class KVCache(BaseKVCache):
         v_proj: Tensor,
         key_positions: Tensor,
         live_step_len: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
         # TODO(dhwang2): By returning only the valid portions of the KV (by live_step_len),
         # the attention complexity can be reduced from O(max_len²) to O(live_step_len²), especially
         # in prefill.
         # The remaining part after `live_step_len` is considered padding.
+        assert page_pool is None
         del live_step_len
         if k_proj.shape != v_proj.shape:
             raise ValueError(f"{k_proj.shape=} != {v_proj.shape=}")
