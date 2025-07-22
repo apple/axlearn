@@ -142,6 +142,7 @@ from axlearn.common.flash_attention.gpu_attention import (
 )
 from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
 from axlearn.common.flash_attention.test_utils import generate_attention_data
+from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.utils import Tensor
 
 X = jnp.zeros((8192, 8192))
@@ -220,12 +221,6 @@ def bench_flash_attention(
     if num_kv_heads is None:
         num_kv_heads = num_heads
     q_seq_len = 1 if is_decode else seq_len
-    if is_decode:
-        cfg = dict(is_decoding=True)
-        q_seq_len = 1
-    else:
-        cfg = dict()
-        q_seq_len = seq_len
     mask_fn = causal_mask
     if sw_sz != -1:
         mask_fn = None
@@ -244,15 +239,18 @@ def bench_flash_attention(
     )
 
     if "axlearn" in library:
-        base_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
-        if q_seq_len == 1:
-            base_fn = GPUDecoding.default_config().set(**cfg).instantiate()
+        base_fn = PallasGPUFlashAttention.default_config().instantiate()
+        if is_decode:
+            base_fn = GPUDecoding.default_config().instantiate()
     elif "cudnn" in library:
-        base_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
+        base_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().instantiate()
     else:
-        base_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+        base_fn = ReferenceMHA.default_config().instantiate()
 
-    assert base_fn.is_supported(dict(query=q, key=k, value=v, bias=bias))
+    kv_cache_type = KVCache if is_decode else None
+    assert base_fn.is_supported(
+        dict(query=q, key=k, value=v, bias=bias), kv_cache_type=kv_cache_type
+    )
     if use_bwd:
         fn = jax.grad(
             lambda q, k, v, b: base_fn(dict(query=q, key=k, value=v, bias=b)).mean(),

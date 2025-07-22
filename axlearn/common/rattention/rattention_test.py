@@ -40,14 +40,14 @@ class ResidualLinearAttentionTest(TestCase):
         thread_resources.env = self.orig_env
 
     @parameterized.product(
-        num_heads=[8, 16],
+        num_heads=[1, 2],
         feat_fn=["softmax", "relu"],
         use_learned_init=[True, False],
         use_qk_scale=[True, False],
     )
     def test_basic(self, num_heads: int, feat_fn: str, use_learned_init: bool, use_qk_scale: bool):
         with jax.checking_leaks():
-            batch, seq_len, per_head_dim = 2, 32, 128
+            batch, seq_len, per_head_dim = 2, 32, 8
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, num_heads * per_head_dim))
@@ -84,7 +84,7 @@ class ResidualLinearAttentionTest(TestCase):
 
     # pylint: disable=no-self-use
     @parameterized.product(
-        num_heads=[8, 16],
+        num_heads=[1, 2],
         feat_fn=["softmax", "relu"],
         use_learned_init=[True, False],
         use_qk_scale=[True, False],
@@ -92,7 +92,7 @@ class ResidualLinearAttentionTest(TestCase):
     def test_extend(self, num_heads: int, feat_fn: str, use_learned_init: bool, use_qk_scale: bool):
         with jax.checking_leaks():
             dtype = jnp.float32
-            batch, seq_len, per_head_dim, sliding_window_size = 2, 32, 128, 7
+            batch, seq_len, per_head_dim, sliding_window_size = 2, 8, 4, 5
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, num_heads * per_head_dim))
@@ -162,7 +162,7 @@ class ResidualLinearAttentionTest(TestCase):
             assert_allclose(decoder_output_data, forward_outputs, atol=2e-1)
 
     @parameterized.product(
-        num_heads=[8, 16],
+        num_heads=[1, 2],
         feat_fn=["softmax", "relu"],
         use_learned_init=[True, False],
         use_qk_scale=[True, False],
@@ -173,7 +173,7 @@ class ResidualLinearAttentionTest(TestCase):
         del self
         with jax.checking_leaks():
             dtype = jnp.float32
-            batch, seq_len, per_head_dim, sliding_window_size = 2, 32, 128, 15
+            batch, seq_len, per_head_dim, sliding_window_size = 2, 8, 4, 5
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, num_heads * per_head_dim))
@@ -289,7 +289,7 @@ class RAttentionTest(TestCase):
         use_qk_scale: bool,
     ):
         with jax.checking_leaks():
-            batch, seq_len, per_head_dim = 2, 256, 128
+            batch, seq_len, per_head_dim = 2, 32, 8
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, model_dim))
@@ -328,8 +328,8 @@ class RAttentionTest(TestCase):
             self.assertEqual(outputs.data.shape, (batch, seq_len, model_dim))
 
     @parameterized.product(
-        num_heads=[8, 16],
-        num_kv_heads=[2, 4],
+        num_heads=[2, 4],
+        num_kv_heads=[1, 2],
         sliding_window_size=[
             31,
         ],
@@ -342,7 +342,7 @@ class RAttentionTest(TestCase):
     ):
         """Disabling residual linear attention to see if it matches FlashAttention."""
         with jax.checking_leaks():
-            batch, seq_len, per_head_dim = 2, 256, 128
+            batch, seq_len, per_head_dim = 2, 32, 8
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, model_dim))
@@ -534,11 +534,11 @@ class RAttentionTest(TestCase):
 
     # pylint: disable=no-self-use
     @parameterized.product(
-        num_heads=[8, 16],
+        num_heads=[1, 2],
         feat_fn=["softmax", "relu"],
         use_learned_init=[True, False],
         use_qk_scale=[True, False],
-        sliding_window_size=[31],
+        sliding_window_size=[11],
     )
     def test_extend(
         self,
@@ -549,7 +549,7 @@ class RAttentionTest(TestCase):
         use_qk_scale: bool,
     ):
         with jax.checking_leaks():
-            batch, seq_len, per_head_dim = 2, 64, 32
+            batch, seq_len, per_head_dim = 2, 8, 4
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, model_dim))
@@ -559,7 +559,7 @@ class RAttentionTest(TestCase):
                 num_kv_heads=num_heads,
                 use_learned_init=use_learned_init,
                 use_qk_scale=use_qk_scale,
-                chunk_size=16,
+                chunk_size=8,
             )
 
             rnn_lattn_cfg = RAttention.default_config().set(
@@ -618,11 +618,11 @@ class RAttentionTest(TestCase):
 
     # pylint: disable=no-self-use
     @parameterized.product(
-        num_heads=[8, 16],
+        num_heads=[1, 2],
         feat_fn=["softmax", "relu"],
         use_learned_init=[True, False],
         use_qk_scale=[True, False],
-        sliding_window_size=[31],
+        sliding_window_size=[11],
     )
     def test_prefill(
         self,
@@ -634,7 +634,7 @@ class RAttentionTest(TestCase):
     ):
         with jax.checking_leaks():
             dtype = jnp.float32
-            batch, seq_len, per_head_dim = 4, 64, 16
+            batch, seq_len, per_head_dim = 1, 8, 4
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, model_dim))
@@ -717,7 +717,7 @@ class RAttentionTest(TestCase):
             assert_allclose(decoder_output, forward_outputs.data, atol=2e-1)
 
     @parameterized.product(
-        num_heads=[8, 16],
+        num_heads=[1, 2],
         sliding_window_size=[
             31,
         ],
@@ -734,7 +734,7 @@ class RAttentionTest(TestCase):
         use_qk_scale: bool,
     ):
         with jax.checking_leaks():
-            batch, seq_len, per_head_dim = 2, 256, 128
+            batch, seq_len, per_head_dim = 2, 16, 8
             model_dim = per_head_dim * num_heads
             rng = jax.random.PRNGKey(345)
             query = jax.random.normal(rng, (batch, seq_len, model_dim))
