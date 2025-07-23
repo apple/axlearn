@@ -102,11 +102,10 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
                 + f"got {type(builder_cfg)}."
             )
 
-        if isinstance(builder_cfg, PathwaysLeaderWorkerTemplate):
+        if isinstance(builder_cfg, PathwaysLeaderWorkerTemplate.Config):
             # pylint: disable-next=protected-access
-            acc_cfg = builder_cfg._inner.config.accelerator
-        else:
-            acc_cfg = builder_cfg.accelerator
+            builder_cfg = builder_cfg.inner
+        acc_cfg = builder_cfg.accelerator
         reservation = builder_cfg.reservation
         location_hint = builder_cfg.location_hint
         enable_tpu_ici_resiliency = builder_cfg.enable_tpu_ici_resiliency
