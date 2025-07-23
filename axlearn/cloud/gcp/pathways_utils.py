@@ -814,6 +814,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         ports = worker_container.get("ports", [])
         ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
         worker_container["ports"] = ports
+        worker_container["image"] = _PATHWAYS_SERVER_IMAGE
 
         worker_container.pop("command")
         return worker_container
