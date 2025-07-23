@@ -241,19 +241,19 @@ class ScheduleTest(parameterized.TestCase):
         self.assertAlmostEqual(fn(200), 1 - (100) ** (-0.8))
 
     def test_ema_schedule(self):
-        warmup_steps = 5
-        s = jax.jit(
-            schedule.ema_schedule(
-                warmup_steps=warmup_steps,
-            )
-        )
+        warmup_steps, step_offset = 5, 3
+        s = jax.jit(schedule.ema_schedule(warmup_steps=warmup_steps, step_offset=step_offset))
+        expected_offset = 0.0
         expected_warmup = [0.0, 1.0 / 2, 2.0 / 3, 3.0 / 4, 4.0 / 5]
         expected_decay = 0.9999
         for step in range(10):
             value = s(step)
-            if step < warmup_steps:
+            if step < step_offset:
+                # Test offset.
+                self.assertAlmostEqual(expected_offset, value)
+            elif step < warmup_steps + step_offset:
                 # Test warmup.
-                self.assertAlmostEqual(expected_warmup[step], value)
+                self.assertAlmostEqual(expected_warmup[step - step_offset], value)
             else:
                 # Test inverse sqrt schedule.
                 self.assertAlmostEqual(expected_decay, value)
