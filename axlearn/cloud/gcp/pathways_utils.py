@@ -593,7 +593,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             ),
             dict(
                 name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
-                replicas=cfg.accelerator.num_replicas,
+                replicas=cfg.accelerator.num_replicas + 1,
                 template=self._build_pathways_worker_job(),
             ),
         ]
