@@ -407,9 +407,9 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 CloudBuildBundler,
             ) as (cfg, bundler_cfg),
         ):
-            cfg.set(
-                reservation_project="test-project",
-                name="test",
+            cfg.inner.set(
+                project="test-project",
+                name="a" * 36,
                 command="test_command",
                 output_dir="FAKE",
             ).instantiate(bundler=bundler_cfg.instantiate())
@@ -426,9 +426,9 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 CloudBuildBundler,
             ) as (cfg, bundler_cfg),
         ):
-            cfg.set(
-                reservation_project="test-project",
-                name="test",
+            cfg.inner.set(
+                project="test-project",
+                name="a" * 36,
                 command="test_command",
                 output_dir="FAKE",
             ).instantiate(bundler=bundler_cfg.instantiate())
@@ -446,9 +446,9 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 CloudBuildBundler,
             ) as (cfg, bundler_cfg),
         ):
-            cfg.set(
-                reservation_project="test-project",
-                name="test",
+            cfg.inner.set(
+                project="test-project",
+                name="a" * 36,
                 command="test_command",
                 output_dir="FAKE",
             ).instantiate(bundler=bundler_cfg.instantiate())

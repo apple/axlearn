@@ -84,7 +84,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         cfg: TPUNodePoolProvisioner.Config = self.config
         job_cfg: GKEJob.Config = job.config
-        builder_cfg: TPUReplicatedJob.Config = job_cfg.builder
+        builder_cfg: TPUReplicatedJob.Config | PathwaysLeaderWorkerTemplate.Config = job_cfg.builder
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
