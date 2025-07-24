@@ -220,7 +220,7 @@ class TPUGKELeaderWorkerSetTest(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [pathways_utils.__name__, bundler.__name__],
+            [jobset_utils.__name__, bundler.__name__],
             settings=self._settings,
         ):
             return super().run(result)
@@ -281,7 +281,9 @@ class TPUGKELeaderWorkerSetTest(TestCase):
         self.assertEqual(cfg.name, cfg.builder.name)
         self.assertEqual(cfg.project, self._settings["project"])
         self.assertEqual(cfg.zone, self._settings["zone"])
-        self.assertEqual(cfg.builder.reservation, reservation or self._settings["gke_reservation"])
+        self.assertEqual(
+            cfg.builder.inner.reservation, reservation or self._settings["gke_reservation"]
+        )
         self.assertEqual(cfg.num_replicas, 1)
         # Should work with wrapped bundlers.
         if wrap_bundler:

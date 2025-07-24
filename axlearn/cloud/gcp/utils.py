@@ -401,7 +401,7 @@ def delete_k8s_leaderworkerset(name: str, *, namespace: str):
         raise
 
 
-def list_k8s_leaderworkerset(name: str, *, namespace: str) -> list[str]:
+def list_k8s_leaderworkerset(*, namespace: str) -> list[str]:
     """List a K8s LWS by name, including all descendant jobs.
 
     Args:
@@ -418,7 +418,6 @@ def list_k8s_leaderworkerset(name: str, *, namespace: str) -> list[str]:
     import kubernetes as k8s  # pytype: disable=import-error
 
     lws_groups = k8s.client.CustomObjectsApi().list_namespaced_custom_object(
-        name=name,
         namespace=namespace,
         propagation_policy="Foreground",
         **custom_leaderworkerset_kwargs(),
