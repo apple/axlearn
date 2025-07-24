@@ -30,8 +30,6 @@ from jax.experimental.array_serialization import serialization
 from axlearn.common import file_system as fs
 from axlearn.common import utils, utils_spmd
 from axlearn.common.checkpointer import (
-    STEP_NUM_DIGITS,
-    STEP_PREFIX,
     BaseCheckpointer,
     Checkpointer,
     CheckpointPolicy,
@@ -649,18 +647,17 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         super().__init__(cfg, parent=parent)
         cfg: OrbaxEmergencyCheckpointer.Config = self.config
         self._name_format = ocp.step.standard_name_format(
-            step_prefix=STEP_PREFIX,
-            step_format_fixed_length=STEP_NUM_DIGITS,
+            step_prefix=None,
+            step_format_fixed_length=None,
         )
         if jax.process_index() == 0:
             fs.makedirs(os.path.join(cfg.dir, self._NON_TENSORS_PREFIX))
             fs.makedirs(os.path.join(cfg.dir, self._TENSORS_PREFIX))
         # Cleanup local checkpoints from different runs.
-        unique_id = _get_unique_id(cfg.trainer_dir)
         for fd in fs.listdir(cfg.local_dir):
-            if not fd.startswith(".") and fd != unique_id:
+            if not fd.startswith("."):
                 fs.rmtree(os.path.join(cfg.local_dir, fd))
-        self._local_dir = os.path.join(cfg.local_dir, unique_id)
+        self._local_dir = cfg.local_dir
         fs.makedirs(self._local_dir)
         # Orbax emergency ckpt requires this function to be called prior to checkpointer
         # operations. This function also serves as a barrier.
