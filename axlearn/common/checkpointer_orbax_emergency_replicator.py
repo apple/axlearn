@@ -6,7 +6,6 @@ See the docstring of `OrbaxEmergencyReplicatorCheckpointer` for more details.
 """
 
 import copy
-import functools
 import hashlib
 import multiprocessing as mp
 import os
@@ -19,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import jax
 import jax.lib
 import orbax.checkpoint as ocp
-import orbax.checkpoint.experimental.emergency.checkpoint_manager as oecp
+import orbax.checkpoint.experimental.emergency.replicator_checkpoint_manager as oercp
 import tensorflow as tf
 from absl import flags, logging
 from etils import epath
@@ -297,7 +296,7 @@ def _init_consistent_proc_ids(
             int(os.environ["MEGASCALE_SLICE_ID"]) * num_proc_per_slice + worker_id
         )
         # De-hardcode
-        use_replicator_service = True
+        use_replicator_service = False
         if use_replicator_service:
             replicator_file = "replicator.yaml"
             temp_file = replicator_file + ".tmp"
@@ -688,7 +687,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         self._composite_save_policy = _composite_save_policy
         ckpt_cfg.save_policy = config_for_function(lambda: _composite_save_policy)
         self._non_tensor_manager: Checkpointer = ckpt_cfg.instantiate(parent=self)
-        self._tensor_manager: Optional[oecp.CheckpointManager] = None
+        self._tensor_manager: Optional[oercp.ReplicatorCheckpointManager] = None
         # See comments of _eval_summaries in `OrbaxCheckpointer`.
         self._eval_summaries = None
         self._reached_preemption = False
@@ -709,52 +708,27 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             state_with_tensors,
         )
 
-    def _get_tensor_manager(self, state_with_tensors: Nested[Tensor]) -> oecp.CheckpointManager:
+    def _get_tensor_manager(
+        self,
+    ) -> oercp.ReplicatorCheckpointManager:
         """Creates the emergency checkpoint manager if not exists.
 
         We defer the creation of this checkpoint manager because it requires the state dict,
         which is not present during __init__.
         """
-        cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
+        # cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
         if self._tensor_manager is not None:
             return self._tensor_manager
 
-        save_policy = cfg.save_policy.instantiate()
-        local_save_policy = cfg.local_save_policy.instantiate()
-
-        def _orbax_save_fn(
-            step: int, last_saved_step: Optional[int], wrapped_save_policy: CheckpointPolicy
-        ) -> bool:
-            del last_saved_step
-            return wrapped_save_policy(step=step, evaler_summaries=self._eval_summaries)
-
         # For meaning of these options, refer to
         # https://github.com/google/orbax/blob/95be2c021bc8cbf4badd83a053ff57b7a9f9b314/checkpoint/orbax/checkpoint/experimental/emergency/checkpoint_manager.py#L277
-        self._tensor_manager = oecp.CheckpointManager(
+        self._tensor_manager = oercp.ReplicatorCheckpointManager(
             self._local_dir,
-            persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
+            # persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
             global_mesh=thread_resources.env.physical_mesh,
-            abstract_state=self._get_abstract_state(state_with_tensors),
-            options=oecp.CheckpointManagerOptions(
-                local=oecp.LocalCheckpointOptions(
-                    should_save_fn=functools.partial(
-                        _orbax_save_fn, wrapped_save_policy=local_save_policy
-                    ),
-                    max_to_keep=cfg.local_keep_last_n,
-                ),
-                persistent=oecp.PersistentCheckpointOptions(
-                    should_save_fn=functools.partial(
-                        _orbax_save_fn, wrapped_save_policy=save_policy
-                    ),
-                    max_to_keep=cfg.keep_last_n,
-                ),
-                replica_axis_index=cfg.replica_axis_index,
-                async_options=oecp.checkpoint_manager.AsyncOptions(
-                    timeout_secs=cfg.async_timeout_secs
-                ),
+            options=oercp.ReplicatorCheckpointManagerOptions(
+                save_interval_steps=100,
                 step_name_format=self._name_format,
-                cleanup_tmp_directories=True,
-                enable_async_checkpointing=True,
             ),
         )
         return self._tensor_manager
@@ -775,7 +749,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         # _non_tensor_manager will block for train step to finish. Start the timer here to avoid
         # including step time in total blocking time.
         start_t = time.perf_counter()
-        self._get_tensor_manager(state_with_tensors).save(
+        self._get_tensor_manager().save(
             step=step, args=ocp.args.Composite(state=ocp.args.PyTreeSave(item=state_with_tensors))
         )
         time_diff = time.perf_counter() - start_t
@@ -820,7 +794,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         state_with_tensors = jax.tree.map(
             lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
         )
-        tensor_manager = self._get_tensor_manager(state_with_tensors)
+        tensor_manager = self._get_tensor_manager()
         if step is None:
             common_steps = self._checkpoint_steps_include_local()
             if not common_steps:
