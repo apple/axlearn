@@ -356,6 +356,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--instance_count={pathways_instance_count}",
                     f"--instance_type={pathways_tpu_version}:{system.topology}",
                     f"--gcs_scratch_location={staging_location}",
+                    "--alsologtostderr",
                 ],
             ),
         ]
