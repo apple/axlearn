@@ -1907,12 +1907,12 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
         ```
     """
     # pylint: disable-next=protected-access
-    # registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
+    registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
 
-    # key_handler = registry_with_keypaths.get(type(node))
-    # if key_handler:
-    #    key_children, _ = key_handler.flatten_with_keys(node)
-    #    return key_children
+    key_handler = registry_with_keypaths.get(type(node))
+    if key_handler:
+        key_children, _ = key_handler.flatten_with_keys(node)
+        return key_children
 
     flat = jax.tree_util.default_registry.flatten_one_level(node)
     if flat is None:
@@ -2028,7 +2028,7 @@ def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):
         except KeyError as e:
             raise ValueError(
                 f"Input is expected to contain '{path}'; "
-                f"instead, it contains: '{jax.tree_util.tree_structure(x)}'."
+                f"instead, it contains: '{jax.tree_structure(x)}'."
             ) from e
 
 
