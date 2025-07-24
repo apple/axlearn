@@ -30,7 +30,7 @@ FLAGS = flags.FLAGS
 
 # TODO(muyang_yu): avoid listing job types one by one.
 _INFERENCE_JOBS = (FlinkTPUGKEJob,)
-_BUILDER_TYPES = (TPUReplicatedJob.Config, PathwaysLeaderWorkerTemplate.Config)
+SUPPORTED_BUILDER_TYPES = (TPUReplicatedJob.Config, PathwaysLeaderWorkerTemplate.Config)
 
 
 class NodePoolProvisioner(FlagConfigurable):
@@ -89,7 +89,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
-        if not isinstance(builder_cfg, _BUILDER_TYPES):
+        if not isinstance(builder_cfg, SUPPORTED_BUILDER_TYPES):
             raise TypeError(
                 "Expected"
                 + f"{TPUReplicatedJob.Config}"
@@ -187,8 +187,8 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
-        if not isinstance(builder_cfg, _BUILDER_TYPES):
-            raise TypeError(f"Expected {_BUILDER_TYPES}" + f"got {type(builder_cfg)}.")
+        if not isinstance(builder_cfg, SUPPORTED_BUILDER_TYPES):
+            raise TypeError(f"Expected {SUPPORTED_BUILDER_TYPES}" + f"got {type(builder_cfg)}.")
 
         num_node_pools = builder_cfg.accelerator.num_replicas
         node_pool_names = []
