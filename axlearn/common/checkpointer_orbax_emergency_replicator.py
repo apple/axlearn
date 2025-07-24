@@ -2,7 +2,7 @@
 
 """Implements Orbax emergency checkpointing and provide utilities for correct store.
 
-See the docstring of `OrbaxEmergencyCheckpointer` for more details.
+See the docstring of `OrbaxEmergencyReplicatorCheckpointer` for more details.
 """
 
 import copy
@@ -22,6 +22,7 @@ import orbax.checkpoint as ocp
 import orbax.checkpoint.experimental.emergency.checkpoint_manager as oecp
 import tensorflow as tf
 from absl import flags, logging
+from etils import epath
 from jax._src.distributed import global_state
 from jax._src.mesh import thread_resources
 from jax.experimental.array_serialization import serialization
@@ -29,8 +30,6 @@ from jax.experimental.array_serialization import serialization
 from axlearn.common import file_system as fs
 from axlearn.common import utils, utils_spmd
 from axlearn.common.checkpointer import (
-    STEP_NUM_DIGITS,
-    STEP_PREFIX,
     BaseCheckpointer,
     Checkpointer,
     CheckpointPolicy,
@@ -297,6 +296,33 @@ def _init_consistent_proc_ids(
         local_proc_info.cur_proc_id = (
             int(os.environ["MEGASCALE_SLICE_ID"]) * num_proc_per_slice + worker_id
         )
+        # De-hardcode
+        use_replicator_service = True
+        if use_replicator_service:
+            replicator_file = "replicator.yaml"
+            temp_file = replicator_file + ".tmp"
+            replicator_file = epath.Path(local_ckpt_dir) / replicator_file
+            temp_file = epath.Path(local_ckpt_dir) / temp_file
+            num_nodes = jax.process_count()
+            nodes_per_slice = num_nodes // num_slices
+            node_rank = jax.process_index()
+            peer_ranks = []
+            for i in range(num_slices):
+                peer = node_rank % nodes_per_slice + i * nodes_per_slice
+                if peer != node_rank:
+                    peer_ranks.append(peer)
+            run_name = os.environ.get("HOSTNAME").split("job")[0].rstrip("-")
+
+            replicator_yaml = f"""job-name: {run_name}
+          framework: orbax
+          assume-data-parallelism: 2
+          node-rank: {node_rank}
+          nodes: {num_nodes}
+          peer-ranks: {peer_ranks}
+          backup-interval-minutes: 30"""
+
+            temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
+            os.rename(temp_file, replicator_file)
     elif jax_backend == "gpu":
         if local_address is None:
             raise ValueError(
@@ -474,7 +500,7 @@ def get_consistent_proc_info(
             del os.environ["JAX_PLATFORMS"]
 
 
-class OrbaxEmergencyCheckpointer(BaseCheckpointer):
+class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
     """Checkpointer implementation that uses Orbax emergency checkpoint.
 
     EXPERIMENTAL. Do not use for actual training runs since the checkpoint layout will likely
@@ -551,7 +577,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
 
     @config_class
     class Config(BaseCheckpointer.Config):
-        """Configures OrbaxEmergencyCheckpointer.
+        """Configures OrbaxEmergencyReplicatorCheckpointer.
 
         Attributes:
             keep_last_n: Keep this many past ckpts.
@@ -581,7 +607,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         local_save_policy: InstantiableConfig[CheckpointPolicy] = config_for_function(
             every_n_steps_policy
         ).set(n=10)
-        local_dir: str = "/host-tmp/checkpoints"
+        local_dir: str = "/checkpoint"
         trainer_dir: Required[str] = REQUIRED
         non_tensor_async_timeout_secs: int = 300
         async_timeout_secs: int = 3600
@@ -619,20 +645,19 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
-        cfg: OrbaxEmergencyCheckpointer.Config = self.config
+        cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
         self._name_format = ocp.step.standard_name_format(
-            step_prefix=STEP_PREFIX,
-            step_format_fixed_length=STEP_NUM_DIGITS,
+            step_prefix=None,
+            step_format_fixed_length=None,
         )
         if jax.process_index() == 0:
             fs.makedirs(os.path.join(cfg.dir, self._NON_TENSORS_PREFIX))
             fs.makedirs(os.path.join(cfg.dir, self._TENSORS_PREFIX))
         # Cleanup local checkpoints from different runs.
-        unique_id = _get_unique_id(cfg.trainer_dir)
         for fd in fs.listdir(cfg.local_dir):
-            if not fd.startswith(".") and fd != unique_id:
+            if not fd.startswith("."):
                 fs.rmtree(os.path.join(cfg.local_dir, fd))
-        self._local_dir = os.path.join(cfg.local_dir, unique_id)
+        self._local_dir = cfg.local_dir
         fs.makedirs(self._local_dir)
         # Orbax emergency ckpt requires this function to be called prior to checkpointer
         # operations. This function also serves as a barrier.
@@ -690,7 +715,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         We defer the creation of this checkpoint manager because it requires the state dict,
         which is not present during __init__.
         """
-        cfg: OrbaxEmergencyCheckpointer.Config = self.config
+        cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
         if self._tensor_manager is not None:
             return self._tensor_manager
 
@@ -791,7 +816,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
     ) -> Tuple[Optional[int], Nested[Tensor]]:
         """Restores state from either local or persistent checkpoint."""
         start_t = time.perf_counter()
-        cfg: OrbaxEmergencyCheckpointer.Config = self.config
+        cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
         state_with_tensors = jax.tree.map(
             lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
         )

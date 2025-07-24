@@ -948,7 +948,12 @@ def trainer_configs(
         Version,
         MODEL_SIZES,
         [True, False],
-        ["", "OrbaxEmergencyCheckpointer", "OrbaxRegularCheckpointer"],
+        [
+            "",
+            "OrbaxEmergencyCheckpointer",
+            "OrbaxEmergencyReplicatorCheckpointer",
+            "OrbaxRegularCheckpointer",
+        ],
     ):
         if model_size not in TOTAL_TOKENS[version]:  # This combination does not exist.
             continue
@@ -959,6 +964,8 @@ def trainer_configs(
             current_suffix_parts.append("-flash")
         if checkpointer == "OrbaxEmergencyCheckpointer":
             current_suffix_parts.append("-orbaxem")
+        if checkpointer == "OrbaxEmergencyReplicatorCheckpointer":
+            current_suffix_parts.append("-orbaxem-replicator")
         elif checkpointer == "OrbaxRegularCheckpointer":
             current_suffix_parts.append("-orbax")
         current_suffix = "".join(current_suffix_parts)

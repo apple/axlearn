@@ -795,6 +795,29 @@ def get_trainer_config_fn(
             ckpt_config.keep_last_n = 3
             ckpt_config.replica_axis_index = 1
             cfg.checkpointer = ckpt_config
+        elif checkpointer == "OrbaxEmergencyReplicatorCheckpointer":
+            # Prevent global dependency on Orbax.
+            # pylint: disable-next=import-outside-toplevel
+            from axlearn.common.checkpointer_orbax_emergency_replicator import (
+                OrbaxEmergencyReplicatorCheckpointer,
+            )
+
+            ckpt_config: OrbaxEmergencyReplicatorCheckpointer.Config = (
+                OrbaxEmergencyReplicatorCheckpointer.default_config()
+            )
+            ckpt_config.save_policy = config_for_function(every_n_steps_and_last_policy).set(
+                n=calculated_save_every_n_steps,
+                max_step=max_step,
+            )
+            ckpt_config.local_save_policy = config_for_function(every_n_steps_and_last_policy).set(
+                n=calculated_save_every_n_steps,
+                max_step=max_step,
+            )
+            ckpt_config.local_dir = "/checkpoint"
+            ckpt_config.keep_every_n_steps = min(max_step, keep_every_n_steps)
+            ckpt_config.keep_last_n = 3
+            ckpt_config.replica_axis_index = 1
+            cfg.checkpointer = ckpt_config
         elif checkpointer == "OrbaxRegularCheckpointer":
             # Prevent global dependency on Orbax.
             # pylint: disable-next=import-outside-toplevel
