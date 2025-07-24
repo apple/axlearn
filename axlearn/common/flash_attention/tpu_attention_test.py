@@ -299,7 +299,7 @@ class TestFlashAttention(TestCase):
         # Compare outputs
         out = fn(input_batch)
         ref_out = ref_fn(input_batch)
-        self.assertNestedAllClose(out, ref_out, atol=2e-2)
+        self.assertNestedAllClose(out, ref_out, atol=1e-6 if q_dtype == jnp.float32 else 2e-2)
 
         # Compare gradients
         def grad_fn(float_inputs, aux_inputs, f):
@@ -310,7 +310,7 @@ class TestFlashAttention(TestCase):
         aux_inputs = dict(bias=bias, prng_key=prng_key)
         grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
         ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
-        self.assertNestedAllClose(grad_out, ref_grad_out, atol=1e-5)
+        self.assertNestedAllClose(grad_out, ref_grad_out, atol=1e-6)
 
     def test_logit_sink_shape_validation(self):
         """Test that logit sink shape validation works correctly."""
