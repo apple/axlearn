@@ -417,7 +417,9 @@ def linear_schedule_with_warmup(
     )
 
 
-def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
+def ema_schedule(
+    decay: float = 0.9999, *, warmup_steps: int = 1, step_offset: int = 0
+) -> ScheduleFn:
     """Ema decay schedule with warm-up.
 
     The ema decay is 0, 1/2, 2/3, 3/4, 4/5, ... during warm-up, and then is constant at decay.
@@ -425,6 +427,8 @@ def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
     Args:
         decay: ema decay.
         warmup_steps: The number of steps of the warm-up schedule.
+        step_offset: The initial step number.
+            If `step` is less than or equal to `step_offset`, we clamp to `step - step_offset` to 0.
 
     Returns:
         A ema decay schedule.
@@ -436,6 +440,7 @@ def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
         raise ValueError("warmup_steps must be > 0.")
 
     def fn(step):
+        step = jnp.maximum(step - step_offset, 0)
         return step / (1.0 + step) * (step < warmup_steps) + decay * (step >= warmup_steps)
 
     return fn
