@@ -69,24 +69,6 @@ _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 # Note that the head pod will back of exact this many times.
 # While workers will share #workers * _PATHWAYS_BACK_OFF_LIMIT total times.
 _PATHWAYS_BACK_OFF_LIMIT = 32
-_JETSTREAM_CONTAINER_PORT = "9000"
-_JETSTREAM_CONTAINER_PORT = 9000
-
-_JETSTREAM_HTTP_CONTAINER_NAME = "jetstream-http"
-_JETSTREAM_HTTP_IMAGE_TAG = "v0.2.3"
-_JETSTREAM_HTTP_CONTAINER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-images/inference/jetstream-http:{_JETSTREAM_HTTP_IMAGE_TAG}"
-)
-_JETSTREAM_HTTP_CONTAINER_PORT = 8000
-_ANNOTATION_ADDITIONAL_NODE_NETWORKS = "tpu-provisioner.cloud.google.com/additional-node-networks"
-
-
-def get_pathways_head_address(job_name: str) -> str:
-    """Returns the address of the pathways head pod."""
-    # There will be only one pathways-head pod, so it is already 0-0.
-    # First 0 means the first replicatedJob of pathways-head,
-    # the second 0 means the first pod in the replicatedJob.
-    return f"{job_name}-{_PATHWAYS_HEAD_REPLICATED_JOB_NAME}-0-0.{job_name}"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
