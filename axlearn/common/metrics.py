@@ -111,3 +111,9 @@ jax.tree_util.register_pytree_node(
     _metric_accumulator_flatten,
     _metric_accumulator_unflatten,
 )
+
+jax.tree.register_pytree_node(
+    MetricAccumulator,
+    _metric_accumulator_flatten,
+    _metric_accumulator_unflatten,
+)

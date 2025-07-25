@@ -76,15 +76,20 @@ def dataclass(klass: _T, flatten_order: Literal[None, "asc"] = "asc", **kwargs) 
         return data, meta
 
     def flatten_with_keys(x) -> tuple[tuple, tuple]:
-        data = tuple((jax.tree_util.GetAttrKey(name), getattr(x, name)) for name in data_fields)
+        data = tuple((jax.tree.GetAttrKey(name), getattr(x, name)) for name in data_fields)
         meta = tuple(getattr(x, name) for name in meta_fields)
         return data, meta
+
 
     # Note that meta, data are tuples as produced by `flatten_with_keys`.
     def unflatten_func(meta: tuple, data: tuple):
         # Support unflattening from chex.dataclass which requires handling lists.
         data = tuple(data)
         return dataklass(**dict(zip(meta_fields + data_fields, meta + data)))
+
+    jax.tree.register_pytree_with_keys(
+        dataklass, flatten_with_keys, unflatten_func, flatten_func
+    )
 
     jax.tree_util.register_pytree_with_keys(
         dataklass, flatten_with_keys, unflatten_func, flatten_func
