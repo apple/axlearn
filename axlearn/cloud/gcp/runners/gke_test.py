@@ -1293,10 +1293,10 @@ class LWSRunnerJobTest(parameterized.TestCase):
         self.assertIn(cfg.name, cfg.output_dir)
 
         # Test that TPU defaults are set.
-        self.assertIn("TPU_TYPE", builder_cfg.env_vars)
+        self.assertIn("TPU_TYPE", builder_cfg.inner.env_vars)
         if env_vars is not None:
             for k, v in env_vars.items():
-                self.assertEqual(builder_cfg.env_vars[k], v)
+                self.assertEqual(builder_cfg.inner.env_vars[k], v)
 
         # Should be instantiable.
         runner: LWSRunnerJob = cfg.instantiate(bundler=mock.Mock())
