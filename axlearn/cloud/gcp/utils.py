@@ -419,7 +419,6 @@ def list_k8s_leaderworkerset(*, namespace: str) -> list[str]:
 
     lws_groups = k8s.client.CustomObjectsApi().list_namespaced_custom_object(
         namespace=namespace,
-        propagation_policy="Foreground",
         **custom_leaderworkerset_kwargs(),
     )
     names = []
