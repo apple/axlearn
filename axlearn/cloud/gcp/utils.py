@@ -422,8 +422,11 @@ def list_k8s_leaderworkerset(*, namespace: str) -> list[str]:
         propagation_policy="Foreground",
         **custom_leaderworkerset_kwargs(),
     )
-
-    return [lws.metadata.name for lws in lws_groups.items]
+    names = []
+    for lws in lws_groups["items"]:
+        if name := lws.get("metadata", {}).get("name", ""):
+            names.append(name)
+    return names
 
 
 def custom_leaderworkerset_kwargs() -> dict[str, str]:
