@@ -75,7 +75,7 @@ class CompilerOptionsTest(test_utils.TestCase):
             xla_tpu_sdc_check_halt_on_detection=False,
             xla_tpu_sdc_replicate_llo=True,
             xla_tpu_sdc_checker_alternate_megacore_cores=True,
-            xla_tpu_ici_sdc_test_run_on_program_start=True,
+            xla_tpu_ici_sdc_test_run_on_program_start=False,
             xla_tpu_ici_sdc_test_max_distance=1,
             xla_tpu_ici_sdc_test_pipeline_depth=4,
             xla_tpu_ici_sdc_test_buffer_size_chunks=32,
