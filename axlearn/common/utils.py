@@ -88,6 +88,25 @@ _enable_xla_runtime_errors = False
 # The set of supported floating point dtypes.
 _supported_float_dtypes = [jnp.bfloat16, jnp.float32]
 
+@staticmethod
+def _tree_map(*args, **kwargs):
+    is_leaf = lambda x: isinstance(x, Summary) 
+    return jax.tree.map(*args, **kwargs, is_leaf=is_leaf)
+
+def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
+    """Generate the (key, value) pairs for the immediate children of a pytree `node`."""
+    flat = jax.tree.default_registry.flatten_one_level(node)
+    if flat is None:
+        return []
+
+    if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
+        return [(jax.tree.GetAttrKey(s), getattr(node, s)) for s in node._fields]
+
+    key_children, _ = jax.tree.default_registry.flatten_one_level_with_keys(node)
+    if key_children:
+        return key_children
+
+    return [(jax.tree.FlattenedIndexKey(i), c) for i, c in enumerate(flat[0])]
 
 @dataclasses.dataclass
 class HybridMeshShape:
