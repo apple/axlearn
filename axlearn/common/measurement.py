@@ -2,6 +2,7 @@
 
 """A library to measure e2e metrics like goodput."""
 
+import contextlib
 import enum
 import importlib
 from typing import Optional, TypeVar
@@ -15,30 +16,20 @@ class Event(enum.Enum):
     """Event to be recorded.
 
     Attributes:
-        START_JOB: Start of job.
-        END_JOB: End of job.
-        START_STEP: Start of a training step. Should be recorded with `step` as a positional arg.
-        START_ACCELERATOR_INIT: Start of accelerator mesh initialization.
-        END_ACCELERATOR_INIT: End of accelerator mesh initialization.
-        START_TRAINING_PREPARATION: Start of training preparation.
-        END_TRAINING_PREPARATION: End of training preparation.
-        START_DATA_LOADING: Start of data loading.
-        END_DATA_LOADING: End of data loading.
-        START_CUSTOM_BADPUT_EVENT: Start of custom badput event.
-        END_CUSTOM_BADPUT_EVENT: End of custom badput event.
+        JOB: Start and end of the job.
+        STEP: Start of a training step. Should be recorded with `step` as a positional arg.
+        ACCELERATOR_INIT: Start and end of accelerator mesh initialization.
+        TRAINING_PREPARATION: Start and end of training preparation.
+        DATA_LOADING: Start and end of data loading.
+        CUSTOM_BADPUT_EVENT: Start and end of custom badput events.
     """
 
-    START_JOB = "START_JOB"
-    END_JOB = "END_JOB"
-    START_STEP = "START_STEP"
-    START_ACCELERATOR_INIT = "START_ACCELERATOR_INIT"
-    END_ACCELERATOR_INIT = "END_ACCELERATOR_INIT"
-    START_TRAINING_PREPARATION = "START_TRAINING_PREPARATION"
-    END_TRAINING_PREPARATION = "END_TRAINING_PREPARATION"
-    START_DATA_LOADING = "START_DATA_LOADING"
-    END_DATA_LOADING = "END_DATA_LOADING"
-    START_CUSTOM_BADPUT_EVENT = "START_CUSTOM_BADPUT_EVENT"
-    END_CUSTOM_BADPUT_EVENT = "END_CUSTOM_BADPUT_EVENT"
+    JOB = "job"
+    STEP = "step"
+    ACCELERATOR_INIT = "tpu_init"
+    TRAINING_PREPARATION = "training_preparation"
+    DATA_LOADING = "data_loading"
+    CUSTOM_BADPUT_EVENT = "custom_badput_event"
 
 
 class Recorder(Configurable):
@@ -59,9 +50,15 @@ class Recorder(Configurable):
         """Converts flags to a recorder."""
         raise NotImplementedError(cls)
 
-    def record(self, event: Event, *args, **kwargs):
-        """Records an event with the given name."""
-        raise NotImplementedError(type(self))
+    @contextlib.contextmanager
+    def record_event(self, event: Event, *args, **kwargs):
+        """A context manager to record the start and end of an event."""
+        # pylint: disable=unnecessary-pass
+        # pylint: disable=unused-argument
+        try:
+            yield
+        finally:
+            pass
 
     def start_monitoring(self, **kwargs):
         """Starts computing and uploading metrics at some configured interval in the background."""
@@ -132,14 +129,6 @@ def initialize(fv: flags.FlagValues):
             "Recorder %s is already initialized, ignoring initialize().",
             global_recorder,
         )
-
-
-def record_event(event: Event):
-    """Records a global event."""
-    if global_recorder is None:
-        logging.log_first_n(logging.INFO, "No recorder configured, ignoring events.", 1)
-    else:
-        global_recorder.record(event)
 
 
 def start_monitoring():
