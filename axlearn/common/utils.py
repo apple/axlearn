@@ -804,8 +804,8 @@ class DataPartitionType(Enum):
 
 
 def data_partition_type_to_spec(
-    partition: Union[DataPartitionType, PartitionSpec],
-) -> PartitionSpec:
+    partition: Union[DataPartitionType, Nested[PartitionSpec]],
+) -> Nested[PartitionSpec]:
     """Returns a PartitionSpec for the given partition type."""
     if partition == DataPartitionType.FULL:
         return input_partition_spec()
@@ -813,6 +813,8 @@ def data_partition_type_to_spec(
         return PartitionSpec(None)
     elif isinstance(partition, PartitionSpec):
         return partition
+    elif isinstance(partition, dict):
+        return {k: data_partition_type_to_spec(v) for k, v in partition.items()}
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
@@ -820,7 +822,7 @@ def data_partition_type_to_spec(
 def host_to_global_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
-    partition: Union[PartitionSpec, DataPartitionType] = DataPartitionType.FULL,
+    partition: Union[Nested[PartitionSpec], DataPartitionType] = DataPartitionType.FULL,
 ) -> Nested[Tensor]:
     """Converts the given host device arrays to global device arrays.
 
@@ -858,7 +860,7 @@ def host_to_global_array(
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
             global_shape = (x.shape[0], *x.shape[1:])
-        elif isinstance(partition, PartitionSpec):
+        elif isinstance(partition, (PartitionSpec, dict)):
             global_shape = None  # Allow jax to infer.
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
