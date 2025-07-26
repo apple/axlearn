@@ -335,7 +335,7 @@ def infer_xsc_compiler_options(
         # XLA ICI SDC Checker flags:
         # N.B. ICI checker only runs once after first program compilation.
         # Disable the interconnect checker by default as it is not meant for production run.
-        # In a job with 32k chips, disabling it reduced compilation time from 18mins to 15s.
+        # In a large scale job, disabling it reduced compilation time from 18mins to 15s.
         xla_tpu_ici_sdc_test_run_on_program_start=False,
         # Max distance between send/recv neighbours.
         xla_tpu_ici_sdc_test_max_distance=1,
