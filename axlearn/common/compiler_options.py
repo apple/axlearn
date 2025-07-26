@@ -69,6 +69,12 @@ def default_xla_options(
             # further if you see "Allocator failed to allocate". A feature
             # to dynamically allocate may come later: b/380514965
             megascale_grpc_premap_memory_bytes=17179869184,
+            # DEBUGGING ONLY: RapidEye output directory for debugging purposes,
+            megascale_rapid_eye_error_digest_log_path="/output/rapideye/",
+            # megascale_jax_offset_launch_id_by_module_name="false",
+            # megascale_jax_use_device_set_based_launch_id="false",
+            # enable megascale debug port.
+            megascale_debug_port=8081,
             # Flag controlling the maximum number of overlapping host offloadings.
             xla_tpu_host_transfer_overlap_limit=24,
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
@@ -159,10 +165,10 @@ def default_xla_options(
             # Similar to megascale_error_reporter_abort_on_hang but for unrecoverable errors.
             megascale_error_reporter_abort_on_error="true",
             # Increase the timeout at which a hang is detected/reported, default is 5m.
-            megascale_graph_hang_threshold="10m",
+            megascale_graph_hang_threshold="20m",
             # Similar to megascale_graph_hang_threshold but specific to within a launch_id.
             # Default is 1m.
-            megascale_graph_within_launch_hang_threshold="10m",
+            megascale_graph_within_launch_hang_threshold="20m",
             # TODO(ethanli): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )
@@ -176,7 +182,16 @@ def default_xla_options(
             int(v)
             continue
         except ValueError:
-            assert v in [True, False, "true", "false", "megachip_tccontrol", "10m"], (k, v)
+            assert v in [
+                True,
+                False,
+                "true",
+                "false",
+                "megachip_tccontrol",
+                "10m",
+                "20m",
+                "/output/rapideye/",
+            ], (k, v)
 
     return options
 
@@ -379,6 +394,7 @@ def infer_xla_performance_flags(
     if current_configuration in mesh_configurations_for_sparse_core_offloading:
         flags = dict(
             # Must disable continuation fusion to enable sparse core offloading.
+            # AXLEARN TESTING NOTE: We are disabling this to test for SparseCore related issues.
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
             xla_tpu_enable_async_collective_fusion_fuse_all_reduce="false",
             xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
