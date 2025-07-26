@@ -100,6 +100,8 @@ FROM base AS pathways-tpu
 
 ARG EXTRAS=
 
+RUN uv pip install debugpy && uv cache clean
+EXPOSE 5678
 RUN uv pip install --prerelease=allow .[core,pathways-tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .

@@ -471,6 +471,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
                 dict(containerPort=8080),  # Port for MXLA coordinator.
                 dict(containerPort=8431),  # Port to export TPU runtime metrics.
                 dict(containerPort=self._load_balancer.target_port),  # Port for load balancer.
+                dict(containerPort=5678),  # Port for debugger.
             ],
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
