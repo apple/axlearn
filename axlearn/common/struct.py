@@ -91,10 +91,6 @@ def dataclass(klass: _T, flatten_order: Literal[None, "asc"] = "asc", **kwargs) 
         dataklass, flatten_with_keys, unflatten_func, flatten_func
     )
 
-    jax.tree_util.register_pytree_with_keys(
-        dataklass, flatten_with_keys, unflatten_func, flatten_func
-    )
-
     def to_state_dict(x) -> utils.Nested[Any]:
         return {name: serialization.to_state_dict(getattr(x, name)) for name in data_fields}
 

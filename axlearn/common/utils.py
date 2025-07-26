@@ -82,16 +82,11 @@ T = TypeVar("T")
 # We avoid subscripting Sequence[int] so it can be used for isinstance checks.
 MeshShape = Sequence
 
-_enable_numeric_checks = False 
+_enable_numeric_checks = False
 _enable_xla_runtime_errors = False
 
 # The set of supported floating point dtypes.
 _supported_float_dtypes = [jnp.bfloat16, jnp.float32]
-
-@staticmethod
-def _tree_map(*args, **kwargs):
-    is_leaf = lambda x: isinstance(x, VDict) or isinstance(x, Tensor)
-    return jax.tree.map(*args, **kwargs, is_leaf=is_leaf)
 
 def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     """Generate the (key, value) pairs for the immediate children of a pytree `node`."""
