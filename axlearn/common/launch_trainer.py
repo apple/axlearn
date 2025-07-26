@@ -152,8 +152,10 @@ def _run_trainer_impl(trainer_config: SpmdTrainer.Config) -> Any:
         # pylint: disable-next=import-error,import-outside-toplevel
         from pathwaysutils.elastic import manager
         elastic_manager = manager.Manager()
-        while True:
+        max_attempts = 5
+        for attempt_index in range(max_attempts):
             try:
+                logging.info(f"Elastic attempt {attempt_index + 1}/{max_attempts}")
                 trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
                 prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
                 output = trainer.run(prng_key)
