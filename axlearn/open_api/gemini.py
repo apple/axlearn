@@ -16,20 +16,13 @@ from axlearn.open_api.common import BaseClient, ClientRateLimitError, Validation
 
 # pylint: disable=import-error
 # pytype: disable=import-error
-import vertexai
 from openai.types.chat.chat_completion_message import (
     ChatCompletionMessage,
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
-from vertexai.generative_models import (
-    Content,
-    FunctionDeclaration,
-    GenerationConfig,
-    GenerativeModel,
-    Part,
-    Tool,
-)
+
+from google.genai import Client, types
 
 # pylint: enable=import-error
 # pytype: enable=import-error
@@ -39,11 +32,11 @@ from vertexai.generative_models import (
 class GeminiClient(BaseClient):
     """Gemini endpoint client."""
 
-    def _create_client(self) -> GenerativeModel:
-        """Creates a GenerativeModel client for Gemini."""
-        cfg: GeminiClient.Config = self.config
-        _init_vertexai()
-        return GenerativeModel(model_name=cfg.model)
+    def _create_client(self) -> Client:
+        """Creates a client for Gemini."""
+        project = os.environ.get("VERTEX_AI_PROJECT")
+        location = os.environ.get("VERTEX_AI_LOCATION")
+        return Client(vertexai=True, project=project, location=location)
 
     async def async_generate(
         self,
@@ -63,6 +56,7 @@ class GeminiClient(BaseClient):
         Raises:
             ValidationError: Field messages must be in request.
         """
+        cfg = self.config
         if "messages" not in request:
             raise ValidationError("Field messages must be in request.")
         _format_request(request=request)
@@ -71,20 +65,26 @@ class GeminiClient(BaseClient):
             gemini_tools = _convert_openai_tools_to_gemini(tools=request["tools"])
         else:
             gemini_tools = None
-        client: GenerativeModel = self._client
+        client: Client = self._client
+        extra_body = copy.deepcopy(cfg.extra_body)
         try:
-            response = await client.generate_content_async(
+            response = await client.aio.models.generate_content(
+                model=cfg.model,
                 contents=contents,
-                tools=gemini_tools,
-                generation_config=GenerationConfig(
+                config=types.GenerateContentConfig(
                     temperature=kwargs.get("temperature", None),
                     top_k=kwargs.get("top_k", None),
                     top_p=kwargs.get("top_p", None),
                     max_output_tokens=kwargs.get("max_tokens", None),
                     stop_sequences=kwargs.get("stop_sequences", None),
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=extra_body.get("thinking_budget", 1024),
+                        include_thoughts=extra_body.get("include_thoughts", True),
+                    ),
+                    tools=gemini_tools,
                 ),
             )
-            return json.dumps(response.to_dict())
+            return json.dumps(response.model_dump(mode="json"))
         # pylint: disable-next=broad-except,broad-exception-caught
         except Exception as e:
             if "resource has been exhausted" in str(e).lower():
@@ -133,9 +133,15 @@ class GeminiClient(BaseClient):
             message = ChatCompletionMessage(role="assistant", content="")
             for part in candidate["content"].get("parts", []):
                 if "text" in part:
-                    message.content = part["text"]
-                    continue
-                if "function_call" not in part or "name" not in part["function_call"]:
+                    if part["thought"]:
+                        message.reasoning_content = part["text"]
+                    else:
+                        message.content = part["text"]
+                if (
+                    "function_call" not in part
+                    or part["function_call"] is None
+                    or "name" not in part["function_call"]
+                ):
                     continue
                 tool_calls.append(
                     ChatCompletionMessageToolCall(
@@ -159,7 +165,7 @@ _max_tool_name_length = 32
 
 def _format_tool_message(message: dict[str, Any]) -> dict[str, Any]:
     """Formats tool role message to reduce tool name length."""
-    if "tool_calls" in message:
+    if "tool_calls" in message and message["tool_calls"]:
         new_tool_calls = []
         for tool_call in message["tool_calls"]:
             tool_call["function"]["name"] = tool_call["function"]["name"][-_max_tool_name_length:]
@@ -178,8 +184,7 @@ def _aggregate_tool_role_messages(messages: list[dict[str, Any]]) -> list[dict[s
             aggregated_messages.append(message)
             continue
         if len(aggregated_messages) > 0 and aggregated_messages[-1]["role"] == "tool":
-            tool_messages: list = aggregated_messages[-1]["tool_messages"]
-            aggregated_messages[-1]["tool_messages"] = tool_messages.append(message)
+            aggregated_messages[-1]["tool_messages"].append(message)
             continue
 
         aggregated_messages.append({"role": "tool", "tool_messages": [message]})
@@ -204,7 +209,7 @@ def _format_request(request: dict[str, Any]):
         request["tools"] = new_tools
 
 
-def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[Content]:
+def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[types.Content]:
     """Converts OpenAI messages to Gemini Content.
 
     Note: system messages are converted into user messages due to a design limitation that system
@@ -231,10 +236,10 @@ def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[C
             role = "user"
         if role == "user":
             if isinstance(message["content"], str):
-                content = Content(
+                content = types.Content(
                     role=role,
                     parts=[
-                        Part.from_text(message["content"]),
+                        types.Part.from_text(text=message["content"]),
                     ],
                 )
             elif isinstance(message["content"], list):
@@ -242,13 +247,13 @@ def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[C
                 parts = []
                 for content in message["content"]:
                     if content["type"] == "text":
-                        parts.append(Part.from_text(content["text"]))
+                        parts.append(types.Part.from_text(text=content["text"]))
                     elif content["type"] == "image_url":
                         mime_type, data = (
                             content["image_url"]["url"].split("data:")[1].split(";base64,")
                         )
-                        parts.append(Part.from_data(data=data, mime_type=mime_type))
-                content = Content(
+                        parts.append(types.Part.from_data(data=data, mime_type=mime_type))
+                content = types.Content(
                     role=role,
                     parts=parts,
                 )
@@ -256,38 +261,33 @@ def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[C
                 raise ValidationError(f"Invalid content type {type(message['content'])}")
         elif role == "assistant":
             role = "model"
-            if "tool_calls" in message:
+            if "tool_calls" in message and message["tool_calls"]:
                 parts = []
                 for tool_call in message["tool_calls"]:
                     args = tool_call["function"]["arguments"]
 
                     if isinstance(args, str):
                         args = json.loads(args)
-
-                    part = Part.from_dict(
-                        {
-                            "function_call": {
-                                "name": tool_call["function"]["name"],
-                                "args": args,
-                            }
-                        }
+                    part = types.Part.from_function_call(
+                        name=tool_call["function"]["name"],
+                        args=args,
                     )
                     parts.append(part)
-                content = Content(
+                content = types.Content(
                     role=role,
                     parts=parts,
                 )
             else:
-                content = Content(
+                content = types.Content(
                     role=role,
                     parts=[
-                        Part.from_text(message["content"]),
+                        types.Part.from_text(text=message["content"]),
                     ],
                 )
         elif role == "tool":
-            content = Content(
+            content = types.Content(
                 parts=[
-                    Part.from_function_response(
+                    types.Part.from_function_response(
                         name=m["name"],
                         response={
                             "content": m["content"],
@@ -303,7 +303,7 @@ def _convert_openai_messages_to_gemini(messages: list[dict[str, Any]]) -> list[C
     return gemini_messages
 
 
-def _convert_openai_tools_to_gemini(tools: Optional[list[Any]]) -> list[Tool]:
+def _convert_openai_tools_to_gemini(tools: Optional[list[Any]]) -> list[types.Tool]:
     """Converts openai tools to Gemini FunctionDeclaration."""
 
     def _convert_parameters(params: dict[str, Any]) -> dict[str, Any]:
@@ -323,20 +323,13 @@ def _convert_openai_tools_to_gemini(tools: Optional[list[Any]]) -> list[Tool]:
     for tool in gemini_tools:
         tool["function"]["name"] = tool["function"]["name"][-_max_tool_name_length:]
         funcs.append(
-            FunctionDeclaration(
+            types.FunctionDeclaration(
                 name=tool["function"]["name"],
                 description=tool["function"]["description"],
                 parameters=_convert_parameters(tool["function"]["parameters"]),
             )
         )
-    return [Tool(function_declarations=funcs)]
-
-
-def _init_vertexai():
-    """Initializes vertex ai environment."""
-    project = os.environ.get("VERTEX_AI_PROJECT")
-    location = os.environ.get("VERTEX_AI_LOCATION")
-    vertexai.init(project=project, location=location)
+    return [types.Tool(function_declarations=funcs)]
 
 
 def _generate_call_id(length: int = 24) -> str:
