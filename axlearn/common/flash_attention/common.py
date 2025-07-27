@@ -314,6 +314,12 @@ class BaseSingleStepDecoding(BaseFlashAttention):
 class BasePagedAttention(BaseSingleStepDecoding):
     """Base class for paged attention."""
 
+    @config_class
+    class Config(BaseSingleStepDecoding.Config):
+        """Configures Paged Attention."""
+
+        sparse_ratio: float = 0.8  # Whether to apply sparse mode kernel
+
     def _validate_input_batch(self, input_batch: Nested[Tensor | BaseAttentionBias]):
         super()._validate_input_batch(input_batch)
         validate_contains_paths(input_batch, paths=["page_tables"])
