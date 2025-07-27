@@ -296,7 +296,7 @@ def _init_consistent_proc_ids(
             int(os.environ["MEGASCALE_SLICE_ID"]) * num_proc_per_slice + worker_id
         )
         # De-hardcode
-        use_replicator_service = False
+        use_replicator_service = True
         if use_replicator_service:
             replicator_file = "replicator.yaml"
             temp_file = replicator_file + ".tmp"
@@ -653,9 +653,11 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             fs.makedirs(os.path.join(cfg.dir, self._NON_TENSORS_PREFIX))
             fs.makedirs(os.path.join(cfg.dir, self._TENSORS_PREFIX))
         # Cleanup local checkpoints from different runs.
-        for fd in fs.listdir(cfg.local_dir):
-            if not fd.startswith("."):
-                fs.rmtree(os.path.join(cfg.local_dir, fd))
+        # Not needed as mtc controller should manage cleanup
+        # for fd in fs.listdir(cfg.local_dir):
+        #     if not fd.startswith("."):
+        #         if os.path.isdir(fd):
+        #             fs.rmtree(os.path.join(cfg.local_dir, fd))
         self._local_dir = cfg.local_dir
         fs.makedirs(self._local_dir)
         # Orbax emergency ckpt requires this function to be called prior to checkpointer
