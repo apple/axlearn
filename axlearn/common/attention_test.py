@@ -129,6 +129,7 @@ from axlearn.common.test_utils import (
     TestCase,
     assert_allclose,
     dummy_segments_positions,
+    is_supported_mesh_shape,
     set_threefry_partitionable,
 )
 from axlearn.common.torch_utils import parameters_from_torch_layer
@@ -2465,6 +2466,82 @@ class MultiheadAttentionTest(TestCase):
             inputs=test_inputs,
         )
         self.assertNestedAllClose(base_outputs, test_outputs)
+
+    @parameterized.product(kv_part=[None, PartitionSpec("fsdp", None, "model", None)])
+    @pytest.mark.d8
+    def test_qkvo_partition_spec(self, kv_part):
+        """Tests that QKVO partition spec are applied correctly when specified."""
+        mesh_shape = (2, 2, 2)
+        if not is_supported_mesh_shape(mesh_shape):
+            self.skipTest(f"Unsupported mesh shape {mesh_shape}")
+        model_dim = 16
+        num_heads = 4
+        mesh = jax.make_mesh(mesh_shape, axis_names=("fsdp", "seq", "model"))
+        q_part = PartitionSpec("fsdp", "seq", "model", None)
+        o_part = PartitionSpec("fsdp", "seq", None)
+
+        layer_kwargs = dict(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            dtype=jnp.float32,
+            q_partition_spec=q_part,
+            o_partition_spec=o_part,
+            k_partition_spec=kv_part,
+            v_partition_spec=kv_part,
+        )
+        init_key = jax.random.PRNGKey(123)
+        base_cfg = attention.MultiheadAttention.default_config().set(**layer_kwargs)
+        base_layer = base_cfg.set(name="base").instantiate(parent=None)
+        base_state = base_layer.initialize_parameters_recursively(prng_key=init_key)
+
+        # Dummy inputs.
+        batch_size, tgt_len = 2, 6
+        base_inputs = dict(
+            query=jax.random.normal(
+                jax.random.PRNGKey(124),
+                [batch_size, tgt_len, model_dim],
+                dtype=jnp.float32,
+            ),
+            key=None,
+            value=None,
+        )
+        forward_key = jax.random.PRNGKey(456)
+
+        def patched_remat_name(_, tensor, name):
+            def callback(sharding):
+                # pylint: disable-next=protected-access
+                normalize_spec = sharding.spec._normalized_spec_for_aval(len(tensor.shape))
+                if name == "q_proj":
+                    self.assertEqual(normalize_spec, q_part)
+                elif name == "o_proj":
+                    self.assertEqual(normalize_spec, o_part)
+                elif name in ["k_proj", "v_proj"]:
+                    if kv_part is None:
+                        self.assertEqual(normalize_spec, q_part)
+                    else:
+                        self.assertEqual(normalize_spec, kv_part)
+
+            jax.debug.inspect_array_sharding(tensor, callback=callback)
+            return tensor
+
+        with mesh, mock.patch.object(
+            attention.MultiheadAttention, "_remat_name", patched_remat_name
+        ):
+
+            @jax.jit
+            def jit_fn():
+                base_outputs, _ = F(
+                    base_layer,
+                    state=base_state,
+                    is_training=False,
+                    prng_key=forward_key,
+                    inputs=base_inputs,
+                )
+                return base_outputs
+
+            jit_fn()
 
     def _test_extend_step(
         self,

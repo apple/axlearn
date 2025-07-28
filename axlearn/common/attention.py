@@ -162,6 +162,7 @@ from axlearn.common.utils import (
     save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
+    with_sharding_constraint,
 )
 
 
@@ -1556,6 +1557,20 @@ class MultiheadAttention(BaseLayer):
         # If true, use learnable logit sinks.
         logit_sink: Optional[bool] = None
 
+        # Partition spec for query ([batch, seq, q_heads, head_dim]) after input projections.
+        q_partition_spec: Optional[PartitionSpec] = None
+
+        # Partition spec for key ([batch, seq, kv_heads, head_dim]) after input projections.
+        # Follows `q_partition_spec` if None.
+        k_partition_spec: Optional[PartitionSpec] = None
+
+        # Partition spec for value ([batch, seq, kv_heads, head_dim]) after input projections.
+        # Follows `q_partition_spec` if None.
+        v_partition_spec: Optional[PartitionSpec] = None
+
+        # Partition spec for output ([batch, seq, hidden_dim]) after output projections.
+        o_partition_spec: Optional[PartitionSpec] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -1719,6 +1734,12 @@ class MultiheadAttention(BaseLayer):
             time_step = cached_states["time_step"]
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
+        if cfg.q_partition_spec:
+            q_proj = with_sharding_constraint(q_proj, cfg.q_partition_spec)
+        if cfg.q_partition_spec or cfg.k_partition_spec:
+            k_proj = with_sharding_constraint(k_proj, cfg.k_partition_spec or cfg.q_partition_spec)
+        if cfg.q_partition_spec or cfg.v_partition_spec:
+            v_proj = with_sharding_constraint(v_proj, cfg.v_partition_spec or cfg.q_partition_spec)
 
         if cfg.scale_kv_before_cache_update:
             if has_external_kv_state:
@@ -1821,6 +1842,8 @@ class MultiheadAttention(BaseLayer):
 
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
+        if cfg.o_partition_spec:
+            o_proj = with_sharding_constraint(o_proj, cfg.o_partition_spec)
         outputs = self._remat_name(o_proj, "o_proj")
         self._add_tensor_stats("o_proj_outputs", outputs)
         return_aux = return_aux or set()
