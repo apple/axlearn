@@ -4,6 +4,7 @@
 
 import contextlib
 import json
+import logging as py_logging
 import os
 from typing import Any, Optional
 
@@ -15,6 +16,8 @@ from axlearn.common import measurement
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape
 from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
+
+py_logging.raiseException = True
 
 # Trainer-specific flags.
 flags.DEFINE_string(
