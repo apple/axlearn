@@ -33,6 +33,7 @@ core = [
     "protobuf>=3.20.3",
     "tensorboard-plugin-profile==2.15.1",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
+    "tokenizers",
     "tensorflow==2.17.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
