@@ -254,6 +254,43 @@ def _logger_init():
     logging.use_absl_handler()
 
 
+def _wait_for_file_to_disappear(f, timeout=300):
+    for _ in range(timeout):
+        if not f.exists():
+            return True
+        time.sleep(1)
+    return False
+
+
+def _extract_step(f):
+    # The base file name is formatted as {job_name}-s{step}-n{node_rank}-g{gpu_rank}
+    return f.rsplit("-", 3)[1][1:]
+
+
+def _block_and_process_restore_dir(directory, timeout=300):
+    """Block until a file ending with `.restore` appears, then extract the step number and rename
+    the directory using the step number.
+    """
+    suffix = ".restore"
+    for _ in range(timeout):
+        files = os.listdir(directory)
+        for f in files:
+            if f.endswith(suffix):
+                step = _extract_step(f)
+                if step != "0":
+                    os.rename(epath.Path(directory) / f, epath.Path(directory) / step)
+                    logging.info(
+                        "Renamed restore directory at step %s to %s.",
+                        step,
+                        epath.Path(directory) / step,
+                    )
+                else:
+                    logging.info("Found a restore directory at step 0, skipping renaming.")
+                return
+        time.sleep(1)
+    logging.info("%d seconds have passed but no .restore file was found.", timeout)
+
+
 def _init_consistent_proc_ids(
     *,
     local_address: Optional[str] = None,
@@ -300,7 +337,11 @@ def _init_consistent_proc_ids(
         if use_replicator_service:
             replicator_file = "replicator.yaml"
             temp_file = replicator_file + ".tmp"
-            replicator_file = epath.Path(local_ckpt_dir) / replicator_file
+            replicator_file_path = epath.Path(local_ckpt_dir) / replicator_file
+            if not _wait_for_file_to_disappear(replicator_file_path):
+                logging.info("Existing replicator.yaml did not disappear in time.")
+            else:
+                logging.info("replicator.yaml no longer exists, creating new replicator.yaml.")
             temp_file = epath.Path(local_ckpt_dir) / temp_file
             num_nodes = jax.process_count()
             nodes_per_slice = num_nodes // num_slices
@@ -321,7 +362,12 @@ def _init_consistent_proc_ids(
           backup-interval-minutes: 30"""
 
             temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
-            os.rename(temp_file, replicator_file)
+            os.rename(temp_file, replicator_file_path)
+            if not _wait_for_file_to_disappear(replicator_file_path):
+                logging.info("The newly created replicator.yaml was not deleted in time.")
+            else:
+                logging.info("The newly created replicator.yaml was deleted, moving forward.")
+                _block_and_process_restore_dir(local_ckpt_dir)
     elif jax_backend == "gpu":
         if local_address is None:
             raise ValueError(
