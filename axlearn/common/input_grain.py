@@ -31,8 +31,8 @@ On `repeat` and `shuffle`:
 """
 
 
-import os
 import json
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Protocol, Sequence, TypeVar, Union, runtime_checkable
@@ -47,8 +47,8 @@ from grain._src.python.data_loader import _determine_worker_count
 from grain._src.python.dataset import dataset as dataset_base
 from jax.experimental import multihost_utils
 
-from axlearn.common import input_base, utils
 from axlearn.common import file_system as fs
+from axlearn.common import input_base, utils
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -74,12 +74,14 @@ class RaggedTensor(list):
 
 @runtime_checkable
 class _CallableTransform(Protocol):
-    def __call__(self, example: Any) -> Any: ...
+    def __call__(self, example: Any) -> Any:
+        ...
 
 
 @runtime_checkable
 class _RandomCallableTransform(Protocol):
-    def __call__(self, example: Any, rng: np.random.Generator) -> Any: ...
+    def __call__(self, example: Any, rng: np.random.Generator) -> Any:
+        ...
 
 
 # Grain supports a set of predefined transformations (e.g. grain.MapTransform), as well as callables
@@ -128,7 +130,8 @@ class DispatchConfig:
 class BuildDatasetFn(Protocol):
     """A function to create a grain data source."""
 
-    def __call__(self, dispatch_config: DispatchConfig) -> Dataset: ...
+    def __call__(self, dispatch_config: DispatchConfig) -> Dataset:
+        ...
 
 
 def _copy_tree(x: _T) -> _T:
@@ -768,13 +771,8 @@ class Input(input_base.Input):
 
 def mixture_train_input_source(
     *,
-    is_training: bool,
-    vocab_cfg: ConfigOr,
     preprocessor: Union[ConfigOr, list[ConfigOr]],
     data_mixture_components: Union[ConfigOr, list],
-    max_sequence_length: int,
-    replace_newlines_with: str = "<n>",
-    fake_input_source_cfg: Optional[ConfigOr] = None,
     seed: Optional[int] = 42,
 ) -> BuildDatasetFn:
     """Build mixture training input source for decoder-only LM model using grain.
@@ -798,21 +796,13 @@ def mixture_train_input_source(
     Returns:
         A BuildDatasetFn that mixes the given list of DataMixtureComponent(s).
     """
-    from axlearn.common.config import maybe_instantiate, maybe_set_config
+    from axlearn.common.config import maybe_instantiate
 
     data_mixture_components = maybe_instantiate(data_mixture_components)
 
     def build_dataset_fn(
-            dispatch_config: DispatchConfig,
-            *,
-            is_training: bool,
-            vocab_cfg: ConfigOr,
-            preprocessor: Union[ConfigOr, list[ConfigOr]],
-            data_mixture_components: Union[ConfigOr, list],
-            max_sequence_length: int,
-            replace_newlines_with: str = "<n>",
-            seed: Optional[int] = 42,
-        ) -> Dataset:
+        dispatch_config: DispatchConfig,
+    ) -> Dataset:
         sources = []
         weights = []
 
@@ -821,7 +811,7 @@ def mixture_train_input_source(
 
             # Construct ArrayRecord paths
             arrayrecord_dataset_dir = os.path.join(
-                "/tmp/tensorflow_datasets/array_record", dataset_name
+                "/tmp/gcsfuse/tensorflow_datasets/array_record", dataset_name
             )
 
             # Use fs.listdir to list all files in the directory
@@ -835,9 +825,7 @@ def mixture_train_input_source(
             ]
 
             # Create ArrayRecord dataset
-            source_ds = (
-                array_record_dataset(paths=arrayrecord_files, seed=seed).shuffle().repeat()
-            )
+            source_ds = array_record_dataset(paths=arrayrecord_files, seed=seed).shuffle().repeat()
             source_ds = shard_dataset(source_ds, dispatch_config)
             #
             features_json = os.path.join(arrayrecord_dataset_dir, "features.json")
@@ -850,29 +838,8 @@ def mixture_train_input_source(
             with fs.open(features_json) as f:
                 features_dict = tfds.features.FeaturesDict.from_json(json.load(f))
             source_ds = source_ds.map(features_dict.deserialize_example_np)
-
-
-            # Apply preprocessing
-            def _set_config_for_preprocessor(p: ConfigOr) -> ConfigOr:
-                return maybe_set_config(
-                    p,
-                    vocab_cfg=vocab_cfg,
-                    max_sequence_length=max_sequence_length,
-                    replace_newlines_with=replace_newlines_with,
-                )
-
-            if isinstance(preprocessor, list):
-                assert len(preprocessor) == len(data_mixture_components)
-                processor_cfg = _set_config_for_preprocessor(preprocessor[len(sources)])
-            else:
-                processor_cfg = _set_config_for_preprocessor(preprocessor)
-
             # Apply processor to the source dataset
-            processor_fn = maybe_instantiate(processor_cfg)
-            source_ds = source_ds.map(processor_fn)
-
-            # Repeat the dataset for mixing
-            source_ds = source_ds.repeat()
+            source_ds = preprocessor(source_ds)
 
             sources.append(source_ds)
             weights.append(component.weight)
@@ -883,12 +850,4 @@ def mixture_train_input_source(
         # Shard the mixed dataset
         return mixed_ds
 
-    return config_for_function(build_dataset_fn).set(
-        is_training=is_training,
-        vocab_cfg=vocab_cfg,
-        preprocessor=preprocessor,
-        data_mixture_components=data_mixture_components,
-        max_sequence_length=max_sequence_length,
-        replace_newlines_with=replace_newlines_with,
-        seed=seed,
-    )
+    return build_dataset_fn

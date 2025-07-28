@@ -1112,7 +1112,7 @@ def trainer_configs(
                 # pylint: disable=cell-var-from-loop
                 # Adjust batch size for grain processing if needed
                 for evaler in cfg.evalers.values():
-                    if hasattr(evaler.input, 'input_dispatcher'):
+                    if hasattr(evaler.input, "input_dispatcher"):
                         evaler.input.input_dispatcher.global_logical_batch_size //= (
                             64 if version in (Version.V3, Version.V3_TIKTOKEN) else 16
                         )

@@ -8,6 +8,7 @@ import os
 from typing import Dict, Optional, Sequence, Union
 
 from axlearn.common import config
+from axlearn.common import file_system as fs
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -27,7 +28,6 @@ from axlearn.common.quantized_dot_general.layers import (
     QuantizedDotGeneral,
     get_all_fp8_param_names,
 )
-from axlearn.common import file_system as fs
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.update_transformation import OverrideInplaceUpdateTransformation
 from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
@@ -362,33 +362,33 @@ class GrainConfigModifier(ConfigModifier):
             A grain source configuration.
         """
         # Import grain modules here to avoid circular imports
-        from axlearn.common import input_grain, input_grain_lm
         import grain.python as grain
+
+        from axlearn.common import input_grain, input_grain_lm
 
         # Extract data mixture components from tf_data_config
         components = tf_data_config.data_mixture_components
         # Extract other relevant config parameters from tf_data_config, with fallbacks
         vocab_cfg = tf_data_config.vocab_cfg
         max_sequence_length = tf_data_config.max_sequence_length
-        preprocessor = config_for_function(input_grain_lm.text_to_lm_training_input).set(
-            vocab=vocab_cfg,
-            max_len=max_sequence_length,
-            max_padding_fraction=tf_data_config.preprocessor.max_padding_fraction,
-            window_size=tf_data_config.preprocessor.window_size,
-            read_options=grain.ReadOptions(num_threads=2, prefetch_buffer_size=16),
-        )
-        max_sequence_length = tf_data_config.max_sequence_length
-        replace_newlines_with = tf_data_config.replace_newlines_with
+
+        def processing_fn(ds):
+            return input_grain_lm.text_to_lm_training_input(
+                ds,
+                vocab=vocab_cfg,
+                max_len=max_sequence_length,
+                max_padding_fraction=tf_data_config.preprocessor.max_padding_fraction,
+                window_size=tf_data_config.preprocessor.window_size,
+                read_options=grain.ReadOptions(num_threads=8, prefetch_buffer_size=128),
+            )
+
+        preprocessor = processing_fn
 
         # Use the existing mixture_train_input_source function which already handles
         # GCS path conversion and fs.listdir operations
-        return input_grain.mixture_train_input_source(
-            is_training=True,
-            vocab_cfg=vocab_cfg,
+        return config_for_function(input_grain.mixture_train_input_source).set(
             preprocessor=preprocessor,
             data_mixture_components=components,
-            max_sequence_length=max_sequence_length,
-            replace_newlines_with=replace_newlines_with,
             seed=42,
         )
 
