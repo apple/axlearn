@@ -1,0 +1,53 @@
+######## dependencies ########
+attrs>=23.1.0 # We use `type` in `attrs.field`
+numpy>=1.26.4 # verified with tensorflow 2.14 RaggedTensor
+######## core ########
+absl-py>=2.1.0
+chex>=0.1.88
+importlab>=0.8.1  # breaks pytype on 0.8
+jax>=0.5.3
+jaxlib>=0.5.3
+ml-dtypes>=0.4.1
+msgpack>=1.1.0  # for checkpointing.
+nltk>=3.7  # for text preprocessing
+optax>=0.1.7  # optimizers (0.1.0 has known bugs).
+portpicker
+pyarrow<21.0.0  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
+protobuf>=3.20.3
+tensorboard-plugin-profile>=2.20.4
+tensorflow>=2.17.1
+tensorflow-datasets>=4.9.2
+tensorflow-io>=0.37.1  # for tensorflow-2.16. Note that 0.37.0 results in pure virtual method called.
+tensorflow_text>=2.17.0; platform_machine == 'x86_64' # implied by seqio, but also used directly for text processing
+tensorstore>=0.1.63  # used for supporting GDA checkpoints
+toml  # for config management
+typing-extensions>=4.12.2
+scipy>=1.12.0  # to avoid module 'scipy.linalg' has no attribute 'tril'
+# seqio>=0.0.18  # used for inputs; This package's requirement, Requires-Dist: protobuf <=3.20.3, is outdated and causes dependency conflicts. It should be removed.
+aqtp>=0.8.2 # Updated from 0.4.0; compatible with Python 3.10
+flax>=0.10.2 # for AQT, param converter and adapter.
+prefixed>=0.9.0 # For formatting file sizes, param counts, etc.
+grain>=0.2.7 # Grain input processing. 0.2.6 onwards supports macos.
+######## gpu ########
+triton>=2.1.0
+jax[cuda12]>=0.5.3
+nvidia-ml-py>=12.560.30
+nvidia-nccl-cu12>=2.27.5
+######## gcp ########
+# cloud-tpu-client  # for creating and managing TPUs.
+# crcmod  # for file uploads.
+# kubernetes>=31.0.0
+# google-api-core>=2.24.1
+# google-api-python-client>=2.109.0
+# google-auth>=2.29.0
+# google-auth[pyopenssl]  # Ensures that we have compatible pyopenssl/cryptography pins.
+# google-cloud-storage>=2.16.0
+# google-cloud-compute>=1.19.2 # Needed for region discovery for CloudBuild API access.
+# google-cloud-core>=2.3.3
+# google-cloud-build>=3.24.1
+# ml-goodput-measurement>=0.0.10
+# pika>=1.3.2  # used by event queue
+# pyOpenSSL>=22.1.0  # compat with cryptography version.
+# tpu-info>=0.2.0 # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
+# prometheus-client>=0.21.0 # For TPU monitoring from tpu-device-plugin.
+
