@@ -39,7 +39,7 @@ from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import generate_job_name
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
-from axlearn.cloud.gcp.job import GKEJob
+from axlearn.cloud.gcp.job import GKEJob, GKELeaderWorkerSet
 from axlearn.cloud.gcp.job_flink import FlinkJobStatus, FlinkTPUGKEJob
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import (
@@ -635,3 +635,249 @@ class FlinkGKERunnerJob(GKERunnerJob):
             # Can happen if job was just submitted.
             logging.warning("Got KeyError: %s, attempting to ignore.", e)
         return GKERunnerJob.Status.UNKNOWN
+
+
+class LWSRunnerJob(BaseRunnerJob):
+    """Launches and monitors a GKE job via k8s LWS API."""
+
+    @config_class
+    class Config(BaseRunnerJob.Config):
+        """Configures LWSRunnerJob.
+
+        Attributes:
+            name: The name of the LeaderWorkerSet.
+            inner: LWS job configuration.
+            output_dir: Output directory for artifacts (e.g. XLA dumps).
+            namespace: K8s namespace propagated to inner.
+            cluster: GKE cluster.
+            status_interval_seconds: Interval to poll status.
+            vertexai_tb_uploader: Optional VertexAI Tensorboard Uploader.
+            enable_pre_provisioner: Whether to enable pre-provisioner.
+            pre_provisioner: Optional pre-provisioner configuration.
+            event_publisher: Optional event publisher configuration.
+            bundler: Bundler config.
+        """
+
+        name: Required[str] = REQUIRED
+        inner: Required[GKEJob.Config] = REQUIRED
+        output_dir: Required[str] = REQUIRED
+        namespace: str = "default"
+        cluster: Required[str] = REQUIRED
+        status_interval_seconds: float = 30
+        vertexai_tb_uploader: Optional[VertexAITensorboardUploader.Config] = None
+        # This config is made Optional for backwards compatibility. Default is False.
+        enable_pre_provisioner: Optional[bool] = None
+        pre_provisioner: Optional[NodePoolProvisioner.Config] = None
+        # The event publisher sends events into queue.
+        event_publisher: Optional[BaseQueueClient.Config] = None
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues = FLAGS):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("name", None, "Name of the jlws ob.", **common_kwargs)
+        flags.DEFINE_string(
+            "output_dir",
+            None,
+            "If specified, the directory to store outputs (such as logs).",
+            **common_kwargs,
+        )
+        flags.DEFINE_string("namespace", None, "K8s namespace.", **common_kwargs)
+        flags.DEFINE_string("cluster", None, "GKE cluster name.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
+        )
+
+    @classmethod
+    def set_defaults(cls, fv: flags.FlagValues):
+        super().set_defaults(fv)
+        # Don't override `name` if already specified, since the default is non-deterministic.
+        # NOTE: Accessing fv.name directly reads any values or default values set on either --name
+        # or its aliases. On the other hand, accessing fv["name"].default ignores any values or
+        # default values set by aliases.
+        fv.set_default("name", fv.name or generate_job_name())
+        fv.set_default("namespace", "default")
+        fv.set_default(
+            "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
+        )
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        cfg: LWSRunnerJob.Config = super().from_flags(fv, **kwargs)
+        cfg.cluster = cfg.cluster or gcp_settings("gke_cluster", required=False, fv=fv)
+        # The pre_provisioner will be configured by default in the construction of the runner
+        # config, which allows its flags to be defined up-front. Here, we disable it if user decides
+        # to opt-out.
+        if not fv.enable_pre_provisioner:
+            cfg.pre_provisioner = None
+        cfg.event_publisher = event_queue_from_config(flag_values=fv)
+        if is_vertexai_tensorboard_configured(fv):
+            cfg.vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(fv)
+        return cfg
+
+    def __init__(self, cfg: Config, *, bundler: Bundler):
+        cfg = cfg.clone(max_tries=cfg.inner.max_tries, retry_interval=cfg.inner.retry_interval)
+        super().__init__(cfg, bundler=bundler)
+        cfg = self.config
+        self._inner: GKELeaderWorkerSet = cfg.inner.instantiate(bundler=self._bundler)
+
+        # Log sync process.
+        self._tb_uploader = None
+        if cfg.vertexai_tb_uploader:
+            self._tb_uploader: VertexAITensorboardUploader = cfg.vertexai_tb_uploader.set(
+                summary_dir=cfg.output_dir
+            ).instantiate()
+
+        self._pre_provisioner = None
+        if cfg.pre_provisioner is not None:
+            self._pre_provisioner: NodePoolProvisioner = cfg.pre_provisioner.set(
+                name=cfg.name,
+            ).instantiate()
+
+        self._event_publisher: BaseQueueClient = maybe_instantiate(cfg.event_publisher)
+
+    class Status(enum.Enum):
+        """GKE LeaderWorkerSet status.
+
+        See also:
+        https://github.com/kubernetes-sigs/lws/blob/main/api/leaderworkerset/v1/leaderworkerset_types.go#L342
+
+
+        Attributes:
+            UNKNOWN: Unknown status.
+            FAILED: lws has failed.
+            UPDATING: lws is updating
+            PROGRESSING: lws replicas are being created
+            RUNNING: lws is running with all workers and healthy leader and worker sets
+        """
+
+        UNKNOWN = "UNKNOWN"
+        FAILED = "FAILED"
+        UPDATING = "UPDATING"
+        PROGRESSING = "PROGRESSING"
+        RUNNING = "RUNNING"
+        NOT_STARTED = "NOT_STARTED"
+
+    def _get_status(self) -> Status:
+        """Retrieves the current status of the job.
+
+        Returns:
+            LWSRunnerJob.Status:
+                UPDATING: When the job succeeded.
+                FAILED: When the job hasn't started yet.
+                RUNNING: When the job is running.
+                UNKNOWN: All other cases.
+
+        Raises:
+            RuntimeError: When the job fails, and LWS runner will retry it.
+        """
+        cfg: LWSRunnerJob.Config = self.config
+        try:
+            resp = k8s.client.CustomObjectsApi().get_namespaced_custom_object_status(
+                name=cfg.name,
+                namespace=cfg.inner.namespace,
+                group="leaderworkerset.x-k8s.io",
+                version="v1",
+                plural="leaderworkersets",
+            )
+
+            status = resp.get("status", {})
+            conditions = status.get("conditions", [])
+
+            condition_available = None
+            condition_progressive = None
+            condition_update_in_progress = None
+
+            for condition in conditions:
+                if condition.get("type") == "Progressing":
+                    condition_progressive = condition.get("status")
+                if condition.get("type") == "Available":
+                    condition_available = condition.get("status")
+                if condition.get("type") == "UpdateInProgress":
+                    condition_update_in_progress = condition.get("status")
+
+            if condition_update_in_progress:
+                return LWSRunnerJob.Status.UPDATING
+
+            # If LeaderWorkerSet is running fine , condition is Available=True
+            if condition_available:
+                return LWSRunnerJob.Status.RUNNING
+
+            # If LeaderWorkerSet is deploying/updating, condition is Progressing=True
+            if condition_progressive:
+                return LWSRunnerJob.Status.PROGRESSING
+
+            # If LeaderWorkerSet is failed , condition is Progressing=False and Available=False
+            if not condition_available and not condition_progressive:
+                return LWSRunnerJob.Status.FAILED
+
+            # If we can't determine the status, return UNKNOWN
+            return LWSRunnerJob.Status.UNKNOWN
+
+        except k8s.client.exceptions.ApiException as e:
+            if e.status == 404:
+                return LWSRunnerJob.Status.NOT_STARTED
+            raise
+        except KeyError as e:
+            # Can happen if job was just submitted.
+            logging.warning("Got KeyError: %s, attempting to ignore.", e)
+        return LWSRunnerJob.Status.UNKNOWN
+
+    def _delete(self):
+        # TODO(markblee): Make delete a public method.
+        self._inner._delete()  # pylint: disable=protected-access
+        if self._pre_provisioner is not None:
+            self._pre_provisioner.delete_for(self._inner)
+
+    def _execute(self):
+        cfg: LWSRunnerJob.Config = self.config
+
+        # Keep track of last status to prevent duplicate events.
+        last_job_status = None
+        while True:
+            status = self._get_status()
+
+            # Don't retry if FAILED, since we ask GKE to handle retries.
+            # Note that LeaderWorkerSet remains ACTIVE until all retries are exhausted.
+            if status == LWSRunnerJob.Status.FAILED:
+                self._maybe_publish(
+                    cfg.name,
+                    msg="LeaderWorkerSet failed with error",
+                    state=JobLifecycleState.FAILED,
+                )
+                logging.info("Task %s exited with status: %s.", cfg.name, status)
+                return
+
+            elif status == LWSRunnerJob.Status.NOT_STARTED:
+                logging.info("Task has not started. Starting it now...")
+                try:
+                    # Note: while this is blocking, the bastion will kill the runner process when it
+                    # needs to reschedule.
+                    self._bundler.wait_until_finished(cfg.name)
+                except RuntimeError as e:
+                    logging.error("Bundling failed: %s. Aborting the job.", e)
+                    return
+
+                # Provision node pools for the job to run.
+                if self._pre_provisioner is not None:
+                    self._pre_provisioner.create_for(self._inner)
+
+                self._inner.execute()
+            else:
+                # Ensure VertexAI Tensorboard Uploader is running.
+                if self._tb_uploader:
+                    self._tb_uploader.upload()
+                logging.info("Task %s has status: %s", cfg.name, status)
+                # Only emit events when status changes.
+                if status == LWSRunnerJob.Status.RUNNING and status != last_job_status:
+                    self._maybe_publish(
+                        cfg.name, msg="LeaderWorkerSet is running", state=JobLifecycleState.RUNNING
+                    )
+                    last_job_status = status
+            time.sleep(cfg.status_interval_seconds)
+
+    def _maybe_publish(self, job_name: str, *, msg: str, state: JobLifecycleState):
+        # Publish events to event queue.
+        if not self._event_publisher:
+            return
+        self._event_publisher.publish(JobLifecycleEvent(job_name, state, msg))
