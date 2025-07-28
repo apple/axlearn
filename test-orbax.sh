@@ -11,7 +11,8 @@ export INSTANCE_TYPE=${INSTANCE_TYPE:-"tpu-v6e-16"}
 # Switch to tpu-v6e-256-4 if on scale cluster
 export MESH_SELECTOR=${MESH:-"tpu-v6e-16"}
 # Need to use tiktoken when saving data iterator
-export CONFIG=${CONFIG:-"fuji-8B-v3-tiktoken-flash-orbax"}
+# export CONFIG=${CONFIG:-"fuji-8B-v3-tiktoken-flash-orbax"}
+export CONFIG=${CONFIG:-"fuji-7B-v3-flash-orbax"}
 export PROJECT_ID=$(gcloud config get project)
 
 # Example for v6e-256

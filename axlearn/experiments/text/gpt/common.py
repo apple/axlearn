@@ -757,7 +757,8 @@ def get_trainer_config_fn(
             cfg.checkpointer = ckpt_config
 
         # Save the data iterator as part of the checkpointing process.
-        cfg.save_input_iterator = True
+        # default is false.
+        # cfg.save_input_iterator = True
 
         cfg.summary_writer.write_every_n_steps = min(eval_every_n_steps, 100)
         cfg.summary_writer.max_queue = 1000
