@@ -734,7 +734,7 @@ def get_trainer_config_fn(
                 max_step=max_step,
             )
             ckpt_config.local_save_policy = config_for_function(every_n_steps_and_last_policy).set(
-                n=calculated_save_every_n_steps,
+                n=20,
                 max_step=max_step,
             )
             ckpt_config.local_dir = "/host-tmp/checkpoints"
