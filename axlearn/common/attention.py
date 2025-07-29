@@ -46,14 +46,16 @@ On `attention_logit_biases`:
 
 TODO(apghml) Convert everything to take an instance of BaseAttentionBias rather than a Tensor.
 
-On `live_step_len`:
-* An int tensor of shape [batch], indicating the valid step length in the given inputs.
-* We assume that live steps must be contiguous at the beginning. So once
-    `live_step_len < max_step_len` for a sequence, the remaining `max_step_len - live_step_len`
-    part is considered padding.
-* During prefill, `time_step == live_step_len`.
+On `unpadded_len`:
+* An int tensor of shape [batch], indicating the number of non-padding tokens in each sequence.
+* Non-padding tokens are assumed to be contiguous at the beginning of each sequence.
+  For a sequence with `unpadded_len[i] < sequence_length`, tokens at positions
+  `unpadded_len[i]:` are considered padding and should be ignored.
+* During prefill, `time_step == unpadded_len` since we process exactly the non-padding tokens.
+* This parameter enables optimizations in some KV cache implementations by avoiding
+  computation on padding tokens.
 
-TODO (dhwang2): Replace `time_step` argument with `live_step_len` to reduce cognitive complexity.
+TODO (dhwang2): Replace `time_step` argument with `unpadded_len` to reduce cognitive complexity.
 
 On `segment_ids`:
 * A tensor of shape [batch, target_length] with values in [0, num_segments].
@@ -1669,7 +1671,7 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        live_step_len: Optional[Tensor] = None,
+        unpadded_len: Optional[Tensor] = None,
         attention_logit_biases: Union[None, Tensor, BaseAttentionBias] = None,
         segment_ids: Optional[Tensor] = None,
         query_positions: Optional[Tensor] = None,
@@ -1688,7 +1690,7 @@ class MultiheadAttention(BaseLayer):
             key:   An optional Tensor of shape [batch, source_length, source_dim].
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
-            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
+            unpadded_len: An optional Tensor of shape [batch]. Please refer to ``On unpadded_len``
                 in the file docstring for details.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See ``On segment_ids`` in the file comments.
@@ -1768,7 +1770,7 @@ class MultiheadAttention(BaseLayer):
             )
         elif mode in (ForwardMode.EXTEND_STEP, ForwardMode.INIT_STATES):
             assert cached_states is not None
-            step_len = live_step_len if live_step_len is not None else q_proj.shape[1]
+            step_len = unpadded_len if unpadded_len is not None else q_proj.shape[1]
             new_cached_states = dict(time_step=time_step + step_len)
             if not has_external_kv_state:
                 # In prefill, init_states already called self.kv_cache.init_states.
@@ -1778,7 +1780,7 @@ class MultiheadAttention(BaseLayer):
                         k_proj=k_proj,
                         v_proj=v_proj,
                         key_positions=query_positions,
-                        live_step_len=live_step_len,
+                        unpadded_len=unpadded_len,
                         page_pool=page_pool,
                     )
                 if mode == ForwardMode.EXTEND_STEP:
@@ -2057,7 +2059,7 @@ class MultiheadAttention(BaseLayer):
             query=query,
             key=key,
             value=value,
-            live_step_len=time_step,
+            unpadded_len=time_step,
             cached_states=init_states,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,

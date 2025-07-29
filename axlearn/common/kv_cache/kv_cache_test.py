@@ -17,9 +17,9 @@ class KVCacheTest(TestCase):
         cached_kv_length=[8],
         time_step_value=[2, 4],
         cache_dtype=[None, jnp.bfloat16],
-        live_step_len=[-1, 2, 4],
+        unpadded_len=[-1, 2, 4],
     )
-    def test_kv_cache(self, cached_kv_length, time_step_value, cache_dtype, live_step_len):
+    def test_kv_cache(self, cached_kv_length, time_step_value, cache_dtype, unpadded_len):
         test_layer = (
             KVCache.default_config()
             .set(name="ref", cache_dtype=cache_dtype)
@@ -33,12 +33,12 @@ class KVCacheTest(TestCase):
         k_proj = jax.random.normal(prng_key, shape=step_shape)
         v_proj = jax.random.normal(prng_key, shape=step_shape)
         key_positions = jnp.arange(step_len)[None] + time_step_value
-        if live_step_len < 0:
+        if unpadded_len < 0:
             valid_step_len = step_len
-            live_step_len = None
+            unpadded_len = None
         else:
-            valid_step_len = live_step_len
-            live_step_len = jnp.full([batch], fill_value=live_step_len, dtype=jnp.int32)
+            valid_step_len = unpadded_len
+            unpadded_len = jnp.full([batch], fill_value=unpadded_len, dtype=jnp.int32)
 
         kv_shape = KVCache.Shape(batch, cached_kv_length, heads, dim)
         test_states = test_layer.init_states(kv_shape, dtype=k_proj.dtype)
@@ -49,7 +49,7 @@ class KVCacheTest(TestCase):
             k_proj=k_proj,
             v_proj=v_proj,
             key_positions=key_positions,
-            live_step_len=live_step_len,
+            unpadded_len=unpadded_len,
         )
 
         def check(input_kv, output_kv):
@@ -65,7 +65,7 @@ class KVCacheTest(TestCase):
         check(v_proj, test_output.v_proj)
         key_positions = jnp.arange(cached_kv_length)[None]
         assert_allclose(test_output.key_positions, key_positions)
-        # Currently, the part larger than live_step_len is also being overwritten in the KV cache.
+        # Currently, the part larger than unpadded_len is also being overwritten in the KV cache.
         # TODO(dhwang2): remove this check when KVCache updates only valid part.
         assert_allclose(
             test_output.k_proj[:, time_step_value : time_step_value + step_len],

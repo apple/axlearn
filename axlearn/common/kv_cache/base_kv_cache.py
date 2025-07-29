@@ -83,7 +83,7 @@ class BaseKVCache(BaseLayer):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        live_step_len: Optional[Tensor] = None,
+        unpadded_len: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Output]:
         """Updates the KV cache per extend step.
@@ -97,8 +97,10 @@ class BaseKVCache(BaseLayer):
             k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             key_positions: An optional Tensor of shape [1|batch, step_length].
-            live_step_len: An optional Tensor of shape [batch]. See file-level docstring of
-                `attention.py`
+            unpadded_len: An optional Tensor of shape [batch]. Specifies the number of
+                non-padding tokens per sequence. When provided, only the first `unpadded_len[i]`
+                tokens of sequence `i` are considered valid for caching. The actual behavior
+                depends on the specific KV cache implementation.
             page_pool: See file-level docstring of `attention.py`.
 
         Returns:

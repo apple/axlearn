@@ -52,7 +52,7 @@ class SlidingWindowKVCache(BaseKVCache):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        live_step_len: Optional[Tensor] = None,
+        unpadded_len: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
         """Updates the sliding window KV cache per extend step.
@@ -62,8 +62,10 @@ class SlidingWindowKVCache(BaseKVCache):
             k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             key_positions: An optional Tensor of shape [1|batch, step_length].
-            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
-                in the file docstring for details.
+            unpadded_len: An optional Tensor of shape [batch]. Specifies the number of
+                non-padding tokens per sequence. When provided, only the first `unpadded_len[i]`
+                tokens of sequence `i` are considered valid and will be cached. Padding tokens
+                are masked out and marked as invalid positions.
 
         Returns:
             A tuple (updated_state, output):
@@ -81,10 +83,10 @@ class SlidingWindowKVCache(BaseKVCache):
 
         # [1|batch, step_length] -> [batch, step_length]
         key_positions = jnp.broadcast_to(key_positions, (batch, step_len))
-        if live_step_len is not None:
-            if live_step_len.shape[0] != batch:
-                raise ValueError(f"{live_step_len.shape=} must be [{batch}].")
-            steps = live_step_len
+        if unpadded_len is not None:
+            if unpadded_len.shape[0] != batch:
+                raise ValueError(f"{unpadded_len.shape=} must be [{batch}].")
+            steps = unpadded_len
             seq_mask = sequence_mask(lengths=steps, max_len=step_len, dtype=key_positions.dtype)
             # update_single rolls key_positions, so mark invalid positions.
             key_positions = jnp.where(seq_mask, key_positions, self._invaild_position())

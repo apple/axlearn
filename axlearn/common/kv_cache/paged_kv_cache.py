@@ -132,7 +132,7 @@ class PagedKVCache(KVCache):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        live_step_len: Optional[Tensor] = None,
+        unpadded_len: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], KVCache.Output]:
         """Extend the cache with the new key and value.
@@ -159,7 +159,7 @@ class PagedKVCache(KVCache):
                     k_pages = k_pages.at[k, actual_page_idx, page_offset].set(k_proj[i, j, k, :])
                     v_pages = v_pages.at[k, actual_page_idx, page_offset].set(v_proj[i, j, k, :])
         """
-        del live_step_len
+        del unpadded_len
 
         if k_proj.shape != v_proj.shape:
             raise ValueError(f"{k_proj.shape=} != {v_proj.shape=}")
