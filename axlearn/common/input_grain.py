@@ -30,6 +30,9 @@ On `repeat` and `shuffle`:
 * `repeat` with `num_repeat=None` will produce datasets with size `sys.maxsize`.
 """
 
+
+import json
+import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Protocol, Sequence, TypeVar, Union, runtime_checkable
@@ -44,6 +47,7 @@ from grain._src.python.data_loader import _determine_worker_count
 from grain._src.python.dataset import dataset as dataset_base
 from jax.experimental import multihost_utils
 
+from axlearn.common import file_system as fs
 from axlearn.common import input_base, utils
 from axlearn.common.config import (
     REQUIRED,
@@ -51,6 +55,7 @@ from axlearn.common.config import (
     Required,
     config_class,
     config_for_class,
+    config_for_function,
     maybe_instantiate,
 )
 from axlearn.common.module import Module
@@ -762,3 +767,90 @@ class Input(input_base.Input):
             return jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype)
 
         return jax.tree.map(shape_dtype, example)
+
+
+def mixture_train_input_source(
+    *,
+    preprocessor: Union[ConfigOr, list[ConfigOr]],
+    data_mixture_components: Union[ConfigOr, list],
+    global_logical_batch_size: int,
+    seed: Optional[int] = 42,
+) -> BuildDatasetFn:
+    """Build mixture training input source for decoder-only LM model using grain.
+
+    Mixture sampling happens after input processing but before batching, meaning that each batch
+    example will only contain tokens from a single source.
+
+    Args:
+        preprocessor: A single or a list of lm text preprocessor config(s). When
+            used as a list, each preprocessor must correspond to one data source;
+            when used as a single config, it will be broadcast for all data sources.
+        data_mixture_components: List of DataMixtureComponent(s).
+        global_logical_batch_size: The global logical batch size.
+
+    Returns:
+        A BuildDatasetFn that mixes the given list of DataMixtureComponent(s).
+    """
+    from axlearn.common.config import maybe_instantiate
+
+    data_mixture_components = maybe_instantiate(data_mixture_components)
+
+    def build_dataset_fn(
+        dispatch_config: DispatchConfig,
+    ) -> Dataset:
+        sources = []
+        weights = []
+
+        for component in data_mixture_components:
+            dataset_name = component.name.replace(":", "/")
+
+            # Construct ArrayRecord paths
+            arrayrecord_dataset_dir = os.path.join(
+                "/tmp/gcsfuse/tensorflow_datasets/array_record", dataset_name
+            )
+
+            # Use fs.listdir to list all files in the directory
+            all_files = fs.listdir(arrayrecord_dataset_dir)
+
+            # Filter for arrayrecord files
+            arrayrecord_files = [
+                os.path.join(arrayrecord_dataset_dir, f)
+                for f in all_files
+                if f.endswith(".arrayrecord")
+            ]
+
+            # Create ArrayRecord dataset
+            source_ds = array_record_dataset(paths=arrayrecord_files, seed=seed).shuffle().repeat()
+            source_ds = shard_dataset(source_ds, dispatch_config)
+            #
+            features_json = os.path.join(arrayrecord_dataset_dir, "features.json")
+            # pylint: disable-next=import-outside-toplevel
+            import tensorflow_datasets as tfds
+
+            logging.info(
+                "Found %s; will assume tfds features and deserialize accordingly.", features_json
+            )
+            with fs.open(features_json) as f:
+                features_dict = tfds.features.FeaturesDict.from_json(json.load(f))
+            source_ds = source_ds.map(features_dict.deserialize_example_np)
+            # Apply processor to the source dataset
+            source_ds = preprocessor(source_ds)
+
+            sources.append(source_ds)
+            weights.append(component.weight)
+
+        # Mix the datasets
+        mixed_ds = sample_from_datasets(sources=sources, weights=weights)
+        global_batch_size = global_logical_batch_size
+        logging.info("Global batch size for grain is set to %s", global_batch_size)
+
+        mixed_ds = per_feed_batch(
+            mixed_ds,
+            global_batch_size=global_batch_size,
+            dispatch_config=dispatch_config,
+        )
+
+        # Shard the mixed dataset
+        return mixed_ds
+
+    return build_dataset_fn
