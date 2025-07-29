@@ -773,6 +773,7 @@ def mixture_train_input_source(
     *,
     preprocessor: Union[ConfigOr, list[ConfigOr]],
     data_mixture_components: Union[ConfigOr, list],
+    global_logical_batch_size: int,
     seed: Optional[int] = 42,
 ) -> BuildDatasetFn:
     """Build mixture training input source for decoder-only LM model using grain.
@@ -781,17 +782,11 @@ def mixture_train_input_source(
     example will only contain tokens from a single source.
 
     Args:
-        is_training: A boolean indicating that inputs will be used for training.
-        vocab_cfg: Config to instantiate the seqio vocab.
         preprocessor: A single or a list of lm text preprocessor config(s). When
             used as a list, each preprocessor must correspond to one data source;
             when used as a single config, it will be broadcast for all data sources.
         data_mixture_components: List of DataMixtureComponent(s).
-        max_sequence_length: Maximum sequence length of an example.
-        replace_newlines_with: Value to replace newlines with in the text.
-        fake_input_source_cfg: A config that instantiates to a BuildDatasetFn for the input source
-            used during unittest.
-        seed: Seed for any downstream transformations (e.g. `shuffle` or `random_map`).
+        global_logical_batch_size: The global logical batch size.
 
     Returns:
         A BuildDatasetFn that mixes the given list of DataMixtureComponent(s).
@@ -846,6 +841,14 @@ def mixture_train_input_source(
 
         # Mix the datasets
         mixed_ds = sample_from_datasets(sources=sources, weights=weights)
+        global_batch_size = global_logical_batch_size
+        logging.info("Global batch size for grain is set to %s", global_batch_size)
+
+        mixed_ds = per_feed_batch(
+            mixed_ds,
+            global_batch_size=global_batch_size,
+            dispatch_config=dispatch_config,
+        )
 
         # Shard the mixed dataset
         return mixed_ds

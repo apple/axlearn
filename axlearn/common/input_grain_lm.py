@@ -545,9 +545,10 @@ def text_to_lm_eval_input(
     ds = ds.map(strided_slice)
 
     # Produce batches.
-    ds = input_grain_text.count_num_bytes(
-        ds, input_key="target_labels", vocab=vocab, output_key="target_num_bytes"
-    )
+    # Skips target_num_bytes for now.
+    # ds = input_grain_text.count_num_bytes(
+    #     ds, input_key="target_labels", vocab=vocab, output_key="target_num_bytes"
+    # )
     ds = ds.map(_drop_empty_targets)
     ds = input_grain.maybe_to_iter_dataset(ds)
     ds = input_grain.unbatch(ds)

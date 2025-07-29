@@ -351,12 +351,15 @@ class GrainConfigModifier(ConfigModifier):
         self._grain_source_builder = cfg.grain_source_builder
 
     def _convert_tf_data_to_grain_source(
-        self, tf_data_config: ConfigOr[Configurable]
+        self,
+        tf_data_config: ConfigOr[Configurable],
+        global_logical_batch_size: int,
     ) -> ConfigOr[Configurable]:
         """Converts a tf.data source config to a grain source config.
 
         Args:
             tf_data_config: The tf.data source configuration.
+            global_logical_batch_size: the global logical batch size used.
 
         Returns:
             A grain source configuration.
@@ -389,6 +392,7 @@ class GrainConfigModifier(ConfigModifier):
         return config_for_function(input_grain.mixture_train_input_source).set(
             preprocessor=preprocessor,
             data_mixture_components=components,
+            global_logical_batch_size=global_logical_batch_size,
             seed=42,
         )
 
@@ -413,7 +417,16 @@ class GrainConfigModifier(ConfigModifier):
         else:
             assert hasattr(input_config, "source")
             # Attempt automatic conversion
-            grain_input_config.source = self._convert_tf_data_to_grain_source(input_config.source)
+            grain_input_config.source = self._convert_tf_data_to_grain_source(
+                input_config.source,
+                global_logical_batch_size=input_config.input_dispatcher.global_logical_batch_size,
+            )
+
+        # Copies input_dispatcher and input_partitioner.
+        if hasattr(input_config, "input_dispatcher"):
+            grain_input_config.input_dispatcher = input_config.input_dispatcher
+        if hasattr(input_config, "input_partitioner"):
+            grain_input_config.input_partitioner = input_config.input_partitioner
 
         return grain_input_config
 

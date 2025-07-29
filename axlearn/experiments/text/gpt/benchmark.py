@@ -63,8 +63,6 @@ def timed(fn, msg):
     return ret
 
 
-from ajax.experiments.speech.pretrain.online_pretrain_utils import audio_to_modality_config
-
 if __name__ == "__main__":
     # def main(argv):
     logging.set_verbosity(logging.INFO)
@@ -82,6 +80,7 @@ if __name__ == "__main__":
             cfg.input.partition_spec = PartitionSpec(
                 general_lm.batch_axis_names_from(general_lm.MESH_AXIS_NAMES)
             )
+            cfg.input.source.global_logical_batch_size = 8
             ds = timed(
                 lambda: cfg.input.set(name="input").instantiate(parent=None),
                 "initialize",

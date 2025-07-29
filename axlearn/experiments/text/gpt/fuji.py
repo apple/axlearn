@@ -1083,7 +1083,7 @@ def trainer_configs(
                 )
                 config_map[f"{config_name}-fp8-single-host"] = make_single_host_fp8_config_func
 
-        if model_size in ("1B", "3B", "7B", "8B"):
+        if model_size in ("70B"):
 
             def make_grain_config(base_config_name: str) -> SpmdTrainer.Config:
                 """Make a grain input processor variant of the base config.
@@ -1107,16 +1107,6 @@ def trainer_configs(
                     convert_training_input=True,
                 )
                 cfg = grain_modifier.instantiate()(cfg)
-
-                # Configure grain-specific input processing settings
-                # pylint: disable=cell-var-from-loop
-                # Adjust batch size for grain processing if needed
-                for evaler in cfg.evalers.values():
-                    if hasattr(evaler.input, "input_dispatcher"):
-                        evaler.input.input_dispatcher.global_logical_batch_size //= (
-                            64 if version in (Version.V3, Version.V3_TIKTOKEN) else 16
-                        )
-                # pylint: enable=cell-var-from-loop
                 return cfg
 
             # Make grain config
