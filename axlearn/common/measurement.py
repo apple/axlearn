@@ -2,6 +2,7 @@
 
 """A library to measure e2e metrics like goodput."""
 
+import contextlib
 import enum
 import importlib
 from typing import Optional, TypeVar
@@ -41,6 +42,26 @@ class Event(enum.Enum):
     END_CUSTOM_BADPUT_EVENT = "END_CUSTOM_BADPUT_EVENT"
 
 
+class EventType(enum.Enum):
+    """Event to be recorded.
+
+    Attributes:
+        JOB: Start and end of the job.
+        STEP: Start of a training step. Should be recorded with `step` as a positional arg.
+        ACCELERATOR_INIT: Start and end of accelerator mesh initialization.
+        TRAINING_PREPARATION: Start and end of training preparation.
+        DATA_LOADING: Start and end of data loading.
+        CUSTOM_BADPUT_EVENT: Start and end of custom badput events.
+    """
+
+    JOB = "job"
+    STEP = "step"
+    ACCELERATOR_INIT = "tpu_init"
+    TRAINING_PREPARATION = "training_preparation"
+    DATA_LOADING = "data_loading"
+    CUSTOM_BADPUT_EVENT = "custom_badput_event"
+
+
 class Recorder(Configurable):
     """The base interface for collecting e2e metrics."""
 
@@ -66,6 +87,20 @@ class Recorder(Configurable):
     def start_monitoring(self, **kwargs):
         """Starts computing and uploading metrics at some configured interval in the background."""
         raise NotImplementedError(type(self))
+
+    @contextlib.contextmanager
+    def record_event(self, event: Event, *args, **kwargs):
+        """A context manager to record the start and end of an event."""
+        # pylint: disable=unnecessary-pass
+        # pylint: disable=unused-argument
+        try:
+            yield
+        finally:
+            pass
+
+    @contextlib.contextmanager
+    def maybe_monitor_all_goodput(self):
+        yield
 
 
 _recorders: dict[str, type] = {}
