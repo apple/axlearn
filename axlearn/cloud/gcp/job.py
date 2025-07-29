@@ -19,12 +19,14 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
 from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
+from axlearn.cloud.gcp.k8s_service import LWSService
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
 from axlearn.cloud.gcp.utils import (
     custom_jobset_kwargs,
     custom_leaderworkerset_kwargs,
     delete_k8s_jobset,
     delete_k8s_leaderworkerset,
+    delete_k8s_service,
 )
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
@@ -292,6 +294,8 @@ class GKELeaderWorkerSet(GCPJob):
         namespace: str = "default"
         annotations: Optional[ConfigOr[dict]] = None
         num_replicas: int = 1
+        enable_service: bool = True
+        service_config: dict = {}
 
     @classmethod
     def set_defaults(cls, fv):
@@ -327,6 +331,7 @@ class GKELeaderWorkerSet(GCPJob):
         # This is not fully blocking; after the call returns there can be a delay before
         # everything is deleted.
         delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
+        delete_k8s_service(cfg.name+"-service", namespace=cfg.namespace)
 
     def _build_leaderworkerset(self) -> Nested[Any]:
         """
@@ -348,6 +353,14 @@ class GKELeaderWorkerSet(GCPJob):
 
     def _execute(self):
         cfg: GKELeaderWorkerSet.Config = self.config
+
+        #### Creating a  Service #######
+        if cfg.enable_service:
+            service = LWSService(cfg)
+            resp = service.execute()
+            logging.info("Service created %s", str(resp))
+
+
 
         api_kwargs = custom_leaderworkerset_kwargs()
         custom_object = dict(
