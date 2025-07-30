@@ -1101,13 +1101,8 @@ class SpmdTrainer(Module):
         if self.step % 100 == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
-                jax.block_until_ready(outputs["loss"]),
-                jax.block_until_ready(
-                    jax.tree.map(
-                        lambda x: x.item() if x.ndim == 0 else f"T{x.shape}",
-                        outputs["aux"]
-                    ),
-                ),
+                outputs["loss"],
+                jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
             )
 
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
