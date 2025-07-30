@@ -345,12 +345,9 @@ def _init_consistent_proc_ids(
             # If there're no assigned slice ids, that means all slices have failed or we're in the
             # very first run. In that case, first_run_assign_fn will be used.
             if already_assigned_slice_ids:
-                to_be_assigned_slice_ids = sorted(
-                    list(set(range(num_slices)) - already_assigned_slice_ids)
-                )
-                failed_slice_keys = sorted(list(failed_slices_new_ids.keys()))
-                assert len(to_be_assigned_slice_ids) == len(failed_slice_keys)
-                for k, new_id in zip(failed_slice_keys, to_be_assigned_slice_ids):
+                to_be_assigned_slice_ids = set(range(num_slices)) - already_assigned_slice_ids
+                assert len(to_be_assigned_slice_ids) == len(failed_slices_new_ids)
+                for k, new_id in zip(failed_slices_new_ids.keys(), to_be_assigned_slice_ids):
                     failed_slices_new_ids[k] = new_id
 
                 def assign_fn(info: _ProcessInfo):
