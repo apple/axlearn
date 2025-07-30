@@ -345,19 +345,30 @@ def _init_consistent_proc_ids(
             # If there're no assigned slice ids, that means all slices have failed or we're in the
             # very first run. In that case, first_run_assign_fn will be used.
             if already_assigned_slice_ids:
-                to_be_assigned_slice_ids = set(range(num_slices)) - already_assigned_slice_ids
-                assert len(to_be_assigned_slice_ids) == len(failed_slices_new_ids)
-                for k, new_id in zip(failed_slices_new_ids.keys(), to_be_assigned_slice_ids):
-                    failed_slices_new_ids[k] = new_id
+                # Create a flat list of all available inv_proc_ids from the dead slices.
+                to_be_assigned_inv_proc_ids = []
+                all_slice_ids = set(range(num_slices))
+                dead_slice_ids = all_slice_ids - already_assigned_slice_ids
+                for slice_id in sorted(list(dead_slice_ids)):
+                    for i in range(num_proc_per_slice):
+                        to_be_assigned_inv_proc_ids.append(slice_id * num_proc_per_slice + i)
+
+                # Create a flat list of all newcomer processes that need an ID.
+                newcomer_procs = [p for p in proc_infos if p.inv_proc_id == -1]
+                # Sort newcomers by their temporary physical ID to ensure determinism.
+                newcomer_procs.sort(key=lambda p: p.cur_proc_id)
+
+                assert len(to_be_assigned_inv_proc_ids) == len(newcomer_procs)
+
+                # Assign the sorted available IDs to the sorted newcomers directly.
+                for proc_info, inv_proc_id in zip(newcomer_procs, to_be_assigned_inv_proc_ids):
+                    proc_info.inv_proc_id = inv_proc_id
 
                 def assign_fn(info: _ProcessInfo):
-                    proc_id = info.inv_proc_id
-                    if (new_slice_id := failed_slices_new_ids.get(info.cur_slice_id)) is not None:
-                        proc_id = (
-                            new_slice_id * num_proc_per_slice
-                            + info.cur_proc_id % num_proc_per_slice
-                        )
-                    info.inv_proc_id = proc_id
+                    # This function is now only responsible for applying the pre-computed
+                    # assignments to the processes.
+                    print(f"processInfo={info}")
+                    pass
 
                 inv_id_assign_fn = assign_fn
 
