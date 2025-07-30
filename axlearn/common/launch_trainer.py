@@ -162,7 +162,7 @@ def _run_trainer_impl(trainer_config: SpmdTrainer.Config) -> Any:
 
                 timeout = 10 * 60  # ten minutes
                 logging.info(f"Waiting up to {timeout} s for slices to be ready")
-                elastic_manager.wait_for_slices(timeout=ten_minutes)
+                elastic_manager.wait_for_slices(timeout=timeout)
 
                 trainer: SpmdTrainer = trainer_config.instantiate(parent=None)
                 prng_key = jax.random.PRNGKey(seed=FLAGS.trainer_prng_seed)
