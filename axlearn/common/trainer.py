@@ -241,58 +241,9 @@ class SpmdTrainer(Module):
         self._device_monitor = maybe_instantiate(cfg.device_monitor)
         self._recorder = maybe_instantiate(cfg.recorder)
         self._is_initialized: bool = False
-        self._maybe_record_event(measurement.Event.START_ACCELERATOR_INIT)
-
-        if cfg.model.dtype is None:
-            raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
-        if cfg.model.param_init is None:
-            cfg.model.param_init = DefaultInitializer.default_config()
-            logging.info(
-                "model.param_init is not specified. Default to DefaultInitializer: %s",
-                cfg.model.param_init,
-            )
-
-        self._per_param_train_dtype = maybe_instantiate(
-            canonicalize_per_param_dtype(cfg.train_dtype)
-        )
-
-        # Create the device mesh.
-        if devices is None:
-            self._step_log(
-                "Devices: global=%s local=%s %s",
-                jax.device_count(),
-                jax.local_device_count(),
-                [device.platform for device in jax.local_devices()],
-            )
-        else:
-            local_devices = [d for d in devices.flatten() if d.process_index == jax.process_index()]
-            self._step_log(
-                "Devices: global=%s local=%s %s",
-                len(devices),
-                len(local_devices),
-                [device.platform for device in local_devices],
-            )
-        self._step_log("Mesh shape: %s", cfg.mesh_shape)
-        devices = (
-            utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
-        )
-        mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
-        self._step_log("Global mesh: %s", mesh)
-        self._mesh = mesh
-        self._context_manager: Callable[[], ContextManager] = (
-            maybe_instantiate(cfg.context_manager) or contextlib.nullcontext
-        )
-        xsc_check_policy = None
-        if cfg.xsc_check_policy:
-            if jax.default_backend() != "tpu":
-                # XSC is currently only supported on TPU XLA backend.
-                logging.warning(
-                    "xsc_check_policy was set for non-TPU XLA backend. Running without XSC."
-                )
-            else:
-                xsc_check_policy = maybe_instantiate(cfg.xsc_check_policy)
-        self._xsc_check_policy: Optional[Callable[[int], bool]] = xsc_check_policy
-        self._compiled_train_step: Optional[jax.stages.Compiled] = None
+        # Accelerator initialization.
+        with self._record_event(measurement.Event.ACCELERATOR_INIT):
+            self._device_init(devices)
 
         # Create all children within the mesh context so that utils.input_partition_spec() works
         # properly.
@@ -352,7 +303,6 @@ class SpmdTrainer(Module):
                     model=self.model,
                     model_param_partition_specs=model_param_partition_specs,
                 )
-        self._maybe_record_event(measurement.Event.END_ACCELERATOR_INIT)
 
     @property
     def step(self):
@@ -369,6 +319,69 @@ class SpmdTrainer(Module):
     @property
     def trainer_state_partition_specs(self):
         return self._trainer_state_partition_specs
+
+    @contextlib.contextmanager
+    def _record_event(self, event: measurement.Event, *args, **kwargs):
+        """A helper to record an event if a recorder is configured."""
+        if self._recorder:
+            with self._recorder.record_event(event, *args, **kwargs) as event_manager:
+                yield event_manager
+        else:
+            yield
+
+    def _device_init(self, devices: Optional[np.ndarray] = None):
+        """Initializes the device mesh and other device-dependent configurations."""
+        cfg = self.config
+        if cfg.model.dtype is None:
+            raise ValueError(f"dtype must be explicitly specified for {self.path()}.model")
+        if cfg.model.param_init is None:
+            cfg.model.param_init = DefaultInitializer.default_config()
+            logging.info(
+                "model.param_init is not specified. Default to DefaultInitializer: %s",
+                cfg.model.param_init,
+            )
+
+        self._per_param_train_dtype = maybe_instantiate(
+            canonicalize_per_param_dtype(cfg.train_dtype)
+        )
+
+        # Create the device mesh.
+        if devices is None:
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                jax.device_count(),
+                jax.local_device_count(),
+                [device.platform for device in jax.local_devices()],
+            )
+        else:
+            local_devices = [d for d in devices.flatten() if d.process_index == jax.process_index()]
+            self._step_log(
+                "Devices: global=%s local=%s %s",
+                len(devices),
+                len(local_devices),
+                [device.platform for device in local_devices],
+            )
+        self._step_log("Mesh shape: %s", cfg.mesh_shape)
+        devices = (
+            utils.create_device_mesh(mesh_shape=cfg.mesh_shape) if devices is None else devices
+        )
+        mesh = jax.sharding.Mesh(devices, cfg.mesh_axis_names)
+        self._step_log("Global mesh: %s", mesh)
+        self._mesh = mesh
+        self._context_manager: Callable[[], ContextManager] = (
+            maybe_instantiate(cfg.context_manager) or contextlib.nullcontext
+        )
+        xsc_check_policy = None
+        if cfg.xsc_check_policy:
+            if jax.default_backend() != "tpu":
+                # XSC is currently only supported on TPU XLA backend.
+                logging.warning(
+                    "xsc_check_policy was set for non-TPU XLA backend. Running without XSC."
+                )
+            else:
+                xsc_check_policy = maybe_instantiate(cfg.xsc_check_policy)
+        self._xsc_check_policy: Optional[Callable[[int], bool]] = xsc_check_policy
+        self._compiled_train_step: Optional[jax.stages.Compiled] = None
 
     def _train_step_input_partition_specs(self):
         # Note that subclasses may override this method to set a partition spec for pjit which is
@@ -527,10 +540,6 @@ class SpmdTrainer(Module):
             )
         return force_run_evals
 
-    def _maybe_record_event(self, event: measurement.Event, *args, **kwargs):
-        if self._recorder is not None:
-            self._recorder.record(event, *args, **kwargs)
-
     # pylint: disable-next=too-many-statements,too-many-branches
     def run(
         self, prng_key: Tensor, *, return_evaler_summaries: Optional[Union[bool, set[str]]] = None
@@ -556,6 +565,17 @@ class SpmdTrainer(Module):
             different types of values such as WeightedScalar, Tensor, or string, depending on
             the specific `metric_calculator` config of the evaler.
         """
+        goodput_monitor_manager = (
+            self._recorder.maybe_monitor_goodput()
+            if hasattr(self._recorder, "maybe_monitor_goodput")
+            else contextlib.nullcontext()
+        )
+        rolling_goodput_monitor_manager = (
+            self._recorder.maybe_monitor_rolling_window_goodput()
+            if hasattr(self._recorder, "maybe_monitor_rolling_window_goodput")
+            else contextlib.nullcontext()
+        )
+
         with (
             (
                 self._device_monitor.start_monitoring()
@@ -566,6 +586,8 @@ class SpmdTrainer(Module):
             self.mesh(),
             jax.log_compiles(self.vlog_is_on(1)),
             self._context_manager(),
+            goodput_monitor_manager,
+            rolling_goodput_monitor_manager,
         ):
             cfg = self.config
             # Check if need to force run evals at the last training step.
@@ -574,8 +596,9 @@ class SpmdTrainer(Module):
             )
 
             # Prepare training.
-            if not self._prepare_training(prng_key):
-                return None
+            with self._record_event(measurement.Event.TRAINING_PREPARATION):
+                if not self._prepare_training(prng_key):
+                    return None
 
             self._is_initialized = True
 
@@ -588,10 +611,10 @@ class SpmdTrainer(Module):
 
                 input_iterator = self.input.batches(self._input_iter)
                 while True:
-                    self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                     try:
-                        input_batch = next(input_iterator)
-                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
+                        with self._record_event(measurement.Event.DATA_LOADING):
+                            input_batch = next(input_iterator)
+
                         logging.log_first_n(
                             logging.INFO, "host_input_batch=%s", 3, utils.shapes(input_batch)
                         )
@@ -601,18 +624,18 @@ class SpmdTrainer(Module):
 
                         self._step = self._step + 1
                         self.vlog(3, "Start step %s", self.step)
-                        self._maybe_record_event(measurement.Event.START_STEP, self._step)
-                        output = self._run_step(
-                            utils.host_to_global_array(
-                                input_batch,
-                                partition=self._train_step_input_partition_specs(),
-                            ),
-                            force_run_evals=(
-                                force_run_eval_sets_at_max_step
-                                if self.step >= cfg.max_step
-                                else None
-                            ),
-                        )
+                        with self._record_event(measurement.Event.STEP):
+                            output = self._run_step(
+                                utils.host_to_global_array(
+                                    input_batch,
+                                    partition=self._train_step_input_partition_specs(),
+                                ),
+                                force_run_evals=(
+                                    force_run_eval_sets_at_max_step
+                                    if self.step >= cfg.max_step
+                                    else None
+                                ),
+                            )
                         self.vlog(3, "Done step %s", self.step)
                         num_steps += 1
                         if num_steps % 100 == 0:
@@ -626,9 +649,6 @@ class SpmdTrainer(Module):
                             self._step_log("Reached max_step=%s. Stopping", cfg.max_step)
                             break
                     except StopIteration:
-                        # Add END_DATA_LOADING event here to close the unpaired START_DATA_LOADING
-                        # event.
-                        self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         break
                 if self.step < cfg.max_step:
                     self._step_log("Reached end of inputs. Stopping")
@@ -869,7 +889,6 @@ class SpmdTrainer(Module):
             A boolean indicating whether the model training should start. If not, return
                 None from the `run` function.
         """
-        self._maybe_record_event(measurement.Event.START_TRAINING_PREPARATION)
         cfg = self.config
 
         # Attempt to restore the latest checkpoint, which may contain a saved `_input_iter`.
@@ -902,7 +921,6 @@ class SpmdTrainer(Module):
             return False
 
         self._jit_train_step = self._pjit_train_step()
-        self._maybe_record_event(measurement.Event.END_TRAINING_PREPARATION)
         return True
 
     def restore_checkpoint(self, restore_step: Optional[int] = None) -> Optional[int]:
@@ -1043,36 +1061,29 @@ class SpmdTrainer(Module):
             mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
         if not with_xsc:
-            self._maybe_record_event(
-                measurement.Event.START_CUSTOM_BADPUT_EVENT,
+            with self._record_event(
+                measurement.Event.CUSTOM_BADPUT_EVENT,
                 custom_badput_event_type="COMPILATION_NO_XSC",
-            )
-            self._compiled_train_step = self.compile_train_step(
-                trainer_state=trainer_state, input_batch=input_batch, compiler_options=options
-            )
-            self._maybe_record_event(
-                measurement.Event.END_CUSTOM_BADPUT_EVENT,
-                custom_badput_event_type="COMPILATION_NO_XSC",
-            )
+            ):
+                self._compiled_train_step = self.compile_train_step(
+                    trainer_state=trainer_state, input_batch=input_batch, compiler_options=options
+                )
             return self._compiled_train_step
+
         logging.log_first_n(logging.INFO, "Compiling XSC train step.", 1)
 
-        self._maybe_record_event(
-            measurement.Event.START_CUSTOM_BADPUT_EVENT,
+        with self._record_event(
+            measurement.Event.CUSTOM_BADPUT_EVENT,
             custom_badput_event_type="COMPILATION_WITH_XSC",
-        )
-        compiled_jit_train_step_fn = self.compile_train_step(
-            trainer_state=trainer_state,
-            input_batch=input_batch,
-            compiler_options=options
-            | infer_xsc_compiler_options(
-                halt_on_detection=True, repeat_count=1, device_kind=device_kind
-            ),
-        )
-        self._maybe_record_event(
-            measurement.Event.END_CUSTOM_BADPUT_EVENT,
-            custom_badput_event_type="COMPILATION_WITH_XSC",
-        )
+        ):
+            compiled_jit_train_step_fn = self.compile_train_step(
+                trainer_state=trainer_state,
+                input_batch=input_batch,
+                compiler_options=options
+                | infer_xsc_compiler_options(
+                    halt_on_detection=True, repeat_count=1, device_kind=device_kind
+                ),
+            )
         return compiled_jit_train_step_fn
 
     def _run_step(
@@ -1107,14 +1118,20 @@ class SpmdTrainer(Module):
                 jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
             )
 
-        self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
+        with self._record_event(
+            measurement.Event.CUSTOM_BADPUT_EVENT, custom_badput_event_type="SUMMARY_WRITER"
+        ):
+            self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
         # Aggregate summaries across evalers.
         evaler_summaries = self._run_eval(
             train_summaries=outputs["summaries"], force_runs=force_run_evals
         )
 
         # Checkpointer policy will decide if we should save.
-        self.save_checkpoint(evaler_summaries=evaler_summaries)
+        with self._record_event(
+            measurement.Event.CUSTOM_BADPUT_EVENT, custom_badput_event_type="CHECKPOINT_SAVE"
+        ):
+            self.save_checkpoint(evaler_summaries=evaler_summaries)
 
         return_dict = {"loss": outputs["loss"], "aux": outputs["aux"]}
         # Returns evaler_summaries if force_run_evals is not None or empty set.
@@ -1130,26 +1147,23 @@ class SpmdTrainer(Module):
         force_runs: Optional[set[str]] = None,
     ) -> dict[str, Any]:
         """Runs evaluations and returns the corresponding summaries."""
-        self._maybe_record_event(
-            measurement.Event.START_CUSTOM_BADPUT_EVENT, custom_badput_event_type="EVAL"
-        )
-        evaler_summaries = {}
-        # Note: we will use the same eval key as the training keys of the future step,
-        # which should be okay.
-        prng_key = self._trainer_state.prng_key
-        for evaler_name, evaler in self._evalers.items():
-            prng_key, summaries, _ = evaler.eval_step(
-                self.step,
-                prng_key=prng_key,
-                model_params=self.model_params_for_eval(),
-                train_summaries=train_summaries,
-                force_run=bool(force_runs is not None and evaler_name in force_runs),
-            )
-            evaler_summaries[evaler_name] = summaries
-        self._maybe_record_event(
-            measurement.Event.END_CUSTOM_BADPUT_EVENT, custom_badput_event_type="EVAL"
-        )
-        return evaler_summaries
+        with self._record_event(
+            measurement.Event.CUSTOM_BADPUT_EVENT, custom_badput_event_type="EVAL"
+        ):
+            evaler_summaries = {}
+            # Note: we will use the same eval key as the training keys of the future step,
+            # which should be okay.
+            prng_key = self._trainer_state.prng_key
+            for evaler_name, evaler in self._evalers.items():
+                prng_key, summaries, _ = evaler.eval_step(
+                    self.step,
+                    prng_key=prng_key,
+                    model_params=self.model_params_for_eval(),
+                    train_summaries=train_summaries,
+                    force_run=bool(force_runs is not None and evaler_name in force_runs),
+                )
+                evaler_summaries[evaler_name] = summaries
+            return evaler_summaries
 
     def _pjit_train_step(self) -> jax.stages.Wrapped:
         return pjit(
