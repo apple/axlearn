@@ -30,9 +30,8 @@ class Service:
     class Config(ConfigBase):
         """Configures Service
         Attributes:
-            builder: A builder that returns one or more statefulset specs.
-            namespace: The namespace to use within the k8s cluster.
-            annotations: LeaderWorkerSet annotations
+            name: The name of LWS  resource.
+            project: The poject to use within the k8s cluster.
         """
 
         name: Required[str] = REQUIRED
@@ -63,15 +62,17 @@ class Service:
 
 
 class LWSService:
-    """Service interface"""
+    """SLWS ervice"""
 
     @config_class
     class Config(Service.Config):
         """Configures Service
         Attributes:
-            builder: A builder that returns one or more statefulset specs.
             namespace: The namespace to use within the k8s cluster.
-            annotations: LeaderWorkerSet annotations
+            protocol: protocol for service , ex: TCP, HTTP
+            port: the exposed port of service
+            targetport: the application port of leader pod
+            service_type: Type of Service , ex: ClusterIP
         """
 
         namespace: str = None
@@ -93,7 +94,7 @@ class LWSService:
 
     def __init__(self, cfg: Config):
 
-        logging.info("service class init")
+        logging.info("LWSService class init")
         self.name = cfg.name + "-service"
         self.config = cfg
 
@@ -106,7 +107,7 @@ class LWSService:
         Returns:
             A nested dict corresponding to a k8s Service config
         """
-        logging.info("service class build")
+        logging.info("LWSservice class build")
         logging.info(str(self.config))
 
         return dict(
@@ -126,8 +127,8 @@ class LWSService:
 
     def execute(self):
         
-        logging.info("service class execute")
+        logging.info("LWSservice class execute")
         service = self._build_service()
-        logging.info("Submitting service body=%s ", service)
+        logging.info("Submitting LWSservice body=%s ", service)
         v1 = k8s.client.CoreV1Api()
         return v1.create_namespaced_service(namespace=self.config.namespace, body=service)
