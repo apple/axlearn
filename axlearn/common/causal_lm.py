@@ -202,7 +202,7 @@ class AuxLossMetrics(BaseLossMetrics):
         live_targets = _infer_live_targets(input_batch)
         num_targets = live_targets.sum()
 
-        logging.info("Module outputs: %s", jax.tree_structure(module_outputs))
+        logging.info("Module outputs: %s", jax.tree_util.tree_structure(module_outputs))
         accumulation = []
         for k, v in flatten_items(module_outputs):
             if re.fullmatch(regex, k):
