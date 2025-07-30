@@ -732,6 +732,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pathways_xla_flags: list[str] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
+        targetport: Optional[int] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -760,12 +761,14 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "Memory request for pathways-head container in GiB. Default is 16GiB",
             **common_kwargs,
         )
+        flags.DEFINE_integer("targetport", None, "port where a service can access application, set at head container", **common_kwargs)
 
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
         fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
         fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+        fv.set_default("targetport", fv.targetport or 8080)
 
     @classmethod
     def default_config(cls):
@@ -907,6 +910,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
+            ports=[dict(containerPort=self.config.targetport)],
         )
 
     def build_leader_pod(self) -> Nested[Any]:
@@ -919,7 +923,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
-        labels ={"app": cfg.name}
+        labels = {"app": cfg.name}
 
         if cfg.gcsfuse_mount:
             annotations.update(

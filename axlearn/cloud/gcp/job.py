@@ -307,8 +307,8 @@ class GKELeaderWorkerSet(GCPJob):
         fv.set_default("max_tries", fv.max_tries or 10)
         fv.set_default("retry_interval", fv.retry_interval or 60)
         fv.set_default("enable_service", fv.enable_service or False)
-        fv.set_default("targetport", fv.targetport or 29001)
-        fv.set_default("port", fv.port or 8000)
+        fv.set_default("targetport", fv.targetport or 8080)
+        fv.set_default("port", fv.port or 8080)
         fv.set_default("protocol", fv.protocol or "TCP")
         fv.set_default("service_type", fv.service_type or "ClusterIP")
 
@@ -344,8 +344,8 @@ class GKELeaderWorkerSet(GCPJob):
         cfg: GKELeaderWorkerSet.Config = super().from_flags(fv, **kwargs)
         cfg.num_replicas = fv.num_replicas
         cfg.enable_service = fv.enable_service
-        cfg.port = int(fv.port)
-        cfg.targetport = int(fv.targetport)
+        cfg.port = fv.port
+        cfg.targetport = fv.targetport
         cfg.protocol = fv.protocol
         cfg.service_type = fv.service_type
         return cfg
