@@ -334,10 +334,6 @@ def _init_consistent_proc_ids(
             for k, data in ids:
                 info = _ProcessInfo.from_string(data, key=k, num_proc_per_slice=num_proc_per_slice)
                 proc_infos.append(info)
-            # Sort by current proc id to ensure the order is deterministic.
-            proc_infos.sort(key=lambda info: info.cur_proc_id)
-
-            for info in proc_infos:
                 if info.inv_proc_id == -1:
                     failed_slices_new_ids[info.cur_slice_id] = -1
 
@@ -376,10 +372,6 @@ def _init_consistent_proc_ids(
             for key, data in ids:
                 info = _ProcessInfo.from_string(data, key=key)
                 proc_infos.append(info)
-            # Sort by current proc id to ensure the order is deterministic.
-            proc_infos.sort(key=lambda info: info.cur_proc_id)
-
-            for info in proc_infos:
                 assigned_ids.add(info.inv_proc_id)
 
             # If there're no assigned ids, that means all slices have failed or we're in the
