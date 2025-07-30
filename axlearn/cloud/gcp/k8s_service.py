@@ -1,33 +1,26 @@
 import logging
 import shlex
 import subprocess
-from collections.abc import Sequence
 from typing import Any, Optional
+import copy
 
 import kubernetes as k8s
 from absl import flags
 
-from axlearn.cloud.common.bundler import BaseDockerBundler
-from axlearn.cloud.common.job import Job
-from axlearn.cloud.common.utils import generate_job_name, subprocess_run
+from axlearn.cloud.common.utils import generate_job_name, subprocess_run, FlagConfigurable
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
-from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
-from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
 from axlearn.cloud.gcp.utils import (
-    custom_jobset_kwargs,
-    custom_leaderworkerset_kwargs,
-    delete_k8s_jobset,
-    delete_k8s_leaderworkerset,
     delete_k8s_service,
 )
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate, ConfigBase
 from axlearn.common.utils import Nested
 
-class Service:
+
+class Service(FlagConfigurable):
     """Service interface"""
 
     @config_class
-    class Config(ConfigBase):
+    class Config(FlagConfigurable.Config):
         """Configures Service
         Attributes:
             name: The name of LWS  resource.
@@ -45,10 +38,9 @@ class Service:
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
-        super().set_defaults(fv)
         fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("project", default_project())
-
+    
     def _delete(self):
         """Cleans up the service. Called on termination when all retries are exhausted.
 
@@ -61,8 +53,8 @@ class Service:
         raise NotImplementedError(type(self))
 
 
-class LWSService:
-    """SLWS ervice"""
+class LWSService(Service):
+    """LWS Service"""
 
     @config_class
     class Config(Service.Config):
@@ -81,22 +73,33 @@ class LWSService:
         targetport: Optional[int] = None
         service_type: Optional[str] = None
 
+
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("name", None, "Name of the service.", **common_kwargs)
+        flags.DEFINE_string("namespace", None, "Namespace of the service.", **common_kwargs)
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
         fv.set_default("namespace", fv.namespace or "default")
 
+    @classmethod
+    def default_config(cls):
+        return super().default_config()
+
     def __init__(self, cfg: Config):
 
         logging.info("LWSService class init")
+        self._config = copy.deepcopy(cfg)
         self.name = cfg.name + "-service"
-        self.config = cfg
+        self.protocol = cfg.protocol
+        self.port = cfg.port
+        self.targetport = cfg.targetport
+        self.service_type = cfg.service_type
+        self.label_name = cfg.name
 
     def _delete(self):
         delete_k8s_service(self.name, namespace=self.config.namespace)
@@ -113,15 +116,15 @@ class LWSService:
         return dict(
             metadata=k8s.client.V1ObjectMeta(name=self.name),
             spec=k8s.client.V1ServiceSpec(
-                selector={"app": self.config.name}, #### may be make labels more generic  #####
+                selector={"app": self.label_name},
                 ports=[
                     k8s.client.V1ServicePort(
-                        protocol=self.config.protocol,
-                        port=self.config.port,
-                        target_port=self.config.targetport,
+                        protocol=self.protocol,
+                        port=self.port,
+                        target_port=self.targetport,
                     )
                 ],
-                type=self.config.service_type,  
+                type=self.service_type,  
             ),
         )
 

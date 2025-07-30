@@ -733,6 +733,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
         targetport: Optional[int] = None
+        enable_service: bool = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -761,6 +762,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "Memory request for pathways-head container in GiB. Default is 16GiB",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "enable_service",
+            None,
+            "Whether to enable creation of service for LWS",
+            **common_kwargs,
+        )
         flags.DEFINE_integer("targetport", None, "port where a service can access application, set at head container", **common_kwargs)
 
     @classmethod
@@ -769,6 +776,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
         fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
         fv.set_default("targetport", fv.targetport or 8080)
+        fv.set_default("enable_service", fv.enable_service or False)
 
     @classmethod
     def default_config(cls):
@@ -910,7 +918,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
-            ports=[dict(containerPort=self.config.targetport)],
+            ports = [dict(containerPort=self.config.targetport)] if self.config.enable_service else [],
         )
 
     def build_leader_pod(self) -> Nested[Any]:
