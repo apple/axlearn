@@ -91,16 +91,11 @@ class LWSService:
         super().set_defaults(fv)
         fv.set_default("namespace", fv.namespace or "default")
 
-    def __init__(self, cfg: Config, protocol="TCP", port=29001, targetport=8000,service_type="ClusterIP"): ### Is port right?? hardcoded now, do we want it generic???
+    def __init__(self, cfg: Config):
 
         logging.info("service class init")
         self.name = cfg.name + "-service"
         self.config = cfg
-        self.protocol=protocol
-        self.port=port
-        self.targetport=targetport
-        self.service_type=service_type
-        
 
     def _delete(self):
         delete_k8s_service(self.name, namespace=self.config.namespace)
@@ -120,12 +115,12 @@ class LWSService:
                 selector={"app": self.config.name}, #### may be make labels more generic  #####
                 ports=[
                     k8s.client.V1ServicePort(
-                        protocol=self.protocol,
-                        port=self.port,
-                        target_port=self.targetport,
+                        protocol=self.config.protocol,
+                        port=self.config.port,
+                        target_port=self.config.targetport,
                     )
                 ],
-                type=self.service_type,  
+                type=self.config.service_type,  
             ),
         )
 

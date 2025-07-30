@@ -294,25 +294,60 @@ class GKELeaderWorkerSet(GCPJob):
         namespace: str = "default"
         annotations: Optional[ConfigOr[dict]] = None
         num_replicas: int = 1
-        enable_service: bool = True
-        service_config: dict = {}
+        enable_service: bool = False
+        port: int = None
+        targetport: int = None
+        service_type: str = None
+        protocol:str = None
+
 
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
         fv.set_default("max_tries", fv.max_tries or 10)
         fv.set_default("retry_interval", fv.retry_interval or 60)
+        fv.set_default("enable_service", fv.enable_service or False)
+        fv.set_default("targetport", fv.targetport or 29001)
+        fv.set_default("port", fv.port or 8000)
+        fv.set_default("protocol", fv.protocol or "TCP")
+        fv.set_default("service_type", fv.service_type or "ClusterIP")
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("name", None, "Name of the LeaderWorkerSet.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_service",
+            None,
+            "Whether to enable creation of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "protocol",
+            None,
+            "Protocol type of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "service_type",
+            None,
+            "Type of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer("port", None, "External port where application is exposed through service", **common_kwargs)
+        flags.DEFINE_integer("targetport", None, " Application port which the service redirects to", **common_kwargs)
+        
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg: GKELeaderWorkerSet.Config = super().from_flags(fv, **kwargs)
         cfg.num_replicas = fv.num_replicas
+        cfg.enable_service = fv.enable_service
+        cfg.port = int(fv.port)
+        cfg.targetport = int(fv.targetport)
+        cfg.protocol = fv.protocol
+        cfg.service_type = fv.service_type
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
@@ -359,8 +394,6 @@ class GKELeaderWorkerSet(GCPJob):
             service = LWSService(cfg)
             resp = service.execute()
             logging.info("Service created %s", str(resp))
-
-
 
         api_kwargs = custom_leaderworkerset_kwargs()
         custom_object = dict(

@@ -919,7 +919,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
-        labels["app"]=cfg.name
+        labels ={"app": cfg.name}
 
         if cfg.gcsfuse_mount:
             annotations.update(
