@@ -1,13 +1,11 @@
-from typing import Optional, cast
+"""Tests k8s service module."""
+
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
 
 from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import  k8s_service
-from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
-from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.test_utils import TestCase
 
 FLAGS = flags.FLAGS
@@ -37,14 +35,8 @@ class GKELWSService(TestCase):
         self.assertIsNotNone(fv["name"])
         return cfg
 
-    @parameterized.product(
-        port=[None, 80],
-        targetport=[None, 80],
-    )
     def test_instantiate(
         self,
-        port,
-        targetport
     ):
 
         cfg = self._service_config(
