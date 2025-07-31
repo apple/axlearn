@@ -1,6 +1,6 @@
 # Copyright © 2024 Apple Inc.
 
-"""Implements Orbax emergency checkpointing and provide utilities for correct store.
+"""Implements Orbax replicator checkpointing and provide utilities for correct store.
 
 See the docstring of `OrbaxEmergencyReplicatorCheckpointer` for more details.
 """
@@ -75,13 +75,15 @@ def setup(spec: str):
         parsed_args["barrier_timeout_seconds"] = int(parsed_args["barrier_timeout_seconds"])
     if "local_ckpt_dir" not in parsed_args:
         raise ValueError("local_ckpt_dir must be specified.")
+    # Get process ID and IP of coordinator
+    process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
     # pylint: disable-next=missing-kwoa
     info = get_consistent_proc_info(
         **parsed_args,
         trainer_dir=FLAGS.trainer_dir,
-        distributed_coordinator=FLAGS.distributed_coordinator,
+        distributed_coordinator=coordinator_address,
         num_processes=FLAGS.num_processes,
-        process_id=FLAGS.process_id,
+        process_id=int(process_id),
         jax_backend=FLAGS.jax_backend,
         initialization_timeout=FLAGS.initialization_timeout,
     )
@@ -291,6 +293,29 @@ def _block_and_process_restore_dir(directory, timeout=300):
     logging.info("%d seconds have passed but no .restore file was found.", timeout)
 
 
+def _retrieve_jax_init_info(local_ckpt_dir):
+    """Retrieve JAX init info from a local file."""
+    jax_init_info_file = "jax-init-info.txt"
+    local_jax_init_info_file = epath.Path(local_ckpt_dir) / jax_init_info_file
+    # Allow time for the JAX init info file to be populated by GKE.
+    # File only populated when the worker with process id of 0 is determined.
+    for i in range(900):
+        if local_jax_init_info_file.exists():
+            return local_jax_init_info_file.read_text().split("\n")[:2]
+        logging.info(
+            "Unable to locate %s after %d seconds, sleeping for 1 second before retrying...",
+            jax_init_info_file,
+            i,
+        )
+        time.sleep(1)
+    logging.info(
+        "Unable to locate i%s after 900 seconds,"
+        "returning empty process id and coordinator address.",
+        jax_init_info_file,
+    )
+    return "", ""
+
+
 def _init_consistent_proc_ids(
     *,
     local_address: Optional[str] = None,
@@ -332,42 +357,6 @@ def _init_consistent_proc_ids(
         local_proc_info.cur_proc_id = (
             int(os.environ["MEGASCALE_SLICE_ID"]) * num_proc_per_slice + worker_id
         )
-        # De-hardcode
-        use_replicator_service = True
-        if use_replicator_service:
-            replicator_file = "replicator.yaml"
-            temp_file = replicator_file + ".tmp"
-            replicator_file_path = epath.Path(local_ckpt_dir) / replicator_file
-            if not _wait_for_file_to_disappear(replicator_file_path):
-                logging.info("Existing replicator.yaml did not disappear in time.")
-            else:
-                logging.info("replicator.yaml no longer exists, creating new replicator.yaml.")
-            temp_file = epath.Path(local_ckpt_dir) / temp_file
-            num_nodes = jax.process_count()
-            nodes_per_slice = num_nodes // num_slices
-            node_rank = jax.process_index()
-            peer_ranks = []
-            for i in range(num_slices):
-                peer = node_rank % nodes_per_slice + i * nodes_per_slice
-                if peer != node_rank:
-                    peer_ranks.append(peer)
-            run_name = os.environ.get("HOSTNAME").split("job")[0].rstrip("-")
-
-            replicator_yaml = f"""job-name: {run_name}
-          framework: orbax
-          assume-data-parallelism: 2
-          node-rank: {node_rank}
-          nodes: {num_nodes}
-          peer-ranks: {peer_ranks}
-          backup-interval-minutes: 30"""
-
-            temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
-            os.rename(temp_file, replicator_file_path)
-            if not _wait_for_file_to_disappear(replicator_file_path):
-                logging.info("The newly created replicator.yaml was not deleted in time.")
-            else:
-                logging.info("The newly created replicator.yaml was deleted, moving forward.")
-                _block_and_process_restore_dir(local_ckpt_dir)
     elif jax_backend == "gpu":
         if local_address is None:
             raise ValueError(
@@ -549,73 +538,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
     """Checkpointer implementation that uses Orbax emergency checkpoint.
 
     EXPERIMENTAL. Do not use for actual training runs since the checkpoint layout will likely
-    change in the future.
-
-    ## Summary:
-
-    This checkpointer is designed to improve the goodput of large multi-slice training jobs that
-    use data-parallelism across slices. At least two data-parallel slices are required. For other
-    use cases where this is not applicable or ultimate goodput is not required, please use
-    `OrbaxCheckpointer`.
-
-    Why it can improve goodput:
-    1. It can save to a local path (usually backed by a ramdisk) more frequently, so the progress
-       lost during restart can be reduced. This is in contrast with saving to remote filesystem
-       such as GCS directly, which has limited bandwidth to support frequent checkpointing.
-    2. During restart, checkpoint can be broadcasted through network, which is faster than reading
-       from a remote filesystem.
-
-    To use the checkpointer, besides configuring it properly, it also requires
-    `get_consistent_proc_info` to be called and pass `inv_proc_id` and `address` as
-    `process_id` and `coordinator_address` to `jax.distributed.initialize`.
-
-    ## How it works under the hood
-
-    This checkpointer is intended for multi-slice training that uses data-parallelism across
-    slices. Orbax emergency checkpoint works by exploiting the following properties:
-    1.  Tensors are replicated across data-parallel replicas.
-    2.  When a slice fails in a multi-slice training and failover is started, only nodes
-        corresponding to the non-healthy slice may be restarted. Healthy nodes from healthy slices
-        will not restart.
-
-    Hence, all slices can write checkpoints to node's memory or disk, providing us with redundancy
-    when there's a failure. This checkpoint frequency can be much higher than remote filesystem,
-    which has limited bandwidth to support high frequency saving. Checkpoints on nodes are referred
-    as local checkpoints. Checkpoints on remote filesystem are referred as persistent checkpoints.
-
-    When a failure occurs, Orbax checkpointer will find the latest step from all local and
-    persistent checkpoints. If the checkpoint is local, the slice on which that checkpoint is
-    stored will read the checkpoint and broadcast the read values to other slices. Since local
-    checkpoints are scattered across different hosts, the process id, which determines the shard id
-    of locally stored shards, must stay the same for nodes in the healthy replicas to guarantee a
-    correct restore. We provide an utility function `get_consistent_proc_info` that returns the
-    process id and global coordinator address. They must be passed to `jax.distributed.initialize`.
-
-    However, the above procedure doesn't apply to some non-tensor states such as data iterators.
-    Data iterators are unique across jax processes, and thus cannot be stored on nodes. Orbax
-    emergency checkpointer doesn't support non-tensor states. Therefore, we reuse axlearn
-    Checkpointer to save, restore and garbage collect those states, which include the index file
-    and tf iterators. These non-tensor states will be saved whenever local or persistent checkpoint
-    need to be saved. As the result, the persistent checkpoint structure looks like this:
-
-    ```
-    ├── path_prefix
-    │   ├── non-tensors
-    │   │   └── step_00000010
-    │   │       ├── index
-    │   │       └── tf_xxx
-    │   └── tensors
-    │       └── step_00000010
-    │           └── orbax_files_xxx
-    ```
-
-    A persistent training checkpoint `step_xxx` is commited when `non-tensors/step_xxx/index`
-    exists and `tensors/step_xxx` is commited by Orbax. Refer to the docstring of
-    `OrbaxCheckpointer` for Orbax's commit criteria.
-
-    To abstract the details of the checkpoint layout, the `checkpoint_steps` API returns all steps
-    for which both Tensor and non-Tensor states have been fully committed.
-    """
+    change in the future."""
 
     _NON_TENSORS_PREFIX: str = "non-tensors"
     _TENSORS_PREFIX: str = "tensors"
@@ -710,6 +633,55 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         # operations. This function also serves as a barrier.
         ocp.multihost.initialize_runtime_to_distributed_ids()
         ocp.multihost.initialize_distributed_to_device_ids()
+
+        num_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
+        # De-hardcode
+        use_replicator_service = True
+        if use_replicator_service:
+            replicator_file = "replicator.yaml"
+            temp_file = replicator_file + ".tmp"
+            replicator_file_path = epath.Path(self._local_dir) / replicator_file
+            if not _wait_for_file_to_disappear(replicator_file_path):
+                logging.info("Existing replicator.yaml did not disappear in time.")
+            else:
+                logging.info("replicator.yaml no longer exists, creating new replicator.yaml.")
+            temp_file = epath.Path(self._local_dir) / temp_file
+            num_nodes = jax.process_count()
+            nodes_per_slice = num_nodes // num_slices
+            # node_rank = jax.process_index()
+
+            node_rank = global_state.process_id
+            my_process_index = jax.process_index()
+            proc_index_to_node_rank = ocp.multihost.runtime_to_distributed_ids()
+
+            my_in_pipeline_index = my_process_index % nodes_per_slice
+            peer_ranks = []
+            for i in range(num_slices):
+                peer_process_index = i * nodes_per_slice + my_in_pipeline_index
+                if peer_process_index != my_process_index:
+                    peer_process_rank = proc_index_to_node_rank[peer_process_index]
+                    peer_ranks.append(peer_process_rank)
+
+            logging.info("Peers for NodeRank %s: %s", node_rank, peer_ranks)
+
+            run_name = os.environ.get("HOSTNAME").split("job")[0].rstrip("-")
+
+            replicator_yaml = f"""job-name: {run_name}
+          framework: orbax
+          assume-data-parallelism: 2
+          node-rank: {node_rank}
+          nodes: {num_nodes}
+          peer-ranks: {peer_ranks}
+          backup-interval-minutes: 30"""
+
+            temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
+            os.rename(temp_file, replicator_file_path)
+            if not _wait_for_file_to_disappear(replicator_file_path):
+                logging.info("The newly created replicator.yaml was not deleted in time.")
+            else:
+                logging.info("The newly created replicator.yaml was deleted, moving forward.")
+                _block_and_process_restore_dir(self._local_dir)
+
         ckpt_cfg: Checkpointer.Config = Checkpointer.default_config()
         # TODO(hanzhi-zhou): this `keep_last_n` may not be what users expect since non-tensor
         # states will save when either local or persistent checkpoint will save.
@@ -750,7 +722,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
     def _get_abstract_state(
         self, state_with_tensors: Nested[Tensor]
     ) -> Nested[jax.ShapeDtypeStruct]:
-        """Generate the abstract states required by the Orbax emergency checkpointer."""
+        """Generate the abstract states required by the Orbax replicator checkpointer."""
         return jax.tree.map(
             lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype, sharding=x.sharding),
             state_with_tensors,
@@ -759,7 +731,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
     def _get_tensor_manager(
         self,
     ) -> oercp.ReplicatorCheckpointManager:
-        """Creates the emergency checkpoint manager if not exists.
+        """Creates the replicator checkpoint manager if not exists.
 
         We defer the creation of this checkpoint manager because it requires the state dict,
         which is not present during __init__.
@@ -769,7 +741,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             return self._tensor_manager
 
         # For meaning of these options, refer to
-        # https://github.com/google/orbax/blob/95be2c021bc8cbf4badd83a053ff57b7a9f9b314/checkpoint/orbax/checkpoint/experimental/emergency/checkpoint_manager.py#L277
+        # https://github.com/google/orbax/blob/de0b6d0bca643d12840ae73a1f7cfee80af73dcd/checkpoint/orbax/checkpoint/experimental/emergency/replicator_checkpoint_manager.py#L87
         self._tensor_manager = oercp.ReplicatorCheckpointManager(
             self._local_dir,
             # persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
@@ -867,7 +839,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             restored_state_with_tensors,
         )
         time_diff = time.perf_counter() - start_t
-        logging.info("Took %ss to restore emergency checkpoint from %s.", time_diff, cfg.dir)
+        logging.info("Took %ss to restore replicator checkpoint from %s.", time_diff, cfg.dir)
         return step, restored_state
 
     def wait_until_finished(self):
