@@ -40,10 +40,11 @@ class Service(FlagConfigurable):
         fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("project", default_project())
     
-    def __init__(self):
+    def __init__(self,cfg: Config):
         """
             Used for initializing .
         """
+        super().__init__(cfg)
     
     def _delete(self):
         """Cleans up the service. Called on termination when all retries are exhausted.
@@ -95,7 +96,7 @@ class LWSService(Service):
         return super().default_config()
 
     def __init__(self, cfg: Config):
-        super().__init__()
+        super().__init__(cfg)
         logging.info("LWSService class init")
         self._config = copy.deepcopy(cfg)
         self.name = cfg.name + "-service"
