@@ -9,7 +9,7 @@ export GKE_CLUSTER=$(axlearn gcp config | grep gke_cluster | awk '{ print $3 }' 
 # Switch to tpu-v6e-256 if on scale cluster
 export INSTANCE_TYPE=${INSTANCE_TYPE:-"tpu-v6e-16"}
 # Switch to tpu-v6e-256-4 if on scale cluster
-export MESH_SELECTOR=${MESH:-"tpu-v6e-16"}
+export MESH_SELECTOR=${MESH_SELECTOR:-"tpu-v6e-16"}
 # Need to use tiktoken when saving data iterator
 # export CONFIG=${CONFIG:-"fuji-8B-v3-tiktoken-flash-orbax"}
 export CONFIG=${CONFIG:-"fuji-7B-v3-flash-orbaxem"}
@@ -38,6 +38,8 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
   echo "Running with Orbax emergency checkpointer."
   axlearn gcp launch run --cluster=$GKE_CLUSTER \
         --runner_name gke_tpu_single \
+        --queue=multislice-queue \
+        --priority_class=very-high \
         --name=$JOBSET_NAME \
         --instance_type=${INSTANCE_TYPE} \
         --host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp \

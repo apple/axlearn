@@ -637,6 +637,10 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "70B":
+        # pylint: disable=import-outside-toplevel
+        import jax
+
+        gbs = len(jax.devices())
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
@@ -652,7 +656,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=gbs,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -714,7 +718,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=128)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
