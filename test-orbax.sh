@@ -51,7 +51,7 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
           --init_module=axlearn.common.checkpointer_orbax_emergency:local_ckpt_dir=/host-tmp/checkpoints \
           --module=text.gpt.c4_trainer \
           --config=${CONFIG} \
-          --trainer_dir=gs://${PROJECT_ID}-axlearn/${JOBSET_NAME}-nr-${NUM_REPLICAS}/ \
+          --trainer_dir=gs://${PROJECT_ID}-axlearn/${JOBSET_NAME} \
           --data_dir=gs://axlearn-public/tensorflow_datasets  \
           --jax_backend=tpu \
           --mesh_selector=${MESH_SELECTOR} \
