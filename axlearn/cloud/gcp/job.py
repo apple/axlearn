@@ -19,12 +19,14 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
 from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
+from axlearn.cloud.gcp.k8s_service import LWSService
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
 from axlearn.cloud.gcp.utils import (
     custom_jobset_kwargs,
     custom_leaderworkerset_kwargs,
     delete_k8s_jobset,
     delete_k8s_leaderworkerset,
+    delete_k8s_service,
 )
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
@@ -292,23 +294,60 @@ class GKELeaderWorkerSet(GCPJob):
         namespace: str = "default"
         annotations: Optional[ConfigOr[dict]] = None
         num_replicas: int = 1
+        enable_service: bool = False
+        port: int = None
+        targetport: int = None
+        service_type: str = None
+        protocol:str = None
+
 
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
         fv.set_default("max_tries", fv.max_tries or 10)
         fv.set_default("retry_interval", fv.retry_interval or 60)
+        fv.set_default("enable_service", fv.enable_service or False)
+        fv.set_default("targetport", fv.targetport or 8080)
+        fv.set_default("port", fv.port or 8080)
+        fv.set_default("protocol", fv.protocol or "TCP")
+        fv.set_default("service_type", fv.service_type or "ClusterIP")
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("name", None, "Name of the LeaderWorkerSet.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_service",
+            None,
+            "Whether to enable creation of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "protocol",
+            None,
+            "Protocol type of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "service_type",
+            None,
+            "Type of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer("port", None, "External port where application is exposed through service", **common_kwargs)
+        flags.DEFINE_integer("targetport", None, " Application port which the service redirects to", **common_kwargs)
+        
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
         cfg: GKELeaderWorkerSet.Config = super().from_flags(fv, **kwargs)
         cfg.num_replicas = fv.num_replicas
+        cfg.enable_service = fv.enable_service
+        cfg.port = fv.port
+        cfg.targetport = fv.targetport
+        cfg.protocol = fv.protocol
+        cfg.service_type = fv.service_type
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
@@ -327,6 +366,8 @@ class GKELeaderWorkerSet(GCPJob):
         # This is not fully blocking; after the call returns there can be a delay before
         # everything is deleted.
         delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
+        if cfg.enable_service:
+            delete_k8s_service(cfg.name+"-service", namespace=cfg.namespace)
 
     def _build_leaderworkerset(self) -> Nested[Any]:
         """
@@ -348,6 +389,12 @@ class GKELeaderWorkerSet(GCPJob):
 
     def _execute(self):
         cfg: GKELeaderWorkerSet.Config = self.config
+
+        #### Creating a  Service #######
+        if cfg.enable_service:
+            service = LWSService(cfg)
+            resp = service.execute()
+            logging.info("Service created %s", str(resp))
 
         api_kwargs = custom_leaderworkerset_kwargs()
         custom_object = dict(
