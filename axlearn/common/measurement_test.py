@@ -92,3 +92,10 @@ class UtilsTest(parameterized.TestCase):
         ) as mock_start_monitoring:
             measurement.start_monitoring()
             mock_start_monitoring.assert_called_once()
+
+        # Ensure that maybe_monitor_all does not fail (just enter and exit context).
+        with measurement.global_recorder.maybe_monitor_all():
+            pass
+
+        # Ensure that create_checkpoint_logger does not crash.
+        measurement.global_recorder.create_checkpoint_logger()
