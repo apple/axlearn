@@ -25,6 +25,7 @@ import os
 from typing import Optional, Sequence
 
 import jax
+import orbax.checkpoint as ocp
 from absl import flags, logging
 from ml_goodput_measurement import goodput
 from ml_goodput_measurement import monitoring as goodput_monitoring
@@ -133,6 +134,19 @@ class GoodputRecorder(measurement.Recorder):
                         "Failed to record end of event %s. Error: %s", event.value, e, exc_info=True
                     )
         # pylint: enable=try-except-raise
+
+    def create_checkpoint_logger(self) -> Optional[ocp.logging.CloudLogger]:
+        try:
+            logging.info("Creating a Goodput checkpoint logger.")
+            return ocp.logging.CloudLogger(
+                options=ocp.logging.CloudLoggerOptions(
+                    job_name=self._job_name,
+                    logger_name=self._logger_name,
+                )
+            )
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logging.warning("Failed to create Goodput checkpoint logger: %s", e, exc_info=True)
+            return None
 
     @contextlib.contextmanager
     def _maybe_monitor_goodput(self, *args, **kwargs):
