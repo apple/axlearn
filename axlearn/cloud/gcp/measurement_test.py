@@ -373,3 +373,46 @@ class GoodputRecorderTest(parameterized.TestCase):
             else:
                 mock_monitor_instance.start_rolling_window_goodput_uploader.assert_not_called()
                 mock_monitor_instance.stop_rolling_window_goodput_uploader.assert_not_called()
+
+    @mock.patch("jax.process_index", return_value=0)
+    def test_create_checkpoint_logger_success(self, _):
+        """Tests that create_checkpoint_logger creates a CloudLogger with correct config."""
+        cfg = GoodputRecorder.default_config().set(
+            name="test-job",
+            upload_dir="/test",
+            upload_interval=30,
+        )
+        recorder = GoodputRecorder(cfg)
+
+        with mock.patch("orbax.checkpoint.logging.CloudLogger") as mock_logger_cls:
+            mock_logger_instance = mock_logger_cls.return_value
+            logger = recorder.create_checkpoint_logger()
+
+            mock_logger_cls.assert_called_once()
+            self.assertIs(logger, mock_logger_instance)
+
+            _, kwargs = mock_logger_cls.call_args
+            options = kwargs["options"]
+            self.assertEqual(options.job_name, "test-job")
+            self.assertEqual(options.logger_name, "goodput_logger_test-job")
+
+    @mock.patch("jax.process_index", return_value=0)
+    def test_create_checkpoint_logger_failure(self, _):
+        """Tests that create_checkpoint_logger logs a warning on failure and returns None."""
+        cfg = GoodputRecorder.default_config().set(
+            name="fail-job",
+            upload_dir="/test",
+            upload_interval=30,
+        )
+        recorder = GoodputRecorder(cfg)
+
+        with mock.patch(
+            "orbax.checkpoint.logging.CloudLogger", side_effect=RuntimeError("TestError")
+        ) as mock_logger_cls, mock.patch.object(logging, "warning") as mock_warning:
+            logger = recorder.create_checkpoint_logger()
+            self.assertIsNone(logger)
+            mock_logger_cls.assert_called_once()
+            mock_warning.assert_called_once()
+            self.assertIn(
+                "Failed to create Goodput checkpoint logger", mock_warning.call_args[0][0]
+            )

@@ -10,13 +10,14 @@ See also checkpointer_test.py for common checkpointing tests.
 import os
 import tempfile
 from typing import Sequence
+from unittest import mock
 
 import jax
 import orbax.checkpoint as ocp
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
 
-from axlearn.common import test_utils
+from axlearn.common import measurement, test_utils
 from axlearn.common.checkpointer import read_index_file
 from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
 
@@ -52,3 +53,21 @@ class OrbaxCheckpointerTest(test_utils.TestCase):
                 ),
             )
             self.assertEqual(ref_index, test_index["index"])
+
+    def test_initializes_checkpoint_logger_from_global_recorder(self):
+        """Tests that OrbaxCheckpointer initializes _checkpoint_logger if global_recorder is set."""
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            measurement, "global_recorder", mock.MagicMock()
+        ) as mock_recorder:
+            mock_logger = mock.MagicMock(spec=ocp.logging.CloudLogger)
+            mock_recorder.create_checkpoint_logger.return_value = mock_logger
+
+            ckpt = (
+                OrbaxCheckpointer.default_config()
+                .set(name="test", dir=temp_dir)
+                .instantiate(parent=None)
+            )
+
+            # Ensure create_checkpoint_logger was called and the logger was set.
+            mock_recorder.create_checkpoint_logger.assert_called_once()
+            self.assertEqual(ckpt._checkpoint_logger, mock_logger)

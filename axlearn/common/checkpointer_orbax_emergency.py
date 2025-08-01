@@ -27,7 +27,7 @@ from jax._src.mesh import thread_resources
 from jax.experimental.array_serialization import serialization
 
 from axlearn.common import file_system as fs
-from axlearn.common import utils, utils_spmd
+from axlearn.common import measurement, utils, utils_spmd
 from axlearn.common.checkpointer import (
     STEP_NUM_DIGITS,
     STEP_PREFIX,
@@ -667,6 +667,9 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
         # See comments of _eval_summaries in `OrbaxCheckpointer`.
         self._eval_summaries = None
         self._reached_preemption = False
+        self._checkpoint_logger = None
+        if measurement.global_recorder:
+            self._checkpoint_logger = measurement.global_recorder.create_checkpoint_logger()
 
     # pylint: disable-next=redefined-builtin
     def ckpt_dir(self, step: int, dir: Optional[str] = None) -> str:
@@ -731,6 +734,7 @@ class OrbaxEmergencyCheckpointer(BaseCheckpointer):
                 cleanup_tmp_directories=True,
                 enable_async_checkpointing=True,
             ),
+            logger=self._checkpoint_logger,
         )
         return self._tensor_manager
 
