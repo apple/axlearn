@@ -14,6 +14,7 @@ export MESH_SELECTOR=${MESH_SELECTOR:-"tpu-v6e-16"}
 # export CONFIG=${CONFIG:-"fuji-8B-v3-tiktoken-flash-orbax"}
 export CONFIG=${CONFIG:-"fuji-7B-v3-flash-orbaxem"}
 export PROJECT_ID=$(gcloud config get project)
+export TRAINER_DIR=gs://tpu-prod-env-multipod-use4
 
 # Example for v6e-256
 # MESH_SELECTOR=tpu-v6e-256-4 INSTANCE_TYPE=tpu-v6e-256 ./test-orbax.sh
@@ -51,7 +52,7 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
           --init_module=axlearn.common.checkpointer_orbax_emergency:local_ckpt_dir=/host-tmp/checkpoints \
           --module=text.gpt.c4_trainer \
           --config=${CONFIG} \
-          --trainer_dir=gs://${PROJECT_ID}-axlearn/${JOBSET_NAME} \
+          --trainer_dir=${TRAINER_DIR}/${JOBSET_NAME} \
           --data_dir=gs://axlearn-public/tensorflow_datasets  \
           --jax_backend=tpu \
           --mesh_selector=${MESH_SELECTOR} \
