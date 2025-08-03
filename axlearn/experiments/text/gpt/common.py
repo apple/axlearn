@@ -16,9 +16,6 @@ from typing import Optional, Protocol, Union
 
 import jax.numpy as jnp
 import tensorflow as tf
-
-# Needed for enabling Orbax debug logging
-from absl import logging
 from jax.sharding import PartitionSpec
 
 from axlearn.common import (
@@ -80,9 +77,6 @@ STEP_DTYPE = jnp.bfloat16
 # The default mesh-axis names for LM training, from least to most communication intensive.
 # See mesh_shape_from_axes() docstring for more details.
 MESH_AXIS_NAMES = ("pipeline", "data", "expert", "fsdp", "seq", "model")
-
-
-logging.set_verbosity(logging.DEBUG)
 
 
 def scaled_hidden_dim(scale: float, *, round_up_to_multiples_of: int = 256) -> FunctionConfigBase:
