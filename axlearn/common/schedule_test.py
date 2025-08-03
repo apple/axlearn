@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests optimizer schedules."""
+
 import math
 
 import jax
@@ -163,6 +164,72 @@ class ScheduleTest(parameterized.TestCase):
                     )
                 )
                 self.assertAlmostEqual(cosine_rate, value)
+
+    @parameterized.named_parameters(
+        {
+            "testcase_name": "full_schedule",
+            "warmup_steps": 100,
+            "decay_begin_step": 200,
+        },
+        {
+            "testcase_name": "no_stable_phase",
+            "warmup_steps": 100,
+            "decay_begin_step": 100,
+        },
+        {
+            "testcase_name": "no_warmup_phase",
+            "warmup_steps": 0,
+            "decay_begin_step": 200,
+        },
+    )
+    def test_warmup_stable_decay(self, warmup_steps, decay_begin_step):
+        peak_lr = 0.1
+        max_step = 300
+        alpha = 0.1
+        begin_value = 0.0
+
+        s = jax.jit(
+            schedule.warmup_stable_decay(
+                peak_lr=peak_lr,
+                max_step=max_step,
+                warmup_steps=warmup_steps,
+                begin_value=begin_value,
+                decay_begin_step=decay_begin_step,
+                alpha=alpha,
+            )
+        )
+
+        for step in range(1, max_step + 1, 25):
+            lr = s(jnp.array(step, dtype=jnp.int32))
+
+            if warmup_steps > 0 and step <= warmup_steps:  # Linear warmup.
+                warmup_progress = step / warmup_steps
+                expected_lr = begin_value + (peak_lr - begin_value) * warmup_progress
+                self.assertAlmostEqual(expected_lr, lr, places=6)
+
+            elif warmup_steps < step <= decay_begin_step:  # Stable at peak_lr.
+                self.assertAlmostEqual(peak_lr, lr, places=6)
+
+            else:  # Linear decay.
+                num_decay_steps = max_step - decay_begin_step
+                decay_progress = (step - decay_begin_step) / num_decay_steps
+                end_lr = peak_lr * alpha
+                expected_lr = peak_lr + (end_lr - peak_lr) * decay_progress
+                self.assertAlmostEqual(expected_lr, lr, places=6)
+
+    def test_warmup_stable_decay_errors(self):
+        """Test error conditions for warmup_stable_decay."""
+        # Test decay_begin_step < warmup_steps.
+        with self.assertRaises(ValueError):
+            schedule.warmup_stable_decay(
+                peak_lr=0.1, warmup_steps=200, decay_begin_step=100, max_step=300
+            )
+
+        # Test max_step < decay_begin_step.
+        with self.assertRaises(ValueError):
+            schedule.warmup_stable_decay(
+                peak_lr=0.1, warmup_steps=100, decay_begin_step=300, max_step=200
+            )
 
     def test_constant_with_linear_warmup(self):
         peak_lr = 0.1
