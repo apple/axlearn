@@ -57,6 +57,11 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
           --jax_backend=tpu \
           --mesh_selector=${MESH_SELECTOR} \
           --initialization_timeout=1200 \
+          --recorder_type=axlearn.cloud.gcp.measurement:goodput \
+          --recorder_spec=name=goodput_${JOBSET_NAME} \
+          --recorder_spec=upload_dir=${TRAINER_DIR}/summaries \
+          --recorder_spec=upload_interval=30 \
+          --recorder_spec=step_deviation_interval_seconds=30 \
           --trace_at_steps=29,59,89,119,149,179,209,239,269,299,329,359,389,419,449,479,509,539,569,599,629,659,689,719
 
 else
