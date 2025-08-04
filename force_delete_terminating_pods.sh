@@ -30,12 +30,17 @@ while true; do
             pod_namespace=$(echo "$pod_json" | jq -r '.metadata.namespace')
             deletion_timestamp_str=$(echo "$pod_json" | jq -r '.metadata.deletionTimestamp')
 
+            # Sanitize the timestamp for macOS `date` by removing fractional seconds and the 'Z' suffix.
+            # This handles formats like "2024-01-01T12:34:56.123456Z" -> "2024-01-01T12:34:56"
+            sanitized_timestamp_str=$(echo "$deletion_timestamp_str" | sed -e 's/\.[0-9]*Z$/Z/' -e 's/Z$//')
+
             # Convert the RFC3339 timestamp to a Unix epoch timestamp
             # Works on both GNU and BSD (macOS) date commands.
             if date --version >/dev/null 2>&1; then # GNU date
-                deletion_ts=$(date -d "$deletion_timestamp_str" +%s)
+                deletion_ts=$(date -d "$sanitized_timestamp_str" +%s)
             else # BSD date
-                deletion_ts=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$deletion_timestamp_str" +%s)
+                # On macOS, use -u to interpret the time as UTC.
+                deletion_ts=$(date -u -jf "%Y-%m-%dT%H:%M:%S" "$sanitized_timestamp_str" +%s)
             fi
 
             # Get the current time as a Unix epoch timestamp
