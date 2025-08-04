@@ -61,7 +61,7 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
           --recorder_spec=name=goodput_${JOBSET_NAME} \
           --recorder_spec=upload_dir=${TRAINER_DIR}/summaries \
           --recorder_spec=upload_interval=30 \
-          --recorder_spec=step_deviation_interval_seconds=30 \
+          --recorder_spec=rolling_window_size=3600,7200,10800,86400 \
           --trace_at_steps=29,59,89,119,149,179,209,239,269,299,329,359,389,419,449,479,509,539,569,599,629,659,689,719
 
 else
