@@ -221,35 +221,32 @@ class GoodputRecorder(measurement.Recorder):
         """
         # Lazily instantiate the recorder. This avoids invoking jax before setup is complete.
         if self._recorder is None:
-            cfg: GoodputRecorder.Config = self.config
+            if jax.process_index() == 0:
+                logging.info("Lazily instantiating goodput recorder.")
             self._recorder = goodput.GoodputRecorder(
-                job_name=cfg.name,
-                logger_name=f"goodput_logger_{cfg.name}",
+                job_name=self._job_name,
+                logger_name=self._logger_name,
                 logging_enabled=(jax.process_index() == 0),
             )
 
-        if event == measurement.Event.START_JOB:
-            self._recorder.record_job_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_JOB:
-            self._recorder.record_job_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_STEP:
-            self._recorder.record_step_start_time(*args, **kwargs)
-        elif event == measurement.Event.START_ACCELERATOR_INIT:
-            self._recorder.record_tpu_init_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_ACCELERATOR_INIT:
-            self._recorder.record_tpu_init_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_TRAINING_PREPARATION:
-            self._recorder.record_training_preparation_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_TRAINING_PREPARATION:
-            self._recorder.record_training_preparation_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_DATA_LOADING:
-            self._recorder.record_data_loading_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_DATA_LOADING:
-            self._recorder.record_data_loading_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_CUSTOM_BADPUT_EVENT:
-            self._recorder.record_custom_badput_event_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_CUSTOM_BADPUT_EVENT:
-            self._recorder.record_custom_badput_event_end_time(*args, **kwargs)
+        start_method_name = f"record_{event.value}_start_time"
+        end_method_name = f"record_{event.value}_end_time"
+
+        record_event_start = getattr(self._recorder, start_method_name, None)
+        record_event_end = getattr(self._recorder, end_method_name, None)
+
+        if record_event_start:
+            try:
+                record_event_start(*args, **kwargs)
+            except RuntimeError as e:
+                logging.warning(
+                    "Failed to record start of event %s. Error: %s", event.value, e, exc_info=True
+                )
+        # pylint: disable=try-except-raise
+        try:
+            yield  # Run the user code in the context
+        except Exception:
+            raise
         else:
             logging.log_first_n(
                 logging.WARNING,
