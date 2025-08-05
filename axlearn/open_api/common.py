@@ -25,6 +25,7 @@ from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 # pylint: disable=import-error
 # pytype: disable=import-error
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion_token_logprob import ChatCompletionTokenLogprob
 
 # pylint: enable=import-error
 # pytype: enable=import-error
@@ -105,6 +106,18 @@ class BaseClient(Configurable):
 
     @classmethod
     def parse_generation(cls, response: dict[str, Any]) -> Sequence[ChatCompletionMessage]:
+        """Parses generation from response.
+
+        Args:
+           response: A dictionary consisting of the response obtained from the generator.
+
+        Returns:
+            A list of ChatCompletionMessage generation.
+        """
+        raise NotImplementedError(cls)
+
+    @classmethod
+    def parse_logprobs(cls, response: dict[str, Any]) -> Optional[list[ChatCompletionTokenLogprob]]:
         """Parses generation from response.
 
         Args:
