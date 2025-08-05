@@ -34,7 +34,13 @@ export TRAINER_DIR=gs://tpu-prod-env-one-vm-saw1-a
 # --queue=multislice-queue \
 # --priority_class=very-high \
 # --trainer_dir=gs://tess-checkpoints-us-west1/${JOBSET_NAME}-nr-${NUM_REPLICAS}/ \
-#
+# For goodput logging
+#           --recorder_type=axlearn.cloud.gcp.measurement:goodput \
+#           --recorder_spec=name=goodput_${JOBSET_NAME} \
+#           --recorder_spec=upload_dir=${TRAINER_DIR}/summaries \
+#           --recorder_spec=upload_interval=30 \
+#           --recorder_spec=rolling_window_size=3600,7200,10800,86400 \
+#           --trace_at_steps=29,59,89,119,149,179,209,239,269,299,329,359,389,419,449,479,509,539,569,599,629,659,689,719
 
 # Check if CONFIG ends with "orbaxem"
 if [[ "$CONFIG" == *"orbaxem"* ]]; then
@@ -58,13 +64,7 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
           --data_dir=gs://axlearn-public/tensorflow_datasets  \
           --jax_backend=tpu \
           --mesh_selector=${MESH_SELECTOR} \
-          --initialization_timeout=1200 \
-          --recorder_type=axlearn.cloud.gcp.measurement:goodput \
-          --recorder_spec=name=goodput_${JOBSET_NAME} \
-          --recorder_spec=upload_dir=${TRAINER_DIR}/summaries \
-          --recorder_spec=upload_interval=30 \
-          --recorder_spec=rolling_window_size=3600,7200,10800,86400 \
-          --trace_at_steps=29,59,89,119,149,179,209,239,269,299,329,359,389,419,449,479,509,539,569,599,629,659,689,719
+          --initialization_timeout=1200
 
 else
   echo "Running Orbax regular checkpointer or AXLearn native."
