@@ -14,7 +14,9 @@ export MESH_SELECTOR=${MESH_SELECTOR:-"tpu-v6e-16"}
 # export CONFIG=${CONFIG:-"fuji-8B-v3-tiktoken-flash-orbax"}
 export CONFIG=${CONFIG:-"fuji-7B-v3-flash-orbaxem"}
 export PROJECT_ID=$(gcloud config get project)
-export TRAINER_DIR=gs://tpu-prod-env-multipod-use4
+# export TRAINER_DIR=gs://tpu-prod-env-multipod-use4
+export TRAINER_DIR=gs://tpu-prod-env-one-vm-saw1-a
+
 
 # Example for v6e-256
 # MESH_SELECTOR=tpu-v6e-256-4 INSTANCE_TYPE=tpu-v6e-256 ./test-orbax.sh
