@@ -5,6 +5,7 @@
 See also ``On configuration`` in `axlearn/cloud/gcp/job.py`.
 """
 
+import enum
 import logging
 import shlex
 import subprocess
@@ -30,6 +31,25 @@ from axlearn.cloud.gcp.utils import (
 )
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
+
+
+class ServiceProtocol(enum.Enum):
+
+    """https://kubernetes.io/docs/reference/networking/service-protocols/"""
+
+    TCP = "TCP"
+    UDP = "UDP"
+    SCTP = "SCTP"
+
+
+class ServiceType(enum.Enum):
+
+    """https://cloud.google.com/kubernetes-engine/docs/concepts/service#types-of-services"""
+
+    CLUSTERIP = "ClusterIP"
+    NODEPORT = "NodePort"
+    LOADBALANCER = "LoadBalancer"
+    EXTERNALNAME = "ExternalName"
 
 
 class GCPJob(Job):
@@ -298,8 +318,7 @@ class GKELeaderWorkerSet(GCPJob):
         port: int = None
         targetport: int = None
         service_type: str = None
-        protocol:str = None
-
+        protocol: str = None
 
     @classmethod
     def set_defaults(cls, fv):
@@ -307,10 +326,10 @@ class GKELeaderWorkerSet(GCPJob):
         fv.set_default("max_tries", fv.max_tries or 10)
         fv.set_default("retry_interval", fv.retry_interval or 60)
         fv.set_default("enable_service", fv.enable_service or False)
-        fv.set_default("targetport", fv.targetport or 8080)
+        fv.set_default("targetport", fv.targetport or 9000)
         fv.set_default("port", fv.port or 8080)
-        fv.set_default("protocol", fv.protocol or "TCP")
-        fv.set_default("service_type", fv.service_type or "ClusterIP")
+        fv.set_default("protocol", fv.protocol or ServiceProtocol.TCP.value)
+        fv.set_default("service_type", fv.service_type or ServiceType.CLUSTERIP.value)
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -319,25 +338,35 @@ class GKELeaderWorkerSet(GCPJob):
         flags.DEFINE_string("name", None, "Name of the LeaderWorkerSet.", **common_kwargs)
         flags.DEFINE_boolean(
             "enable_service",
-            None,
+            False,
             "Whether to enable creation of service for LWS",
             **common_kwargs,
         )
+        #### https://kubernetes.io/docs/reference/networking/service-protocols/ #####
+        #### Available types: TCP, UDP, SCTP #####
         flags.DEFINE_string(
             "protocol",
             None,
             "Protocol type of service for LWS",
             **common_kwargs,
         )
+        ##### https://cloud.google.com/kubernetes-engine/docs/how-to/exposing-apps ####
+        ## Available types: ClusterIP(default), NodePort, LoadBalancer, ExternalName, Headless ##
         flags.DEFINE_string(
             "service_type",
             None,
             "Type of service for LWS",
             **common_kwargs,
         )
-        flags.DEFINE_integer("port", None, "External port where application is exposed through service", **common_kwargs)
-        flags.DEFINE_integer("targetport", None, " Application port which the service redirects to", **common_kwargs)
-        
+        flags.DEFINE_integer(
+            "port",
+            None,
+            "External port where application is exposed through service",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "targetport", None, " Application port which the service redirects to", **common_kwargs
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -367,7 +396,7 @@ class GKELeaderWorkerSet(GCPJob):
         # everything is deleted.
         delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
         if cfg.enable_service:
-            delete_k8s_service(cfg.name+"-service", namespace=cfg.namespace)
+            delete_k8s_service(cfg.name + "-service", namespace=cfg.namespace)
 
     def _build_leaderworkerset(self) -> Nested[Any]:
         """

@@ -1,16 +1,14 @@
 """ k8s service module."""
+import copy
 import logging
 from typing import Any, Optional
-import copy
 
 import kubernetes as k8s
 from absl import flags
 
-from axlearn.cloud.common.utils import generate_job_name, FlagConfigurable
+from axlearn.cloud.common.utils import FlagConfigurable, generate_job_name
 from axlearn.cloud.gcp.config import default_project
-from axlearn.cloud.gcp.utils import (
-    delete_k8s_service,
-)
+from axlearn.cloud.gcp.utils import delete_k8s_service
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -39,13 +37,7 @@ class Service(FlagConfigurable):
     def set_defaults(cls, fv: flags.FlagValues):
         fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("project", default_project())
-    
-    def __init__(self,cfg: Config):
-        """
-            Used for initializing .
-        """
-        super().__init__(cfg)
-    
+
     def _delete(self):
         """Cleans up the service. Called on termination when all retries are exhausted.
 
@@ -77,7 +69,6 @@ class LWSService(Service):
         port: Optional[int] = None
         targetport: Optional[int] = None
         service_type: Optional[str] = None
-
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -129,12 +120,11 @@ class LWSService(Service):
                         target_port=self.targetport,
                     )
                 ],
-                type=self.service_type,  
+                type=self.service_type,
             ),
         )
 
     def execute(self):
-        
         logging.info("LWSservice class execute")
         service = self._build_service()
         logging.info("Submitting LWSservice body=%s ", service)
