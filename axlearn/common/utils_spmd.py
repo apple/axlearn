@@ -88,6 +88,16 @@ def setup(
                 coordinator_address=distributed_coordinator,
                 num_processes=num_processes,
                 process_id=process_id,
+                # The duration of missing heartbeats before shutting down.
+                heartbeat_timeout="120s",
+                # JAX distributed initialization timeout.
+                initialization_timeout="3600s",
+                # JAX distributed shutdown timeout.
+                shutdown_timeout="3600s",
+                # RPC timeout.
+                rpc_timeout="3600s",
+                # RPC timeout for heartbeat.
+                coordinator_rpc_timeout="3600s",
             )
             if jax_backend == "gpu":
                 # jax 0.4.34 introduced a change to cluster auto-detection behavior, supplying

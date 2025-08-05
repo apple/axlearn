@@ -15,6 +15,8 @@ import functools
 import itertools
 from typing import Any, List, NamedTuple, Optional, Union
 
+import jax
+from absl import logging
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -67,7 +69,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
 
-MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
+MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "150B")
 
 
 class Version(enum.Enum):
@@ -113,6 +115,7 @@ TOTAL_TOKENS = {
         "test": 2 * (1024**4),  # 2T tokens
         "7B": 2 * (1024**4),  # 2T tokens
         "70B": 2 * (1024**4),  # 2T tokens
+        "150B": 2 * (1024**4),  # 2T tokens
     },
     Version.V3: {
         "test": 15 * (1024**4),  # 15T tokens
@@ -120,6 +123,7 @@ TOTAL_TOKENS = {
         "3B": 15 * (1024**4),  # 15T tokens
         "7B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "150B": 15 * (1024**4),  # 15T tokens
     },
     Version.V3_TIKTOKEN: {
         "test": 15 * (1024**4),  # 15T tokens
@@ -127,6 +131,7 @@ TOTAL_TOKENS = {
         "3B": 15 * (1024**4),  # 15T tokens
         "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "150B": 15 * (1024**4),  # 15T tokens
     },
 }
 
@@ -290,7 +295,6 @@ def get_trainer_kwargs(
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
-
     # Whether to use grouped query attention.
     num_kv_heads = None
     if version in (Version.V3, Version.V3_TIKTOKEN):
@@ -839,6 +843,116 @@ def get_trainer_kwargs(
                 ),
             ),
         )
+    elif model_size == "150B":
+        ##################################################################################
+        max_sequence_length = MAX_SEQUENCE_LENGTH[Version.V2]  # 4096
+
+        # model_parallelism * fsdp == num_chips_in_trillium (256)
+        model_parallelism = 4
+        fsdp = 64
+
+        current_pdbs = 0.5
+        train_batch_size = int(current_pdbs * len(jax.devices()))
+
+        # 16k * 4096 = 64M
+        tokens_per_batch = int(train_batch_size * max_sequence_length)
+
+        # 32M tokens is the max global tokens we can train on.
+        # We must modify either the pdbs or the model sharding to accommodate 128 slices.
+        if tokens_per_batch > 32 * (1024**2):
+            tokens_per_batch = 32 * (1024**2)
+            # if we want to modify the pdbs:
+            current_pdbs = 0.25
+
+            # otherwise we can modify the model sharding.
+            # model_parallelism = 8
+            # fsdp = 32
+
+        # 32M tokens is the max global tokens we can train on.
+        assert tokens_per_batch <= 32 * (1024**2)
+        assert fsdp * model_parallelism == 256
+
+        # 1 / model_parallelism = 1 / 4 = 0.25
+        min_pdbs = 1 / model_parallelism
+        max_pdbs = 1
+
+        # More than 1 pdbs causes an OOM.
+        assert current_pdbs < max_pdbs
+        assert current_pdbs >= min_pdbs
+
+        # maximum number of devices we can use this config on =
+        # train_batch_size // min_pdbs = 4096 / 0.25 = 16384
+        max_devices = int(train_batch_size // min_pdbs)
+
+        assert isinstance(train_batch_size, int)
+        assert isinstance(tokens_per_batch, int)
+
+        logging.info(
+            (
+                "******* DEBUGGING: max_sequence_length: %s, model_parallelism: %s,"
+                " fsdp: %s, current_pdbs: %s, train_batch_size: %s,"
+                " tokens_per_batch: %s, min_pdbs: %s, max_pdbs: %s, max_devices: %s"
+            ),
+            max_sequence_length,
+            model_parallelism,
+            fsdp,
+            current_pdbs,
+            train_batch_size,
+            tokens_per_batch,
+            min_pdbs,
+            max_pdbs,
+            max_devices,
+        )
+        ##################################################################################
+
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=80,
+                hidden_dim=128 * 96,
+                num_heads=96,
+                # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                num_kv_heads=None if version == Version.V1 else 8,
+                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
+                rope_theta=rope_theta,
+                shared_lm_head=False,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=train_batch_size,
+            max_step=100_000,  # max_step,
+            save_every_n_steps=20,
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=fsdp, model=model_parallelism),
+            mesh_rules=(
+                (
+                    # Target per-device token count = 4k.
+                    # PDBS = 0.5 at 8k context.
+                    # Each slice can train a batch size of 128.
+                    "tpu-v6e-256.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=save_and_offload_only_these_names_regex(
+                                            names_which_can_be_offloaded=".*input",
+                                            names_which_can_be_saved=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                            V6eFlashConfigModifier.default_config(),
+                        ],
+                    ),
+                ),
+            ),
+        )
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
@@ -950,6 +1064,12 @@ def trainer_configs(
         if model_size not in TOTAL_TOKENS[version]:  # This combination does not exist.
             continue
         vocab_size = VOCAB_SIZE[version]
+        logging.info(
+            "******* DEBUGGING: version: %s, model_size: %s, flash_attention: %s",
+            version,
+            model_size,
+            flash_attention,
+        )
         config_name = make_config_name(
             arch=arch,
             model_size=model_size,
