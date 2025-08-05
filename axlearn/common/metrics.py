@@ -16,8 +16,13 @@ from axlearn.common.utils import NestedTensor, Tensor
 class WeightedScalarValue(Summary):
     """A weighted scalar value represents a mean value and a weight."""
 
-    mean: Tensor
-    weight: Tensor
+    mean: NestedTensor | int | float
+    weight: NestedTensor | int | float
+
+    def __init__(self, mean: NestedTensor | int | float, weight: NestedTensor | int | float):
+        self.mean = mean
+        self.weight = weight
+        super().__init__(mean, weight)  # pytype: disable=wrong-arg-count
 
     def value(self) -> Optional[Union[NestedTensor, int, float]]:
         return self.mean
