@@ -156,7 +156,7 @@ mmau = [
 orbax = [
     "humanize==4.10.0",
     # "orbax-checkpoint==0.11.20",
-    "orbax-checkpoint @ git+https://github.com/samos123/orbax.git@v0.11.20-em#subdirectory=checkpoint"
+    "orbax-checkpoint @ git+https://github.com/samos123/orbax.git@v0.12.0#subdirectory=checkpoint"
 ]
 # Audio dependencies.
 audio = [
