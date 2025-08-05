@@ -76,14 +76,14 @@ def setup(spec: str):
     if "local_ckpt_dir" not in parsed_args:
         raise ValueError("local_ckpt_dir must be specified.")
     # Get process ID and IP of coordinator
-    process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
+    # process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
     # pylint: disable-next=missing-kwoa
     info = get_consistent_proc_info(
         **parsed_args,
         trainer_dir=FLAGS.trainer_dir,
-        distributed_coordinator=coordinator_address,
+        distributed_coordinator=FLAGS.distributed_coordinator,
         num_processes=FLAGS.num_processes,
-        process_id=int(process_id),
+        process_id=FLAGS.process_id,
         jax_backend=FLAGS.jax_backend,
         initialization_timeout=FLAGS.initialization_timeout,
     )
@@ -265,7 +265,7 @@ def _wait_for_file_to_disappear(f, timeout=300):
 
 
 def _extract_step(f):
-    # The base file name is formatted as {job_name}-s{step}-n{node_rank}-g{gpu_rank}
+    # The base file name is formatted as {job_name}-s{step}-n{node_rank}-w{worker_rank}
     return f.rsplit("-", 3)[1][1:]
 
 
@@ -636,7 +636,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
 
         num_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
         # De-hardcode
-        use_replicator_service = True
+        use_replicator_service = False
         if use_replicator_service:
             replicator_file = "replicator.yaml"
             temp_file = replicator_file + ".tmp"
@@ -728,23 +728,25 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             state_with_tensors,
         )
 
+    # pylint: disable=unused-argument
     def _get_tensor_manager(
-        self,
+        self, state_with_tensors: Nested[Tensor]
     ) -> oercp.ReplicatorCheckpointManager:
         """Creates the replicator checkpoint manager if not exists.
 
         We defer the creation of this checkpoint manager because it requires the state dict,
         which is not present during __init__.
         """
-        # cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
+        cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
         if self._tensor_manager is not None:
             return self._tensor_manager
 
         # For meaning of these options, refer to
         # https://github.com/google/orbax/blob/de0b6d0bca643d12840ae73a1f7cfee80af73dcd/checkpoint/orbax/checkpoint/experimental/emergency/replicator_checkpoint_manager.py#L87
+        # pylint: disable-next=unexpected-keyword-arg
         self._tensor_manager = oercp.ReplicatorCheckpointManager(
             self._local_dir,
-            # persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
+            persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
             global_mesh=thread_resources.env.physical_mesh,
             options=oercp.ReplicatorCheckpointManagerOptions(
                 save_interval_steps=100,
@@ -769,7 +771,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         # _non_tensor_manager will block for train step to finish. Start the timer here to avoid
         # including step time in total blocking time.
         start_t = time.perf_counter()
-        self._get_tensor_manager().save(
+        self._get_tensor_manager(state_with_tensors).save(
             step=step, args=ocp.args.Composite(state=ocp.args.PyTreeSave(item=state_with_tensors))
         )
         time_diff = time.perf_counter() - start_t
@@ -814,7 +816,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         state_with_tensors = jax.tree.map(
             lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
         )
-        tensor_manager = self._get_tensor_manager()
+        tensor_manager = self._get_tensor_manager(state_with_tensors)
         if step is None:
             common_steps = self._checkpoint_steps_include_local()
             if not common_steps:
@@ -825,19 +827,32 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         restore_step, state = self._non_tensor_manager.restore(step=step, state=state)
         assert step == restore_step
 
+        def _restore_args(x: Any) -> ocp.RestoreArgs:
+            return ocp.checkpoint_utils.construct_restore_args(
+                jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype, sharding=x.sharding)
+            )
+
+        restore_args = jax.tree.map(_restore_args, state)
+
         restored_state_with_tensors = tensor_manager.restore(
             step=step,
             args=ocp.args.Composite(
-                state=ocp.args.PyTreeRestore(item=self._get_abstract_state(state_with_tensors))
+                state=ocp.args.PyTreeRestore(
+                    item=self._get_abstract_state(state_with_tensors), restore_args=restore_args
+                )
             ),
         )
         # Merge non-tensor and tensor states by replacing leaves of the non-tensor Pytree with the
         # not-None leaves of the tensor Pytree.
+        _, restored_treedef = jax.tree_util.tree_flatten(restored_state_with_tensors)
+        state_leaves, _ = jax.tree_util.tree_flatten(state)
+        compatible_state = jax.tree_util.tree_unflatten(restored_treedef, state_leaves)
         restored_state = jax.tree.map(
             lambda non_tensor, tensor: non_tensor if tensor is None else tensor,
-            state,
+            compatible_state,
             restored_state_with_tensors,
         )
+
         time_diff = time.perf_counter() - start_t
         logging.info("Took %ss to restore replicator checkpoint from %s.", time_diff, cfg.dir)
         return step, restored_state
