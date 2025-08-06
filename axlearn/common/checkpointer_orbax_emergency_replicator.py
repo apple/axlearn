@@ -6,13 +6,10 @@ See the docstring of `OrbaxEmergencyReplicatorCheckpointer` for more details.
 """
 
 import copy
-import hashlib
-import multiprocessing as mp
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import jax
@@ -78,17 +75,14 @@ def setup(spec: str):
     # Get process ID and IP of coordinator
     process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
     # pylint: disable-next=missing-kwoa
-    info = get_consistent_proc_info(
-        **parsed_args,
-        trainer_dir=FLAGS.trainer_dir,
-        distributed_coordinator=coordinator_address,
-        num_processes=FLAGS.num_processes,
-        process_id=int(process_id),
+    utils_spmd.setup(
         jax_backend=FLAGS.jax_backend,
+        distributed_coordinator=coordinator_address,
+        process_id=int(process_id),
         initialization_timeout=FLAGS.initialization_timeout,
     )
-    FLAGS.process_id = info.inv_proc_id
-    FLAGS.distributed_coordinator = info.address
+    FLAGS.process_id = int(process_id)
+    FLAGS.distributed_coordinator = coordinator_address
     FLAGS.experimental_orbax_use_distributed_process_id = True
     yield
 
@@ -181,81 +175,6 @@ class _TFSavablesStateStorage(StateStorage):
         self._executor.shutdown(wait=True)
 
 
-_PROCESS_ID_FILE_NAME: str = "process_id.txt"
-
-
-@dataclass
-class _ProcessInfo:
-    """Records the process id and address information for this node.
-
-    Attributes:
-        address: The global coordinator address. This is set during the first run and stays and
-            stays the same unless process 0 failed.
-        inv_proc_id: The invariant process id of this node. This process id is set during the first
-            run and stays the same for all subsequent runs unless this node failed.
-        cur_proc_id: Internal field. The new process id assigned externally after failover. Used
-            during ID negotiation after failover.
-        key: Internal field. Key used during ID negotiation after failover.
-        num_proc_per_slice: Internal field. Used to calculate slice ID for TPU.
-    """
-
-    address: str
-    inv_proc_id: int
-    cur_proc_id: int
-    key: Optional[str] = None
-    num_proc_per_slice: Optional[int] = None
-
-    def to_string(self):
-        return "|".join(str(x) for x in [self.address, self.inv_proc_id, self.cur_proc_id])
-
-    @property
-    def prev_slice_id(self):
-        assert self.num_proc_per_slice is not None
-        return self.inv_proc_id // self.num_proc_per_slice
-
-    @property
-    def cur_slice_id(self):
-        assert self.num_proc_per_slice is not None
-        return self.cur_proc_id // self.num_proc_per_slice
-
-    @classmethod
-    def from_string(
-        cls, data: str, *, key: Optional[str] = None, num_proc_per_slice: Optional[int] = None
-    ):
-        ls = data.split("|")
-        assert len(ls) == 3
-        return cls(ls[0], int(ls[1]), int(ls[2]), key=key, num_proc_per_slice=num_proc_per_slice)
-
-
-def _get_previous_process_info(local_dir: str, *, trainer_dir: str) -> _ProcessInfo:
-    """Gets process info from local checkpoint directory."""
-    path = os.path.join(local_dir, _get_unique_id(trainer_dir), _PROCESS_ID_FILE_NAME)
-    if not fs.exists(path):
-        return _ProcessInfo(address="", inv_proc_id=-1, cur_proc_id=-1)
-
-    with fs.open(path) as f:
-        return _ProcessInfo.from_string(f.read())
-
-
-def _dump_process_info(local_dir: str, *, trainer_dir: str, proc_info: _ProcessInfo):
-    """Dumps process info to local checkpoint directory."""
-    local_dir = os.path.join(local_dir, _get_unique_id(trainer_dir))
-    fs.makedirs(local_dir)
-    process_id_file = os.path.join(local_dir, _PROCESS_ID_FILE_NAME)
-    with fs.open(process_id_file, "w") as f:
-        f.write(proc_info.to_string())
-
-
-def _get_unique_id(trainer_dir: str) -> str:
-    return hashlib.sha256(trainer_dir.encode(), usedforsecurity=False).hexdigest()
-
-
-def _logger_init():
-    """Init logger in spawned processes that don't inherit parent's logger."""
-    logging.set_verbosity(logging.INFO)
-    logging.use_absl_handler()
-
-
 def _wait_for_file_to_disappear(f, timeout=300):
     for _ in range(timeout):
         if not f.exists():
@@ -314,224 +233,6 @@ def _retrieve_jax_init_info(local_ckpt_dir):
         jax_init_info_file,
     )
     return "", ""
-
-
-def _init_consistent_proc_ids(
-    *,
-    local_address: Optional[str] = None,
-    barrier_timeout_seconds: int = 300,
-    trainer_dir: str,
-    local_ckpt_dir: str,
-    **setup_kwargs,
-):
-    """Exchanges id info through jax coordinator and dumps to local file.
-
-    During failover, healthy nodes will read their locally stored process id file, but failed nodes
-    will lost their process ids. To assign ids that are free in the global id range (i.e. 0 to
-    num_processes - 1), we let each node report its process id (-1 if missing) to rank 0, and rank
-    0 will figure out suitable IDs to assign to each failed node. We reuse Jax's distributed client
-    to avoid writing our own coordinator.
-    """
-    _logger_init()
-
-    jax_backend = setup_kwargs["jax_backend"]
-    timeout_ms = barrier_timeout_seconds * 1000
-    utils_spmd.setup(**setup_kwargs)
-    client: jax.lib.xla_extension.DistributedRuntimeClient = global_state.client
-    local_proc_info = _get_previous_process_info(local_ckpt_dir, trainer_dir=trainer_dir)
-    key_prefix = "axlearn/id_reassign"
-    # Local key just needs to be unique for each process.
-    local_proc_info.key = f"{key_prefix}/{jax.process_index()}"
-
-    if jax_backend == "tpu":
-        worker_hostnames = os.environ["TPU_WORKER_HOSTNAMES"].split(",")
-        num_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
-        num_proc_per_slice = len(worker_hostnames)
-        worker_id = int(os.environ["TPU_WORKER_ID"])
-
-        # Coordinator port for TPU is hardcoded. Reference:
-        # https://github.com/jax-ml/jax/blob/1aa5de66a8f3c910115cac2fbe118e0facd7a3be/jax/_src/clusters/cloud_tpu_cluster.py#L29
-        local_proc_info.address = f"{worker_hostnames[worker_id]}:8476"
-        # Note: cannot use jax.process_index() here because it may be different from the
-        # distributed id. This is a jax problem.
-        local_proc_info.cur_proc_id = (
-            int(os.environ["MEGASCALE_SLICE_ID"]) * num_proc_per_slice + worker_id
-        )
-    elif jax_backend == "gpu":
-        if local_address is None:
-            raise ValueError(
-                "local_address must be set for GPU when using in-memory checkpointing."
-            )
-        local_proc_info.address = local_address
-        local_proc_info.cur_proc_id = setup_kwargs["process_id"]
-    else:
-        raise RuntimeError(f"Unsupported backend {jax_backend}.")
-
-    # Every worker reports its proc info to rank 0.
-    client.key_value_set(local_proc_info.key, local_proc_info.to_string())
-    client.wait_at_barrier("axlearn/id-reassign-gather-id", timeout_in_ms=timeout_ms)
-
-    # Then, rank 0 assigns inv_proc_id for worker that's missing their inv_proc_id and find the
-    # coordinator address.
-    if local_proc_info.cur_proc_id == 0:
-        ids = client.key_value_dir_get(key_prefix)
-        proc_infos: list[_ProcessInfo] = []
-
-        def first_run_assign_fn(info: _ProcessInfo):
-            info.inv_proc_id = info.cur_proc_id
-
-        inv_id_assign_fn = first_run_assign_fn
-        if jax_backend == "tpu":
-            # For TPUs, we have the additional requirement that process ids in slice id X must be
-            # in range [X * num_processes_per_slice, (X + 1) * num_processes_per_slice). Therefore,
-            # we first identify the healthy slices' ids and then figure out the slice ids to assign
-            # to failed slices. Each process in the failed slice will then get id `new_slice_id *
-            # num_proc_per_slice + cur_proc_id % num_proc_per_slice`. After id assignment, the
-            # address of process that's assigned with id=0 will be broadcasted to every worker.
-
-            # Mapping from new slice ids to assigned slice ids forfailed slices.
-            failed_slices_new_ids = {}
-            for k, data in ids:
-                info = _ProcessInfo.from_string(data, key=k, num_proc_per_slice=num_proc_per_slice)
-                proc_infos.append(info)
-                if info.inv_proc_id == -1:
-                    failed_slices_new_ids[info.cur_slice_id] = -1
-
-            already_assigned_slice_ids = set()
-            for info in proc_infos:
-                if info.cur_slice_id not in failed_slices_new_ids:
-                    already_assigned_slice_ids.add(info.prev_slice_id)
-
-            # If there're no assigned slice ids, that means all slices have failed or we're in the
-            # very first run. In that case, first_run_assign_fn will be used.
-            if already_assigned_slice_ids:
-                to_be_assigned_slice_ids = set(range(num_slices)) - already_assigned_slice_ids
-                assert len(to_be_assigned_slice_ids) == len(failed_slices_new_ids)
-                for k, new_id in zip(failed_slices_new_ids.keys(), to_be_assigned_slice_ids):
-                    failed_slices_new_ids[k] = new_id
-
-                def assign_fn(info: _ProcessInfo):
-                    proc_id = info.inv_proc_id
-                    if (new_slice_id := failed_slices_new_ids.get(info.cur_slice_id)) is not None:
-                        proc_id = (
-                            new_slice_id * num_proc_per_slice
-                            + info.cur_proc_id % num_proc_per_slice
-                        )
-                    info.inv_proc_id = proc_id
-
-                inv_id_assign_fn = assign_fn
-
-        elif jax_backend == "gpu":
-            num_processes = setup_kwargs["num_processes"]
-            # For GPU backend, failed nodes are assigned with ids that are missing in the global id
-            # range with arbitrary order.
-            assigned_ids = set()
-            for key, data in ids:
-                info = _ProcessInfo.from_string(data, key=key)
-                proc_infos.append(info)
-                assigned_ids.add(info.inv_proc_id)
-
-            # If there're no assigned ids, that means all slices have failed or we're in the
-            # very first run. In that case, first_run_assign_fn will be used.
-            if assigned_ids:
-                to_be_assigned_ids = iter(set(range(num_processes)) - assigned_ids)
-
-                def assign_fn(info: _ProcessInfo):
-                    if info.inv_proc_id == -1:
-                        info.inv_proc_id = next(to_be_assigned_ids)
-
-                inv_id_assign_fn = assign_fn
-
-        coordinator_address = None
-        for info in proc_infos:
-            inv_id_assign_fn(info)
-            if info.inv_proc_id == 0:
-                coordinator_address = info.address
-        assert coordinator_address is not None
-        for info in proc_infos:
-            info.address = coordinator_address
-            client.key_value_set(info.key + "/get", info.to_string())
-
-    new_info = _ProcessInfo.from_string(
-        client.blocking_key_value_get(local_proc_info.key + "/get", timeout_in_ms=timeout_ms)
-    )
-    logging.info(
-        "Previous proc id: %d. Assigned proc id: %d. Global coordinator address: %s.",
-        local_proc_info.inv_proc_id,
-        new_info.inv_proc_id,
-        new_info.address,
-    )
-    _dump_process_info(local_ckpt_dir, trainer_dir=trainer_dir, proc_info=new_info)
-    # Block to avoid coordinator exiting too early.
-    client.wait_at_barrier("axlearn/id-reassign-finalize", timeout_in_ms=timeout_ms)
-    jax.distributed.shutdown()
-
-
-def get_consistent_proc_info(
-    *,
-    local_address: Optional[str] = None,
-    barrier_timeout_seconds: int = 300,
-    trainer_dir: str,
-    local_ckpt_dir: str,
-    **setup_kwargs,
-) -> _ProcessInfo:
-    """Gets the invariant process id of the current process and global coordinator's address.
-
-    This function guarantees process id <-> node mapping stays the same for healthy nodes after a
-    failover. This is required to preserve shard order for in-memory checkpoint recovery. For GPU
-    training, all healthy nodes will have their process id unchanged. For TPU, all nodes in the
-    healthy slices will have their process id unchanged. See docstring of
-    `_init_consistent_proc_ids` for implementation details.
-
-    Args:
-        local_address: A IP:Port that can be used as the coordinator if this rank is elected.
-            This Port must be free in the coordinator pod and IP:Port must be reachable from all
-            other processes.
-        barrier_timeout_seconds: Timeout in seconds for the barrier and key_value_set operations.
-        trainer_dir: Path to the trainer dir.
-        local_ckpt_dir: Path to the local checkpoint dir.
-        **setup_kwargs: Args to `utils_spmd.setup()`.
-
-    Returns:
-        A _ProcessInfo whose `inv_proc_id` should be used as the process id and `address` should be
-        used as the global coordinator address.
-    """
-    platform = os.environ.get("JAX_PLATFORMS", "")
-    try:
-        start_t = time.perf_counter()
-        # Patch platform so the process doesn't waste time initializing accelerators.
-        os.environ["JAX_PLATFORMS"] = "cpu"
-        proc = mp.get_context("spawn").Process(
-            target=_init_consistent_proc_ids,
-            kwargs=dict(
-                local_address=local_address,
-                barrier_timeout_seconds=barrier_timeout_seconds,
-                trainer_dir=trainer_dir,
-                local_ckpt_dir=local_ckpt_dir,
-                **setup_kwargs,
-            ),
-        )
-        proc.start()
-        proc.join()
-        if proc.exitcode != 0:
-            raise RuntimeError(
-                "Expects id assignment process to finish normally. "
-                f"Got exit code {proc.exitcode}. Please check the log above for errors."
-            )
-
-        info = _get_previous_process_info(local_ckpt_dir, trainer_dir=trainer_dir)
-        if info.inv_proc_id == -1:
-            raise RuntimeError("Expects inv process id != -1, but got -1.")
-        logging.info(
-            "Successfully finished process ID assignment in %fs", time.perf_counter() - start_t
-        )
-        return info
-    finally:
-        # Restore previous platform settings.
-        if platform != "":
-            os.environ["JAX_PLATFORMS"] = platform
-        else:
-            del os.environ["JAX_PLATFORMS"]
 
 
 class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
