@@ -76,11 +76,19 @@ class LWSService(Service):
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("name", None, "Name of the service.", **common_kwargs)
         flags.DEFINE_string("namespace", None, "Namespace of the service.", **common_kwargs)
+        flags.DEFINE_string("protocol", None, "Protocol of the service.", **common_kwargs)
+        flags.DEFINE_string("service_type", None, "Type of the service.", **common_kwargs)
+        flags.DEFINE_integer("port", None, "Port of the service.", **common_kwargs)
+        flags.DEFINE_integer("targetport", None, "TargetPort of the service.", **common_kwargs)
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
         super().set_defaults(fv)
         fv.set_default("namespace", fv.namespace or "default")
+        fv.set_default("protocol", fv.protocol or "TCP")
+        fv.set_default("service_type", fv.service_type or "ClusterIP")
+        fv.set_default("port", fv.port or 9000)
+        fv.set_default("targetport", fv.targetport or 9000)
 
     @classmethod
     def default_config(cls):
