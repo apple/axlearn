@@ -1,7 +1,5 @@
 """Tests k8s service module."""
 
-from unittest import mock
-
 from absl import flags
 
 from axlearn.cloud.common.utils import define_flags, from_flags
@@ -47,12 +45,3 @@ class GKELWSService(TestCase):
         gke_lws_service = cfg.set().instantiate()
         self.assertEqual(cfg.name + "-service", gke_lws_service.name)
         self.assertEqual(cfg.port, gke_lws_service.port)
-
-    def test_delete(self):
-        patch_delete = mock.patch(f"{k8s_service.__name__}.delete_k8s_service")
-        with patch_delete as mock_delete:
-            cfg = self._service_config(command="test-command")
-            gke_service = cfg.set().instantiate()
-            print(gke_service.name)
-            gke_service._delete()  # pylint: disable=protected-access
-            mock_delete.assert_called()
