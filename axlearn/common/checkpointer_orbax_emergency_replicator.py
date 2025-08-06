@@ -76,14 +76,14 @@ def setup(spec: str):
     if "local_ckpt_dir" not in parsed_args:
         raise ValueError("local_ckpt_dir must be specified.")
     # Get process ID and IP of coordinator
-    # process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
+    process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
     # pylint: disable-next=missing-kwoa
     info = get_consistent_proc_info(
         **parsed_args,
         trainer_dir=FLAGS.trainer_dir,
-        distributed_coordinator=FLAGS.distributed_coordinator,
+        distributed_coordinator=coordinator_address,
         num_processes=FLAGS.num_processes,
-        process_id=FLAGS.process_id,
+        process_id=int(process_id),
         jax_backend=FLAGS.jax_backend,
         initialization_timeout=FLAGS.initialization_timeout,
     )
@@ -746,12 +746,12 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         # pylint: disable-next=unexpected-keyword-arg
         self._tensor_manager = oercp.ReplicatorCheckpointManager(
             self._local_dir,
-            persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
-            global_mesh=thread_resources.env.physical_mesh,
             options=oercp.ReplicatorCheckpointManagerOptions(
                 save_interval_steps=100,
                 step_name_format=self._name_format,
             ),
+            global_mesh=thread_resources.env.physical_mesh,
+            persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
         )
         return self._tensor_manager
 
@@ -819,9 +819,11 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         tensor_manager = self._get_tensor_manager(state_with_tensors)
         if step is None:
             common_steps = self._checkpoint_steps_include_local()
+
             if not common_steps:
                 logging.warning("Could not find any completed checkpoints under %s.", cfg.dir)
                 return None, state
+
             step = max(common_steps)
 
         restore_step, state = self._non_tensor_manager.restore(step=step, state=state)
@@ -838,18 +840,17 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             step=step,
             args=ocp.args.Composite(
                 state=ocp.args.PyTreeRestore(
-                    item=self._get_abstract_state(state_with_tensors), restore_args=restore_args
+                    item=self._get_abstract_state(state_with_tensors),
+                    restore_args=restore_args,
                 )
             ),
         )
-        # Merge non-tensor and tensor states by replacing leaves of the non-tensor Pytree with the
-        # not-None leaves of the tensor Pytree.
-        _, restored_treedef = jax.tree_util.tree_flatten(restored_state_with_tensors)
-        state_leaves, _ = jax.tree_util.tree_flatten(state)
-        compatible_state = jax.tree_util.tree_unflatten(restored_treedef, state_leaves)
+
+        restored_state_with_tensors = restored_state_with_tensors["state"]
+
         restored_state = jax.tree.map(
             lambda non_tensor, tensor: non_tensor if tensor is None else tensor,
-            compatible_state,
+            state,
             restored_state_with_tensors,
         )
 
