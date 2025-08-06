@@ -8,7 +8,7 @@ from absl import flags
 
 from axlearn.cloud.common.utils import FlagConfigurable, generate_job_name
 from axlearn.cloud.gcp.config import default_project
-from axlearn.cloud.gcp.utils import delete_k8s_service
+from axlearn.cloud.gcp.utils import custom_leaderworkerset_kwargs
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -97,9 +97,6 @@ class LWSService(Service):
         self.service_type = cfg.service_type
         self.label_name = cfg.name
 
-    def _delete(self):
-        delete_k8s_service(self.name, namespace=self.config.namespace)
-
     def _build_service(self) -> Nested[Any]:
         """
         Builds a config for a Service
@@ -108,9 +105,34 @@ class LWSService(Service):
         """
         logging.info("LWSservice class build")
         logging.info(str(self.config))
+        api_kwargs = custom_leaderworkerset_kwargs()
+
+        namespace = "default"
+        group = "leaderworkerset.x-k8s.io"  # Replace with actual API group for LWS
+        version = "v1"  # Replace with CRD version
+        plural = "leaderworkersets"  # Replace with CRD plural name
+        lws_name = self.name.split("-service")[0]
+        custom_api = k8s.client.CustomObjectsApi()
+
+        # Fetch the CR object
+        lws = custom_api.get_namespaced_custom_object(
+            group=group, version=version, namespace=namespace, plural=plural, name=lws_name
+        )
 
         return dict(
-            metadata=k8s.client.V1ObjectMeta(name=self.name),
+            metadata=k8s.client.V1ObjectMeta(
+                name=self.name,
+                owner_references=[
+                    k8s.client.V1OwnerReference(
+                        api_version=f"{api_kwargs['group']}/{api_kwargs['version']}",
+                        kind="LeaderWorkerSet",
+                        name=lws_name,  ### self.name is a name+"-service"
+                        uid=lws["metadata"]["uid"],
+                        controller=True,
+                        block_owner_deletion=True,
+                    )
+                ],
+            ),
             spec=k8s.client.V1ServiceSpec(
                 selector={"app": self.label_name},
                 ports=[

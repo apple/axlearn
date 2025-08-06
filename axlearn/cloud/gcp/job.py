@@ -27,13 +27,12 @@ from axlearn.cloud.gcp.utils import (
     custom_leaderworkerset_kwargs,
     delete_k8s_jobset,
     delete_k8s_leaderworkerset,
-    delete_k8s_service,
 )
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
 
 
-class ServiceProtocol(enum.Enum):
+class _ServiceProtocol(enum.Enum):
 
     """https://kubernetes.io/docs/reference/networking/service-protocols/"""
 
@@ -42,9 +41,9 @@ class ServiceProtocol(enum.Enum):
     SCTP = "SCTP"
 
 
-class ServiceType(enum.Enum):
+class _ServiceType(enum.Enum):
 
-    """https://cloud.google.com/kubernetes-engine/docs/concepts/service#types-of-services"""
+    """https://cloud.google.com/kubernetes-engine/docs/concepts/service#types-of-services sss"""
 
     CLUSTERIP = "ClusterIP"
     NODEPORT = "NodePort"
@@ -327,9 +326,9 @@ class GKELeaderWorkerSet(GCPJob):
         fv.set_default("retry_interval", fv.retry_interval or 60)
         fv.set_default("enable_service", fv.enable_service or False)
         fv.set_default("targetport", fv.targetport or 9000)
-        fv.set_default("port", fv.port or 8080)
-        fv.set_default("protocol", fv.protocol or ServiceProtocol.TCP.value)
-        fv.set_default("service_type", fv.service_type or ServiceType.CLUSTERIP.value)
+        fv.set_default("port", fv.port or 9000)
+        fv.set_default("protocol", fv.protocol or _ServiceProtocol.TCP.value)
+        fv.set_default("service_type", fv.service_type or _ServiceType.CLUSTERIP.value)
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -344,19 +343,21 @@ class GKELeaderWorkerSet(GCPJob):
         )
         #### https://kubernetes.io/docs/reference/networking/service-protocols/ #####
         #### Available types: TCP, UDP, SCTP #####
-        flags.DEFINE_string(
+        flags.DEFINE_enum(
             "protocol",
             None,
-            "Protocol type of service for LWS",
-            **common_kwargs,
+            [v.value for v in _ServiceProtocol],
+            help="Protocol type of service for LWS",
+            flag_values=fv,
         )
         ##### https://cloud.google.com/kubernetes-engine/docs/how-to/exposing-apps ####
         ## Available types: ClusterIP(default), NodePort, LoadBalancer, ExternalName, Headless ##
-        flags.DEFINE_string(
+        flags.DEFINE_enum(
             "service_type",
             None,
-            "Type of service for LWS",
-            **common_kwargs,
+            [v.value for v in _ServiceType],
+            help="Service type for LWS",
+            flag_values=fv,
         )
         flags.DEFINE_integer(
             "port",
@@ -364,6 +365,7 @@ class GKELeaderWorkerSet(GCPJob):
             "External port where application is exposed through service",
             **common_kwargs,
         )
+
         flags.DEFINE_integer(
             "targetport", None, " Application port which the service redirects to", **common_kwargs
         )
@@ -395,8 +397,6 @@ class GKELeaderWorkerSet(GCPJob):
         # This is not fully blocking; after the call returns there can be a delay before
         # everything is deleted.
         delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
-        if cfg.enable_service:
-            delete_k8s_service(cfg.name + "-service", namespace=cfg.namespace)
 
     def _build_leaderworkerset(self) -> Nested[Any]:
         """
@@ -419,12 +419,6 @@ class GKELeaderWorkerSet(GCPJob):
     def _execute(self):
         cfg: GKELeaderWorkerSet.Config = self.config
 
-        #### Creating a  Service #######
-        if cfg.enable_service:
-            service = LWSService(cfg)
-            resp = service.execute()
-            logging.info("Service created %s", str(resp))
-
         api_kwargs = custom_leaderworkerset_kwargs()
         custom_object = dict(
             apiVersion=f"{api_kwargs['group']}/{api_kwargs['version']}",
@@ -432,11 +426,18 @@ class GKELeaderWorkerSet(GCPJob):
             **self._build_leaderworkerset(),
         )
         logging.info("submitting LeaderWorkerSet: %s", custom_object)
-        return k8s.client.CustomObjectsApi().create_namespaced_custom_object(
+        lws_resp = k8s.client.CustomObjectsApi().create_namespaced_custom_object(
             namespace=cfg.namespace,
             body=custom_object,
             **api_kwargs,
         )
+        #### Creating a  Service #######
+        if cfg.enable_service:
+            service = LWSService(cfg)
+            resp = service.execute()
+            logging.info("Service created %s", str(resp))
+
+        return lws_resp
 
 
 def exclusive_topology_annotations_leaderworkerset() -> dict:

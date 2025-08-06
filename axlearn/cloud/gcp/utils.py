@@ -430,17 +430,3 @@ def list_k8s_leaderworkerset(*, namespace: str) -> list[str]:
 
 def custom_leaderworkerset_kwargs() -> dict[str, str]:
     return dict(group="leaderworkerset.x-k8s.io", version="v1", plural="leaderworkersets")
-
-def delete_k8s_service(name: str, *, namespace: str):
-    # Delete the service
-
-    # Avoid introducing a k8s dependency globally.
-    # pylint: disable-next=import-error,import-outside-toplevel
-    import kubernetes as k8s  # pytype: disable=import-error
-
-    v1 = k8s.client.CoreV1Api()
-    try:
-        v1.delete_namespaced_service(name=name, namespace=namespace)
-        print(f"Service '{name}' deleted from namespace '{namespace}'.")
-    except k8s.client.exceptions.ApiException as e:
-        print(f"Exception when deleting service: {e}")
