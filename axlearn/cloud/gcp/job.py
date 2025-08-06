@@ -434,8 +434,8 @@ class GKELeaderWorkerSet(GCPJob):
         #### Creating a  Service #######
         if cfg.enable_service:
             service = LWSService(cfg)
-            resp = service.execute()
-            logging.info("Service created %s", str(resp))
+            service_resp = service.execute()
+            logging.info("Service created %s", str(service_resp))
 
         return lws_resp
 

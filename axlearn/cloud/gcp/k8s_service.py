@@ -116,9 +116,9 @@ class LWSService(Service):
         api_kwargs = custom_leaderworkerset_kwargs()
 
         namespace = "default"
-        group = "leaderworkerset.x-k8s.io"  # Replace with actual API group for LWS
-        version = "v1"  # Replace with CRD version
-        plural = "leaderworkersets"  # Replace with CRD plural name
+        group = api_kwargs["group"]
+        version = api_kwargs["version"]
+        plural = api_kwargs["plural"]
         lws_name = self.name.split("-service")[0]
         custom_api = k8s.client.CustomObjectsApi()
 
