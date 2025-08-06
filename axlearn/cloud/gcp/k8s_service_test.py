@@ -17,19 +17,21 @@ class GKELWSService(TestCase):
         *,
         command: str,
         **kwargs,
-    ) -> tuple[k8s_service.LWSService.Config]:
+    ) -> k8s_service.LWSService.Config:
         fv = flags.FlagValues()
         cfg = k8s_service.LWSService.default_config().set()
 
         define_flags(cfg, fv)
+        print(kwargs)
         for key, value in kwargs.items():
+            print(key, value)
             if value is not None:
                 # Use setattr rather than set_default to set flags.
                 setattr(fv, key, value)
         fv.name = "fake-name"
         fv.project = "fake-project"
         fv.mark_as_parsed()
-        from_flags(cfg, fv, command=command)
+        cfg = from_flags(cfg, fv, command=command)
         # Test that retries are configured on fv by default.
         self.assertIsNotNone(fv["name"])
         return cfg
@@ -39,6 +41,8 @@ class GKELWSService(TestCase):
     ):
         cfg = self._service_config(
             command="test-command",
+            project="fake-project",
+            port=9000,
         )
         self.assertIsInstance(cfg, k8s_service.LWSService.Config)
         self.assertEqual(cfg.project, "fake-project")
