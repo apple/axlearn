@@ -314,6 +314,8 @@ def _init_consistent_proc_ids(
     # Then, rank 0 assigns inv_proc_id for worker that's missing their inv_proc_id and find the
     # coordinator address.
     if local_proc_info.cur_proc_id == 0:
+        jax_devices = [dev.id for dev in jax.devices()]
+        logging.info("jax_devices=%s", jax_devices)
         ids = client.key_value_dir_get(key_prefix)
         proc_infos: list[_ProcessInfo] = []
 
