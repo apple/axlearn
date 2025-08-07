@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 from absl import logging
 from jax.experimental.shard_map import shard_map
-from jax.interpreters.pxla import thread_resources
+from jax.extend.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention, KVState
