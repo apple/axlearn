@@ -318,6 +318,7 @@ class GKELeaderWorkerSet(GCPJob):
         targetport: int = None
         service_type: str = None
         protocol: str = None
+        service: Optional[LWSService.Config] = None
 
     @classmethod
     def set_defaults(cls, fv):
@@ -433,9 +434,10 @@ class GKELeaderWorkerSet(GCPJob):
         )
         #### Creating a  Service #######
         if cfg.enable_service:
-            service = LWSService(cfg)
-            service_resp = service.execute()
+            service_resp = cfg.service.instantiate().execute()
             logging.info("Service created %s", str(service_resp))
+        else:
+            cfg.service = None
 
         return lws_resp
 
