@@ -24,7 +24,7 @@ from jax._src.mesh import thread_resources
 from jax.experimental.array_serialization import serialization
 
 from axlearn.common import file_system as fs
-from axlearn.common import utils, utils_spmd
+from axlearn.common import utils
 from axlearn.common.checkpointer import (
     BaseCheckpointer,
     Checkpointer,
@@ -74,16 +74,10 @@ def setup(spec: str):
         raise ValueError("local_ckpt_dir must be specified.")
     # Get process ID and IP of coordinator
     process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
-    # pylint: disable-next=missing-kwoa
-    utils_spmd.setup(
-        jax_backend=FLAGS.jax_backend,
-        distributed_coordinator=coordinator_address,
-        process_id=int(process_id),
-        initialization_timeout=FLAGS.initialization_timeout,
-    )
     FLAGS.process_id = int(process_id)
     FLAGS.distributed_coordinator = coordinator_address
     FLAGS.experimental_orbax_use_distributed_process_id = True
+
     yield
 
 
@@ -337,7 +331,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
 
         num_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
         # De-hardcode
-        use_replicator_service = False
+        use_replicator_service = True
         if use_replicator_service:
             replicator_file = "replicator.yaml"
             temp_file = replicator_file + ".tmp"
