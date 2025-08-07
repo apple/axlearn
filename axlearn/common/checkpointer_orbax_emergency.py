@@ -90,6 +90,9 @@ def setup(spec: str):
     FLAGS.process_id = info.inv_proc_id
     FLAGS.distributed_coordinator = info.address
     FLAGS.experimental_orbax_use_distributed_process_id = True
+    # Required for case when slices swap and ici_dp=2 or higher.
+    # PR that introduced this flag: https://github.com/google/orbax/pull/2222
+    FLAGS.experimental_use_distributed_id_for_mesh_consistency = False
     yield
 
 
