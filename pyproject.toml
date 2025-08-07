@@ -79,6 +79,7 @@ dev = [
     "timm==0.6.12",  # DiT Dependency test-only
     "torch>=1.12.1",  # test-only
     "torchvision==0.16.1",  # test-only
+    "safetensors<=0.5.3",  # TODO: Remove once torch dependency is >=2.3.0
     "transformers==4.51.3",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
