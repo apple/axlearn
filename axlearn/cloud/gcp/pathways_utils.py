@@ -308,6 +308,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
                 image=_PATHWAYS_PROXY_IMAGE,
+                imagePullPolicy="Always",
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
@@ -318,6 +319,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             dict(
                 name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
                 image=_PATHWAYS_SERVER_IMAGE,
+                imagePullPolicy="Always",
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
