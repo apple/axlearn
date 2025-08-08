@@ -531,6 +531,13 @@ class SpmdTrainer(Module):
         if self._recorder is not None:
             self._recorder.record(event, *args, **kwargs)
 
+    def _maybe_monitor_all(self):
+        return (
+            self._recorder.maybe_monitor_all()
+            if self._recorder is not None
+            else contextlib.nullcontext()
+        )
+
     # pylint: disable-next=too-many-statements,too-many-branches
     def run(
         self, prng_key: Tensor, *, return_evaler_summaries: Optional[Union[bool, set[str]]] = None
@@ -566,6 +573,7 @@ class SpmdTrainer(Module):
             self.mesh(),
             jax.log_compiles(self.vlog_is_on(1)),
             self._context_manager(),
+            self._maybe_monitor_all(),
         ):
             cfg = self.config
             # Check if need to force run evals at the last training step.
