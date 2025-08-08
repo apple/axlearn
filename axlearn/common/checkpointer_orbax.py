@@ -13,9 +13,12 @@ from concurrent import futures
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import jax
+import numpy as np
 import orbax.checkpoint as ocp
 import tensorflow as tf
 from absl import logging
+from orbax.checkpoint._src.metadata import array_metadata_store as array_metadata_store_lib
+from orbax.checkpoint._src.serialization.type_handlers import ArrayHandler
 
 from axlearn.common import utils
 from axlearn.common.checkpointer import (
@@ -187,15 +190,18 @@ class OrbaxCheckpointer(BaseCheckpointer):
 
         Attributes:
             keep_last_n: Keep this many past ckpts.
+            keep_every_n_steps: If set, keep a checkpoint every n steps.
             validation_type: Checkpoint validation during restore.
             async_timeout_secs: Timeout for async barrier in seconds.
         """
 
         keep_last_n: int = 1
+        keep_every_n_steps: Optional[int] = None
         validation_type: CheckpointValidationType = CheckpointValidationType.EXACT
         async_timeout_secs: int = 300
         max_concurrent_save_gb: Optional[int] = None
         max_concurrent_restore_gb: Optional[int] = None
+        enable_single_replica_ckpt_restoring: bool = True
 
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> List[str]:
@@ -237,6 +243,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
             options=ocp.CheckpointManagerOptions(
                 create=True,
                 max_to_keep=cfg.keep_last_n,
+                keep_period=cfg.keep_every_n_steps,
                 enable_async_checkpointing=True,
                 step_name_format=self._name_format,
                 should_save_fn=save_fn_with_summaries,
@@ -321,11 +328,33 @@ class OrbaxCheckpointer(BaseCheckpointer):
 
         cfg: OrbaxCheckpointer.Config = self.config
 
+        if cfg.enable_single_replica_ckpt_restoring:
+            array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
+                replica_axis_index=0,
+                broadcast_memory_limit_bytes=1024 * 1024 * 1000,  # 1000 MB limit
+            )
+            ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
+
         def _restore_args(x: Any) -> ocp.RestoreArgs:
             if isinstance(x, (Tensor, TensorSpec)):
-                return ocp.checkpoint_utils.construct_restore_args(
-                    jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype, sharding=x.sharding)
-                )
+                if cfg.enable_single_replica_ckpt_restoring:
+                    pspec = x.sharding.spec
+                    mesh = x.sharding.mesh
+                    replica_axis_index = 0
+                    replica_devices = _replica_devices(mesh.devices, replica_axis_index)
+                    replica_mesh = jax.sharding.Mesh(replica_devices, mesh.axis_names)
+                    single_replica_sharding = jax.sharding.NamedSharding(replica_mesh, pspec)
+
+                    return ocp.type_handlers.SingleReplicaArrayRestoreArgs(
+                        sharding=jax.sharding.NamedSharding(mesh, pspec),
+                        single_replica_sharding=single_replica_sharding,
+                        global_shape=x.shape,
+                        dtype=x.dtype,
+                    )
+                else:
+                    return ocp.checkpoint_utils.construct_restore_args(
+                        jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype, sharding=x.sharding)
+                    )
             elif isinstance(x, tf.data.Iterator):
                 return _TfIteratorHandler.RestoreArgs(item=x)
             elif _GRAIN_INSTALLED and isinstance(x, _GrainIterator):
@@ -349,6 +378,13 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 raise ValueError(f"Failed to restore at step {step}.") from e
             logging.info("Could not find any completed checkpoints under %s: %s", cfg.dir, e)
             return None, state  # Return the input state.
+        finally:
+            if cfg.enable_single_replica_ckpt_restoring:
+                ocp.type_handlers.register_type_handler(
+                    jax.Array,
+                    ArrayHandler(array_metadata_store=array_metadata_store_lib.Store()),
+                    override=True,
+                )
 
         restored_index = composite_state["index"]
         restored_state = composite_state["state"]
@@ -375,3 +411,29 @@ class OrbaxCheckpointer(BaseCheckpointer):
     def stop(self, *, has_exception: bool = False):
         """See `BaseCheckpointer.stop` for details."""
         self._manager.close()
+
+
+def _find_idx(array: np.ndarray, replica_axis_idx: int):
+    """Returns the index along given dimension that the current host belongs to."""
+    idx = None
+    for idx, val in np.ndenumerate(array):
+        if val.process_index == jax.process_index():
+            break
+    return idx[replica_axis_idx]
+
+
+def _replica_devices(device_array: np.ndarray, replica_axis_idx: int):
+    """Returns the devices from the replica that current host belongs to.
+
+    Replicas are assumed to be restricted to the first axis.
+
+    Args:
+      device_array: devices of the mesh that can be obtained by mesh.devices()
+      replica_axis_idx: axis dimension along which replica is taken
+
+    Returns:
+      devices inside the replica that current host is in
+    """
+    idx = _find_idx(device_array, replica_axis_idx)
+    replica_result = np.take(device_array, idx, axis=replica_axis_idx)
+    return np.expand_dims(replica_result, axis=replica_axis_idx)
