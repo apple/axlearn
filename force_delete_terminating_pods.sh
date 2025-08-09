@@ -5,7 +5,7 @@
 
 # --- Configuration ---
 # The maximum duration (in seconds) a pod is allowed to be in the Terminating state.
-STUCK_DURATION_SECONDS=1200
+STUCK_DURATION_SECONDS=300
 
 # How often (in seconds) the script should check for stuck pods.
 CHECK_INTERVAL_SECONDS=60

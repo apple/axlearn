@@ -158,7 +158,7 @@ orbax = [
     # "orbax-checkpoint==0.11.21",
     # "orbax-checkpoint @ git+https://github.com/samos123/orbax.git@v0.11.21-em#subdirectory=checkpoint"
     # Single replica restore from GCS with Orbax EM
-    "orbax-checkpoint @ git+https://github.com/samos123/orbax.git@v0.11.21-em-sr#subdirectory=checkpoint"
+    "orbax-checkpoint @ git+https://github.com/samos123/orbax.git@v0.11.21-em-sr2#subdirectory=checkpoint"
     # "orbax-checkpoint @ git+https://github.com/google/orbax.git@main#subdirectory=checkpoint"
 ]
 # Audio dependencies.
