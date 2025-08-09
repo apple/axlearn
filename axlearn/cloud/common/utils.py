@@ -379,6 +379,7 @@ class AcceleratorConfig(ConfigBase):
 
     instance_type: Required[str] = REQUIRED
     num_replicas: int = 1
+    topology: Optional[str] = None
 
 
 def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
@@ -386,6 +387,14 @@ def accelerator_flags(flag_values: flags.FlagValues, **kwargs):
     flags.DEFINE_string("instance_type", None, "Instance type.", flag_values=flag_values, **kwargs)
     flags.DEFINE_integer(
         "num_replicas", 1, "Number of replicas.", flag_values=flag_values, **kwargs
+    )
+    flags.DEFINE_string(
+        "topology",
+        None,
+        "Custom topology to provide to the TPU node pool. If not set, the default topology "
+        "defined in axlearn/cloud/gcp/system_characteristics.py will be used.",
+        flag_values=flag_values,
+        **kwargs,
     )
 
 

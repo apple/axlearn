@@ -6,6 +6,7 @@ import io
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 from urllib.parse import urlparse
@@ -31,7 +32,7 @@ from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
-from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -294,7 +295,9 @@ class SingleReplicatedJob(BaseReplicatedJob):
         cfg.service_account = cfg.service_account or gcp_settings(
             "k8s_service_account", default="default", fv=fv
         )
-        cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
+        cfg.accelerator.set(
+            instance_type=fv.instance_type, num_replicas=fv.num_replicas, topology=fv.topology
+        )
         # pylint: disable=missing-kwoa
         # pytype: disable=missing-parameter
         if fv.gcsfuse_mount_spec:
@@ -304,8 +307,32 @@ class SingleReplicatedJob(BaseReplicatedJob):
                 HostMount(**parse_kv_flags(item.split(","), delimiter="="))
                 for item in fv.host_mount_spec
             ]
+        if fv.topology:
+            cls.verify_custom_topology_availability(cfg.accelerator)
         # pytype: enable=missing-parameter
         return cfg
+
+    @classmethod
+    def verify_custom_topology_availability(cls, accelerator: AcceleratorConfig):
+        tpu_type = infer_tpu_type(accelerator.instance_type)
+        cores = infer_tpu_cores(tpu_type)
+        topology = accelerator.topology
+        if not tpu_type.startswith("v5p") or cores < 128:
+            raise ValueError("custom topology is only available for v5p-128 and above.")
+        if not re.fullmatch(r"\d+x\d+x\d+", topology):
+            raise ValueError("custom topology only supports 3d topology for v5p.")
+        dims = [int(dim.strip()) for dim in topology.split("x")]
+        if any(dim == 1 for dim in dims):
+            # Note that v5p-8's topology is 2*2*1, but v5p-8 doesn't support custom
+            # topology so it will fail checks above. So we don't specially handle it
+            # in this branch.
+            raise ValueError("There should be no 1 in each topology dimension.")
+        cores_in_topology = math.prod(dims)
+        if cores != cores_in_topology:
+            raise ValueError(
+                f"custom topology {topology} doesn't match the number of cores in "
+                f"instance_type {accelerator.instance_type}."
+            )
 
 
 class TPUJobBuilder(SingleReplicatedJob):
@@ -697,7 +724,7 @@ class TPUJobBuilder(SingleReplicatedJob):
             hostAliases=[metadata_host_alias],
             nodeSelector={
                 "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                "cloud.google.com/gke-tpu-topology": system.topology,
+                "cloud.google.com/gke-tpu-topology": cfg.accelerator.topology or system.topology,
                 **selector,
             },
             tolerations=tolerations,
