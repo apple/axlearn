@@ -174,6 +174,8 @@ class BaseGoldenConfigTest(TestCase):
     def _flags(self, request):
         # pylint: disable-next=attribute-defined-outside-init
         self._update = request.config.getoption("--update")
+        self._verify = not request.config.getoption("--golden-file-no-verify")
+        assert self._update or self._verify
 
     def _test(
         self,
@@ -183,14 +185,40 @@ class BaseGoldenConfigTest(TestCase):
         *,
         test_type: GoldenTestType,
     ):
+        actual_result, comparison_fn = self._get_golden_results(
+            module=module,
+            config_name=config_name,
+            trainer_config=trainer_config,
+            test_type=test_type,
+        )
+
+        # We need to read file first in case it is updated soon.
+        if self._verify:
+            with open(self._golden_file_path(module, config_name, test_type), "rb") as f:
+                golden_result = f.read()
+
         if self._update:
-            self._update_golden_file(
-                module, config_name, trainer_config=trainer_config, test_type=test_type
-            )
-        else:
-            self._check_against_golden_file(
-                module, config_name, trainer_config=trainer_config, test_type=test_type
-            )
+            config_path = self._golden_file_path(module, config_name, test_type)
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            if isinstance(actual_result, str):
+                result = actual_result.encode("utf-8")
+            elif not isinstance(actual_result, bytes):
+                raise ValueError(f"Invalid golden result type {type(actual_result)}.")
+            with open(config_path, "wb") as f:
+                f.write(result)
+
+        if self._verify:
+            if isinstance(actual_result, str):
+                result = golden_result.decode("utf-8")
+            else:
+                result = golden_result
+            try:
+                comparison_fn(actual_result, result)
+            except AssertionError as e:
+                raise AssertionError(
+                    f"Golden {test_type.value} files have changed. If this is expected, run "
+                    f"`pytest -n auto {self._filepath} --update` to update golden files."
+                ) from e
 
     @property
     def _filepath(self):
@@ -383,56 +411,6 @@ class BaseGoldenConfigTest(TestCase):
                         )
 
                     return result, comparison_fn
-
-    def _check_against_golden_file(
-        self,
-        module: str,
-        config_name: str,
-        *,
-        trainer_config: TrainerConfigFn,
-        test_type: GoldenTestType,
-    ):
-        with open(self._golden_file_path(module, config_name, test_type), "rb") as f:
-            golden_result = f.read()
-        try:
-            actual_result, comparison_fn = self._get_golden_results(
-                module=module,
-                config_name=config_name,
-                trainer_config=trainer_config,
-                test_type=test_type,
-            )
-            if isinstance(actual_result, str):
-                golden_result = golden_result.decode("utf-8")
-            comparison_fn(actual_result, golden_result)
-
-        except AssertionError as e:
-            raise AssertionError(
-                f"Golden {test_type.value} files have changed. If this is expected, run "
-                f"`pytest -n auto {self._filepath} --update` to update golden files."
-            ) from e
-
-    def _update_golden_file(
-        self,
-        module: str,
-        config_name: str,
-        *,
-        trainer_config: TrainerConfigFn,
-        test_type: GoldenTestType,
-    ):
-        config_path = self._golden_file_path(module, config_name, test_type)
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        result, _ = self._get_golden_results(
-            module=module,
-            config_name=config_name,
-            trainer_config=trainer_config,
-            test_type=test_type,
-        )
-        if isinstance(result, str):
-            result = result.encode("utf-8")
-        elif not isinstance(result, bytes):
-            raise ValueError(f"Invalid golden result type {type(result)}.")
-        with open(config_path, "wb") as f:
-            f.write(result)
 
     def compare_str(self, actual_result: str, golden_result: str):
         self.assertListEqual(golden_result.split("\n"), actual_result.split("\n"))
