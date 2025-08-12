@@ -161,10 +161,10 @@ from axlearn.common.utils import (
     check_numerics,
     flatten_items,
     get_or_none,
+    maybe_shard,
     save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
-    with_sharding_constraint,
 )
 
 
@@ -1560,18 +1560,18 @@ class MultiheadAttention(BaseLayer):
         logit_sink: Optional[bool] = None
 
         # Partition spec for query ([batch, seq, q_heads, head_dim]) after input projections.
-        q_partition_spec: Optional[PartitionSpec] = None
+        q_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
 
         # Partition spec for key ([batch, seq, kv_heads, head_dim]) after input projections.
         # Follows `q_partition_spec` if None.
-        k_partition_spec: Optional[PartitionSpec] = None
+        k_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
 
         # Partition spec for value ([batch, seq, kv_heads, head_dim]) after input projections.
         # Follows `q_partition_spec` if None.
-        v_partition_spec: Optional[PartitionSpec] = None
+        v_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
 
         # Partition spec for output ([batch, seq, hidden_dim]) after output projections.
-        o_partition_spec: Optional[PartitionSpec] = None
+        o_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1736,12 +1736,9 @@ class MultiheadAttention(BaseLayer):
             time_step = cached_states["time_step"]
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
-        if cfg.q_partition_spec:
-            q_proj = with_sharding_constraint(q_proj, cfg.q_partition_spec)
-        if cfg.q_partition_spec or cfg.k_partition_spec:
-            k_proj = with_sharding_constraint(k_proj, cfg.k_partition_spec or cfg.q_partition_spec)
-        if cfg.q_partition_spec or cfg.v_partition_spec:
-            v_proj = with_sharding_constraint(v_proj, cfg.v_partition_spec or cfg.q_partition_spec)
+        q_proj = maybe_shard(q_proj, cfg.q_partition_spec)
+        k_proj = maybe_shard(k_proj, cfg.k_partition_spec or cfg.q_partition_spec)
+        v_proj = maybe_shard(v_proj, cfg.v_partition_spec or cfg.q_partition_spec)
 
         if cfg.scale_kv_before_cache_update:
             if has_external_kv_state:
@@ -1844,8 +1841,7 @@ class MultiheadAttention(BaseLayer):
 
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
-        if cfg.o_partition_spec:
-            o_proj = with_sharding_constraint(o_proj, cfg.o_partition_spec)
+        o_proj = maybe_shard(o_proj, cfg.o_partition_spec)
         outputs = self._remat_name(o_proj, "o_proj")
         self._add_tensor_stats("o_proj_outputs", outputs)
         return_aux = return_aux or set()
@@ -3608,15 +3604,17 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
 def set_attention_partition_specs(
     cfg: MultiheadAttention.Config,
     *,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
     fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
     tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
+    set_attn_activation_specs: bool = False,
 ):
     """Sets `cfg` to shard attention weights over both fsdp and tp axes.
 
     Args:
         cfg: A MultiheadAttention layer config to apply sharding spec to.
-        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
-        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        **kwargs: See `set_double_shard_weights_config`.
     """
     # Shard weights.
     input_linear_cfg = cfg.input_linear
@@ -3624,6 +3622,10 @@ def set_attention_partition_specs(
         input_linear_cfg = input_linear_cfg.input_linear
     input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
     cfg.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+
+    if set_attn_activation_specs:
+        cfg.q_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names, None)
+        cfg.o_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
 
 
 def set_feed_forward_partition_specs(
@@ -3638,10 +3640,7 @@ def set_feed_forward_partition_specs(
 
     Args:
         cfg: A TransformerFeedForwardLayer layer config to apply sharding spec to.
-        batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
-        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
-        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
-        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+        **kwargs: See `set_double_shard_weights_config`.
     """
     # Shard weights.
     cfg.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
@@ -3658,6 +3657,7 @@ def set_double_shard_weights_config(
     fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
     tp_axis_names: Union[str, Sequence[str]] = "model",
     seq_axis_names: Union[str, Sequence[str]] = "seq",
+    set_attn_activation_specs: bool = False,
 ):
     """Sets `cfg` to shard FFN and attention weights over both fsdp and tp axes.
 
@@ -3667,32 +3667,35 @@ def set_double_shard_weights_config(
         fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
         tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
         seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+        set_attn_activation_specs: Whether to set activation spec of qkvo projections. This may be
+            required in for some complex sharding cases.
     """
 
     # pytype: disable=attribute-error
     if not isinstance(cfg, Sequence):
         cfg = [cfg]
 
+    axis_names = dict(
+        batch_axis_names=batch_axis_names,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+        seq_axis_names=seq_axis_names,
+    )
+
     for layer_cfg in cfg:
         set_attention_partition_specs(
             layer_cfg.self_attention.attention,
-            fsdp_axis_names=fsdp_axis_names,
-            tp_axis_names=tp_axis_names,
+            set_attn_activation_specs=set_attn_activation_specs,
+            **axis_names,
         )
         if layer_cfg.cross_attention is not None:
             set_attention_partition_specs(
                 layer_cfg.cross_attention.attention,
-                fsdp_axis_names=fsdp_axis_names,
-                tp_axis_names=tp_axis_names,
+                set_attn_activation_specs=set_attn_activation_specs,
+                **axis_names,
             )
         if isinstance(layer_cfg.feed_forward, TransformerFeedForwardLayer.Config):
-            set_feed_forward_partition_specs(
-                layer_cfg.feed_forward,
-                batch_axis_names=batch_axis_names,
-                fsdp_axis_names=fsdp_axis_names,
-                tp_axis_names=tp_axis_names,
-                seq_axis_names=seq_axis_names,
-            )
+            set_feed_forward_partition_specs(layer_cfg.feed_forward, **axis_names)
     # pytype: enable=attribute-error
 
 

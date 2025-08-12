@@ -170,3 +170,9 @@ wandb/
 
 # Custom
 .axlearn.config
+
+# Bazel
+bazel-*
+
+# Emacs
+*~

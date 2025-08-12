@@ -17,15 +17,6 @@ exit_if_error() {
   exit "$exit_code"
 }
 
-download_assets() {
-  set -e -x
-  mkdir -p axlearn/data/tokenizers/sentencepiece
-  mkdir -p axlearn/data/tokenizers/bpe
-  curl https://huggingface.co/t5-base/resolve/main/spiece.model -o axlearn/data/tokenizers/sentencepiece/t5-base
-  curl https://huggingface.co/FacebookAI/roberta-base/raw/main/merges.txt -o axlearn/data/tokenizers/bpe/roberta-base-merges.txt
-  curl https://huggingface.co/FacebookAI/roberta-base/raw/main/vocab.json -o axlearn/data/tokenizers/bpe/roberta-base-vocab.json
-}
-
 precommit_checks() {
   set -e -x
   pre-commit install
@@ -36,8 +27,6 @@ precommit_checks() {
 
 # Collect all background PIDs explicitly.
 TEST_PIDS=()
-
-download_assets
 
 if [[ "${1:-x}" = "--skip-pre-commit" ]] ; then
   SKIP_PRECOMMIT=true

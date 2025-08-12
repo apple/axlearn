@@ -71,12 +71,16 @@ def mock_openai_package():
     mock_openai_types = types.ModuleType("openai.types")
     mock_openai_types_chat = types.ModuleType("openai.types.chat")
     mock_chat_completion_message = types.ModuleType("openai.types.chat.chat_completion_message")
+    mock_chat_completion_token_logprob = types.ModuleType(
+        "openai.types.chat.chat_completion_token_logprob"
+    )
     mock_chat_completion_message_tool_call = types.ModuleType(
         "openai.types.chat.chat_completion_message_tool_call"
     )
 
     mock_chat_completion_message.ChatCompletionMessage = MagicMock()
     mock_chat_completion_message.ChatCompletionMessageToolCall = MagicMock()
+    mock_chat_completion_token_logprob.ChatCompletionTokenLogprob = MagicMock()
     mock_chat_completion_message_tool_call.Function = MagicMock()
 
     mock_openai_types_completion = types.ModuleType("openai.types.completion")
@@ -87,6 +91,7 @@ def mock_openai_package():
     mock_openai.types.chat = mock_openai_types_chat
     mock_openai.types.chat.ChatCompletion = MagicMock()
     mock_openai.types.chat.chat_completion_message = mock_chat_completion_message
+    mock_openai.types.chat.chat_completion_token_logprob = mock_chat_completion_token_logprob
     mock_openai.types.chat.chat_completion_message_tool_call = (
         mock_chat_completion_message_tool_call
     )
@@ -100,6 +105,9 @@ def mock_openai_package():
         sys.modules["openai.types"] = mock_openai_types
         sys.modules["openai.types.chat"] = mock_openai_types_chat
         sys.modules["openai.types.chat.chat_completion_message"] = mock_chat_completion_message
+        sys.modules[
+            "openai.types.chat.chat_completion_token_logprob"
+        ] = mock_chat_completion_token_logprob
         sys.modules[
             "openai.types.chat.chat_completion_message_tool_call"
         ] = mock_chat_completion_message_tool_call

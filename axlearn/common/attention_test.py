@@ -2467,7 +2467,7 @@ class MultiheadAttentionTest(TestCase):
         )
         self.assertNestedAllClose(base_outputs, test_outputs)
 
-    @parameterized.product(kv_part=[None, PartitionSpec("fsdp", None, "model", None)])
+    @parameterized.product(kv_part=[None, ("fsdp", None, "model", None)])
     @pytest.mark.d8
     def test_qkvo_partition_spec(self, kv_part):
         """Tests that QKVO partition spec are applied correctly when specified."""
@@ -2477,8 +2477,8 @@ class MultiheadAttentionTest(TestCase):
         model_dim = 16
         num_heads = 4
         mesh = jax.make_mesh(mesh_shape, axis_names=("fsdp", "seq", "model"))
-        q_part = PartitionSpec("fsdp", "seq", "model", None)
-        o_part = PartitionSpec("fsdp", "seq", None)
+        q_part = ("fsdp", "seq", "model", None)
+        o_part = ("fsdp", "seq", None)
 
         layer_kwargs = dict(
             query_dim=model_dim,
@@ -2514,14 +2514,14 @@ class MultiheadAttentionTest(TestCase):
                 # pylint: disable-next=protected-access
                 normalize_spec = sharding.spec._normalized_spec_for_aval(len(tensor.shape))
                 if name == "q_proj":
-                    self.assertEqual(normalize_spec, q_part)
+                    self.assertEqual(normalize_spec, PartitionSpec(*q_part))
                 elif name == "o_proj":
-                    self.assertEqual(normalize_spec, o_part)
+                    self.assertEqual(normalize_spec, PartitionSpec(*o_part))
                 elif name in ["k_proj", "v_proj"]:
                     if kv_part is None:
-                        self.assertEqual(normalize_spec, q_part)
+                        self.assertEqual(normalize_spec, PartitionSpec(*q_part))
                     else:
-                        self.assertEqual(normalize_spec, kv_part)
+                        self.assertEqual(normalize_spec, PartitionSpec(*kv_part))
 
             jax.debug.inspect_array_sharding(tensor, callback=callback)
             return tensor

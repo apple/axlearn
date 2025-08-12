@@ -780,6 +780,16 @@ def _wrapped_usage(
 
 
 if __name__ == "__main__":
+    # remove FLAGS injected by tensorflow and array record package during import
+    # example: import grain.python as grain
+    # TODO: remove this after we stop using the global FLAG for axlearn flags
+    flags_to_remove = []
+    modules_to_exclude = ["tensorflow", "grain", "array_record", "orbax"]
+    for module_name, flags_list in FLAGS.flags_by_module_dict().items():
+        if any(module_name.startswith(module_prefix) for module_prefix in modules_to_exclude):
+            flags_to_remove.extend(flags_list)
+    for flag_to_remove in flags_to_remove:
+        delattr(FLAGS, flag_to_remove.name)
     configure_logging(logging.INFO)
     _private_flags()
     app.run(main)
