@@ -229,7 +229,7 @@ def _retrieve_jax_init_info(local_ckpt_dir):
 
 
 class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
-    """Checkpointer implementation that uses Orbax emergency checkpoint.
+    """Checkpointer implementation that uses Orbax emergency replicator checkpointer.
 
     EXPERIMENTAL. Do not use for actual training runs since the checkpoint layout will likely
     change in the future."""
@@ -317,7 +317,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         #     fs.makedirs(os.path.join(cfg.dir, self._TENSORS_PREFIX))
         self._local_dir = cfg.local_dir
         fs.makedirs(self._local_dir)
-        # Orbax emergency ckpt requires this function to be called prior to checkpointer
+        # Orbax replicator ckpt requires this function to be called prior to checkpointer
         # operations. This function also serves as a barrier.
         ocp.multihost.initialize_runtime_to_distributed_ids()
         ocp.multihost.initialize_distributed_to_device_ids()
@@ -336,7 +336,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             temp_file = epath.Path(self._local_dir) / temp_file
             num_nodes = jax.process_count()
             nodes_per_slice = num_nodes // num_slices
-            # node_rank = jax.process_index()
 
             node_rank = global_state.process_id
             my_process_index = jax.process_index()
@@ -401,13 +400,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         self._eval_summaries = None
         self._reached_preemption = False
 
-    # pylint: disable-next=redefined-builtin
-    #    def ckpt_dir(self, step: int, dir: Optional[str] = None) -> str:
-    #        """Obtains the checkpoint dir for the given step."""
-    #        if dir is None:
-    #            dir = self._non_tensor_manager.directory
-    #        return str(ocp.step.build_step_path(dir, self._name_format, step))
-
     def _get_abstract_state(
         self, state_with_tensors: Nested[Tensor]
     ) -> Nested[jax.ShapeDtypeStruct]:
@@ -417,22 +409,19 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             state_with_tensors,
         )
 
-    # pylint: disable=unused-argument
     def _get_tensor_manager(
-        self, state_with_tensors: Nested[Tensor]
+        self,
     ) -> oercp.ReplicatorCheckpointManager:
         """Creates the replicator checkpoint manager if not exists.
 
         We defer the creation of this checkpoint manager because it requires the state dict,
         which is not present during __init__.
         """
-        # cfg: OrbaxEmergencyReplicatorCheckpointer.Config = self.config
         if self._tensor_manager is not None:
             return self._tensor_manager
 
         # For meaning of these options, refer to
         # https://github.com/google/orbax/blob/de0b6d0bca643d12840ae73a1f7cfee80af73dcd/checkpoint/orbax/checkpoint/experimental/emergency/replicator_checkpoint_manager.py#L87
-        # pylint: disable-next=unexpected-keyword-arg
         self._tensor_manager = oercp.ReplicatorCheckpointManager(
             self._local_dir,
             options=oercp.ReplicatorCheckpointManagerOptions(
@@ -440,7 +429,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
                 step_name_format=self._name_format,
             ),
             global_mesh=thread_resources.env.physical_mesh,
-            # persistent_directory=os.path.join(cfg.dir, self._TENSORS_PREFIX),
         )
         return self._tensor_manager
 
@@ -460,7 +448,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         # _non_tensor_manager will block for train step to finish. Start the timer here to avoid
         # including step time in total blocking time.
         start_t = time.perf_counter()
-        self._get_tensor_manager(state_with_tensors).save(
+        self._get_tensor_manager().save(
             step=step, args=ocp.args.Composite(state=ocp.args.PyTreeSave(item=state_with_tensors))
         )
         time_diff = time.perf_counter() - start_t
@@ -506,7 +494,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         state_with_tensors = jax.tree.map(
             lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
         )
-        tensor_manager = self._get_tensor_manager(state_with_tensors)
+        tensor_manager = self._get_tensor_manager()
         if step is None:
             common_steps = self._checkpoint_steps_include_local()
 
