@@ -675,7 +675,7 @@ class LWSRunnerJob(BaseRunnerJob):
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
-        flags.DEFINE_string("name", None, "Name of the jlws ob.", **common_kwargs)
+        flags.DEFINE_string("name", None, "Name of the LWS object.", **common_kwargs)
         flags.DEFINE_string(
             "output_dir",
             None,
