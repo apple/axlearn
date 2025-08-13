@@ -54,6 +54,13 @@ flags.DEFINE_integer(
     "If the trainer.step does not increment within this interval, "
     "the watchdog will log the stack traces of all threads.",
 )
+flags.DEFINE_integer(
+    "trainer_crash_on_hang_timeout_seconds",
+    7200,
+    "Timeout for crashing the trainer on hang in seconds. "
+    "If the trainer hangs for longer than this interval, "
+    "the trainer will crash to prevent indefinite hanging.",
+)
 flags.DEFINE_enum(
     "device_monitor",
     "none",
@@ -109,6 +116,10 @@ def get_trainer_config(
     trainer_config.start_trace_steps = [int(el) for el in flag_values.trace_at_steps]
     if trainer_config.watchdog_timeout_seconds is None:
         trainer_config.watchdog_timeout_seconds = flag_values.trainer_watchdog_timeout_seconds
+    if trainer_config.crash_on_hang_timeout_seconds is None:
+        trainer_config.crash_on_hang_timeout_seconds = (
+            flag_values.trainer_crash_on_hang_timeout_seconds
+        )
     for eval_cfg in trainer_config.evalers.values():
         eval_cfg.trace_at_iters = [int(el) for el in flag_values.eval_trace_at_iters]
     if flag_values.device_monitor == "tpu":

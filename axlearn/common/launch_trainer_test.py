@@ -108,3 +108,89 @@ class GetTrainerConfigTest(TestCase):
         )
         with patch_fn, self.assertRaisesRegex(type(expect_raises), str(expect_raises)):
             launch_trainer.get_trainer_config(flag_values=fv)
+
+    def test_crash_on_hang_timeout_seconds_flag(self):
+        """Test that trainer_crash_on_hang_timeout_seconds flag is properly set."""
+        # Create a mock trainer config
+        mock_trainer_config = mock.MagicMock()
+        mock_trainer_config.crash_on_hang_timeout_seconds = None
+        mock_trainer_config.watchdog_timeout_seconds = None
+        mock_trainer_config.dir = None
+        mock_trainer_config.mesh_axis_names = None
+        mock_trainer_config.mesh_shape = None
+        mock_trainer_config.evalers = {}
+        mock_trainer_config.checkpointer = mock.MagicMock()
+        mock_trainer_config.checkpointer.trainer_dir = None
+
+        # Set up flag values with custom crash timeout
+        flag_values = {
+            "config": "config",
+            "config_module": "local_module",
+            "trainer_dir": "/tmp/trainer",
+            "trainer_crash_on_hang_timeout_seconds": 9000,  # Custom value
+            "trainer_watchdog_timeout_seconds": 3600,
+            "trace_at_steps": [],
+            "eval_trace_at_iters": [],
+            "device_monitor": "none",
+            "mesh_selector": None,
+        }
+        fv = _flag_values_from_dict(flag_values)
+
+        # Mock the trainer config function
+        trainer_config_fn = lambda: mock_trainer_config
+
+        # Mock get_named_trainer_config to avoid dependency issues
+        with mock.patch(
+            f"{launch_trainer.__name__}.get_named_trainer_config",
+            side_effect=_mock_get_named_trainer_config,
+        ):
+            cfg = launch_trainer.get_trainer_config(
+                flag_values=fv, trainer_config_fn=trainer_config_fn
+            )
+
+            # Verify that crash_on_hang_timeout_seconds was set from the flag
+            self.assertEqual(cfg.crash_on_hang_timeout_seconds, 9000)
+            # Also verify watchdog timeout was set
+            self.assertEqual(cfg.watchdog_timeout_seconds, 3600)
+
+    def test_crash_on_hang_timeout_seconds_not_overridden(self):
+        """Test that existing crash_on_hang_timeout_seconds value is not overridden."""
+        # Create a mock trainer config with pre-existing crash timeout
+        mock_trainer_config = mock.MagicMock()
+        mock_trainer_config.crash_on_hang_timeout_seconds = 5000  # Pre-existing value
+        mock_trainer_config.watchdog_timeout_seconds = None
+        mock_trainer_config.dir = None
+        mock_trainer_config.mesh_axis_names = None
+        mock_trainer_config.mesh_shape = None
+        mock_trainer_config.evalers = {}
+        mock_trainer_config.checkpointer = mock.MagicMock()
+        mock_trainer_config.checkpointer.trainer_dir = None
+
+        # Set up flag values
+        flag_values = {
+            "config": "config",
+            "config_module": "local_module",
+            "trainer_dir": "/tmp/trainer",
+            "trainer_crash_on_hang_timeout_seconds": 9000,  # Flag value
+            "trainer_watchdog_timeout_seconds": 3600,
+            "trace_at_steps": [],
+            "eval_trace_at_iters": [],
+            "device_monitor": "none",
+            "mesh_selector": None,
+        }
+        fv = _flag_values_from_dict(flag_values)
+
+        # Mock the trainer config function
+        trainer_config_fn = lambda: mock_trainer_config
+
+        # Mock get_named_trainer_config to avoid dependency issues
+        with mock.patch(
+            f"{launch_trainer.__name__}.get_named_trainer_config",
+            side_effect=_mock_get_named_trainer_config,
+        ):
+            cfg = launch_trainer.get_trainer_config(
+                flag_values=fv, trainer_config_fn=trainer_config_fn
+            )
+
+            # Verify that the pre-existing value was not overridden
+            self.assertEqual(cfg.crash_on_hang_timeout_seconds, 5000)
