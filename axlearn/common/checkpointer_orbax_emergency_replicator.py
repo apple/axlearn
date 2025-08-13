@@ -8,7 +8,6 @@ See the docstring of `OrbaxEmergencyReplicatorCheckpointer` for more details.
 import copy
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -16,30 +15,17 @@ import jax
 import jax.lib
 import orbax.checkpoint as ocp
 import orbax.checkpoint.experimental.emergency.replicator_checkpoint_manager as oercp
-import tensorflow as tf
 from absl import flags, logging
 from etils import epath
 from jax._src.distributed import global_state
 from jax._src.mesh import thread_resources
-from jax.experimental.array_serialization import serialization
 
-from axlearn.common import utils
 from axlearn.common.checkpointer import (
     BaseCheckpointer,
-    Checkpointer,
     CheckpointPolicy,
-    CheckpointValidationType,
     InstantiableConfig,
-    StateStorage,
-    StateStorageCommitCallback,
-    async_save_tf_savables,
-    check_state_structure,
     config_for_function,
     every_n_steps_policy,
-    multihost_utils,
-    read_index_file,
-    restore_tf_savables,
-    write_index_file,
 )
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
@@ -71,94 +57,6 @@ def setup(spec: str):
     FLAGS.experimental_orbax_use_distributed_process_id = True
 
     yield
-
-
-class _TFSavablesStateStorage(StateStorage):
-    """A StateStorage implementation that only saves the index file and tf savables."""
-
-    @config_class
-    class Config(StateStorage.Config):
-        timeout_secs: int = 300
-
-    def __init__(self, cfg: Config):
-        super().__init__(cfg)
-        # One thread is sufficient because `async_save_tf_savables` only creates one future.
-        self._executor = ThreadPoolExecutor(1)
-        self._manager = serialization.AsyncManager(timeout_secs=cfg.timeout_secs)
-
-    def _get_spec(self, *, step: int, state: Nested[Any]) -> Nested[Any]:
-        spec = {"index": [("step", int(step))], "tf_ckpt_map": {}}
-        for path, value in utils.flatten_items(state):
-            if isinstance(value, (Tensor, TensorSpec)):
-                dtype = getattr(value.dtype, "dtype", value.dtype)
-                spec["index"].append(
-                    (path, {"dtype": str(dtype), "shape": str(tuple(value.shape))})
-                )
-            elif isinstance(value, tf.data.Iterator):
-                spec["index"].append((path, str(type(value))))
-                spec["tf_ckpt_map"][path] = value
-            else:
-                spec["index"].append((path, value))
-        logging.log_first_n(logging.INFO, "TF savables spec: %s", 1, str(spec))
-        return spec
-
-    def save_to_dir(
-        self,
-        *,
-        step: int,
-        state: Nested[Tensor],
-        ckpt_dir: str,
-        on_commit_callback: StateStorageCommitCallback = write_index_file,
-    ):
-        start_time = time.perf_counter()
-        # We write data files directly to `ckpt_dir`. `index` is written into `ckpt_dir` in
-        # `on_commit_callback` to finalize the checkpoint.
-        spec = self._get_spec(step=step, state=state)
-        self.wait_until_finished()
-        jax.block_until_ready(state)
-
-        save_tf_future = async_save_tf_savables(
-            spec["tf_ckpt_map"],
-            executor=self._executor,
-            dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"),
-        )
-
-        def commit():
-            on_commit_callback(ckpt_dir=ckpt_dir, index=spec["index"])
-            logging.info(
-                "Serialization of TF savables to %s completed in %s seconds.",
-                ckpt_dir,
-                time.perf_counter() - start_time,
-            )
-
-        # pylint: disable=protected-access
-        self._manager._add_futures([save_tf_future])
-        self._manager._start_async_commit(commit)
-
-    def wait_until_finished(self):
-        self._manager.wait_until_finished()
-
-    def restore_from_dir(
-        self,
-        step: int,
-        state: Union[Nested[Tensor], Nested[TensorSpec]],
-        *,
-        ckpt_dir: str,
-        validation: CheckpointValidationType = CheckpointValidationType.EXACT,
-    ) -> Nested[Tensor]:
-        spec = self._get_spec(step=step, state=state)
-        logging.info("Restoring TF savables from directory %s", ckpt_dir)
-        check_state_structure(
-            read_index_file(ckpt_dir), target_structure=spec["index"], validation=validation
-        )
-        restore_tf_savables(
-            spec["tf_ckpt_map"], dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
-        )
-        multihost_utils.sync_global_devices(ckpt_dir)
-        return state
-
-    def stop(self):
-        self._executor.shutdown(wait=True)
 
 
 def _wait_for_file_to_disappear(f, timeout=300):
@@ -227,9 +125,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
     EXPERIMENTAL. Do not use for actual training runs since the checkpoint layout will likely
     change in the future."""
 
-    #    _NON_TENSORS_PREFIX: str = "non-tensors"
-    #    _TENSORS_PREFIX: str = "tensors"
-
     @config_class
     class Config(BaseCheckpointer.Config):
         """Configures OrbaxEmergencyReplicatorCheckpointer.
@@ -250,8 +145,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             local_save_policy: Save policy for local checkpoints. This should be more frequent than
                 `save_policy`. Note that data iterator will be saved with either `save_policy` or
                 `local_save_policy` indicate we should save.
-            non_tensor_async_timeout_secs: Timeout for async barrier in seconds when saving
-                non-tensor states.
             async_timeout_secs: Timeout for async barrier in seconds when saving tensors.
             replica_axis_index: The index of the "data" axis.
         """
@@ -264,39 +157,8 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         ).set(n=10)
         local_dir: str = "/checkpoint"
         trainer_dir: Required[str] = REQUIRED
-        non_tensor_async_timeout_secs: int = 300
         async_timeout_secs: int = 3600
         replica_axis_index: Required[int] = REQUIRED
-
-    # @classmethod
-    # def checkpoint_paths(cls, base_dir: str) -> List[str]:
-    #    """See `BaseCheckpointer.checkpointer_paths`.
-    #
-    #    Only persistent checkpoint paths are returned. There's no guarantee that the paths returned
-    #    have committed TF savables. Use `checkpoint_steps` to get steps with both tensors and
-    #    committed TF savables.
-    #    """
-    #    logging.log_first_n(
-    #        logging.WARNING,
-    #        msg="checkpoint_paths is deprecated. Use checkpoint_steps instead.",
-    #        n=1,
-    #    )
-    #    tensors_dir = os.path.join(base_dir, cls._TENSORS_PREFIX)
-    #    return [str(path) for path in ocp.utils.checkpoint_steps_paths(tensors_dir)]
-    #
-    # @classmethod
-    # def checkpoint_steps(cls, base_dir) -> list[int]:
-    #    """See `BaseCheckpointer.checkpointer_steps`.
-    #
-    #    Only persistent checkpoint steps are returned.
-    #    """
-    #    return list(
-    #        set(
-    #            ocp.utils.checkpoint_steps(os.path.join(base_dir, cls._TENSORS_PREFIX))
-    #        ).intersection(
-    #            set(Checkpointer.checkpoint_steps(os.path.join(base_dir, cls._NON_TENSORS_PREFIX)))
-    #        )
-    #    )
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -305,9 +167,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             step_prefix=None,
             step_format_fixed_length=None,
         )
-        # if jax.process_index() == 0:
-        #     fs.makedirs(os.path.join(cfg.dir, self._NON_TENSORS_PREFIX))
-        #     fs.makedirs(os.path.join(cfg.dir, self._TENSORS_PREFIX))
         self._local_dir = cfg.local_dir
         # Orbax replicator ckpt requires this function to be called prior to checkpointer
         # operations. This function also serves as a barrier.
@@ -359,32 +218,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             logging.info("The newly created replicator.yaml was deleted, moving forward.")
             _block_and_process_restore_dir(self._local_dir)
 
-        ckpt_cfg: Checkpointer.Config = Checkpointer.default_config()
-        # TODO(hanzhi-zhou): this `keep_last_n` may not be what users expect since non-tensor
-        # states will save when either local or persistent checkpoint will save.
-        ckpt_cfg.keep_last_n = cfg.keep_last_n
-        ckpt_cfg.keep_every_n_steps = cfg.keep_every_n_steps
-        ckpt_cfg.storage = _TFSavablesStateStorage.default_config()
-        ckpt_cfg.storage.timeout_secs = cfg.non_tensor_async_timeout_secs
-        #        ckpt_cfg.dir = os.path.join(cfg.dir, self._NON_TENSORS_PREFIX)
-        ckpt_cfg.name = "non-tensors-checkpointer"
-
-        save_policy = cfg.save_policy.instantiate()
-        local_save_policy = cfg.local_save_policy.instantiate()
-
-        # Non-tensor states must save when either local or persistent ckpt needs to be saved for
-        # restore from either to succeed.
-        def _composite_save_policy(*, step: int, evaler_summaries: dict[str, Any]):
-            return (
-                save_policy(step=step, evaler_summaries=evaler_summaries)
-                or local_save_policy(step=step, evaler_summaries=evaler_summaries)
-                or self._reached_preemption
-            )
-
-        self._composite_save_policy = _composite_save_policy
-        ckpt_cfg.save_policy = config_for_function(lambda: _composite_save_policy)
-        #        self._non_tensor_manager: Checkpointer = ckpt_cfg.instantiate(parent=self)
-        #        self._non_tensor_manager: Optional[oercp.ReplicatorCheckpointManager] = None
         self._tensor_manager: Optional[oercp.ReplicatorCheckpointManager] = None
         # See comments of _eval_summaries in `OrbaxCheckpointer`.
         self._eval_summaries = None
@@ -433,17 +266,13 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         state_with_tensors = jax.tree.map(
             lambda x: x if isinstance(x, (Tensor, TensorSpec)) else None, state
         )
-        # Note that save() waits for prior serialization to finish.
-        # self._non_tensor_manager.save(step=step, state=state)
-        # _non_tensor_manager will block for train step to finish. Start the timer here to avoid
-        # including step time in total blocking time.
+
         start_t = time.perf_counter()
         self._get_tensor_manager().save(
             step=step, args=ocp.args.Composite(state=ocp.args.PyTreeSave(item=state_with_tensors))
         )
         time_diff = time.perf_counter() - start_t
-        if self._composite_save_policy(step=step, evaler_summaries=self._eval_summaries):
-            logging.info("In-mem ckpt blocking time is %fs.", time_diff)
+        logging.info("Save time is %fs.", time_diff)
         self._eval_summaries = None
         if self._reached_preemption:
             self.wait_until_finished()
@@ -452,25 +281,9 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
     def _checkpoint_steps_include_local(self) -> list[int]:
         """Returns a sorted list of complete checkpoints, including both persistent and local.
 
-        This is done by finding the intersection of the checkpoint steps managed by tensor and
-        non-tensor manager. `all_steps` from tensor manager gives the steps of complete local and
-        persistent checkpoints.
-
         This function assumes tensor manager has already been initialized.
         """
-        return sorted(
-            set(self._tensor_manager.all_steps())
-            #            set(self._tensor_manager.all_steps()).intersection(
-            #                set(
-            #                    (
-            #                        parse_step_from_dir(d)
-            #                        for d in self._non_tensor_manager.checkpoint_paths(
-            #                            self._non_tensor_manager.config.dir
-            #                        )
-            #                    )
-            #                )
-            #            )
-        )
+        return sorted(set(self._tensor_manager.all_steps()))
 
     def restore(
         self,
@@ -493,9 +306,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
                 return None, state
 
             step = max(common_steps)
-
-        #        restore_step, state = self._non_tensor_manager.restore(step=step, state=state)
-        #        assert step == restore_step
 
         def _restore_args(x: Any) -> ocp.RestoreArgs:
             return ocp.checkpoint_utils.construct_restore_args(
@@ -528,11 +338,9 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
 
     def wait_until_finished(self):
         """See `BaseCheckpointer.wait_until_finished` docstring for details."""
-        # self._non_tensor_manager.wait_until_finished()
         self._tensor_manager.wait_until_finished()
 
     def stop(self, *, has_exception: bool = False):
         """See `BaseCheckpointer.stop` for details."""
-        # self._non_tensor_manager.stop(has_exception=has_exception)
         if self._tensor_manager:
             self._tensor_manager.close()
