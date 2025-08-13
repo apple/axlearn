@@ -23,7 +23,6 @@ from jax._src.distributed import global_state
 from jax._src.mesh import thread_resources
 from jax.experimental.array_serialization import serialization
 
-from axlearn.common import file_system as fs
 from axlearn.common import utils
 from axlearn.common.checkpointer import (
     BaseCheckpointer,
@@ -53,22 +52,16 @@ FLAGS = flags.FLAGS
 def setup(spec: str):
     """Setups FLAGS.process_id and FLAGS.distributed_coordinator as required by Orbax.
 
-    See the docstring of `get_consistent_proc_info` for more details.
-
     Args:
-        spec: Key=Value pairs separated by comma. Key must be one of ("local_address",
-            "barrier_timeout_seconds", "local_ckpt_dir"). See the docstring of
-            `get_consistent_proc_info`.
+        spec: Key=Value pairs separated by comma.
     """
     parsed_args = {}
-    allowed_fields = ["local_address", "barrier_timeout_seconds", "local_ckpt_dir"]
+    allowed_fields = ["local_ckpt_dir"]
     for field in spec.split(","):
         k, v = field.split("=")
         if k not in allowed_fields:
             raise ValueError(f"Expected key in {allowed_fields}, got key={k}.")
         parsed_args[k] = v
-    if "barrier_timeout_seconds" in parsed_args:
-        parsed_args["barrier_timeout_seconds"] = int(parsed_args["barrier_timeout_seconds"])
     if "local_ckpt_dir" not in parsed_args:
         raise ValueError("local_ckpt_dir must be specified.")
     # Get process ID and IP of coordinator
@@ -182,8 +175,8 @@ def _extract_step(f):
 
 
 def _block_and_process_restore_dir(directory, timeout=300):
-    """Block until a file ending with `.restore` appears, then extract the step number and rename
-    the directory using the step number.
+    """Block until the directory symlink ending with `.restore` appears, then extract
+    the step number and rename the directory using the step number.
     """
     suffix = ".restore"
     for _ in range(timeout):
@@ -316,58 +309,55 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         #     fs.makedirs(os.path.join(cfg.dir, self._NON_TENSORS_PREFIX))
         #     fs.makedirs(os.path.join(cfg.dir, self._TENSORS_PREFIX))
         self._local_dir = cfg.local_dir
-        fs.makedirs(self._local_dir)
         # Orbax replicator ckpt requires this function to be called prior to checkpointer
         # operations. This function also serves as a barrier.
         ocp.multihost.initialize_runtime_to_distributed_ids()
         ocp.multihost.initialize_distributed_to_device_ids()
 
         num_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
-        # De-hardcode
-        use_replicator_service = True
-        if use_replicator_service:
-            replicator_file = "replicator.yaml"
-            temp_file = replicator_file + ".tmp"
-            replicator_file_path = epath.Path(self._local_dir) / replicator_file
-            if not _wait_for_file_to_disappear(replicator_file_path):
-                logging.info("Existing replicator.yaml did not disappear in time.")
-            else:
-                logging.info("replicator.yaml no longer exists, creating new replicator.yaml.")
-            temp_file = epath.Path(self._local_dir) / temp_file
-            num_nodes = jax.process_count()
-            nodes_per_slice = num_nodes // num_slices
 
-            node_rank = global_state.process_id
-            my_process_index = jax.process_index()
-            proc_index_to_node_rank = ocp.multihost.runtime_to_distributed_ids()
+        replicator_file = "replicator.yaml"
+        temp_file = replicator_file + ".tmp"
+        replicator_file_path = epath.Path(self._local_dir) / replicator_file
+        if not _wait_for_file_to_disappear(replicator_file_path):
+            logging.info("Existing replicator.yaml did not disappear in time.")
+        else:
+            logging.info("replicator.yaml no longer exists, creating new replicator.yaml.")
+        temp_file = epath.Path(self._local_dir) / temp_file
+        num_nodes = jax.process_count()
+        nodes_per_slice = num_nodes // num_slices
 
-            my_in_pipeline_index = my_process_index % nodes_per_slice
-            peer_ranks = []
-            for i in range(num_slices):
-                peer_process_index = i * nodes_per_slice + my_in_pipeline_index
-                if peer_process_index != my_process_index:
-                    peer_process_rank = proc_index_to_node_rank[peer_process_index]
-                    peer_ranks.append(peer_process_rank)
+        node_rank = global_state.process_id
+        my_process_index = jax.process_index()
+        proc_index_to_node_rank = ocp.multihost.runtime_to_distributed_ids()
 
-            logging.info("Peers for NodeRank %s: %s", node_rank, peer_ranks)
+        my_in_pipeline_index = my_process_index % nodes_per_slice
+        peer_ranks = []
+        for i in range(num_slices):
+            peer_process_index = i * nodes_per_slice + my_in_pipeline_index
+            if peer_process_index != my_process_index:
+                peer_process_rank = proc_index_to_node_rank[peer_process_index]
+                peer_ranks.append(peer_process_rank)
 
-            run_name = os.environ.get("HOSTNAME").split("job")[0].rstrip("-")
+        logging.info("Peers for NodeRank %s: %s", node_rank, peer_ranks)
 
-            replicator_yaml = f"""job-name: {run_name}
-          framework: orbax
-          assume-data-parallelism: 2
-          node-rank: {node_rank}
-          nodes: {num_nodes}
-          peer-ranks: {peer_ranks}
-          backup-interval-minutes: 5"""
+        run_name = os.environ.get("HOSTNAME").split("job")[0].rstrip("-")
 
-            temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
-            os.rename(temp_file, replicator_file_path)
-            if not _wait_for_file_to_disappear(replicator_file_path):
-                logging.info("The newly created replicator.yaml was not deleted in time.")
-            else:
-                logging.info("The newly created replicator.yaml was deleted, moving forward.")
-                _block_and_process_restore_dir(self._local_dir)
+        replicator_yaml = f"""job-name: {run_name}
+      framework: orbax
+      assume-data-parallelism: 2
+      node-rank: {node_rank}
+      nodes: {num_nodes}
+      peer-ranks: {peer_ranks}
+      backup-interval-minutes: 5"""
+
+        temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
+        os.rename(temp_file, replicator_file_path)
+        if not _wait_for_file_to_disappear(replicator_file_path):
+            logging.info("The newly created replicator.yaml was not deleted in time.")
+        else:
+            logging.info("The newly created replicator.yaml was deleted, moving forward.")
+            _block_and_process_restore_dir(self._local_dir)
 
         ckpt_cfg: Checkpointer.Config = Checkpointer.default_config()
         # TODO(hanzhi-zhou): this `keep_last_n` may not be what users expect since non-tensor
