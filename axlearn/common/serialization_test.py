@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.tree_util import Partial
 
 from axlearn.common import serialization, struct
@@ -127,3 +127,7 @@ class SerializationTest(parameterized.TestCase):
         self.assertEqual(serialized_state_dict, {"state": {"dummy": {"x": 2.0}}})
         deserialized_state = serialization.from_state_dict(variables, serialized_state_dict)
         self.assertEqual(variables, deserialized_state)
+
+
+if __name__ == "__main__":
+    absltest.main()

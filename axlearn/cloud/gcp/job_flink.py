@@ -89,10 +89,12 @@ class FlinkTPUGKEJob(job.GKEJob):
         """Configures FlinkTPUGKEJob.
 
         Attributes:
-            flink_threads_per_worker: Threads per worker.
+            flink_threads_per_worker: Threads per TaskManager.
+            worker_jvm_metaspace_size: the JVM metaspace size of the TaskManagers.
         """
 
         flink_threads_per_worker: int = 1
+        worker_jvm_metaspace_size: str = "256mb"
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -108,6 +110,15 @@ class FlinkTPUGKEJob(job.GKEJob):
             "If this is not set, job_flink will set it to be chips_per_vm based on the TPU type.",
             **common_kwargs,
         )
+        # pylint: disable=line-too-long
+        flags.DEFINE_string(
+            "worker_jvm_metaspace_size",
+            "256mb",
+            "JVM Metaspace Size for the TaskManagers. See this link for more details."
+            "https://nightlies.apache.org/flink/flink-docs-release-1.13/docs/deployment/memory/mem_setup_tm/",
+            **common_kwargs,
+        )
+        # pylint: enable=line-too-long
 
     @classmethod
     def default_config(cls):
@@ -390,6 +401,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                     # threads per worker.
                     "taskmanager.numberOfTaskSlots": f"{cfg.flink_threads_per_worker}",
                     "taskmanager.memory.task.off-heap.size": "16g",
+                    "taskmanager.memory.jvm-metaspace.size": cfg.worker_jvm_metaspace_size,
                     "taskmanager.network.bind-host": "0.0.0.0",
                     "rest.address": "0.0.0.0",
                     # Store checkpointing for retry.

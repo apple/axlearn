@@ -1,3 +1,5 @@
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+
 py_library(
     name = "attention",
     srcs = ["attention.py"],
@@ -15,6 +17,20 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         "@pip//attrs",
+    ],
+)
+
+py_test(
+    name = "config_test",
+    size = "small",
+    srcs = ["config_test.py"],
+    deps = [
+        ":config",
+        "@pip//absl_py",
+        "@pip//attrs",
+        "@pip//numpy",
+        "@pip//pytest",
+        "@pip//wrapt",
     ],
 )
 
@@ -79,6 +95,21 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
         "@pip//jax",
+    ],
+)
+
+py_test(
+    name = "serialization_test",
+    size = "small",
+    srcs = ["serialization_test.py"],
+    deps = [
+        ":serialization",
+        ":struct",
+        "@pip//absl_py",
+        "@pip//jax",
+        "@pip//numpy",
+        "@pip//pytest",
+        "@pip//optax",
     ],
 )
 
