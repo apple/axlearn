@@ -1161,6 +1161,155 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
         )
 
 
+# Inverse dim formula to find dim based on number of rotations
+def _find_correction_dim(num_rotations, dim, theta=10000.0, max_position_embeddings=2048):
+    return (dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))) / (
+        2 * math.log(theta)
+    )
+
+
+def _linear_ramp_mask(low, high, dim):
+    if low == high:
+        low += 0.001  # Prevent singularity
+
+    linear_func = (jnp.arange(dim, dtype=jnp.float32) - low) / (high - low)
+    ramp_func = jnp.clip(linear_func, 0, 1)
+    return ramp_func
+
+
+class YaRNSinusoidalPositionalEmbedding(RoFormerSinusoidalPositionalEmbedding):
+    """Scale RoPE with Scaling with YaRN.
+
+    Ref:
+    https://arxiv.org/pdf/2309.00071
+
+    Reference implementation:
+    Original:
+    https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py
+    HuggingFace:
+    https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py#L197
+    """
+
+    @config_class
+    class Config(RoFormerSinusoidalPositionalEmbedding.Config):
+        """Configures YaRNSinusoidalPositionalEmbedding."""
+
+        original_max_seq_length: Required[int] = REQUIRED
+        # Target max_seq_length = original_max_seq_length * scaling_factor.
+        scaling_factor: float = 1.0
+        beta_slow: float = 1.0
+        beta_fast: float = 32.0
+        extrapolation_factor: float = 1.0
+        # TODO(kelvinzou): HuggingFace has slightly different behavior for attn_factor.
+        # We may consider adding them to the config and fully match the HuggingFace implementation
+        # over the original implementation in the future. Currently it is always set to 1.0.
+        attn_factor: float = 1.0
+
+    def compute_rope_params(self):
+        """Generates the inverse frequencies and scaling factors for the YaRN RoPE.
+
+        Args:
+            dim (int): The dimensionality of the positional embedding.
+            theta (float, optional): A parameter to scale the frequency. Defaults to 10000.0.
+            scaling_factor (float, optional): A factor to scale the interpolation frequencies.
+                It should be the same as target_max_seq_length/source_max_seq_length.
+            beta_slow (float, optional): A factor to control the slow rotation. Defaults to 1.0.
+            beta_fast (float, optional): A factor to control the fast rotation. Defaults to 32.0.
+            original_max_seq_length (int, optional): The original maximum sequence length.
+                Defaults to 2048.
+            extrapolation_factor (float, optional): A factor to control the extrapolation.
+                Defaults to 1.0.
+            attn_factor (float, optional): A factor to control the attention. Defaults to 1.0.
+
+        Returns:
+            Tuple[Tensor, float]: The inverse frequencies and scaling factors for the YaRN RoPE.
+        """
+        cfg: YaRNSinusoidalPositionalEmbedding.Config = self.config
+        dim = cfg.dim
+        theta = cfg.theta
+        dim_array = jnp.arange(dim // 2).astype(jnp.float32)
+        pos_freqs = jnp.power(theta, 2 * dim_array / dim)
+        inv_freq_extrapolation = 1.0 / pos_freqs
+        inv_freq_interpolation = 1.0 / (cfg.scaling_factor * pos_freqs)
+        # Find dim range bounds based on rotations, and clip values just in case.
+        low = max(
+            0,
+            math.floor(
+                _find_correction_dim(cfg.beta_fast, dim, theta, cfg.original_max_seq_length)
+            ),
+        )
+        high = min(
+            dim - 1,
+            math.ceil(_find_correction_dim(cfg.beta_slow, dim, theta, cfg.original_max_seq_length)),
+        )
+        ramp_func = _linear_ramp_mask(low, high, dim // 2).astype(jnp.float32)
+        # Get n-d rotational scaling corrected for extrapolation
+        inv_freq_mask = (1 - ramp_func) * cfg.extrapolation_factor
+        inv_freq = (
+            inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
+        )
+        # Get n-d magnitude scaling corrected for interpolation
+        mscale = (0.1 * math.log(max(1.0, cfg.scaling_factor)) + 1.0) * cfg.attn_factor
+        return inv_freq, mscale
+
+    def build_rotary_sinusoidal_positional_embeddings(
+        self, positions: Tensor, inv_freq: Tensor, mscale: float
+    ) -> Tensor:
+        """Generate the sin/cos positional embedding from prebuilt inverse frequencies.
+
+        Args:
+            positions: A tensor representing the token positions with shape [batch_size, seq_len].
+            inv_freq: A tensor of inverse frequencies with shape [dim // 2].
+            mscale: A scaling factor for the positional embeddings.
+        Returns:
+            Rotary Positional Embedding with shape [batch_size, seq_len, dim].
+        """
+        pos_array = positions.astype(jnp.float32)  # [batch_size, seq_len]
+        position_enc = pos_array[:, :, None] * inv_freq[None, None, :]
+        rope_part_1 = jnp.sin(position_enc) * mscale
+        rope_part_2 = jnp.cos(position_enc) * mscale
+        rope = jnp.concatenate((rope_part_1, rope_part_2), axis=-1)
+        return rope
+
+    def forward(
+        self, *, positions: Optional[Tensor] = None, max_seq_len: Optional[int] = None
+    ) -> Tensor:
+        """
+        Computes the rotary sinusoidal positional embeddings with YaRN.
+
+        Args:
+            positions: A tensor representing the token position IDs.
+                The shape is [batch_size, seq_len].
+            max_seq_len: Max length of sequence, required if positions is not provided,
+                ignored if positions is provided.
+
+        Returns:
+            Rotary Positional Embedding. Shape is [seq_len, dim].
+
+        Raises:
+            ValueError: If positions is None and max_seq_len is None, or they both exist
+                but do not match.
+        """
+        ivf, mscale = self.compute_rope_params()
+
+        if positions is not None and max_seq_len is not None:
+            if max_seq_len != positions.shape[-1]:
+                raise ValueError(
+                    "Both `positions` and `max_seq_len` are provided and they "
+                    "do not match. You only need to provide one of them."
+                )
+        if positions is None:
+            if max_seq_len is None:
+                raise ValueError(
+                    "Must provide `max_seq_len` for computing default query positions if "
+                    "`positions` is None."
+                )
+            positions = self.default_query_positions(max_seq_len)
+        return self.build_rotary_sinusoidal_positional_embeddings(
+            positions=positions, inv_freq=ivf, mscale=mscale
+        )
+
+
 def apply_rotary_position_embeddings(
     *,
     query: Tensor,
