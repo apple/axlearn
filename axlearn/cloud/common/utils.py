@@ -6,6 +6,7 @@ import collections
 import copy
 import dataclasses
 import functools
+import importlib
 import logging as pylogging
 import os
 import shlex
@@ -15,7 +16,6 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, Callable, Optional, TypeVar, Union
 
-import pkg_resources
 import psutil
 from absl import app, flags, logging
 
@@ -108,7 +108,7 @@ def get_package_root(root_module_name: str = ROOT_MODULE_NAME) -> str:
 def get_pyproject_version() -> str:
     """Returns the project version, e.g. X.Y.Z."""
     # TODO(markblee): Fix for nightly
-    return pkg_resources.get_distribution(ROOT_MODULE_NAME).version
+    return importlib.metadata.version(ROOT_MODULE_NAME)
 
 
 def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> dict[str, str]:

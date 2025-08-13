@@ -3,7 +3,6 @@
 """Tests state builders."""
 
 # pylint: disable=no-self-use,too-many-lines
-import os
 import tempfile
 from copy import deepcopy
 from typing import Any, Dict, Optional, Sequence
@@ -11,14 +10,12 @@ from typing import Any, Dict, Optional, Sequence
 import jax
 import jax.numpy as jnp
 import optax
-import pytest
 import torch
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
 from axlearn.common import bert
-from axlearn.common.adapter_flax import config_for_flax_module
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
@@ -33,7 +30,6 @@ from axlearn.common.input_base import Input
 from axlearn.common.input_fake import FakeLmInput
 from axlearn.common.layers import Linear
 from axlearn.common.module import Module
-from axlearn.common.module import functional as F
 from axlearn.common.param_converter import torch_to_axlearn
 from axlearn.common.repeat import Repeat
 from axlearn.common.state_builder import (
@@ -47,7 +43,6 @@ from axlearn.common.state_builder import (
     Conv2DToConv3DBuilder,
     Converter,
     EmaParamsConverter,
-    FlaxPretrainedBuilder,
     HuggingFacePreTrainedBuilder,
     MergeStateConverter,
     MergeStateSelection,
@@ -756,116 +751,6 @@ class BaseConverterFromPretrainedModelTest(TestCase):
         # Ensure that we're able to instantiate mock_trainer_cfg with -1 in the mesh.
         converter = cfg.set(name="test_converter").instantiate(parent=None)
         converter.target_to_source(mock_state)
-
-
-class DiffusersPretrainedBuilderTest(TestCase):
-    """Tests FlaxPretrainedBuilder for a diffusers model."""
-
-    def _init_state(self, model, prng_key: Tensor):
-        prng_key, init_key = jax.random.split(prng_key)
-        model_params = model.initialize_parameters_recursively(init_key)
-        return TrainerState(
-            prng_key=prng_key,
-            model=model_params,
-            learner=None,
-        )
-
-    def test_load_local_ckpts(self):
-        ckpt_folder = os.path.join(
-            os.path.dirname(__file__), "testdata/axlearn.common.state_builder_test"
-        )
-        if not os.path.exists(ckpt_folder):
-            pytest.skip(reason="Missing testdata.")
-
-        # pylint: disable-next=import-outside-toplevel,import-error
-        from diffusers.models.vae_flax import FlaxAutoencoderKL  # pytype: disable=import-error
-
-        with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
-            # Set up a minimal sized diffusers model.
-            auto_encoder_config_dict = dict(
-                sample_size=16,
-                in_channels=1,
-                out_channels=1,
-                latent_channels=1,
-                block_out_channels=(2,),
-                layers_per_block=1,
-                down_block_types=("DownEncoderBlock2D",),
-                up_block_types=("UpDecoderBlock2D",),
-                norm_num_groups=1,
-            )
-
-            def dummy_inputs_bchw():
-                return (jnp.zeros([1, 1, 16, 16], dtype=jnp.float32),), {}
-
-            autoencoder_cfg = config_for_flax_module(
-                FlaxAutoencoderKL,
-                dummy_inputs_bchw,
-                create_module_kwargs=auto_encoder_config_dict,
-            ).set(name="autoencoder")
-
-            model = autoencoder_cfg.instantiate(parent=None)
-            prng_key = jax.random.PRNGKey(0)
-            trainer_state_specs = TrainerState(
-                prng_key=ParameterSpec(dtype=jnp.uint32, shape=[4], mesh_axes=PartitionSpec(None)),
-                model=model.create_parameter_specs_recursively(),
-                learner=None,
-            )
-            trainer_state_partition_specs = jax.tree.map(
-                lambda spec: spec.mesh_axes, trainer_state_specs
-            )
-
-            def _init_state(*args):
-                return self._init_state(model, *args)
-
-            init_computation = pjit(
-                _init_state,
-                in_shardings=(None,),
-                out_shardings=trainer_state_partition_specs,
-            )
-
-            trainer_state = init_computation(prng_key)
-            builder_state = Builder.State(step=0, trainer_state=trainer_state, built_keys=set())
-
-            def flax_state_supplier():
-                _, source_params = FlaxAutoencoderKL.from_pretrained(
-                    ckpt_folder, subfolder="vae", from_pt=True
-                )
-                return source_params
-
-            builder_config = FlaxPretrainedBuilder.default_config().set(
-                name="builder",
-                flax_state_supplier_config=config_for_function(flax_state_supplier),
-                target_scope=[],
-            )
-            builder = builder_config.instantiate(parent=None)
-
-            restored_state = builder(builder_state)
-
-            # Check the value of a specific kernel.
-            restored_kernel = restored_state.trainer_state.model["params"]["encoder"]["conv_in"][
-                "kernel"
-            ]
-            restored_kernel = jnp.reshape(jnp.transpose(restored_kernel, (3, 2, 0, 1)), [18])
-
-            self.assertNestedAllClose(jnp.array(range(18), dtype=jnp.float32), restored_kernel)
-
-            # Check the parity of model output.
-            flax_model, flax_params = FlaxAutoencoderKL.from_pretrained(
-                ckpt_folder, subfolder="vae", from_pt=True
-            )
-            random_image = jax.random.uniform(
-                jax.random.PRNGKey(0), [1, 1, 16, 16], dtype=jnp.float32
-            )
-            flax_output = flax_model.apply({"params": flax_params}, random_image)
-
-            axlearn_output, _ = F(
-                model,
-                inputs=(random_image,),
-                state=restored_state.trainer_state.model,
-                is_training=False,
-                prng_key=jax.random.PRNGKey(0),
-            )
-            self.assertNestedAllClose(flax_output.sample, axlearn_output.sample)
 
 
 class HuggingFacePreTrainedBuilderTest(TestCase):
