@@ -164,8 +164,8 @@ audio = [
     "levenshtein==0.25.1",
 ]
 
-[tool.setuptools]
-packages = ["axlearn"]
+[tool.setuptools.packages.find]
+include = ['axlearn*']
 
 [tool.setuptools.exclude-package-data]
 "*" = ["**/BUILD"]
