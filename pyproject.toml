@@ -7,13 +7,13 @@ name = "axlearn"
 version = "0.1.7"
 description = "AXLearn"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 # Production dependencies.
 # Minimal requirments for axlearn/common/config.py.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
+    "numpy>=1.26.4",  # verified with tensorflow 2.14 RaggedTensor
 ]
 
 [project.optional-dependencies]
@@ -23,9 +23,9 @@ core = [
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.5.3",
-    "jaxlib==0.5.3",
-    "ml-dtypes==0.4.1",
+    "jax==0.6.2",
+    "jaxlib==0.6.2",
+    "ml-dtypes==0.5.1",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -34,10 +34,10 @@ core = [
     "protobuf>=3.20.3",
     "tensorboard-plugin-profile==2.20.4",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
-    "tensorflow==2.17.1",
+    "tensorflow==2.19.1",
     "tensorflow-datasets>=4.9.2",
-    "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    "tensorflow_text==2.17.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
+    "tensorflow-io>=0.37.2",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
+    "tensorflow_text==2.19.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.12.2",
@@ -67,16 +67,15 @@ dev = [
     "pylint==2.17.7",
     "pytest",  # test runner
     "pytest-xdist",  # pytest plugin for test parallelism
-    "pytype==2022.4.22",  # type checking
+    "pytype==2024.10.11",  # type checking
     "scikit-learn==1.5.2",  # test-only
     # Fix AttributeError: module 'scipy.linalg' has no attribute 'tril' and related scipy import errors.
     "scipy==1.12.0",
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
-    "timm==0.6.12",  # DiT Dependency test-only
-    "torch>=1.12.1",  # test-only
-    "torchvision==0.16.1",  # test-only
-    "safetensors<=0.5.3",  # TODO: Remove once torch dependency is >=2.3.0
+    "timm==1.0.17",  # DiT Dependency test-only
+    "torch==2.7.1",  # test-only
+    "torchvision==0.22.1",  # test-only
     "transformers==4.51.3",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
@@ -107,7 +106,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.6.2",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
@@ -119,7 +118,7 @@ vertexai_tensorboard = [
     "setuptools==65.7.0",
     # Pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
     # https://github.com/googleapis/python-aiplatform/commit/4f982ab254b05fe44a9d2ed959fca2793961b56c
-    "google-cloud-aiplatform[tensorboard]==1.61.0",
+    "google-cloud-aiplatform[tensorboard]",
     "tensorboard",
 ]
 # Dataflow dependencies.
@@ -132,9 +131,9 @@ dataflow = [
 ]
 # GPU custom kernel dependency.
 gpu = [
-    "triton==2.1.0",
-    "jax[cuda12]==0.5.3",
-    "nvidia-ml-py==12.560.30",
+    "triton>=2.1.0",
+    "jax[cuda12]==0.6.2",
+    "nvidia-ml-py>=12.560.30",
     # pin nccl version, otherwise jax[cuda12] will pull latest version
     "nvidia-nccl-cu12==2.27.5",
 ]
@@ -174,11 +173,11 @@ axlearn = "axlearn.cli:main"
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39']
+target-version = ['py38', 'py39', 'py310', 'py312']
 
 [tool.ruff]
 line-length = 100
-target-version = 'py39'
+target-version = ['py38', 'py39', 'py310', 'py312']
 
 [tool.pytest.ini_options]
 addopts = "-rs -s -p no:warnings --junitxml=test-results/testing.xml"
