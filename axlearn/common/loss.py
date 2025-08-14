@@ -399,7 +399,7 @@ def bilinear_mean_squared_error(
         loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
     """
     src_shape = jnp.broadcast_shapes(preds.shape, targets.shape)
-    for dim, new_dim in jax.util.safe_zip(src_shape, shape):
+    for dim, new_dim in zip(src_shape, shape, strict=True):
         if not (dim % new_dim == 0 or new_dim % dim == 0):
             raise NotImplementedError(
                 f"The dimensions in shape and (preds-targets).shape must be "
