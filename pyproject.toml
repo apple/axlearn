@@ -1,6 +1,6 @@
 [build-system]
-requires = ["flit_core >=3.2,<4"]
-build-backend = "flit_core.buildapi"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "axlearn"
@@ -164,9 +164,14 @@ audio = [
     "levenshtein==0.25.1",
 ]
 
-[tool.flit.module]
-# This defines the import name. https://flit.pypa.io/en/stable/pyproject_toml.html#module-section
-name = "axlearn"
+[tool.setuptools]
+packages = ["axlearn"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["**/BUILD"]
+
+[tool.pytype]
+inputs = ["axlearn"]
 
 [project.scripts]
 # Entrypoint for CLI.

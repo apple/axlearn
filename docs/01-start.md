@@ -123,7 +123,7 @@ pre-commit run -a
 We use [pytype](https://github.com/google/pytype) for static type checking:
 ```shell
 # This can take a while, so we exclude it from pre-commit.
-pytype -j auto .
+pytype -j auto axlearn
 ```
 
 To run tests (please refer to the [pytest](https://docs.pytest.org) docs for more information):
