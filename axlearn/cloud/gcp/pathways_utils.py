@@ -734,6 +734,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
 
+        target_port: Optional[int] = None
+        enable_service: bool = None
+
     @classmethod
     def define_flags(cls, fv):
         super().define_flags(fv)
@@ -761,12 +764,26 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "Memory request for pathways-head container in GiB. Default is 16GiB",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "enable_service",
+            False,
+            "Whether to enable creation of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "target_port",
+            None,
+            "port where a service can access application, set at head container",
+            **common_kwargs,
+        )
 
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
         fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
         fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+        fv.set_default("target_port", fv.target_port or 9000)
+        fv.set_default("enable_service", fv.enable_service or False)
 
     @classmethod
     def default_config(cls):
@@ -908,6 +925,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
+            ports=[dict(containerPort=self.config.target_port)]
+            if self.config.enable_service
+            else [],
         )
 
     def build_leader_pod(self) -> Nested[Any]:
@@ -920,6 +940,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+        labels = {"app": cfg.name}
 
         if cfg.gcsfuse_mount:
             annotations.update(
