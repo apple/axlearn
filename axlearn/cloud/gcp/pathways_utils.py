@@ -73,17 +73,15 @@ _PATHWAYS_BACK_OFF_LIMIT = 32
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
-    """Attempts to convert an XLA flag string value to int, then bool.
+    """Attempts to convert an XLA flag string value to int.
 
     If conversion fails, returns the original string (stripped).
     """
-    bool_mapper = {"true": True, "false": False}
     stripped_value_str = value.strip()
     try:
         return int(stripped_value_str)
     except ValueError:
-        # Not an integer, try boolean conversion.
-        return bool_mapper.get(stripped_value_str.lower(), stripped_value_str)
+        return stripped_value_str
 
 
 def get_pathways_tpu_version(gke_machine_type: str) -> str:
