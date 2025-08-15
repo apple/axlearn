@@ -444,6 +444,7 @@ class TPUJobBuilder(SingleReplicatedJob):
             job_name=cfg.job_name,
         )
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
+        self._output_volume_mount = dict(name="checkpoint", mountPath="/checkpoint")
         if cfg.additional_node_networks and not cfg.service_account:
             raise ValueError("service_account must be set if additional_node_networks is set.")
         self._load_balancer = _LoadBalancer(jobset_name=cfg.name, replicated_job_name=cfg.job_name)
@@ -570,6 +571,16 @@ class TPUJobBuilder(SingleReplicatedJob):
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+
+        volumes.append(
+            dict(
+                name="checkpoint",
+                csi=dict(
+                    driver="multitier-checkpoint.csi.storage.gke.io",
+                ),
+            )
+        )
+
         if cfg.gcsfuse_mount:
             # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
             # prefetch is enabled.
