@@ -20,13 +20,7 @@ from etils import epath
 from jax._src.distributed import global_state
 from jax._src.mesh import thread_resources
 
-from axlearn.common.checkpointer import (
-    BaseCheckpointer,
-    CheckpointPolicy,
-    InstantiableConfig,
-    config_for_function,
-    every_n_steps_policy,
-)
+from axlearn.common.checkpointer import BaseCheckpointer
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor, TensorSpec
@@ -50,7 +44,7 @@ def setup(spec: str):
         parsed_args[k] = v
     if "local_ckpt_dir" not in parsed_args:
         raise ValueError("local_ckpt_dir must be specified.")
-    # Get process ID and IP of coordinator
+    # Get process ID and IP of jax coordinator
     process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
     FLAGS.process_id = int(process_id)
     FLAGS.distributed_coordinator = coordinator_address
@@ -64,6 +58,7 @@ def _wait_for_file_to_disappear(f, timeout=300):
         if not f.exists():
             return True
         time.sleep(1)
+    logging.error("File %s did not dissappear in time.", f)
     return False
 
 
@@ -111,12 +106,10 @@ def _retrieve_jax_init_info(local_ckpt_dir):
             i,
         )
         time.sleep(1)
-    logging.info(
-        "Unable to locate i%s after 900 seconds,"
-        "returning empty process id and coordinator address.",
-        jax_init_info_file,
+    raise RuntimeError(
+        f"Unable to locate {jax_init_info_file} after 900 seconds, "
+        "returning empty process id and coordinator address."
     )
-    return "", ""
 
 
 class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
@@ -130,10 +123,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         """Configures OrbaxEmergencyReplicatorCheckpointer.
 
         Attributes:
-            keep_last_n: Keep this many past ckpts.
-            keep_every_n_steps: If > 0, keeps at least one persistent checkpoint every N steps.
-            local_keep_last_n: Keep this many past ckpts in local storage (e.g. node memory).
-                This should almost always set to 1 to avoid OOM.
             local_dir: Ckpt base path for local storage. The content in this path must persist
                 across pod restarts unless the restart is caused by node failure. `local_dir` must
                 be the same for all processes or processes may hang.
@@ -141,24 +130,12 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
                 trainer_dir. Local checkpoint will be stored in local_dir/sha256(trainer_dir).
                 During init, all other folders in local_dir will be removed to prevent unexpected
                 memory usage.
-            save_policy: Save policy for persistent checkpoints.
-            local_save_policy: Save policy for local checkpoints. This should be more frequent than
-                `save_policy`. Note that data iterator will be saved with either `save_policy` or
-                `local_save_policy` indicate we should save.
             async_timeout_secs: Timeout for async barrier in seconds when saving tensors.
-            replica_axis_index: The index of the "data" axis.
         """
 
-        keep_last_n: int = 1
-        keep_every_n_steps: Optional[int] = None
-        local_keep_last_n: int = 1
-        local_save_policy: InstantiableConfig[CheckpointPolicy] = config_for_function(
-            every_n_steps_policy
-        ).set(n=10)
         local_dir: str = "/checkpoint"
         trainer_dir: Required[str] = REQUIRED
         async_timeout_secs: int = 3600
-        replica_axis_index: Required[int] = REQUIRED
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
