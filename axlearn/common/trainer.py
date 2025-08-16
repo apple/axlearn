@@ -623,7 +623,7 @@ class SpmdTrainer(Module):
                         )
                         self.vlog(3, "Done step %s", self.step)
                         num_steps += 1
-                        if num_steps % 100 == 0:
+                        if num_steps % 1 == 0:
                             now = time.perf_counter()
                             average_step_time = (now - start_time) / num_steps
                             self._step_log("Average step time: %s seconds", average_step_time)
@@ -937,42 +937,40 @@ class SpmdTrainer(Module):
                 **ckpt_state_spec, input_iter=iter(self.input.dataset())
             )
             restore_input_iter = cfg.save_input_iterator
-            try:
-                # Try to restore with `input_iter`.
-                step, ckpt_state = self.checkpointer.restore(
-                    step=restore_step,
-                    state=(
-                        ckpt_state_spec_with_input_iter if restore_input_iter else ckpt_state_spec
-                    ),
-                )
-                if step is not None:
-                    self.vlog(
-                        0,
-                        "Restored checkpoint at %s with restore_input_iter=%s",
-                        step,
-                        restore_input_iter,
-                    )
-            except ValueError as e:
-                logging.warning(
-                    "Attempt to restore checkpoint with restore_input_iter=%s failed: %s",
+            # try:
+            # Try to restore with `input_iter`.
+            step, ckpt_state = self.checkpointer.restore(
+                step=restore_step,
+                state=(ckpt_state_spec_with_input_iter if restore_input_iter else ckpt_state_spec),
+            )
+            if step is not None:
+                self.vlog(
+                    0,
+                    "Restored checkpoint at %s with restore_input_iter=%s",
+                    step,
                     restore_input_iter,
-                    e,
                 )
-                # Restore with a different restore_input_iter setting.
-                restore_input_iter = not restore_input_iter
-                step, ckpt_state = self.checkpointer.restore(
-                    step=restore_step,
-                    state=(
-                        ckpt_state_spec_with_input_iter if restore_input_iter else ckpt_state_spec
-                    ),
-                )
-                if step is not None:
-                    self.vlog(
-                        0,
-                        "Restored checkpoint at %s with restore_input_iter=%s",
-                        step,
-                        restore_input_iter,
-                    )
+            # except ValueError as e:
+            #     logging.warning(
+            #         "Attempt to restore checkpoint with restore_input_iter=%s failed: %s",
+            #         restore_input_iter,
+            #         e,
+            #     )
+            #     # Restore with a different restore_input_iter setting.
+            #     restore_input_iter = not restore_input_iter
+            #     step, ckpt_state = self.checkpointer.restore(
+            #         step=restore_step,
+            #         state=(
+            #             ckpt_state_spec_with_input_iter if restore_input_iter else ckpt_state_spec
+            #         ),
+            #     )
+            #     if step is not None:
+            #         self.vlog(
+            #             0,
+            #             "Restored checkpoint at %s with restore_input_iter=%s",
+            #             step,
+            #             restore_input_iter,
+            #         )
             if step is not None:
                 self._step = step
                 self._trainer_state = TrainerState(
@@ -1108,7 +1106,7 @@ class SpmdTrainer(Module):
             # Run the compiled function.
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
-        if self.step % 100 == 0 or 0 <= self.step <= 5:
+        if self.step % 1 == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],

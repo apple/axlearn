@@ -161,7 +161,11 @@ class GKEJob(GCPJob):
         return dict(
             metadata=dict(name=cfg.name, annotations=annotations),
             spec=dict(
-                failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
+                failurePolicy=dict(
+                    maxRestarts=cfg.max_tries - 1,
+                    restartStrategy="BlockingRecreate"
+                    # maxRestarts=cfg.max_tries - 1,
+                ),
                 replicatedJobs=self._builder(),
             ),
         )
