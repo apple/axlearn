@@ -83,6 +83,15 @@ def assert_allclose(actual, desired, atol=1e-6, rtol=1e-3, err_msg=""):
     )
 
 
+def assert_not_allclose(actual, desired, atol=1e-6, rtol=1e-3):
+    """Assert that actual and desired are NOT close."""
+    try:
+        assert_allclose(actual, desired, atol=atol, rtol=rtol)
+    except AssertionError:
+        return
+    raise AssertionError(f"Arrays are unexpectedly close:\nactual={actual}\ndesired={desired}")
+
+
 def is_supported_platform(target_platform: str) -> bool:
     """Checks if a function intended for a specific platform can be executed on the current one."""
     devices = jax.devices()
