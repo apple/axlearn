@@ -28,14 +28,14 @@ from typing import Optional
 
 import jax.numpy as jnp
 import numpy as np
-import tensorflow as tf
 
-from axlearn.common import config, evaler, input_tf_data, learner, optimizers, schedule, trainer
+from axlearn.common import config, evaler, learner, optimizers, schedule, trainer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
-from axlearn.common.input_tf_data import BuildDatasetFn, Input
+from axlearn.common.input_fake import fake_grain_source
+from axlearn.common.input_grain import DispatchConfig, Input, maybe_to_iter_dataset
 from axlearn.common.layers import ClassificationMetric, Linear
 from axlearn.common.module import Module
 from axlearn.common.utils import NestedTensor, Tensor
@@ -60,29 +60,31 @@ def _synthesize_data(
     return features.astype(np.float32), labels
 
 
-def synthetic_dataset_fn(
-    num_examples: int = 1000, random_seed: int = 42, shuffle_and_repeat: bool = True
-) -> BuildDatasetFn:
-    def dataset_fn() -> tf.data.Dataset:
+def synthetic_grain_source(
+    num_examples: int = 1000,
+    random_seed: int = 42,
+    shuffle_and_repeat: bool = True,
+    global_batch_size: int = 32,
+):
+    def dataset_fn(dispatch_config: DispatchConfig):
         features, labels = _synthesize_data(num_examples=num_examples, random_seed=random_seed)
 
-        def data_generator():
-            for i in range(len(features)):
-                yield {"features": features[i], "label": labels[i]}
+        # Convert to list of examples for PyGrain
+        examples = [{"features": features[i], "label": labels[i]} for i in range(len(features))]
 
-        dataset = tf.data.Dataset.from_generator(
-            data_generator,
-            output_signature={
-                "features": tf.TensorSpec(shape=(2,), dtype=tf.float32),
-                "label": tf.TensorSpec(shape=(), dtype=tf.int32),
-            },
+        # Use fake_grain_source to create the dataset
+        ds = fake_grain_source(
+            examples,
+            repeat=None if shuffle_and_repeat else 1,
+            shuffle_seed=random_seed if shuffle_and_repeat else None,
         )
 
-        if shuffle_and_repeat:
-            dataset = dataset.shuffle(buffer_size=num_examples)
-            dataset = dataset.repeat()
+        # Add batching for the local batch size (divided by number of shards)
+        local_batch_size = global_batch_size // dispatch_config.num_shards[0]
+        ds = ds.batch(local_batch_size)
 
-        return dataset
+        # Convert to IterDataset as expected by the Input class
+        return maybe_to_iter_dataset(ds)
 
     return dataset_fn
 
@@ -131,21 +133,24 @@ class LogisticRegressionModel(BaseModel):
 
 
 def build_input_config(is_training: bool, global_batch_size: int = 32) -> Input.Config:
-    dataset_fn = (
-        synthetic_dataset_fn(num_examples=1000, random_seed=42, shuffle_and_repeat=True)
-        if is_training
-        else synthetic_dataset_fn(num_examples=200, random_seed=123, shuffle_and_repeat=False)
-    )
+    def build_source():
+        if is_training:
+            return synthetic_grain_source(
+                num_examples=1000,
+                random_seed=42,
+                shuffle_and_repeat=True,
+                global_batch_size=global_batch_size,
+            )
+        else:
+            return synthetic_grain_source(
+                num_examples=200,
+                random_seed=123,
+                shuffle_and_repeat=False,
+                global_batch_size=global_batch_size,
+            )
 
     return Input.default_config().set(
-        is_training=is_training,
-        source=config.config_for_function(lambda: dataset_fn).set(),
-        processor=config.config_for_function(input_tf_data.identity).set(),
-        batcher=config.config_for_function(input_tf_data.batch).set(
-            global_batch_size=global_batch_size,
-            prefetch_buffer_size=tf.data.AUTOTUNE,
-            pad_example_fn=input_tf_data.default_pad_example_fn,
-        ),
+        source=config.config_for_function(build_source),
     )
 
 
