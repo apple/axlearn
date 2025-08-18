@@ -529,13 +529,15 @@ class TPUReplicatedJobTest(TestCase):
                 "custom topology 2x2x2 doesn't match the number of cores in instance_type v5p-128."
             ),
         ),
-        dict(instance_type="v5p-128", topology="2x8x8", expected=None),
+        dict(instance_type="v5p-128", topology="2x4x8", expected=None),
     )
     def test_verify_custom_topology_availability(self, instance_type, topology, expected):
         accelerator = AcceleratorConfig().set(instance_type=instance_type, topology=topology)
         if isinstance(expected, Exception):
             with self.assertRaisesRegex(type(expected), str(expected)):
                 TPUReplicatedJob.verify_custom_topology_availability(accelerator)
+        else:
+            TPUReplicatedJob.verify_custom_topology_availability(accelerator)
 
 
 class CompositeReplicatedJobTest(TestCase):

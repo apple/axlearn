@@ -327,7 +327,8 @@ class SingleReplicatedJob(BaseReplicatedJob):
             # topology so it will fail checks above. So we don't specially handle it
             # in this branch.
             raise ValueError("There should be no 1 in each topology dimension.")
-        cores_in_topology = math.prod(dims)
+        # There are two cores per chip in v5p
+        cores_in_topology = math.prod(dims) * 2
         if cores != cores_in_topology:
             raise ValueError(
                 f"custom topology {topology} doesn't match the number of cores in "
