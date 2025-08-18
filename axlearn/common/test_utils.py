@@ -3,7 +3,6 @@
 """Utilities used for testing."""
 
 import contextlib
-import copy
 import dataclasses
 import os
 import pathlib
@@ -27,7 +26,6 @@ from jax import numpy as jnp
 from axlearn.common import optimizers, schedule, utils_spmd
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.base_model import BaseModel
-from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,
@@ -37,7 +35,6 @@ from axlearn.common.config import (
     config_class,
     config_for_function,
 )
-from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.learner import Learner
 from axlearn.common.module import InvocationContext, Module, current_context
 from axlearn.common.module import functional as F
@@ -59,7 +56,6 @@ from axlearn.common.utils import (
     prune_empty,
     prune_tree,
     push_data_dir,
-    set_data_dir,
     shapes,
 )
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
@@ -315,69 +311,6 @@ class TestCase(parameterized.TestCase):
             a_value = a_dict[k]
             b_value = b_dict[k]
             self.assertAllCloseWithOutliers(a_value, b_value, tolerance_map=tolerance_map)
-
-
-# TODO(markblee): Move this to axlearn/experiments/test_utils.py, where it's used.
-class TrainerConfigTestCase(TestCase):
-    """Base class for testing trainer configs."""
-
-    def _test_with_trainer_config(self, trainer_config, mesh_size: Optional[dict[str, int]] = None):
-        with jax.checking_leaks(), set_data_dir("FAKE"):
-            if mesh_size is None:
-                mesh_size = {}
-            cfg = copy.deepcopy(trainer_config)
-            cfg.dir = cfg.dir or tempfile.mkdtemp()
-            cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
-            cfg.mesh_shape = cfg.mesh_shape or (len(jax.devices()), 1)
-            cfg.max_step = 3
-
-            # TODO(kelvin-zou): Remove this once bfloat16 bug on CPU is fixed.
-            if jax.devices()[0].platform == "cpu":
-                if cfg.train_dtype == jnp.bfloat16:
-                    cfg.train_dtype = jnp.float32
-                for evaler_cfg in cfg.evalers.values():
-                    if evaler_cfg.eval_dtype == jnp.bfloat16:
-                        evaler_cfg.eval_dtype = jnp.float32
-
-            for evaler_cfg in cfg.evalers.values():
-                if getattr(evaler_cfg.eval_policy, "fn", None) is eval_every_n_steps_policy:
-                    evaler_cfg.eval_policy.n = 2
-                evaler_cfg.vlog = max(evaler_cfg.vlog or 0, 3)
-
-            if getattr(cfg.checkpointer.save_policy, "fn", None) is every_n_steps_policy:
-                cfg.checkpointer.save_policy.n = 2
-            logging.info("_test_with_trainer_config: %s", trainer_config)
-            trainer: SpmdTrainer = cfg.instantiate(parent=None)
-            trainer.run(jax.random.PRNGKey(123))
-
-            state_spec_map = dict(flatten_items(trainer.trainer_state_specs))
-            for path, value in flatten_items(trainer.trainer_state):
-                state_spec = state_spec_map.get(path)
-                logging.info(
-                    "State: %s=%s(%s) state_spec=%s", path, value.dtype, value.shape, state_spec
-                )
-                if state_spec is None:
-                    continue
-                self.assertSequenceEqual(value.shape, state_spec.shape)
-                if state_spec.mesh_axes is None:
-                    state_spec.mesh_axes = [None] * len(value.shape)
-                self.assertLen(
-                    state_spec.mesh_axes,
-                    len(value.shape),
-                    msg=f"{path}: {state_spec} vs {value.shape}",
-                )
-                for dim_size, dim_name in zip(value.shape, state_spec.mesh_axes):
-                    if dim_name is None:
-                        continue
-                    mesh_dim_size = mesh_size.get(dim_name, 1)
-                    self.assertEqual(
-                        dim_size % mesh_dim_size,
-                        0,
-                        msg=(
-                            f"{path}: {dim_size} % {mesh_dim_size} != 0 "
-                            f"for {dim_name} in {value.shape} vs. {state_spec}"
-                        ),
-                    )
 
 
 class DummyForwardModel(BaseModel):

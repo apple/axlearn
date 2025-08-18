@@ -2,7 +2,7 @@
 
 """Tests Conformer LibriSpeech configs."""
 
-from axlearn.common import test_utils
+from axlearn.experiments import test_utils
 from axlearn.experiments.audio.conformer import librispeech_trainer
 
 
