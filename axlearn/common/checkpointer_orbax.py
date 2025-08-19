@@ -17,7 +17,7 @@ import orbax.checkpoint as ocp
 import tensorflow as tf
 from absl import logging
 
-from axlearn.common import utils
+from axlearn.common import measurement, utils
 from axlearn.common.checkpointer import (
     STEP_NUM_DIGITS,
     STEP_PREFIX,
@@ -232,6 +232,9 @@ class OrbaxCheckpointer(BaseCheckpointer):
             step_prefix=STEP_PREFIX,
             step_format_fixed_length=STEP_NUM_DIGITS,
         )
+        self._checkpoint_logger = None
+        if measurement.global_recorder:
+            self._checkpoint_logger = measurement.global_recorder.create_checkpoint_logger()
         self._manager = ocp.CheckpointManager(
             directory=cfg.dir,
             options=ocp.CheckpointManagerOptions(
@@ -255,6 +258,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
                     restore_concurrent_gb=cfg.max_concurrent_restore_gb,
                 ),
             },
+            logger=self._checkpoint_logger,
         )
 
     def _get_spec(self, *, step: int, state: Nested[Any]) -> Nested[Any]:

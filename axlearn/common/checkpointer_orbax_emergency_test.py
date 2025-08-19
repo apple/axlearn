@@ -10,6 +10,7 @@ import socket
 import tempfile
 from contextlib import ExitStack, closing
 from typing import Optional
+from unittest import mock
 
 import jax
 import numpy as np
@@ -18,7 +19,7 @@ from absl import logging
 from absl.testing import parameterized
 from jax import numpy as jnp
 
-from axlearn.common import utils_spmd
+from axlearn.common import measurement, utils_spmd
 from axlearn.common.checkpointer_orbax_emergency import (
     OrbaxEmergencyCheckpointer,
     _dump_process_info,
@@ -299,3 +300,28 @@ class OrbaxCheckpointerTest(parameterized.TestCase):
             finally:
                 for p in processes:
                     p.kill()
+
+    @mock.patch("orbax.checkpoint._src.multihost.multihost.initialize_runtime_to_distributed_ids")
+    @mock.patch("orbax.checkpoint._src.multihost.multihost.initialize_distributed_to_device_ids")
+    def test_emergency_checkpointer_initializes_logger_from_global_recorder(
+        self, mock_init_runtime, mock_init_device_ids
+    ):  # pylint: disable=unused-argument
+        """Tests OrbaxEmergencyCheckpointer initializes _checkpoint_logger."""
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            measurement, "global_recorder", mock.MagicMock()
+        ) as mock_recorder:
+            mock_logger = mock.MagicMock()
+            mock_recorder.create_checkpoint_logger.return_value = mock_logger
+
+            cfg = OrbaxEmergencyCheckpointer.default_config().set(
+                name="test_logger",
+                trainer_dir=temp_dir,
+                dir=temp_dir,
+                local_dir=temp_dir,
+                replica_axis_index=0,
+            )
+
+            ckpt: OrbaxEmergencyCheckpointer = cfg.instantiate(parent=None)
+
+            mock_recorder.create_checkpoint_logger.assert_called_once()
+            self.assertEqual(ckpt._checkpoint_logger, mock_logger)
