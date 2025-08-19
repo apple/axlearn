@@ -146,7 +146,13 @@ from axlearn.cloud.gcp.jobs.launch_utils import (
     with_k8s_jobset_state,
 )
 from axlearn.cloud.gcp.runners.base import BaseRunnerJob
-from axlearn.cloud.gcp.utils import GCPAPI, catch_auth, load_kube_config, running_from_vm
+from axlearn.cloud.gcp.utils import (
+    GCPAPI,
+    catch_auth,
+    load_kube_config,
+    running_from_vm,
+    validate_region_matching,
+)
 from axlearn.common.config import (
     REQUIRED,
     ConfigBase,
@@ -374,6 +380,10 @@ class BaseBastionManagedJob(FlagConfigurable):
         """
         cfg: BaseBastionManagedJob.Config = self.config
         from_vm = running_from_vm()
+
+        output_dir = cfg.output_dir
+        bucket_name = output_dir.split("//")[1].split("/")[0]
+        validate_region_matching(bucket_name, gcp_settings("zone"))
 
         if not from_vm:
             os.environ["BASTION_TIER"] = "disabled"
