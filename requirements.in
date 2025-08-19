@@ -10,3 +10,5 @@ pytest
 wrapt
 optax
 pytype
+tensorflow
+msgpack
