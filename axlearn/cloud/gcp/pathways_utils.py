@@ -41,18 +41,23 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 # The port used by pathways worker server.
 # The specific value is not important, as long as clients and servers use the same port.
 _PATHWAYS_WORKER_PORT = 29001
+_COLOCATED_CONTAINER_PORT = 50051
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
 _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
+
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
 )
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server_maxtext:latest"
+)
+_COLOCATED_PYTHON_IMAGE = (
+    "gcr.io/cloud-tpu-multipod-dev/ksadi_sidecar_maxtext:latest"
 )
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
@@ -62,6 +67,10 @@ _PATHWAYS_PROXY_CONTAINER_NAME = "pathways-proxy"
 _PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
 # The k8s replicatedJob name for pathways-worker pods.
 _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
+
+_COLOCATED_PYTHON_SIDECAR_NAME = "colocated-python-sidecar"
+
+
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
@@ -381,7 +390,50 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--gcs_scratch_location={staging_location}",
                 ],
             ),
+            
+            
+            # # #   volumeMounts:
+            # # #   - mountPath: /tmp
+            # # #     name: shared-tmp
+            # dict(
+            #     name=_COLOCATED_PYTHON_SIDECAR_NAME,
+            #     image=_COLOCATED_PYTHON_IMAGE,
+            #     # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
+            #     # SideCar container is an init container with restartPolicy as "Always".
+            #     restartPolicy="Always",
+            #     env=[
+            #         {
+            #             "name": "GRPC_SERVER_ADDRESS",
+            #             "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
+            #         },
+            #     ],
+            #     imagePullPolicy="Always",
+            #     ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
+
+            # ),
         ]
+    
+    def _colocated_python_container(self):
+        #   volumeMounts:
+            #   - mountPath: /tmp
+            #     name: shared-tmp
+
+        return  dict(
+                name=_COLOCATED_PYTHON_SIDECAR_NAME,
+                image=_COLOCATED_PYTHON_IMAGE,
+                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
+                # SideCar container is an init container with restartPolicy as "Always".
+                restartPolicy="Always",
+                env=[
+                    {
+                        "name": "GRPC_SERVER_ADDRESS",
+                        "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
+                    },
+                ],
+                imagePullPolicy="Always",
+                ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
+
+            )
 
     def _build_pathways_head_pod(self) -> Nested[Any]:
         """Builds a pathways head pod. The pod includes a head container,
@@ -563,6 +615,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pod_spec["containers"] = [
             self._build_pathways_worker_container(pathways_worker_replicated_job_index)
         ]
+        pod_spec["initContainers"]=[self._colocated_python_container()]
+        
         worker_pod["spec"] = pod_spec
 
         # Service account for nodes.

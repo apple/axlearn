@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 # Minimal requirments for axlearn/common/config.py.
 dependencies = [
     "attrs>=23.1.0", # We use `type` in `attrs.field`
-    "numpy==1.26.4",  # verified with tensorflow 2.14 RaggedTensor
+    "numpy==2.1.1",  # verified with tensorflow 2.14 RaggedTensor
 ]
 
 [project.optional-dependencies]
@@ -23,9 +23,9 @@ core = [
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.5.3",
-    "jaxlib==0.5.3",
-    "ml-dtypes==0.4.1",
+    "jax==0.6.2",
+    "jaxlib==0.6.2",
+    "ml-dtypes==0.5.1",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -34,14 +34,14 @@ core = [
     "protobuf>=3.20.3",
     "tensorboard-plugin-profile==2.20.4",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
-    "tensorflow==2.17.1",
+    "tensorflow==2.19.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    "tensorflow_text==2.17.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
+    "tensorflow_text==2.19.0; platform_machine == 'x86_64'", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.12.2",
-    "scipy==1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
+    "scipy==1.15.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18",  # used for inputs
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
     "flax==0.10.2", # for AQT, param converter and adapter.
@@ -107,7 +107,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.6.2",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.

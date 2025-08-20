@@ -65,6 +65,7 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.fuji import offload_attention_proj_policy
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from absl import logging
 
 MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL")
 
@@ -81,7 +82,7 @@ VOCAB_SIZE = 32 * 1024
 MAX_SEQUENCE_LENGTH = {
     "test": 8192,
     "Switch-Base": 8192,
-    "Switch-Large": 8192,
+    "Switch-Large": 4096,#8192,
     "Switch-XXL": 8192,
 }
 
@@ -156,6 +157,9 @@ def get_trainer_kwargs(
         )
     elif model_size == "Switch-Base":
         # Num of parameters: 30B.
+        import jax
+        gbs=len(jax.devices())
+
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=12,
@@ -175,7 +179,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
             max_sequence_length=max_sequence_length,
-            train_batch_size=tokens_per_batch // max_sequence_length,  # 8M tokens.
+            train_batch_size=gbs, #tokens_per_batch // max_sequence_length,  # 8M tokens.
             max_step=250_000,
             mesh_shape=mesh_shape_from_axes(fsdp=-1, expert=16),
             mesh_rules=(
@@ -204,14 +208,14 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, expert=16, fsdp=16)
                             ),
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
-                                        policy=offload_attention_proj_policy,
-                                    ),
-                                }
-                            ),
+                            # RematSpecModifier.default_config().set(
+                            #     remat_policies={
+                            #         "model.decoder.transformer.layer": RematSpec(
+                            #             prevent_cse=False
+                            #             policy=offload_attention_proj_policy,
+                            #         ),
+                            #     }
+                            # ),
                         ],
                     ),
                 ),
@@ -219,6 +223,10 @@ def get_trainer_kwargs(
         )
     elif model_size == "Switch-Large":
         # Num of parameters: 104B.
+        import jax
+        gbs=len(jax.devices())
+        logging.info("Training batch size: %s", str(tokens_per_batch // max_sequence_length))
+        logging.info("gbs: %s", str(gbs))
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=24,
@@ -238,7 +246,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
             max_sequence_length=max_sequence_length,
-            train_batch_size=tokens_per_batch // max_sequence_length,  # 8M tokens.
+            train_batch_size=gbs,#tokens_per_batch // max_sequence_length,  # 8M tokens.
             max_step=250_000,  # Most of the evals were done at 100k steps in the paper.
             mesh_shape=mesh_shape_from_axes(fsdp=-1, expert=16),
             mesh_rules=(
@@ -265,16 +273,16 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, expert=16, fsdp=16)
+                                mesh_shape=mesh_shape_from_axes(data=-1, expert=16, fsdp=8)
                             ),
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
-                                        policy=offload_attention_proj_policy,
-                                    ),
-                                }
-                            ),
+                            # RematSpecModifier.default_config().set(
+                            #     remat_policies={
+                            #         "model.decoder.transformer.layer": RematSpec(
+                            #             prevent_cse=True,
+                            #             policy=offload_attention_proj_policy,
+                            #         ),
+                            #     }
+                            # ),
                         ],
                     ),
                 ),
@@ -285,15 +293,15 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, expert=16, fsdp=16)
                             ),
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
-                                        policy=offload_attention_proj_policy,
-                                    ),
-                                }
-                            ),
-                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                            # RematSpecModifier.default_config().set(
+                            #     remat_policies={
+                            #         "model.decoder.transformer.layer": RematSpec(
+                            #             prevent_cse=True,
+                            #             policy=offload_attention_proj_policy,
+                            #         ),
+                            #     }
+                            # ),
+                            # GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
                 ),
