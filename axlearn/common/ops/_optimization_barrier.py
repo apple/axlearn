@@ -94,8 +94,7 @@ def forward_optimization_barrier(pytree: Any) -> Any:
     Returns:
         `pytree` transparently wrapped in an XLA optimization barrier.
     """
-    return ad_checkpoint._optimization_barrier(pytree)  # pylint: disable=protected-access
-
+    return jax.lax.optimization_barrier(pytree)
 
 @forward_optimization_barrier.defjvp
 def forward_optimization_barrier_jvp(primals: tuple, tangents: tuple) -> tuple[Any, Any]:
