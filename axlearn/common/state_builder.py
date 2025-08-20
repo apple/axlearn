@@ -503,43 +503,6 @@ class BaseConverterFromPretrainedModel(Converter):
             return source, target
 
 
-class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
-    """Replaces a BertLMHead with a BertSequenceClassificationHead.
-
-    Main use-case is to convert a pretrained BertModel checkpoint by dropping the MLM head and
-    loading a task-specific finetuning head in its place. Note that we also reset optimizer state
-    (e.g. accumulators) corresponding to the base pretrained model.
-    """
-
-    def target_state_type(self) -> Builder.StateType:
-        return Builder.StateType.TENSORS
-
-    def source_to_target(self, source: Builder.State, aux: Any) -> Builder.State:
-        """Produces state compatible with the new classification head."""
-        restored_model = jax.tree.map(
-            lambda s, t: self._swap_heads(s, t) if self._is_bert_lm_head(s) else s,
-            source.trainer_state.model,
-            aux.trainer_state.model,
-        )
-        restored_state = source.trainer_state._replace(model=restored_model)
-        # Reset old optimizer state following fairseq, e.g:
-        # https://github.com/facebookresearch/fairseq/blob/acd9a53607d1e5c64604e88fc9601d0ee56fd6f1/examples/roberta/config/finetuning/cola.yaml#L21
-        # https://github.com/facebookresearch/fairseq/blob/10b797a44f1d724465cd66ce1bb92d6b8fa052eb/fairseq/trainer.py#L587
-        restored_state = restored_state._replace(learner=aux.trainer_state.learner)
-        built_keys = source.built_keys.union({key for key, _ in flatten_items(restored_state)})
-        return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
-
-    # pylint: disable-next=no-self-use
-    def _is_bert_lm_head(self, state: dict[str, Any]) -> bool:
-        return is_dict(state, "head") and is_dict(state["head"], ["transform", "output_bias"])
-
-    # pylint: disable-next=no-self-use
-    def _swap_heads(self, source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
-        out = clone_tree(source)
-        out["head"] = target["head"]
-        return out
-
-
 def traverse_and_set_target_state_parameters(
     *,
     target_state: dict[str, Any],
