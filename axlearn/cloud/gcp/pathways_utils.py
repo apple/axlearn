@@ -390,39 +390,13 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--gcs_scratch_location={staging_location}",
                 ],
             ),
-            
-            
-            # # #   volumeMounts:
-            # # #   - mountPath: /tmp
-            # # #     name: shared-tmp
-            # dict(
-            #     name=_COLOCATED_PYTHON_SIDECAR_NAME,
-            #     image=_COLOCATED_PYTHON_IMAGE,
-            #     # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
-            #     # SideCar container is an init container with restartPolicy as "Always".
-            #     restartPolicy="Always",
-            #     env=[
-            #         {
-            #             "name": "GRPC_SERVER_ADDRESS",
-            #             "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
-            #         },
-            #     ],
-            #     imagePullPolicy="Always",
-            #     ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
-
-            # ),
         ]
     
     def _colocated_python_container(self):
-        #   volumeMounts:
-            #   - mountPath: /tmp
-            #     name: shared-tmp
 
         return  dict(
                 name=_COLOCATED_PYTHON_SIDECAR_NAME,
                 image=_COLOCATED_PYTHON_IMAGE,
-                # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
-                # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
                 env=[
                     {

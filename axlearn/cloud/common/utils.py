@@ -6,7 +6,7 @@ import collections
 import copy
 import dataclasses
 import functools
-import importlib.metadata
+import importlib
 import logging as pylogging
 import os
 import shlex
