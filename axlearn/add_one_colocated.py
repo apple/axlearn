@@ -33,11 +33,10 @@ print("def add_one")
 def add_one(x):
   import sys
 
-  sys.stderr.write("In colocated python function")
-
-  sys.stderr.write(f"[Colocated] jax version: {jax.__version__}")
+  sys.stderr.write("In colocated python function \n")
+  sys.stderr.write(f"[Colocated] jax version: {jax.__version__} \n")
   sys.stderr.write("[Colocated] add_one")
-  sys.stderr.write(f"[Colocated] x:  {x} on device:  {x.device }")
+  sys.stderr.write(f"[Colocated] x:  {x} on device:  {x.device } \n")
   return x+1
 
 
