@@ -1037,15 +1037,30 @@ class Bastion(Configurable):
             serialized_jobspec = io.StringIO()
             serialize_jobspec(job.spec, serialized_jobspec)
             env_vars |= {_BASTION_SERIALIZED_JOBSPEC_ENV_VAR: serialized_jobspec.getvalue()}
-            _start_command(
-                job,
-                remote_log_dir=self._log_dir,
-                env_vars=env_vars,
-            )
-            assert job.command_proc is not None
 
-            # If command is completed, move to CLEANING. Otherwise, it's still RUNNING.
-            if _is_proc_complete(job.command_proc):
+            try:
+                _start_command(
+                    job,
+                    remote_log_dir=self._log_dir,
+                    env_vars=env_vars,
+                )
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                job.command_proc = None
+                logging.warning(
+                    "Failed to start command for the job %s: %s with error: %s",
+                    job.spec.name,
+                    job.spec.command,
+                    e,
+                )
+
+            if job.command_proc is None:
+                # If failed to start command, moving the job to CLEANING directly.
+                self._append_to_job_history(
+                    job, msg="Failed to start job command", state=JobLifecycleState.CLEANING
+                )
+                job.state.status = JobStatus.CLEANING
+            elif _is_proc_complete(job.command_proc):
+                # If command is completed, move to CLEANING. Otherwise, it's still RUNNING.
                 self._append_to_job_history(
                     job, msg="CLEANING: process finished", state=JobLifecycleState.CLEANING
                 )

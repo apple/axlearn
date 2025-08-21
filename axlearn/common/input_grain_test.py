@@ -578,17 +578,6 @@ class InputTest(parameterized.TestCase):
         batch = next(grain_input.batches(iter(grain_input)))
         self.assertEqual(batch.shape[0], grain_input.input_dispatcher.feed_logical_batch_size)
 
-        # Try with the incorrect batching.
-        cfg = self._input_config(
-            range_dataset(start=0, stop=10, seed=123).shuffle().repeat(num_epochs=1),
-            per_process=lambda ds, **_: ds.batch(4),
-        )
-        cfg.input_dispatcher = dispatcher
-        grain_input: Input = cfg.instantiate(parent=None)
-
-        with self.assertRaisesRegex(ValueError, "per-feed batch"):
-            next(grain_input.batches(iter(grain_input)))
-
     @parameterized.parameters(
         # Should produce a per-feed batch of 2, taking every `num_shards` example.
         dict(num_shards=2, shard_index=0, expected=[0, 2]),

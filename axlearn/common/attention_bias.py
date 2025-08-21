@@ -567,11 +567,18 @@ class MaskFnAttentionBias(BoolAttentionBias):
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
     ) -> Union[BaseAttentionBias, PartitionSpec]:
-        batch = mha_dim_to_partition_spec["bnts"][0]
+        if mha_dim_to_partition_spec["bnts"] == PartitionSpec(None):
+            batch = target = source = None
+        else:
+            batch, _, target, source = mha_dim_to_partition_spec["bnts"]
         return dataclasses.replace(
             self,
-            target_positions=PartitionSpec(None if self.target_positions.shape[0] == 1 else batch),
-            source_positions=PartitionSpec(None if self.source_positions.shape[0] == 1 else batch),
+            target_positions=PartitionSpec(
+                None if self.target_positions.shape[0] == 1 else batch, target
+            ),
+            source_positions=PartitionSpec(
+                None if self.source_positions.shape[0] == 1 else batch, source
+            ),
         )
 
 

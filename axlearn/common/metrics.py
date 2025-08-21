@@ -16,8 +16,13 @@ from axlearn.common.utils import NestedTensor, Tensor
 class WeightedScalarValue(Summary):
     """A weighted scalar value represents a mean value and a weight."""
 
-    mean: Tensor
-    weight: Tensor
+    mean: NestedTensor | int | float
+    weight: NestedTensor | int | float
+
+    def __init__(self, mean: NestedTensor | int | float, weight: NestedTensor | int | float):
+        self.mean = mean
+        self.weight = weight
+        super().__init__(mean, weight)  # pytype: disable=wrong-arg-count
 
     def value(self) -> Optional[Union[NestedTensor, int, float]]:
         return self.mean
@@ -48,6 +53,48 @@ class WeightedScalar(WeightedScalarValue):
         if not isinstance(other, WeightedScalar):
             raise TypeError(f"Expected WeightedScalar, got {type(other)}.")
         return self + other
+
+
+class MinSummary(Summary):
+    """A summary that computes the minimum value across tensor elements."""
+
+    _value: Tensor
+
+    def value(self) -> Tensor:
+        return self._value
+
+    def validate(self):
+        val = self._value
+        if not isinstance(val, Tensor):
+            raise ValueError(f"MinSummary value must be a Tensor, but got {str(type(val))}.")
+        if val.ndim >= 1:
+            raise ValueError(f"MinSummary value must be a scalar, but got {val.ndim=}.")
+
+    def accumulate(self, other: Summary) -> Summary:
+        if not isinstance(other, MinSummary):
+            raise TypeError(f"Expected MinSummary, got {type(other)}.")
+        return MinSummary(jnp.minimum(self.value(), other.value()))
+
+
+class MaxSummary(Summary):
+    """A summary that computes the maximum value across tensor elements."""
+
+    _value: Tensor
+
+    def value(self) -> Tensor:
+        return self._value
+
+    def validate(self):
+        val = self._value
+        if not isinstance(val, Tensor):
+            raise ValueError(f"MaxSummary value must be a Tensor, but got {str(type(val))}.")
+        if val.ndim >= 1:
+            raise ValueError(f"MaxSummary value must be a scalar, but got {val.ndim=}.")
+
+    def accumulate(self, other: Summary) -> Summary:
+        if not isinstance(other, MaxSummary):
+            raise TypeError(f"Expected MaxSummary, got {type(other)}.")
+        return MaxSummary(jnp.maximum(self.value(), other.value()))
 
 
 class MetricAccumulator(Configurable):

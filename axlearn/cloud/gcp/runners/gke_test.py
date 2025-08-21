@@ -18,10 +18,12 @@ from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.job_flink import FlinkJobStatus
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
+from axlearn.cloud.gcp.pathways_utils import PathwaysLeaderWorkerTemplate
 from axlearn.cloud.gcp.runners import gke as runner_gke
 from axlearn.cloud.gcp.runners import named_runner_configs
 from axlearn.cloud.gcp.runners.gke import (
     GKERunnerJob,
+    LWSRunnerJob,
     _infer_job_count,
     _infer_job_version,
     _infer_processor_type,
@@ -1228,3 +1230,226 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
                         self.assertEqual(expected, job._get_status())
                 else:
                     self.assertEqual(expected, job._get_status())
+
+
+class LWSRunnerJobTest(parameterized.TestCase):
+    """Tests LWSRunnerJob."""
+
+    def run(self, result=None):
+        # Run tests under mock user and settings.
+        self._settings = default_mock_settings()
+        mock_user = mock.patch("os.environ", {"USER": "test"})
+        with (
+            mock_user,
+            mock_gcp_settings(
+                [runner_gke.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                settings=self._settings,
+            ),
+        ):
+            return super().run(result)
+
+    def _job_config(
+        self, *, name: str, command: str, env_vars: Optional[dict] = None, **kwargs
+    ) -> LWSRunnerJob.Config:
+        fv = flags.FlagValues()
+        cfg = named_runner_configs("gke_tpu_lws_pathways")
+        define_flags(cfg, fv)
+        # Set `name` as a default; since implementations typically use `generate_job_name`, we
+        # want to exercise the case that the default value of name is not overridden.
+        fv.set_default("name", name)
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(fv, key, value)
+        if env_vars:
+            fv.env = [f"{k}:{v}" for k, v in env_vars.items()]
+        fv.set_default("instance_type", "tpu-v4-8")
+        fv.mark_as_parsed()
+        return from_flags(cfg, fv, command=command)
+
+    @parameterized.product(
+        name=[None, "test-name"],
+        cluster=[None, "test-cluster"],
+        enable_pre_provisioner=[None, False, True],
+        env_vars=[None, {"test": "123"}],
+    )
+    def test_from_flags(self, name, cluster, enable_pre_provisioner, env_vars):
+        cfg = self._job_config(
+            command="test-command",
+            name=name,
+            cluster=cluster,
+            enable_pre_provisioner=enable_pre_provisioner,
+            env_vars=env_vars,
+        )
+        if name:
+            self.assertEqual(cfg.name, name)
+        else:
+            self.assertIsNotNone(cfg.name)
+        self.assertEqual(cfg.cluster, cluster or self._settings["gke_cluster"])
+        self.assertEqual(cfg.enable_pre_provisioner, enable_pre_provisioner)
+        builder_cfg: PathwaysLeaderWorkerTemplate.Config = cfg.inner.builder
+        self.assertIsInstance(builder_cfg, PathwaysLeaderWorkerTemplate.Config)
+        self.assertEqual(builder_cfg.name, cfg.name)
+        self.assertEqual(builder_cfg.output_dir, cfg.output_dir)
+        self.assertIn(cfg.name, cfg.output_dir)
+
+        # Test that TPU defaults are set.
+        self.assertIn("TPU_TYPE", builder_cfg.inner.env_vars)
+        if env_vars is not None:
+            for k, v in env_vars.items():
+                self.assertEqual(builder_cfg.inner.env_vars[k], v)
+
+        # Should be instantiable.
+        runner: LWSRunnerJob = cfg.instantiate(bundler=mock.Mock())
+
+        # Inner should have consistent configs.
+        final_config = runner.config
+        inner_config = runner._inner.config
+        for key, value in final_config.items():
+            if key not in ("klass", "service_account") and key in inner_config.keys():
+                self.assertEqual(value, getattr(inner_config, key), msg=key)
+
+    def test_default_name(self):
+        """Tests that default name works even when env doesn't contain USER."""
+        fv = flags.FlagValues()
+        LWSRunnerJob.define_flags(fv)
+        fv.mark_as_parsed()
+        LWSRunnerJob.set_defaults(fv)
+        self.assertIsNotNone(fv["name"].default)
+
+    @parameterized.product(
+        status=[
+            runner_gke.LWSRunnerJob.Status.FAILED,
+        ],
+        enable_pre_provisioner=[None, False, True],
+    )
+    def test_exit(self, status, enable_pre_provisioner):
+        cfg = self._job_config(
+            command="",
+            name="test-name",
+            cluster="test-cluster",
+            enable_pre_provisioner=enable_pre_provisioner,
+        )
+        job: LWSRunnerJob = cfg.instantiate(bundler=mock.Mock())
+        with mock.patch.multiple(
+            job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
+        ):
+            job._execute()
+
+    @parameterized.product(
+        (
+            # Conditions is set, so we use it.
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Progressing", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                expected=runner_gke.LWSRunnerJob.Status.PROGRESSING,
+            ),
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Available", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                expected=runner_gke.LWSRunnerJob.Status.RUNNING,
+            ),
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="UpdateInProgress", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                expected=runner_gke.LWSRunnerJob.Status.UPDATING,
+            ),
+        )
+    )
+    def test_get_status(
+        self,
+        status: dict,
+        num_slices: int,
+        expected: runner_gke.LWSRunnerJob.Status,
+        tier: str,
+        job_version: Optional[int],
+        spec: dict,
+        enable_pre_provisioner: Optional[bool] = None,
+    ):
+        cfg = self._job_config(
+            command="test-command",
+            name="test-name",
+            cluster="test-cluster",
+            enable_pre_provisioner=enable_pre_provisioner,
+            num_replicas=num_slices,
+        )
+        job: LWSRunnerJob = cfg.instantiate(bundler=mock.Mock())
+
+        if isinstance(status, Exception):
+            mock_get_status = mock.Mock(side_effect=status)
+        else:
+            mock_get_status = mock.Mock(return_value=dict(status=status, spec=spec))
+
+        with (
+            mock.patch.dict(
+                "os.environ", {"BASTION_TIER": tier, BASTION_JOB_VERSION_ENV_VAR: job_version}
+            ),
+            mock.patch(
+                "kubernetes.client.CustomObjectsApi",
+                return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
+            ),
+        ):
+            self.assertEqual(expected, job._get_status())
+
+    @parameterized.parameters(None, False, True)
+    def test_delete(self, enable_pre_provisioner):
+        cfg = self._job_config(
+            name="test-name",
+            command="",
+            cluster="test-cluster",
+            enable_pre_provisioner=enable_pre_provisioner,
+        )
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+
+        with mock.patch.multiple(
+            job,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        ):
+            job._delete()
+
+            job._inner._delete.assert_called()  # pytype: disable=attribute-error
+
+            if enable_pre_provisioner:
+                # pytype: disable=attribute-error
+                job._pre_provisioner.delete_for.assert_called()
+                # pytype: enable=attribute-error
+
+    def test_name_alias(self):
+        """Tests that names set via flag aliases are retained."""
+        with (
+            mock_gcp_settings(
+                [runner_gke.__name__, bundler.__name__, node_pool_provisioner.__name__],
+                default_mock_settings(),
+            ),
+        ):
+            cfg: GKERunnerJob.Config = GKERunnerJob.default_config()
+            fv = flags.FlagValues()
+            define_flags(cfg, fv)
+            fv.mark_as_parsed()
+            self.assertIsNone(fv.name)
+            self.assertIsNone(fv["name"].default)
+            flags.DEFINE_alias("alias_name", "name", flag_values=fv)
+            fv.set_default("alias_name", "test-name")
+            from_flags(cfg, fv)
+            self.assertEqual(cfg.name, fv.alias_name)

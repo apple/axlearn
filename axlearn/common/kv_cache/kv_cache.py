@@ -37,13 +37,15 @@ class KVCache(BaseKVCache):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        live_step_len: Optional[Tensor] = None,
+        unpadded_len: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
-        # TODO(dhwang2): By returning only the valid portions of the KV (by live_step_len),
-        # the attention complexity can be reduced from O(max_len²) to O(live_step_len²), especially
+        # TODO(dhwang2): By returning only the valid portions of the KV (by unpadded_len),
+        # the attention complexity can be reduced from O(max_len²) to O(unpadded_len²), especially
         # in prefill.
-        # The remaining part after `live_step_len` is considered padding.
-        del live_step_len
+        # The remaining part after `unpadded_len` is considered padding.
+        assert page_pool is None
+        del unpadded_len
         if k_proj.shape != v_proj.shape:
             raise ValueError(f"{k_proj.shape=} != {v_proj.shape=}")
         if k_proj.shape[1] != key_positions.shape[1]:
@@ -99,7 +101,7 @@ class KVCache(BaseKVCache):
         # [B, S, N, H]
         k_proj = jnp.einsum("bnhs->bsnh", cached_key)
         v_proj = jnp.einsum("bnhs->bsnh", cached_value)
-        # Currently, the part larger than live_step_len is also being overwritten in the KV cache,
+        # Currently, the part larger than unpadded_len is also being overwritten in the KV cache,
         # and this part is filtered out by the causal mask through key_positions.
         key_positions = jnp.arange(k_proj.shape[1])[None]  # [1, source_length]
         return updated_state, self.Output(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)

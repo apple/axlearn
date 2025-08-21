@@ -46,6 +46,7 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested, Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
@@ -71,7 +72,7 @@ def _to_splash_mask(
 
     # Because mask.mask() may use jnp ops. e.g. jnp.logical_and.
     with jax.ensure_compile_time_eval():
-        # This code is reached only when `is_decoding == False` (i.e., forward and prefill) and
+        # This code is reached only when `kv_cache_type=None` (i.e., forward and prefill) and
         # `target_len == source_len` (i.e., self-attention) (see `check_tpu_splash_attention`).
         # `target_positions` and `source_positions` are always in the range [0, seq_len].
         target_positions = np.arange(mask_shape[0])[None, :, None]
@@ -863,11 +864,10 @@ class TPUFlashAttention(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
         block_size = self.cfg.tpu_block_size
         if not self._check_block_size(input_batch=input_batch, block_size=block_size):
@@ -896,9 +896,10 @@ class TPUSplashAttention(TPUFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(input_batch):
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
         bias: BaseAttentionBias = input_batch["bias"]
         _, _, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
@@ -926,6 +927,7 @@ class TPUSplashAttention(TPUFlashAttention):
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         value: Tensor = input_batch["value"]
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
         prng_key = input_batch.get("prng_key", None)
 
         if cfg.dropout_rate > 0.0 and prng_key is None:
@@ -957,7 +959,9 @@ class TPUSplashAttention(TPUFlashAttention):
             # and 1.14x in 539.5b.
             use_fused_bwd_kernel=True,
         )
-        splash_mask = _to_splash_mask(mask, mask_shape=(query.shape[2], key.shape[2]))
+        splash_mask = _to_splash_mask(
+            mask, mask_shape=(query.shape[2], key.shape[2]), q_seq_shards=1
+        )
 
         num_heads = query.shape[1]
         mha_mask = splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads)
@@ -973,7 +977,7 @@ class TPUSplashAttention(TPUFlashAttention):
             interpret=self.cfg.interpret,
             residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
         )
-        p_kernel = functools.partial(kernel, prng_key=prng_key)
+        p_kernel = functools.partial(kernel, prng_key=prng_key, logit_sink=logit_sink)
         vp_kernel = jax.vmap(p_kernel, axis_name="batch")
         context = vp_kernel(q=query, k=key, v=value, segment_ids=seg_ids)
         return jnp.einsum("bnth->btnh", context)
@@ -1027,9 +1031,10 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(input_batch):
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
@@ -1037,6 +1042,9 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
             return self._log_unsupported(f"{query.dtype=} != {key.dtype=}")
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
+        logit_sink = input_batch.get("logit_sink", None)
+        if logit_sink is not None:
+            return self._log_unsupported("LegacyTPUFlashAttention doesn't support logit sink.")
         logging.info("Using %s.", self.name())
         return True
 

@@ -25,6 +25,9 @@ from axlearn.common.attention_bias import (
     sliding_window_causal_mask,
 )
 from axlearn.common.flash_attention import common, utils
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
+from axlearn.common.kv_cache.sliding_window_kv_cache import SlidingWindowKVCache
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
 
 
@@ -186,6 +189,7 @@ class TestFlashAttention(TestCase):
                     value=value,
                     prng_key=prng_key,
                     bias=bias,
+                    logit_sink=None,
                 )
                 ref_out = ref_fn(input_batch)
                 test_out = test_fn(input_batch)
@@ -225,6 +229,7 @@ class TestFlashAttention(TestCase):
                 target_positions=jnp.arange(seq_len)[None],
                 source_positions=jnp.arange(seq_len)[None],
             )
+            kv_cache_type = KVCache
         else:
             assert bias_type == "sliding"
             bias = SlidingWindowAttentionBias(
@@ -233,17 +238,8 @@ class TestFlashAttention(TestCase):
                 target_positions=jnp.arange(seq_len)[None],
                 source_positions=jnp.arange(seq_len)[None],
             )
+            kv_cache_type = SlidingWindowKVCache
 
-        query, key, value = _get_inputs(
-            batch=batch,
-            seq_len=seq_len,
-            num_heads=num_heads,
-            num_kv_heads=num_kv_heads or num_heads,
-            per_head_dim=per_head_dim,
-            input_dtype=input_dtype,
-        )
-        page_tables = None
-        key_for_forward, value_for_forward = key, value
         if page_size is not None:
             query, key, value, page_tables = _get_paged_inputs(
                 batch=batch,
@@ -257,6 +253,18 @@ class TestFlashAttention(TestCase):
 
             key_for_forward = common.reconstruct_kv(page_tables, key)
             value_for_forward = common.reconstruct_kv(page_tables, value)
+            kv_cache_type = PagedKVCache
+        else:
+            query, key, value = _get_inputs(
+                batch=batch,
+                seq_len=seq_len,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads or num_heads,
+                per_head_dim=per_head_dim,
+                input_dtype=input_dtype,
+            )
+            page_tables = None
+            key_for_forward, value_for_forward = key, value
 
         with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
             fwd_fn = utils.flash_attention_implementation(
@@ -274,10 +282,13 @@ class TestFlashAttention(TestCase):
                 key=key,
                 value=value,
                 bias=bias,
+                kv_cache_type=kv_cache_type,
                 tpu_block_size=128,
-                is_decoding=True,
                 page_tables=page_tables,
             )
+            if decode_fn is None:
+                self.assertEqual(kv_cache_type, SlidingWindowKVCache)
+                return
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
                 prng_key = jax.random.PRNGKey(0)
                 forward_batch = dict(
@@ -286,6 +297,7 @@ class TestFlashAttention(TestCase):
                     value=value_for_forward,
                     prng_key=prng_key,
                     bias=bias,
+                    logit_sink=None,
                 )
                 fwd_out = fwd_fn(forward_batch)
                 # Limit generation length to 16 to save test time.
@@ -317,10 +329,9 @@ class TestFlashAttention(TestCase):
                         prng_key=prng_key,
                         page_tables=page_tables,
                         bias=bias_step,
+                        logit_sink=None,
                     )
-                    decoding_out = decode_fn(
-                        input_batch=decode_batch,
-                    )
+                    decoding_out = decode_fn(input_batch=decode_batch)
                     decoding_output.append(decoding_out)
                 decoding_output = jnp.concatenate(decoding_output, axis=1)
                 self.assertNestedAllClose(fwd_out, decoding_output, atol=0.02)

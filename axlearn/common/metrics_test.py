@@ -2,14 +2,16 @@
 
 """Tests for metrics.py."""
 
+import contextlib
 from typing import Optional
 
 import chex
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import metrics, summary, test_utils, utils
+from axlearn.common.metrics import MaxSummary, MinSummary
 from axlearn.common.module import Summable
 
 
@@ -54,6 +56,29 @@ class TestMetricAccumulator(test_utils.TestCase):
         result = jax.tree_util.tree_leaves(result)
         expected = jax.tree_util.tree_leaves(expected)
         chex.assert_trees_all_close(result, expected)
+
+    @parameterized.parameters(
+        dict(cls=metrics.MinSummary, expected=-10),
+        dict(cls=metrics.MaxSummary, expected=10),
+    )
+    def test_metric_min_max_accumulator(self, cls, expected):
+        acc = metrics.MetricAccumulator.default_config().instantiate()
+        summaries = [
+            dict(foo=cls(jnp.array(5))),
+            dict(foo=cls(jnp.array(-10))),
+            dict(foo=cls(jnp.array(10))),
+        ]
+
+        summaries_copy = jax.tree.map(lambda x: x, summaries)
+        for s in summaries_copy:
+            acc.update(s)
+        result = acc.summaries()
+        expected = dict(foo=cls(jnp.array(expected)))
+
+        chex.assert_trees_all_equal_structs(result, expected)
+        result = jax.tree_util.tree_leaves(result)
+        expected = jax.tree_util.tree_leaves(expected)
+        self.assertEqual(result, expected)
 
     def test_flatten_unflatten_metric_accumulator(self):
         acc = metrics.MetricAccumulator.default_config().instantiate()
@@ -128,3 +153,45 @@ class TestMetricAccumulator(test_utils.TestCase):
 
         # Test isinstance check.
         self.assertIsInstance(metrics.WeightedScalar(1.0, 1.0), Summable)
+
+
+class MinSummaryTest(test_utils.TestCase):
+    @parameterized.parameters(
+        (jnp.array(1), jnp.array(1)),
+        (jnp.array([1, 2]), ValueError("MinSummary value must be a scalar, but got val.ndim=1.")),
+        (jnp.array([[1, 2]]), ValueError("MinSummary value must be a scalar, but got val.ndim=2.")),
+        (1, ValueError("MinSummary value must be a Tensor, but got <class 'int'>.")),
+    )
+    def test_min_summary(self, value, expected):
+        min_summary = MinSummary(value)
+        if isinstance(expected, ValueError):
+            ctx = self.assertRaisesRegex(ValueError, expected.args[0])
+        else:
+            ctx = contextlib.nullcontext()
+        with ctx:
+            min_summary.validate()
+            new_summary = min_summary.accumulate(MinSummary(jnp.array(10)))
+            self.assertEqual(new_summary.value(), expected)
+
+
+class MaxSummaryTest(test_utils.TestCase):
+    @parameterized.parameters(
+        (jnp.array(1), jnp.array(1)),
+        (jnp.array([1, 2]), ValueError("MaxSummary value must be a scalar, but got val.ndim=1.")),
+        (jnp.array([[1, 2]]), ValueError("MaxSummary value must be a scalar, but got val.ndim=2.")),
+        (1, ValueError("MaxSummary value must be a Tensor, but got <class 'int'>.")),
+    )
+    def test_min_summary(self, value, expected):
+        max_summary = MaxSummary(value)
+        if isinstance(expected, ValueError):
+            ctx = self.assertRaisesRegex(ValueError, expected.args[0])
+        else:
+            ctx = contextlib.nullcontext()
+        with ctx:
+            max_summary.validate()
+            new_summary = max_summary.accumulate(MaxSummary(jnp.array(-10)))
+            self.assertEqual(new_summary.value(), expected)
+
+
+if __name__ == "__main__":
+    absltest.main()

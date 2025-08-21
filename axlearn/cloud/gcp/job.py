@@ -5,6 +5,7 @@
 See also ``On configuration`` in `axlearn/cloud/gcp/job.py`.
 """
 
+import enum
 import logging
 import shlex
 import subprocess
@@ -19,9 +20,35 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
 from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
-from axlearn.cloud.gcp.utils import custom_jobset_kwargs, delete_k8s_jobset
+from axlearn.cloud.gcp.k8s_service import LWSService
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
+from axlearn.cloud.gcp.utils import (
+    custom_jobset_kwargs,
+    custom_leaderworkerset_kwargs,
+    delete_k8s_jobset,
+    delete_k8s_leaderworkerset,
+)
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
+
+
+class _ServiceProtocol(enum.Enum):
+
+    """https://kubernetes.io/docs/reference/networking/service-protocols/"""
+
+    TCP = "TCP"
+    UDP = "UDP"
+    SCTP = "SCTP"
+
+
+class _ServiceType(enum.Enum):
+
+    """https://cloud.google.com/kubernetes-engine/docs/concepts/service#types-of-services sss"""
+
+    CLUSTER_IP = "ClusterIP"
+    NODE_PORT = "NodePort"
+    LOAD_BALANCER = "LoadBalancer"
+    EXTERNAL_NAME = "ExternalName"
 
 
 class GCPJob(Job):
@@ -267,3 +294,175 @@ def docker_command(
     )
     logging.debug("Docker run command: %s", cmd)
     return cmd
+
+
+class GKELeaderWorkerSet(GCPJob):
+    """Base GKE LeaderWorkerSet interface"""
+
+    @config_class
+    class Config(GCPJob.Config):
+        """Configures GKELeaderWorkerSet.
+        Attributes:
+            builder: A builder that returns one or more statefulset specs.
+            namespace: The namespace to use within the k8s cluster.
+            annotations: LeaderWorkerSet annotations.
+            num_replicas: number of LWS replicas.
+        """
+
+        builder: Required[BaseLeaderWorkerTemplate.Config] = REQUIRED
+        namespace: str = "default"
+        annotations: Optional[ConfigOr[dict]] = None
+        num_replicas: int = 1
+        enable_service: bool = False
+        ports: list[str] = None
+        targetports: list[str] = None
+        service_type: str = None
+        protocol_list: list[str] = None
+        port_names: list[str] = None
+        service: Optional[LWSService.Config] = None
+
+    @classmethod
+    def set_defaults(cls, fv):
+        super().set_defaults(fv)
+        fv.set_default("max_tries", fv.max_tries or 10)
+        fv.set_default("retry_interval", fv.retry_interval or 60)
+
+        fv.set_default("enable_service", fv.enable_service or False)
+        fv.set_default("targetports", fv.targetports or ["9090"])
+        fv.set_default("ports", fv.ports or ["9090"])
+        fv.set_default("protocol_list", fv.protocol_list or [_ServiceProtocol.TCP.value])
+        fv.set_default("port_names", fv.port_names or ["tcp-port"])
+        fv.set_default("service_type", fv.service_type or _ServiceType.CLUSTER_IP.value)
+
+    @classmethod
+    def define_flags(cls, fv: flags.FlagValues):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string("name", None, "Name of the LeaderWorkerSet.", **common_kwargs)
+        flags.DEFINE_boolean(
+            "enable_service",
+            False,
+            "Whether to enable creation of service for LWS",
+            **common_kwargs,
+        )
+        ##### https://cloud.google.com/kubernetes-engine/docs/how-to/exposing-apps ####
+        ## Available types: ClusterIP(default), NodePort, LoadBalancer, ExternalName, Headless ##
+        flags.DEFINE_enum(
+            "service_type",
+            None,
+            [v.value for v in _ServiceType],
+            help="Service type for LWS",
+            flag_values=fv,
+        )
+        flags.DEFINE_list(
+            "ports",
+            [],
+            "External ports where application is exposed through service",
+            **common_kwargs,
+        )
+
+        flags.DEFINE_list(
+            "targetports",
+            [],
+            " Application port which the service redirects to",
+            **common_kwargs,
+        )
+        flags.DEFINE_list(
+            "port_names",
+            [],
+            " Port Names which map the port and targetport in service",
+            **common_kwargs,
+        )
+        #### https://kubernetes.io/docs/reference/networking/service-protocols/ #####
+        #### Available types: TCP, UDP, SCTP #####
+        flags.DEFINE_list(
+            "protocol_list",
+            [],
+            "Protocol list needed for different port and targetport combinations",
+            **common_kwargs,
+        )
+
+    @classmethod
+    def from_flags(cls, fv: flags.FlagValues, **kwargs):
+        cfg: GKELeaderWorkerSet.Config = super().from_flags(fv, **kwargs)
+        cfg.num_replicas = fv.num_replicas
+        cfg.enable_service = fv.enable_service
+        cfg.ports = fv.ports
+        cfg.targetports = fv.targetports
+        cfg.protocol_list = fv.protocol_list
+        cfg.port_names = fv.port_names
+        cfg.service_type = fv.service_type
+        return cfg
+
+    def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
+        super().__init__(cfg)
+        cfg: GKELeaderWorkerSet.Config = self.config
+        self._bundler = bundler
+        # This instantiatees a builder for constructing replicated job specs, which will be managed
+        # together under the leaderworkerset represented by this class.
+        # Note the distinction from bundlers, which are responsible for bundling any code assets
+        # required to run the job.
+        self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)
+
+    def _delete(self):
+        cfg: GKELeaderWorkerSet.Config = self.config
+        # Issues a delete request for the LeaderWorkerSet and proactively delete its descendants.
+        # This is not fully blocking; after the call returns there can be a delay before
+        # everything is deleted.
+        delete_k8s_leaderworkerset(cfg.name, namespace=cfg.namespace)
+
+    def _build_leaderworkerset(self) -> Nested[Any]:
+        """
+        Builds a config for a LeaderWorkerSet, which is a set for multi-host inference
+
+        Returns:
+            A nested dict corresponding to a k8s LWS config
+        """
+        cfg: GKELeaderWorkerSet.Config = self.config
+        annotations = maybe_instantiate(cfg.annotations or {})
+
+        return dict(
+            metadata=dict(name=cfg.name, annotations=annotations),
+            spec=dict(
+                replicas=cfg.num_replicas,
+                leaderWorkerTemplate=self._builder(),
+            ),
+        )
+
+    def _execute(self):
+        cfg: GKELeaderWorkerSet.Config = self.config
+
+        api_kwargs = custom_leaderworkerset_kwargs()
+        custom_object = dict(
+            apiVersion=f"{api_kwargs['group']}/{api_kwargs['version']}",
+            kind="LeaderWorkerSet",
+            **self._build_leaderworkerset(),
+        )
+        logging.info("submitting LeaderWorkerSet: %s", custom_object)
+
+        lws_resp = k8s.client.CustomObjectsApi().create_namespaced_custom_object(
+            namespace=cfg.namespace,
+            body=custom_object,
+            **api_kwargs,
+        )
+
+        #### Creating a  Service #######
+        if cfg.enable_service:
+            service_resp = cfg.service.instantiate().execute()
+            logging.info("Service created %s", str(service_resp))
+        else:
+            cfg.service = None
+
+        return lws_resp
+
+
+def exclusive_topology_annotations_leaderworkerset() -> dict:
+    """Used for TPU GKELeaderWorkerSet.
+
+    The exclusive topology annotation will ensure that all Pods will have affinity
+    rules added that will ensure that they are fully scheduled on the same pod-slice
+    node-pools.
+    """
+    return {
+        "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology": "cloud.google.com/gke-nodepool"
+    }

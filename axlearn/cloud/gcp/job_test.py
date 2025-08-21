@@ -11,7 +11,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import define_flags, from_flags
-from axlearn.cloud.gcp import bundler, job, jobset_utils
+from axlearn.cloud.gcp import bundler, job, jobset_utils, pathways_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -211,3 +211,90 @@ class GPUGKEJobTest(TestCase):
             self.assertNotIn("kueue.x-k8s.io/queue-name", jobset_annotations)
         else:
             self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)
+
+
+class TPUGKELeaderWorkerSetTest(TestCase):
+    """Tests GKELeaderWorkerSet with TPU."""
+
+    def run(self, result=None):
+        # Run tests under mock user and settings.
+        self._settings = default_mock_settings()
+        with mock_gcp_settings(
+            [jobset_utils.__name__, bundler.__name__],
+            settings=self._settings,
+        ):
+            return super().run(result)
+
+    def _job_config(
+        self,
+        *,
+        command: str,
+        bundler_cls: type[Bundler],
+        **kwargs,
+    ) -> tuple[job.GKELeaderWorkerSet.Config, Bundler.Config]:
+        fv = flags.FlagValues()
+        cfg = job.GKELeaderWorkerSet.default_config().set(
+            builder=pathways_utils.PathwaysLeaderWorkerTemplate.default_config()
+        )
+        define_flags(cfg, fv)
+        for key, value in kwargs.items():
+            if value is not None:
+                # Use setattr rather than set_default to set flags.
+                setattr(fv, key, value)
+        fv.name = "fake-name"
+        fv.output_dir = "FAKE"
+        fv.instance_type = "tpu-v4-8"
+        fv.mark_as_parsed()
+        from_flags(cfg, fv, command=command)
+        # Test that retries are configured on fv by default.
+        self.assertIsNotNone(fv["max_tries"].default)
+        self.assertIsNotNone(fv["retry_interval"].default)
+        bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
+        return cfg, bundler_cfg
+
+    @parameterized.product(
+        reservation=[None, "test"],
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        wrap_bundler=[False, True],
+    )
+    def test_instantiate(
+        self,
+        reservation,
+        bundler_cls: type[Bundler],
+        wrap_bundler,
+    ):
+        class WrappedBundler(Bundler):
+            @config_class
+            class Config(Bundler.Config):
+                inner: Required[Bundler.Config] = REQUIRED
+
+        cfg, bundler_cfg = self._job_config(
+            command="test-command",
+            bundler_cls=bundler_cls,
+            reservation=reservation,
+            num_replicas=1,
+        )
+
+        self.assertIsInstance(cfg.builder, pathways_utils.PathwaysLeaderWorkerTemplate.Config)
+        cfg.builder = cast(pathways_utils.PathwaysLeaderWorkerTemplate.Config, cfg.builder)
+
+        self.assertEqual(cfg.name, cfg.builder.name)
+        self.assertEqual(cfg.project, self._settings["project"])
+        self.assertEqual(cfg.zone, self._settings["zone"])
+        self.assertEqual(
+            cfg.builder.inner.reservation, reservation or self._settings["gke_reservation"]
+        )
+        self.assertEqual(cfg.num_replicas, 1)
+        # Should work with wrapped bundlers.
+        if wrap_bundler:
+            bundler_cfg = WrappedBundler.default_config().set(inner=bundler_cfg)
+        gke_job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        self.assertEqual("v4-8", gke_job._builder._tpu_type)
+
+    def test_delete(self):
+        patch_delete = mock.patch(f"{job.__name__}.delete_k8s_leaderworkerset")
+        with patch_delete as mock_delete:
+            cfg, _ = self._job_config(command="test-command", bundler_cls=CloudBuildBundler)
+            gke_job = cfg.instantiate(bundler=mock.Mock())
+            gke_job._delete()  # pylint: disable=protected-access
+            mock_delete.assert_called()

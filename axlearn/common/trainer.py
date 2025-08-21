@@ -122,7 +122,7 @@ class SpmdTrainer(Module):
         mesh_axis_names: Required[Sequence[str]] = REQUIRED
         # Subset of mesh axis names over which the leaves of the input batch are sharded.
         # TODO(markblee): Deprecate this field in favor of `input.input_partitioner`.
-        batch_axis_names: Union[str, Sequence[str]] = "data"
+        batch_axis_names: Optional[Union[str, Sequence[str]]] = "data"
 
         # An optional list of (regex, MeshShape) pairs to override the default mesh configuration.
         #
@@ -297,11 +297,12 @@ class SpmdTrainer(Module):
         # Create all children within the mesh context so that utils.input_partition_spec() works
         # properly.
         with self.mesh():
+            if cfg.batch_axis_names is not None:
+                cfg.input = maybe_set_config(
+                    cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
+                )
             self.input: Input = self._add_child(
-                "input",
-                maybe_set_config(
-                    cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names), is_training=True
-                ),
+                "input", maybe_set_config(cfg.input, is_training=True)
             )
             # Start from the beginning of the input dataset by default.
             self._input_iter = iter(self.input.dataset())
@@ -341,9 +342,10 @@ class SpmdTrainer(Module):
                 evaler_cfg.summary_writer.dir = evaler_cfg.summary_writer.dir or os.path.join(
                     cfg.dir, "summaries", evaler_name
                 )
-                maybe_set_config(
-                    evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
-                )
+                if cfg.batch_axis_names is not None:
+                    maybe_set_config(
+                        evaler_cfg.input, partition_spec=PartitionSpec(cfg.batch_axis_names)
+                    )
                 self._evalers[evaler_name] = self._add_child(
                     evaler_name,
                     evaler_cfg,
@@ -529,6 +531,13 @@ class SpmdTrainer(Module):
         if self._recorder is not None:
             self._recorder.record(event, *args, **kwargs)
 
+    def _maybe_monitor_all(self):
+        return (
+            self._recorder.maybe_monitor_all()
+            if self._recorder is not None
+            else contextlib.nullcontext()
+        )
+
     # pylint: disable-next=too-many-statements,too-many-branches
     def run(
         self, prng_key: Tensor, *, return_evaler_summaries: Optional[Union[bool, set[str]]] = None
@@ -564,6 +573,7 @@ class SpmdTrainer(Module):
             self.mesh(),
             jax.log_compiles(self.vlog_is_on(1)),
             self._context_manager(),
+            self._maybe_monitor_all(),
         ):
             cfg = self.config
             # Check if need to force run evals at the last training step.
@@ -591,7 +601,7 @@ class SpmdTrainer(Module):
                         input_batch = next(input_iterator)
                         self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         logging.log_first_n(
-                            logging.INFO, "input_batch=%s", 3, utils.shapes(input_batch)
+                            logging.INFO, "host_input_batch=%s", 3, utils.shapes(input_batch)
                         )
 
                         # Stop or start tracing if necessary.
@@ -601,7 +611,7 @@ class SpmdTrainer(Module):
                         self.vlog(3, "Start step %s", self.step)
                         self._maybe_record_event(measurement.Event.START_STEP, self._step)
                         output = self._run_step(
-                            utils.host_to_global_device_array(
+                            utils.host_to_global_array(
                                 input_batch,
                                 partition=self._train_step_input_partition_specs(),
                             ),
@@ -1089,6 +1099,7 @@ class SpmdTrainer(Module):
             A dict containing 'loss' and 'aux' outputs. If force_run_evals is a set,
             force run the evalers in the set and return 'evaler_summaries' output.
         """
+        logging.log_first_n(logging.INFO, "global_input_batch=%s", 3, utils.shapes(input_batch))
         with jax.profiler.StepTraceAnnotation("train", step_num=self.step):
             run_with_xsc = self._xsc_check_policy and self._xsc_check_policy(self.step)
             compiled_train_step_fn = self._get_compiled_train_step_fn(
@@ -1216,15 +1227,18 @@ class SpmdTrainer(Module):
         state: TrainerState,
         input_batch: dict[str, Any],
     ) -> tuple[TrainerState, NestedTensor]:
+        def train_cast(in_tree):
+            per_param_train_dtype = self._per_param_train_dtype(in_tree)
+            return utils.cast_floats_per_param(in_tree, per_param_train_dtype)
+
+        # Cast before dispatching to speed up matmul and decrease memory imprint.
+        input_batch = train_cast(input_batch)
+
         # Shard and (possibly) dispatch the input batch.
         input_batch = self.input.dispatch_global_batch(input_batch)
         new_prng_key, param_noise_key, forward_key, learner_key = jax.random.split(
             state.prng_key, 4
         )
-
-        def train_cast(in_tree):
-            per_param_train_dtype = self._per_param_train_dtype(in_tree)
-            return utils.cast_floats_per_param(in_tree, per_param_train_dtype)
 
         # A nested tree of booleans.
         should_compute_gradients = self.learner.should_update_with_optimizers(state.model)
@@ -1243,7 +1257,9 @@ class SpmdTrainer(Module):
                 prng_key=inputs["forward_key"],
                 output_collection=model_output_collection,
             ):
-                loss, aux = self.model(input_batch=train_cast(inputs["input_batch"]))
+                # Copy tree to avoid tracer leaks when input_batch is changed by the model.
+                input_batch_copy = jax.tree.map(lambda x: x, inputs["input_batch"])
+                loss, aux = self.model(input_batch=input_batch_copy)
             return ForwardOutputs(loss=loss, aux=aux, output_collection=model_output_collection)
 
         # `grads` are computed for `model_parameters_grad`.

@@ -548,10 +548,8 @@ def every_n_steps_policy(
     def fn(*, step: int, train_summaries: dict[str, Any]) -> bool:
         del train_summaries
         if step < min_step:
-            logging.info(
-                "Skipping eval, as step (%s) < min_step (%s).",
-                step,
-                min_step,
+            logging.log_first_n(
+                logging.INFO, "Skipping eval, as step (%s) < min_step (%s).", 10, step, min_step
             )
             return False
         return step % n == 0 or (max_step is not None and step >= max_step)

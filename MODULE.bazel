@@ -1,0 +1,13 @@
+module(
+    name = "axlearn",
+    version = "0.0.1",
+)
+
+bazel_dep(name = "rules_python", version = "1.5.1")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.11")  # Jax 0.7.0 requires Python 3.11
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(hub_name = "pip", python_version = "3.11", requirements_lock = "//:requirements_lock.txt")
+use_repo(pip, "pip")

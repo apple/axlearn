@@ -1,6 +1,9 @@
 # Copyright © 2024 Apple Inc.
 """Tests for compiler_options.py."""
 
+import os
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -11,6 +14,14 @@ from axlearn.common.utils import Tensor
 
 
 class CompilerOptionsTest(test_utils.TestCase):
+    def setUp(self):
+        self._original_env = dict(os.environ)
+
+    def tearDown(self):
+        # Reset environment variables.
+        os.environ.clear()
+        os.environ.update(self._original_env)
+
     @pytest.mark.skipif(jax.default_backend() != "tpu", reason="TPU-only test.")
     def test_default_xla_options(self):
         @jax.jit
@@ -24,7 +35,32 @@ class CompilerOptionsTest(test_utils.TestCase):
         )
         self.assertEqual(f_compiled(5), 15)
 
-    def atest_xla_flags_from_options(self):
+    @parameterized.parameters(
+        dict(xla_option_override=None, expected_value="true"),
+        dict(xla_option_override="", expected_value="true"),
+        dict(
+            xla_option_override="xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction=false",
+            expected_value="false",
+        ),
+    )
+    def test_default_xla_options_override(
+        self,
+        xla_option_override: Optional[str],
+        expected_value: str,
+    ):
+        if xla_option_override is not None:
+            os.environ["XLA_OPTIONS_OVERRIDE"] = xla_option_override
+        xla_options = compiler_options.default_xla_options(
+            instance_type="tpu-v6e-32",
+            num_slices=2,
+            backend="tpu",
+        )
+        self.assertEqual(
+            xla_options["xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction"],
+            expected_value,
+        )
+
+    def test_xla_flags_from_options(self):
         options = dict(a="true", b="false", c=True, d=False, long_option_name=True)
         result = compiler_options.xla_flags_from_options(options)
         self.assertEqual(result, "--a=true --b=false --c=1 --d=0 --long_option_name=1")
@@ -39,7 +75,7 @@ class CompilerOptionsTest(test_utils.TestCase):
             xla_tpu_sdc_check_halt_on_detection=False,
             xla_tpu_sdc_replicate_llo=True,
             xla_tpu_sdc_checker_alternate_megacore_cores=True,
-            xla_tpu_ici_sdc_test_run_on_program_start=True,
+            xla_tpu_ici_sdc_test_run_on_program_start=False,
             xla_tpu_ici_sdc_test_max_distance=1,
             xla_tpu_ici_sdc_test_pipeline_depth=4,
             xla_tpu_ici_sdc_test_buffer_size_chunks=32,

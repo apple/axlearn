@@ -1740,6 +1740,7 @@ def adastar_optimizer(
     update_ema_debias: bool,
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
     weight_decay: float = 0,
+    weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     update_schedule: schedule.Schedule,
     verbosity: int = 0,
 ) -> PartitionedGradientTransformation:
@@ -1810,6 +1811,11 @@ def adastar_optimizer(
         weight_decay: (float) optional rate at which to decay weights. Note that weight_decay
             is decoupled from `learning_rate` but is subject to `update_schedule`. This is
             similar to adamw_adamw_decoupled_optimizer and different from adafactor_optimizer.
+        weight_decay_per_param_scale: (optional) a Callable that returns a tree with same structure
+            as the params PyTree, where each leaf is a float representing the per-param decay scale.
+            The scale will be applied on top of the global decay rate:
+            effective_decay_rate = global_decay_rate * per_param_scale.
+            If None, all leaves will have a scale of 1.
         update_schedule: an update schedule, which is applied to scale both the learning rate
             and the weight decay.
         verbosity: The verbosity level of summaries. When verbosity > 0, adds update norms and
@@ -2001,24 +2007,40 @@ def adastar_optimizer(
     def update2_fn(updates, state: Tensor, params: NestedOptParam):
         step_inc = optax.safe_int32_increment(state)
 
-        def _update2(u: Tensor, param: OptParam):
+        def _update2(u: Tensor, param: OptParam, weight_decay_scale: float = 1.0):
             lr_scaled_updates = learning_rate * u
-            updates_with_wd = lr_scaled_updates + weight_decay * param.value
+            updates_with_wd = lr_scaled_updates + weight_decay * param.value * weight_decay_scale
             schedule_scale = update_schedule(step_inc)
             context = current_context()
             if context:
                 context.add_summary("schedule_step", step_inc)
                 context.add_summary("schedule_scale", schedule_scale)
                 context.add_summary("learning_rate", learning_rate * schedule_scale)
-                context.add_summary("weight_decay_rate", weight_decay * schedule_scale)
+                context.add_summary(
+                    "weight_decay_rate", weight_decay * schedule_scale * weight_decay_scale
+                )
             return -schedule_scale * updates_with_wd
 
-        updates2 = jax.tree.map(
-            lambda u, p: None if u is None else _update2(u, param=p),
-            updates,
-            params,
-            is_leaf=lambda x: x is None,
-        )
+        if weight_decay_per_param_scale is not None:
+            weight_decay_scales = _weight_decay_scales(
+                params, per_param_scale=weight_decay_per_param_scale
+            )
+            updates2 = jax.tree.map(
+                lambda u, p, wds: None
+                if u is None
+                else _update2(u, param=p, weight_decay_scale=wds),
+                updates,
+                params,
+                weight_decay_scales,
+                is_leaf=lambda x: x is None,
+            )
+        else:
+            updates2 = jax.tree.map(
+                lambda u, p: None if u is None else _update2(u, param=p),
+                updates,
+                params,
+                is_leaf=lambda x: x is None,
+            )
         return updates2, step_inc
 
     # Stage 1.

@@ -18,11 +18,13 @@ class KVState(NamedTuple):
         k_proj: [batch, source_length, num_kv_heads, per_head_dim], Projected key tensor.
         v_proj: [batch, source_length, num_kv_heads, per_head_dim], Projected value tensor.
         key_positions: [batch, source_length], Positions of the keys in the batch.
+        page_indices: [batch, max_pages_per_request], optional page indices for batched requests.
     """
 
     k_proj: Tensor
     v_proj: Tensor
     key_positions: Tensor
+    page_indices: Optional[Tensor] = None
 
 
 class BaseKVCache(BaseLayer):
@@ -81,7 +83,8 @@ class BaseKVCache(BaseLayer):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        live_step_len: Optional[Tensor] = None,
+        unpadded_len: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Output]:
         """Updates the KV cache per extend step.
 
@@ -94,8 +97,11 @@ class BaseKVCache(BaseLayer):
             k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             key_positions: An optional Tensor of shape [1|batch, step_length].
-            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
-                in the file docstring for details.
+            unpadded_len: An optional Tensor of shape [batch]. Specifies the number of
+                non-padding tokens per sequence. When provided, only the first `unpadded_len[i]`
+                tokens of sequence `i` are considered valid for caching. The actual behavior
+                depends on the specific KV cache implementation.
+            page_pool: See file-level docstring of `attention.py`.
 
         Returns:
             A tuple (updated_state, output):
@@ -104,3 +110,13 @@ class BaseKVCache(BaseLayer):
                 KV cache, resulting in a length of `source_length`.
         """
         raise NotImplementedError(type(self))
+
+    @classmethod
+    def maybe_normalize_kv(cls, kv_state: KVState) -> tuple[Tensor, Tensor]:
+        """Normalize the KV shape if they're not already normalized.
+
+        Returns:
+            A tuple of [k_proj, v_proj], each with shape [batch_size, seq_len, kv_heads, head_dim].
+        """
+        assert kv_state.page_indices is None
+        return kv_state.k_proj, kv_state.v_proj

@@ -25,7 +25,7 @@ from axlearn.common.attention_bias import (
 from axlearn.common.flash_attention import tpu_attention
 from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.test_utils import generate_attention_data
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, Tolerance
 from axlearn.common.utils import Tensor
 
 
@@ -130,7 +130,7 @@ class TestFlashAttention(TestCase):
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
         matmul_precision=[None, "highest"],
-        dropout_rate=[0.0, 0.1, 0.2],
+        dropout_rate=[0, 0.2, 0.5],
         head_group_size=[2, 1],
     )
     def test_forward_and_backward(
@@ -193,12 +193,13 @@ class TestFlashAttention(TestCase):
             value=v,
             bias=bias,
             prng_key=prng_key,
+            logit_sink=None,
         )
 
         with jax.default_matmul_precision(matmul_precision) if matmul_precision else nullcontext():
             err = matmul_precision == "highest" and q_dtype == jnp.bfloat16
             with self.assertRaises(ValueError) if err else nullcontext():
-                is_supported = fn.is_supported(input_batch=input_batch)
+                is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
             if err:
                 return
 
@@ -206,7 +207,7 @@ class TestFlashAttention(TestCase):
                 # Check splash attention is used when it should be.
                 self.assertEqual(fallback_to_legacy, True)
                 fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
-                legacy_supported = fn.is_supported(input_batch=input_batch)
+                legacy_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
                 if q_dtype != kv_dtype:
                     self.assertEqual(legacy_supported, False)
                     return
@@ -219,18 +220,154 @@ class TestFlashAttention(TestCase):
                 dropout_mask = fn.get_dropout_mask(input_batch)
                 ref_fn = partial(ref_fn, dropout_mask=dropout_mask)
             ref_out = ref_fn(input_batch)
-            self.assertNestedAllClose(out, ref_out, atol=0.05)
+            self.assertAllCloseWithOutliers(
+                out,
+                ref_out,
+                tolerance_map={
+                    1.0: Tolerance(atol=5e-2),
+                    0.98: Tolerance(atol=1e-2),
+                },
+            )
 
             # Compare grads.
             def grad_fn(float_inputs, aux_inputs, f):
                 full_batch = {**float_inputs, **aux_inputs}
                 return f(full_batch).mean()
 
-            float_inputs = dict(query=q, key=k, value=v)
+            float_inputs = dict(query=q, key=k, value=v, logit_sink=None)
             aux_inputs = dict(bias=bias, prng_key=prng_key)
             grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
             ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
-            self.assertNestedAllClose(grad_out, ref_grad_out, atol=0.05)
+            self.assertNestedAllCloseWithOutliers(
+                grad_out,
+                ref_grad_out,
+                tolerance_map={
+                    1.0: Tolerance(atol=5e-2),
+                    0.98: Tolerance(atol=1e-2),
+                },
+            )
+
+    @parameterized.product(
+        batch_size=[2, 4],
+        seq_len=[128, 256],
+        num_heads=[1, 4],
+        per_head_dim=[128, 256],
+        logit_sink_values=[0.0, -1.0, 1.0],
+        q_dtype=[jnp.float32, jnp.bfloat16],
+    )
+    def test_logit_sink(
+        self,
+        batch_size,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        logit_sink_values,
+        q_dtype,
+    ):
+        """Test logit sink functionality."""
+        # Generate test data
+        q, k, v, bias = generate_attention_data(
+            batch_size,
+            seq_len,
+            seq_len,
+            num_heads,
+            per_head_dim,
+            num_heads,  # num_kv_heads = num_heads for simplicity
+            mask_fn=None,
+            attention_bias_type=None,
+            with_segment_ids=False,
+            dtype=q_dtype,
+            kv_dtype=q_dtype,
+        )
+
+        # Create logit sink tensor
+        logit_sink = jnp.full((num_heads,), logit_sink_values, dtype=q_dtype)
+
+        tpu_block_size = 128
+        interpret = jax.default_backend() == "cpu"
+        cfg = dict(
+            interpret=interpret,
+            softmax_scale=per_head_dim**-0.5,
+            tpu_block_size=tpu_block_size,
+            dropout_rate=0.0,
+        )
+
+        ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+        fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
+
+        prng_key = jax.random.PRNGKey(42)
+        input_batch = dict(
+            query=q,
+            key=k,
+            value=v,
+            bias=bias,
+            logit_sink=logit_sink,
+            prng_key=prng_key,
+        )
+
+        # Check if the kernel supports this configuration
+        is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
+        if not is_supported:
+            pytest.skip(reason="Configuration not supported by TPUSplashAttention")
+
+        # Compare outputs
+        out = fn(input_batch)
+        ref_out = ref_fn(input_batch)
+        self.assertNestedAllClose(out, ref_out, atol=1e-6 if q_dtype == jnp.float32 else 2e-2)
+
+        # Compare gradients
+        def grad_fn(float_inputs, aux_inputs, f):
+            full_batch = {**float_inputs, **aux_inputs}
+            return f(full_batch).mean()
+
+        float_inputs = dict(query=q, key=k, value=v, logit_sink=logit_sink)
+        aux_inputs = dict(bias=bias, prng_key=prng_key)
+        grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
+        ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
+        self.assertNestedAllClose(grad_out, ref_grad_out, atol=1e-6)
+
+    def test_logit_sink_shape_validation(self):
+        """Test that logit sink shape validation works correctly."""
+        batch_size, seq_len, num_heads, per_head_dim = 2, 128, 4, 128
+
+        q, k, v, bias = generate_attention_data(
+            batch_size,
+            seq_len,
+            seq_len,
+            num_heads,
+            per_head_dim,
+            num_heads,
+            mask_fn=None,
+            attention_bias_type=None,
+            with_segment_ids=False,
+            dtype=jnp.float32,
+            kv_dtype=jnp.float32,
+        )
+
+        # Create logit sink with wrong shape (should be num_heads, not num_heads + 1)
+        wrong_logit_sink = jnp.zeros((num_heads + 1,), dtype=jnp.float32)
+
+        cfg = dict(
+            interpret=jax.default_backend() == "cpu",
+            softmax_scale=per_head_dim**-0.5,
+            tpu_block_size=128,
+            dropout_rate=0.0,
+        )
+
+        fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
+
+        input_batch = dict(
+            query=q,
+            key=k,
+            value=v,
+            bias=bias,
+            logit_sink=wrong_logit_sink,
+            prng_key=jax.random.PRNGKey(42),
+        )
+
+        # This should raise a ValueError due to shape mismatch
+        with self.assertRaises(ValueError):
+            fn.is_supported(input_batch=input_batch, kv_cache_type=None)
 
 
 if __name__ == "__main__":

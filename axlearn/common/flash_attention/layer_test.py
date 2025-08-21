@@ -2,9 +2,10 @@
 
 """Tests FlashAttention layers."""
 
-# pylint: disable=ungrouped-imports
 import math
 import os
+
+# pylint: disable=ungrouped-imports
 from unittest import mock
 
 from jax.sharding import PartitionSpec
@@ -28,13 +29,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common.attention import (
-    Dropout,
-    GroupedQKVLinear,
-    GroupedQueryAttention,
-    KVCache,
-    QKVLinear,
-)
+from axlearn.common.attention import Dropout, GroupedQKVLinear, GroupedQueryAttention, QKVLinear
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     CompositeAttentionBias,
@@ -53,6 +48,9 @@ from axlearn.common.flash_attention.layer import (
     default_mha_dim_to_partition_spec,
     default_output_dim_to_partition_spec,
 )
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
+from axlearn.common.kv_cache.sliding_window_kv_cache import SlidingWindowKVCache
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
@@ -110,12 +108,15 @@ def _prepare_layers(
     per_head_dim,
     mesh_axis_names,
     mask,
+    kv_cache=KVCache.default_config(),
     inference=False,
     set_layer_bias_recursively=False,
     tpu_block_size=512,
     dropout_rate=0.0,
 ):
     hidden_dim = num_heads * per_head_dim
+    cache_dtype = jnp.bfloat16 if inference else None
+    kv_cache = kv_cache.set(cache_dtype=cache_dtype)
     kwargs = dict(
         query_dim=hidden_dim,
         key_dim=hidden_dim,
@@ -126,22 +127,25 @@ def _prepare_layers(
         input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
         if num_kv_heads is not None
         else QKVLinear.default_config(),
+        kv_cache=kv_cache,
     )
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
 
-    if inference:
-        ref_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
+    mha_spec = default_mha_dim_to_partition_spec(mesh_axis_names)
+    if kv_cache.klass == PagedKVCache:
+        model_axis = "model" if "model" in mesh_axis_names else None
+        mha_spec["nbph"] = PartitionSpec(model_axis, None, None, None)
+        # ref cfh only uses non-paged kv cache for simplicity
+        ref_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=cache_dtype))
     test_cfg = (
         FlashAttention.default_config()
         .set(**kwargs)
         .set(
-            mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
+            mha_dim_to_partition_spec=mha_spec,
             output_dim_to_partition_spec=default_output_dim_to_partition_spec(mesh_axis_names),
             tpu_block_size=tpu_block_size,
         )
     )
-    if inference:
-        test_cfg.set(kv_cache=KVCache.default_config().set(cache_dtype=jnp.bfloat16))
 
     ref_cfg.set(mask=mask)
     test_cfg.set(mask=mask)
@@ -375,6 +379,15 @@ class TestFlashAttention(TestCase):
             mesh=(1, 2, 1, 2, 2),
             mesh_axis_names=("data", "seq", "expert", "fsdp", "model"),
         ),
+        dict(
+            batch=8,
+            seq_len=2048,
+            num_heads=8,
+            num_kv_heads=None,
+            per_head_dim=128,
+            mesh=(1, 8),
+            mesh_axis_names=("data", "model"),
+        ),
     ]
 
     def test_dropout_support(self):
@@ -562,6 +575,8 @@ class TestFlashAttention(TestCase):
             mask = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
         elif attn_type == "custom":
             mask = MaskFnAttentionBias.default_config(mask=jax_fn_mask(5))
+        else:
+            raise ValueError(f"Not supported attn_type {attn_type}.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -740,8 +755,7 @@ class TestFlashAttention(TestCase):
 
     @parameterized.product(
         _TEST_CONFIGS,
-        attn_type=["causal", "sliding_window"],
-        use_bias=[True, False],
+        attn_type=["causal", "sliding_window", "paged"],
         dtype=[jnp.float32, jnp.bfloat16],
     )
     def test_extend_step(
@@ -754,31 +768,36 @@ class TestFlashAttention(TestCase):
         mesh,
         mesh_axis_names,
         attn_type,
-        use_bias,
         dtype,
     ):
-        print(
-            f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
-            f"per_head_dim={per_head_dim}, mesh={mesh}, mesh_axis_names={mesh_axis_names}, \n"
-            f"attn_type={attn_type}"
-        )
-
-        # Limit generation length to 16 to save test time.
-        seq_len = 16
-
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
 
         named_sharding = dict(zip(mesh_axis_names, mesh))
         if "seq" in named_sharding and named_sharding["seq"] > 1:
             pytest.skip(reason="Unsupported seq dim sharding for decoding.")
+        if (
+            math.prod(mesh) > 1
+            and attn_type == "paged"
+            and math.prod(mesh) != named_sharding.get("model", 1)
+        ):
+            pytest.skip(reason="Paged attention only supports model sharding.")
 
-        if attn_type == "full":
-            mask = None
-        elif attn_type == "causal":
+        if attn_type == "causal":
             mask = CausalAttentionBias.default_config()
+            kv_cache = KVCache.default_config()
         elif attn_type == "sliding_window":
             mask = SlidingWindowAttentionBias.default_config(sliding_window_size=4)
+            kv_cache = SlidingWindowKVCache.default_config().set(cached_kv_length=4)
+        elif attn_type == "paged":
+            mask = CausalAttentionBias.default_config()
+            kv_cache = PagedKVCache.default_config()
+        else:
+            raise ValueError(f"Not supported attn_type {attn_type}.")
+
+        page_size = 16 if attn_type == "paged" else None
+        # Limit generation length to 16 to save test time.
+        seq_len = 16 if page_size is None else max(16, page_size)
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             test_layer, ref_layer, params, hidden_dim = _prepare_layers(
@@ -787,6 +806,7 @@ class TestFlashAttention(TestCase):
                 per_head_dim=per_head_dim,
                 mesh_axis_names=mesh_axis_names,
                 mask=mask,
+                kv_cache=kv_cache,
                 inference=True,
             )
 
@@ -797,12 +817,6 @@ class TestFlashAttention(TestCase):
                 dtype=dtype,
             )
             causal_bias = None
-            if use_bias:
-                causal_bias = jax.random.normal(
-                    jax.random.PRNGKey(0),
-                    [batch, num_heads, seq_len, seq_len],
-                    dtype=dtype,
-                )
             kv_state = None
             return_aux = None
 
@@ -847,15 +861,45 @@ class TestFlashAttention(TestCase):
             )
             self.assertIsNone(initial_output)
             self.assertIsNone(ref_inital_output)
-            if dtype is jnp.float32:
+            if page_size is not None:
+                # Populate the kv_pages and page_indices.
+                max_pages_each_request = (seq_len + page_size - 1) // page_size
+                # First page is the padding page.
+                num_global_pages = batch * max_pages_each_request + 1
+                page_indices = jnp.arange(1, num_global_pages).reshape(
+                    (batch, max_pages_each_request)
+                )
                 # Float32 inference still uses bfloat16 kv cache.
+                page_dtype = jnp.bfloat16 if dtype is jnp.float32 else dtype
                 for k in ["key", "value"]:
-                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
-                    self.assertEqual(initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                    initial_state["kv_cache"][k] = jnp.zeros(
+                        shape=[
+                            test_layer.i_proj.num_kv_heads,
+                            num_global_pages,
+                            page_size,
+                            per_head_dim,
+                        ],
+                        dtype=page_dtype,
+                    )
+                initial_state["kv_cache"]["page_indices"] = page_indices
+
+                if dtype is jnp.float32:
+                    # Float32 inference still uses bfloat16 kv cache.
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                else:
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
             else:
-                for k in ["key", "value"]:
-                    self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
-                    self.assertEqual(initial_state["kv_cache"][k].dtype, dtype)
+                if dtype is jnp.float32:
+                    # Float32 inference still uses bfloat16 kv cache.
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                        self.assertEqual(initial_state["kv_cache"][k].dtype, jnp.bfloat16)
+                else:
+                    for k in ["key", "value"]:
+                        self.assertEqual(ref_initial_state["kv_cache"][k].dtype, dtype)
+                        self.assertEqual(initial_state["kv_cache"][k].dtype, dtype)
 
             # Prepare decoding inputs.
             inputs = dict(
@@ -886,15 +930,7 @@ class TestFlashAttention(TestCase):
             for t in range(seq_len):
                 cur_query = jnp.expand_dims(query[:, t, :], axis=1)
                 inputs["query"] = cur_query
-                if use_bias:
-                    inputs["attention_logit_biases"] = jnp.expand_dims(
-                        causal_bias[:, :, t, :], axis=2
-                    )
                 ref_inputs["query"] = cur_query
-                if use_bias:
-                    ref_inputs["attention_logit_biases"] = jnp.expand_dims(
-                        causal_bias[:, :, t, :], axis=2
-                    )
                 ref_extend_step_outputs, _ = extend_one_step(params, ref_inputs, ref_layer)
                 ref_inputs["cached_states"] = ref_extend_step_outputs[0]
                 ref_decoder_output = ref_decoder_output.at[t].set(
@@ -936,6 +972,286 @@ class TestFlashAttention(TestCase):
                 atol=2e-2,
             )
         jax.clear_caches()
+
+    @parameterized.product(
+        _TEST_CONFIGS[:3],  # Use a subset for faster testing
+        logit_sink=[True, False],
+        attn_type=["full", "causal"],
+        input_dtype=[jnp.bfloat16, jnp.float32],
+    )
+    def test_logit_sink(
+        self,
+        batch,
+        seq_len,
+        num_heads,
+        num_kv_heads,
+        per_head_dim,
+        mesh,
+        mesh_axis_names,
+        logit_sink,
+        attn_type,
+        input_dtype,
+    ):
+        """Tests logit sink functionality in FlashAttention."""
+        if not is_supported_mesh_shape(mesh):
+            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+
+        mask = None
+        if attn_type == "causal":
+            mask = CausalAttentionBias.default_config()
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            # Create layers with logit sink configuration
+            hidden_dim = num_heads * per_head_dim
+            kwargs = dict(
+                query_dim=hidden_dim,
+                key_dim=hidden_dim,
+                value_dim=hidden_dim,
+                num_heads=num_heads,
+                dtype=jnp.bfloat16,
+                dropout=Dropout.default_config().set(rate=0.0),
+                input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+                if num_kv_heads is not None
+                else QKVLinear.default_config(),
+                logit_sink=logit_sink,
+            )
+
+            ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
+            test_cfg = (
+                FlashAttention.default_config()
+                .set(**kwargs)
+                .set(
+                    mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
+                    output_dim_to_partition_spec=default_output_dim_to_partition_spec(
+                        mesh_axis_names
+                    ),
+                    tpu_block_size=128,
+                )
+            )
+
+            if mask is not None:
+                ref_cfg.set(mask=mask)
+                test_cfg.set(mask=mask)
+
+            ref_layer = ref_cfg.set(name="ref").instantiate(parent=None)
+            test_layer = test_cfg.set(name="test").instantiate(parent=None)
+
+            # Initialize parameters
+            params = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+            if logit_sink:
+                self.assertIn("sink", params)
+                self.assertEqual(params["sink"].shape, (num_heads,))
+            else:
+                self.assertNotIn("sink", params)
+
+            # Create test inputs
+            inputs = _fake_inputs(
+                batch=batch,
+                num_heads=num_heads,
+                kv_len=seq_len,
+                query_len=seq_len,
+                hidden_dim=hidden_dim,
+                use_bias=False,
+                use_segment_ids=False,
+                input_dtype=input_dtype,
+            )
+
+            ref_inputs = dict(inputs)
+            ref_out, _ = F(
+                ref_layer,
+                prng_key=jax.random.PRNGKey(5),
+                state=params,
+                inputs=ref_inputs,
+                is_training=True,
+            )
+            test_out, _ = F(
+                test_layer,
+                prng_key=jax.random.PRNGKey(5),
+                state=params,
+                inputs=inputs,
+                is_training=True,
+            )
+
+            # Compare outputs - they should be close when using the same parameters
+            self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
+
+    def test_logit_sink_parameter_initialization(self):
+        """Tests that logit sink parameters are properly initialized."""
+        num_heads = 4
+        per_head_dim = 32
+        hidden_dim = num_heads * per_head_dim
+
+        # Test with logit sink enabled
+        cfg = FlashAttention.default_config().set(
+            query_dim=hidden_dim,
+            key_dim=hidden_dim,
+            value_dim=hidden_dim,
+            num_heads=num_heads,
+            logit_sink=True,
+            name="test",
+        )
+        layer = cfg.instantiate(parent=None)
+        params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(42))
+
+        # Check that sink parameter exists and has correct shape
+        self.assertIn("sink", params)
+        self.assertEqual(params["sink"].shape, (num_heads,))
+        self.assertEqual(params["sink"].dtype, layer.dtype())  # Default dtype
+
+        # Test with logit sink disabled
+        cfg_no_sink = cfg.set(logit_sink=False)
+        layer_no_sink = cfg_no_sink.instantiate(parent=None)
+        params_no_sink = layer_no_sink.initialize_parameters_recursively(
+            prng_key=jax.random.PRNGKey(42)
+        )
+
+        # Check that sink parameter does not exist
+        self.assertNotIn("sink", params_no_sink)
+
+    def test_logit_sink_numerical_stability(self):
+        """Tests that logit sink improves numerical stability with extreme logits."""
+        batch = 2
+        seq_len = 16
+        num_heads = 2
+        per_head_dim = 8
+        hidden_dim = num_heads * per_head_dim
+
+        with Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
+            # Create layers with and without logit sink
+            base_cfg = FlashAttention.default_config().set(
+                query_dim=hidden_dim,
+                key_dim=hidden_dim,
+                value_dim=hidden_dim,
+                num_heads=num_heads,
+                dtype=jnp.bfloat16,
+                mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(("data", "model")),
+                output_dim_to_partition_spec=default_output_dim_to_partition_spec(
+                    ("data", "model")
+                ),
+                tpu_block_size=128,
+            )
+
+            layer_with_sink = base_cfg.set(logit_sink=True, name="with_sink").instantiate(
+                parent=None
+            )
+            layer_without_sink = base_cfg.set(logit_sink=False, name="without_sink").instantiate(
+                parent=None
+            )
+
+            # Initialize parameters
+            params_with_sink = layer_with_sink.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(123)
+            )
+            params_without_sink = layer_without_sink.initialize_parameters_recursively(
+                prng_key=jax.random.PRNGKey(123)
+            )
+
+            # Create inputs that might cause numerical issues (large values)
+            query = (
+                jax.random.normal(
+                    jax.random.PRNGKey(0), [batch, seq_len, hidden_dim], dtype=jnp.bfloat16
+                )
+                * 10
+            )
+            inputs = dict(
+                query=query,
+                key=query,
+                value=query,
+                attention_logit_biases=CompositeAttentionBias([]),
+                segment_ids=None,
+            )
+
+            # Test forward pass with both configurations
+            out_with_sink, _ = F(
+                layer_with_sink,
+                prng_key=jax.random.PRNGKey(5),
+                state=params_with_sink,
+                inputs=inputs,
+                is_training=True,
+            )
+
+            out_without_sink, _ = F(
+                layer_without_sink,
+                prng_key=jax.random.PRNGKey(5),
+                state=params_without_sink,
+                inputs=inputs,
+                is_training=True,
+            )
+
+            # Both should produce finite outputs
+            self.assertTrue(jnp.all(jnp.isfinite(out_with_sink.data)))
+            self.assertTrue(jnp.all(jnp.isfinite(out_without_sink.data)))
+
+            # Outputs should be different due to logit sink effect
+            self.assertFalse(jnp.allclose(out_with_sink.data, out_without_sink.data, atol=1e-3))
+
+    @parameterized.parameters([True, False])
+    def test_logit_sink_backward_pass(self, logit_sink):
+        """Tests that gradients flow correctly through logit sink."""
+        batch = 2
+        seq_len = 8
+        num_heads = 2
+        per_head_dim = 4
+        hidden_dim = num_heads * per_head_dim
+
+        with Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
+            cfg = FlashAttention.default_config().set(
+                query_dim=hidden_dim,
+                key_dim=hidden_dim,
+                value_dim=hidden_dim,
+                num_heads=num_heads,
+                dtype=jnp.bfloat16,
+                logit_sink=logit_sink,
+                mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(("data", "model")),
+                output_dim_to_partition_spec=default_output_dim_to_partition_spec(
+                    ("data", "model")
+                ),
+                tpu_block_size=128,
+                name="test",
+            )
+
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+            def loss_fn(params):
+                inputs = dict(
+                    query=jax.random.normal(
+                        jax.random.PRNGKey(0), [batch, seq_len, hidden_dim], dtype=jnp.bfloat16
+                    ),
+                    key=None,
+                    value=None,
+                    attention_logit_biases=CompositeAttentionBias([]),
+                    segment_ids=None,
+                )
+                out, _ = F(
+                    layer,
+                    prng_key=jax.random.PRNGKey(5),
+                    state=params,
+                    inputs=inputs,
+                    is_training=True,
+                )
+                return jnp.mean(out.data)
+
+            # Compute gradients
+            loss_value, grads = jax.value_and_grad(loss_fn)(params)
+
+            # Check that loss is finite
+            self.assertTrue(jnp.isfinite(loss_value))
+
+            # Check that all gradients are finite
+            def check_finite(x):
+                if isinstance(x, jnp.ndarray):
+                    self.assertTrue(jnp.all(jnp.isfinite(x)), f"Non-finite gradient found: {x}")
+
+            jax.tree.map(check_finite, grads)
+
+            # If logit sink is enabled, check that sink gradients exist and are finite
+            if logit_sink:
+                self.assertIn("sink", grads)
+                self.assertTrue(jnp.all(jnp.isfinite(grads["sink"])))
+            else:
+                self.assertNotIn("sink", grads)
 
 
 if __name__ == "__main__":

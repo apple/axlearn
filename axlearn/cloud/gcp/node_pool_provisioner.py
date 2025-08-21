@@ -21,6 +21,7 @@ from axlearn.cloud.gcp.node_pool import (
     create_node_pools,
     delete_node_pools,
 )
+from axlearn.cloud.gcp.pathways_utils import PathwaysLeaderWorkerTemplate
 from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
 from axlearn.cloud.gcp.tpu import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -29,6 +30,7 @@ FLAGS = flags.FLAGS
 
 # TODO(muyang_yu): avoid listing job types one by one.
 _INFERENCE_JOBS = (FlinkTPUGKEJob,)
+_SUPPORTED_BUILDER_TYPES = (TPUReplicatedJob.Config, PathwaysLeaderWorkerTemplate.Config)
 
 
 class NodePoolProvisioner(FlagConfigurable):
@@ -83,13 +85,21 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         cfg: TPUNodePoolProvisioner.Config = self.config
         job_cfg: GKEJob.Config = job.config
-        builder_cfg: TPUReplicatedJob.Config = job_cfg.builder
+        builder_cfg: TPUReplicatedJob.Config | PathwaysLeaderWorkerTemplate.Config = job_cfg.builder
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
-        if not isinstance(builder_cfg, TPUReplicatedJob.Config):
-            raise TypeError(f"Expected {TPUReplicatedJob.Config}, got {type(builder_cfg)}.")
+        if not isinstance(builder_cfg, _SUPPORTED_BUILDER_TYPES):
+            raise TypeError(
+                "Expected"
+                + f"{TPUReplicatedJob.Config}"
+                + f"{PathwaysLeaderWorkerTemplate.Config},"
+                + f"got {type(builder_cfg)}."
+            )
 
+        if isinstance(builder_cfg, PathwaysLeaderWorkerTemplate.Config):
+            # pylint: disable-next=protected-access
+            builder_cfg = builder_cfg.inner
         acc_cfg = builder_cfg.accelerator
         reservation = builder_cfg.reservation
         location_hint = builder_cfg.location_hint
@@ -177,8 +187,8 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         # TODO(markblee,ethanli,muyang_yu): Refactor so we do not need to make assumptions about
         # TPUGKEJob implementation and internals.
-        if not isinstance(builder_cfg, TPUReplicatedJob.Config):
-            raise TypeError(f"Expected {TPUReplicatedJob.Config}, got {type(builder_cfg)}.")
+        if not isinstance(builder_cfg, _SUPPORTED_BUILDER_TYPES):
+            raise TypeError(f"Expected {_SUPPORTED_BUILDER_TYPES}" + f"got {type(builder_cfg)}.")
 
         num_node_pools = builder_cfg.accelerator.num_replicas
         node_pool_names = []

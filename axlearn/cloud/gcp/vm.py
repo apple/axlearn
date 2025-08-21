@@ -365,19 +365,28 @@ def list_disk_images(creds: Credentials) -> list[str]:
     """
     resource = _compute_resource(creds)
     image_project = gcp_settings("image_project")
-    images = (
-        resource.images()
-        .list(
-            project=image_project,
-            orderBy="creationTimestamp desc",
-            maxResults=50,
-        )
-        .execute()
-    )
     image_names = []
-    for el in images["items"]:
-        if "ubuntu-2004" in el["name"] and "arm" not in el["name"]:
-            image_names.append(el["name"])
+    next_page_token = None
+
+    while True:
+        images = (
+            resource.images()
+            .list(
+                project=image_project,
+                orderBy="creationTimestamp desc",
+                maxResults=100,
+                pageToken=next_page_token,
+            )
+            .execute()
+        )
+        for el in images["items"]:
+            if "ubuntu-2204" in el["name"] and "arm" not in el["name"]:
+                image_names.append(el["name"])
+
+        next_page_token = images.get("nextPageToken")
+        if next_page_token is None:
+            break
+
     return [f"projects/{image_project}/global/images/{name}" for name in image_names]
 
 

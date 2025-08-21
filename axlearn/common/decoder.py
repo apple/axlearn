@@ -496,6 +496,7 @@ class Decoder(BaseLayer):
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Optional[NestedTensor], Tensor]:
         validate_contains_paths(input_batch, paths=["input_ids"])
         input_segment_ids = input_batch.get("input_segment_ids", None)
@@ -538,6 +539,7 @@ class Decoder(BaseLayer):
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                page_pool=page_pool,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")

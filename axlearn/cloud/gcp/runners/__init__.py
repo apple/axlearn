@@ -4,7 +4,12 @@
 
 from typing import Optional, Union
 
-from axlearn.cloud.gcp.job import GKEJob, exclusive_topology_annotations
+from axlearn.cloud.gcp.job import (
+    GKEJob,
+    GKELeaderWorkerSet,
+    exclusive_topology_annotations,
+    exclusive_topology_annotations_leaderworkerset,
+)
 from axlearn.cloud.gcp.job_flink import FlinkTPUGKEJob
 from axlearn.cloud.gcp.job_pathways import GKEPathwaysJobSet
 from axlearn.cloud.gcp.jobset_utils import (
@@ -14,10 +19,15 @@ from axlearn.cloud.gcp.jobset_utils import (
     A4HighReplicatedJob,
     TPUReplicatedJob,
 )
+from axlearn.cloud.gcp.k8s_service import LWSService
 from axlearn.cloud.gcp.node_pool_provisioner import TPUNodePoolProvisioner
-from axlearn.cloud.gcp.pathways_utils import PathwaysMultiheadReplicatedJob, PathwaysReplicatedJob
+from axlearn.cloud.gcp.pathways_utils import (
+    PathwaysLeaderWorkerTemplate,
+    PathwaysMultiheadReplicatedJob,
+    PathwaysReplicatedJob,
+)
 from axlearn.cloud.gcp.runners.base import BaseRunnerJob
-from axlearn.cloud.gcp.runners.gke import FlinkGKERunnerJob, GKERunnerJob
+from axlearn.cloud.gcp.runners.gke import FlinkGKERunnerJob, GKERunnerJob, LWSRunnerJob
 from axlearn.common.config import config_for_function
 
 
@@ -49,6 +59,14 @@ def named_runner_configs(
             inner=GKEPathwaysJobSet.default_config().set(
                 builder=PathwaysMultiheadReplicatedJob.default_config()
             ),
+        ),
+        "gke_tpu_lws_pathways": LWSRunnerJob.default_config().set(
+            inner=GKELeaderWorkerSet.default_config().set(
+                builder=PathwaysLeaderWorkerTemplate.default_config(),
+                annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
+                service=LWSService.default_config(),
+            ),
+            pre_provisioner=TPUNodePoolProvisioner.default_config(),
         ),
     }
 

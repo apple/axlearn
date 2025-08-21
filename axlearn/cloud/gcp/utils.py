@@ -378,3 +378,55 @@ class GCPAPI(str, enum.Enum):
     """GCP API to submit resource requests to."""
 
     GKE = "GKE"
+
+
+def delete_k8s_leaderworkerset(name: str, *, namespace: str):
+    """Deletes a K8s LWS by name, including all descendant jobs."""
+
+    # Avoid introducing a k8s dependency globally.
+    # pylint: disable-next=import-error,import-outside-toplevel
+    import kubernetes as k8s  # pytype: disable=import-error
+
+    try:
+        k8s.client.CustomObjectsApi().delete_namespaced_custom_object(
+            name=name,
+            namespace=namespace,
+            propagation_policy="Foreground",
+            **custom_leaderworkerset_kwargs(),
+        )
+    except k8s.client.ApiException as e:
+        if e.status == 404:
+            logging.info("LWS %s does not exist, no need to delete.", name)
+            return
+        raise
+
+
+def list_k8s_leaderworkerset(*, namespace: str) -> list[str]:
+    """List a K8s LWS by name, including all descendant jobs.
+
+    Args:
+        namespace: The namespace of the K8s cluster.
+        label_selector: Comma-separated labels k=v to filter jobs
+
+    Returns:
+        A list of filtered names of existing K8s LWS.
+
+    """
+
+    # Avoid introducing a k8s dependency globally.
+    # pylint: disable-next=import-error,import-outside-toplevel
+    import kubernetes as k8s  # pytype: disable=import-error
+
+    lws_groups = k8s.client.CustomObjectsApi().list_namespaced_custom_object(
+        namespace=namespace,
+        **custom_leaderworkerset_kwargs(),
+    )
+    names = []
+    for lws in lws_groups["items"]:
+        if name := lws.get("metadata", {}).get("name", ""):
+            names.append(name)
+    return names
+
+
+def custom_leaderworkerset_kwargs() -> dict[str, str]:
+    return dict(group="leaderworkerset.x-k8s.io", version="v1", plural="leaderworkersets")

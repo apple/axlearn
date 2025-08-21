@@ -28,6 +28,7 @@ Compared to the implementation in the JAX repo, we made the following enhancemen
 * Support dropout.
 * Support arbitrary mask function like Pytorch FlexAttention.
 """
+
 import functools
 from collections.abc import Sequence
 from typing import Any, Optional, Tuple
@@ -43,6 +44,7 @@ from jax._src.cudnn.fused_attention_stablehlo import (
 )
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
+from jax.experimental.pallas.triton import TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -64,18 +66,10 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Nested, Tensor
-
-
-class NoPopDict(dict):
-    """A dict that doesn't delete after pop.
-
-    Used to workaround https://github.com/jax-ml/jax/issues/25714.
-    """
-
-    def pop(self, *args, **kwargs):
-        return super().get(*args, **kwargs)
 
 
 def _segment_mask(
@@ -415,7 +409,7 @@ def _flash_attention_impl(
         grid=grid_,
         in_specs=in_specs,
         out_specs=out_specs,
-        compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+        compiler_params=TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
@@ -744,7 +738,7 @@ def _mha_backward(
             name=kernel.__name__,
             debug=debug,
             interpret=interpret,
-            compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+            compiler_params=TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
         )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta, index_offset, index_offset_size)
 
     dk, dv = call_kernel(
@@ -803,25 +797,28 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
 
+        self._kv_cache_type = kv_cache_type
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
-        if self.cfg.is_decoding:
+        if kv_cache_type is None:
+            # cuDNN has no concept of block size. It only requires the length of query and
+            # key/value to be even.
+            if not self._check_block_size(input_batch, block_size=2):
+                return False
+        elif kv_cache_type == KVCache:
             if query.shape[1] > 1:
                 return self._log_unsupported("multi-step decoding is not supported.")
             if not key.shape[1] % 2 == 0:
                 return self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
         else:
-            # cuDNN has no concept of block size. It only requires the length of query and
-            # key/value to be even.
-            if not self._check_block_size(input_batch, block_size=2):
-                return False
+            return self._log_unsupported(f"{kv_cache_type=}")
+
         if query.dtype not in (jnp.float16, jnp.bfloat16):
             return self._log_unsupported(
                 f"{query.dtype=} is not supported. Only supports float16 and bfloat16."
@@ -837,7 +834,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         bias: BaseAttentionBias = input_batch["bias"]
         _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
         if sliding.has_value() and not self._allow_explicit_bias:
-            if self.cfg.is_decoding:
+            if kv_cache_type == KVCache:
                 return self._log_unsupported(
                     "cuDNN doesn't support sliding window in decoding "
                     "without folding it into explicit bias."
@@ -852,9 +849,14 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
                     "cuDNN doesn't support sliding window with explicit bias "
                     "without folding it into explicit bias."
                 )
-
         if explicit_bias.has_value() and not self._allow_explicit_bias:
             return self._log_unsupported("we don't allow explicit bias at this stage.")
+
+        logit_sink = input_batch.get("logit_sink", None)
+        # TODO(c_lan): Add logit sink support.
+        if logit_sink is not None:
+            return self._log_unsupported("cuDNN doesn't support logit sink.")
+
         logging.info("Using %s.", self.name())
         return True
 
@@ -877,7 +879,19 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         )
         # TODO(hanzhi-zhou): cuDNN decoding is only for testing. Enable in production once we
         # upgrade cuDNN frontend to enable lean attention.
-        if self.cfg.is_decoding:
+        if self._kv_cache_type is None:
+            causal, sliding, explicit_bias = split(
+                bias, CausalAttentionBias, SlidingWindowAttentionBias
+            )
+            mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
+            if sliding.has_value():
+                if self.cfg.dropout_rate != 0.0 or explicit_bias.has_value():
+                    explicit_bias += sliding
+                else:
+                    args["sliding_window_length"] = sliding.sliding_window_size + 1
+                    # When using cuDNN sliding window, mask must be set to CAUSAL.
+                    mask_type = MaskType.CAUSAL
+        elif self._kv_cache_type == KVCache:
             # Decoding needs PADDING mask to compute attention only up to `kv_seqlen`.
             mask_type = MaskType.PADDING
             mask, explicit_bias = split(bias, MaskFnAttentionBias)
@@ -892,17 +906,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
                 if mask.has_value():
                     explicit_bias += mask
         else:
-            causal, sliding, explicit_bias = split(
-                bias, CausalAttentionBias, SlidingWindowAttentionBias
-            )
-            mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
-            if sliding.has_value():
-                if self.cfg.dropout_rate != 0.0 or explicit_bias.has_value():
-                    explicit_bias += sliding
-                else:
-                    args["sliding_window_length"] = sliding.sliding_window_size + 1
-                    # When using cuDNN sliding window, mask must be set to CAUSAL.
-                    mask_type = MaskType.CAUSAL
+            return self._log_unsupported(f"{self._kv_cache_type=}")
         # cuDNN requires bias to have the same dtype as qkv.
         tensor_bias = explicit_bias.astype(query.dtype).value()
         # TODO(kelvin-zou): Add support for segment IDs.
@@ -928,11 +932,10 @@ class PallasGPUFlashAttention(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
         block_size = self.cfg.gpu_block_size
         query: Tensor = input_batch["query"]
@@ -943,6 +946,11 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         # it by reducing the block size along sequence dim. Support it when needed.
         if head_dim > 128:
             return self._log_unsupported(f"{head_dim=} > 128")
+
+        logit_sink = input_batch.get("logit_sink", None)
+        if logit_sink is not None:
+            return self._log_unsupported("PallasGPUFlashAttention doesn't support logit sink.")
+
         logging.info("Using %s.", self.name())
         return True
 

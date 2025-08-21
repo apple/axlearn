@@ -22,7 +22,7 @@ from axlearn.cloud.common.bastion import (
 )
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.types import JobMetadata
-from axlearn.cloud.common.utils import define_flags, from_flags
+from axlearn.cloud.common.utils import AcceleratorConfig, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler
 from axlearn.cloud.gcp.jobset_utils import (
@@ -35,6 +35,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     CompositeReplicatedJob,
     GCSFuseMount,
     HostMount,
+    TPUReplicatedJob,
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
@@ -77,6 +78,7 @@ class TPUReplicatedJobTest(TestCase):
             jobset_utils.TPUReplicatedJob.define_flags(fv)
             fv.set_default("name", "test-name")
             fv.set_default("instance_type", "tpu-v4-8")
+            fv.set_default("topology", None)
             for key, value in kwargs.items():
                 if value is not None:
                     setattr(fv, key, value)
@@ -503,6 +505,37 @@ class TPUReplicatedJobTest(TestCase):
         self.assertEqual(lb2.service_name, "jobset1-job2-service")
         self.assertEqual(lb2.target_port, 8080)
         self.assertEqual(lb2.port, 443)
+
+    @parameterized.parameters(
+        dict(
+            instance_type="v5p-16",
+            topology="2x2x2",
+            expected=ValueError("custom topology is only available for v5p-128 and above."),
+        ),
+        dict(
+            instance_type="v5p-128",
+            topology="2x64",
+            expected=ValueError("custom topology only supports 3d topology for v5p."),
+        ),
+        dict(
+            instance_type="v5p-128",
+            topology="2x1x64",
+            expected=ValueError("There should be no 1 in each topology dimension."),
+        ),
+        dict(
+            instance_type="v5p-128",
+            topology="2x2x2",
+            expected=ValueError(
+                "custom topology 2x2x2 doesn't match the number of cores in instance_type v5p-128."
+            ),
+        ),
+        dict(instance_type="v5p-128", topology="2x8x8", expected=None),
+    )
+    def test_verify_custom_topology_availability(self, instance_type, topology, expected):
+        accelerator = AcceleratorConfig().set(instance_type=instance_type, topology=topology)
+        if isinstance(expected, Exception):
+            with self.assertRaisesRegex(type(expected), str(expected)):
+                TPUReplicatedJob.verify_custom_topology_availability(accelerator)
 
 
 class CompositeReplicatedJobTest(TestCase):

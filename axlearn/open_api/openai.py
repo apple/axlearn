@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import re
-from typing import Any
+from typing import Any, Optional
 
 from axlearn.open_api.common import (
     BaseClient,
@@ -25,6 +25,7 @@ from axlearn.open_api.common import (
 from openai import AsyncOpenAI, RateLimitError
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion_token_logprob import ChatCompletionTokenLogprob
 from openai.types.completion import Completion
 
 # pylint: enable=import-error
@@ -165,6 +166,28 @@ class OpenAIClient(BaseClient):
         for choice in response["choices"]:
             generations.append(OpenAIClient._parse_generation_from_message(choice["message"]))
         return generations
+
+    @classmethod
+    def parse_logprobs(cls, response: dict[str, Any]) -> Optional[list[ChatCompletionTokenLogprob]]:
+        """Parse generation from response.
+
+        Args:
+           response: A dictionary of response.
+
+        Returns:
+           List of ChatCompletionTokenLogprob or None.
+        """
+        if len(response.get("choices", [])) == 0:
+            return
+
+        logprobs = []
+        for choice in response["choices"]:
+            choice_logprobs = choice.get("logprobs", {})
+            if choice_logprobs is None:
+                return
+            for token_logprob in choice_logprobs.get("content", []):
+                logprobs.append(ChatCompletionTokenLogprob(**token_logprob))
+        return logprobs
 
     @classmethod
     def format_message(cls, message: dict[str, Any]) -> ChatCompletionMessage:

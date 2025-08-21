@@ -4,6 +4,7 @@
 
 import multiprocessing
 import re
+import resource
 
 from absl import flags, logging
 
@@ -20,6 +21,7 @@ except (ImportError, ModuleNotFoundError):
 from axlearn.cloud.gcp import config as gcp_config
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 
+_UPLOADER_PROC_MEM_LIMIT_GB = 50
 _VERTEXAI_EXP_NAME_MAX_LEN = 128
 
 
@@ -50,6 +52,15 @@ def is_vertexai_tensorboard_configured(flag_values: flags.FlagValues) -> bool:
 
 # Keep as a top-level function so that it is pickleable.
 def _start_vertexai_tensorboard(*, project_id: str, region: str, resource_name: str, logdir: str):
+    # Limit memory usage for the tensorboard uploader process.
+    memory_limit_bytes = _UPLOADER_PROC_MEM_LIMIT_GB * 1024 * 1024 * 1024
+    try:
+        # Set both soft and hard limits
+        resource.setrlimit(resource.RLIMIT_AS, (memory_limit_bytes, memory_limit_bytes))
+        logging.info("Set memory limit to %dGB for uploader process", _UPLOADER_PROC_MEM_LIMIT_GB)
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        logging.warning("Fail to set memory limit: %s", error)
+
     api_client = initializer.global_config.create_client(
         client_class=TensorboardClientWithOverride,
         location_override=region,
@@ -70,7 +81,12 @@ def _start_vertexai_tensorboard(*, project_id: str, region: str, resource_name: 
         writer_client=api_client,
         logdir=logdir,
         one_shot=False,
-        event_file_inactive_secs=None,
+        # Ignore files that are last updated more than 5 minutes ago. This is to limited number of
+        # event files processed and avoid massive memory consumption when there are many runs.
+        # There is a risk of lossig data points if the process terminates before the lastest events
+        # get uploaded and resumes after 5 minutes. But given logdir poll rate is set to every
+        # 30 seconds, the potential data loss is very limited. Thus, the risk is low.
+        event_file_inactive_secs=300,
         verbosity=0,
         run_name_prefix=None,
         logdir_poll_rate_limiter=uploader_utils.RateLimiter(interval_secs=30),

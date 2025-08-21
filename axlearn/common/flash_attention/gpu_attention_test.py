@@ -69,7 +69,7 @@ def _test_forward_and_backward(
     backward_tol_fn: Callable = _default_tol_fn,
 ):
     float_batch = dict(query=q, key=k, value=v)
-    aux_batch = dict(prng_key=jax.random.PRNGKey(44), bias=bias)
+    aux_batch = dict(prng_key=jax.random.PRNGKey(44), bias=bias, logit_sink=None)
     input_batch = {**float_batch, **aux_batch}
     ref_fn = jax.jit(ref_fn)
     test_fn = jax.jit(test_fn)
@@ -159,8 +159,10 @@ def test_triton_fwd_only_against_ref(
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, prng_key=jax.random.PRNGKey(43), bias=bias)
-    chex.assert_equal(test_fn.is_supported(input_batch), True)
+    input_batch = dict(
+        query=q, key=k, value=v, prng_key=jax.random.PRNGKey(43), bias=bias, logit_sink=None
+    )
+    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
     o = test_fn(input_batch)
     o_ref = ref_fn(input_batch)
 
@@ -223,8 +225,8 @@ def test_triton_against_xla_ref(
     # Compare outputs.
     test_fn = PallasGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
-    chex.assert_equal(test_fn.is_supported(input_batch), True)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
+    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
 
     def forward_tol_fn(backend, dtype):
         del dtype
@@ -271,12 +273,19 @@ def test_sliding_window_mask(
         softmax_scale=q.shape[-1] ** -0.5,
         interpret=jax.default_backend() == "cpu",
     )
+
+    # The memory layout of B200 is different than previous GPU generations
+    # and requires a smaller block size to work with Pallas kernels
+    if jax.default_backend() == "gpu" and test_cls is PallasGPUFlashAttention:
+        if "NVIDIA B200" in jax.devices("gpu")[0].device_kind:
+            cfg["gpu_block_size"] = 64
+
     test_fn = test_cls.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
     if test_cls is CuDNNGPUFlashAttention and use_segment_ids:
-        chex.assert_equal(test_fn.is_supported(input_batch), False)
+        chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), False)
         test_fn = CuDNNGPUFlashAttentionWithExplicitBias.default_config().set(**cfg).instantiate()
-    chex.assert_equal(test_fn.is_supported(input_batch), True)
+    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
     _test_forward_and_backward(q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn)
 
@@ -321,8 +330,8 @@ def test_cudnn_against_triton_ref(
 
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
-    chex.assert_equal(test_fn.is_supported(input_batch), True)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
+    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
     def forward_tol_fn(backend, dtype):
@@ -389,6 +398,13 @@ def test_cudnn_dropout_against_xla_dropout(
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
 
+    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
+    q = jax.random.normal(k1, qkv_shape, dtype=dtype)
+    k = jax.random.normal(k2, qkv_shape, dtype=dtype)
+    v = jax.random.normal(k3, qkv_shape, dtype=dtype)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
+    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
+
     dropout_mask = (
         test_fn(
             dict(
@@ -398,6 +414,7 @@ def test_cudnn_dropout_against_xla_dropout(
                     jnp.eye(per_head_dim, dtype=dtype)[None, :, None], qkv_shape
                 ),
                 bias=bias,
+                logit_sink=None,
             ),
         )
         == 0.0
@@ -405,13 +422,6 @@ def test_cudnn_dropout_against_xla_dropout(
     # Clear the compilation cache to reset cudnn RNG offset, so the next invocation will generate
     # the same mask.
     jax.clear_caches()
-
-    k1, k2, k3 = jax.random.split(jax.random.PRNGKey(0), 3)
-    q = jax.random.normal(k1, qkv_shape, dtype=dtype)
-    k = jax.random.normal(k2, qkv_shape, dtype=dtype)
-    v = jax.random.normal(k3, qkv_shape, dtype=dtype)
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
-    chex.assert_equal(test_fn.is_supported(input_batch), True)
 
     ref_fn = functools.partial(
         ref_fn,
@@ -461,8 +471,8 @@ def test_cudnn_seqlen_head_support(
     # Compare outputs.
     test_fn = CuDNNGPUFlashAttention.default_config().set(**cfg).instantiate()
     ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
-    input_batch = dict(query=q, key=k, value=v, bias=bias)
-    chex.assert_equal(test_fn.is_supported(input_batch), True)
+    input_batch = dict(query=q, key=k, value=v, bias=bias, logit_sink=None)
+    chex.assert_equal(test_fn.is_supported(input_batch, kv_cache_type=None), True)
 
     _test_forward_and_backward(
         q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=_cudnn_xla_forward_tol_fn
@@ -479,8 +489,10 @@ def test_cudnn_dropout_determinism():
         key=k,
         value=v,
         bias=bias,
+        logit_sink=None,
     )
     fn = CuDNNGPUFlashAttention.default_config().set(dropout_rate=0.1).instantiate()
+    chex.assert_equal(fn.is_supported(input_batch, kv_cache_type=None), True)
 
     outputs = []
     grads = []
@@ -491,6 +503,7 @@ def test_cudnn_dropout_determinism():
             key=k,
             value=v,
             bias=bias,
+            logit_sink=None,
         )
         return fn(input_batch).mean()
 

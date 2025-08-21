@@ -64,6 +64,7 @@ config fields with mutable values, including config values.
 import copy
 import dataclasses
 import enum
+import importlib
 import inspect
 import re
 import types
@@ -81,7 +82,6 @@ from typing import Any, Callable, Generic, Optional, Sequence, TypeVar, Union
 # Our config library relies on `__attrs_post_init__` and `on_setattr=_validate_and_transform_field`
 # to apply validation on field names and values.
 import attr
-import numpy as np
 
 
 def is_named_tuple(x: Any):
@@ -227,7 +227,6 @@ register_validator(
                 float,
                 str,
                 enum.Enum,
-                np.dtype,
             ),
         )
     ),
@@ -257,6 +256,28 @@ register_validator(
     match_fn=lambda v: not isinstance(v, type) and hasattr(v, "from_pretrained"),
     validate_fn=lambda v: validate_config_field_value(v.to_dict()),
 )
+
+
+def _maybe_register_optional_type(module: str, attribute: str):
+    """Attempts to register a valid type specified via `module` path and `attribute` name.
+
+    This is used to register optional types so that we can avoid a hard dependency on the module.
+    """
+    try:
+        module = importlib.import_module(module)
+        register_validator(
+            match_fn=lambda v: isinstance(v, getattr(module, attribute)),
+            validate_fn=lambda _: None,
+        )
+    except (ImportError, AttributeError):
+        pass
+
+
+# Register other validators for convenience and backwards compat.
+# We allow these to be optional to avoid a hard dependency.
+_maybe_register_optional_type("numpy", "dtype")
+# As of 0.6.1, PartitionSpec is no longer a tuple.
+_maybe_register_optional_type("jax.sharding", "PartitionSpec")
 
 
 def validate_config_field_value(value: Any) -> None:
