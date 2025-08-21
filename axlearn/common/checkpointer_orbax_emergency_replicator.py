@@ -88,7 +88,7 @@ def _block_and_process_restore_dir(directory, timeout=300):
                     logging.info("Found a restore directory at step 0, skipping renaming.")
                 return
         time.sleep(1)
-    logging.info("%d seconds have passed but no .restore file was found.", timeout)
+    raise TimeoutError(f"{timeout} seconds have passed but no .restore file was found.")
 
 
 def _retrieve_jax_init_info(local_ckpt_dir):
@@ -106,7 +106,7 @@ def _retrieve_jax_init_info(local_ckpt_dir):
             i,
         )
         time.sleep(1)
-    raise RuntimeError(
+    raise TimeoutError(
         f"Unable to locate {jax_init_info_file} after 900 seconds, "
         "returning empty process id and coordinator address."
     )
@@ -156,7 +156,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         temp_file = replicator_file + ".tmp"
         replicator_file_path = epath.Path(self._local_dir) / replicator_file
         if not _wait_for_file_to_disappear(replicator_file_path):
-            logging.info("Existing replicator.yaml did not disappear in time.")
+            raise TimeoutError("Existing replicator.yaml did not disappear in time.")
         else:
             logging.info("replicator.yaml no longer exists, creating new replicator.yaml.")
         temp_file = epath.Path(self._local_dir) / temp_file
@@ -179,6 +179,9 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
 
         run_name = os.environ.get("HOSTNAME").split("job")[0].rstrip("-")
 
+        if run_name is None or run_name == "":
+            raise ValueError("HOSTNAME is not set or value is invalid.")
+
         replicator_yaml = f"""job-name: {run_name}
       framework: orbax
       assume-data-parallelism: 2
@@ -190,7 +193,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
         os.rename(temp_file, replicator_file_path)
         if not _wait_for_file_to_disappear(replicator_file_path):
-            logging.info("The newly created replicator.yaml was not deleted in time.")
+            raise TimeoutError("The newly created replicator.yaml was not deleted in time.")
         else:
             logging.info("The newly created replicator.yaml was deleted, moving forward.")
             _block_and_process_restore_dir(self._local_dir)
