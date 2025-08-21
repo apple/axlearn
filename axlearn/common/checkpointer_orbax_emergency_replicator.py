@@ -68,25 +68,23 @@ def _extract_step(f):
 
 
 def _block_and_process_restore_dir(directory, timeout=300):
-    """Block until the directory symlink ending with `.restore` appears, then extract
-    the step number and rename the directory using the step number.
+    """Blocks until the directory symlink ending with `.restore` appears, then extracts
+    the step number and renames the directory using the step number.
     """
-    suffix = ".restore"
+    directory_path = epath.Path(directory)
     for _ in range(timeout):
-        files = os.listdir(directory)
-        for f in files:
-            if f.endswith(suffix):
-                step = _extract_step(f)
-                if step != "0":
-                    os.rename(epath.Path(directory) / f, epath.Path(directory) / step)
-                    logging.info(
-                        "Renamed restore directory at step %s to %s.",
-                        step,
-                        epath.Path(directory) / step,
-                    )
-                else:
-                    logging.info("Found a restore directory at step 0, skipping renaming.")
-                return
+        for f in directory_path.glob("*.restore"):
+            step = _extract_step(f.name)
+            if step != "0":
+                f.rename(directory_path / step)
+                logging.info(
+                    "Renamed restore directory at step %s to %s.",
+                    step,
+                    directory_path / step,
+                )
+            else:
+                logging.info("Found a restore directory at step 0, skipping renaming.")
+            return
         time.sleep(1)
     raise TimeoutError(f"{timeout} seconds have passed but no .restore file was found.")
 
@@ -123,6 +121,10 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         """Configures OrbaxEmergencyReplicatorCheckpointer.
 
         Attributes:
+            assume_data_parallelism: Number of identical pipelines in job, should be equal to
+                ICI data parallelism * DCN data parallelism.
+            backup_interval_minutes: How often GKE multi-tier checkpointer should back up local
+                checkpoints to GCS.
             local_dir: Ckpt base path for local storage. The content in this path must persist
                 across pod restarts unless the restart is caused by node failure. `local_dir` must
                 be the same for all processes or processes may hang.
@@ -133,6 +135,8 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             async_timeout_secs: Timeout for async barrier in seconds when saving tensors.
         """
 
+        assume_data_parallelism: int = 2
+        backup_interval_minutes: int = 30
         local_dir: str = "/checkpoint"
         trainer_dir: Required[str] = REQUIRED
         async_timeout_secs: int = 3600
@@ -184,11 +188,11 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
 
         replicator_yaml = f"""job-name: {run_name}
       framework: orbax
-      assume-data-parallelism: 2
+      assume-data-parallelism: {cfg.assume_data_parallelism}
       node-rank: {node_rank}
       nodes: {num_nodes}
       peer-ranks: {peer_ranks}
-      backup-interval-minutes: 5"""
+      backup-interval-minutes: {cfg.backup_interval_minutes}"""
 
         temp_file.write_text("\n".join([l.strip() for l in replicator_yaml.split("\n")]))
         os.rename(temp_file, replicator_file_path)
@@ -258,13 +262,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             self.wait_until_finished()
             raise SystemExit(f"Exiting after saving checkpoint at {step=} due to pre-emption.")
 
-    def _checkpoint_steps_include_local(self) -> list[int]:
-        """Returns a sorted list of complete checkpoints, including both persistent and local.
-
-        This function assumes tensor manager has already been initialized.
-        """
-        return sorted(set(self._tensor_manager.all_steps()))
-
     def restore(
         self,
         *,
@@ -279,7 +276,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         )
         tensor_manager = self._get_tensor_manager()
         if step is None:
-            common_steps = self._checkpoint_steps_include_local()
+            common_steps = sorted(set(self._tensor_manager.all_steps()))
 
             if not common_steps:
                 logging.warning("Could not find any completed checkpoints under %s.", cfg.dir)
