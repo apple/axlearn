@@ -685,9 +685,12 @@ class TPUJobBuilder(SingleReplicatedJob):
 
             labels.update({"job-priority": str(spec.metadata.priority)})
             labels.update({"user-id": spec.metadata.user_id})
+            labels.update({"project-id": spec.metadata.project_id})
 
             # For job-priority to be populated to node labels when tpu-provisioner is used.
             selector.update({"job-priority": str(spec.metadata.priority)})
+
+        labels.update({"num-replicas": str(cfg.accelerator.num_replicas)})
 
         annotations.update(
             {

@@ -404,10 +404,16 @@ class TPUReplicatedJobTest(TestCase):
                     str(spec.metadata.priority), node_selector.get("job-priority", None)
                 )
                 self.assertEqual(spec.metadata.user_id, labels.get("user-id", None))
+                self.assertEqual(spec.metadata.project_id, labels.get("project-id", None))
+                self.assertEqual(
+                    str(gke_job.config.accelerator.num_replicas),
+                    labels.get("num-replicas", None),
+                )
             else:
                 self.assertNotIn("job-priority", labels)
                 self.assertNotIn("job-priority", node_selector)
                 self.assertNotIn("user-id", labels)
+                self.assertNotIn("project-id", labels)
 
             if BASTION_JOB_VERSION_ENV_VAR in env:
                 job_version = env.get(BASTION_JOB_VERSION_ENV_VAR)
