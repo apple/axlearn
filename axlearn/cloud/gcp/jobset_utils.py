@@ -237,6 +237,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
             env_vars: Optional env vars to set.
             gcsfuse_mount: Optional configs for the GCS FUSE sidecar and volume mount.
                 See `GCSFuseMount` for details.
+            mtc_mount: Optionally mount multi-tier checkpointing volume.
             host_mounts: List of volumes from host to mount into the container.
                 See `HostMount` for details.
             service_account: Optional service account to execute the job as.
@@ -250,6 +251,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         accelerator: AcceleratorConfig = AcceleratorConfig()
         env_vars: dict[str, str] = {}
         gcsfuse_mount: Optional[GCSFuseMount] = None
+        mtc_mount: Optional[bool] = None
         host_mounts: Optional[Sequence[HostMount]] = None
         service_account: Optional[str] = None
         # This config is made Optional for backwards compatibility. Default is False.
@@ -344,6 +346,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
                 to attach to the node pool. This is needed to support multiple NIC.
                 Refer to GKE TPU provisioner for more context:
                 https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
+            mtc_mount: Whether or not to mount volume for multi-tier checkpointing
         """
 
         reservation: Optional[str] = None
@@ -353,6 +356,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         enable_tpu_smart_repair: bool = False
         priority_class: Optional[str] = None
         additional_node_networks: Optional[str] = None
+        mtc_mount: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -375,6 +379,12 @@ class TPUReplicatedJob(SingleReplicatedJob):
             "priority_class",
             None,
             "The GKE PriorityClass for the job.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "mtc_mount",
+            None,
+            "Whether to mount checkpoint volume",
             **common_kwargs,
         )
 
@@ -400,6 +410,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         cfg.additional_node_networks = gcp_settings(
             "additional_node_networks", required=False, fv=fv
         )
+        cfg.mtc_mount = fv.mtc_mount
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
@@ -417,7 +428,6 @@ class TPUReplicatedJob(SingleReplicatedJob):
             job_name=cfg.job_name,
         )
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
-        self._output_volume_mount = dict(name="checkpoint", mountPath="/checkpoint")
         if cfg.additional_node_networks and not cfg.service_account:
             raise ValueError("service_account must be set if additional_node_networks is set.")
         self._load_balancer = _LoadBalancer(jobset_name=cfg.name, replicated_job_name=cfg.job_name)
@@ -442,6 +452,11 @@ class TPUReplicatedJob(SingleReplicatedJob):
             self._maybe_add_volume_mount(volume_mounts, spec=cfg.gcsfuse_mount)
             self._maybe_add_volume_mount(
                 volume_mounts, spec=VolumeMount(name="shared-memory", mount_path="/dev/shm")
+            )
+
+        if cfg.mtc_mount:
+            self._maybe_add_volume_mount(
+                volume_mounts, spec=VolumeMount(name="checkpoint", mount_path="/checkpoint")
             )
 
         if cfg.host_mounts:
@@ -545,14 +560,15 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
         volumes.append(dict(name="shared-output", emptyDir={}))
 
-        volumes.append(
-            dict(
-                name="checkpoint",
-                csi=dict(
-                    driver="multitier-checkpoint.csi.storage.gke.io",
-                ),
+        if cfg.mtc_mount:
+            volumes.append(
+                dict(
+                    name="checkpoint",
+                    csi=dict(
+                        driver="multitier-checkpoint.csi.storage.gke.io",
+                    ),
+                )
             )
-        )
 
         if cfg.gcsfuse_mount:
             # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
