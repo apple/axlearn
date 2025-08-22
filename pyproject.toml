@@ -167,6 +167,9 @@ audio = [
 [tool.setuptools.packages.find]
 include = ['axlearn*']
 
+[tool.setuptools.package-data]
+"*" = ["*.sh", "*.txtpb"]
+
 [tool.setuptools.exclude-package-data]
 "*" = ["**/BUILD"]
 
