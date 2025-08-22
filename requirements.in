@@ -1,0 +1,11 @@
+# Minimal requirements for struct module and test
+jax
+jaxlib
+typing-extensions
+attrs
+numpy
+absl-py
+chex
+pytest
+wrapt
+optax

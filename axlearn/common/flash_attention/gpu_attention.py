@@ -66,6 +66,8 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Nested, Tensor
 
@@ -795,25 +797,28 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
 
+        self._kv_cache_type = kv_cache_type
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
-        if self.cfg.is_decoding:
+        if kv_cache_type is None:
+            # cuDNN has no concept of block size. It only requires the length of query and
+            # key/value to be even.
+            if not self._check_block_size(input_batch, block_size=2):
+                return False
+        elif kv_cache_type == KVCache:
             if query.shape[1] > 1:
                 return self._log_unsupported("multi-step decoding is not supported.")
             if not key.shape[1] % 2 == 0:
                 return self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
         else:
-            # cuDNN has no concept of block size. It only requires the length of query and
-            # key/value to be even.
-            if not self._check_block_size(input_batch, block_size=2):
-                return False
+            return self._log_unsupported(f"{kv_cache_type=}")
+
         if query.dtype not in (jnp.float16, jnp.bfloat16):
             return self._log_unsupported(
                 f"{query.dtype=} is not supported. Only supports float16 and bfloat16."
@@ -829,7 +834,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         bias: BaseAttentionBias = input_batch["bias"]
         _, sliding, explicit_bias = split(bias, CausalAttentionBias, SlidingWindowAttentionBias)
         if sliding.has_value() and not self._allow_explicit_bias:
-            if self.cfg.is_decoding:
+            if kv_cache_type == KVCache:
                 return self._log_unsupported(
                     "cuDNN doesn't support sliding window in decoding "
                     "without folding it into explicit bias."
@@ -874,7 +879,19 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         )
         # TODO(hanzhi-zhou): cuDNN decoding is only for testing. Enable in production once we
         # upgrade cuDNN frontend to enable lean attention.
-        if self.cfg.is_decoding:
+        if self._kv_cache_type is None:
+            causal, sliding, explicit_bias = split(
+                bias, CausalAttentionBias, SlidingWindowAttentionBias
+            )
+            mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
+            if sliding.has_value():
+                if self.cfg.dropout_rate != 0.0 or explicit_bias.has_value():
+                    explicit_bias += sliding
+                else:
+                    args["sliding_window_length"] = sliding.sliding_window_size + 1
+                    # When using cuDNN sliding window, mask must be set to CAUSAL.
+                    mask_type = MaskType.CAUSAL
+        elif self._kv_cache_type == KVCache:
             # Decoding needs PADDING mask to compute attention only up to `kv_seqlen`.
             mask_type = MaskType.PADDING
             mask, explicit_bias = split(bias, MaskFnAttentionBias)
@@ -889,17 +906,7 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
                 if mask.has_value():
                     explicit_bias += mask
         else:
-            causal, sliding, explicit_bias = split(
-                bias, CausalAttentionBias, SlidingWindowAttentionBias
-            )
-            mask_type = MaskType.CAUSAL if causal.has_value() else MaskType.NO_MASK
-            if sliding.has_value():
-                if self.cfg.dropout_rate != 0.0 or explicit_bias.has_value():
-                    explicit_bias += sliding
-                else:
-                    args["sliding_window_length"] = sliding.sliding_window_size + 1
-                    # When using cuDNN sliding window, mask must be set to CAUSAL.
-                    mask_type = MaskType.CAUSAL
+            return self._log_unsupported(f"{self._kv_cache_type=}")
         # cuDNN requires bias to have the same dtype as qkv.
         tensor_bias = explicit_bias.astype(query.dtype).value()
         # TODO(kelvin-zou): Add support for segment IDs.
@@ -925,11 +932,10 @@ class PallasGPUFlashAttention(BaseFlashAttention):
     def is_supported(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(
-            input_batch=input_batch,
-        ):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
         block_size = self.cfg.gpu_block_size
         query: Tensor = input_batch["query"]

@@ -14,8 +14,9 @@ from typing import Any, Callable, Optional, Union
 import attr
 import attrs
 import numpy as np
+import pytest
 import wrapt
-from absl.testing import absltest, parameterized
+from absl.testing import parameterized
 
 from axlearn.common import config
 from axlearn.common.config import (
@@ -1045,4 +1046,8 @@ class ConfigTest(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    absltest.main()
+    # we can’t use absltest.main because it sets __module__ to "" instead of "axlearn.common", and
+    # it sets __name__ to "__main__" instead of "config_test".  These incorrect values confuse
+    # axlearn.common.config.debug_string, which then produces incorrectly named fields and causes
+    # the test/CI to fail. So, here we have to use pytest.main.
+    pytest.main()

@@ -56,6 +56,7 @@ from axlearn.common.test_utils import (
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import (
     PHYSICAL_TO_LOGICAL_DISPATCH_KEY,
+    DataPartitionType,
     HybridMeshShape,
     MeshShape,
     NestedTensor,
@@ -74,6 +75,7 @@ from axlearn.common.utils import (
     copy_recursively,
     count_model_params,
     create_device_mesh,
+    data_partition_type_to_spec,
     dispatch_input_batch,
     expand_vdicts,
     find_cycles,
@@ -1970,6 +1972,53 @@ class HostToGlobalArrayTest(TestCase):
             # Check that contents are as expected.
             self.assertNestedEqual(global_array, replicate_to_local_data(batch))
 
+    @pytest.mark.for_8_devices
+    def test_one_per_process_two_arrays(self):
+        """Test a case where every process produces a slice.
+
+        This is recommended to run on 2 process, e.g. v5e-16.
+        """
+        # NOTE: the following can be used for local testing
+        # XLA_FLAGS=--xla_force_host_platform_device_count=8
+
+        device_count = jax.device_count()
+        process_count = jax.process_count()
+        print(f"{device_count=}, {process_count=}")
+        assert device_count > 1
+        assert process_count <= 2
+
+        # Build an array that has dim=0 smaller than num devices, but still >= num processes.
+        global_shape = (device_count // 2, 2)
+        assert global_shape[0] % process_count == 0
+        process_shape = global_shape[0] // process_count
+
+        feed_index = jax.process_index()
+        global_a = jax.random.uniform(jax.random.PRNGKey(123), shape=global_shape)
+        global_b = jax.random.uniform(jax.random.PRNGKey(124), shape=global_shape)
+        expected_batch = {"a": global_a, "b": {"nested_value": global_b}}
+
+        with jax.sharding.Mesh(np.array(jax.devices()).reshape(device_count // 2, 2), ("x", "y")):
+            # Shard dim=0 only along data.
+            logical_sharding = {"a": PartitionSpec("x"), "b": PartitionSpec("y")}
+
+            # Each process has a slice.
+            local_batch = {
+                "a": global_a[feed_index * process_shape : (feed_index + 1) * process_shape],
+                "b": {
+                    "nested_value": global_b[
+                        feed_index * process_shape : (feed_index + 1) * process_shape
+                    ]
+                },
+            }
+            batch = host_to_global_device_array(local_batch, partition=logical_sharding)
+
+            # Check that sharding is as expected.
+            self.assertEqual(logical_sharding["a"], batch["a"].sharding.spec)
+            self.assertEqual(logical_sharding["b"], batch["b"]["nested_value"].sharding.spec)
+
+            # Check that contents are as expected.
+            self.assertNestedEqual(expected_batch, replicate_to_local_data(batch))
+
     # Test process_count // 1, process_count // 2, process_count // 4.
     # On v5e-16, this exercises 4, 2, and 1 reading hosts out of 4.
     @parameterized.parameters(1, 2, 4)
@@ -2181,6 +2230,37 @@ class TestOwnFields(TestCase):
             child_field2: Required[int] = REQUIRED
 
         self.assertSameElements(("child_field1", "child_field2"), own_fields(ConfigChild()))
+
+
+class DataPartitionTypeToSpecTest(TestCase):
+    @mock.patch("axlearn.common.utils.input_partition_spec")
+    def test_full_partition(self, mock_input_partition_spec):
+        # Mocks input_partition_spec to return a predictable value
+        mock_input_partition_spec.return_value = PartitionSpec("full_spec")
+        result = data_partition_type_to_spec(DataPartitionType.FULL)
+        self.assertEqual(result, PartitionSpec("full_spec"))
+        mock_input_partition_spec.assert_called_once()
+
+    def test_replicated_partition(self):
+        result = data_partition_type_to_spec(DataPartitionType.REPLICATED)
+        self.assertEqual(result, PartitionSpec(None))
+
+    def test_partition_spec_input(self):
+        custom_spec = PartitionSpec((("data", 0), ("model", 1)))
+        result = data_partition_type_to_spec(custom_spec)
+        self.assertEqual(result, custom_spec)
+
+    def test_dict_input(self):
+        dict_spec = {"a": PartitionSpec("b"), "c": {"d": PartitionSpec("d")}}
+        result = data_partition_type_to_spec(dict_spec)
+        self.assertEqual(result, dict_spec)
+
+    def test_unsupported_partition_type(self):
+        with self.assertRaisesRegex(NotImplementedError, "Unsupported partition: unsupported_type"):
+            data_partition_type_to_spec("unsupported_type")
+
+        with self.assertRaisesRegex(NotImplementedError, "Unsupported partition: 123"):
+            data_partition_type_to_spec(123)
 
 
 if __name__ == "__main__":

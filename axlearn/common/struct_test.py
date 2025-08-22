@@ -151,3 +151,7 @@ class Struct(struct.PyTreeNode):
     field_a: jax.Array
     field_d: jax.Array
     field_c: jax.Array
+
+
+if __name__ == "__main__":
+    absltest.main()

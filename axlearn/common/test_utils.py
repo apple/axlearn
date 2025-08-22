@@ -293,6 +293,20 @@ class TestCase(parameterized.TestCase):
                 f"Max difference = {diff.max()}",
             )
 
+    def assertNestedAllCloseWithOutliers(
+        self, actual: NestedTensor, desired: NestedTensor, *, tolerance_map: dict[float, Tolerance]
+    ):
+        """A nested variant of `assertAllCloseWithOutliers`."""
+        a_kv = flatten_items(actual)
+        b_kv = flatten_items(desired)
+        self.assertCountEqual([k for k, _ in a_kv], [k for k, _ in b_kv])
+        a_dict = dict(a_kv)
+        b_dict = dict(b_kv)
+        for k in a_dict:
+            a_value = a_dict[k]
+            b_value = b_dict[k]
+            self.assertAllCloseWithOutliers(a_value, b_value, tolerance_map=tolerance_map)
+
 
 # TODO(markblee): Move this to axlearn/experiments/test_utils.py, where it's used.
 class TrainerConfigTestCase(TestCase):

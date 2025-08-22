@@ -30,6 +30,7 @@ def fake_process(target, *args, kwargs, **rest):
 class VertexAITensorboardUploaderTest(absltest.TestCase):
     """Tests VertexAITensorboardUploader."""
 
+    @mock.patch("resource.setrlimit")
     @mock.patch("multiprocessing.get_context")
     @mock.patch(f"{uploader.TensorBoardUploader.__module__}.TensorBoardUploader", autospec=True)
     @mock.patch(
@@ -50,6 +51,7 @@ class VertexAITensorboardUploaderTest(absltest.TestCase):
         create_client_fn,
         tb_uploader_class,
         mock_get_context,
+        mock_set_resource_limit,
     ):  # pylint: disable=no-self-use
         mock_context = mock.MagicMock()
         mock_context.Process.side_effect = fake_process
@@ -67,6 +69,7 @@ class VertexAITensorboardUploaderTest(absltest.TestCase):
             )
         tb_uploader = cfg.instantiate()
         tb_uploader.upload()
+        mock_set_resource_limit.assert_called_once()
         mock_get_context.assert_called_once_with("spawn")
         create_client_fn.assert_called_once()
         bucket_folder_fn.assert_called_once()

@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Optimizer schedules."""
+
 import math
 from typing import Callable, Optional, Union
 
@@ -45,7 +46,8 @@ def polynomial(
     Args:
         begin_step: The first step of polynomial schedule.
         begin_value: The begin value of polynomial schedule.
-        end_step: The end step of polynomial schedule. Must be > begin_step.
+        end_step: The end step of polynomial schedule. Must be >= begin_step.
+            If equal to begin_step, the schedule will always return `begin_value`.
         end_value: The end value of polynomial schedule.
         power: The polynomial power.
 
@@ -53,14 +55,18 @@ def polynomial(
         A ScheduleFn according to the spec.
 
     Raises:
-        ValueError: If begin_step >= end_step.
+        ValueError: If begin_step > end_step.
     """
-    if begin_step >= end_step:
-        raise ValueError(f"begin_step {begin_step} must be < end_step {end_step}.")
+    if begin_step > end_step:
+        raise ValueError(f"begin_step ({begin_step}) must be <= end_step ({end_step}).")
+
+    if begin_step == end_step:
+        # For a zero-duration schedule, always return the starting value.
+        return lambda step: jnp.array(begin_value, dtype=jnp.float32)
 
     def fn(step: Tensor) -> Tensor:
         frac = (step - begin_step) / (end_step - begin_step)
-        frac = jnp.minimum(1.0, jnp.maximum(0.0, frac))
+        frac = jnp.minimum(1.0, jnp.maximum(0.0, frac))  # Clamp progress to [0, 1].
         return begin_value + (frac**power) * (end_value - begin_value)
 
     return fn
@@ -348,6 +354,61 @@ def cosine_with_linear_warmup(
     return segment_wise(segments=segments, segment_steps=segment_steps)
 
 
+def warmup_stable_decay(
+    peak_lr: float,
+    *,
+    max_step: int,
+    decay_begin_step: int,
+    warmup_steps: int = 500,
+    begin_value: float = 0.0,
+    alpha: float = 0.0,
+) -> ScheduleFn:
+    """Warmup stable decay (WSD) learning rate schedule. Linear warmup + constant lr + linear decay.
+
+    Args:
+        peak_lr: The peak learning rate corresponding to the stable part of the schedule.
+        max_step: The total number of steps from warmup + stable + decay.
+        decay_begin_step: The step to begin linear decay. The learning rate is kept constant
+            in [warmup_steps, decay_begin_step).
+        warmup_steps: The number of steps of the warm-up schedule. Skip warm-up if set to 0.
+        begin_value: The begin value of the linear warm-up.
+        alpha: The multiplier of peak_lr used to determine the final lr at the end of decay phase.
+
+    Returns:
+        A composite schedule.
+
+    Raises:
+        ValueError: If decay_begin_step < warmup_steps, or if max_step < decay_begin_step.
+    """
+    if decay_begin_step < warmup_steps:
+        raise ValueError(
+            f"decay_begin_step ({decay_begin_step}) must be >= warmup_steps ({warmup_steps})."
+        )
+    if max_step < decay_begin_step:
+        raise ValueError(f"max_step ({max_step}) must be >= decay_begin_step ({decay_begin_step}).")
+
+    return segment_wise(
+        segments=[
+            config_for_function(polynomial).set(
+                begin_step=0,
+                begin_value=begin_value,
+                end_step=warmup_steps,
+                end_value=peak_lr,
+            ),
+            config_for_function(constant_schedule).set(
+                value=peak_lr,
+            ),
+            config_for_function(polynomial).set(
+                begin_step=0,
+                begin_value=peak_lr,
+                end_step=max_step - decay_begin_step,
+                end_value=peak_lr * alpha,
+            ),
+        ],
+        segment_steps=[warmup_steps, decay_begin_step - warmup_steps],
+    )
+
+
 def constant_with_linear_warmup(
     peak_lr: float,
     *,
@@ -417,7 +478,9 @@ def linear_schedule_with_warmup(
     )
 
 
-def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
+def ema_schedule(
+    decay: float = 0.9999, *, warmup_steps: int = 1, step_offset: int = 0
+) -> ScheduleFn:
     """Ema decay schedule with warm-up.
 
     The ema decay is 0, 1/2, 2/3, 3/4, 4/5, ... during warm-up, and then is constant at decay.
@@ -425,6 +488,8 @@ def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
     Args:
         decay: ema decay.
         warmup_steps: The number of steps of the warm-up schedule.
+        step_offset: The initial step number.
+            If `step` is less than or equal to `step_offset`, we clamp to `step - step_offset` to 0.
 
     Returns:
         A ema decay schedule.
@@ -436,6 +501,7 @@ def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
         raise ValueError("warmup_steps must be > 0.")
 
     def fn(step):
+        step = jnp.maximum(step - step_offset, 0)
         return step / (1.0 + step) * (step < warmup_steps) + decay * (step >= warmup_steps)
 
     return fn

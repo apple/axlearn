@@ -103,8 +103,8 @@ class PagedKVCacheTest(TestCase):
             v_proj = jax.random.normal(prng_key, shape=step_shape, dtype=cache_dtype)
             key_positions = jnp.full((batch, 1), time_step_value, dtype=jnp.int32)
 
-            # TODO(xiyou): consider live_step_len when it's supported
-            live_step_len = None
+            # TODO(xiyou): consider unpadded_len when it's supported
+            unpadded_len = None
 
             kv_shape = KVCache.Shape(batch, max_pages_each_request * page_size, heads, dim)
             ref_states = ref_layer.init_states(kv_shape, dtype=k_proj.dtype)
@@ -131,22 +131,22 @@ class PagedKVCacheTest(TestCase):
 
             @partial(jax.jit, static_argnums=(0,))
             def jit_extend_step(
-                layer: KVCache, test_states, k_proj, v_proj, key_positions, live_step_len
+                layer: KVCache, test_states, k_proj, v_proj, key_positions, unpadded_len
             ):
                 _, test_output = layer.extend_step(
                     test_states,
                     k_proj=k_proj,
                     v_proj=v_proj,
                     key_positions=key_positions,
-                    live_step_len=live_step_len,
+                    unpadded_len=unpadded_len,
                 )
                 return test_output
 
             ref_out: KVState = jit_extend_step(
-                ref_layer, ref_states, k_proj, v_proj, key_positions, live_step_len
+                ref_layer, ref_states, k_proj, v_proj, key_positions, unpadded_len
             )
             test_out: KVState = jit_extend_step(
-                test_layer, test_states, k_proj, v_proj, key_positions, live_step_len
+                test_layer, test_states, k_proj, v_proj, key_positions, unpadded_len
             )
 
             test_k_proj = reconstruct_kv(page_indices, test_out.k_proj)

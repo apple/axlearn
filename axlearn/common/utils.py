@@ -804,8 +804,8 @@ class DataPartitionType(Enum):
 
 
 def data_partition_type_to_spec(
-    partition: Union[DataPartitionType, PartitionSpec],
-) -> PartitionSpec:
+    partition: Union[DataPartitionType, Nested[PartitionSpec]],
+) -> Nested[PartitionSpec]:
     """Returns a PartitionSpec for the given partition type."""
     if partition == DataPartitionType.FULL:
         return input_partition_spec()
@@ -813,6 +813,8 @@ def data_partition_type_to_spec(
         return PartitionSpec(None)
     elif isinstance(partition, PartitionSpec):
         return partition
+    elif isinstance(partition, dict):
+        return {k: data_partition_type_to_spec(v) for k, v in partition.items()}
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
@@ -820,7 +822,7 @@ def data_partition_type_to_spec(
 def host_to_global_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
-    partition: Union[PartitionSpec, DataPartitionType] = DataPartitionType.FULL,
+    partition: Union[Nested[PartitionSpec], DataPartitionType] = DataPartitionType.FULL,
 ) -> Nested[Tensor]:
     """Converts the given host device arrays to global device arrays.
 
@@ -858,7 +860,7 @@ def host_to_global_array(
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
             global_shape = (x.shape[0], *x.shape[1:])
-        elif isinstance(partition, PartitionSpec):
+        elif isinstance(partition, (PartitionSpec, dict)):
             global_shape = None  # Allow jax to infer.
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
@@ -1896,9 +1898,6 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
 def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     """Generate the (key, value) pairs for the immediate children of a pytree `node`.
 
-    The returned children match those returned by
-    `jax.tree_util.default_registry.flatten_one_level()`.
-
     Reference: jax._src.tree_util.generate_key_paths()
 
     Example:
@@ -1906,14 +1905,6 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
         assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
         ```
     """
-    # pylint: disable-next=protected-access
-    registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
-
-    key_handler = registry_with_keypaths.get(type(node))
-    if key_handler:
-        key_children, _ = key_handler.flatten_with_keys(node)
-        return key_children
-
     flat = jax.tree_util.default_registry.flatten_one_level(node)
     if flat is None:
         return []
@@ -1921,6 +1912,11 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
         # Handle namedtuple as a special case, based on heuristic.
         return [(jax.tree_util.GetAttrKey(s), getattr(node, s)) for s in node._fields]
+
+    key_children, _ = jax.tree_util.default_registry.flatten_one_level_with_keys(node)
+    if key_children:
+        return key_children
+
     return [(jax.tree_util.FlattenedIndexKey(i), c) for i, c in enumerate(flat[0])]
 
 

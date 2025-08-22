@@ -30,9 +30,9 @@ core = [
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
-    "pyarrow>=20.0.0,<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
+    "pyarrow<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
     "protobuf>=3.20.3",
-    "tensorboard-plugin-profile==2.15.1",
+    "tensorboard-plugin-profile==2.20.4",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
     "tensorflow==2.17.1",
     "tensorflow-datasets>=4.9.2",
@@ -57,9 +57,6 @@ apple-silicon = [
 ]
 # Requirements for testing and development.
 dev = [
-    "axlearn[core]",  # core
-    "axlearn[audio]",  # audio tests
-    "axlearn[orbax]",  # checkpointer tests
     "black==23.1a1",  # formatting
     "einops==0.8.0",  # for unittests only. Do not use it in core impl because it's not thread-safe.
     "evaluate",
@@ -79,6 +76,7 @@ dev = [
     "timm==0.6.12",  # DiT Dependency test-only
     "torch>=1.12.1",  # test-only
     "torchvision==0.16.1",  # test-only
+    "safetensors<=0.5.3",  # TODO: Remove once torch dependency is >=2.3.0
     "transformers==4.51.3",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
@@ -99,7 +97,7 @@ gcp = [
     "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
     "google-cloud-build==3.24.1",
-    "ml-goodput-measurement==0.0.10",
+    "ml-goodput-measurement==0.0.14",
     "pika==1.3.2",  # used by event queue
     "pyOpenSSL>=22.1.0",  # compat with cryptography version.
     "tpu-info==0.2.0", # For TPU monitoring from libtpu. https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info
@@ -126,7 +124,7 @@ vertexai_tensorboard = [
 ]
 # Dataflow dependencies.
 dataflow = [
-    "pyarrow>=20.0.0,<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
+    "pyarrow<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
     "apache-beam==2.55.1",
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
@@ -137,6 +135,8 @@ gpu = [
     "triton==2.1.0",
     "jax[cuda12]==0.5.3",
     "nvidia-ml-py==12.560.30",
+    # pin nccl version, otherwise jax[cuda12] will pull latest version
+    "nvidia-nccl-cu12==2.27.5",
 ]
 # Open API inference.
 open_api = [
@@ -150,6 +150,7 @@ mmau = [
     "plotly==5.22.0",
     "nbconvert==7.16.4",
     "google-cloud-aiplatform==1.50.0",
+    "google-genai==1.25.0",
     "transformers==4.51.3",
     "huggingface-hub==0.24.6",
 ]

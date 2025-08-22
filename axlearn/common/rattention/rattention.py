@@ -377,8 +377,10 @@ class ResidualLinearAttention(BaseLayer):
         query: Union[Tensor, TensorSpec],
         qkv_proj: Optional[BaseQKVLinear.Output] = None,
         cached_states: Optional[NestedTensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Optional[Tensor]], Tensor]:
         """Forward function for linear attention."""
+        assert page_pool is None
         # Initialize states.
         cfg = self.config
         if qkv_proj is None:
@@ -453,12 +455,14 @@ class ResidualLinearAttention(BaseLayer):
         cached_states: Nested[Tensor],
         query: Tensor,
         qkv_proj: BaseQKVLinear.Output,
+        **kwargs,
     ) -> tuple[Nested[Tensor], Tensor]:
         return self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
             query=query,
             qkv_proj=qkv_proj,
             cached_states=cached_states,
+            **kwargs,
         )
 
 
@@ -596,12 +600,13 @@ class RAttention(FlashAttention):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        live_step_len: Optional[int] = None,
+        unpadded_len: Optional[int] = None,
         attention_logit_biases: Union[None, Tensor, BaseAttentionBias] = None,
         segment_ids: Optional[Tensor] = None,
         query_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Optional[FlashAttention.Output]]:
         """Forward function for RAttention.
 
@@ -611,7 +616,7 @@ class RAttention(FlashAttention):
         k_proj/v_proj as kv_state to the output.
 
         Notes on intermediate variables:
-            * live_step_len vs time_step: time_step denotes the starting point where live_step_len
+            * unpadded_len vs time_step: time_step denotes the starting point where unpadded_len
               denotes the length of progression.
             * k_proj/v_proj vs full_k_proj/full_v_proj: the former could be single token during
               extend_step whereas the latter always means the kv for the whole sequence. Residual_la
@@ -646,6 +651,8 @@ class RAttention(FlashAttention):
 
             if cfg.residual_la is not None:
                 rla_output = self.residual_la(query, i_proj_output)
+            else:
+                rla_output = None
             new_cached_states = {}
         else:
             if kv_state is None:
@@ -656,7 +663,8 @@ class RAttention(FlashAttention):
                         k_proj=k_proj,
                         v_proj=v_proj,
                         key_positions=query_positions,
-                        live_step_len=live_step_len,
+                        unpadded_len=unpadded_len,
+                        page_pool=page_pool,
                     )
                     if mode == ForwardMode.EXTEND_STEP:
                         full_k_proj, full_v_proj, key_positions, _ = swa_cache_output
@@ -684,14 +692,14 @@ class RAttention(FlashAttention):
             else:
                 if mode == ForwardMode.INIT_STATES:
                     rla_state, rla_output = self.residual_la.init_states(
-                        query, (q_proj, full_k_proj, full_v_proj), live_step_len
+                        query, (q_proj, full_k_proj, full_v_proj), unpadded_len
                     )
                 else:
                     rla_state, rla_output = self.residual_la.extend_step(
                         cached_states["rla_state"], query, (q_proj, full_k_proj, full_v_proj)
                     )
 
-            step_len = live_step_len if live_step_len is not None else query.shape[1]
+            step_len = unpadded_len if unpadded_len is not None else query.shape[1]
             new_time_step = time_step + step_len
             new_cached_states = dict(
                 swa_state=swa_state, rla_state=rla_state, time_step=new_time_step
@@ -794,7 +802,7 @@ class RAttention(FlashAttention):
             query=query,
             key=key,
             value=value,
-            live_step_len=time_step,
+            unpadded_len=time_step,
             cached_states=init_states,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,

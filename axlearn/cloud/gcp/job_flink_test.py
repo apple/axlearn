@@ -85,6 +85,7 @@ expected_flink_deployment_json = """
     "flinkConfiguration": {
       "taskmanager.numberOfTaskSlots": "4",
       "taskmanager.memory.task.off-heap.size": "16g",
+      "taskmanager.memory.jvm-metaspace.size": "256mb",
       "taskmanager.network.bind-host": "0.0.0.0",
       "rest.address": "0.0.0.0",
       "execution.checkpointing.interval": "10m",

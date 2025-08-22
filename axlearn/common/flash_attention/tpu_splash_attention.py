@@ -25,9 +25,9 @@ The implementation extends the online softmax algorithm to support additional si
 participate in the max and sum computations but do not contribute to the output. When enabled,
 the `logit_sink` parameter provides per-head scalar values that are incorporated into the
 softmax normalization as follows: the running maximum is initialized with the sink value, and
-at each step, the sink's contribution is added to the normalization sum (denominator) as
-exp(logit_sink - running_max). The sink does not contribute to the numerator of the
-attention-weighted sum, as it has no corresponding value. In the backward pass, gradients for
+during the final normalization the sink's contribution is added once to the normalization sum
+(denominator) as exp(logit_sink - running_max). The sink does not contribute to the numerator of
+the attention-weighted sum, as it has no corresponding value. In the backward pass, gradients for
 the sink logits are computed as the negative sum of their attention weights multiplied by the
 output gradients, reflecting their role in the normalization term without direct output
 contribution.
@@ -219,10 +219,6 @@ def flash_attention_kernel(
         assert s_curr.shape == (bq, bkv_compute)
 
         l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
-        # Add sink contribution to normalization sum.
-        if logit_sink_ref is not None:
-            sink_value = logit_sink_ref[h].astype(qk.dtype)
-            l_curr = l_curr + jnp.exp(sink_value - m_next[:, 0:1])
         assert l_curr.shape == (bq, NUM_LANES)
 
         alpha = jnp.exp(m_prev - m_next)
@@ -262,6 +258,9 @@ def flash_attention_kernel(
     @pl.when(j == grid_width - 1)
     def end():
         l = l_scratch_ref[...]
+        if logit_sink_ref is not None:
+            sink_value = logit_sink_ref[h].astype(jnp.float32)
+            l = l + jnp.exp(sink_value - m_scratch_ref[...])
         l_inv = pltpu.repeat(1.0 / l, head_dim_repeats, axis=1)
         o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
         if logsumexp_ref is not None:
@@ -1211,6 +1210,9 @@ def _flash_attention_dkv_kernel(
                 bkv_compute,
                 dropout_rate,
             )
+
+            # Only float32 is supported for transpose.
+            dm = dm.astype(jnp.float32).T.astype(jnp.bool)
 
             dpr = dp
             dp = jnp.where(dm, 0.0, dpr / (1.0 - dropout_rate))

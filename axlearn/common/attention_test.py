@@ -35,6 +35,8 @@ from absl.testing import absltest, parameterized
 from jax import nn
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
+from transformers.configuration_utils import PretrainedConfig as HFPretrainedConfig
+from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS as HF_ROPE_INIT_FUNCTIONS
 from transformers.models.roberta import modeling_roberta as hf_roberta
 from transformers.models.roformer import modeling_roformer as hf_roformer
 from transformers.models.xlnet import modeling_xlnet as hf_xlnet
@@ -129,6 +131,7 @@ from axlearn.common.test_utils import (
     TestCase,
     assert_allclose,
     dummy_segments_positions,
+    is_supported_mesh_shape,
     set_threefry_partitionable,
 )
 from axlearn.common.torch_utils import parameters_from_torch_layer
@@ -997,6 +1000,91 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             ref_rope_emb,
             positions if override_positions else None,
         )
+
+
+class YarnScaleRopeParametersTest(TestCase):
+    """Tests YarnScaledRoFormerSinusoidalPositionalEmbedding."""
+
+    @parameterized.parameters(
+        (2, 10, 32),
+        (2, 8, 32),
+        (2, 6, 32),
+        (2, 8, 16),
+        (2, 8, 48),
+        (2, 8, 64),
+    )
+    def test_yarn_emb_basic(self, batch_size, max_len, dim):
+        # Here we test yarn embedding within the original max length, which translates to
+        # the original RoFormer embedding.
+        # Token id is in the np format for easier transition.
+        token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
+        positions = jnp.expand_dims(jnp.arange(token_ids.shape[-1], dtype=jnp.int32), 0)
+        ref_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
+        # In recent transformers API, PE's `_init_weight` is called recursively by parent module.
+        # Since we only initialize the PE layer here, we need to manually call it.
+        ref_layer._init_weight()  # pylint: disable=protected-access, no-value-for-parameter
+        ref_output = ref_layer(as_torch_tensor(token_ids).shape)
+        # Set up the RoPE AXLearn configs.
+        test_layer = (
+            attention.YaRNSinusoidalPositionalEmbedding.default_config()
+            .set(name="test_rope_emb", dim=dim, original_max_seq_length=max_len)
+            .instantiate(parent=None)
+        )
+        test_output = test_layer.forward(positions=positions)
+        np.testing.assert_allclose(np.expand_dims(ref_output, 0), test_output, atol=5e-7)
+
+    @parameterized.parameters(
+        (2, 8, 32, 32, 1.0, 32.0, 10000.0),
+        (2, 16, 32, 32, 1.0, 32.0, 10000.0),
+        (2, 8, 48, 32, 1.0, 32.0, 10000.0),
+        (2, 8, 64, 32, 2.0, 32.0, 10000.0),
+        (2, 8, 64, 32, 2.0, 16.0, 10000.0),
+        (2, 8, 48, 32, 1.0, 16.0, 10000.0),
+    )
+    def test_yarn_emb_extend(
+        self, batch_size, original_max_len, dim, new_max_len, beta_slow, beta_fast, theta
+    ):
+        # Here we test yarn embedding within the original max length, which translates to
+        # the original RoFormer embedding.
+        # Token id is in the np format for easier transition.
+        token_ids = np.random.randint(low=1, high=20, size=[batch_size, new_max_len])
+        scaling_factor = new_max_len / original_max_len
+        ref_config = HFPretrainedConfig(
+            rope_theta=theta,
+            head_dim=dim,
+            hidden_size=dim,
+            num_attention_heads=1,
+            max_position_embeddings=new_max_len,
+            rope_scaling={
+                "rope_type": "yarn",
+                "factor": scaling_factor,
+                "original_max_position_embeddings": original_max_len,
+                "beta_slow": beta_slow,
+                "beta_fast": beta_fast,
+            },
+        )
+        ref_rope_fn = HF_ROPE_INIT_FUNCTIONS[ref_config.rope_scaling["rope_type"]]
+        ref_tokens = as_torch_tensor(token_ids)
+        inv_freq, attention_factor = ref_rope_fn(ref_config, device=ref_tokens.device)
+        # In recent transformers API, PE's `_init_weight` is called recursively by parent module.
+        # Since we only initialize the PE layer here, we need to manually call it.
+        # Set up the RoPE AXLearn configs.
+        test_layer = (
+            attention.YaRNSinusoidalPositionalEmbedding.default_config()
+            .set(
+                name="test_rope_emb",
+                scaling_factor=scaling_factor,
+                dim=dim,
+                theta=theta,
+                original_max_seq_length=original_max_len,
+                beta_slow=beta_slow,
+                beta_fast=beta_fast,
+            )
+            .instantiate(parent=None)
+        )
+        test_output, test_output2 = test_layer.compute_rope_params()
+        np.testing.assert_allclose(as_tensor(inv_freq), test_output, atol=5e-7)
+        np.testing.assert_allclose(attention_factor, test_output2, atol=5e-7)
 
 
 def llama_reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -2465,6 +2553,82 @@ class MultiheadAttentionTest(TestCase):
             inputs=test_inputs,
         )
         self.assertNestedAllClose(base_outputs, test_outputs)
+
+    @parameterized.product(kv_part=[None, ("fsdp", None, "model", None)])
+    @pytest.mark.d8
+    def test_qkvo_partition_spec(self, kv_part):
+        """Tests that QKVO partition spec are applied correctly when specified."""
+        mesh_shape = (2, 2, 2)
+        if not is_supported_mesh_shape(mesh_shape):
+            self.skipTest(f"Unsupported mesh shape {mesh_shape}")
+        model_dim = 16
+        num_heads = 4
+        mesh = jax.make_mesh(mesh_shape, axis_names=("fsdp", "seq", "model"))
+        q_part = ("fsdp", "seq", "model", None)
+        o_part = ("fsdp", "seq", None)
+
+        layer_kwargs = dict(
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            dtype=jnp.float32,
+            q_partition_spec=q_part,
+            o_partition_spec=o_part,
+            k_partition_spec=kv_part,
+            v_partition_spec=kv_part,
+        )
+        init_key = jax.random.PRNGKey(123)
+        base_cfg = attention.MultiheadAttention.default_config().set(**layer_kwargs)
+        base_layer = base_cfg.set(name="base").instantiate(parent=None)
+        base_state = base_layer.initialize_parameters_recursively(prng_key=init_key)
+
+        # Dummy inputs.
+        batch_size, tgt_len = 2, 6
+        base_inputs = dict(
+            query=jax.random.normal(
+                jax.random.PRNGKey(124),
+                [batch_size, tgt_len, model_dim],
+                dtype=jnp.float32,
+            ),
+            key=None,
+            value=None,
+        )
+        forward_key = jax.random.PRNGKey(456)
+
+        def patched_remat_name(_, tensor, name):
+            def callback(sharding):
+                # pylint: disable-next=protected-access
+                normalize_spec = sharding.spec._normalized_spec_for_aval(len(tensor.shape))
+                if name == "q_proj":
+                    self.assertEqual(normalize_spec, PartitionSpec(*q_part))
+                elif name == "o_proj":
+                    self.assertEqual(normalize_spec, PartitionSpec(*o_part))
+                elif name in ["k_proj", "v_proj"]:
+                    if kv_part is None:
+                        self.assertEqual(normalize_spec, PartitionSpec(*q_part))
+                    else:
+                        self.assertEqual(normalize_spec, PartitionSpec(*kv_part))
+
+            jax.debug.inspect_array_sharding(tensor, callback=callback)
+            return tensor
+
+        with mesh, mock.patch.object(
+            attention.MultiheadAttention, "_remat_name", patched_remat_name
+        ):
+
+            @jax.jit
+            def jit_fn():
+                base_outputs, _ = F(
+                    base_layer,
+                    state=base_state,
+                    is_training=False,
+                    prng_key=forward_key,
+                    inputs=base_inputs,
+                )
+                return base_outputs
+
+            jit_fn()
 
     def _test_extend_step(
         self,
