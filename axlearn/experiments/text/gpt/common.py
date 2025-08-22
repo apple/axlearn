@@ -805,6 +805,9 @@ def get_trainer_config_fn(
             ckpt_config: OrbaxEmergencyReplicatorCheckpointer.Config = (
                 OrbaxEmergencyReplicatorCheckpointer.default_config()
             )
+            # TODO: move to job arg -- assume_data_parallelism should not be hardcoded
+            # or defaulted as it depends on number of slices and data parallelism settings
+            ckpt_config.assume_data_parallelism = 2
             ckpt_config.local_dir = "/checkpoint"
             cfg.checkpointer = ckpt_config
         elif checkpointer == "OrbaxRegularCheckpointer":
