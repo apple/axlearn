@@ -125,6 +125,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
                 ICI data parallelism * DCN data parallelism.
             backup_interval_minutes: How often GKE multi-tier checkpointer should back up local
                 checkpoints to GCS.
+            save_interval_steps: Number of steps between each checkpoint.
             local_dir: Ckpt base path for local storage. The content in this path must persist
                 across pod restarts unless the restart is caused by node failure. `local_dir` must
                 be the same for all processes or processes may hang.
@@ -137,6 +138,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
 
         assume_data_parallelism: int = 2
         backup_interval_minutes: int = 30
+        save_interval_steps: int = 100
         local_dir: str = "/checkpoint"
         trainer_dir: Required[str] = REQUIRED
         async_timeout_secs: int = 3600
@@ -149,6 +151,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             step_format_fixed_length=None,
         )
         self._local_dir = cfg.local_dir
+        self._save_interval_steps = cfg.save_interval_steps
         # Orbax replicator ckpt requires this function to be called prior to checkpointer
         # operations. This function also serves as a barrier.
         ocp.multihost.initialize_runtime_to_distributed_ids()
@@ -232,7 +235,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         self._tensor_manager = oercp.ReplicatorCheckpointManager(
             self._local_dir,
             options=oercp.ReplicatorCheckpointManagerOptions(
-                save_interval_steps=100,
+                save_interval_steps=self._save_interval_steps,
                 step_name_format=self._name_format,
             ),
             global_mesh=thread_resources.env.physical_mesh,
