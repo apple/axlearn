@@ -495,3 +495,96 @@ pytype_library(
         "@pip//optax",
     ],
 )
+
+pytype_library(
+    name = "status_server",
+    srcs = ["status_server.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":utils",
+        "@pip//absl_py",
+    ],
+)
+
+pytype_library(
+    name = "utils_spmd",
+    srcs = ["utils_spmd.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pip//jax",
+        "@pip//portpicker",
+    ],
+)
+
+pytype_library(
+    name = "launch",
+    srcs = ["launch.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":compiler_options",
+        ":status_server",
+        ":utils",
+        ":utils_spmd",
+        "@pip//absl_py",
+        "@pip//jax",
+    ],
+)
+
+pytype_library(
+    name = "launch_trainer",
+    srcs = ["launch_trainer.py"],
+    enable_pytype = False,  # Avoid circular dependency with experiments
+    visibility = ["//visibility:public"],
+    deps = [
+        ":file_system",
+        ":measurement",
+        ":trainer",
+        ":utils",
+        "@pip//absl_py",
+        "@pip//jax",
+    ],
+)
+
+pytype_library(
+    name = "launch_trainer_main_lib",
+    srcs = ["launch_trainer_main.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":launch",
+        ":launch_trainer",
+        ":measurement",
+        "@pip//absl_py",
+    ],
+)
+
+pytype_library(
+    name = "input_fake",
+    srcs = ["input_fake.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":input_base",
+        ":utils",
+        "@pip//jax",
+        "@pip//numpy",
+        "@pip//tensorflow",
+    ],
+)
+
+pytype_library(
+    name = "input_grain",
+    srcs = ["input_grain.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":input_base",
+        ":module",
+        ":utils",
+        "@pip//absl_py",
+        "@pip//array_record",
+        "@pip//grain",
+        "@pip//jax",
+        "@pip//numpy",
+    ],
+)

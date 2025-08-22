@@ -7,16 +7,24 @@
 absl-py==2.3.1
     # via
     #   -r requirements.in
+    #   array-record
     #   chex
+    #   dm-tree
+    #   grain
     #   keras
     #   optax
     #   tensorboard
     #   tensorflow
+array-record==0.8.1
+    # via
+    #   -r requirements.in
+    #   grain
 astunparse==1.6.3
     # via tensorflow
 attrs==25.3.0
     # via
     #   -r requirements.in
+    #   dm-tree
     #   pytype
 certifi==2025.8.3
     # via requests
@@ -26,12 +34,24 @@ chex==0.1.90
     # via
     #   -r requirements.in
     #   optax
+cloudpickle==3.1.1
+    # via grain
+dm-tree==0.1.9
+    # via grain
+etils[epath,epy]==1.13.0
+    # via
+    #   array-record
+    #   grain
 flatbuffers==25.2.10
     # via tensorflow
+fsspec==2025.7.0
+    # via etils
 gast==0.6.0
     # via tensorflow
 google-pasta==0.2.0
     # via tensorflow
+grain==0.2.11
+    # via -r requirements.in
 grpcio==1.74.0
     # via
     #   tensorboard
@@ -46,6 +66,8 @@ immutabledict==4.2.1
     # via pytype
 importlab==0.8.1
     # via pytype
+importlib-resources==6.5.2
+    # via etils
 iniconfig==2.1.0
     # via pytest
 jax==0.6.2
@@ -83,6 +105,8 @@ ml-dtypes==0.5.3
     #   jaxlib
     #   keras
     #   tensorflow
+more-itertools==10.7.0
+    # via grain
 msgpack==1.1.1
     # via -r requirements.in
 msgspec==0.19.0
@@ -99,6 +123,8 @@ numpy==2.2.6
     # via
     #   -r requirements.in
     #   chex
+    #   dm-tree
+    #   grain
     #   h5py
     #   jax
     #   jaxlib
@@ -126,10 +152,15 @@ pillow==11.3.0
     # via tensorboard
 pluggy==1.6.0
     # via pytest
+portpicker==1.6.0
+    # via -r requirements.in
 protobuf==6.32.0
     # via
+    #   grain
     #   tensorboard
     #   tensorflow
+psutil==7.0.0
+    # via portpicker
 pycnite==2024.7.31
     # via pytype
 pydot==4.0.1
@@ -177,6 +208,7 @@ typing-extensions==4.14.1
     # via
     #   -r requirements.in
     #   chex
+    #   etils
     #   optree
     #   pytype
     #   tensorflow
@@ -189,7 +221,10 @@ wheel==0.45.1
 wrapt==1.17.2
     # via
     #   -r requirements.in
+    #   dm-tree
     #   tensorflow
+zipp==3.23.0
+    # via etils
 
 # The following packages are considered to be unsafe in a requirements file:
 setuptools==80.9.0

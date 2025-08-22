@@ -12,3 +12,6 @@ optax
 pytype
 tensorflow
 msgpack
+portpicker
+grain
+array-record
