@@ -857,7 +857,6 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         if logit_sink is not None:
             return self._log_unsupported("cuDNN doesn't support logit sink.")
 
-        logging.info("Using %s.", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
@@ -951,7 +950,6 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         if logit_sink is not None:
             return self._log_unsupported("PallasGPUFlashAttention doesn't support logit sink.")
 
-        logging.info("Using %s.", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])

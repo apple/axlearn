@@ -460,7 +460,6 @@ class ReferenceMHA(BaseFlashAttention):
         dropout_mask: Optional[Tensor] = None,
     ):
         # We apply the scale factor before the attention biases.
-        logging.info("Using %s", self.name())
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         value: Tensor = input_batch["value"]

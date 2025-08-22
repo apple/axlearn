@@ -8,7 +8,6 @@ import jax
 import jax.ad_checkpoint
 import jax.numpy as jnp
 import numpy as np
-from absl import logging
 from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
@@ -913,7 +912,6 @@ class TPUSplashAttention(TPUFlashAttention):
             return self._log_unsupported(
                 f"{head_dim=} is not divisible by {splash_attention_kernel.NUM_LANES=}"
             )
-        logging.info("Using %s.", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
@@ -1045,7 +1043,6 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         logit_sink = input_batch.get("logit_sink", None)
         if logit_sink is not None:
             return self._log_unsupported("LegacyTPUFlashAttention doesn't support logit sink.")
-        logging.info("Using %s.", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
