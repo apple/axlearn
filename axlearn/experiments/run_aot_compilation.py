@@ -30,6 +30,7 @@ python -m axlearn.experiments.run_aot_compilation \
 
 Reference: https://jax.readthedocs.io/en/latest/aot.html
 """
+
 import pickle
 from typing import Optional
 
@@ -39,10 +40,11 @@ from absl import app, flags, logging
 from jax.experimental.serialize_executable import serialize
 
 from axlearn.common import aot_compilation, compiler_options
+from axlearn.common.config import TrainerConfigFn
 from axlearn.common.trainer import SpmdTrainer, aot_model_analysis, select_mesh_config
 from axlearn.common.utils import set_data_dir
 from axlearn.common.utils_spmd import setup
-from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
+from axlearn.experiments import get_named_trainer_config
 
 flags.DEFINE_string("module", None, "The trainer config module.", required=True)
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)

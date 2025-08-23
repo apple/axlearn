@@ -1,12 +1,12 @@
 # Copyright © 2023 Apple Inc.
 
 """AXLearn experiments."""
+
 from importlib import import_module
 
 from absl import logging
 
-from axlearn.common.config import similar_names
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.common.config import TrainerConfigFn, similar_names
 
 
 def _load_trainer_configs(

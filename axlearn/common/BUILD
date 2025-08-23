@@ -533,13 +533,14 @@ pytype_library(
 pytype_library(
     name = "launch_trainer",
     srcs = ["launch_trainer.py"],
-    enable_pytype = False,  # Avoid circular dependency with experiments
     visibility = ["//visibility:public"],
     deps = [
+        ":config",
         ":file_system",
         ":measurement",
         ":trainer",
         ":utils",
+        "//axlearn/experiments:__init__",
         "@pip//absl_py",
         "@pip//jax",
     ],

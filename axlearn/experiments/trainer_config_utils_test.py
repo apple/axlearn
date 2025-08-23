@@ -1,26 +1,32 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests trainer config utilities."""
+
 import threading
 from typing import Optional
 
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 
-from axlearn.common.config import REQUIRED, ConfigBase, config_class, config_for_function
+from axlearn.common.config import (
+    REQUIRED,
+    ConfigBase,
+    TrainerConfigFn,
+    config_class,
+    config_for_function,
+    with_overrides,
+)
 from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
 from axlearn.common.flash_attention.layer_test import DummyModel as FlashDummyModel
 from axlearn.common.flash_attention.layer_test import FlashAttention
 from axlearn.common.input_fake import FakeLmInput
 from axlearn.common.test_utils import mock_trainer_config
 from axlearn.common.trainer_test import DummyModel
-from axlearn.experiments import TrainerConfigFn
 from axlearn.experiments.trainer_config_utils import (
     V6eFlashConfigModifier,
     _DeepCopyWithClosureFnWrapper,
     _wrap_with_deep_copy_with_closure,
     config_map_cache,
-    with_overrides,
 )
 
 

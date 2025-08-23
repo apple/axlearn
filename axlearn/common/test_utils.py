@@ -32,6 +32,7 @@ from axlearn.common.config import (
     InstantiableConfig,
     Required,
     RequiredFieldValue,
+    TrainerConfigFn,
     config_class,
     config_for_function,
 )
@@ -58,7 +59,6 @@ from axlearn.common.utils import (
     push_data_dir,
     shapes,
 )
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 _PYTEST_OPT_REGISTERED = {}
 

@@ -32,14 +32,19 @@ import numpy as np
 from axlearn.common import config, evaler, learner, optimizers, schedule, trainer
 from axlearn.common.base_model import BaseModel
 from axlearn.common.checkpointer import every_n_steps_policy
-from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
+from axlearn.common.config import (
+    REQUIRED,
+    InstantiableConfig,
+    Required,
+    TrainerConfigFn,
+    config_class,
+)
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.input_fake import fake_grain_source
 from axlearn.common.input_grain import DispatchConfig, Input, maybe_to_iter_dataset
 from axlearn.common.layers import ClassificationMetric, Linear
 from axlearn.common.module import Module
 from axlearn.common.utils import NestedTensor, Tensor
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 # ============================================================================
 # Step 2: Data Generation

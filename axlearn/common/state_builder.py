@@ -35,6 +35,7 @@ from axlearn.common.config import (
     ConfigOr,
     InstantiableConfig,
     Required,
+    TrainerConfigFn,
     config_class,
     config_for_function,
     maybe_instantiate,
@@ -55,7 +56,6 @@ from axlearn.common.utils import (
     infer_mesh_shape,
     set_data_dir,
 )
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 
 class Builder(Module):
