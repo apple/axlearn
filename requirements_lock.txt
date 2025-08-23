@@ -7,14 +7,20 @@
 absl-py==2.3.1
     # via
     #   -r requirements.in
+    #   aqtp
     #   array-record
     #   chex
     #   dm-tree
     #   grain
     #   keras
     #   optax
+    #   orbax-checkpoint
     #   tensorboard
     #   tensorflow
+aiofiles==24.1.0
+    # via orbax-checkpoint
+aqtp==0.8.2
+    # via -r requirements.in
 array-record==0.8.1
     # via
     #   -r requirements.in
@@ -42,8 +48,11 @@ etils[epath,epy]==1.13.0
     # via
     #   array-record
     #   grain
+    #   orbax-checkpoint
 flatbuffers==25.2.10
     # via tensorflow
+flax==0.10.7
+    # via aqtp
 fsspec==2025.7.0
     # via etils
 gast==0.6.0
@@ -60,6 +69,8 @@ h5py==3.14.0
     # via
     #   keras
     #   tensorflow
+humanize==4.12.3
+    # via orbax-checkpoint
 idna==3.10
     # via requests
 immutabledict==4.2.1
@@ -73,11 +84,15 @@ iniconfig==2.1.0
 jax==0.6.2
     # via
     #   -r requirements.in
+    #   aqtp
     #   chex
+    #   flax
     #   optax
+    #   orbax-checkpoint
 jaxlib==0.6.2
     # via
     #   -r requirements.in
+    #   aqtp
     #   chex
     #   jax
     #   optax
@@ -105,15 +120,21 @@ ml-dtypes==0.5.3
     #   jaxlib
     #   keras
     #   tensorflow
+    #   tensorstore
 more-itertools==10.7.0
     # via grain
 msgpack==1.1.1
-    # via -r requirements.in
+    # via
+    #   -r requirements.in
+    #   flax
+    #   orbax-checkpoint
 msgspec==0.19.0
     # via pytype
 namex==0.1.0
     # via keras
-networkx==3.5
+nest-asyncio==1.6.0
+    # via orbax-checkpoint
+networkx==3.4.2
     # via
     #   importlab
     #   pytype
@@ -124,6 +145,7 @@ numpy==2.2.6
     #   -r requirements.in
     #   chex
     #   dm-tree
+    #   flax
     #   grain
     #   h5py
     #   jax
@@ -131,17 +153,24 @@ numpy==2.2.6
     #   keras
     #   ml-dtypes
     #   optax
+    #   orbax-checkpoint
     #   scipy
     #   tensorboard
     #   tensorflow
+    #   tensorstore
+    #   treescope
 opt-einsum==3.4.0
     # via
     #   jax
     #   tensorflow
 optax==0.2.5
-    # via -r requirements.in
+    # via
+    #   -r requirements.in
+    #   flax
 optree==0.17.0
     # via keras
+orbax-checkpoint==0.11.23
+    # via flax
 packaging==25.0
     # via
     #   keras
@@ -157,6 +186,7 @@ portpicker==1.6.0
 protobuf==6.32.0
     # via
     #   grain
+    #   orbax-checkpoint
     #   tensorboard
     #   tensorflow
 psutil==7.0.0
@@ -176,15 +206,22 @@ pytest==8.4.1
 pytype==2024.10.11
     # via -r requirements.in
 pyyaml==6.0.2
-    # via libcst
+    # via
+    #   flax
+    #   libcst
+    #   orbax-checkpoint
 requests==2.32.5
     # via tensorflow
 rich==14.1.0
-    # via keras
+    # via
+    #   flax
+    #   keras
 scipy==1.15.3
     # via
     #   jax
     #   jaxlib
+simplejson==3.20.1
+    # via orbax-checkpoint
 six==1.17.0
     # via
     #   astunparse
@@ -198,18 +235,27 @@ tensorboard-data-server==0.7.2
     # via tensorboard
 tensorflow==2.20.0
     # via -r requirements.in
+tensorstore==0.1.76
+    # via
+    #   -r requirements.in
+    #   flax
+    #   orbax-checkpoint
 termcolor==3.1.0
     # via tensorflow
 toml==0.10.2
     # via pytype
 toolz==1.0.0
     # via chex
+treescope==0.1.10
+    # via flax
 typing-extensions==4.14.1
     # via
     #   -r requirements.in
     #   chex
     #   etils
+    #   flax
     #   optree
+    #   orbax-checkpoint
     #   pytype
     #   tensorflow
 urllib3==2.5.0

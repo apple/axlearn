@@ -1,4 +1,4 @@
-load("//pytype_bazel:pytype.bzl", "pytype_library", "pytype_test")
+load("//pytype_bazel:pytype.bzl", "pytype_binary", "pytype_library", "pytype_test")
 
 pytype_library(
     name = "attention",
@@ -35,6 +35,7 @@ pytype_library(
         ":utils",
         "@pip//absl_py",
         "@pip//jax",
+        "@pip//tensorstore",
     ],
 )
 
@@ -82,6 +83,34 @@ pytype_library(
     visibility = ["//visibility:public"],
     deps = [
         "@pip//attrs",
+    ],
+)
+
+pytype_library(
+    name = "convolution",
+    srcs = ["convolution.py"],
+    enable_pytype = False,  # Complex dependencies
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":ein_ops",
+        ":module",
+        ":utils",
+        "@pip//jax",
+        "@pip//numpy",
+    ],
+)
+
+pytype_library(
+    name = "ein_ops",
+    srcs = ["ein_ops.py"],
+    enable_pytype = False,  # Complex dependencies
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":module",
+        "@pip//jax",
+        "@pip//numpy",
     ],
 )
 
@@ -205,8 +234,69 @@ pytype_library(
     visibility = ["//visibility:public"],
     deps = [
         ":config",
+        ":convolution",
+        ":loss",
+        ":metrics_classification",
         ":module",
         ":param_init",
+        ":quantized_dot_general_layers",
+    ],
+)
+
+pytype_library(
+    name = "quantized_dot_general_layers",
+    srcs = [
+        "quantized_dot_general/activation_clipping.py",
+        "quantized_dot_general/layers.py",
+        "quantized_dot_general/utils.py",
+    ],
+    enable_pytype = False,  # Complex dependencies
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":module",
+        ":utils",
+        "@pip//aqtp",
+        "@pip//jax",
+        "@pip//numpy",
+    ],
+)
+
+pytype_library(
+    name = "metrics_classification",
+    srcs = ["metrics_classification.py"],
+    enable_pytype = False,  # Complex dependencies
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":module",
+        ":utils",
+        "@pip//jax",
+        "@pip//numpy",
+    ],
+)
+
+pytype_library(
+    name = "loss",
+    srcs = ["loss.py"],
+    enable_pytype = False,  # Complex dependencies
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        ":module",
+        ":normalize",
+        ":utils",
+        "@pip//jax",
+        "@pip//numpy",
+    ],
+)
+
+pytype_library(
+    name = "normalize",
+    srcs = ["normalize.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@pip//jax",
     ],
 )
 
@@ -258,6 +348,7 @@ pytype_library(
     visibility = ["//visibility:public"],
     deps = [
         ":config",
+        ":input_fake",
         ":module",
         ":utils",
     ],
@@ -546,8 +637,8 @@ pytype_library(
     ],
 )
 
-pytype_library(
-    name = "launch_trainer_main_lib",
+pytype_binary(
+    name = "launch_trainer_main",
     srcs = ["launch_trainer_main.py"],
     visibility = ["//visibility:public"],
     deps = [
@@ -555,6 +646,10 @@ pytype_library(
         ":launch",
         ":launch_trainer",
         ":measurement",
+        # Experiment modules for dynamic loading with all dependencies
+        "//axlearn/experiments:__init__",
+        "//axlearn/experiments:logistic_regression_tutorial",
+        # Add other experiment modules here as they get Bazelized
         "@pip//absl_py",
     ],
 )

@@ -15,3 +15,5 @@ msgpack
 portpicker
 grain
 array-record
+tensorstore
+aqtp
