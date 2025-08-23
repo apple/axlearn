@@ -77,7 +77,8 @@ class PathwaysReplicatedJobTest(TestCase):
             pod_spec = pod["spec"]
 
             self.assertEqual(len(pod_spec["containers"]), 1)
-            self.assertEqual(len(pod_spec["initContainers"]), 2)
+            # pathways-proxy, pathways-rm and output-uploader
+            self.assertEqual(len(pod_spec["initContainers"]), 3)
             node_selector = pod_spec["nodeSelector"]
             self.assertEqual(
                 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
