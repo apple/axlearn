@@ -479,6 +479,7 @@ class TPUJobBuilder(SingleReplicatedJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
+        # This label will be used by TPU provisioner to select machine type.
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
         # Set request memory by host machine type.
         machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(

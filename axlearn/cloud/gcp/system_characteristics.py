@@ -395,6 +395,12 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
     "v6e-8": _SystemCharacteristics(
         "2x4", 2, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-8"
     ),
+    # Naming convention for TPU: {version}-{cores}[-{variant}]
+    # "-{variant}" is optional. It is used to define a spec that is different from standard.
+    # The value can be anything as long as it is unique.
+    "v6e-8-1": _SystemCharacteristics(
+        "2x4", 1, "tpu-v6e-slice", "ct6e-standard-8t", 8, AcceleratorType["TPU"], "v6e-8"
+    ),
     "v6e-16": _SystemCharacteristics(
         "4x4", 4, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-16"
     ),
