@@ -108,7 +108,7 @@ gcp = [
 tpu = [
     "axlearn[gcp]",
     "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
-    "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
+    "pathwaysutils==0.1.2",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
