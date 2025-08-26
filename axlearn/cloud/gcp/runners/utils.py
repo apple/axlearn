@@ -34,7 +34,7 @@ def should_recreate_job(
         # We only consider recreation for TPU jobs.
         return False
 
-    if str(tier) != "0" and reservation is not None:
+    if str(tier) not in ["0", "disabled"] and reservation is not None:
         logging.info(
             "Bastion tier is %s but reservation is %s. Job resources will be recreated.",
             tier,
