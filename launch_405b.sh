@@ -7,8 +7,8 @@ export JOBSET_NAME=${JOBSET_NAME:-$USER}
 # export BASTION_TIER=disabled
 # local launch automatically sets tier to disabled
 export GKE_CLUSTER=$(axlearn gcp config | grep gke_cluster | awk '{ print $3 }' | tr -d '"')
-export INSTANCE_TYPE=${INSTANCE_TYPE:-"tpu-v5p-128"}
-export MESH_SELECTOR=${MESH_SELECTOR:-"tpu-v5p-128"}
+export INSTANCE_TYPE=${INSTANCE_TYPE:-"tpu-v5p-64"}
+export MESH_SELECTOR=${MESH_SELECTOR:-"tpu-v5p-64"}
 export CONFIG=${CONFIG:-"fuji-70B-v3-flash"}
 export PROJECT_ID=$(gcloud config get project)
 export TRAINER_DIR=gs://${PROJECT_ID}-axlearn
@@ -45,4 +45,6 @@ axlearn gcp launch run --cluster=$GKE_CLUSTER \
         --jax_backend=tpu \
         --mesh_selector=${MESH_SELECTOR} \
         --initialization_timeout=1200 \
+        --trainer_crash_on_hang_timeout_seconds=300 \
+        --trainer_watchdog_timeout_seconds=290 \
         --trace_at_steps=11
