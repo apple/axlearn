@@ -754,7 +754,20 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=False,
-                                        policy=offload_attention_proj_policy,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            # names_which_can_be_saved="|".join(
+                                            #     [
+                                            #         RematRegexSavePatterns.FLASH_ATTENTION.value,
+                                            #         ".*linear1_0",
+                                            #     ]
+                                            # ),
+                                            names_which_can_be_offloaded=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
