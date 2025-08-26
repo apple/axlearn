@@ -66,7 +66,11 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
+from axlearn.experiments.trainer_config_utils import (
+    TrainerConfigFn,
+    V6eFlashConfigModifier,
+    with_overrides,
+)
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
 
@@ -897,7 +901,6 @@ def get_trainer_kwargs(
         raise NotImplementedError(f"Unknown model size {model_size}.")
     total_chips = len(jax.devices())
     trainer_kwargs["train_batch_size"] = total_chips
-    trainer_kwargs["max_step"] = 15
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
     if version == Version.V3_TIKTOKEN:  # tiktoken tokenizer
@@ -1028,6 +1031,7 @@ def trainer_configs(
             ),
             **kwargs,
         )
+        with_overrides(config_map[config_name], max_steps=15)
 
         def make_fp8_config(base_config_name: str) -> SpmdTrainer.Config:
             """Make a FP8 variant of the base config.
