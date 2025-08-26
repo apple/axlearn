@@ -857,6 +857,8 @@ class Embedding(BaseLayer):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
+        # Prevent OOM on 405b
+        # cfg.param_partition_spec = ("fsdp", "model")
         cfg.param_partition_spec = (None, "model")
         # By default, initialize to Gaussian with std=1/sqrt(dim), e.g., 0.036 when dim=768.
         #
