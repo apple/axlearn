@@ -2744,9 +2744,9 @@ class TransformerAttentionLayer(BaseLayer):
         target_dim: Required[int] = REQUIRED  # Input target feature dim.
         source_dim: Required[int] = REQUIRED  # Input source feature dim.
         # The normalization layer config.
-        norm: Union[
-            InstantiableConfig, dict[NormPosition, InstantiableConfig]
-        ] = LayerNorm.default_config()
+        norm: Union[InstantiableConfig, dict[NormPosition, InstantiableConfig]] = (
+            LayerNorm.default_config()
+        )
         attention: InstantiableConfig = (
             MultiheadAttention.default_config()
         )  # The attention layer config.
@@ -3094,9 +3094,9 @@ class TransformerFeedForwardLayer(BaseLayer):
             param_partition_spec=["model", None]
         )
         # The normalization layer config.
-        norm: Union[
-            InstantiableConfig, dict[NormPosition, InstantiableConfig]
-        ] = LayerNorm.default_config()
+        norm: Union[InstantiableConfig, dict[NormPosition, InstantiableConfig]] = (
+            LayerNorm.default_config()
+        )
         # The activation function(s).
         #
         # If a single string, the activation applied on the output of linear1.
@@ -3922,9 +3922,9 @@ class StackedTransformerLayer(BaseStackedTransformerLayer):
 
         # If `layer` is a Config, it will be stacked cfg.num_layers times. If `layer` is a
         # sequence of Configs, the sequence length should match cfg.num_layers.
-        layer: Union[
-            BaseTransformerLayer.Config, Sequence[BaseTransformerLayer.Config]
-        ] = TransformerLayer.default_config()
+        layer: Union[BaseTransformerLayer.Config, Sequence[BaseTransformerLayer.Config]] = (
+            TransformerLayer.default_config()
+        )
         # If set, implements the UpdateDataFn protocol to update individual layers' input
         # data in some specified way. This operation is applied before calling every layer.
         data_merger: Optional[InstantiableConfig[UpdateDataFn]] = None
@@ -4482,6 +4482,7 @@ class RematRegexSavePatterns(enum.Enum):
     FLASH_CONTEXT = f".*{FLASH_ATTN_RESIDUAL_NAME}"
     FLASH_ATTENTION = "|".join([FLASH_CONTEXT, QKV_PROJ, O_PROJ])
     FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
+    INPUT = r".*input"
 
 
 def build_remat_spec(

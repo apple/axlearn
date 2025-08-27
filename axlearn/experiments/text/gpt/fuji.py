@@ -741,10 +741,30 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=False,
-                                        policy=offload_attention_proj_policy,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.INPUT.value,
+                                                ]
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
+                            # RematSpecModifier.default_config().set(
+                            #     remat_policies={
+                            #         "model.decoder.transformer.layer": RematSpec(
+                            #             prevent_cse=False,
+                            #             policy=offload_attention_proj_policy,
+                            #         ),
+                            #     }
+                            # ),
                             V6eFlashConfigModifier.default_config(),
                         ],
                     ),
