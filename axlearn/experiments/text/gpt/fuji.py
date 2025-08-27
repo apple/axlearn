@@ -138,43 +138,30 @@ TOTAL_TOKENS = {
 }
 
 
-def offload_dots_saveable_policy(*_, **__):
+def offload_dots_saveable_policy(prim, *args, **kwargs):
     """A rematerialization policy function used in RematSpec to offload dot_general_p
     operations from device to pinned host memory.
-
-    Args:
-        *_: Ignored positional arguments.
-        **__: Ignored keyword arguments.
-
-    Returns:
-        A policy function that offloads dot_general_p from device to pinned host
-    memory.
     """
-    return config_for_function(extended_checkpoint_policies.offload_dots_saveable).set(
-        offload_src="device", offload_dst="pinned_host"
+    return (
+        config_for_function(extended_checkpoint_policies.offload_dots_saveable)
+        .set(offload_src="device", offload_dst="pinned_host")
+        .instantiate()(prim, *args, **kwargs)
     )
 
 
-def offload_attention_proj_policy(*_, **__):
+def offload_attention_proj_policy(prim, *args, **kwargs):
     """A rematerialization policy function used in RematSpec to offload attention
     projection intermediates during model execution.
-
-    Args:
-        *_: Ignored positional arguments.
-        **__: Ignored keyword arguments.
-
-    Returns:
-        A checkpoint policy function that offloads native attention projection intermediates
-        from device to pinned host memory, enabling memory-efficient training with checkpoint
-        support.
     """
-    return config_for_function(
-        extended_checkpoint_policies.save_and_offload_only_these_names_regex
-    ).set(
-        names_which_can_be_saved=None,
-        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
-        offload_src="device",
-        offload_dst="pinned_host",
+    return (
+        config_for_function(extended_checkpoint_policies.save_and_offload_only_these_names_regex)
+        .set(
+            names_which_can_be_saved=None,
+            names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
+        .instantiate()(prim, *args, **kwargs)
     )
 
 
@@ -748,26 +735,13 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=False,
-                                        policy=config_for_function(
-                                            save_and_offload_only_these_names_regex
-                                        ).set(
-                                            names_which_can_be_saved=None,
-                                            # names_which_can_be_saved="|".join(
-                                            #     [
-                                            #         RematRegexSavePatterns.FLASH_ATTENTION.value,
-                                            #         ".*linear1_0",
-                                            #     ]
-                                            # ),
-                                            names_which_can_be_offloaded=None,
-                                            offload_src="device",
-                                            offload_dst="pinned_host",
-                                        ),
+                                        policy=offload_attention_proj_policy,
                                     ),
                                 }
                             ),
