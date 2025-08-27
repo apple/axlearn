@@ -35,6 +35,7 @@ from axlearn.common.attention import (
     ScaleKey,
     ScaleQuery,
     TransformerLayer,
+    RematRegexSavePatterns,
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.embedding import TransformerTextEmbeddings
@@ -47,7 +48,7 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
+from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec, save_and_offload_only_these_names_regex
 from axlearn.experiments.text.gpt.common import (
     MESH_AXIS_NAMES,
     SourceBuilder,
@@ -58,13 +59,14 @@ from axlearn.experiments.text.gpt.common import (
     make_config_name,
     mesh_shape_from_axes,
 )
+from axlearn.common.config import config_for_function
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import (
     mup_simple_adam_update_transformation,
     scaled_hidden_dim,
 )
 from axlearn.experiments.text.gpt.fuji import offload_attention_proj_policy
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
+from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
 
 MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL")
 
@@ -156,6 +158,8 @@ def get_trainer_kwargs(
         )
     elif model_size == "Switch-Base":
         # Num of parameters: 30B.
+        import jax
+        gbs=len(jax.devices())
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=12,
@@ -175,7 +179,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
             max_sequence_length=max_sequence_length,
-            train_batch_size=tokens_per_batch // max_sequence_length,  # 8M tokens.
+            train_batch_size=gbs,#tokens_per_batch // max_sequence_length,  # 8M tokens.
             max_step=250_000,
             mesh_shape=mesh_shape_from_axes(fsdp=-1, expert=16),
             mesh_rules=(
@@ -207,11 +211,24 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
-                                        policy=offload_attention_proj_policy,
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.INPUT.value,
+                                                ]
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),
@@ -219,6 +236,8 @@ def get_trainer_kwargs(
         )
     elif model_size == "Switch-Large":
         # Num of parameters: 104B.
+        import jax
+        gbs=len(jax.devices())
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=24,
@@ -238,7 +257,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
             max_sequence_length=max_sequence_length,
-            train_batch_size=tokens_per_batch // max_sequence_length,  # 8M tokens.
+            train_batch_size=gbs,#tokens_per_batch // max_sequence_length,  # 8M tokens.
             max_step=250_000,  # Most of the evals were done at 100k steps in the paper.
             mesh_shape=mesh_shape_from_axes(fsdp=-1, expert=16),
             mesh_rules=(
@@ -288,12 +307,24 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
-                                        policy=offload_attention_proj_policy,
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.INPUT.value,
+                                                ]
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
-                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),
