@@ -6,6 +6,7 @@ from typing import Any
 
 import jax
 
+
 @jax.custom_jvp
 @jax.custom_batching.custom_vmap  # Must be wrapped in this before custom_jvp.
 # PyTrees are defined by whether they are registered, not based on their type.
@@ -93,6 +94,7 @@ def forward_optimization_barrier(pytree: Any) -> Any:
         `pytree` transparently wrapped in an XLA optimization barrier.
     """
     return jax.lax.optimization_barrier(pytree)
+
 
 @forward_optimization_barrier.defjvp
 def forward_optimization_barrier_jvp(primals: tuple, tangents: tuple) -> tuple[Any, Any]:
