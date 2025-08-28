@@ -131,6 +131,10 @@ class Recorder(Configurable):
         """
         yield
 
+    def create_checkpoint_logger(self) -> Optional[object]:
+        """Optionally returns a fully functional and independent checkpoint logger."""
+        return None
+
 
 _recorders: dict[str, type] = {}
 _T = TypeVar("_T")
