@@ -14,7 +14,6 @@ from unittest import mock
 
 # pylint: disable=no-self-use
 import jax
-import jaxlib
 import numpy as np
 import pytest
 import tensorflow as tf

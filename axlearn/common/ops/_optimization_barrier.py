@@ -5,8 +5,6 @@
 from typing import Any
 
 import jax
-from jax._src import ad_checkpoint  # pylint: disable=protected-access
-
 
 @jax.custom_jvp
 @jax.custom_batching.custom_vmap  # Must be wrapped in this before custom_jvp.
