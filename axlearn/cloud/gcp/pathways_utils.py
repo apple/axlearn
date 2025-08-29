@@ -21,7 +21,10 @@ from axlearn.cloud.gcp.jobset_utils import (
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
-from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.system_characteristics import (
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+    support_twisted_topology,
+)
 from axlearn.cloud.gcp.tpu import infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import (
@@ -344,6 +347,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
+        instance_type = f"{pathways_tpu_version}:{system.topology}"
+        if support_twisted_topology(self._tpu_type):
+            instance_type = f"{instance_type}_untwisted"
         return [
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
@@ -377,7 +383,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
                     "--node_type=resource_manager",
                     f"--instance_count={pathways_instance_count}",
-                    f"--instance_type={pathways_tpu_version}:{system.topology}",
+                    f"--instance_type={instance_type}",
                     f"--gcs_scratch_location={staging_location}",
                 ],
                 volumeMounts=[dict(name="shared-output", mountPath="/output")],
