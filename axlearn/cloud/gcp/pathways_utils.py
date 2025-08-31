@@ -914,7 +914,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         }
         return dict(
             name=cfg.name,
-            image=self._bundler.id(cfg.name),
+            image=cfg.image_id or self._bundler.id(cfg.name),
             command=["bash", "-c", cfg.command],
             env=[
                 {

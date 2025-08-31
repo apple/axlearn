@@ -956,13 +956,17 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 job._pre_provisioner.delete_for.assert_called()
                 # pytype: enable=attribute-error
 
-    @parameterized.parameters(None, False, True)
-    def test_start(self, enable_pre_provisioner):
+    @parameterized.product(
+        enable_pre_provisioner=[None, False, True],
+        image_id=[None, "my-image-id"],
+    )
+    def test_start(self, enable_pre_provisioner, image_id):
         cfg = self._job_config(
             command="test-command",
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
+            image_id=image_id,
         )
         job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
 
@@ -978,14 +982,19 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             _inner=mock.DEFAULT,
             _pre_provisioner=mock.DEFAULT,
         ):
+            job._inner._builder.config.image_id = image_id
             job._execute()
 
+            # pytype: disable=attribute-error
             if enable_pre_provisioner:
-                # pytype: disable=attribute-error
                 job._pre_provisioner.create_for.assert_called()
-                # pytype: enable=attribute-error
 
-            job._inner.execute.assert_called()  # pytype: disable=attribute-error
+            if image_id:
+                job._bundler.wait_until_finished.assert_not_called()
+            else:
+                job._bundler.wait_until_finished.assert_called_with("test-name")
+            job._inner.execute.assert_called()
+            # pytype: enable=attribute-error
 
     @parameterized.parameters(None, False, True)
     def test_update(self, enable_pre_provisioner):
