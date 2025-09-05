@@ -4,11 +4,7 @@ set -e -x
 
 # Install the package (necessary for CLI tests).
 # Requirements should already be cached in the docker image.
-pip install -e .
-
-# Log installed versions
-echo "PIP FREEZE:"
-pip freeze
+pip install -qq -e .
 
 exit_if_error() {
   local exit_code=$1
