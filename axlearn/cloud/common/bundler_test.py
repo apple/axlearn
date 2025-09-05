@@ -288,6 +288,11 @@ class DockerBundlerTest(TestWithTemporaryCWD):
         cfg.set(image="test", repo="test", dockerfile="test")
         cfg.instantiate()
 
+    def test_required_when_skipped(self):
+        cfg = DockerBundler.default_config().set(image="", repo="", dockerfile="", skip_bundle=True)
+        # No error will be raised when skip_bundle=True
+        cfg.instantiate()
+
     @parameterized.product(
         platform=[None, "test-platform"],
         target=[None, "test-target"],
