@@ -2,6 +2,10 @@
 
 set -e -x
 
+export TF_CPP_MIN_LOG_LEVEL=3  # Filter INFO + WARNING + ERROR, leave only FATAL
+export TF_TRT_IS_AVAILABLE=0  # Suppress TF-TRT Warning: Could not find TensorRT
+export TF_DISABLE_TRT=1  # Suppress TF-TRT Warning: Could not find TensorRT
+
 # Install the package (necessary for CLI tests).
 # Requirements should already be cached in the docker image.
 pip install -qq -e .
