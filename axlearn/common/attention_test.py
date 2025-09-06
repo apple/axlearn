@@ -2567,7 +2567,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertNestedAllClose(base_outputs, test_outputs)
 
     @parameterized.product(kv_part=[None, ("fsdp", None, "model", None)])
-    @pytest.mark.d8
+    @pytest.mark.for_8_devices
     def test_qkvo_partition_spec(self, kv_part):
         """Tests that QKVO partition spec are applied correctly when specified."""
         mesh_shape = (2, 2, 2)
@@ -2625,8 +2625,9 @@ class MultiheadAttentionTest(TestCase):
             jax.debug.inspect_array_sharding(tensor, callback=callback)
             return tensor
 
-        with mesh, mock.patch.object(
-            attention.MultiheadAttention, "_remat_name", patched_remat_name
+        with (
+            mesh,
+            mock.patch.object(attention.MultiheadAttention, "_remat_name", patched_remat_name),
         ):
 
             @jax.jit
@@ -2881,9 +2882,11 @@ class MultiheadAttentionTest(TestCase):
             kv_state=kv_state,
             return_aux=return_aux,
         )
-        with self.assertRaises(
-            ValueError
-        ) if scale_kv_before_cache_update else contextlib.nullcontext():
+        with (
+            self.assertRaises(ValueError)
+            if scale_kv_before_cache_update
+            else contextlib.nullcontext()
+        ):
             forward_outputs, _ = F(
                 layer,
                 state=layer_params,
