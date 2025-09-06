@@ -40,15 +40,15 @@ if [[ "${SKIP_PRECOMMIT:-false}" = "false" ]] ; then
 fi
 
 UNQUOTED_PYTEST_FILES=$(echo $1 |  tr -d "'")
-pytest --durations=100 -v -n auto \
+pytest -W error --durations=100 -v -n auto \
   -m "not (gs_login or tpu or high_cpu or fp64 or for_8_devices)" ${UNQUOTED_PYTEST_FILES} \
   --dist worksteal &
 TEST_PIDS[$!]=1
 
-JAX_ENABLE_X64=1 pytest --durations=100 -v -n auto -v -m "fp64" --dist worksteal &
+JAX_ENABLE_X64=1 pytest -W error --durations=100 -v -n auto -v -m "fp64" --dist worksteal &
 TEST_PIDS[$!]=1
 
-XLA_FLAGS="--xla_force_host_platform_device_count=8" pytest --durations=100 -v \
+XLA_FLAGS="--xla_force_host_platform_device_count=8" pytest -W error --durations=100 -v \
   -n auto -v -m "for_8_devices" --dist worksteal &
 TEST_PIDS[$!]=1
 
