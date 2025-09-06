@@ -45,7 +45,7 @@ from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import safe_not
 
 
-class TestLayer(BaseLayer):
+class _Layer(BaseLayer):
     """A dummy layer."""
 
     def _create_layer_parameter_specs(self):
@@ -68,12 +68,12 @@ class TestLayer(BaseLayer):
         return y
 
 
-class TestParentLayer(BaseLayer):
+class _ParentLayer(BaseLayer):
     """A parent layer."""
 
     @config_class
     class Config(BaseLayer.Config):
-        child: TestLayer.Config = TestLayer.default_config()
+        child: _Layer.Config = _Layer.default_config()
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -84,13 +84,13 @@ class TestParentLayer(BaseLayer):
         return self.child(x)
 
 
-class TestIntermediateOutputLayer(BaseLayer):
+class _IntermediateOutputLayer(BaseLayer):
     """A parent layer."""
 
     @config_class
     class Config(BaseLayer.Config):
-        child1: TestLayer.Config = TestLayer.default_config()
-        child2: TestLayer.Config = TestLayer.default_config()
+        child1: _Layer.Config = _Layer.default_config()
+        child2: _Layer.Config = _Layer.default_config()
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -134,12 +134,12 @@ def _callback_primitive(forward, backward):
     return prim.bind
 
 
-class TestRematLayer(BaseLayer):
+class _RematLayer(BaseLayer):
     """A dummy remat layer."""
 
     @config_class
     class Config(BaseLayer.Config):
-        """Configures TestRematLayer."""
+        """Configures _RematLayer."""
 
         output_name: str = "op"
 
@@ -169,12 +169,12 @@ class TestRematLayer(BaseLayer):
         return len(self._backward_calls)
 
 
-class TestRematParentLayer(BaseLayer):
+class _RematParentLayer(BaseLayer):
     """A dummy parent layer."""
 
     @config_class
     class Config(BaseLayer.Config):
-        """Configures TestRematParentLayer."""
+        """Configures _RematParentLayer."""
 
         child_names: list[str] = []
 
@@ -183,7 +183,7 @@ class TestRematParentLayer(BaseLayer):
         for name in cfg.child_names:
             self._add_child(
                 name,
-                TestRematLayer.default_config().set(output_name=name, remat_spec=cfg.remat_spec),
+                _RematLayer.default_config().set(output_name=name, remat_spec=cfg.remat_spec),
             )
 
     def forward(self, x, static_arg: Any = None):
@@ -194,9 +194,7 @@ class BaseLayerTest(TestCase):
     """Tests BaseLayer."""
 
     def test_forward(self):
-        test_module: TestLayer = (
-            TestLayer.default_config().set(name="test").instantiate(parent=None)
-        )
+        test_module: _Layer = _Layer.default_config().set(name="test").instantiate(parent=None)
         state = test_module.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(456))
         self.assertEqual({"moving_mean": 1.0}, state)
         y, output_collection = jax.jit(partial(F, test_module, is_training=True))(
@@ -211,8 +209,8 @@ class BaseLayerTest(TestCase):
         )
 
     def test_intermediate_output(self):
-        test_module: TestIntermediateOutputLayer = (
-            TestIntermediateOutputLayer.default_config().set(name="test").instantiate(parent=None)
+        test_module: _IntermediateOutputLayer = (
+            _IntermediateOutputLayer.default_config().set(name="test").instantiate(parent=None)
         )
         state = test_module.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(456))
         y, output_collection = jax.jit(partial(F, test_module, is_training=True))(
@@ -223,8 +221,8 @@ class BaseLayerTest(TestCase):
         self.assertEqual(output_collection.module_outputs, {})
 
     def test_parent_forward(self):
-        test_module: TestParentLayer = (
-            TestParentLayer.default_config().set(name="test").instantiate(parent=None)
+        test_module: _ParentLayer = (
+            _ParentLayer.default_config().set(name="test").instantiate(parent=None)
         )
         state = test_module.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(456))
         self.assertEqual({"child": {"moving_mean": 1.0}}, state)
@@ -290,8 +288,8 @@ class BaseLayerTest(TestCase):
 
     def test_remat_name(self):
         var_tag = "save_var"
-        test_module: TestRematLayer = (
-            TestRematLayer.default_config()
+        test_module: _RematLayer = (
+            _RematLayer.default_config()
             .set(name="test", output_name=var_tag)
             .instantiate(parent=None)
         )
@@ -313,8 +311,8 @@ class BaseLayerTest(TestCase):
         static_arg: Any,
         remat_spec=RematSpec(policy=jax_remat_policies.nothing_saveable),
     ):
-        test_module: TestRematParentLayer = (
-            TestRematParentLayer.default_config()
+        test_module: _RematParentLayer = (
+            _RematParentLayer.default_config()
             .set(name="test", child_names=["layer1", "layer2"])
             .instantiate(parent=None)
         )
@@ -352,8 +350,8 @@ class BaseLayerTest(TestCase):
         None, ParameterScaler.default_config(), ParameterScaler.default_config().set(scale=0)
     )
     def test_apply_parameter_noise_recursively(self, param_noise_cfg):
-        test_module: TestLayer = (
-            TestLayer.default_config()
+        test_module: _Layer = (
+            _Layer.default_config()
             .set(tensor_stats=TensorRMSNorm.default_config())
             .set(name="test", param_noise=param_noise_cfg)
             .instantiate(parent=None)
@@ -376,8 +374,8 @@ class BaseLayerTest(TestCase):
 
     @parameterized.parameters(False, True)
     def test_tensor_stats(self, inline_child_summaries: bool):
-        test_layer: TestLayer = (
-            TestLayer.default_config()
+        test_layer: _Layer = (
+            _Layer.default_config()
             .set(
                 name="test",
                 tensor_stats=CompositeTensorStats.default_config().set(
@@ -420,7 +418,7 @@ class BaseLayerTest(TestCase):
 
     @parameterized.parameters(None, (jnp.array([0, 10, 5, 7]),), (jnp.array([0, 0, 0, 0]),))
     def test_activation_summary(self, lengths):
-        test_layer: TestLayer = TestLayer.default_config().set(name="test").instantiate(parent=None)
+        test_layer: _Layer = _Layer.default_config().set(name="test").instantiate(parent=None)
         data_key, init_key, prng_key = jax.random.split(jax.random.PRNGKey(567), num=3)
         batch_size = 4
 
@@ -478,7 +476,7 @@ class BaseLayerTest(TestCase):
     @parameterized.parameters(True, False)
     # pylint: disable-next=no-self-use
     def test_activation_summary_toy_example(self, with_paddings):
-        test_layer: TestLayer = TestLayer.default_config().set(name="test").instantiate(parent=None)
+        test_layer: _Layer = _Layer.default_config().set(name="test").instantiate(parent=None)
         init_key, prng_key = jax.random.split(jax.random.PRNGKey(112))
 
         # shape [2, 2, 3]
