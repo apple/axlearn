@@ -22,7 +22,7 @@ precommit_checks() {
   pre-commit install
   pre-commit run --all-files || exit_if_error $? "pre-commit failed."
   # Run pytype separately to utilize all cpus and for better output.
-  pytype -j auto . || exit_if_error $? "pytype failed."
+  pytype -j auto axlearn || exit_if_error $? "pytype failed."
 }
 
 # Collect all background PIDs explicitly.

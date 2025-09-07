@@ -4,6 +4,7 @@ import copy
 import jax
 import jax.numpy as jnp
 import jax.random
+import pytest
 from absl.testing import parameterized
 from jax._src.mesh import ResourceEnv, thread_resources
 from jax.experimental import mesh_utils
@@ -23,6 +24,9 @@ from axlearn.common.rattention.kernels.utils import FeatureMap
 from axlearn.common.rattention.rattention import RAttention, ResidualLinearAttention
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import TensorSpec
+
+if jax.default_backend() == "gpu":
+    pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
 
 class ResidualLinearAttentionTest(TestCase):

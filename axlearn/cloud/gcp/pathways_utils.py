@@ -21,7 +21,10 @@ from axlearn.cloud.gcp.jobset_utils import (
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
-from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.system_characteristics import (
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+    support_twisted_topology,
+)
 from axlearn.cloud.gcp.tpu import infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import (
@@ -43,8 +46,9 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
-# However this image was also tested in Maxtext with Jax 0.6.1.
-_PATHWAYS_IMAGE_TAG = "jax-0.5.3-patch060625"
+# This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
+# This image extends GRPC timeout for long context models.
+_PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -72,17 +76,15 @@ _PATHWAYS_BACK_OFF_LIMIT = 32
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
-    """Attempts to convert an XLA flag string value to int, then bool.
+    """Attempts to convert an XLA flag string value to int.
 
     If conversion fails, returns the original string (stripped).
     """
-    bool_mapper = {"true": True, "false": False}
     stripped_value_str = value.strip()
     try:
         return int(stripped_value_str)
     except ValueError:
-        # Not an integer, try boolean conversion.
-        return bool_mapper.get(stripped_value_str.lower(), stripped_value_str)
+        return stripped_value_str
 
 
 def get_pathways_tpu_version(gke_machine_type: str) -> str:
@@ -345,10 +347,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
-        # This is required for GKE Workload Identity and Mac Jax Client support.
-        # TODO(samos123): Remove this once this becomes the default.
-        proxy_env = [{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}]
-
+        instance_type = f"{pathways_tpu_version}:{system.topology}"
+        if support_twisted_topology(self._tpu_type):
+            instance_type = f"{instance_type}_untwisted"
         return [
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
@@ -357,8 +358,14 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
                 args=cmd_args,
-                env=proxy_env,
+                env=[
+                    # This is required for GKE Workload Identity and Mac Jax Client support.
+                    # TODO(samos123): Remove this once this becomes the default.
+                    {"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"},
+                    {"name": "XLA_FLAGS", "value": f"--xla_dump_to=/output/{cfg.name}/xla"},
+                ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
+                volumeMounts=[dict(name="shared-output", mountPath="/output")],
             ),
             dict(
                 name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
@@ -376,9 +383,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
                     "--node_type=resource_manager",
                     f"--instance_count={pathways_instance_count}",
-                    f"--instance_type={pathways_tpu_version}:{system.topology}",
+                    f"--instance_type={instance_type}",
                     f"--gcs_scratch_location={staging_location}",
                 ],
+                volumeMounts=[dict(name="shared-output", mountPath="/output")],
             ),
         ]
 
@@ -411,7 +419,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         }
 
         head_container = self._build_pathways_head_container()
-        init_containers = self._build_pathways_head_sidecar_containers()
+        init_containers = [
+            *self._build_pathways_head_sidecar_containers(),
+            # pylint: disable-next=protected-access
+            self._inner._build_uploader_container(),
+        ]
 
         # Hardcode metadata.google.internal ip address to avoid transient DNS resolution issue.
         metadata_host_alias = dict(
@@ -733,6 +745,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
 
+        target_port: Optional[int] = None
+        enable_service: bool = None
+
     @classmethod
     def define_flags(cls, fv):
         super().define_flags(fv)
@@ -760,12 +775,26 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "Memory request for pathways-head container in GiB. Default is 16GiB",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "enable_service",
+            False,
+            "Whether to enable creation of service for LWS",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "target_port",
+            None,
+            "port where a service can access application, set at head container",
+            **common_kwargs,
+        )
 
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
         fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
         fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+        fv.set_default("target_port", fv.target_port or 9000)
+        fv.set_default("enable_service", fv.enable_service or False)
 
     @classmethod
     def default_config(cls):
@@ -885,7 +914,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         }
         return dict(
             name=cfg.name,
-            image=self._bundler.id(cfg.name),
+            image=cfg.image_id or self._bundler.id(cfg.name),
             command=["bash", "-c", cfg.command],
             env=[
                 {
@@ -907,6 +936,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
+            ports=[dict(containerPort=self.config.target_port)]
+            if self.config.enable_service
+            else [],
         )
 
     def build_leader_pod(self) -> Nested[Any]:
@@ -919,6 +951,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+        labels = {"app": cfg.name}
 
         if cfg.gcsfuse_mount:
             annotations.update(

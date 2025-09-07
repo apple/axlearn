@@ -153,7 +153,15 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             additional_labels_list.append(additional_labels)
 
         start_time = time.perf_counter()
-        topology = None if isinstance(job, _INFERENCE_JOBS) else job_sys_property.topology
+        topology = job_sys_property.topology
+        if job_sys_property.gce_machine_type == "ct6e-standard-8t":
+            # If we customize chips_per_vm to use ct6e-standard-8t for v6e,
+            # it is required not to set topology.
+            topology = None
+        if isinstance(job, _INFERENCE_JOBS):
+            # Inference jobs like Flink/Beam jobs use node pool as single
+            # host nodes, we don't set topology for them
+            topology = None
         create_node_pools(
             node_pool_names,
             project=cfg.project,

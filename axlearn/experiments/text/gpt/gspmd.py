@@ -11,7 +11,7 @@ from typing import Any
 
 from axlearn.common.attention import PipelinedTransformerLayer
 from axlearn.common.base_model import BaseModel
-from axlearn.common.config import config_for_function
+from axlearn.common.config import TrainerConfigFn, config_for_function
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
 from axlearn.common.learner import Learner
@@ -28,7 +28,6 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 _VOCAB_SIZE = 32 * 1024
 _MAX_SEQUENCE_LENGTH = 1024

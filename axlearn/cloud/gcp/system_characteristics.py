@@ -395,6 +395,12 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
     "v6e-8": _SystemCharacteristics(
         "2x4", 2, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-8"
     ),
+    # Naming convention for TPU: {version}-{cores}[-{variant}]
+    # "-{variant}" is optional. It is used to define a spec that is different from standard.
+    # The value can be anything as long as it is unique.
+    "v6e-8-1": _SystemCharacteristics(
+        "2x4", 1, "tpu-v6e-slice", "ct6e-standard-8t", 8, AcceleratorType["TPU"], "v6e-8"
+    ),
     "v6e-16": _SystemCharacteristics(
         "4x4", 4, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-16"
     ),
@@ -498,3 +504,9 @@ GCE_MACHINE_TYPE_TO_CPU_CHARACTERISTICS = {
     "ct4p-hightpu-4t": 240,
     "ct6e-standard-4t": 180,
 }
+
+
+# Reference doc https://cloud.google.com/tpu/docs/v5p#tpu-v5p-config
+# And there is no twisted topology for v6e
+def support_twisted_topology(tpu_type: str):
+    return tpu_type in {"v5p-256", "v5p-512", "v5p-2048", "v5p-4096"}

@@ -11,7 +11,6 @@ import jax.numpy as jnp
 # Import needed to enable JAX cache on Neuron.
 import jax_neuronx  # pylint: disable=unused-import
 import neuronxcc.nki.language as nl
-from absl import logging
 from jax import custom_vjp
 from neuronxcc.nki.kernels.attention import flash_attn_bwd, flash_fwd
 
@@ -237,7 +236,6 @@ class NeuronFlashAttention(BaseFlashAttention):
             return False
         if self.cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
-        logging.info("Using %s.", self.name())
         return True
 
     @partial(jax.jit, static_argnames=["self"])

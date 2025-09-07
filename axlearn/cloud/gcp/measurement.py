@@ -29,7 +29,7 @@ from absl import flags, logging
 from ml_goodput_measurement import goodput
 from ml_goodput_measurement import monitoring as goodput_monitoring
 
-from axlearn.cloud.common.utils import parse_kv_flags
+from axlearn.cloud.common.utils import parse_kv_flags, to_bool
 from axlearn.common import measurement
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
 
@@ -52,12 +52,17 @@ class GoodputRecorder(measurement.Recorder):
                 See "How to Monitor Rolling Window Goodput Metrics" in
                 docs/05-Goodput-Monitoring.md for more details.
             jax_backend: Jax backend type to infer Pathways environment.
+            enable_monitoring: Whether to enable goodput monitoring/uploading.
         """
 
         upload_dir: Required[str] = REQUIRED
         upload_interval: Required[int] = REQUIRED
         rolling_window_size: Sequence[int] = []
         jax_backend: Optional[str] = None
+        # Disabled by default because of performance degradation. This doesn't disable goodput
+        # recording.
+        # TODO (apolloreno): once the performance degradation is fixed, will change default to True
+        enable_monitoring: bool = False
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues) -> "GoodputRecorder":
@@ -72,6 +77,7 @@ class GoodputRecorder(measurement.Recorder):
         - rolling_window_size: Comma-separated list of integers representing rolling window
             sizes in seconds.
         - jax_backend: The type of jax backend.
+        - enable_monitoring: Boolean to enable/disable goodput monitoring (default: false).
         """
         cfg: measurement.Recorder.Config = cls.default_config()
         parsed_flags = parse_kv_flags(fv.recorder_spec, delimiter="=")
@@ -83,6 +89,8 @@ class GoodputRecorder(measurement.Recorder):
             parsed_flags["rolling_window_size"] = [
                 int(x) for x in parsed_flags["rolling_window_size"].split(",")
             ]
+        if "enable_monitoring" in parsed_flags:
+            parsed_flags["enable_monitoring"] = to_bool(parsed_flags["enable_monitoring"])
         return maybe_set_config(cfg, **parsed_flags).instantiate()
 
     def __init__(self, cfg):
@@ -149,7 +157,7 @@ class GoodputRecorder(measurement.Recorder):
         Default behavior is to push metrics to Google Cloud Monitoring.
         This behavior can be overridden by configuring `goodput_monitoring.GCPOptions`
         """
-        if jax.process_index() != 0:
+        if not self.config.enable_monitoring or jax.process_index() != 0:
             yield
             return
         try:
@@ -175,7 +183,11 @@ class GoodputRecorder(measurement.Recorder):
     @contextlib.contextmanager
     def _maybe_monitor_rolling_window_goodput(self):
         """Monitor rolling window goodput if enabled."""
-        if not self.config.rolling_window_size or jax.process_index() != 0:
+        if (
+            not self.config.enable_monitoring
+            or not self.config.rolling_window_size
+            or jax.process_index() != 0
+        ):
             yield
             return
         try:

@@ -25,7 +25,7 @@ from axlearn.common.attention_bias import (
 from axlearn.common.flash_attention import tpu_attention
 from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.test_utils import generate_attention_data
-from axlearn.common.test_utils import TestCase
+from axlearn.common.test_utils import TestCase, Tolerance
 from axlearn.common.utils import Tensor
 
 
@@ -130,7 +130,7 @@ class TestFlashAttention(TestCase):
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
         matmul_precision=[None, "highest"],
-        dropout_rate=[0.0, 0.1, 0.2],
+        dropout_rate=[0, 0.2, 0.5],
         head_group_size=[2, 1],
     )
     def test_forward_and_backward(
@@ -220,7 +220,14 @@ class TestFlashAttention(TestCase):
                 dropout_mask = fn.get_dropout_mask(input_batch)
                 ref_fn = partial(ref_fn, dropout_mask=dropout_mask)
             ref_out = ref_fn(input_batch)
-            self.assertNestedAllClose(out, ref_out, atol=0.05)
+            self.assertAllCloseWithOutliers(
+                out,
+                ref_out,
+                tolerance_map={
+                    1.0: Tolerance(atol=5e-2),
+                    0.98: Tolerance(atol=1e-2),
+                },
+            )
 
             # Compare grads.
             def grad_fn(float_inputs, aux_inputs, f):
@@ -231,7 +238,14 @@ class TestFlashAttention(TestCase):
             aux_inputs = dict(bias=bias, prng_key=prng_key)
             grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
             ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
-            self.assertNestedAllClose(grad_out, ref_grad_out, atol=0.05)
+            self.assertNestedAllCloseWithOutliers(
+                grad_out,
+                ref_grad_out,
+                tolerance_map={
+                    1.0: Tolerance(atol=5e-2),
+                    0.98: Tolerance(atol=1e-2),
+                },
+            )
 
     @parameterized.product(
         batch_size=[2, 4],

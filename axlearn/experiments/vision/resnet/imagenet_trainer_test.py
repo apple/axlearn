@@ -2,7 +2,7 @@
 
 """ResNet on ImageNet trainer config tests."""
 
-from axlearn.common import test_utils
+from axlearn.experiments import test_utils
 from axlearn.experiments.vision.resnet import imagenet_trainer
 
 

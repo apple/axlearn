@@ -125,7 +125,6 @@ class TPUPagedAttention(BasePagedAttention):
                 f"Head dimension has to be a multiple of 128 for double-buffering DMA, "
                 f"got {key.shape[-1]}"
             )
-        logging.info("Using %s", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])

@@ -306,6 +306,10 @@ class BaseDockerBundler(Bundler):
         super().__init__(cfg)
         cfg = self.config
 
+        if cfg.skip_bundle:
+            # No need to check other fields if skip bundle
+            return
+
         if not cfg.image:
             raise ValueError(
                 "image cannot be empty. Please provide one via --bundler_spec=image=my-image."

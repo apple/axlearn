@@ -17,7 +17,6 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-from absl import logging
 from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas.triton import TritonCompilerParams
@@ -317,7 +316,6 @@ class GPUPagedAttention(BasePagedAttention):
             )
 
             return False
-        logging.info("Using %s", self.name())
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])

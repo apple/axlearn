@@ -46,6 +46,7 @@ from axlearn.common.config import (
     ConfigOr,
     FunctionConfigBase,
     InstantiableConfig,
+    TrainerConfigFn,
     config_for_function,
     maybe_instantiate,
     maybe_set_config,
@@ -64,7 +65,6 @@ from axlearn.common.summary_writer import BaseWriter
 from axlearn.common.trainer import MeshShape, SpmdTrainer
 from axlearn.common.utils import HybridMeshShape, Nested, get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, tfds_text_source
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 REPLACE_NEWLINES_WITH = "<n>"
 EVAL_EVERY_N_STEPS = 5_000

@@ -13,11 +13,11 @@ import jax.random
 from absl import flags
 from absl.testing import absltest
 
+from axlearn.common.config import get_named_trainer_config
 from axlearn.common.inference import InferenceRunner
 from axlearn.common.summary_writer import NoOpWriter
 from axlearn.common.test_utils import TestCase
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.experiments import get_named_trainer_config
 
 flags.DEFINE_boolean("update_golden_checkpoints", False, "If true, update golden config files.")
 

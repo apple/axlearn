@@ -89,10 +89,13 @@ class FlinkTPUGKEJob(job.GKEJob):
         """Configures FlinkTPUGKEJob.
 
         Attributes:
-            flink_threads_per_worker: Threads per worker.
+            flink_threads_per_worker: Threads per TaskManager.
+            worker_jvm_metaspace_size: the JVM metaspace size of the TaskManagers.
         """
 
         flink_threads_per_worker: int = 1
+        worker_jvm_metaspace_size: str = "256mb"
+        image_id: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -107,6 +110,18 @@ class FlinkTPUGKEJob(job.GKEJob):
             "once if the model loading is implemented in a singleton way. \n"
             "If this is not set, job_flink will set it to be chips_per_vm based on the TPU type.",
             **common_kwargs,
+        )
+        # pylint: disable=line-too-long
+        flags.DEFINE_string(
+            "worker_jvm_metaspace_size",
+            "256mb",
+            "JVM Metaspace Size for the TaskManagers. See this link for more details."
+            "https://nightlies.apache.org/flink/flink-docs-release-1.13/docs/deployment/memory/mem_setup_tm/",
+            **common_kwargs,
+        )
+        # pylint: enable=line-too-long
+        flags.DEFINE_string(
+            "image_id", None, "Image used for starting the container.", **common_kwargs
         )
 
     @classmethod
@@ -390,6 +405,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                     # threads per worker.
                     "taskmanager.numberOfTaskSlots": f"{cfg.flink_threads_per_worker}",
                     "taskmanager.memory.task.off-heap.size": "16g",
+                    "taskmanager.memory.jvm-metaspace.size": cfg.worker_jvm_metaspace_size,
                     "taskmanager.network.bind-host": "0.0.0.0",
                     "rest.address": "0.0.0.0",
                     # Store checkpointing for retry.
@@ -442,7 +458,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     volumeMounts=[
                                         dict(mountPath="/opt/flink/log", name="flink-logs")
                                     ],
-                                    image=self._bundler.id(cfg.name),
+                                    image=cfg.image_id or self._bundler.id(cfg.name),
                                     args=["-worker_pool"],
                                     env=[
                                         dict(name="BEAM_EXTERNAL_HOST", value="0.0.0.0"),
@@ -564,7 +580,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                             dict(
                                 name=cfg.name,
                                 env=[dict(name="PYTHONUNBUFFERED", value="1")],
-                                image=self._bundler.id(cfg.name),
+                                image=cfg.image_id or self._bundler.id(cfg.name),
                                 volumeMounts=[dict(name="shared-output", mountPath="/output")],
                                 command=["/bin/sh", "-c"],
                                 args=[

@@ -44,14 +44,15 @@ Examples:
     ```
 
 """
+
 from typing import Optional
 
 import jax.numpy as jnp
 
 from axlearn.common import checkpointer, config, evaler, input_tf_data, schedule
+from axlearn.common.config import TrainerConfigFn
 from axlearn.common.evaler import SpmdEvaler
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 from axlearn.experiments.vision import imagenet
 from axlearn.experiments.vision.resnet.common import learner_config, model_config
 from axlearn.vision import resnet

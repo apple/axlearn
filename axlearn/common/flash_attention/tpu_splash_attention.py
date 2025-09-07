@@ -1211,6 +1211,9 @@ def _flash_attention_dkv_kernel(
                 dropout_rate,
             )
 
+            # Only float32 is supported for transpose.
+            dm = dm.astype(jnp.float32).T.astype(jnp.bool)
+
             dpr = dp
             dp = jnp.where(dm, 0.0, dpr / (1.0 - dropout_rate))
             pr = jnp.where(dm, 0.0, p / (1.0 - dropout_rate))

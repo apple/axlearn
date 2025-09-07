@@ -10,14 +10,15 @@ python axlearn/experiments/aot_test.py
 Reference:
 https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 """
+
 from typing import Optional
 
 import pytest
 from absl.testing import absltest
 
-from axlearn.common import test_utils
 from axlearn.common.aot_compilation import compile_trainer_programs, get_devices_for_topology
 from axlearn.common.trainer import SpmdTrainer
+from axlearn.experiments import test_utils
 from axlearn.experiments.text.gpt import c4_trainer
 
 

@@ -37,12 +37,35 @@ class GoodputRecorderTest(parameterized.TestCase):
             expected_rolling_window_size=[1, 2, 3],
             expected_jax_backend="proxy",
         ),
+        dict(
+            recorder_spec=[
+                "name=test-name",
+                "upload_dir=/test/path",
+                "upload_interval=15",
+                "enable_monitoring=true",
+            ],
+            expected_rolling_window_size=[],
+            expected_jax_backend=None,
+            expected_enable_monitoring=True,
+        ),
+        dict(
+            recorder_spec=[
+                "name=test-name",
+                "upload_dir=/test/path",
+                "upload_interval=15",
+                "enable_monitoring=false",
+            ],
+            expected_rolling_window_size=[],
+            expected_jax_backend=None,
+            expected_enable_monitoring=False,
+        ),
     )
     def test_from_flags(
         self,
         recorder_spec,
         expected_rolling_window_size,
         expected_jax_backend,
+        expected_enable_monitoring=False,
     ):
         """Tests that flags are correctly parsed into the config."""
         mock_fv = mock.MagicMock(spec=flags.FlagValues)
@@ -56,6 +79,7 @@ class GoodputRecorderTest(parameterized.TestCase):
         self.assertEqual(15, recorder.config.upload_interval)
         self.assertEqual(expected_rolling_window_size, recorder.config.rolling_window_size)
         self.assertEqual(expected_jax_backend, recorder.config.jax_backend)
+        self.assertEqual(expected_enable_monitoring, recorder.config.enable_monitoring)
 
     def test_from_flags_missing_required(self):
         """Tests that missing required flags raise an error."""
@@ -188,6 +212,7 @@ class GoodputRecorderTest(parameterized.TestCase):
             upload_dir="/test",
             upload_interval=30,
             jax_backend=mock_jax_backend,
+            enable_monitoring=True,
         )
         recorder = GoodputRecorder(cfg)
 
@@ -245,6 +270,7 @@ class GoodputRecorderTest(parameterized.TestCase):
             upload_interval=30,
             rolling_window_size=rolling_window_size,
             jax_backend=mock_jax_backend,
+            enable_monitoring=True,
         )
         recorder = GoodputRecorder(cfg)
 
@@ -279,7 +305,7 @@ class GoodputRecorderTest(parameterized.TestCase):
     ):  # pylint: disable=unused-argument
         """Tests that monitoring is skipped on non-zero process indices."""
         cfg = GoodputRecorder.default_config().set(
-            name="test", upload_dir="/test", upload_interval=30
+            name="test", upload_dir="/test", upload_interval=30, enable_monitoring=True
         )
         recorder = GoodputRecorder(cfg)
 
@@ -294,6 +320,7 @@ class GoodputRecorderTest(parameterized.TestCase):
                 upload_dir="/test",
                 upload_interval=30,
                 rolling_window_size=[10, 20],
+                enable_monitoring=True,
             )
             recorder_rolling = GoodputRecorder(cfg_rolling)
             with recorder_rolling._maybe_monitor_rolling_window_goodput():
@@ -347,6 +374,7 @@ class GoodputRecorderTest(parameterized.TestCase):
             upload_interval=30,
             rolling_window_size=rolling_window_size,
             jax_backend=jax_backend,
+            enable_monitoring=True,
         )
         recorder = GoodputRecorder(cfg)
 
@@ -373,3 +401,118 @@ class GoodputRecorderTest(parameterized.TestCase):
             else:
                 mock_monitor_instance.start_rolling_window_goodput_uploader.assert_not_called()
                 mock_monitor_instance.stop_rolling_window_goodput_uploader.assert_not_called()
+
+    @mock.patch("jax.process_index", return_value=0)
+    def test_enable_monitoring_disabled_by_default(self, _):
+        """Tests that monitoring is disabled by default (enable_monitoring=False)."""
+        cfg = GoodputRecorder.default_config().set(
+            name="test-disabled",
+            upload_dir="/test",
+            upload_interval=30,
+            # enable_monitoring defaults to False
+            rolling_window_size=[10, 20],
+        )
+        recorder = GoodputRecorder(cfg)
+
+        # Verify the flag defaults to False
+        self.assertFalse(recorder.config.enable_monitoring)
+
+        with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_monitor_cls:
+            # Test that cumulative goodput monitoring is skipped
+            with recorder._maybe_monitor_goodput():
+                pass
+            mock_monitor_cls.assert_not_called()
+
+            # Test that rolling window monitoring is skipped
+            with recorder._maybe_monitor_rolling_window_goodput():
+                pass
+            mock_monitor_cls.assert_not_called()
+
+            # Test that maybe_monitor_all is skipped
+            with recorder.maybe_monitor_all():
+                pass
+            mock_monitor_cls.assert_not_called()
+
+    @mock.patch("jax.process_index", return_value=0)
+    def test_enable_monitoring_explicitly_disabled(self, _):
+        """Tests that monitoring is disabled when enable_monitoring=False."""
+        cfg = GoodputRecorder.default_config().set(
+            name="test-explicitly-disabled",
+            upload_dir="/test",
+            upload_interval=30,
+            enable_monitoring=False,  # Explicitly disabled
+            rolling_window_size=[10, 20],
+        )
+        recorder = GoodputRecorder(cfg)
+
+        with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_monitor_cls:
+            # Test cumulative goodput monitoring is skipped
+            with recorder._maybe_monitor_goodput():
+                pass
+            mock_monitor_cls.assert_not_called()
+
+            # Test rolling window monitoring is skipped
+            with recorder._maybe_monitor_rolling_window_goodput():
+                pass
+            mock_monitor_cls.assert_not_called()
+
+            # Test maybe_monitor_all is skipped
+            with recorder.maybe_monitor_all():
+                pass
+            mock_monitor_cls.assert_not_called()
+
+    @mock.patch("jax.process_index", return_value=0)
+    def test_enable_monitoring_explicitly_enabled(self, _):
+        """Tests that monitoring works when enable_monitoring=True."""
+        cfg = GoodputRecorder.default_config().set(
+            name="test-enabled",
+            upload_dir="/test",
+            upload_interval=30,
+            enable_monitoring=True,  # Explicitly enabled
+            rolling_window_size=[10, 20],
+        )
+        recorder = GoodputRecorder(cfg)
+
+        with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_monitor_cls:
+            mock_monitor_instance = mock_monitor_cls.return_value
+
+            # Test cumulative goodput monitoring works
+            with recorder._maybe_monitor_goodput():
+                pass
+
+            # Should be called once for cumulative monitoring
+            self.assertEqual(mock_monitor_cls.call_count, 1)
+            mock_monitor_instance.start_goodput_uploader.assert_called_once()
+            mock_monitor_instance.stop_goodput_uploader.assert_called_once()
+
+    @mock.patch("jax.process_index", return_value=0)
+    def test_record_event_works_with_monitoring_disabled(self, _):
+        """Tests that record_event still works when monitoring is disabled."""
+        cfg = GoodputRecorder.default_config().set(
+            name="test-recording-only",
+            upload_dir="/test",
+            upload_interval=30,
+            enable_monitoring=False,  # Monitoring disabled
+        )
+        recorder = GoodputRecorder(cfg)
+
+        # Verify that goodput recording still works (not monitoring/uploading)
+        with mock.patch("ml_goodput_measurement.goodput.GoodputRecorder") as mock_recorder_cls:
+            mock_instance = mock_recorder_cls.return_value
+            mock_instance.record_job_start_time = mock.MagicMock()
+            mock_instance.record_job_end_time = mock.MagicMock()
+
+            # Record event should work
+            with recorder.record_event(measurement.EventType.JOB):
+                pass
+
+            # Verify goodput recording happened
+            mock_recorder_cls.assert_called_once()
+            mock_instance.record_job_start_time.assert_called_once()
+            mock_instance.record_job_end_time.assert_called_once()
+
+        # Verify no monitoring/uploading happened
+        with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_monitor_cls:
+            with recorder.maybe_monitor_all():
+                pass
+            mock_monitor_cls.assert_not_called()

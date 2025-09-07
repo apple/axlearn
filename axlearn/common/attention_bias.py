@@ -74,12 +74,12 @@ class BaseAttentionBias:
         """
         if not self.has_value():
             raise ValueError("AttentionBias has no value.")
-        return jax.eval_shape(self.value).shape
+        return jax.eval_shape(type(self).value, self).shape
 
     @final
     def has_value(self) -> bool:
         """Return whether to the bias has a value."""
-        return jax.eval_shape(self.value) is not None
+        return jax.eval_shape(type(self).value, self) is not None
 
     @final
     def value(self) -> Optional[Tensor]:

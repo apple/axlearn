@@ -39,7 +39,7 @@ RUN pip install --upgrade pip && pip install uv flit && pip cache purge
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN uv pip install .[core,dev,grain,gcp,vertexai_tensorboard,open_api] && uv cache clean
+RUN uv pip install .[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api] && uv cache clean
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.

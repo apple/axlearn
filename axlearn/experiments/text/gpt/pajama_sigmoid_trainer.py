@@ -40,11 +40,10 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
 ```
 """
 
-
 from dataclasses import dataclass
 
+from axlearn.common.config import TrainerConfigFn
 from axlearn.experiments.text.gpt import deterministic_trainer, gala, gala_sigmoid, pajama_trainer
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 # Mapping between sequence length and shorthand name.
 MAX_SEQUENCE_LENGTH_NAME: dict[int, str] = {2048: "2k", 4096: "4k"}

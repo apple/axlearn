@@ -11,6 +11,7 @@ The Gala models are set up for baselines for various papers:
 - Sigmoid Attention. See `gala_sigmoid.py`.
 
 """
+
 import itertools
 from typing import Any, Literal, Optional, TypeAlias, Union, cast
 
@@ -24,6 +25,7 @@ from axlearn.common.attention import (
     ScaleQuery,
     TransformerLayer,
 )
+from axlearn.common.config import TrainerConfigFn
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
 from axlearn.experiments.text.gpt.common import (
@@ -41,7 +43,6 @@ from axlearn.experiments.text.gpt.common import (
     mup_simple_adam_update_transformation,
     scaled_hidden_dim,
 )
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 MODEL_SIZES = ("test", "85M", "302M", "1B", "7B")
 

@@ -37,6 +37,7 @@ from axlearn.common.attention import (
     TransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
+from axlearn.common.config import TrainerConfigFn
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
 from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh
@@ -64,7 +65,6 @@ from axlearn.experiments.text.gpt.common import (
     scaled_hidden_dim,
 )
 from axlearn.experiments.text.gpt.fuji import offload_attention_proj_policy
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL")
 

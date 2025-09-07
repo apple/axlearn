@@ -22,7 +22,6 @@ from unittest import mock
 
 import jax.random
 import numpy as np
-import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
 from jax import nn
@@ -69,7 +68,7 @@ from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import ConstantInitializer, FanAxes
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, assert_not_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import as_tensor, flatten_items, safe_not, shapes
 
@@ -81,7 +80,7 @@ def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
         dst.copy_(src)
 
 
-class LayerTest(TestCase, tf.test.TestCase):
+class LayerTest(TestCase):
     @parameterized.parameters(
         "linear",
         "nn.relu",
@@ -450,8 +449,8 @@ class LayerTest(TestCase, tf.test.TestCase):
             expected_mean = sum_x / np.maximum(count, 1)
             expected_var = sum_x2 / np.maximum(count, 1) - expected_mean**2
 
-        self.assertAllClose(jnp.squeeze(mean, axis=reduction_axis), expected_mean)
-        self.assertAllClose(jnp.squeeze(variance, axis=reduction_axis), expected_var)
+        assert_allclose(jnp.squeeze(mean, axis=reduction_axis), expected_mean)
+        assert_allclose(jnp.squeeze(variance, axis=reduction_axis), expected_var)
 
     def test_layer_norm_against_torch(self):
         dim = 6
@@ -738,7 +737,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             state=layer_params,
             prng_key=prng_key,
         )
-        self.assertAllClose(jnp.linalg.norm(outputs, axis=0), jnp.array([1.0, 1.0]))
+        assert_allclose(jnp.linalg.norm(outputs, axis=0), jnp.array([1.0, 1.0]))
 
     @parameterized.named_parameters(
         {
@@ -799,7 +798,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 1))
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
-        self.assertAllEqual(outputs.shape, output_shape)
+        self.assertEqual(list(outputs.shape), list(output_shape))
 
     @parameterized.parameters(
         itertools.product(
@@ -1042,7 +1041,7 @@ class LayerTest(TestCase, tf.test.TestCase):
                 flatten_items(params), flatten_items(noisy_params)
             ):
                 self.assertEqual(orig_path, noisy_path)
-                self.assertNotAllClose(orig_value, noisy_value)
+                assert_not_allclose(orig_value, noisy_value)
 
     @parameterized.product(drop_rate=(0, 0.5), num_cls_tokens=(0, 6))
     def test_drop_tokens(self, drop_rate, num_cls_tokens):
@@ -1155,7 +1154,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             state=layer_params,
             prng_key=jax.random.PRNGKey(123),
         )
-        self.assertAllEqual([*positions.shape, dim], outputs.shape)
+        self.assertEqual([*positions.shape, dim], list(outputs.shape))
 
         context = module.InvocationContext(
             name="root",
@@ -1197,7 +1196,7 @@ class LayerTest(TestCase, tf.test.TestCase):
         prng_key = jax.random.PRNGKey(123)
         prng_key, init_key = jax.random.split(prng_key)
         layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(dict(count=[], value=[]), shapes(layer_params))
+        self.assertEqual(dict(count=tuple(), value=tuple()), shapes(layer_params))
 
         # Random inputs.
         prng_key, input_key = jax.random.split(prng_key)
@@ -1231,7 +1230,7 @@ class LayerTest(TestCase, tf.test.TestCase):
             layer_params = copy.deepcopy(output_collection.state_updates)
 
         self.assertAlmostEqual(outputs, layer_params["value"])
-        self.assertAllClose(outputs, converge_to, atol=0.01, rtol=0.01)
+        assert_allclose(outputs, converge_to, atol=0.01, rtol=0.01)
 
 
 class EmbedTest(parameterized.TestCase):
