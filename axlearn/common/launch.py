@@ -114,25 +114,13 @@ def setup():
         logging.info("LIBTPU_INIT_ARGS='%s'", os.environ["LIBTPU_INIT_ARGS"])
 
     with _init_context():
-        if FLAGS.jax_backend == "proxy":
-            # AXLearn assumes rbg PRNG implementation and restore from checkpoint
-            # will fail on pathways if this isn't set. This is due shape of [4]
-            # being hardcoded here:
-            # https://github.com/apple/axlearn/blob/8bb4421e62c815ef9f1ba3679c3277b8bbc6a449/axlearn/common/trainer.py#L330
-            jax.config.update("jax_default_prng_impl", "rbg")
-
-            # pylint: disable-next=import-error,import-outside-toplevel
-            import pathwaysutils  # pytype: disable=import-error
-
-            pathwaysutils.initialize()
-        else:
-            setup_spmd(
-                distributed_coordinator=FLAGS.distributed_coordinator,
-                num_processes=FLAGS.num_processes,
-                process_id=FLAGS.process_id,
-                jax_backend=FLAGS.jax_backend,
-                initialization_timeout=FLAGS.initialization_timeout,
-            )
+        setup_spmd(
+            distributed_coordinator=FLAGS.distributed_coordinator,
+            num_processes=FLAGS.num_processes,
+            process_id=FLAGS.process_id,
+            jax_backend=FLAGS.jax_backend,
+            initialization_timeout=FLAGS.initialization_timeout,
+        )
 
     if FLAGS.jax_profiler_port is not None:
         # Start jax.profiler for Tensorboard and profiling in open source.
