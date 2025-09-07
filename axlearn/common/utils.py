@@ -54,6 +54,7 @@ from jax.ad_checkpoint import Offloadable, Recompute, Saveable
 from jax.experimental import mesh_utils, multihost_utils
 from jax.extend.core import Primitive
 from jax.sharding import PartitionSpec
+from packaging import version
 
 from axlearn.common import serialization
 from axlearn.common.config import (
@@ -65,6 +66,9 @@ from axlearn.common.config import (
     maybe_instantiate,
     register_validator,
 )
+
+# Define the version of JAX for compatibility on MemKind
+_JAX_MEMORY_SPACE_SUPPORT = version.parse(jax.__version__) >= version.parse("0.7.0")
 
 # New code should use Nested[XX] instead of NestedXX.
 # Old definitions are provided for backwards compatibility.
@@ -118,7 +122,23 @@ class HybridMeshShape:
 # "pinned_host" = Page locked memory on CPU, which can be address directly by accelerators by
 # direct memory access (DMA). For TPU, "pinned_host" memory layout follows TPU device tile
 # layout and usually cannot be zero-copy converted to a CPU-tensor.
-MemoryKind = Literal["device", "pinned_host"]
+if _JAX_MEMORY_SPACE_SUPPORT:
+    MemoryKind = [jax.memory.Space.Device, jax.memory.Space.Host]
+    DEVICE_MEMORY = jax.memory.Space.Device
+    HOST_MEMORY = jax.memory.Space.Host
+
+    def transfer_to_memory_kind(tensor: Tensor, memory_kind: MemoryKind) -> Tensor:
+        return jax.device_put(tensor, memory_kind)
+
+else:
+    from jax._src.sharding_impls import TransferToMemoryKind  # pylint: disable=ungrouped-imports
+
+    MemoryKind = Literal["device", "pinned_host"]
+    DEVICE_MEMORY = "device"
+    HOST_MEMORY = "pinned_host"
+
+    def transfer_to_memory_kind(tensor: Tensor, memory_kind: MemoryKind) -> Tensor:
+        return jax.device_put(tensor, TransferToMemoryKind(memory_kind))
 
 
 @dataclasses.dataclass
