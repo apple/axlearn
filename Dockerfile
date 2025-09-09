@@ -45,7 +45,7 @@ RUN pip install -qq --upgrade pip && \
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN uv pip install -qq .[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api] && \
+RUN uv pip install -qq .[core,audio,orbax,dev,gcp,vertexai_tensorboard] && \
     uv cache clean
 COPY . .
 
