@@ -20,6 +20,7 @@ input.processor.vocab_cfg.extra_ids: 0
 input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 input.processor.vocab_cfg.reverse_extra_ids: True
 input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+input.processor.vocab_cfg.use_fast_tokenizer: False
 input.source.dataset_name: 'librispeech:2.1.0'
 input.source.download: False
 input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
