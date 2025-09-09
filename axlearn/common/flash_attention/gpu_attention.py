@@ -44,7 +44,6 @@ from jax._src.cudnn.fused_attention_stablehlo import (
 )
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
-from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -69,7 +68,14 @@ from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.layers import get_dropout_mask
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import _JAX_MEMORY_SPACE_SUPPORT, Nested, Tensor
+
+# pylint: disable=ungrouped-imports
+if _JAX_MEMORY_SPACE_SUPPORT:
+    from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
+else:
+    from jax.experimental.pallas.triton import TritonCompilerParams
+# pylint: disable=ungrouped-imports
 
 
 def _segment_mask(

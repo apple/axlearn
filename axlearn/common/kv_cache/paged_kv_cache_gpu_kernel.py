@@ -8,9 +8,15 @@ This kernel is a temporary workaround of occasional performance problems with
 import jax
 import jax.numpy as jnp
 from jax.experimental import pallas as pl
-from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
 
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import _JAX_MEMORY_SPACE_SUPPORT, Tensor
+
+# pylint: disable=ungrouped-imports
+if _JAX_MEMORY_SPACE_SUPPORT:
+    from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
+else:
+    from jax.experimental.pallas.triton import TritonCompilerParams
+# pylint: enable=ungrouped-imports
 
 
 def _scatter_pages_kernel(
