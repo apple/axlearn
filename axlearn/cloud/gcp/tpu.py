@@ -35,11 +35,14 @@ def infer_tpu_cores(tpu_type: str) -> int:
     """Infer the number of TPU cores from the TPU type.
 
     Args:
-        tpu_type: A string of the format {version}-{cores}.
+        tpu_type: A string of the format {version}-{cores}[-{variant}].
+        -variant is optional.
 
     Returns:
         Inferred number of TPU cores.
     """
+    if tpu_type.count("-") == 2:
+        tpu_type = tpu_type[: tpu_type.rfind("-")]
     return int(tpu_type.rsplit("-", 1)[1])
 
 
@@ -47,11 +50,14 @@ def infer_tpu_workers(tpu_type: str) -> int:
     """Infer the number of worker processes for the given TPU type.
 
     Args:
-        tpu_type: A string of the format {version}-{cores}.
+        tpu_type: A string of the format {version}-{cores}[-{variant}].
+        -variant is optional.
 
     Returns:
         Inferred number of TPU workers.
     """
+    if tpu_type.count("-") == 2:
+        tpu_type = tpu_type[: tpu_type.rfind("-")]
     tpu_pattern = r"(.+)*-(\d+)"
     match = re.search(tpu_pattern, tpu_type)
     try:

@@ -5,10 +5,8 @@
 
 import copy
 import enum
-import functools
 import re
 from collections.abc import Mapping, Sequence
-from importlib import import_module
 from tempfile import mkdtemp
 from typing import Any, Optional, Union
 
@@ -21,7 +19,6 @@ from jax._src.tree_util import KeyEntry
 from jax.experimental.pjit import pjit
 
 from axlearn.common import utils
-from axlearn.common.base_layer import BaseLayer
 from axlearn.common.checkpointer import (
     CheckpointValidationType,
     StateStorage,
@@ -32,12 +29,10 @@ from axlearn.common.checkpointer import (
 )
 from axlearn.common.config import (
     REQUIRED,
-    ConfigOr,
     InstantiableConfig,
     Required,
+    TrainerConfigFn,
     config_class,
-    config_for_function,
-    maybe_instantiate,
 )
 from axlearn.common.input_fake import EmptyInput
 from axlearn.common.module import Module
@@ -49,13 +44,11 @@ from axlearn.common.utils import (
     PartitionSpec,
     Tensor,
     _key_entry_to_str,
-    check_param_shape_alignment,
     flatten_items,
     get_data_dir,
     infer_mesh_shape,
     set_data_dir,
 )
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 
 class Builder(Module):
@@ -503,43 +496,6 @@ class BaseConverterFromPretrainedModel(Converter):
             return source, target
 
 
-class BertSequenceClassificationHeadConverter(BaseConverterFromPretrainedModel):
-    """Replaces a BertLMHead with a BertSequenceClassificationHead.
-
-    Main use-case is to convert a pretrained BertModel checkpoint by dropping the MLM head and
-    loading a task-specific finetuning head in its place. Note that we also reset optimizer state
-    (e.g. accumulators) corresponding to the base pretrained model.
-    """
-
-    def target_state_type(self) -> Builder.StateType:
-        return Builder.StateType.TENSORS
-
-    def source_to_target(self, source: Builder.State, aux: Any) -> Builder.State:
-        """Produces state compatible with the new classification head."""
-        restored_model = jax.tree.map(
-            lambda s, t: self._swap_heads(s, t) if self._is_bert_lm_head(s) else s,
-            source.trainer_state.model,
-            aux.trainer_state.model,
-        )
-        restored_state = source.trainer_state._replace(model=restored_model)
-        # Reset old optimizer state following fairseq, e.g:
-        # https://github.com/facebookresearch/fairseq/blob/acd9a53607d1e5c64604e88fc9601d0ee56fd6f1/examples/roberta/config/finetuning/cola.yaml#L21
-        # https://github.com/facebookresearch/fairseq/blob/10b797a44f1d724465cd66ce1bb92d6b8fa052eb/fairseq/trainer.py#L587
-        restored_state = restored_state._replace(learner=aux.trainer_state.learner)
-        built_keys = source.built_keys.union({key for key, _ in flatten_items(restored_state)})
-        return Builder.State(step=aux.step, trainer_state=restored_state, built_keys=built_keys)
-
-    # pylint: disable-next=no-self-use
-    def _is_bert_lm_head(self, state: dict[str, Any]) -> bool:
-        return is_dict(state, "head") and is_dict(state["head"], ["transform", "output_bias"])
-
-    # pylint: disable-next=no-self-use
-    def _swap_heads(self, source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
-        out = clone_tree(source)
-        out["head"] = target["head"]
-        return out
-
-
 def traverse_and_set_target_state_parameters(
     *,
     target_state: dict[str, Any],
@@ -593,130 +549,6 @@ def traverse_and_set_target_state_parameters(
             source_scope=source_scope,
         )
     return target_state
-
-
-def torch_to_axlearn_converter(
-    module: str = "axlearn.common.param_converter",
-    dst_layer: Optional[ConfigOr[Union[BaseLayer, type]]] = None,
-):
-    """See HuggingFacePreTrainedBuilder.converter."""
-    # Lazily import to avoid introducing a dependency otherwise.
-    # TODO(bwzhang@): The fairseq layer is not supported in TPU.
-    # pylint: disable-next=import-outside-toplevel
-    torch_to_axlearn = import_module(module).torch_to_axlearn
-    return functools.partial(torch_to_axlearn, dst_layer=maybe_instantiate(dst_layer))
-
-
-class HuggingFacePreTrainedBuilder(Builder):
-    """Replaces model state with params from a Hugging Face layer.
-
-    This builder supports replacing parameters for parts of the module.
-    To use this builder, the user can call spec_to_config function with spec defined as
-    "hf_pretrained:model_name:target_scope1/target_scope2:source_scope1/source_scope2"
-
-    The user can also configure and initialize the builder by setting the hf_layer_config,
-    target_scope, and source_scope.
-    The hf_layer_config is required. The target and source scopes are optional.
-
-    In the following context, the target refers to the model state.
-    The source refers to the HF model.
-
-    The builder will replace the target model's parameters under
-    target_scope1->target_scope2->... to the HF model's parameters under
-    source_scope1->source_scope2->...
-    target[target_scope1][target_scope2] = hf_model[source_scope1][source_scope2]
-    """
-
-    SPEC_PREFIX = "hf_pretrained:"
-
-    @config_class
-    class Config(Builder.Config):
-        """Configures HuggingFacePreTrainedBuilder."""
-
-        # A config that instantiates to a Hugging Face layer.
-        hf_layer_config: Required[InstantiableConfig] = REQUIRED
-        # The target_scope is defined as a list of strings with multiple scope names.
-        # If target_scope == [], it means the whole model state parameters will be replaced.
-        target_scope: Sequence[str] = []
-        # The source_scope is defined as a list of strings with multiple scope names.
-        # If source_scope == [], it means the whole HF model parameters will be
-        # used for replacement.
-        source_scope: Sequence[str] = []
-        # A config that instantiates to a param converter, which takes a torch module and emits
-        # axlearn model params.
-        converter: InstantiableConfig = config_for_function(torch_to_axlearn_converter)
-
-    def __init__(self, cfg: Config, *, parent: Optional[Module]):
-        super().__init__(cfg, parent=parent)
-        cfg = self.config
-        self._converter = cfg.converter.instantiate()
-
-    @classmethod
-    def spec_to_config(cls, spec: str) -> Config:
-        # Lazily import to avoid introducing a dependency otherwise.
-        # pylint: disable-next=import-outside-toplevel
-        from transformers import AutoModel
-
-        spec_split = spec.split(":")
-        if len(spec_split) != 3:
-            raise ValueError(
-                "The spec should contains three components, model_name,"
-                "source_scope, and target_scope. The source_scope and"
-                "target scope can be empty. For example, 'hf_pretrained:Model::'"
-                "This means the model_name is Model. The source_scope and"
-                "target_scope are not set."
-            )
-
-        spec = spec_split[0]
-        target_scope = spec_split[1]
-        if target_scope == "":
-            target_scope = []  # directly replacing empty string with [].
-        else:
-            target_scope = target_scope.split("/")
-        source_scope = spec_split[2]
-        if source_scope == "":
-            source_scope = []
-        else:
-            source_scope = source_scope.split("/")
-
-        def auto_from_pretrained(model_name: str):
-            return AutoModel.from_pretrained(model_name)
-
-        return cls.default_config().set(
-            hf_layer_config=config_for_function(auto_from_pretrained).set(model_name=spec),
-            target_scope=target_scope,
-            source_scope=source_scope,
-        )
-
-    def input_state_type(self) -> Builder.StateType:
-        return Builder.StateType.TENSORS
-
-    def __call__(self, state: Builder.State) -> Builder.State:
-        """Copies model params from Hugging Face layer."""
-        cfg = self.config
-
-        hf_layer = cfg.hf_layer_config.instantiate()
-        model_params = self._converter(hf_layer)
-
-        restored_model_state = traverse_and_set_target_state_parameters(
-            target_state=state.trainer_state.model,
-            target_scope=cfg.target_scope,
-            source_params=model_params,
-            source_scope=cfg.source_scope,
-        )
-        # Check the shape between the original state and the new state.
-        shape_check_msg = check_param_shape_alignment(
-            state.trainer_state.model, restored_model_state
-        )
-        if shape_check_msg:
-            raise ValueError(shape_check_msg)
-
-        # The restored_model_state should return a full model state. Part of the model parameters
-        # might be set to HF model's parameters.
-        restored_state = state.trainer_state._replace(model=restored_model_state)
-
-        built_keys = state.built_keys.union({key for key, _ in flatten_items(restored_state)})
-        return Builder.State(step=0, trainer_state=restored_state, built_keys=built_keys)
 
 
 class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
@@ -1142,10 +974,7 @@ class Conv2DToConv3DBuilder(BaseConv2DStateBuilder):
         return weight[:, :, jnp.newaxis, :, :].repeat(cfg.depth, axis=2) / cfg.depth
 
 
-_BUILDERS = [
-    TensorStoreStateStorageBuilder,
-    HuggingFacePreTrainedBuilder,
-]
+_BUILDERS = [TensorStoreStateStorageBuilder]
 
 
 class UnknownBuilderError(NotImplementedError):

@@ -39,9 +39,10 @@ axlearn gcp launch --zone=$ZONE --instance_type=$INSTANCE_TYPE --num_slices=${NU
     --mesh_selector=$INSTANCE_TYPE --jax_backend=tpu
 ```
 """
+
 from typing import Callable
 
-from axlearn.common.config import InstantiableConfig, config_for_function
+from axlearn.common.config import InstantiableConfig, TrainerConfigFn, config_for_function
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
@@ -51,7 +52,6 @@ from axlearn.experiments.text.gpt.common import (
     mixture_train_input_source,
     tfds_input,
 )
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 # Sentencepiece vocabs generated from c4/en:3.0.1.
 # See bpe_{32k,128k}.json for the sentencepiece settings.

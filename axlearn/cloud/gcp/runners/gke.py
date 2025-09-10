@@ -477,13 +477,15 @@ class GKERunnerJob(BaseRunnerJob):
                 self._inner._delete()  # pylint: disable=protected-access
             elif status == GKERunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
-                try:
-                    # Note: while this is blocking, the bastion will kill the runner process when it
-                    # needs to reschedule.
-                    self._bundler.wait_until_finished(cfg.name)
-                except RuntimeError as e:
-                    logging.error("Bundling failed: %s. Aborting the job.", e)
-                    return
+                # pylint: disable-next=protected-access
+                if not self._inner._builder.config.image_id:
+                    try:
+                        # Note: while this is blocking, the bastion will kill the runner process
+                        # when it needs to reschedule.
+                        self._bundler.wait_until_finished(cfg.name)
+                    except RuntimeError as e:
+                        logging.error("Bundling failed: %s. Aborting the job.", e)
+                        return
 
                 # Provision node pools for the job to run.
                 if self._pre_provisioner is not None:
@@ -850,13 +852,15 @@ class LWSRunnerJob(BaseRunnerJob):
 
             elif status == LWSRunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
-                try:
-                    # Note: while this is blocking, the bastion will kill the runner process when it
-                    # needs to reschedule.
-                    self._bundler.wait_until_finished(cfg.name)
-                except RuntimeError as e:
-                    logging.error("Bundling failed: %s. Aborting the job.", e)
-                    return
+                # pylint: disable-next=protected-access
+                if not self._inner._builder.config.image_id:
+                    try:
+                        # Note: while this is blocking, the bastion will kill the runner process
+                        # when it needs to reschedule.
+                        self._bundler.wait_until_finished(cfg.name)
+                    except RuntimeError as e:
+                        logging.error("Bundling failed: %s. Aborting the job.", e)
+                        return
 
                 # Provision node pools for the job to run.
                 if self._pre_provisioner is not None:

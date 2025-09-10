@@ -88,6 +88,7 @@ class CompilerOptionsTest(test_utils.TestCase):
 
     @parameterized.parameters(
         dict(tpu_type="v5e-16", expected="v5litepod"),
+        dict(tpu_type="v6e-8-1", expected="v6e"),
     )
     def test_tpu_version_alias(self, tpu_type: str, expected: str):
         self.assertEqual(expected, compiler_options.infer_tpu_version(tpu_type))

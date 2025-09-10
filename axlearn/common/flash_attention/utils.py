@@ -137,6 +137,7 @@ def flash_attention_implementation(
         attn_fn = cfg.default_config().set(**common_cfg).instantiate()
         is_supported = attn_fn.is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type)
         if is_supported:
+            logging.info("Using %s for flash attention.", attn_fn.name())
             return attn_fn
     # Fall back to standard attention if no backend kernels are supported for the given
     # configuration.

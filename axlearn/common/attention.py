@@ -143,6 +143,7 @@ from axlearn.common.param_init import (
     ConstantInitializer,
     DefaultInitializer,
     FanAxes,
+    GaussianInitializer,
     WeightInitializer,
     constant_initializer,
 )
@@ -1361,78 +1362,6 @@ def apply_rotary_position_embeddings(
     return query, key, value
 
 
-class RoFormerQKVLinear(BaseQKVLinear):
-    """RoFormerQKVLinear class
-
-    This class maps the query, key, and value using the RoPE embeddings.
-    """
-
-    @config_class
-    class Config(BaseQKVLinear.Config):
-        """Configures RoFormerQKVLinear."""
-
-        rope_pos_emb_layer: RoFormerSinusoidalPositionalEmbedding.Config = (
-            RoFormerSinusoidalPositionalEmbedding.default_config()
-        )
-        input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
-        # Whether to apply RoPE rotations to the value embeddings.
-        rotary_value: Required[bool] = REQUIRED
-
-    def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
-        super().__init__(cfg, parent=parent)
-        cfg = self.config
-        self._add_child(
-            "rope_pos_emb_layer",
-            cfg.rope_pos_emb_layer.set(dim=cfg.per_head_dim),
-        )
-        self._add_child(
-            "i_proj",
-            cfg.input_linear.set(
-                query_dim=cfg.query_dim,
-                value_dim=cfg.value_dim,
-                key_dim=cfg.key_dim,
-                num_heads=cfg.num_heads,
-                per_head_dim=cfg.per_head_dim,
-            ),
-        )
-
-    @property
-    def num_kv_heads(self):
-        """Propagate num KV heads from input linear."""
-        return self.i_proj.num_kv_heads
-
-    def forward(
-        self,
-        query: Tensor,
-        *,
-        key: Optional[Tensor] = None,
-        value: Optional[Tensor] = None,
-        kv_state: Optional[KVState] = None,
-        query_positions: Optional[Tensor] = None,
-    ) -> BaseQKVLinear.Output:
-        cfg = self.config
-        # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
-        query, key, value = self.i_proj(query, key=key, value=value, kv_state=kv_state)
-        seq_len = query.shape[1]
-        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(
-            positions=query_positions, max_seq_len=seq_len
-        ).astype(query.dtype)
-        # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
-        sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
-
-        i_proj_computes_kv = kv_state is None
-        query, key, value = apply_rotary_position_embeddings(
-            sinusoidal_pos=sinusoidal_pos_emb,
-            query=query,
-            key=key,
-            value=value,
-            rotary_key=i_proj_computes_kv,
-            rotary_value=i_proj_computes_kv and cfg.rotary_value,
-        )
-
-        return self.Output(query, key, value)
-
-
 class PerDimScale(BaseLayer):
     """A layer to scale individual dimensions of the input."""
 
@@ -1634,6 +1563,153 @@ class ScaleKey(BaseScaleQK):
         return config_for_function(constant_scale_fn).set(value=1)
 
 
+class RoFormerQKVLinear(BaseQKVLinear):
+    """RoFormerQKVLinear class
+
+    This class maps the query, key, and value using the RoPE embeddings.
+    """
+
+    @config_class
+    class Config(BaseQKVLinear.Config):
+        """Configures RoFormerQKVLinear."""
+
+        rope_pos_emb_layer: RoFormerSinusoidalPositionalEmbedding.Config = (
+            RoFormerSinusoidalPositionalEmbedding.default_config()
+        )
+        input_linear: BaseQKVLinear.Config = QKVLinear.default_config()
+        # Whether to apply RoPE rotations to the value embeddings.
+        rotary_value: Required[bool] = REQUIRED
+
+        # This is pre-rope scaling for query and key.
+        query_scale: Optional[BaseScaleQK.Config] = None
+        key_scale: Optional[BaseScaleQK.Config] = None
+
+        # If set, only this fraction of the per_head_dim is rotated.
+        partial_rope_factor: Optional[float] = None
+
+    def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+
+        if cfg.partial_rope_factor is not None and not 0 < cfg.partial_rope_factor <= 1:
+            raise ValueError(
+                f"partial_rope_factor must be in (0, 1], got {cfg.partial_rope_factor}"
+            )
+
+        if cfg.partial_rope_factor is None:
+            rope_dim = cfg.per_head_dim
+        else:
+            rope_dim = int(cfg.per_head_dim * cfg.partial_rope_factor)
+
+        self._add_child(
+            "rope_pos_emb_layer",
+            cfg.rope_pos_emb_layer.set(dim=rope_dim),
+        )
+        self._add_child(
+            "i_proj",
+            cfg.input_linear.set(
+                query_dim=cfg.query_dim,
+                value_dim=cfg.value_dim,
+                key_dim=cfg.key_dim,
+                num_heads=cfg.num_heads,
+                per_head_dim=cfg.per_head_dim,
+            ),
+        )
+
+        if cfg.query_scale is None:
+            # Identity scale.
+            cfg.query_scale = ScaleQuery.default_config().set(
+                scale_factor=config_for_function(constant_scale_fn).set(value=1.0)
+            )
+        self._add_child(
+            "scale_query",
+            cfg.query_scale.set(per_head_dim=cfg.per_head_dim),
+        )
+
+        if cfg.key_scale is None:
+            # Identity scale.
+            cfg.key_scale = ScaleKey.default_config().set(
+                scale_factor=config_for_function(constant_scale_fn).set(value=1.0)
+            )
+        self._add_child(
+            "scale_key",
+            cfg.key_scale.set(per_head_dim=cfg.per_head_dim),
+        )
+
+    @property
+    def num_kv_heads(self):
+        """Propagate num KV heads from input linear."""
+        return self.i_proj.num_kv_heads
+
+    def forward(
+        self,
+        query: Tensor,
+        *,
+        key: Optional[Tensor] = None,
+        value: Optional[Tensor] = None,
+        kv_state: Optional[KVState] = None,
+        query_positions: Optional[Tensor] = None,
+    ) -> BaseQKVLinear.Output:
+        cfg = self.config
+        # Query should have shape of [batch_size, seq_len, num_heads, per_head_dim].
+        query, key, value = self.i_proj(query, key=key, value=value, kv_state=kv_state)
+        seq_len = query.shape[1]
+        sinusoidal_pos_emb = self.rope_pos_emb_layer.forward(
+            positions=query_positions, max_seq_len=seq_len
+        ).astype(query.dtype)
+        # sinusoidal_pos_emb shape should be [batch_size, seq_len, 1, dim]
+        sinusoidal_pos_emb = jnp.expand_dims(sinusoidal_pos_emb, 2)
+
+        # The positions arguments is not used in the default scale_query/key.
+        query = self.scale_query(query, positions=query_positions)
+        key = self.scale_key(key, positions=query_positions)
+
+        if cfg.partial_rope_factor is None or cfg.partial_rope_factor == 1.0:
+            query_rope, key_rope, value_rope = query, key, value
+        else:
+            split_point = int(cfg.per_head_dim * cfg.partial_rope_factor)
+            query_rope, query_nope = jnp.split(
+                query,
+                [
+                    split_point,
+                ],
+                axis=-1,
+            )
+            key_rope, key_nope = jnp.split(
+                key,
+                [
+                    split_point,
+                ],
+                axis=-1,
+            )
+            value_rope, value_nope = jnp.split(
+                value,
+                [
+                    split_point,
+                ],
+                axis=-1,
+            )
+
+        i_proj_computes_kv = kv_state is None
+        query_rope, key_rope, value_rope = apply_rotary_position_embeddings(
+            sinusoidal_pos=sinusoidal_pos_emb,
+            query=query_rope,
+            key=key_rope,
+            value=value_rope,
+            rotary_key=i_proj_computes_kv,
+            rotary_value=i_proj_computes_kv and cfg.rotary_value,
+        )
+
+        if cfg.partial_rope_factor is None or cfg.partial_rope_factor == 1.0:
+            query, key, value = query_rope, key_rope, value_rope
+        else:
+            query = jnp.concatenate([query_rope, query_nope], axis=-1)
+            key = jnp.concatenate([key_rope, key_nope], axis=-1)
+            value = jnp.concatenate([value_rope, value_nope], axis=-1)
+
+        return self.Output(query, key, value)
+
+
 class MultiheadAttention(BaseLayer):
     """A basic multi-head attention layer.
 
@@ -1772,12 +1848,16 @@ class MultiheadAttention(BaseLayer):
         cfg = self.config
         params = {}
         if cfg.logit_sink:
-            initializer = ConstantInitializer.default_config().set(value=0.0).instantiate()
+            initializer = (
+                GaussianInitializer.default_config()
+                .set(std=math.sqrt(self.per_head_dim()))
+                .instantiate()
+            )
             params["sink"] = ParameterSpec(
                 shape=(cfg.num_heads,),
                 mesh_axes=("model",),
                 initializer=initializer,
-                dtype=cfg.dtype,
+                dtype=jnp.float32,
                 weight_decay_scale=0.0,
             )
         return params

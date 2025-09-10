@@ -14,6 +14,7 @@ from axlearn.cloud.gcp.pathways_utils import (
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY,
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
     _PATHWAYS_PROXY_CONTAINER_NAME,
+    _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
     _PATHWAYS_SERVER_IMAGE,
     get_megascale_options,
     get_xla_options,
@@ -39,7 +40,7 @@ class PathwaysReplicatedJobTest(TestCase):
     """Tests PathwaysReplicatedJob."""
 
     @contextlib.contextmanager
-    def _job_config(self, bundler_cls: type[Bundler], **kwargs):
+    def _job_config(self, bundler_cls: type[Bundler], instance_type: str = "tpu-v5p-16", **kwargs):
         with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
             fv = flags.FlagValues()
             cfg = pathways_utils.PathwaysReplicatedJob.default_config().set(
@@ -48,20 +49,21 @@ class PathwaysReplicatedJobTest(TestCase):
             define_flags(cfg, fv)
 
             fv.set_default("name", "fake-name")
-            fv.set_default("instance_type", "tpu-v5p-16")
+            fv.set_default("instance_type", instance_type)
             for key, value in kwargs.items():
                 if value is not None:
                     setattr(fv, key, value)
             fv.mark_as_parsed()
             cfg = from_flags(cfg, fv)
             bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
-            print("debug: cfg: ", type(cfg))
             yield cfg, bundler_cfg
 
-    def test_build_pathways_head_pod(self):
+    @parameterized.parameters(dict(instance_type="tpu-v5p-16"), dict(instance_type="tpu-v5p-256"))
+    def test_build_pathways_head_pod(self, instance_type):
         with (
             self._job_config(
                 CloudBuildBundler,
+                instance_type,
             ) as (cfg, bundler_cfg),
         ):
             cfg.inner.set(
@@ -77,7 +79,8 @@ class PathwaysReplicatedJobTest(TestCase):
             pod_spec = pod["spec"]
 
             self.assertEqual(len(pod_spec["containers"]), 1)
-            self.assertEqual(len(pod_spec["initContainers"]), 2)
+            # pathways-proxy, pathways-rm and output-uploader
+            self.assertEqual(len(pod_spec["initContainers"]), 3)
             node_selector = pod_spec["nodeSelector"]
             self.assertEqual(
                 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
@@ -113,17 +116,28 @@ class PathwaysReplicatedJobTest(TestCase):
 
             # Check pathways-proxy container args for XLA flags.
             proxy_container = None
+            rm_container = None
             for container in pod_spec["initContainers"]:
                 if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
                     proxy_container = container
-                    break
+                if container["name"] == _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME:
+                    rm_container = container
             self.assertIsNotNone(proxy_container, "Pathways proxy container not found.")
+            self.assertIsNotNone(rm_container, "Pathways rm container not found.")
 
             # pylint: disable-next=protected-access
             xla_arg_flags = xla_flags_from_options(builder._xla_options).split()
             self.assertTrue(xla_arg_flags, "XLA flags should be present")
             for flag in xla_arg_flags:
                 self.assertIn(flag, proxy_container["args"])
+
+            # Check that instance_type and expected_instances are set
+            if instance_type == "tpu-v5p-16":
+                self.assertIn("--instance_count=1", rm_container["args"])
+                self.assertIn("--instance_type=tpuv5:2x2x2", rm_container["args"])
+            if instance_type == "tpu-v5p-256":
+                self.assertIn("--instance_count=1", rm_container["args"])
+                self.assertIn("--instance_type=tpuv5:4x4x8_untwisted", rm_container["args"])
 
     def test_build_pathways_worker_pod(self):
         with (
@@ -204,8 +218,7 @@ class PathwaysReplicatedJobTest(TestCase):
         """Tests processing of pathways_xla_flags, including overrides and new flags."""
         flag_to_override_key = "xla_tpu_enable_latency_hiding_scheduler"
         override_value_str = "false"
-        # This flag's default value for v5p is "true" (string). Change it to False (bool).
-        expected_override_value_parsed = False
+        expected_override_value_parsed = "false"
 
         new_xla_flag_key = "xla_a_brand_new_one"
         new_xla_flag_value_str = "12345"

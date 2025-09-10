@@ -24,6 +24,7 @@ from axlearn.common.attention import (
     TransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
+from axlearn.common.config import TrainerConfigFn
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
 from axlearn.experiments.text.gpt.common import (
@@ -41,7 +42,6 @@ from axlearn.experiments.text.gpt.common import (
     mup_simple_adam_update_transformation,
     scaled_hidden_dim,
 )
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
 MODEL_SIZES = ("test", "85M", "3B")
 

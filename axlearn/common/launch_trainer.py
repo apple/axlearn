@@ -11,9 +11,9 @@ from absl import flags, logging
 
 from axlearn.common import file_system as fs
 from axlearn.common import measurement
+from axlearn.common.config import TrainerConfigFn, get_named_trainer_config
 from axlearn.common.trainer import SpmdTrainer, select_mesh_config
 from axlearn.common.utils import MeshShape, get_data_dir, infer_mesh_shape
-from axlearn.experiments import TrainerConfigFn, get_named_trainer_config
 
 # Trainer-specific flags.
 flags.DEFINE_string(

@@ -4,12 +4,16 @@
 
 from typing import Callable
 
-from axlearn.common.config import InstantiableConfig, config_for_function
+from axlearn.common.config import (
+    InstantiableConfig,
+    TrainerConfigFn,
+    config_for_function,
+    with_overrides,
+)
 from axlearn.common.input_tf_data import tfds_dataset
 from axlearn.experiments.text.common import vocab
 from axlearn.experiments.text.gpt import gala, honeycrisp
 from axlearn.experiments.text.gpt.common import REPLACE_NEWLINES_WITH, tfds_input
-from axlearn.experiments.trainer_config_utils import TrainerConfigFn, with_overrides
 
 _SENTENCEPIECE_MODEL_NAME = {
     32 * 1024: "bpe_32k_c4.model",

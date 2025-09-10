@@ -263,7 +263,8 @@ class NotTpuError(ValueError):
 
 # TODO(markblee): Generalize to other accelerators.
 def infer_tpu_type(instance_type: str) -> str:
-    """Infers tpu type (e.g. v4-8) from instance type (e.g. tpu-v4-8 or v4-8)."""
+    """Infers tpu type (e.g. v4-8 or v6e-8-1) from instance type
+    (e.g. tpu-v4-8, v4-8, tpu-v6e-8-1 or v6e-8-1)."""
     if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
         raise NotTpuError(f"Invalid TPU instance: {instance_type}")
     return instance_type.replace("tpu-", "")
@@ -282,6 +283,8 @@ def infer_tpu_version(tpu_type: str) -> str:
     Raises:
         ValueError: if the TPU version string is unknown.
     """
+    if tpu_type.count("-") == 2:
+        tpu_type = tpu_type[: tpu_type.rfind("-")]
     tpu_type = infer_tpu_type(tpu_type)
     tpu_version = tpu_type.rsplit("-", 1)[0]  # split from the last occurrence of '-'
     # Resolve aliases like v5e to v5litepod, since in some cases (e.g. aot compilation) v5e is

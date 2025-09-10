@@ -1248,12 +1248,18 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             attention.GroupedQKVLinear.default_config(),
         ),
         has_query_positions=(True, False),
+        use_query_scale=(True, False),
+        use_key_scale=(True, False),
+        partial_rope_factor=(1.0, 0.5, None),
     )
     def test_roformer_qkv_linear(
         self,
         dtype: jnp.dtype,
         input_linear: attention.BaseQKVLinear.Config,
         has_query_positions: bool,
+        use_query_scale: bool,
+        use_key_scale: bool,
+        partial_rope_factor: Optional[float],
     ):
         seq_len = 6
         batch_size = 2
@@ -1275,6 +1281,12 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
                 num_kv_heads = num_heads // 2
                 input_linear = input_linear.set(num_kv_heads=num_kv_heads)
             roformer_qkv_linear_kwargs["input_linear"] = input_linear
+
+        if use_key_scale:
+            roformer_qkv_linear_kwargs["key_scale"] = attention.ScaleKey.default_config()
+        if use_query_scale:
+            roformer_qkv_linear_kwargs["query_scale"] = attention.ScaleQuery.default_config()
+        roformer_qkv_linear_kwargs["partial_rope_factor"] = partial_rope_factor
 
         roformer_qkv_linear = (
             RoFormerQKVLinear.default_config()

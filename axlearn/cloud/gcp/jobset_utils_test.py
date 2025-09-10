@@ -188,6 +188,7 @@ class TPUReplicatedJobTest(TestCase):
         ],
         priority_class=[None, "such-high-priority"],
         additional_node_networks=[None, "network-1:subnet-1,network-2:subnet-2"],
+        image_id=[None, "my-image-id"],
     )
     def test_build_pod(
         self,
@@ -205,6 +206,7 @@ class TPUReplicatedJobTest(TestCase):
         gcsfuse_mount_spec: Optional[list[str]] = None,
         priority_class: Optional[str] = None,
         additional_node_networks: Optional[str] = None,
+        image_id: Optional[str] = None,
     ):
         with (
             mock.patch("os.environ", env),
@@ -213,6 +215,7 @@ class TPUReplicatedJobTest(TestCase):
                 host_mount_spec=host_mount_spec,
                 gcsfuse_mount_spec=gcsfuse_mount_spec,
                 priority_class=priority_class,
+                image_id=image_id,
             ) as (cfg, bundler_cfg),
         ):
             gke_job: jobset_utils.TPUReplicatedJob = cfg.set(
@@ -281,6 +284,10 @@ class TPUReplicatedJobTest(TestCase):
             container = pod_spec["containers"][0]
             # Check command.
             self.assertIn("test_command", container["command"])
+            if image_id:
+                self.assertEqual(image_id, container["image"])
+            else:
+                self.assertIn("test-image", container["image"])
 
             if host_mount_spec:
                 for v in pod_spec["volumes"]:
@@ -404,10 +411,16 @@ class TPUReplicatedJobTest(TestCase):
                     str(spec.metadata.priority), node_selector.get("job-priority", None)
                 )
                 self.assertEqual(spec.metadata.user_id, labels.get("user-id", None))
+                self.assertEqual(spec.metadata.project_id, labels.get("project-id", None))
+                self.assertEqual(
+                    str(gke_job.config.accelerator.num_replicas),
+                    labels.get("num-replicas", None),
+                )
             else:
                 self.assertNotIn("job-priority", labels)
                 self.assertNotIn("job-priority", node_selector)
                 self.assertNotIn("user-id", labels)
+                self.assertNotIn("project-id", labels)
 
             if BASTION_JOB_VERSION_ENV_VAR in env:
                 job_version = env.get(BASTION_JOB_VERSION_ENV_VAR)
@@ -529,13 +542,15 @@ class TPUReplicatedJobTest(TestCase):
                 "custom topology 2x2x2 doesn't match the number of cores in instance_type v5p-128."
             ),
         ),
-        dict(instance_type="v5p-128", topology="2x8x8", expected=None),
+        dict(instance_type="v5p-128", topology="2x4x8", expected=None),
     )
     def test_verify_custom_topology_availability(self, instance_type, topology, expected):
         accelerator = AcceleratorConfig().set(instance_type=instance_type, topology=topology)
         if isinstance(expected, Exception):
             with self.assertRaisesRegex(type(expected), str(expected)):
                 TPUReplicatedJob.verify_custom_topology_availability(accelerator)
+        else:
+            TPUReplicatedJob.verify_custom_topology_availability(accelerator)
 
 
 class CompositeReplicatedJobTest(TestCase):
