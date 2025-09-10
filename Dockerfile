@@ -45,8 +45,12 @@ RUN pip install -qq --upgrade pip && \
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
+<<<<<<< HEAD
 RUN uv pip install -qq .[core,audio,orbax,dev,gcp,vertexai_tensorboard] && \
     uv cache clean
+=======
+RUN uv pip install .[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api] && uv cache clean
+>>>>>>> 4109ab0 (Move UV_FIND_LINKS to pyproject.toml)
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
@@ -65,7 +69,11 @@ FROM base AS bastion
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
+<<<<<<< HEAD
 RUN uv pip install -qq .[core,gcp,vertexai_tensorboard] && uv cache clean
+=======
+RUN uv pip install .[core,gcp,vertexai_tensorboard] && uv cache clean
+>>>>>>> 4109ab0 (Move UV_FIND_LINKS to pyproject.toml)
 
 ################################################################################
 # Dataflow container spec.                                                     #
@@ -76,7 +84,11 @@ FROM base AS dataflow
 # Beam workers default to creating a new virtual environment on startup. Instead, we want them to
 # pickup the venv setup above. An alternative is to install into the global environment.
 ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
+<<<<<<< HEAD
 RUN uv pip install -qq .[core,gcp,dataflow] && uv cache clean
+=======
+RUN uv pip install .[core,gcp,dataflow] && uv cache clean
+>>>>>>> 4109ab0 (Move UV_FIND_LINKS to pyproject.toml)
 COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
