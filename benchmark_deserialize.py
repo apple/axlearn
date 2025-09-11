@@ -154,6 +154,19 @@ class PatchedGlobalAsyncCheckpointManager(GlobalAsyncCheckpointManager):
         self.wait_until_finished()
         concurrent_bytes = concurrent_gb * 10**9
 
+        max_shard_bytes = 0
+        if global_shapes and dtypes:
+            for sharding, shape, dtype in zip(shardings, global_shapes, dtypes):
+                if isinstance(sharding, Layout):
+                    sharding = sharding.sharding
+                shard_shape = sharding.shard_shape(shape)
+                shard_bytes = np.prod(shard_shape) * np.dtype(dtype).itemsize
+                if shard_bytes > max_shard_bytes:
+                    max_shard_bytes = shard_bytes
+
+        if max_shard_bytes > concurrent_bytes:
+            concurrent_bytes = int(max_shard_bytes) + 1
+
         async def _run_deserializer():
             # pylint: disable=protected-access
             byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
