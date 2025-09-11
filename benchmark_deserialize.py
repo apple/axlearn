@@ -50,7 +50,6 @@ flags.DEFINE_string(
 )
 flags.DEFINE_integer("num_iterations", 5, "The number of benchmark iterations.")
 flags.DEFINE_integer("warmup_iterations", 1, "The number of warmup iterations.")
-flags.DEFINE_integer("batch_size", 64, "The number of tensors to deserialize in each batch.")
 
 
 # --- Local Patch for Deserialization ---
@@ -206,29 +205,17 @@ def main(argv: Sequence[str]) -> None:
     manager = PatchedGlobalAsyncCheckpointManager()
 
     def run_deserialize():
-        """Runs deserialization across all tensors, processing them in batches."""
-        total_duration = 0
-        num_tensors = len(ts_specs)
-        for i in range(0, num_tensors, FLAGS.batch_size):
-            batch_start_time = time.time()
-            batch_end = min(i + FLAGS.batch_size, num_tensors)
-            print(
-                f"  Deserializing batch {i // FLAGS.batch_size + 1}/"
-                f"{math.ceil(num_tensors / FLAGS.batch_size)} (tensors {i}-{batch_end-1})..."
-            )
-
-            restored_arrays = manager.deserialize(
-                shardings=shardings_list[i:batch_end],
-                tensorstore_specs=ts_specs[i:batch_end],
-                global_shapes=global_shapes[i:batch_end],
-                dtypes=dtypes[i:batch_end],
-            )
-            for arr in restored_arrays:
-                arr.block_until_ready()
-
-            batch_duration = time.time() - batch_start_time
-            total_duration += batch_duration
-        return total_duration
+        """Runs deserialization across all tensors."""
+        start_time = time.time()
+        restored_arrays = manager.deserialize(
+            shardings=shardings_list,
+            tensorstore_specs=ts_specs,
+            global_shapes=global_shapes,
+            dtypes=dtypes,
+        )
+        for arr in restored_arrays:
+            arr.block_until_ready()
+        return time.time() - start_time
 
     print(f"Running {FLAGS.warmup_iterations} warmup iterations...")
     for _ in range(FLAGS.warmup_iterations):
