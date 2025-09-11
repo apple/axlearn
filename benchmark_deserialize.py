@@ -94,7 +94,7 @@ async def _patched_async_deserialize(
     async def cb(index: array.Index, device: jax.Device):
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
-        requested_bytes = serialization.ts_impl.estimate_read_memory_footprint(t, restricted_domain)
+        requested_bytes = serialization.estimate_read_memory_footprint(t, restricted_domain)
         await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
         if dtype is not None:
@@ -137,9 +137,7 @@ async def _patched_async_deserialize(
 
     # This is the patched line.
     # pylint: disable-next=protected-access
-    return await serialization.ts_impl._create_async_array_from_callback(
-        shape, dtype, in_sharding, cb
-    )
+    return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
 
 
 class PatchedGlobalAsyncCheckpointManager(GlobalAsyncCheckpointManager):
