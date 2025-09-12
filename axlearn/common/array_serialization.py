@@ -627,8 +627,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
         result = fut.result()
-        jax.profiler.stop_trace()
         logging.info("deserialize took %.4f seconds.", time.time() - start_time)
+        jax.profiler.stop_trace()
         sys.exit(0)
         # pylint: disable=unreachable
         return result
