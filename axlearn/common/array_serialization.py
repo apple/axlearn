@@ -20,6 +20,7 @@ import asyncio
 import functools
 import math
 import os
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -628,6 +629,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         result = fut.result()
         jax.profiler.stop_trace()
         logging.info("deserialize took %.4f seconds.", time.time() - start_time)
+        sys.exit(0)
+        # pylint: disable=unreachable
         return result
 
 
