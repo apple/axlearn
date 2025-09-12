@@ -404,11 +404,24 @@ async def _async_deserialize(
             f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
         )
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
+
+    # gcs_grpc improves performance.
+    if tensorstore_spec.get("kvstore", {}).get("driver", "") == "gcs":
+        tensorstore_spec["kvstore"]["driver"] = "gcs_grpc"
+
     t = await ts.open(
         tensorstore_spec,
         open=True,
         assume_metadata=False,
-        context=serialization.TS_CONTEXT,
+        # context=serialization.TS_CONTEXT,
+        # Improve GCS performance
+        context=ts.Context(
+            {
+                "cache_pool": {"total_bytes_limit": 0},
+                "data_copy_concurrency": {"limit": "shared"},
+                "gcs_request_concurrency": {"limit": 480},
+            }
+        ),
     )
     shape = tuple(t.shape if global_shape is None else global_shape)
     new_shard_shape = in_sharding.shard_shape(shape)
