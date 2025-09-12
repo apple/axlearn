@@ -454,12 +454,21 @@ async def _async_deserialize(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
         try:
+            log_id = id(out)
+            logging.info(
+                "Sending jax.device_put of size %s MiB. Shape: %s. ID: %s",
+                out_size / (1024 * 1024),
+                out.shape,
+                log_id,
+            )
+            start_time = time.time()
             if os.getenv("JAX_PLATFORMS") == "proxy":
                 result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
             else:
                 await h2d_limiter.wait_for_bytes(out_size)
                 result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
                 await h2d_limiter.release_bytes(out_size)
+            logging.info("Device put took %.4f seconds. ID: %s", time.time() - start_time, log_id)
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
                 raise e  # Raise if it's not the type of error we expect.
