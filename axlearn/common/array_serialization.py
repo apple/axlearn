@@ -418,7 +418,8 @@ async def _async_deserialize(
         restricted_domain = t.domain.intersect(requested_domain)
         requested_bytes = serialization.estimate_read_memory_footprint(t, restricted_domain)
         # Limit the bytes read for every shard.
-        await byte_limiter.wait_for_bytes(requested_bytes)
+        if os.getenv("JAX_PLATFORMS") != "proxy":
+            await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
         # Use ts.cast rather than np.astype since ts can perform casting on-the-fly.
         if dtype is not None:
@@ -477,7 +478,8 @@ async def _async_deserialize(
                 single_thread_pool, _blocking_device_put, out, layout
             )
 
-        await byte_limiter.release_bytes(requested_bytes)
+        if os.getenv("JAX_PLATFORMS") != "proxy":
+            await byte_limiter.release_bytes(requested_bytes)
         return result
 
     return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
