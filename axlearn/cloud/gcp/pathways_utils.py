@@ -540,6 +540,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             # Set premap buffer to 17GB, needed for faster jax.device_put h2d
             # pylint: disable=line-too-long
             "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=17179869184",
+            "--temporary_flags_for_debugging=temporary_flag_for_debugging_pathways_xla_max_inflight_async_computations=1000",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
