@@ -597,6 +597,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         concurrent_gb: int = 32,
     ):
         self.wait_until_finished()
+        start_time = time.time()
         jax.profiler.start_trace("gs://cloud-tpu-multipod-dev-uss1/stoelinga-profile-1/")
 
         concurrent_bytes = concurrent_gb * 10**9
@@ -624,6 +625,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
         result = fut.result()
         jax.profiler.stop_trace()
+        logging.info("deserialize took %.4f seconds.", time.time() - start_time)
         return result
 
 
