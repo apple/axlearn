@@ -537,6 +537,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address={pathways_head_address}:"
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+            # Set premap buffer to 17GB, needed for faster jax.device_put h2d
+            # pylint: disable=line-too-long
+            "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=17179869184",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
