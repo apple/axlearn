@@ -107,7 +107,7 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
 
 
 def get_megascale_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those pertaining to Megascale.
 
@@ -122,7 +122,7 @@ def get_megascale_options(
 
 
 def get_xla_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those starting with 'xla_'.
 
@@ -315,7 +315,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            # "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         head_container["resources"] = resources
 
@@ -537,6 +537,14 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address={pathways_head_address}:"
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+            # Set premap buffer to 17GB, needed for faster jax.device_put h2d
+            # pylint: disable=line-too-long
+            # Below flags did not help on 7b restore time
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_pinned_host_allocation_mode=recycle",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_num_premapped_partitions=16",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
@@ -910,7 +918,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            # "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         return dict(
             name=cfg.name,
@@ -936,9 +944,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
-            ports=[dict(containerPort=self.config.target_port)]
-            if self.config.enable_service
-            else [],
+            ports=(
+                [dict(containerPort=self.config.target_port)] if self.config.enable_service else []
+            ),
         )
 
     def build_leader_pod(self) -> Nested[Any]:
