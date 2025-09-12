@@ -466,7 +466,7 @@ async def _async_deserialize(
             await h2d_limiter.release_bytes(out_size)
             logging.info("Device put took %.4f seconds. ID: %s", time.time() - start_time, log_id)
             # We delete afterwards from HBM since we're testing on v5e with limited HBM
-            result.delete()
+            # result.delete(), this didn't work it causes instance device_puts
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
                 raise e  # Raise if it's not the type of error we expect.
