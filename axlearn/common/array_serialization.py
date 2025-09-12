@@ -23,6 +23,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from collections import defaultdict
 from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
@@ -623,7 +624,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         logging.info("concurrent_gb=%s GB.", concurrent_gb)
         self.wait_until_finished()
         start_time = time.time()
-        jax.profiler.start_trace("gs://cloud-tpu-multipod-dev-uss1/stoelinga-profile-1/")
+        uid = uuid.uuid4()
+        jax.profiler.start_trace(f"gs://cloud-tpu-multipod-dev-uss1/stoelinga-{uid}/")
 
         concurrent_bytes = concurrent_gb * 10**9
 
