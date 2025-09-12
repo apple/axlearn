@@ -539,9 +539,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
             # Set premap buffer to 17GB, needed for faster jax.device_put h2d
             # pylint: disable=line-too-long
-            "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=17179869184",
-            # Causes crash on cloud
-            "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
+            # Below flags did not help on 7b restore time
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_pinned_host_allocation_mode=recycle",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_num_premapped_partitions=16",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
