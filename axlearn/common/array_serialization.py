@@ -418,8 +418,7 @@ async def _async_deserialize(
         restricted_domain = t.domain.intersect(requested_domain)
         requested_bytes = serialization.estimate_read_memory_footprint(t, restricted_domain)
         # Limit the bytes read for every shard.
-        if os.getenv("JAX_PLATFORMS") != "proxy":
-            await byte_limiter.wait_for_bytes(requested_bytes)
+        await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
         # Use ts.cast rather than np.astype since ts can perform casting on-the-fly.
         if dtype is not None:
@@ -462,12 +461,9 @@ async def _async_deserialize(
                 log_id,
             )
             start_time = time.time()
-            if os.getenv("JAX_PLATFORMS") == "proxy":
-                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-            else:
-                await h2d_limiter.wait_for_bytes(out_size)
-                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-                await h2d_limiter.release_bytes(out_size)
+            await h2d_limiter.wait_for_bytes(out_size)
+            result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+            await h2d_limiter.release_bytes(out_size)
             logging.info("Device put took %.4f seconds. ID: %s", time.time() - start_time, log_id)
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
@@ -487,8 +483,7 @@ async def _async_deserialize(
                 single_thread_pool, _blocking_device_put, out, layout
             )
 
-        if os.getenv("JAX_PLATFORMS") != "proxy":
-            await byte_limiter.release_bytes(requested_bytes)
+        await byte_limiter.release_bytes(requested_bytes)
         return result
 
     return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
