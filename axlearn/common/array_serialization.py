@@ -350,7 +350,9 @@ async def _run_serializer(
 
 
 def _blocking_device_put(out: Tensor, layout: Layout) -> Tensor:
-    return jax.block_until_ready(jax.device_put(out, layout))
+    # Make it non blocking
+    # return jax.block_until_ready(jax.device_put(out, layout))
+    return jax.device_put(out, layout)
 
 
 async def _async_deserialize(
@@ -408,6 +410,8 @@ async def _async_deserialize(
     # gcs_grpc improves performance.
     if tensorstore_spec.get("kvstore", {}).get("driver", "") == "gcs":
         tensorstore_spec["kvstore"]["driver"] = "gcs_grpc"
+
+    logging.info("tensorstore_spec: %s", tensorstore_spec)
 
     t = await ts.open(
         tensorstore_spec,
@@ -643,6 +647,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
         result = fut.result()
+        jax.block_until_ready(result)
         logging.info("deserialize took %.4f seconds.", time.time() - start_time)
         jax.profiler.stop_trace()
         sys.exit(0)
