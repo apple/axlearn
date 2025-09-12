@@ -107,7 +107,7 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
 
 
 def get_megascale_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those pertaining to Megascale.
 
@@ -122,7 +122,7 @@ def get_megascale_options(
 
 
 def get_xla_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those starting with 'xla_'.
 
@@ -315,7 +315,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            # "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         head_container["resources"] = resources
 
@@ -910,7 +910,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            # "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         return dict(
             name=cfg.name,
@@ -936,9 +936,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
-            ports=[dict(containerPort=self.config.target_port)]
-            if self.config.enable_service
-            else [],
+            ports=(
+                [dict(containerPort=self.config.target_port)] if self.config.enable_service else []
+            ),
         )
 
     def build_leader_pod(self) -> Nested[Any]:
