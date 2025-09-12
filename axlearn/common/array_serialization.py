@@ -597,7 +597,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         tensorstore_specs: Sequence[dict[str, Any]],
         global_shapes: Optional[Sequence[array.Shape]] = None,
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
-        concurrent_gb: int = 32,
+        concurrent_gb: int = 128,
     ):
         self.wait_until_finished()
         start_time = time.time()
