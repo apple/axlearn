@@ -425,7 +425,7 @@ def get_trainer_kwargs(
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
                 (
-                    "tpu-v5litepod-256",
+                    "tpu-v5litepod-32-1",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
@@ -435,11 +435,18 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=False,
-                                        policy=offload_dots_saveable_policy,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
-                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                            # GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
                 ),
