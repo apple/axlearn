@@ -205,8 +205,7 @@ def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
 
 
 class TensorstoreSpecModifier:
-    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
-        ...
+    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]): ...
 
 
 async def _async_serialize(
@@ -454,9 +453,12 @@ async def _async_deserialize(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
         try:
-            await h2d_limiter.wait_for_bytes(out_size)
-            result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-            await h2d_limiter.release_bytes(out_size)
+            if os.getenv("JAX_PLATFORMS") == "proxy":
+                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+            else:
+                await h2d_limiter.wait_for_bytes(out_size)
+                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+                await h2d_limiter.release_bytes(out_size)
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
                 raise e  # Raise if it's not the type of error we expect.
