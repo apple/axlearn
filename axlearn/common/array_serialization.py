@@ -602,6 +602,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         concurrent_gb: int = 32,
     ):
         self.wait_until_finished()
+        jax.profiler.start_trace("gs://cloud-tpu-multipod-dev-uss1/stoelinga-profile-1/")
 
         concurrent_bytes = concurrent_gb * 10**9
 
@@ -626,7 +627,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             return await asyncio.gather(*future_arrays)
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
-        return fut.result()
+        result = fut.result()
+        jax.profiler.stop_trace()
+        return result
 
 
 class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
