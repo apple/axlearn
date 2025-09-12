@@ -451,9 +451,11 @@ async def _async_deserialize(
             # the extra values will be filled with 0s.
             out = np.zeros(new_shard_shape, read_ts.dtype.numpy_dtype)
 
+        write_start_time = time.time()
         await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][restricted_domain].write(
             read_ts
         )
+        logging.info("ts.array.write took %.4f seconds.", time.time() - write_start_time)
 
         # Convert to jnp array so that layouts are initialized properly for
         # sub-byte dtypes.
