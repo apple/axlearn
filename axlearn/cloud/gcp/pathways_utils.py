@@ -540,12 +540,14 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             # Set premap buffer to 17GB, needed for faster jax.device_put h2d
             # "--pathways_tpu_premapped_buffer_size=17179869184" doesn't work in cloud
             # Below flags did not help on 7b restore time
+            # Recycle vs on-demand seems to give a slight perf boost
+            "--tpu_pinned_host_allocation_recycle=true",
             # pylint: disable=line-too-long
-            "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debuggings_max_num_threads_for_xla_compilation=1000"
             # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
-            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_pinned_host_allocation_mode=recycle",
             # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
-            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_num_premapped_partitions=16",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_num_premapped_partitions=65536",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
@@ -909,6 +911,14 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 "--instance_count=1",
                 f"--instance_type={pathways_tpu_version}:{system.topology}",
                 f"--gcs_scratch_location={staging_location}",
+                # Troubleshooting perf
+                "--tpu_pinned_host_allocation_recycle=true",
+                # pylint: disable=line-too-long
+                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+                # "--temporary_flags_for_debugging=temporary_flag_for_debuggings_max_num_threads_for_xla_compilation=1000"
+                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
+                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
+                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_num_premapped_partitions=65536",
             ],
             ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
         )
