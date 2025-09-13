@@ -538,9 +538,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
             # Set premap buffer to 17GB, needed for faster jax.device_put h2d
-            # pylint: disable=line-too-long
+            # "--pathways_tpu_premapped_buffer_size=17179869184" doesn't work in cloud
             # Below flags did not help on 7b restore time
-            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+            # pylint: disable=line-too-long
+            "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
             # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
             # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_pinned_host_allocation_mode=recycle",
             # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
