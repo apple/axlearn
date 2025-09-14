@@ -621,7 +621,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         concurrent_gb: int = 32,
     ):
         # force to 64
-        concurrent_gb = max(64, concurrent_gb)
+        # concurrent_gb = max(64, concurrent_gb)
         logging.info("concurrent_gb=%s GB.", concurrent_gb)
         self.wait_until_finished()
         start_time = time.time()
