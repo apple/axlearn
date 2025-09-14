@@ -582,7 +582,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             # Recycle vs on-demand seems to give a slight perf boost
             "--tpu_pinned_host_allocation_recycle=true",
             # pylint: disable=line-too-long
-            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+            "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
             # "--temporary_flags_for_debugging=temporary_flag_for_debuggings_max_num_threads_for_xla_compilation=1000"
             # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
             # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
@@ -958,7 +958,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 # Troubleshooting perf
                 "--tpu_pinned_host_allocation_recycle=true",
                 # pylint: disable=line-too-long
-                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+                "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
                 # "--temporary_flags_for_debugging=temporary_flag_for_debuggings_max_num_threads_for_xla_compilation=1000"
                 # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
                 # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
