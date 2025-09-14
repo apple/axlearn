@@ -352,8 +352,8 @@ async def _run_serializer(
 
 def _blocking_device_put(out: Tensor, layout: Layout) -> Tensor:
     # Make it non blocking
-    # return jax.block_until_ready(jax.device_put(out, layout))
-    return jax.device_put(out, layout)
+    # return jax.device_put(out, layout)
+    return jax.block_until_ready(jax.device_put(out, layout))
 
 
 async def _async_deserialize(
@@ -652,7 +652,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
         result = fut.result()
-        jax.block_until_ready(result)
+        # Only needed when we use non blocking device put
+        # jax.block_until_ready(result)
         logging.info("deserialize took %.4f seconds.", time.time() - start_time)
         jax.profiler.stop_trace()
         sys.exit(0)
