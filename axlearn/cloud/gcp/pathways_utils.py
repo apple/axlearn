@@ -146,12 +146,14 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             inner: The wrapped TPUReplicatedJob configuration.
             pathways_head_cpu: CPU request for pathways-head container.
             pathways_head_mem: Memory request for pathways-head container.
+            pathways_head_on_tpu: Whether to run pathways head on TPU VM.
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
         pathways_xla_flags: list[str] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
+        pathways_head_on_tpu: bool = False
 
     @classmethod
     def define_flags(cls, fv):
@@ -178,6 +180,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "pathways_head_mem",
             None,
             "Memory request for pathways-head container in GiB. Default is 16GiB",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "pathways_head_on_tpu",
+            False,
+            "If True, run pathways head on TPU VM.",
             **common_kwargs,
         )
 
@@ -414,9 +422,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 }
             )
 
-        node_selector = {
-            _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
-        }
+        if self.config.pathways_head_on_tpu:
+            # pylint: disable-next=protected-access
+            pod = self._inner._build_pod()
+            node_selector = {}
+            tolerations = pod["spec"]["tolerations"]
+        else:
+            node_selector = {
+                _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+            }
 
         head_container = self._build_pathways_head_container()
         init_containers = [
@@ -437,6 +451,26 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "hostAliases": [metadata_host_alias],
             "nodeSelector": node_selector,
             "tolerations": tolerations,
+            "affinity": {
+                "podAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": [
+                        {
+                            "labelSelector": {
+                                "matchExpressions": [
+                                    {
+                                        "key": "batch.kubernetes.io/job-name",
+                                        "operator": "In",
+                                        "values": [
+                                            f"{cfg.name}-{_PATHWAYS_WORKER_REPLICATED_JOB_NAME}-0"
+                                        ],
+                                    }
+                                ]
+                            },
+                            "topologyKey": "kubernetes.io/hostname",
+                        }
+                    ]
+                }
+            },
             "containers": [head_container],
             "initContainers": init_containers,
             "volumes": volumes,
@@ -444,6 +478,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "hostNetwork": True,
             "dnsPolicy": "ClusterFirstWithHostNet",
         }
+
+        # Remove host ports to avoid scheduling conflicts on the same node.
+        # The pod runs on host network anyway, so the ports are still accessible.
+        if "ports" in head_pod_spec["containers"][0]:
+            del head_pod_spec["containers"][0]["ports"]
 
         if cfg.priority_class:
             head_pod_spec["priorityClassName"] = cfg.priority_class
@@ -645,18 +684,23 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     def __call__(self) -> Sequence[Nested[Any]]:
         cfg: TPUReplicatedJob.Config = self._inner.config
 
-        replicated_jobs = [
-            dict(
-                name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
-                replicas=1,
-                template=self._build_pathways_head_job(),
-            ),
-            dict(
-                name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
-                replicas=cfg.accelerator.num_replicas,
-                template=self._build_pathways_worker_job(),
-            ),
-        ]
+        worker_job = dict(
+            name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
+            replicas=cfg.accelerator.num_replicas,
+            template=self._build_pathways_worker_job(),
+        )
+        head_job = dict(
+            name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
+            replicas=1,
+            template=self._build_pathways_head_job(),
+        )
+        if self.config.pathways_head_on_tpu:
+            head_job["dependsOn"] = [
+                dict(name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME, status="Ready")
+            ]
+            replicated_jobs = [worker_job, head_job]
+        else:
+            replicated_jobs = [head_job, worker_job]
 
         return replicated_jobs
 
