@@ -620,8 +620,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
         concurrent_gb: int = 32,
     ):
-        # force to 128
-        # concurrent_gb = max(128, concurrent_gb)
+        # force to 64
+        concurrent_gb = max(64, concurrent_gb)
         logging.info("concurrent_gb=%s GB.", concurrent_gb)
         self.wait_until_finished()
         start_time = time.time()
