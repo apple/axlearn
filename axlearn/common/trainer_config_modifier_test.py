@@ -16,6 +16,7 @@ from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     FP8ConfigModifier,
     GradientAccumulationModifier,
+    GrainConfigModifier,
     MeshShapeModifier,
     ModuleConfigModifier,
     OverrideInplaceUpdateTransformation,
@@ -207,6 +208,102 @@ class FP8ConfigModifierTest(test_utils.TestCase):
             [f".*/{x}" for x in get_all_fp8_param_names()],
         )
         self.assertEqual(cfg.model.linear.quantized_dot_general.fp8_amax_history_length, 1)
+
+
+class GrainConfigModifierTest(test_utils.TestCase):
+    def test_convert_tf_data_to_grain_source(self):
+        """Test conversion of tf.data config to grain source using mixture_train_input_source."""
+        # Mock data mixture components
+        class MockComponent:
+            def __init__(self, name, weight=1.0):
+                self.name = name
+                self.weight = weight
+
+        class MockConfig:
+            def __init__(self, components, vocab_cfg=None, preprocessor=None, max_sequence_length=1024, seed=123):
+                self.data_mixture_components = components
+                self.vocab_cfg = vocab_cfg
+                self.preprocessor = preprocessor
+                self.max_sequence_length = max_sequence_length
+                self.replace_newlines_with = "<newline>"
+                self.seed = seed
+
+        # Test that the conversion leverages mixture_train_input_source
+        components = [
+            MockComponent("gs://permanent-us-central1-0rxn/tensorflow_datasets/c4/en/3.0.1"),
+            MockComponent("gs://permanent-us-central1-0rxn/tensorflow_datasets/pile/train"),
+        ]
+
+        # Create a mock vocab and preprocessor config
+        from axlearn.common.config import config_for_function
+        mock_vocab_cfg = config_for_function(lambda: "mock_vocab")
+        mock_preprocessor_cfg = config_for_function(lambda x: x)
+
+        tf_data_config = MockConfig(
+            components=components,
+            vocab_cfg=mock_vocab_cfg,
+            preprocessor=mock_preprocessor_cfg,
+            max_sequence_length=1024,
+            seed=123
+        )
+
+        modifier = GrainConfigModifier.default_config().instantiate()
+
+        # Mock the mixture_train_input_source function
+        import unittest.mock
+        with unittest.mock.patch('axlearn.common.input_grain.mixture_train_input_source') as mock_mixture:
+            mock_mixture.return_value = lambda dispatch_config: None  # Mock return value
+
+            grain_source = modifier._convert_tf_data_to_grain_source(tf_data_config)
+
+            # Should call mixture_train_input_source with the components
+            mock_mixture.assert_called_once()
+            call_args = mock_mixture.call_args
+
+            # Verify the call arguments use values from tf_data_config
+            self.assertTrue(call_args[1]['is_training'])
+            self.assertEqual(call_args[1]['data_mixture_components'], components)
+            self.assertEqual(call_args[1]['vocab_cfg'], mock_vocab_cfg)
+            self.assertEqual(call_args[1]['preprocessor'], mock_preprocessor_cfg)
+            self.assertEqual(call_args[1]['max_sequence_length'], 1024)
+            self.assertEqual(call_args[1]['replace_newlines_with'], "<newline>")
+            self.assertEqual(call_args[1]['seed'], 123)
+
+    def test_convert_tf_data_to_grain_source_with_defaults(self):
+        """Test conversion with missing config values uses defaults."""
+        # Mock data mixture components
+        class MockComponent:
+            def __init__(self, name, weight=1.0):
+                self.name = name
+                self.weight = weight
+
+        class MockConfig:
+            def __init__(self, components):
+                self.data_mixture_components = components
+                # Missing other config attributes to test defaults
+
+        components = [MockComponent("test_dataset")]
+        tf_data_config = MockConfig(components)
+
+        modifier = GrainConfigModifier.default_config().instantiate()
+
+        # Mock the mixture_train_input_source function
+        import unittest.mock
+        with unittest.mock.patch('axlearn.common.input_grain.mixture_train_input_source') as mock_mixture:
+            mock_mixture.return_value = lambda dispatch_config: None  # Mock return value
+
+            grain_source = modifier._convert_tf_data_to_grain_source(tf_data_config)
+
+            # Should call mixture_train_input_source with default values
+            mock_mixture.assert_called_once()
+            call_args = mock_mixture.call_args
+
+            # Verify the call arguments use default values
+            self.assertTrue(call_args[1]['is_training'])
+            self.assertEqual(call_args[1]['data_mixture_components'], components)
+            self.assertEqual(call_args[1]['max_sequence_length'], 512)  # Default
+            self.assertEqual(call_args[1]['replace_newlines_with'], "<n>")  # Default
+            self.assertEqual(call_args[1]['seed'], 42)  # Default
 
 
 if __name__ == "__main__":
