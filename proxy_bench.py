@@ -3,6 +3,7 @@
 import asyncio
 import os
 import time
+import uuid
 
 import jax
 import numpy as np
@@ -36,8 +37,9 @@ async def benchmark_host_to_device_throughput(
 
     print(f"Starting benchmark ({num_transfers} transfers)...")
     for i in range(num_transfers):
+        uid = uuid.uuid4()
         if i == 0:
-            trace_dir = "gs://cloud-tpu-multipod-dev-axlearn/stoelinga-proxy-benchmark-premap"
+            trace_dir = f"gs://cloud-tpu-multipod-dev-axlearn/{uid}"
             jax.profiler.start_trace(f"{trace_dir}/{device_put_buffer_mb}mb")
 
         start_time = time.perf_counter()
