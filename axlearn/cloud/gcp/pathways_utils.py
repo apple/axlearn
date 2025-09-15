@@ -67,8 +67,8 @@ _PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
 _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
-_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
-_PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
+_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "node.kubernetes.io/instance-type"
+_PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "c4-standard-192"
 # The back off limit of pathways pods.
 # Note that the head pod will back of exact this many times.
 # While workers will share #workers * _PATHWAYS_BACK_OFF_LIMIT total times.
