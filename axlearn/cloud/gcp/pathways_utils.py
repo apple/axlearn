@@ -362,6 +362,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
                 image=_PATHWAYS_PROXY_IMAGE,
+                securityContext={"privileged": True},
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
@@ -921,6 +922,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         return dict(
             name=_PATHWAYS_PROXY_CONTAINER_NAME,
             image=_PATHWAYS_PROXY_IMAGE,
+            securityContext={"privileged": True},
             args=[
                 f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
                 f"--server_port={_PATHWAYS_PROXY_PORT}",
