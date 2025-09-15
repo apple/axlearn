@@ -451,7 +451,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "hostAliases": [metadata_host_alias],
             "nodeSelector": node_selector,
             "tolerations": tolerations,
-            "affinity": {
+            "containers": [head_container],
+            "initContainers": init_containers,
+            "volumes": volumes,
+            "serviceAccountName": cfg.service_account,
+            "hostNetwork": True,
+            "dnsPolicy": "ClusterFirstWithHostNet",
+        }
+        if self.config.pathways_head_on_tpu:
+            head_pod_spec["affinity"] = {
                 "podAffinity": {
                     "requiredDuringSchedulingIgnoredDuringExecution": [
                         {
@@ -470,14 +478,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                         }
                     ]
                 }
-            },
-            "containers": [head_container],
-            "initContainers": init_containers,
-            "volumes": volumes,
-            "serviceAccountName": cfg.service_account,
-            "hostNetwork": True,
-            "dnsPolicy": "ClusterFirstWithHostNet",
-        }
+            }
 
         # Remove host ports to avoid scheduling conflicts on the same node.
         # The pod runs on host network anyway, so the ports are still accessible.
