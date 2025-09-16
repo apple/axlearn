@@ -666,7 +666,7 @@ class LWSRunnerJob(BaseRunnerJob):
         """
 
         name: Required[str] = REQUIRED
-        inner: Required[GKEJob.Config] = REQUIRED
+        inner: Required[GKELeaderWorkerSet.Config] = REQUIRED
         output_dir: Required[str] = REQUIRED
         namespace: str = "default"
         cluster: Required[str] = REQUIRED
