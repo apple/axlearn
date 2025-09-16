@@ -461,6 +461,9 @@ class Decoder(BaseLayer):
             None,
             "model",
         )
+        # Precision dtype for logits computation.
+        # if None, uses the input dtype as default for logits computation.
+        logits_forward_dtype: Optional[jnp.dtype] = None
         # The logit modifier to apply. If None, does not modify logits.
         output_logits_modifier: Optional[ConfigOr[logit_modifiers.LogitsToLogitsFn]] = None
         # The decoding implementation.
@@ -469,6 +472,14 @@ class Decoder(BaseLayer):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
+
+        # Validate logits_forward_dtype
+        if cfg.logits_forward_dtype not in [None, jnp.float32]:
+            raise ValueError(
+                f"logits_forward_dtype must be None or jnp.float32, "
+                f"got {cfg.logits_forward_dtype}"
+            )
+
         set_dropout_rate_recursively(cfg, dropout_rate=cfg.dropout_rate, set_only_if_none=True)
 
         if cfg.attention_mask is not None:
@@ -504,6 +515,7 @@ class Decoder(BaseLayer):
 
         emb_batch = {**input_batch}
         emb_batch["inputs"] = emb_batch["input_ids"]
+
         x = self.emb(input_batch=emb_batch)
 
         if mode == ForwardMode.FORWARD:
@@ -550,12 +562,25 @@ class Decoder(BaseLayer):
             x = self.output_norm(x)
             self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
-        if "lm_head" in self.children:
-            logits = self.lm_head(x)
+
+        if self.config.logits_forward_dtype == jnp.float32:
+            logits_context = jax.default_matmul_precision("float32")
         else:
-            # Reuse the token embedding.
-            with child_context("emb_attend", module=self.emb):
-                logits = self.emb.attend(x)
+            logits_context = contextlib.nullcontext()
+
+        with logits_context:
+            logits_x = (
+                x.astype(self.config.logits_forward_dtype)
+                if self.config.logits_forward_dtype
+                else x
+            )
+            if "lm_head" in self.children:
+                logits = self.lm_head(logits_x)
+            else:
+                # Reuse the token embedding.
+                with child_context("emb_attend", module=self.emb):
+                    logits = self.emb.attend(logits_x)
+
         if self._output_logits_modifier is not None:
             logits = self._output_logits_modifier(logits)
         logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))

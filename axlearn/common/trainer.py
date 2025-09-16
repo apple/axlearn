@@ -377,7 +377,10 @@ class SpmdTrainer(Module):
 
     def model_params_for_eval(self):
         state = self.trainer_state
-        if self.config.learner.ema.decay is not None:
+        # Note: It's important to use self._config, not self.config, here because this method
+        # can get called multiple times per training step (especially if there are many evalers)
+        # and self.config does an expensive deep copy.
+        if self._config.learner.ema.decay is not None:
             logging.log_first_n(logging.INFO, "Using model parameter EMA for eval", 10)
             return state.learner["ema"].ema
         return state.model

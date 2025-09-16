@@ -1573,6 +1573,9 @@ def param_ema(
 
     Also known as "polyak averaging".
 
+    Non floating point params will be assigned with current values, instead of being interpolated
+    with EMA.
+
     References:
         [Polyak et al, 1991](https://epubs.siam.org/doi/10.1137/0330046)
         https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
@@ -1602,12 +1605,16 @@ def param_ema(
         count_inc = optax.safe_int32_increment(state.count)
         decay_t = decay_fn(count_inc)
 
+        def _interpolate(param, ema_value):
+            x = param.value
+            if not jnp.issubdtype(x.dtype, jnp.floating):
+                # For example, int32 for step counters.
+                return x
+
+            return (1 - decay_t) * x + decay_t * ema_value
+
         # Transform updates and compute new per-tensor EMA.
-        new_ema = jax.tree.map(
-            lambda param, ema: (1 - decay_t) * param.value + decay_t * ema,
-            params,
-            state.ema,
-        )
+        new_ema = jax.tree.map(_interpolate, params, state.ema)
         return updates, ParamEmaState(count=count_inc, ema=new_ema)
 
     def partition_fn(

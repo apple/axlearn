@@ -1971,7 +1971,7 @@ def _convert_to_qkv_linear(
     return test_state
 
 
-class TestQLinearWithKvUpdate(QLinear):
+class _QLinearWithKvUpdate(QLinear):
     """QLinear that adjusts the external KV for testing purposes."""
 
     def forward(
@@ -2567,7 +2567,7 @@ class MultiheadAttentionTest(TestCase):
         self.assertNestedAllClose(base_outputs, test_outputs)
 
     @parameterized.product(kv_part=[None, ("fsdp", None, "model", None)])
-    @pytest.mark.d8
+    @pytest.mark.for_8_devices
     def test_qkvo_partition_spec(self, kv_part):
         """Tests that QKVO partition spec are applied correctly when specified."""
         mesh_shape = (2, 2, 2)
@@ -2625,8 +2625,9 @@ class MultiheadAttentionTest(TestCase):
             jax.debug.inspect_array_sharding(tensor, callback=callback)
             return tensor
 
-        with mesh, mock.patch.object(
-            attention.MultiheadAttention, "_remat_name", patched_remat_name
+        with (
+            mesh,
+            mock.patch.object(attention.MultiheadAttention, "_remat_name", patched_remat_name),
         ):
 
             @jax.jit
@@ -2675,7 +2676,7 @@ class MultiheadAttentionTest(TestCase):
         key = value = kv_state = None
         if attention_cfg.klass == attention.GroupedQueryAttention:
             pass
-        elif attention_cfg.input_linear.klass in (QLinear, TestQLinearWithKvUpdate):
+        elif attention_cfg.input_linear.klass in (QLinear, _QLinearWithKvUpdate):
             kv_state = KVState(
                 k_proj=jax.random.normal(
                     jax.random.PRNGKey(124), [batch_size, tgt_len, num_heads, head_dim], dtype=dtype
@@ -2770,7 +2771,7 @@ class MultiheadAttentionTest(TestCase):
         dtype=(jnp.float32, jnp.float16, jnp.bfloat16),
         per_dim_scale=(None, PerDimScale.default_config()),
         atten_logit_cap=(0.0, 20.0),
-        input_linear=(QKVLinear, RoFormerQKVLinear, QLinear, TestQLinearWithKvUpdate),
+        input_linear=(QKVLinear, RoFormerQKVLinear, QLinear, _QLinearWithKvUpdate),
         bias=(True, False),
         causal_type=("causal", "sliding_window"),
         extend_step_len=(1, 4),
@@ -2789,7 +2790,7 @@ class MultiheadAttentionTest(TestCase):
         scale_kv_before_cache_update: bool,
         page_size: Optional[int],
     ):
-        if input_linear in (QLinear, TestQLinearWithKvUpdate):
+        if input_linear in (QLinear, _QLinearWithKvUpdate):
             if causal_type == "sliding_window":
                 pytest.skip("QLinear variants don't support sliding window mask.")
             if scale_kv_before_cache_update:
@@ -2797,7 +2798,7 @@ class MultiheadAttentionTest(TestCase):
         if page_size is not None:
             if extend_step_len > 1:
                 pytest.skip("PagedKVCache doesn't support extending multiple steps yet.")
-            if input_linear in (QLinear, TestQLinearWithKvUpdate):
+            if input_linear in (QLinear, _QLinearWithKvUpdate):
                 pytest.skip("PagedKVCache doesn't support QLinear yet.")
         model_dim = 16
         num_heads = 4
@@ -2881,9 +2882,11 @@ class MultiheadAttentionTest(TestCase):
             kv_state=kv_state,
             return_aux=return_aux,
         )
-        with self.assertRaises(
-            ValueError
-        ) if scale_kv_before_cache_update else contextlib.nullcontext():
+        with (
+            self.assertRaises(ValueError)
+            if scale_kv_before_cache_update
+            else contextlib.nullcontext()
+        ):
             forward_outputs, _ = F(
                 layer,
                 state=layer_params,
@@ -4584,7 +4587,7 @@ class ParallelTransformerTest(TestCase):
         )
 
 
-class TestStackModel(BaseLayer):
+class _StackModel(BaseLayer):
     """A dummy transformer stack."""
 
     @config_class
@@ -4670,7 +4673,7 @@ class NonUniformStack(StackedTransformerLayer):
         )
 
 
-class TestStackedTransformerLayerWithKVState(NonUniformStack):
+class _StackedTransformerLayerWithKVState(NonUniformStack):
     """A class with a simple override of _update_layer_kwargs for unit testing."""
 
     def _update_layer_kwargs(
@@ -4689,7 +4692,7 @@ class TestStackedTransformerLayerWithKVState(NonUniformStack):
             layer_kwargs["self_attention_kv_state"] = None
 
 
-class TestStackedTransformerLayerWithSkipConnection(StackedTransformerLayer):
+class _StackedTransformerLayerWithSkipConnection(StackedTransformerLayer):
     """A class that outputs all layers' output for unit testing."""
 
     def _aggregate_layer_outputs(
@@ -4712,12 +4715,12 @@ class StackedTransformerTest(BaseTransformerTest):
         dtype,
         remat_spec,
         output_self_attention_kv_state=False,
-    ) -> TestStackModel.Config:
+    ) -> _StackModel.Config:
         if isinstance(stack_cfg, type):
             stack_cfg = stack_cfg.default_config()
         if callable(remat_spec):
             remat_spec = remat_spec(stack_cfg)
-        cfg = TestStackModel.default_config().set(
+        cfg = _StackModel.default_config().set(
             name="test",
             stack=stack_cfg.set(
                 input_dim=model_dim,
@@ -5036,7 +5039,7 @@ class StackedTransformerTest(BaseTransformerTest):
         num_layers = 5
         layer_with_skip_input = 3
 
-        cfg = TestStackedTransformerLayerWithSkipConnection.default_config().set(
+        cfg = _StackedTransformerLayerWithSkipConnection.default_config().set(
             name="test", input_dim=input_dim, num_layers=num_layers
         )
 
@@ -5143,7 +5146,7 @@ class StackedTransformerTest(BaseTransformerTest):
         num_layers = 3
 
         # Create a StackedTransformerLayer by specifying a sequence of non-uniform layer configs.
-        cfg = TestStackedTransformerLayerWithKVState.default_config().set(name="test")
+        cfg = _StackedTransformerLayerWithKVState.default_config().set(name="test")
         cfg.input_dim = input_dim
         cfg.num_layers = num_layers
         cfg.layer = []
@@ -5272,7 +5275,7 @@ class StackedTransformerTest(BaseTransformerTest):
                     remat_spec=remat_spec,
                 )
                 cls = cfg.stack.klass
-                layer: TestStackModel = cfg.instantiate(parent=None)
+                layer: _StackModel = cfg.instantiate(parent=None)
 
                 param_specs = layer.create_parameter_specs_recursively()
                 logging.info(
