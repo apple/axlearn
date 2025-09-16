@@ -27,6 +27,15 @@ from axlearn.common.utils import Nested, Tensor, TensorSpec
 
 FLAGS = flags.FLAGS
 
+flags.DEFINE_integer(
+    "assume_data_parallelism",
+    None,
+    (
+        "Number of identical pipelines in job, "
+        "should be equal to ICI data parallelism * DCN data parallelism."
+    ),
+)
+
 
 @contextmanager
 def setup(spec: str):
@@ -36,7 +45,7 @@ def setup(spec: str):
         spec: Key=Value pairs separated by comma.
     """
     parsed_args = {}
-    allowed_fields = ["local_ckpt_dir"]
+    allowed_fields = ["local_ckpt_dir", "assume_data_parallelism"]
     for field in spec.split(","):
         k, v = field.split("=")
         if k not in allowed_fields:
@@ -44,8 +53,11 @@ def setup(spec: str):
         parsed_args[k] = v
     if "local_ckpt_dir" not in parsed_args:
         raise ValueError("local_ckpt_dir must be specified.")
+    if "assume_data_parallelism" not in parsed_args:
+        raise ValueError("assume_data_parallelism must be specified.")
     # Get process ID and IP of jax coordinator
     process_id, coordinator_address = _retrieve_jax_init_info(parsed_args["local_ckpt_dir"])
+    FLAGS.assume_data_parallelism = int(parsed_args["assume_data_parallelism"])
     FLAGS.process_id = int(process_id)
     FLAGS.distributed_coordinator = coordinator_address
     FLAGS.experimental_orbax_use_distributed_process_id = True
@@ -123,8 +135,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
         """Configures OrbaxEmergencyReplicatorCheckpointer.
 
         Attributes:
-            assume_data_parallelism: Number of identical pipelines in job, should be equal to
-                ICI data parallelism * DCN data parallelism.
             backup_interval_minutes: How often GKE multi-tier checkpointer should back up local
                 checkpoints to GCS.
             save_interval_steps: Number of steps between each checkpoint.
@@ -138,7 +148,6 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
             async_timeout_secs: Timeout for async barrier in seconds when saving tensors.
         """
 
-        assume_data_parallelism: int = None
         backup_interval_minutes: int = 30
         save_interval_steps: int = 100
         local_dir: str = "/checkpoint"
@@ -195,7 +204,7 @@ class OrbaxEmergencyReplicatorCheckpointer(BaseCheckpointer):
 
         replicator_yaml = f"""job-name: {run_name}
       framework: orbax
-      assume-data-parallelism: {cfg.assume_data_parallelism}
+      assume-data-parallelism: {FLAGS.assume_data_parallelism}
       node-rank: {node_rank}
       nodes: {num_nodes}
       peer-ranks: {peer_ranks}
