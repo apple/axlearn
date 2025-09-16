@@ -377,6 +377,7 @@ class TPUJobBuilder(SingleReplicatedJob):
                 to attach to the node pool. This is needed to support multiple NIC.
                 Refer to GKE TPU provisioner for more context:
                 https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
+            scheduler: Optional; The GKE Scheduler for the job.
         """
 
         reservation: Optional[str] = None
@@ -386,6 +387,7 @@ class TPUJobBuilder(SingleReplicatedJob):
         enable_tpu_smart_repair: bool = False
         priority_class: Optional[str] = None
         additional_node_networks: Optional[str] = None
+        scheduler: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -408,6 +410,13 @@ class TPUJobBuilder(SingleReplicatedJob):
             "priority_class",
             None,
             "The GKE PriorityClass for the job.",
+            **common_kwargs,
+        )
+
+        flags.DEFINE_string(
+            "scheduler",
+            None,
+            "The GKE Scheduler for the job.",
             **common_kwargs,
         )
 
@@ -758,6 +767,9 @@ class TPUJobBuilder(SingleReplicatedJob):
             )
             spec["hostNetwork"] = True
             spec["dnsPolicy"] = "ClusterFirstWithHostNet"
+
+        if cfg.scheduler:
+            spec["schedulerName"] = cfg.scheduler
 
         return dict(
             metadata=dict(annotations=annotations, labels=labels),
