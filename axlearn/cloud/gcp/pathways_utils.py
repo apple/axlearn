@@ -48,14 +48,19 @@ _PATHWAYS_WORKER_PORT = 29001
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
+# _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
+_PATHWAYS_IMAGE_TAG = "uds"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+    # f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/shauryag/"
+    f"unsanitized_proxy_server:{_PATHWAYS_IMAGE_TAG}"
 )
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    # f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/shauryag/"
+    f"unsanitized_server:{_PATHWAYS_IMAGE_TAG}"
 )
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
@@ -269,10 +274,16 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         head_container = copy.deepcopy(container)
 
         env_list = head_container.get("env", [])
+        # self._update_env_list(
+        #     env_list,
+        #     "JAX_BACKEND_TARGET",
+        #     f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
+        # )
+        # Unix domain socket
         self._update_env_list(
             env_list,
             "JAX_BACKEND_TARGET",
-            f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
+            "grpc:///tmp/ifrt_proxy.sock",
         )
         self._update_env_list(env_list, "XCLOUD_ENVIRONMENT", "GCP")
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
@@ -327,6 +338,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         }
         head_container["resources"] = resources
 
+        volume_mounts = head_container.get("volumeMounts", [])
+        volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/"))
+        head_container["volumeMounts"] = volume_mounts
+
         return head_container
 
     def _build_pathways_head_sidecar_containers(self) -> list[Nested[Any]]:
@@ -350,6 +365,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
 
         cmd_args = [
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            # using unix socket but port needs to be set anyway
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
         ]
@@ -374,7 +390,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     {"name": "XLA_FLAGS", "value": f"--xla_dump_to=/output/{cfg.name}/xla"},
                 ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
-                volumeMounts=[dict(name="shared-output", mountPath="/output")],
+                volumeMounts=[
+                    dict(name="shared-output", mountPath="/output"),
+                    dict(name="shared-memory", mountPath="/tmp/"),
+                ],
             ),
             dict(
                 name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
@@ -412,6 +431,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+        volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
 
         if cfg.gcsfuse_mount:
             annotations.update(
