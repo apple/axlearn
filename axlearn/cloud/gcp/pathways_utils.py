@@ -48,14 +48,19 @@ _PATHWAYS_WORKER_PORT = 29001
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
+# _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
+_PATHWAYS_IMAGE_TAG = "uds"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+    # f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/shauryag/"
+    f"unsanitized_proxy_server:{_PATHWAYS_IMAGE_TAG}"
 )
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    # f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/shauryag/"
+    f"unsanitized_server:{_PATHWAYS_IMAGE_TAG}"
 )
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
@@ -107,7 +112,7 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
 
 
 def get_megascale_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those pertaining to Megascale.
 
@@ -122,7 +127,7 @@ def get_megascale_options(
 
 
 def get_xla_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those starting with 'xla_'.
 
@@ -146,12 +151,14 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             inner: The wrapped TPUReplicatedJob configuration.
             pathways_head_cpu: CPU request for pathways-head container.
             pathways_head_mem: Memory request for pathways-head container.
+            pathways_head_on_tpu: Whether to run pathways head on TPU VM.
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
         pathways_xla_flags: list[str] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
+        pathways_head_on_tpu: bool = False
 
     @classmethod
     def define_flags(cls, fv):
@@ -178,6 +185,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "pathways_head_mem",
             None,
             "Memory request for pathways-head container in GiB. Default is 16GiB",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "pathways_head_on_tpu",
+            False,
+            "If True, run pathways head on TPU VM.",
             **common_kwargs,
         )
 
@@ -261,10 +274,16 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         head_container = copy.deepcopy(container)
 
         env_list = head_container.get("env", [])
+        # self._update_env_list(
+        #     env_list,
+        #     "JAX_BACKEND_TARGET",
+        #     f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
+        # )
+        # Unix domain socket
         self._update_env_list(
             env_list,
             "JAX_BACKEND_TARGET",
-            f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
+            "grpc:///tmp/ifrt_proxy.sock",
         )
         self._update_env_list(env_list, "XCLOUD_ENVIRONMENT", "GCP")
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
@@ -315,9 +334,13 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            # "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         head_container["resources"] = resources
+
+        volume_mounts = head_container.get("volumeMounts", [])
+        volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/"))
+        head_container["volumeMounts"] = volume_mounts
 
         return head_container
 
@@ -342,6 +365,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
 
         cmd_args = [
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            # using unix socket but port needs to be set anyway
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
         ]
@@ -354,6 +378,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
                 image=_PATHWAYS_PROXY_IMAGE,
+                securityContext={"privileged": True},
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
@@ -365,7 +390,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     {"name": "XLA_FLAGS", "value": f"--xla_dump_to=/output/{cfg.name}/xla"},
                 ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
-                volumeMounts=[dict(name="shared-output", mountPath="/output")],
+                volumeMounts=[
+                    dict(name="shared-output", mountPath="/output"),
+                    dict(name="shared-memory", mountPath="/tmp/"),
+                ],
             ),
             dict(
                 name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
@@ -403,6 +431,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+        volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
 
         if cfg.gcsfuse_mount:
             annotations.update(
@@ -414,9 +443,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 }
             )
 
-        node_selector = {
-            _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
-        }
+        if self.config.pathways_head_on_tpu:
+            # pylint: disable-next=protected-access
+            pod = self._inner._build_pod()
+            node_selector = {}
+            tolerations = pod["spec"]["tolerations"]
+        else:
+            node_selector = {
+                _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
+            }
 
         head_container = self._build_pathways_head_container()
         init_containers = [
@@ -444,6 +479,32 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "hostNetwork": True,
             "dnsPolicy": "ClusterFirstWithHostNet",
         }
+        if self.config.pathways_head_on_tpu:
+            head_pod_spec["affinity"] = {
+                "podAffinity": {
+                    "requiredDuringSchedulingIgnoredDuringExecution": [
+                        {
+                            "labelSelector": {
+                                "matchExpressions": [
+                                    {
+                                        "key": "batch.kubernetes.io/job-name",
+                                        "operator": "In",
+                                        "values": [
+                                            f"{cfg.name}-{_PATHWAYS_WORKER_REPLICATED_JOB_NAME}-0"
+                                        ],
+                                    }
+                                ]
+                            },
+                            "topologyKey": "kubernetes.io/hostname",
+                        }
+                    ]
+                }
+            }
+
+        # Remove host ports to avoid scheduling conflicts on the same node.
+        # The pod runs on host network anyway, so the ports are still accessible.
+        if "ports" in head_pod_spec["containers"][0]:
+            del head_pod_spec["containers"][0]["ports"]
 
         if cfg.priority_class:
             head_pod_spec["priorityClassName"] = cfg.priority_class
@@ -537,6 +598,17 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address={pathways_head_address}:"
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+            # Set premap buffer to 17GB, needed for faster jax.device_put h2d
+            # "--pathways_tpu_premapped_buffer_size=17179869184" doesn't work in cloud
+            # Below flags did not help on 7b restore time
+            # Recycle vs on-demand seems to give a slight perf boost
+            "--tpu_pinned_host_allocation_recycle=true",
+            # pylint: disable=line-too-long
+            "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debuggings_max_num_threads_for_xla_compilation=1000"
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
+            # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_num_premapped_partitions=65536",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
@@ -634,18 +706,23 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     def __call__(self) -> Sequence[Nested[Any]]:
         cfg: TPUReplicatedJob.Config = self._inner.config
 
-        replicated_jobs = [
-            dict(
-                name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
-                replicas=1,
-                template=self._build_pathways_head_job(),
-            ),
-            dict(
-                name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
-                replicas=cfg.accelerator.num_replicas,
-                template=self._build_pathways_worker_job(),
-            ),
-        ]
+        worker_job = dict(
+            name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
+            replicas=cfg.accelerator.num_replicas,
+            template=self._build_pathways_worker_job(),
+        )
+        head_job = dict(
+            name=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
+            replicas=1,
+            template=self._build_pathways_head_job(),
+        )
+        if self.config.pathways_head_on_tpu:
+            head_job["dependsOn"] = [
+                dict(name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME, status="Ready")
+            ]
+            replicated_jobs = [worker_job, head_job]
+        else:
+            replicated_jobs = [head_job, worker_job]
 
         return replicated_jobs
 
@@ -865,6 +942,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         return dict(
             name=_PATHWAYS_PROXY_CONTAINER_NAME,
             image=_PATHWAYS_PROXY_IMAGE,
+            securityContext={"privileged": True},
             args=[
                 f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
                 f"--server_port={_PATHWAYS_PROXY_PORT}",
@@ -900,6 +978,14 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 "--instance_count=1",
                 f"--instance_type={pathways_tpu_version}:{system.topology}",
                 f"--gcs_scratch_location={staging_location}",
+                # Troubleshooting perf
+                "--tpu_pinned_host_allocation_recycle=true",
+                # pylint: disable=line-too-long
+                "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_premapped_buffer_size=68719476736",
+                # "--temporary_flags_for_debugging=temporary_flag_for_debuggings_max_num_threads_for_xla_compilation=1000"
+                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_max_inflight_async_computations=1000",
+                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_xla_tpu_allow_async_allocations=true",
+                # "--temporary_flags_for_debugging=temporary_flag_for_debugging_tpu_num_premapped_partitions=65536",
             ],
             ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
         )
@@ -910,7 +996,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            # "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         return dict(
             name=cfg.name,
@@ -936,9 +1022,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
-            ports=[dict(containerPort=self.config.target_port)]
-            if self.config.enable_service
-            else [],
+            ports=(
+                [dict(containerPort=self.config.target_port)] if self.config.enable_service else []
+            ),
         )
 
     def build_leader_pod(self) -> Nested[Any]:

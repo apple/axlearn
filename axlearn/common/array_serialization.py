@@ -20,8 +20,10 @@ import asyncio
 import functools
 import math
 import os
+import sys
 import threading
 import time
+import uuid
 from collections import defaultdict
 from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
@@ -205,8 +207,7 @@ def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
 
 
 class TensorstoreSpecModifier:
-    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
-        ...
+    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]): ...
 
 
 async def _async_serialize(
@@ -350,6 +351,8 @@ async def _run_serializer(
 
 
 def _blocking_device_put(out: Tensor, layout: Layout) -> Tensor:
+    # Make it non blocking
+    # return jax.device_put(out, layout)
     return jax.block_until_ready(jax.device_put(out, layout))
 
 
@@ -404,11 +407,26 @@ async def _async_deserialize(
             f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
         )
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
+
+    # gcs_grpc improves performance.
+    if tensorstore_spec.get("kvstore", {}).get("driver", "") == "gcs":
+        tensorstore_spec["kvstore"]["driver"] = "gcs_grpc"
+
+    logging.info("tensorstore_spec: %s", tensorstore_spec)
+
     t = await ts.open(
         tensorstore_spec,
         open=True,
         assume_metadata=False,
-        context=serialization.TS_CONTEXT,
+        # context=serialization.TS_CONTEXT,
+        # Improve GCS performance
+        context=ts.Context(
+            {
+                "cache_pool": {"total_bytes_limit": 0},
+                "data_copy_concurrency": {"limit": "shared"},
+                "gcs_request_concurrency": {"limit": 480},
+            }
+        ),
     )
     shape = tuple(t.shape if global_shape is None else global_shape)
     new_shard_shape = in_sharding.shard_shape(shape)
@@ -434,9 +452,11 @@ async def _async_deserialize(
             # the extra values will be filled with 0s.
             out = np.zeros(new_shard_shape, read_ts.dtype.numpy_dtype)
 
+        write_start_time = time.time()
         await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][restricted_domain].write(
             read_ts
         )
+        logging.info("ts.array.write took %.4f seconds.", time.time() - write_start_time)
 
         # Convert to jnp array so that layouts are initialized properly for
         # sub-byte dtypes.
@@ -450,13 +470,25 @@ async def _async_deserialize(
         mb_256 = 256 * 1024 * 1024
         out_size = math.ceil(out_size / mb_256) * mb_256
 
+        logging.info("in_sharding: %s", in_sharding)
         layout = Layout(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
         try:
+            log_id = id(out)
+            logging.info(
+                "Sending jax.device_put of size %s MiB. Shape: %s. ID: %s",
+                out_size / (1024 * 1024),
+                out.shape,
+                log_id,
+            )
+            start_time = time.time()
             await h2d_limiter.wait_for_bytes(out_size)
             result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
             await h2d_limiter.release_bytes(out_size)
+            logging.info("Device put took %.4f seconds. ID: %s", time.time() - start_time, log_id)
+            # We delete afterwards from HBM since we're testing on v5e with limited HBM
+            # result.delete(), this didn't work it causes instance device_puts
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
                 raise e  # Raise if it's not the type of error we expect.
@@ -588,7 +620,13 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
         concurrent_gb: int = 32,
     ):
+        # force to 64
+        # concurrent_gb = max(64, concurrent_gb)
+        logging.info("concurrent_gb=%s GB.", concurrent_gb)
         self.wait_until_finished()
+        start_time = time.time()
+        uid = uuid.uuid4()
+        jax.profiler.start_trace(f"gs://cloud-tpu-multipod-dev-uss1/stoelinga-{uid}/")
 
         concurrent_bytes = concurrent_gb * 10**9
 
@@ -613,7 +651,14 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             return await asyncio.gather(*future_arrays)
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
-        return fut.result()
+        result = fut.result()
+        # Only needed when we use non blocking device put
+        # jax.block_until_ready(result)
+        logging.info("deserialize took %.4f seconds.", time.time() - start_time)
+        jax.profiler.stop_trace()
+        sys.exit(0)
+        # pylint: disable=unreachable
+        return result
 
 
 class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):

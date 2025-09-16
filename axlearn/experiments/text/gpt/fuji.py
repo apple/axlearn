@@ -15,6 +15,7 @@ import functools
 import itertools
 from typing import Any, List, NamedTuple, Optional, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -409,8 +410,9 @@ def get_trainer_kwargs(
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
+            save_every_n_steps=100,
             max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
                 # Step time:
                 # v1 on tpu-v4-1024 (512 chips):            3.03s
@@ -423,21 +425,28 @@ def get_trainer_kwargs(
                 ("tpu-v4-(1024|2048)", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
                 (
-                    "tpu-v5litepod-256",
+                    "tpu-v5litepod-32-1",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                mesh_shape=mesh_shape_from_axes(fsdp=32)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=False,
-                                        policy=offload_dots_saveable_policy,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
-                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                            # GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
                 ),
@@ -705,6 +714,31 @@ def get_trainer_kwargs(
                     ),
                 ),
                 (
+                    "tpu-v5e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                (
                     "tpu-v5p-.*",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
@@ -841,6 +875,8 @@ def get_trainer_kwargs(
         )
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
+    total_chips = len(jax.devices())
+    trainer_kwargs["train_batch_size"] = total_chips
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
     if version == Version.V3_TIKTOKEN:  # tiktoken tokenizer
