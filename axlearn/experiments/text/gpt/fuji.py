@@ -412,7 +412,7 @@ def get_trainer_kwargs(
             train_batch_size=train_batch_size,
             save_every_n_steps=100,
             max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
                 # Step time:
                 # v1 on tpu-v4-1024 (512 chips):            3.03s
