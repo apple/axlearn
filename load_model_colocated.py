@@ -38,6 +38,36 @@ array_serialization.estimate_read_memory_footprint = tensorstore_impl.estimate_r
 # Add ajax to Python path if needed
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+def run_deserializer():
+        # Object should be created once per process.
+        # pylint: disable=protected-access
+    concurrent_bytes = 1099511627776
+    sys.stderr.write("colocated python run_deserializer")
+    start_time = time.time()
+    byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
+    h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
+    thread_pool = ThreadPoolExecutor(1)
+
+    future_arrays = jax.tree.map(
+        functools.partial(
+            _async_deserialize,
+            byte_limiter=byte_limiter,
+            h2d_limiter=h2d_limiter,
+            single_thread_pool=thread_pool,
+        ),
+        cpu_shardings,
+        tensorstore_specs,
+        global_shapes,
+        dtypes,
+    ).block_until_ready()
+    async def gather_func():
+        sys.stderr.write("gather_func")
+        return await asyncio.gather(*future_arrays)
+    result = asyncio.run(gather_func()).block_until_ready()
+    deserialize_time = time.time() - start_time
+    sys.stderr.write(f"Deserialize completed in {deserialize_time:.2f} seconds")
+        #print(result)
+    return result
 
 def _colocated_deserialize(
     shardings: Sequence[jax.sharding.NamedSharding],
@@ -59,6 +89,7 @@ def _colocated_deserialize(
         ]
     print("In  _colocated_deserialize")
     print(cpu_shardings)
+    start_time=time.time()
 
     def output_spec_fn():
         print("output_spec_fn")
@@ -67,44 +98,18 @@ def _colocated_deserialize(
             for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
         ]
 
-    @colocated_python.colocated_python
-    def run_deserializer():
-        # Object should be created once per process.
-        # pylint: disable=protected-access
-        sys.stderr.write("colocated python run_deserializer")
-        start_time = time.time()
-        byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-        h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-        thread_pool = ThreadPoolExecutor(1)
-
-        future_arrays = jax.tree.map(
-            functools.partial(
-                _async_deserialize,
-                byte_limiter=byte_limiter,
-                h2d_limiter=h2d_limiter,
-                single_thread_pool=thread_pool,
-            ),
-            cpu_shardings,
-            tensorstore_specs,
-            global_shapes,
-            dtypes,
-        )
-        async def gather_func():
-            sys.stderr.write("gather_func")
-            return await asyncio.gather(*future_arrays)
-        result = asyncio.run(gather_func())
-        deserialize_time = time.time() - start_time
-        sys.stderr.write(f"Deserialize completed in {deserialize_time:.2f} seconds")
-        #print(result)
-        return result
+    #@colocated_python.colocated_python
     
-    run_deserializer = run_deserializer.specialize(
+    run_deserializer1=colocated_python.colocated_python(run_deserializer)
+    run_deserializer1 = run_deserializer1.specialize(
         devices=cpu_devices,
         out_specs_fn=output_spec_fn,
     )
+    #jax.block_until_ready(run_deserializer())
     
     # Try running in the current event loop if one exists, otherwise create new one
-    result = run_deserializer()
+    result = run_deserializer1()
+    print(time.time()-start_time)
     return result
 
 
