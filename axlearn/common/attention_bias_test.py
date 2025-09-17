@@ -382,7 +382,7 @@ class AttentionBiasTest(test_utils.TestCase):
         )
         new_bias_list = [b if b.has_value() else None for b in new_bias_list]
         expected = [causal, segment_ids, mask, None]
-        for b1, b2 in jax.util.safe_zip(new_bias_list, expected):
+        for b1, b2 in zip(new_bias_list, expected, strict=True):
             self.assertIs(b1, b2)
 
     def test_tensor_attention_bias(self):

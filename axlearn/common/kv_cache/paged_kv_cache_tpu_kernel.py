@@ -98,7 +98,7 @@ def tpu_scatter_update_pages_shmap_fn(
             grid=(num_heads, batch_size),
         ),
         out_shape=jax.ShapeDtypeStruct(kv_pages.shape, kv_pages.dtype),
-        compiler_params=pltpu.TPUCompilerParams(dimension_semantics=("parallel", "parallel")),
+        compiler_params=pltpu.CompilerParams(dimension_semantics=("parallel", "parallel")),
         interpret=jax.default_backend() == "cpu",
         input_output_aliases={2: 0},  # Output is aliased with input `kv_pages`.
     )(page_indices, key_positions, kv_pages, kv_proj)

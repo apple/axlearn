@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
-from jax.experimental.pallas.triton import TritonCompilerParams
+from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,

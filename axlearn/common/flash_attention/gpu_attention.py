@@ -44,7 +44,7 @@ from jax._src.cudnn.fused_attention_stablehlo import (
 )
 from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import pallas as pl
-from jax.experimental.pallas.triton import TritonCompilerParams
+from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
