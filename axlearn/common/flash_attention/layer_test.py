@@ -124,9 +124,11 @@ def _prepare_layers(
         num_heads=num_heads,
         dtype=jnp.bfloat16,
         dropout=Dropout.default_config().set(rate=dropout_rate),
-        input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-        if num_kv_heads is not None
-        else QKVLinear.default_config(),
+        input_linear=(
+            GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+            if num_kv_heads is not None
+            else QKVLinear.default_config()
+        ),
         kv_cache=kv_cache,
     )
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
@@ -429,9 +431,11 @@ class TestFlashAttention(TestCase):
                 value_dim=hidden_dim,
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
-                input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-                if num_kv_heads is not None
-                else QKVLinear.default_config(),
+                input_linear=(
+                    GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+                    if num_kv_heads is not None
+                    else QKVLinear.default_config()
+                ),
                 mha_dim_to_partition_spec={
                     "btnh": PartitionSpec("data", None, "model", None),
                     "bsnh": PartitionSpec("data", None, "model", None),
@@ -675,9 +679,11 @@ class TestFlashAttention(TestCase):
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
                 dropout=Dropout.default_config().set(rate=dropout_rate),
-                input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-                if num_kv_heads is not None
-                else QKVLinear.default_config(),
+                input_linear=(
+                    GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+                    if num_kv_heads is not None
+                    else QKVLinear.default_config()
+                ),
             )
             if attn_type == "causal":
                 kwargs["mask"] = CausalAttentionBias.default_config()
@@ -1010,9 +1016,11 @@ class TestFlashAttention(TestCase):
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
                 dropout=Dropout.default_config().set(rate=0.0),
-                input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-                if num_kv_heads is not None
-                else QKVLinear.default_config(),
+                input_linear=(
+                    GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+                    if num_kv_heads is not None
+                    else QKVLinear.default_config()
+                ),
                 logit_sink=logit_sink,
             )
 
@@ -1252,6 +1260,67 @@ class TestFlashAttention(TestCase):
                 self.assertTrue(jnp.all(jnp.isfinite(grads["sink"])))
             else:
                 self.assertNotIn("sink", grads)
+
+    @parameterized.parameters(
+        # (partition_spec, expected_mesh_axes, test_description)
+        (PartitionSpec(None), (None,), "length_1_short_spec"),
+        (PartitionSpec("data", None), (None,), "length_2_short_spec"),
+        (PartitionSpec("data", None, "model"), ("model",), "length_3_exact_boundary"),
+        (PartitionSpec("data", "seq", "fsdp", "expert"), ("fsdp",), "length_4_long_spec"),
+    )
+    def test_create_layer_parameter_specs_with_logit_sink(
+        self, bsnh_partition_spec, expected_mesh_axes, test_description
+    ):
+        """Tests _create_layer_parameter_specs with different partition spec lengths."""
+        del test_description  # Unused, just for test readability
+
+        num_heads = 4
+        per_head_dim = 32
+        hidden_dim = num_heads * per_head_dim
+
+        cfg = FlashAttention.default_config().set(
+            query_dim=hidden_dim,
+            key_dim=hidden_dim,
+            value_dim=hidden_dim,
+            num_heads=num_heads,
+            logit_sink=True,
+            mha_dim_to_partition_spec={
+                "bsnh": bsnh_partition_spec,
+                "btnh": bsnh_partition_spec,
+                "bnts": PartitionSpec(None),
+            },
+            name="test",
+        )
+
+        layer = cfg.instantiate(parent=None)
+        # pylint: disable-next=protected-access
+        param_specs = layer._create_layer_parameter_specs()
+
+        # Check that sink parameter exists and has correct mesh_axes
+        self.assertIn("sink", param_specs)
+        self.assertEqual(param_specs["sink"].mesh_axes, expected_mesh_axes)
+
+    def test_create_layer_parameter_specs_without_logit_sink(self):
+        """Tests _create_layer_parameter_specs when logit_sink is disabled."""
+        num_heads = 4
+        per_head_dim = 32
+        hidden_dim = num_heads * per_head_dim
+
+        cfg = FlashAttention.default_config().set(
+            query_dim=hidden_dim,
+            key_dim=hidden_dim,
+            value_dim=hidden_dim,
+            num_heads=num_heads,
+            logit_sink=False,
+            name="test",
+        )
+
+        layer = cfg.instantiate(parent=None)
+        # pylint: disable-next=protected-access
+        param_specs = layer._create_layer_parameter_specs()
+
+        # Check that sink parameter does not exist when logit_sink is disabled
+        self.assertNotIn("sink", param_specs)
 
 
 if __name__ == "__main__":

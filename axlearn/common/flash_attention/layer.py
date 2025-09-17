@@ -15,6 +15,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention, KVState
 from axlearn.common.attention_bias import BaseAttentionBias
+from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import ConfigBase, ConfigModifier, config_class
 from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
@@ -76,6 +77,19 @@ class FlashAttention(GroupedQueryAttention):
             )
         if cfg.tpu_block_size % 128 != 0:
             raise ValueError("cfg.tpu_block_size must divide 128.")
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        params = super()._create_layer_parameter_specs()
+
+        # Derive the mesh_axes for sink parameters from mha_dim_to_partition_spec.
+        if cfg.logit_sink:
+            if len(cfg.mha_dim_to_partition_spec["bsnh"]) < 3:
+                params["sink"].mesh_axes = (None,)
+            else:
+                params["sink"].mesh_axes = (cfg.mha_dim_to_partition_spec["bsnh"][2],)
+
+        return params
 
     @classmethod
     def default_config(cls) -> Config:
@@ -259,7 +273,11 @@ class FlashAttention(GroupedQueryAttention):
             # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
             "bias": attention_logit_biases_spec,
             # Logit sink values of shape [num_heads].
-            "logit_sink": PartitionSpec("model") if logit_sink is not None else PartitionSpec(None),
+            "logit_sink": (
+                PartitionSpec(None)
+                if logit_sink is None or len(cfg.mha_dim_to_partition_spec["bsnh"]) < 3
+                else PartitionSpec(cfg.mha_dim_to_partition_spec["bsnh"][2])
+            ),
             # PagedKVCache's page indices.
             "page_tables": cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None)),
         }
