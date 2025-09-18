@@ -97,6 +97,7 @@ ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.ht
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
+RUN uv pip install --prerelease=allow "jaxlib==0.5.3.dev20250918" --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html
 COPY . .
 
 ################################################################################
