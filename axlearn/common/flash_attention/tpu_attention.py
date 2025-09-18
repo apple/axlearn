@@ -872,14 +872,6 @@ class TPUFlashAttention(BaseFlashAttention):
         block_size = self.cfg.tpu_block_size
         if not self._check_block_size(input_batch=input_batch, block_size=block_size):
             return False
-        query: Tensor = input_batch["query"]
-        if jax.config.jax_default_matmul_precision == "highest" and query.dtype == jnp.bfloat16:
-            # Pallas is having some trouble compiling bfloat with precision default is the highest
-            # precision.
-            raise ValueError(
-                "TPU FlashAttention doesn't support default_matmul_precision=='highest' "
-                "when the query dtype is bfloat16!"
-            )
         return True
 
 
