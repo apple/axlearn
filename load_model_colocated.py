@@ -66,7 +66,6 @@ def run_deserializer():
     result = asyncio.run(gather_func()).block_until_ready()
     deserialize_time = time.time() - start_time
     sys.stderr.write(f"Deserialize completed in {deserialize_time:.2f} seconds")
-        #print(result)
     return result
 
 def _colocated_deserialize(
