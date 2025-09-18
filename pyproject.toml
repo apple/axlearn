@@ -69,7 +69,7 @@ dev = [
     "pytype==2024.10.11",  # type checking
     "scikit-learn==1.5.2",  # test-only
     # Fix AttributeError: module 'scipy.linalg' has no attribute 'tril' and related scipy import errors.
-    "scipy==1.12.0",
+    "scipy>=1.12.0",
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
     "timm==1.0.17",  # DiT Dependency test-only
