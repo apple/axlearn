@@ -38,9 +38,10 @@ array_serialization.estimate_read_memory_footprint = tensorstore_impl.estimate_r
 # Add ajax to Python path if needed
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+@colocated_python.colocated_python
 def run_deserializer():
-        # Object should be created once per process.
-        # pylint: disable=protected-access
+    # Object should be created once per process.
+    # pylint: disable=protected-access
     concurrent_bytes = 1099511627776
     sys.stderr.write("colocated python run_deserializer")
     start_time = time.time()
@@ -63,7 +64,7 @@ def run_deserializer():
     async def gather_func():
         sys.stderr.write("gather_func")
         return await asyncio.gather(*future_arrays)
-    result = asyncio.run(gather_func()).block_until_ready()
+    result = asyncio.run(gather_func())
     deserialize_time = time.time() - start_time
     sys.stderr.write(f"Deserialize completed in {deserialize_time:.2f} seconds")
     return result
@@ -88,7 +89,6 @@ def _colocated_deserialize(
         ]
     print("In  _colocated_deserialize")
     print(cpu_shardings)
-    start_time=time.time()
 
     def output_spec_fn():
         print("output_spec_fn")
@@ -96,19 +96,14 @@ def _colocated_deserialize(
             jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
             for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
         ]
-
-    #@colocated_python.colocated_python
     
-    run_deserializer1=colocated_python.colocated_python(run_deserializer)
-    run_deserializer1 = run_deserializer1.specialize(
+    run_deserializer1 = run_deserializer.specialize(
         devices=cpu_devices,
         out_specs_fn=output_spec_fn,
     )
-    #jax.block_until_ready(run_deserializer())
     
     # Try running in the current event loop if one exists, otherwise create new one
     result = run_deserializer1()
-    print(time.time()-start_time)
     return result
 
 
@@ -281,12 +276,17 @@ def main():
     
     args = parser.parse_args()
     
-    print(f"JAX devices: {jax.devices()}")
-    
+    #print(f"JAX devices: {jax.devices()}")
+    devices=jax.devices()
     preloaded_values = preload_model(ckpt_path=args.ckpt_path)
     
     print(f"✅ Successfully preloaded model from {args.ckpt_path}")
     print(f"   Total parameters: {sum(x.size for x in preloaded_values):,}")
+    z=jax.device_put(preloaded_values[0],devices[0])
+    z.block_until_ready()
+    #print("device put time:", time.time()-start_time)
+    
+    
 
 
 if __name__ == "__main__":
