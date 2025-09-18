@@ -85,8 +85,8 @@ class SerializerTest(parameterized.TestCase):
             if jax.device_count() != 8 or jax.process_count() != 1:
                 self.skipTest("Incorrect device count for mesh.")
             devices = mesh_utils.create_device_mesh((8,))
-            mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ('x', 'y'))
-            sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, 'y'))
+            mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+            sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, "y"))
             arr = jax.device_put(single_device_arr, sharding)
             return arr
         return single_device_arr
@@ -416,8 +416,8 @@ class SerializerTest(parameterized.TestCase):
     ):
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
-        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ('x', 'y'))
-        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, 'y'))
+        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, "y"))
         arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
@@ -438,8 +438,8 @@ class SerializerTest(parameterized.TestCase):
     def test_shard_info_fully_sharded(self, max_data_shard_degree: int, shard_threshold_bytes: int):
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
-        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ('x', 'y'))
-        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec('x', 'y'))
+        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("x", "y"))
         arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
@@ -463,7 +463,7 @@ class SerializerTest(parameterized.TestCase):
     ):
         single_device_arr = jnp.arange(0, sz)
         devices = mesh_utils.create_device_mesh((8,))
-        mesh = jax.sharding.Mesh(devices, 'x')
+        mesh = jax.sharding.Mesh(devices, "x")
         sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None))
         arr = jax.device_put(single_device_arr, sharding)
 
