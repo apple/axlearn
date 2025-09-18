@@ -34,7 +34,7 @@ import numpy as np
 import tensorstore as ts
 from absl import logging
 from jax._src import array, typing
-from jax._src.layout import Layout
+from jax._src.layout import Format
 from jax.experimental.array_serialization import serialization
 
 from axlearn.common.utils import Tensor
@@ -357,12 +357,12 @@ async def _run_serializer(
         raise e
 
 
-def _blocking_device_put(out: Tensor, layout: Layout) -> Tensor:
+def _blocking_device_put(out: Tensor, layout: Format) -> Tensor:
     return jax.block_until_ready(jax.device_put(out, layout))
 
 
 async def _async_deserialize(
-    user_in_sharding: jax.sharding.Sharding | Layout,
+    user_in_sharding: jax.sharding.Sharding | Format,
     tensorstore_spec: dict[str, Any],
     global_shape: Optional[Sequence[int]],
     dtype: Optional[typing.DTypeLike],
@@ -404,14 +404,14 @@ async def _async_deserialize(
     huge pages (THP) can help, but it's only for jax 0.5.1+.
     """
     in_sharding = (
-        user_in_sharding.sharding if isinstance(user_in_sharding, Layout) else user_in_sharding
+        user_in_sharding.sharding if isinstance(user_in_sharding, Format) else user_in_sharding
     )
     if not isinstance(in_sharding, jax.sharding.Sharding):
         raise ValueError(
             "sharding passed to deserialization should be specified, concrete and"
             f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
         )
-    dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
+    dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Format) else None
     t = await ts.open(
         tensorstore_spec,
         open=True,
@@ -458,7 +458,7 @@ async def _async_deserialize(
         mb_256 = 256 * 1024 * 1024
         out_size = math.ceil(out_size / mb_256) * mb_256
 
-        layout = Layout(
+        layout = Format(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
 
@@ -493,7 +493,7 @@ async def _async_deserialize(
         return result
 
     # pylint: disable-next=protected-access
-    return await serialization.ts_impl._create_async_array_from_callback(shape, in_sharding, cb)
+    return await serialization.ts_impl._create_async_array_from_callback(shape, dtype, in_sharding, cb)
 
 
 # Reference:
@@ -597,7 +597,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
     def deserialize(
         self,
-        shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
+        shardings: Sequence[Union[jax.sharding.Sharding, Format]],
         tensorstore_specs: Sequence[dict[str, Any]],
         global_shapes: Optional[Sequence[array.Shape]] = None,
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
