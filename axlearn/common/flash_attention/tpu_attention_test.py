@@ -369,6 +369,52 @@ class TestFlashAttention(TestCase):
         with self.assertRaises(ValueError):
             fn.is_supported(input_batch=input_batch, kv_cache_type=None)
 
+    @parameterized.product(
+        kv_len=[1024, 1024 * 16],
+        sliding_window_sz=[-1, 1024],
+        use_fused_override=[None, False, True],
+    )
+    def test_splash_fused_bwd_heuristic(self, kv_len, sliding_window_sz, use_fused_override):
+        if jax.default_backend() != "cpu":
+            self.skipTest("No need to run on non-CPU platforms.")  # This is to save CI time.
+
+        # Use a dummy jit function to avoid materializing big qkv tensors in memory.
+        @jax.jit
+        def jit_fn():
+            q, k, v, bias = generate_attention_data(
+                1, kv_len, kv_len, 1, 128, 1, sliding_window_sz=sliding_window_sz
+            )
+            cfg = dict(
+                interpret=jax.default_backend() == "cpu",
+                tpu_block_size=512,
+            )
+            if use_fused_override is not None:
+                cfg["backend_overrides"] = {"splash_use_fused_bwd_kernel": use_fused_override}
+            fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
+            prng_key = jax.random.PRNGKey(66)
+            input_batch = dict(
+                query=q,
+                key=k,
+                value=v,
+                bias=bias,
+                prng_key=prng_key,
+                logit_sink=None,
+            )
+
+            is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
+            self.assertTrue(is_supported)
+
+            if use_fused_override is not None:
+                expected_use_fused = use_fused_override
+            elif sliding_window_sz == -1:
+                expected_use_fused = True
+            else:
+                expected_use_fused = not kv_len / sliding_window_sz >= 4.0
+            # pylint: disable-next=protected-access
+            self.assertEqual(fn._use_fused, expected_use_fused)
+
+        jit_fn()
+
 
 if __name__ == "__main__":
     absltest.main()

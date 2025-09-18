@@ -3,7 +3,7 @@
 """FlashAttention layers."""
 
 from collections.abc import Sequence
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 import jax
 import jax.numpy as jnp
@@ -61,6 +61,10 @@ class FlashAttention(GroupedQueryAttention):
         mha_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {}
         # How to partition output values, keyed by dims.
         output_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {}
+
+        # Backend specific config overrides.
+        # TODO(hanzhi-zhou): Unify tpu_block_size and gpu_block_size with backend_overrides.
+        backend_overrides: Optional[dict[str, Any]] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -230,6 +234,7 @@ class FlashAttention(GroupedQueryAttention):
             gpu_block_size=cfg.gpu_block_size or 128,
             dropout_rate=cfg.dropout.rate,
             page_tables=page_indices,
+            backend_overrides=cfg.backend_overrides,
         )
         if jit_attn is None:
             # Fall back to standard attention if no backend kernels are supported.
