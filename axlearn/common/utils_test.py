@@ -14,7 +14,6 @@ from unittest import mock
 
 # pylint: disable=no-self-use
 import jax
-import jaxlib
 import numpy as np
 import pytest
 import tensorflow as tf
@@ -1017,7 +1016,7 @@ class ContextManagerTest(TestWithTemporaryCWD):
         # With runtime_checks enabled, we should be able to crash with jittable checks without
         # needing to checkify.
         with runtime_checks():
-            with self.assertRaisesRegex(jaxlib.xla_extension.XlaRuntimeError, "cannot be zero!"):
+            with self.assertRaisesRegex(jax.errors.JaxRuntimeError, "cannot be zero!"):
                 jax.jit(f)(0)
 
     def test_prng_impl(self):

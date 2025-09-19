@@ -632,6 +632,10 @@ class TPUJobBuilder(SingleReplicatedJob):
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
         tier = os.environ.get("BASTION_TIER", None)
 
+        # TODO(samos123) support using reservation when using local launch
+        # the local launch command automatically sets tier=disabled.
+        logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
+        selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})

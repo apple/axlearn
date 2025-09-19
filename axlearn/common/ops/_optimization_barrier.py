@@ -5,7 +5,6 @@
 from typing import Any
 
 import jax
-from jax._src import ad_checkpoint  # pylint: disable=protected-access
 
 
 @jax.custom_jvp
@@ -94,7 +93,7 @@ def forward_optimization_barrier(pytree: Any) -> Any:
     Returns:
         `pytree` transparently wrapped in an XLA optimization barrier.
     """
-    return ad_checkpoint._optimization_barrier(pytree)  # pylint: disable=protected-access
+    return jax.lax.optimization_barrier(pytree)
 
 
 @forward_optimization_barrier.defjvp

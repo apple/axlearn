@@ -19,7 +19,6 @@ import numpy as np
 import pytest
 from absl.testing import parameterized
 from jax.experimental import mesh_utils
-from jax.sharding import PositionalSharding
 
 from axlearn.common import array_serialization
 from axlearn.common.array_serialization import (
@@ -86,8 +85,9 @@ class SerializerTest(parameterized.TestCase):
             if jax.device_count() != 8 or jax.process_count() != 1:
                 self.skipTest("Incorrect device count for mesh.")
             devices = mesh_utils.create_device_mesh((8,))
-            sharding = PositionalSharding(devices)
-            arr = jax.device_put(single_device_arr, sharding.reshape(4, 2).replicate(0))
+            mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+            sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, "y"))
+            arr = jax.device_put(single_device_arr, sharding)
             return arr
         return single_device_arr
 
@@ -96,7 +96,7 @@ class SerializerTest(parameterized.TestCase):
         arr = self._create_partially_replicated_array(sharded)
 
         ts_open_handle: Any = None
-        old_open = array_serialization.serialization.ts.open
+        old_open = array_serialization.ts.open
 
         async def ts_open_patch(*args, **kwargs):
             nonlocal ts_open_handle
@@ -118,7 +118,7 @@ class SerializerTest(parameterized.TestCase):
 
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts.open",
+            f"{array_serialization.__name__}.ts.open",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec, mock.patch(
             f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
@@ -144,7 +144,7 @@ class SerializerTest(parameterized.TestCase):
         arr_host = jax.device_get(arr)
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts.open",
+            f"{array_serialization.__name__}.ts.open",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec, mock.patch(
             f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
@@ -178,7 +178,7 @@ class SerializerTest(parameterized.TestCase):
 
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts.open",
+            f"{array_serialization.__name__}.ts.open",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec:
             f = _CommitFuture(
@@ -276,8 +276,8 @@ class SerializerTest(parameterized.TestCase):
             mock.patch(
                 f"{array_serialization.__name__}.serialization._get_metadata", lambda *_: {}
             ),
-            mock.patch(f"{array_serialization.__name__}.serialization.ts.open", open_patch),
-            mock.patch(f"{array_serialization.__name__}.serialization.ts.Spec", mock.MagicMock()),
+            mock.patch(f"{array_serialization.__name__}.ts.open", open_patch),
+            mock.patch(f"{array_serialization.__name__}.ts.Spec", mock.MagicMock()),
         ):
             manager.serialize(arrays, tensorstore_specs, on_commit_callback=lambda: None)
             manager.wait_until_finished()
@@ -299,7 +299,8 @@ class SerializerTest(parameterized.TestCase):
         load_to_pinned_host: bool,
     ):
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
+        mesh = jax.sharding.Mesh(devices, "x")
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(("x",)))
         data = [jax.device_put(arr, sharding) for arr in arrays]
 
         # create a temporary tensorstore spec for the arrays
@@ -415,9 +416,9 @@ class SerializerTest(parameterized.TestCase):
     ):
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
-
-        arr = jax.device_put(single_device_arr, sharding.reshape(4, 2).replicate(0))
+        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, "y"))
+        arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
         self.assertEqual(replica_count[((None, None, None), (0, 512, None))], 4)
@@ -437,9 +438,9 @@ class SerializerTest(parameterized.TestCase):
     def test_shard_info_fully_sharded(self, max_data_shard_degree: int, shard_threshold_bytes: int):
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
-
-        arr = jax.device_put(single_device_arr, sharding.reshape(4, 2))
+        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("x", "y"))
+        arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
         self.assertEqual(replica_count[((0, 256, None), (0, 512, None))], 1)
@@ -462,9 +463,9 @@ class SerializerTest(parameterized.TestCase):
     ):
         single_device_arr = jnp.arange(0, sz)
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
-
-        arr = jax.device_put(single_device_arr, sharding.replicate(0))
+        mesh = jax.sharding.Mesh(devices, "x")
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None))
+        arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
         # Fully replicated on 8 devices.
