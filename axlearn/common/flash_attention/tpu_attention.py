@@ -911,24 +911,36 @@ class TPUSplashAttention(TPUFlashAttention):
             )
 
         if (
+            not self.get_backend_overrides("splash_use_fused_bwd_kernel", True)
+            and self.cfg.dropout_rate > 0.0
+        ):
+            # TODO (bailin): Support dropout with non-fused bwd kernel.
+            return self._log_unsupported("dropout with non-fused bwd kernel is not supported.")
+
+        # If user doesn't specify splash_use_fused_bwd_kernel, we have some defaults
+        # or heuristics to decide whether to use fused bwd kernel.
+        if (
             not self.cfg.backend_overrides
             or "splash_use_fused_bwd_kernel" not in self.cfg.backend_overrides
         ):
-            # If user doesn't specify splash_use_fused_bwd_kernel, use a heuristic to detect
-            # whether we should use the fused bwd kernel or not.
-            sliding, _ = split(bias, SlidingWindowAttentionBias)
-            key: Tensor = input_batch["key"]
-            kv_seq_len = key.shape[1]
-            # TODO(c_lan): Support logit_sinks for non-fused bwd kernel.
-            if sliding.has_value() and "logit_sinks" not in input_batch:
-                if kv_seq_len >= 16 * 1024 and kv_seq_len / sliding.sliding_window_size >= 4.0:
-                    logging.info(
-                        "Not using fused kernel for splash attention backward pass for better "
-                        "performance, because sliding_window_size=%d << kv_seq_len=%d.",
-                        sliding.sliding_window_size,
-                        kv_seq_len,
-                    )
-                    self._use_fused = False
+            # When dropout is enabled, we always use the fused bwd kernel.
+            if self.cfg.dropout_rate > 0.0:
+                self._use_fused = True
+            else:
+                # Heuristic for sliding window attention.
+                sliding, _ = split(bias, SlidingWindowAttentionBias)
+                key: Tensor = input_batch["key"]
+                kv_seq_len = key.shape[1]
+                # TODO(c_lan): Support logit_sinks for non-fused bwd kernel.
+                if sliding.has_value() and "logit_sinks" not in input_batch:
+                    if kv_seq_len >= 16 * 1024 and kv_seq_len / sliding.sliding_window_size >= 4.0:
+                        logging.info(
+                            "Not using fused kernel for splash attention backward pass for better "
+                            "performance, because sliding_window_size=%d << kv_seq_len=%d.",
+                            sliding.sliding_window_size,
+                            kv_seq_len,
+                        )
+                        self._use_fused = False
         else:
             self._use_fused = self.get_backend_overrides("splash_use_fused_bwd_kernel", True)
 
