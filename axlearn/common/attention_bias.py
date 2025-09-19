@@ -37,7 +37,7 @@ import jax
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
-from axlearn.common import struct
+from axlearn.common import flax_struct
 from axlearn.common.config import ClassConfigBase, ConfigOr, config_for_class, maybe_instantiate
 from axlearn.common.utils import Tensor, safe_not
 
@@ -51,13 +51,13 @@ OpT = typing.TypeVar("OpT", type(None), Tensor)
 B = TypeVar("B", bound="BaseAttentionBias")
 
 
-@functools.partial(struct.dataclass, eq=False)
+@functools.partial(flax_struct.dataclass, eq=False)
 class BaseAttentionBias:
     """Base class representing attention logit biases."""
 
     # The dtype of the biases to return in `value()`.
     # If None, do not cast the dtype.
-    dtype: Optional[jnp.dtype] = struct.field(kw_only=True, default=None, pytree_node=False)
+    dtype: Optional[jnp.dtype] = flax_struct.field(kw_only=True, default=None, pytree_node=False)
 
     @final
     def eval_shape(self) -> tuple[int, int, int, int]:
@@ -191,7 +191,7 @@ class BaseAttentionBias:
         raise NotImplementedError
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class BiasAndResidual(BaseAttentionBias, Generic[B]):
     """A bias and residual where the bias has type `B` (or is None) and the residual
     has any type.
@@ -213,7 +213,7 @@ class BiasAndResidual(BaseAttentionBias, Generic[B]):
         return iter((self.bias, self.residual))
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class CompositeAttentionBias(BaseAttentionBias):
     """A lazily evaluated list of biases that are added together to get the final bias.
 
@@ -340,7 +340,7 @@ def split(bias: BaseAttentionBias, *cls: Type[BaseAttentionBias]) -> Iterable[Ba
     yield bias
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class TensorAttentionBias(BaseAttentionBias):
     """An attention bias represented as an explicit Tensor."""
 
@@ -349,11 +349,11 @@ class TensorAttentionBias(BaseAttentionBias):
     _internal_value: Tensor
 
     def __post_init__(self):
-        # Because TensorAttentionBias is a struct.dataclass and the automatically generated pytree
-        # flattening methods for all struct.dataclasses always flatten to a list of the dataclass
-        # fields. (I.e., not the result of calling value().)
-        # Therefore, we enforce a consistent shape so that the partition spec correctly lines
-        # up wit the dimensions of the stored Tensor.
+        # Because TensorAttentionBias is a flax_struct.dataclass and the automatically generated
+        # pytree flattening methods for all flax_struct.dataclasses always flatten to a list of the
+        # dataclass fields. (I.e., not the result of calling value().)  Therefore, we enforce a
+        # consistent shape so that the partition spec correctly lines up wit the dimensions of the
+        # stored Tensor.
         if getattr(self._internal_value, "ndim", 4) != 4:
             raise ValueError(f"Invalid shape {self._internal_value.shape}.")
 
@@ -390,7 +390,7 @@ def _spec_for_explicit_bias(
     return spec
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class BoolAttentionBias(BaseAttentionBias):
     """An attention bias represented as a boolean mask."""
 
@@ -424,7 +424,7 @@ class BoolAttentionBias(BaseAttentionBias):
         raise NotImplementedError
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class SegmentIdAttentionBias(BoolAttentionBias):
     """An attention bias defined by segment ids."""
 
@@ -485,12 +485,12 @@ class MaskFn(Protocol):
         """
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class MaskFnAttentionBias(BoolAttentionBias):
     """An attention bias represented as an implicit boolean mask."""
 
     # The function defining the contents of the mask.
-    mask: MaskFn = struct.field(pytree_node=False)
+    mask: MaskFn = flax_struct.field(pytree_node=False)
 
     # The positions in the query sequence that the mask should be computed for.
     # I.e., `self.value()[batch, num_heads, i]` is the mask specifying what the query token at
@@ -503,9 +503,9 @@ class MaskFnAttentionBias(BoolAttentionBias):
     # is not necessarily contiguous. E.g., speculative decoding, non-contiguous prompts,
     # various papers that need it.
     # The index in the sequence of query vectors, [1|batch, target_len].
-    target_positions: Tensor = struct.field(kw_only=True)
+    target_positions: Tensor = flax_struct.field(kw_only=True)
     # The index in the sequence of key vectors, [1|batch, source_len].
-    source_positions: Tensor = struct.field(kw_only=True)
+    source_positions: Tensor = flax_struct.field(kw_only=True)
 
     @classmethod
     def default_config(cls, mask: MaskFn) -> ClassConfigBase["MaskFnAttentionBias"]:
@@ -582,7 +582,7 @@ class MaskFnAttentionBias(BoolAttentionBias):
         )
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class BoolTensorAttentionBias(BoolAttentionBias):
     """An attention bias represented as an explicit boolean mask."""
 
@@ -643,12 +643,12 @@ def causal_mask(query_position: Tensor, key_position: Tensor) -> Tensor:
     return query_position >= key_position
 
 
-@struct.dataclass
+@flax_struct.dataclass
 @final
 class CausalAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-error
     """A causal attention mask."""
 
-    mask: Optional[MaskFn] = struct.field(pytree_node=False, default=causal_mask)
+    mask: Optional[MaskFn] = flax_struct.field(pytree_node=False, default=causal_mask)
 
     @classmethod
     def default_config(cls) -> ClassConfigBase[MaskFnAttentionBias]:
@@ -665,13 +665,13 @@ class CausalAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-error
         return biases[0]
 
 
-@struct.dataclass
+@flax_struct.dataclass
 @final
 class SlidingWindowAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-error
     """A sliding window attention mask."""
 
     # A left context size for sliding window attention. Total window size = sliding_window_size + 1
-    sliding_window_size: int = struct.field(kw_only=True, pytree_node=False)
+    sliding_window_size: int = flax_struct.field(kw_only=True, pytree_node=False)
 
     @classmethod
     # pylint: disable-next=arguments-renamed
@@ -684,7 +684,7 @@ class SlidingWindowAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-
         )
 
 
-@struct.dataclass
+@flax_struct.dataclass
 @final
 class ZeroAttentionBias(BoolAttentionBias):
     """ "Attention bias that adds zero.

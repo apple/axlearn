@@ -7,11 +7,11 @@ from typing import Any, Callable, Optional, Union
 import jax
 import numpy as np
 
-from axlearn.common import struct
+from axlearn.common import flax_struct
 from axlearn.common.utils import NestedTensor, Tensor
 
 
-class Summary(struct.PyTreeNode):
+class Summary(flax_struct.PyTreeNode):
     """Base class for a summary value.
 
     Subclasses should implement value() and, optionally, validate().
@@ -145,7 +145,7 @@ class CallbackSummary(Summary):
         ```
     """
 
-    fn: Callable = struct.field(pytree_node=False)
+    fn: Callable = flax_struct.field(pytree_node=False)
     args: tuple
     kwargs: dict[str, Any]
 

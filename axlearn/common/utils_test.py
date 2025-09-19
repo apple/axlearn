@@ -25,7 +25,7 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
-from axlearn.common import learner, optimizers, serialization, struct, utils
+from axlearn.common import flax_struct, learner, optimizers, serialization, utils
 from axlearn.common.aot_compilation import get_devices_for_topology, reshape_devices
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import (
@@ -113,7 +113,7 @@ class Combo(NamedTuple):
 
 
 # pylint: disable-next=abstract-method
-class StructContainer(struct.PyTreeNode):
+class StructContainer(flax_struct.PyTreeNode):
     contents: Any
 
 
@@ -131,13 +131,13 @@ class TreeUtilsTest(TestCase):
             tree_paths(Combo(head=1, tail=Combo(head=2, tail=3))),
         )
 
-        # struct.PyTreeNode.
+        # flax_struct.PyTreeNode.
         self.assertEqual(
             WeightedScalar(mean="mean", weight="weight"),
             tree_paths(WeightedScalar(mean=2, weight=3)),
         )
 
-        # Nested struct.PyTreeNode.
+        # Nested flax_struct.PyTreeNode.
         self.assertEqual(
             StructContainer(WeightedScalar(mean="contents/mean", weight="contents/weight")),
             tree_paths(StructContainer(WeightedScalar(mean=2, weight=3))),
@@ -158,7 +158,7 @@ class TreeUtilsTest(TestCase):
             ),
         )
 
-        class DataclassCombo(struct.PyTreeNode):
+        class DataclassCombo(flax_struct.PyTreeNode):
             scalar: int
             dataclass_combo: Any
             none: type[None]

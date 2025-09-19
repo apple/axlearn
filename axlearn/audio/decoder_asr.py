@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from axlearn.common import decoding, struct
+from axlearn.common import decoding, flax_struct
 from axlearn.common.attention import TransformerAttentionLayer
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.base_model import BaseModel
@@ -140,7 +140,7 @@ class CommonPrefixMerger(PrefixMerger):
         return jax.vmap(jax.vmap(_update_seq))(tokens, state)
 
 
-class DecodeOutputs(struct.PyTreeNode):
+class DecodeOutputs(flax_struct.PyTreeNode):
     """Output of decoding."""
 
     # Raw decode output sequences. May contain blank and/or repeated tokens.

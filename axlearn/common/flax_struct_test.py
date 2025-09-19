@@ -20,14 +20,14 @@ import pytest
 from absl.testing import absltest
 from jax._src.tree_util import prefix_errors
 
-from axlearn.common import struct
+from axlearn.common import flax_struct
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class _Point:
     x: float
     y: float
-    meta: Any = struct.field(pytree_node=False)
+    meta: Any = flax_struct.field(pytree_node=False)
 
 
 class StructTest(absltest.TestCase):
@@ -45,7 +45,7 @@ class StructTest(absltest.TestCase):
 
     @pytest.mark.skipif(sys.version_info < (3, 10), reason="Slots require Python >= 3.10")
     def test_slots(self):
-        @functools.partial(struct.dataclass, frozen=False, slots=True)
+        @functools.partial(flax_struct.dataclass, frozen=False, slots=True)
         class SlotsPoint:
             x: float
             y: float
@@ -75,22 +75,22 @@ class StructTest(absltest.TestCase):
         self.assertFalse(hasattr(Dummy, "_axlearn_dataclass"))
 
         # pylint: disable-next=invalid-name
-        Dummy = struct.dataclass(Dummy)
+        Dummy = flax_struct.dataclass(Dummy)
         self.assertTrue(hasattr(Dummy, "_axlearn_dataclass"))
 
         # pylint: disable-next=invalid-name
-        Dummy = struct.dataclass(Dummy)  # no-op
+        Dummy = flax_struct.dataclass(Dummy)  # no-op
         self.assertTrue(hasattr(Dummy, "_axlearn_dataclass"))
 
     def test_wrap_pytree_node_no_error(self):
-        @struct.dataclass
-        class Dummy(struct.PyTreeNode):
+        @flax_struct.dataclass
+        class Dummy(flax_struct.PyTreeNode):
             a: int
 
         del Dummy
 
     def test_chex_tree_leaves_compatibility(self):
-        """Tests that the treedef of a chex.dataclass is the same as a struct.PyTreeNode.
+        """Tests that the treedef of a chex.dataclass is the same as a flax_struct.PyTreeNode.
 
         This is needed to ensure backwards compatibility for serialization / deserialization.
         """
@@ -126,9 +126,9 @@ class StructTest(absltest.TestCase):
         self.assertEqual(actual, expected)
 
     def test_flatten_order(self):
-        """Tests the `flatten_order` argument of `struct.dataclass`."""
+        """Tests the `flatten_order` argument of `flax_struct.dataclass`."""
 
-        @functools.partial(struct.dataclass, flatten_order=None)
+        @functools.partial(flax_struct.dataclass, flatten_order=None)
         class C:
             field_b: int
             field_a: int
@@ -146,7 +146,7 @@ class Chex:
     field_c: jax.Array
 
 
-class Struct(struct.PyTreeNode):
+class Struct(flax_struct.PyTreeNode):
     field_b: jax.Array
     field_a: jax.Array
     field_d: jax.Array

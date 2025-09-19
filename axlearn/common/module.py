@@ -54,7 +54,7 @@ import numpy as np
 from absl import logging
 from typing_extensions import Protocol
 
-from axlearn.common import struct, traceback_util
+from axlearn.common import flax_struct, traceback_util
 from axlearn.common.config import REQUIRED, Configurable, Required, RequiredFieldValue, config_class
 from axlearn.common.summary import Summary
 from axlearn.common.traceback_util import annotate_stack, no_stack_summary
@@ -225,7 +225,7 @@ class Summable(Protocol):
 
 
 # TODO(markblee): Link to docs on invocation contexts.
-@functools.partial(struct.dataclass, frozen=False)
+@functools.partial(flax_struct.dataclass, frozen=False)
 class InvocationContext:  # pylint: disable=too-many-instance-attributes
     """The invocation context for `Module.__call__()`.
 
@@ -240,13 +240,13 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
         output_collection: See `OutputCollection`.
     """
 
-    name: str = struct.field(pytree_node=False)
-    parent: Optional["InvocationContext"] = struct.field(pytree_node=True)
-    module: Optional["Module"] = struct.field(pytree_node=False)
-    state: NestedTensor = struct.field(pytree_node=True)
-    is_training: bool = struct.field(pytree_node=False)
-    prng_key: Optional[Tensor] = struct.field(pytree_node=True)
-    output_collection: OutputCollection = struct.field(pytree_node=True)
+    name: str = flax_struct.field(pytree_node=False)
+    parent: Optional["InvocationContext"] = flax_struct.field(pytree_node=True)
+    module: Optional["Module"] = flax_struct.field(pytree_node=False)
+    state: NestedTensor = flax_struct.field(pytree_node=True)
+    is_training: bool = flax_struct.field(pytree_node=False)
+    prng_key: Optional[Tensor] = flax_struct.field(pytree_node=True)
+    output_collection: OutputCollection = flax_struct.field(pytree_node=True)
 
     def path(self):
         if self.parent is None:
@@ -991,19 +991,19 @@ class Module(Configurable, metaclass=_PostInitMeta):
         return self.forward(*args, **kwargs)
 
 
-@functools.partial(struct.dataclass, frozen=False)
+@functools.partial(flax_struct.dataclass, frozen=False)
 class _Functional:
     """A pure functional call to `method_fn`."""
 
     # The function to call.
-    method_fn: Callable = struct.field(pytree_node=False)
+    method_fn: Callable = flax_struct.field(pytree_node=False)
     # The context to call method_fn in.
     # This will be copied to prevent method_fn from mutating the original.
-    context: InvocationContext = struct.field(pytree_node=True)
+    context: InvocationContext = flax_struct.field(pytree_node=True)
     # Whether to require that context.parent is current_context().
-    require_parent: bool = struct.field(pytree_node=False)
+    require_parent: bool = flax_struct.field(pytree_node=False)
     # Whether to copy the argument pytrees to prevent method_fn from mutating the original.
-    copy_args_tree: bool = struct.field(pytree_node=False, default=True)
+    copy_args_tree: bool = flax_struct.field(pytree_node=False, default=True)
 
     def __call__(self, *args, **kwargs) -> tuple[Any, OutputCollection]:
         """Invokes method_fn in a pure functional fashion.

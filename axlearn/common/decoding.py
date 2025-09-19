@@ -29,7 +29,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import lax
 
-from axlearn.common import struct
+from axlearn.common import flax_struct
 from axlearn.common.utils import NestedTensor, Tensor, vectorized_tree_map
 
 # Constants
@@ -353,7 +353,7 @@ class _BeamState(NamedTuple):
     prefix_merger: NestedTensor
 
 
-class BeamSearchOutputs(struct.PyTreeNode):
+class BeamSearchOutputs(flax_struct.PyTreeNode):
     """Output values after performing beam search decoding."""
 
     # Sequences that end with eos_id.
@@ -813,7 +813,7 @@ def _decode_init(
     )
 
 
-class SampleOutputs(struct.PyTreeNode):
+class SampleOutputs(flax_struct.PyTreeNode):
     """Output values after performing sample decoding."""
 
     # Sequences which may or may not end with eos_id.

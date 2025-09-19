@@ -30,11 +30,11 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import (
     debug_utils,
+    flax_struct_test,
     layers,
     learner,
     optimizers,
     param_init,
-    struct_test,
     test_utils,
     utils_spmd,
 )
@@ -1337,14 +1337,14 @@ class CompatibilityTest(test_utils.TestCase):
                 del prebuilt
                 cfg = self.config
                 if cfg.kind == "chex":
-                    param = struct_test.Chex(
+                    param = flax_struct_test.Chex(
                         field_d=jnp.array(4),
                         field_b=jnp.array(1),
                         field_a=jnp.array(2),
                         field_c=jnp.array(3),
                     )
                 elif cfg.kind == "struct":
-                    param = struct_test.Struct(
+                    param = flax_struct_test.Struct(
                         field_d=jnp.array(5),
                         field_b=jnp.array(6),
                         field_a=jnp.array(7),
@@ -1398,8 +1398,8 @@ class CompatibilityTest(test_utils.TestCase):
                 struct_trainer.restore_checkpoint()
             struct_data = struct_trainer.trainer_state.model["param"]
 
-            self.assertIsInstance(chex_data, struct_test.Chex)
-            self.assertIsInstance(struct_data, struct_test.Struct)
+            self.assertIsInstance(chex_data, flax_struct_test.Chex)
+            self.assertIsInstance(struct_data, flax_struct_test.Struct)
             chex.assert_trees_all_equal(
                 dataclasses.asdict(chex_data), dataclasses.asdict(struct_data)
             )
