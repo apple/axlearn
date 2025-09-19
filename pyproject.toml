@@ -20,12 +20,12 @@ dependencies = [
 # Core dependencies needed for jax based training and evaluation.
 # Every time we upgrade JAX, we should try to bring the rest to the newest versions.
 core = [
-    "absl-py==2.1.0",
-    "chex==0.1.88",
+    "absl-py==2.3.1",
+    "chex==0.1.91",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.7.2.dev20250914",
-    "jaxlib==0.7.2.dev20250914",
-    "ml-dtypes==0.5.1",
+    "jax==0.7.2.dev20250916",
+    "jaxlib==0.7.2.dev20250916",
+    "ml-dtypes==0.5.3",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -41,7 +41,7 @@ core = [
     "tensorflow_text==2.19.0", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
-    "typing-extensions==4.12.2",
+    "typing-extensions==4.15.0",
     "scipy>=1.12.0",  # to avoid "module 'scipy.linalg' has no attribute 'tril'"
     "seqio==0.0.18.1",  # used for inputs
     "aqtp==0.8.2", # Updated from 0.4.0; compatible with Python 3.10
@@ -106,7 +106,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.7.2.dev20250914",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.7.2.dev20250916",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
@@ -132,7 +132,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton>=2.1.0",
-    "jax[cuda12]==0.7.2.dev20250914",
+    "jax[cuda12]==0.7.2.dev20250916",
     "nvidia-ml-py==12.560.30",
     # pin nccl version, otherwise jax[cuda12] will pull latest version
     "nvidia-nccl-cu12==2.27.5",
