@@ -205,8 +205,7 @@ def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
 
 
 class TensorstoreSpecModifier:
-    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
-        ...
+    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]): ...
 
 
 async def _async_serialize(
@@ -404,11 +403,22 @@ async def _async_deserialize(
             f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
         )
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
+
+    # gcs_grpc improves performance.
+    if tensorstore_spec.get("kvstore", {}).get("driver") == "gcs":
+        tensorstore_spec["kvstore"]["driver"] = "gcs_grpc"
     t = await ts.open(
         tensorstore_spec,
         open=True,
         assume_metadata=False,
-        context=serialization.TS_CONTEXT,
+        # Improve GCS performance
+        context=ts.Context(
+            {
+                "cache_pool": {"total_bytes_limit": 0},
+                "data_copy_concurrency": {"limit": "shared"},
+                "gcs_request_concurrency": {"limit": 480},
+            }
+        ),
     )
     shape = tuple(t.shape if global_shape is None else global_shape)
     new_shard_shape = in_sharding.shard_shape(shape)
@@ -434,10 +444,15 @@ async def _async_deserialize(
             # the extra values will be filled with 0s.
             out = np.zeros(new_shard_shape, read_ts.dtype.numpy_dtype)
 
+        ts_read_start_time = time.time()
         await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][restricted_domain].write(
             read_ts
         )
-
+        logging.info(
+            "Reading %d MB from tensorstore took %.4f seconds.",
+            requested_bytes // 1024 // 1024,
+            time.time() - ts_read_start_time,
+        )
         # Convert to jnp array so that layouts are initialized properly for
         # sub-byte dtypes.
         # TODO(yashkatariya): This is a band-aid fix. Figure out a better way to
@@ -454,9 +469,18 @@ async def _async_deserialize(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
         try:
-            await h2d_limiter.wait_for_bytes(out_size)
-            result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-            await h2d_limiter.release_bytes(out_size)
+            device_put_start = time.time()
+            if os.getenv("JAX_PLATFORMS") == "proxy":
+                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+            else:
+                await h2d_limiter.wait_for_bytes(out_size)
+                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+                await h2d_limiter.release_bytes(out_size)
+            logging.info(
+                "device_put of %d MB took %.4f seconds.",
+                requested_bytes // 1024 // 1024,
+                time.time() - device_put_start,
+            )
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
                 raise e  # Raise if it's not the type of error we expect.
@@ -589,8 +613,14 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         concurrent_gb: int = 32,
     ):
         self.wait_until_finished()
+        start_time = time.time()
 
         concurrent_bytes = concurrent_gb * 10**9
+        # Increase the amount of bytes to read and deserialize in parallel.
+        # This is important especially for larger models. You should set this as
+        # big as possible until you run out of memory. Note do not use this change
+        # in production, instead pass a bigger value of concurrent_gb.
+        concurrent_bytes = concurrent_bytes * 4
 
         async def _run_deserializer():
             # Object should be created once per process.
@@ -613,7 +643,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             return await asyncio.gather(*future_arrays)
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
-        return fut.result()
+        result = fut.result()
+        logging.info("deserialize took %.4f seconds.", time.time() - start_time)
+        return result
 
 
 class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
