@@ -24,7 +24,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
@@ -482,7 +481,7 @@ class TestFlashAttention(TestCase):
         self, batch, seq_len, num_heads, num_kv_heads, per_head_dim, mesh, mesh_axis_names
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         def as_tensor_bias(bias: Tensor) -> CompositeAttentionBias:
             return CompositeAttentionBias([TensorAttentionBias(bias)])
@@ -554,22 +553,22 @@ class TestFlashAttention(TestCase):
         dropout_rate,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
         if attn_type != "full" and use_bias:
             # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
-            pytest.skip(reason="Only one of causal and use_bias can be True.")
+            self.skipTest("Only one of causal and use_bias can be True.")
         if use_segment_ids and query_len_multiplier != 1:
-            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
+            self.skipTest("Segment IDs are not supported for Q and K with different lengths.")
         # Data=1 with bias matrix in all fp32 format would OOM the H100 SRAM.
         if use_bias and mesh[mesh_axis_names.index("data")] == 1 and input_dtype == jnp.float32:
-            pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
+            self.skipTest("Unsupported large bias matrix in fp32 format.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
-            pytest.skip("Dropout is implemented for GPU only.")
+            self.skipTest("Dropout is implemented for GPU only.")
         if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
             # rows. "custom" is also sliding window, but uses a different function to test support
             # for custom mask fns.
-            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
+            self.skipTest("Sliding window attention does not make sense when q_len != kv_len.")
 
         if attn_type == "full":
             mask = None
@@ -655,20 +654,20 @@ class TestFlashAttention(TestCase):
         dropout_rate,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
         if use_segment_ids and query_len_multiplier != 1:
-            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
+            self.skipTest("Segment IDs are not supported for Q and K with different lengths.")
         if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
             # rows. "custom" is also sliding window, but uses a different function to test support
             # for custom mask fns.
-            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
+            self.skipTest("Sliding window attention does not make sense when q_len > kv_len.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
-            pytest.skip("Dropout is implemented for GPU only.")
+            self.skipTest("Dropout is implemented for GPU only.")
 
         if attn_type != "full" and use_bias:
             # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
-            pytest.skip(reason="Only one of causal and use_bias can be True.")
+            self.skipTest("Only one of causal and use_bias can be True.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             hidden_dim = num_heads * per_head_dim
@@ -777,17 +776,17 @@ class TestFlashAttention(TestCase):
         dtype,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         named_sharding = dict(zip(mesh_axis_names, mesh))
         if "seq" in named_sharding and named_sharding["seq"] > 1:
-            pytest.skip(reason="Unsupported seq dim sharding for decoding.")
+            self.skipTest("Unsupported seq dim sharding for decoding.")
         if (
             math.prod(mesh) > 1
             and attn_type == "paged"
             and math.prod(mesh) != named_sharding.get("model", 1)
         ):
-            pytest.skip(reason="Paged attention only supports model sharding.")
+            self.skipTest("Paged attention only supports model sharding.")
 
         if attn_type == "causal":
             mask = CausalAttentionBias.default_config()
@@ -1000,7 +999,7 @@ class TestFlashAttention(TestCase):
     ):
         """Tests logit sink functionality in FlashAttention."""
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         mask = None
         if attn_type == "causal":

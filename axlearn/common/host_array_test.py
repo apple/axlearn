@@ -123,7 +123,7 @@ class HostArrayTest(TestCase):
 
         mesh_shape = infer_mesh_shape(mesh_shape)
         if not _is_supported(platform=platform, mesh_shape=mesh_shape):
-            pytest.skip(reason="Unsupported platform/mesh.")
+            self.skipTest("Unsupported platform/mesh.")
 
         devices = mesh_utils.create_device_mesh(mesh_shape, allow_split_physical_axes=True)
         mesh = jax.sharding.Mesh(devices, ("data", "model"))
@@ -133,14 +133,14 @@ class HostArrayTest(TestCase):
 
         # Number of dims should match number of partitioned axes.
         if len(process_shape) < len(partition):
-            pytest.skip(reason="Incompatible process_shape/partition.")
+            self.skipTest("Incompatible process_shape/partition.")
 
         # Infer global shape from local_shape and number of processes.
         global_shape = local_to_global_shape(sharding, process_shape)
         # Partition should divide global_shape evenly.
         partitions = _infer_num_partitions(global_shape, mesh=mesh, partition=partition)
         if any(dim % num_parts != 0 for dim, num_parts in zip(global_shape, partitions)):
-            pytest.skip(reason="Incompatible global_shape/partitioning.")
+            self.skipTest("Incompatible global_shape/partitioning.")
 
         with mesh:
             host_arrays = dict(
@@ -185,7 +185,7 @@ class HostArrayTest(TestCase):
 
         mesh_shape = infer_mesh_shape(mesh_shape)
         if not _is_supported(platform=platform, mesh_shape=mesh_shape):
-            pytest.skip(reason="Unsupported platform/mesh.")
+            self.skipTest("Unsupported platform/mesh.")
         logging.info(
             "platform=%s mesh_shape=%s global_shape=%s data_partition=%s",
             platform,
@@ -200,11 +200,11 @@ class HostArrayTest(TestCase):
         partition = data_partition_type_to_spec(partition)
         # Number of dims should match number of partitioned axes.
         if len(global_shape) < len(partition):
-            pytest.skip(reason="Incompatible process_shape/partition.")
+            self.skipTest("Incompatible process_shape/partition.")
 
         partitions = _infer_num_partitions(global_shape, mesh=mesh, partition=partition)
         if any(dim % num_parts != 0 for dim, num_parts in zip(global_shape, partitions)):
-            pytest.skip(reason="Incompatible global_shape/partitioning.")
+            self.skipTest("Incompatible global_shape/partitioning.")
 
         with mesh:
             sharding = jax.sharding.NamedSharding(mesh, partition)
@@ -246,7 +246,7 @@ class HostArrayTest(TestCase):
 
         mesh_shape = infer_mesh_shape(mesh_shape)
         if not _is_supported(platform=platform, mesh_shape=mesh_shape):
-            pytest.skip(reason="Unsupported platform/mesh.")
+            self.skipTest("Unsupported platform/mesh.")
 
         device_count = jax.device_count()
         process_count = jax.process_count()
@@ -254,7 +254,7 @@ class HostArrayTest(TestCase):
         assert device_count > 1
 
         if process_count % 2 != 0:
-            pytest.skip(reason="Requires even number of processes.")
+            self.skipTest("Requires even number of processes.")
 
         # Tile the global array across processes (N/2, 2).
         # Process i gets (i//2, i%2).
@@ -282,7 +282,7 @@ class HostArrayTest(TestCase):
         # Partition should divide global_shape evenly.
         partitions = _infer_num_partitions(global_array.shape, mesh=mesh, partition=partition)
         if any(dim % num_parts != 0 for dim, num_parts in zip(global_array.shape, partitions)):
-            pytest.skip(reason="Incompatible global_shape/partitioning.")
+            self.skipTest("Incompatible global_shape/partitioning.")
 
         with mesh:
             # Each process has a slice.
@@ -315,7 +315,7 @@ class HostArrayTest(TestCase):
 
         mesh_shape = infer_mesh_shape(mesh_shape)
         if not _is_supported(platform=platform, mesh_shape=mesh_shape):
-            pytest.skip(reason="Unsupported platform/mesh.")
+            self.skipTest("Unsupported platform/mesh.")
 
         device_count = jax.device_count()
         process_count = jax.process_count()
@@ -323,7 +323,7 @@ class HostArrayTest(TestCase):
         assert device_count > 1
 
         if process_count % 2 != 0:
-            pytest.skip(reason="Requires even number of processes.")
+            self.skipTest("Requires even number of processes.")
 
         # Build an array that can be sharded over multiple dims.
         process_arrays = {}
@@ -352,7 +352,7 @@ class HostArrayTest(TestCase):
         for k, global_array in global_arrays.items():
             partitions = _infer_num_partitions(global_array.shape, mesh=mesh, partition=partition)
             if any(dim % num_parts != 0 for dim, num_parts in zip(global_array.shape, partitions)):
-                pytest.skip(reason="Incompatible global_shape/partitioning.")
+                self.skipTest("Incompatible global_shape/partitioning.")
 
         process_index = jax.process_index()
 

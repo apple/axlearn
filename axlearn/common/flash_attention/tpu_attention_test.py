@@ -151,14 +151,14 @@ class TestFlashAttention(TestCase):
     ):
         if jax.default_backend() == "cpu":
             # TODO(dhwang2): this has been broken for a while on CPU.
-            pytest.skip(reason="Backward path is broken on CPU")
+            self.skipTest("Backward path is broken on CPU")
         if mask not in (None, causal_mask) and query_length_multiplier > 1:
-            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
+            self.skipTest("Sliding window attention does not make sense when q_len != kv_len.")
         if kv_dtype == jnp.float32 and q_dtype == jnp.bfloat16:
-            pytest.skip(reason="KV should not have a higher precision than Q.")
+            self.skipTest("KV should not have a higher precision than Q.")
         if dropout_rate > 0.0 and (attention_bias_type is not None or per_head_dim % 128 != 0):
-            pytest.skip(
-                reason="Dropout is only supported with SplashAttention (which requires \
+            self.skipTest(
+                "Dropout is only supported with SplashAttention (which requires \
                             no bias, and per_head_dim being a multiple of 128.)"
             )
         # pylint: disable=protected-access
@@ -308,7 +308,7 @@ class TestFlashAttention(TestCase):
         # Check if the kernel supports this configuration
         is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
         if not is_supported:
-            pytest.skip(reason="Configuration not supported by TPUSplashAttention")
+            self.skipTest("Configuration not supported by TPUSplashAttention")
 
         # Compare outputs
         out = fn(input_batch)

@@ -619,7 +619,7 @@ class TreeUtilsTest(TestCase):
     )
     def test_input_partition_spec(self, mesh_shape, mesh_axis_names):
         if not is_supported_mesh_shape(mesh_shape):
-            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
+            self.skipTest(f"Unsupported mesh {mesh_shape}.")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         with jax.sharding.Mesh(devices, mesh_axis_names):
             self.assertSequenceEqual(
@@ -640,7 +640,7 @@ class TreeUtilsTest(TestCase):
         batch_axis_names: Sequence[str],
     ):
         if not is_supported_mesh_shape(mesh_shape):
-            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
+            self.skipTest(f"Unsupported mesh {mesh_shape}.")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         with jax.sharding.Mesh(devices, mesh_axis_names):
             sharded_batch = dispatch_input_batch(
@@ -2032,7 +2032,7 @@ class HostToGlobalArrayTest(TestCase):
         print(f"{device_count=}, {process_count=}")
         # E.g., run on v5e-16.
         if process_count % divisor != 0:
-            pytest.skip(reason="Incompatible process_count/divisor.")
+            self.skipTest("Incompatible process_count/divisor.")
 
         # Use a logical shape that has dim=0 smaller than number of hosts.
         # This requires us to produce padding batches on some hosts.
@@ -2082,7 +2082,7 @@ class HostToGlobalSpecsTest(TestCase):
         dict(partition_spec=PartitionSpec("data"), expect_num_feeds=4),
     )
     # TODO(kcruise,markblee): Add support for AOT test in CI.
-    @pytest.mark.skip(reason="Requires jax[tpu] for AOT.")
+    @absltest.skip("Requires jax[tpu] for AOT.")
     def test_host_to_global_specs(self, partition_spec, expect_num_feeds):
         mesh_shape, topology, num_slices = (-1, 8), "v5p-32", 2
         devices, num_per_slice = get_devices_for_topology(topology, topology_num_slices=num_slices)

@@ -32,7 +32,7 @@ class GDATest(TestCase):
             data_partition,
         )
         if not is_supported_mesh_shape(mesh_shape):
-            pytest.skip(reason=f"Unsupported {mesh_shape=}")
+            self.skipTest(f"Unsupported {mesh_shape=}")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         if data_partition == DataPartitionType.FULL:
             global_batch_size = per_host_batch_size * jax.process_count()

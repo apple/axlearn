@@ -5,7 +5,6 @@ from typing import Literal
 
 import jax
 import jax.numpy as jnp
-import pytest
 from absl.testing import absltest, parameterized
 
 from axlearn.common.attention_bias import causal_mask
@@ -41,7 +40,10 @@ elif jax.default_backend() == "cpu":
     paged_attn_decoding_fns = [GPUPagedAttention, TPUPagedAttention]
     dtypes = [jnp.float32]
 else:
-    pytest.skip(reason="Incompatible hardware", allow_module_level=True)
+    # Use empty lists to prevent test generation when hardware is incompatible
+    decoding_fns = []
+    paged_attn_decoding_fns = []
+    dtypes = []
 
 
 class DecodingTest(TestCase):
@@ -100,9 +102,9 @@ class DecodingTest(TestCase):
         decoding_fn: BasePagedAttention,
     ):
         if batch_size * seq_len * per_head_dim >= 262144 and input_dtype == jnp.float32:
-            pytest.skip(reason="Shared Memory Explodes")
+            self.skipTest("Shared Memory Explodes")
         if decoding_fn == TPUPagedAttention and per_head_dim % 128 != 0:
-            pytest.skip(reason="TPU kernel requires head dim divides 128 for double buffering.")
+            self.skipTest("TPU kernel requires head dim divides 128 for double buffering.")
 
         softmax_scale = per_head_dim**-0.5
         data_args = dict(mask_fn=causal_mask)

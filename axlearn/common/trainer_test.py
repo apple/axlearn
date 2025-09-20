@@ -569,7 +569,7 @@ class TrainerTest(test_utils.TestCase):
     # pylint: enable=duplicate-code
     def test_compile_train_step(self, *, platform, mesh_shape):
         if not test_utils.is_supported_platform(platform):
-            pytest.skip(reason=f"Unsupported config: {platform=}, {mesh_shape=}.")
+            self.skipTest(f"Unsupported config: {platform=}, {mesh_shape=}.")
         cfg = SpmdTrainer.default_config().set(name="test_trainer", train_dtype=jnp.bfloat16)
         cfg.dir = tempfile.mkdtemp()
         cfg.mesh_axis_names = ("data", "model")
@@ -1160,7 +1160,7 @@ class TrainerTest(test_utils.TestCase):
 
         batch_axis_size = int(process_count * multiple)
         if batch_axis_size < 1:
-            pytest.skip(reason=f"Incompatible {process_count=} and {multiple=}")
+            self.skipTest(f"Incompatible {process_count=} and {multiple=}")
 
         mesh_shape = (batch_axis_size, device_count // batch_axis_size)
         global_logical_batch_size = mesh_shape[0]

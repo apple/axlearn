@@ -363,6 +363,23 @@ def bench_flash_attention_fwd_bwd(use_bwd: bool):
     )
 
 
-benchmark_decode()
-bench_flash_attention_fwd_bwd(False)
-bench_flash_attention_fwd_bwd(True)
+def main():
+    """Main function to run benchmarks."""
+    # Check if CUDA is available
+    if jax.default_backend() != "gpu":
+        print(f"Skipping GPU benchmarks: backend is {jax.default_backend()}, not 'gpu'")
+        return
+
+    # Check for CUDA support in jaxlib
+    if not has_registrations:
+        print("Skipping GPU benchmarks: jaxlib >=0.4.36 with CUDA support required")
+        return
+
+    # Run benchmarks
+    benchmark_decode()
+    bench_flash_attention_fwd_bwd(False)
+    bench_flash_attention_fwd_bwd(True)
+
+
+if __name__ == "__main__":
+    main()

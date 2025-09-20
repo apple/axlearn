@@ -1519,13 +1519,13 @@ class QKVLinearTest(TestCase):
             attention.FusedQKVLinear,
             attention.FusedGroupedQKVLinear,
         ):
-            pytest.skip(reason="Fused QKV doesn't support different value dim.")
+            self.skipTest("Fused QKV doesn't support different value dim.")
         if fp8_amax_history_length is not None and jax.default_backend() != "gpu":
-            pytest.skip(reason="FP8 is only supported on H100!")
+            self.skipTest("FP8 is only supported on H100!")
         if cross_attention and test_cls is attention.FusedGroupedQKVLinear:
-            pytest.skip(reason="FusedGroupedQKVLinear doesn't support cross attention.")
+            self.skipTest("FusedGroupedQKVLinear doesn't support cross attention.")
         if value_dim_ratio != 1 and not cross_attention:
-            pytest.skip(reason="Value dim ratio only makes sense for cross attention.")
+            self.skipTest("Value dim ratio only makes sense for cross attention.")
         with utils.numeric_checks(True):
             model_dim = 12
             num_heads = 4
@@ -2319,7 +2319,7 @@ class MultiheadAttentionTest(TestCase):
                 (FusedGroupedQKVLinear.Config, RoFormerQKVLinear.Config, FusedQKVLinear.Config),
             )
         ):
-            pytest.skip(reason="Incompatible test setting that does not need testing.")
+            self.skipTest("Incompatible test setting that does not need testing.")
 
         model_dim = 16
         num_heads = 4
@@ -2792,14 +2792,14 @@ class MultiheadAttentionTest(TestCase):
     ):
         if input_linear in (QLinear, _QLinearWithKvUpdate):
             if causal_type == "sliding_window":
-                pytest.skip("QLinear variants don't support sliding window mask.")
+                self.skipTest("QLinear variants don't support sliding window mask.")
             if scale_kv_before_cache_update:
-                pytest.skip("QLinear variants don't support scale_kv_before_cache_update=True")
+                self.skipTest("QLinear variants don't support scale_kv_before_cache_update=True")
         if page_size is not None:
             if extend_step_len > 1:
-                pytest.skip("PagedKVCache doesn't support extending multiple steps yet.")
+                self.skipTest("PagedKVCache doesn't support extending multiple steps yet.")
             if input_linear in (QLinear, _QLinearWithKvUpdate):
-                pytest.skip("PagedKVCache doesn't support QLinear yet.")
+                self.skipTest("PagedKVCache doesn't support QLinear yet.")
         model_dim = 16
         num_heads = 4
         if input_linear == attention.RoFormerQKVLinear:
@@ -2924,7 +2924,7 @@ class MultiheadAttentionTest(TestCase):
     ):
         if page_size is not None:
             if extend_step_len > 1:
-                pytest.skip("PagedKVCache doesn't support extending multiple steps.")
+                self.skipTest("PagedKVCache doesn't support extending multiple steps.")
         model_dim = 16
         num_heads = 4
         kv_cache_class = PagedKVCache if page_size is not None else KVCache
