@@ -644,6 +644,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             # Set concurrent bytes to 1/4 of total memory.
             concurrent_bytes = get_linux_memory_bytes() / 4
 
+        logging.info("concurrent_gb: %s", concurrent_bytes / 10**9)
+
         async def _run_deserializer():
             # Object should be created once per process.
             # pylint: disable=protected-access
