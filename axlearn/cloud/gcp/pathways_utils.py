@@ -558,7 +558,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             # Recycling host memory gives a slight increase in performance.
             "--tpu_pinned_host_allocation_recycle=true",
             # The flag below is needed for better H2D performance.
-            "--tpu_premapped_buffer_size=17179869184",
+            # Rule of thumb: 3x the shard size. So 96GB to be safe.
+            # Decrease if you start running out of host memory on TPU VMs.
+            "--tpu_premapped_buffer_size=103079215104",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
