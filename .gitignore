@@ -176,3 +176,5 @@ bazel-*
 
 # Emacs
 *~
+
+*.whl

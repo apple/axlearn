@@ -40,7 +40,7 @@ def should_recreate_job(
             tier,
             reservation,
         )
-        return True
+        return False
     elif str(tier) == "0" and reservation is None:
         if is_pending:
             logging.info(

@@ -549,6 +549,18 @@ def _get_premapped_buffer_size():
     return 1099511627776
 
 
+def get_linux_memory_bytes():
+    """Get total physical memory in bytes on Linux by reading /proc/meminfo."""
+    with open("/proc/meminfo", "r", encoding="utf-8") as mem:
+        for line in mem:
+            if "MemTotal:" in line:
+                # Line is like: 'MemTotal:       16340200 kB'
+                # Split the line and get the numeric value
+                total_kib = int(line.split()[1])
+                # Convert Kibibytes (KiB) to bytes
+                return total_kib * 1024
+
+
 class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
     """Similar to GlobalAsyncCheckpointManager but allows passing additional futures to be awaited
     while asynchronously serializing tensors.
@@ -628,7 +640,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # This is important especially for larger models. You should set this as
         # big as possible until you run out of memory. Note do not use this change
         # in production, instead pass a bigger value of concurrent_gb.
-        concurrent_bytes = concurrent_bytes * 3
+        if os.getenv("JAX_PLATFORMS") == "proxy":
+            # Set concurrent bytes to 1/4 of total memory.
+            concurrent_bytes = get_linux_memory_bytes() / 4
 
         async def _run_deserializer():
             # Object should be created once per process.

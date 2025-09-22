@@ -631,6 +631,8 @@ class TPUJobBuilder(SingleReplicatedJob):
         # If running from bastion, a scheduling tier will be specified in env.
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
         tier = os.environ.get("BASTION_TIER", None)
+        # hotfix needed when using local
+        selector.update({"cloud.google.com/reservation-name": cfg.reservation})
 
         if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
