@@ -20,6 +20,7 @@ import asyncio
 import functools
 import math
 import os
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -471,7 +472,9 @@ async def _async_deserialize(
         try:
             device_put_start = time.time()
             if os.getenv("JAX_PLATFORMS") == "proxy":
-                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+                result = await loop.run_in_executor(
+                    single_thread_pool, _blocking_device_put, out, layout
+                )
             else:
                 await h2d_limiter.wait_for_bytes(out_size)
                 result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
@@ -613,6 +616,11 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         concurrent_gb: int = 32,
     ):
         self.wait_until_finished()
+        # pylint: disable=import-outside-toplevel
+        import uuid
+
+        uid = uuid.uuid4()
+        jax.profiler.start_trace(f"gs://cloud-tpu-multipod-dev-euw4/xprof-{uid}")
         start_time = time.time()
 
         concurrent_bytes = concurrent_gb * 10**9
@@ -620,20 +628,21 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # This is important especially for larger models. You should set this as
         # big as possible until you run out of memory. Note do not use this change
         # in production, instead pass a bigger value of concurrent_gb.
-        concurrent_bytes = concurrent_bytes * 4
+        concurrent_bytes = concurrent_bytes * 3
 
         async def _run_deserializer():
             # Object should be created once per process.
             # pylint: disable=protected-access
             byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
             h2d_limiter = serialization._LimitInFlightBytes(_get_premapped_buffer_size())
+            thread_pool = ThreadPoolExecutor(max_workers=192)
 
             future_arrays = jax.tree.map(
                 functools.partial(
                     _async_deserialize,
                     byte_limiter=byte_limiter,
                     h2d_limiter=h2d_limiter,
-                    single_thread_pool=self._single_thread_pool,
+                    single_thread_pool=thread_pool,
                 ),
                 shardings,
                 tensorstore_specs,
@@ -645,6 +654,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
         result = fut.result()
         logging.info("deserialize took %.4f seconds.", time.time() - start_time)
+        jax.profiler.stop_trace()
+        # pylint: disable=unreachable
+        sys.exit(0)
         return result
 
 
