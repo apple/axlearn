@@ -5,7 +5,6 @@ from typing import Optional
 
 import chex
 import jax.numpy as jnp
-import jax.util
 from absl.testing import absltest, parameterized
 from jax.sharding import PartitionSpec
 
