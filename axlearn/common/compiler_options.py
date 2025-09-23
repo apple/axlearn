@@ -73,12 +73,6 @@ def default_xla_options(
             xla_tpu_host_transfer_overlap_limit=24,
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
             xla_max_concurrent_host_send_recv=100,
-            # Flag controlling the HBM memory limit as a percentage of the total HBM size.
-            # Default value is 95. Can tune up or down to give more or less memory for the
-            # scheduler. The scheduler favors more on less memory usage when it's under
-            # memory pressure, instead of hiding latency by overlapping more computations
-            # and communications.
-            xla_tpu_scheduler_percent_shared_memory_limit=90,
             # Flag controlling the number of times the scheduler is run if the scheduled
             # peak memory usage exceeds the initial memory limit, by setting memory limit
             # to 90% of the previous memory limit each time. Default value is 1. Sometimes
