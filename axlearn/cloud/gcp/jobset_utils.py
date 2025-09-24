@@ -162,10 +162,12 @@ class BaseReplicatedJob(FlagConfigurable):
                 Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
                 This directory is used by the sidecar container to sync outputs to GCS using gsutil.
                 Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
+            image_id: An optional field to specify the image used for starting the container
         """
 
         name: Required[str] = REQUIRED
         output_dir: Optional[str] = None
+        image_id: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -178,6 +180,9 @@ class BaseReplicatedJob(FlagConfigurable):
             None,
             "If specified, the directory to store outputs (such as logs).",
             **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "image_id", None, "Image used for starting the container.", **common_kwargs
         )
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
@@ -500,7 +505,7 @@ class TPUJobBuilder(SingleReplicatedJob):
 
         return dict(
             name=cfg.name,
-            image=self._bundler.id(cfg.name),
+            image=cfg.image_id or self._bundler.id(cfg.name),
             # https://cloud.google.com/kubernetes-engine/docs/how-to/tpus#tpu-chips-node-pool
             # https://cloud.google.com/kubernetes-engine/docs/how-to/tpu-multislice#run_workload
             ports=[

@@ -428,6 +428,7 @@ class FlinkTPUGKEJobTest(TestCase):
         enable_pre_provisioner=[None, False, True],
         location_hint=["fake-location-hint", None],
         flink_threads_per_worker=[1, 2, 4],
+        image_id=[None, "my-image-id"],
     )
     def test_get_flinkdeployment(
         self,
@@ -437,6 +438,7 @@ class FlinkTPUGKEJobTest(TestCase):
         location_hint,
         bundler_cls,
         flink_threads_per_worker,
+        image_id,
     ):
         cfg, bundler_cfg = self._job_config(
             bundler_cls,
@@ -445,6 +447,7 @@ class FlinkTPUGKEJobTest(TestCase):
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
             flink_threads_per_worker=flink_threads_per_worker,
+            image_id=image_id,
         )
         flink_job: job_flink.FlinkTPUGKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
         # pylint: disable=protected-access
@@ -457,6 +460,10 @@ class FlinkTPUGKEJobTest(TestCase):
         expected_flink_deployment["spec"]["flinkConfiguration"][
             "taskmanager.numberOfTaskSlots"
         ] = str(flink_threads_per_worker)
+        if image_id:
+            expected_flink_deployment["spec"]["taskManager"]["podTemplate"]["spec"]["containers"][
+                0
+            ]["image"] = image_id
         if not location_hint:
             del expected_flink_deployment["spec"]["taskManager"]["podTemplate"]["spec"][
                 "nodeSelector"
@@ -477,6 +484,7 @@ class FlinkTPUGKEJobTest(TestCase):
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         enable_pre_provisioner=[None, False, True],
         flink_threads_per_worker=[1, 2, 4],
+        image_id=[None, "my-image-id"],
     )
     def test_get_job_submission_deployment(
         self,
@@ -485,6 +493,7 @@ class FlinkTPUGKEJobTest(TestCase):
         enable_pre_provisioner,
         bundler_cls,
         flink_threads_per_worker,
+        image_id,
     ):
         cfg, bundler_cfg = self._job_config(
             bundler_cls,
@@ -492,6 +501,7 @@ class FlinkTPUGKEJobTest(TestCase):
             service_account=service_account,
             enable_pre_provisioner=enable_pre_provisioner,
             flink_threads_per_worker=flink_threads_per_worker,
+            image_id=image_id,
         )
         flink_job: job_flink.FlinkTPUGKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
         # pylint: disable=protected-access
@@ -505,6 +515,9 @@ class FlinkTPUGKEJobTest(TestCase):
         expected_job_submission["spec"]["template"]["spec"]["containers"][0]["args"][
             0
         ] = _get_expected_job_submission_command(expected_parallelism)
+        if image_id:
+            expected_job_submission["spec"]["template"]["spec"]["containers"][0]["image"] = image_id
+
         try:
             self.assertDictEqual(expected_job_submission, job_submission)
         except AssertionError:

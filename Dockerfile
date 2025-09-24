@@ -9,13 +9,17 @@ FROM ${BASE_IMAGE} AS base
 # Any RUN apt-get install step needs to have apt-get update otherwise stale package
 # list may occur when previous apt-get update step is cached. See here for more info:
 # https://docs.docker.com/build/building/best-practices/#apt-get
-RUN apt-get update && apt-get upgrade -y && apt-get install -y curl gnupg && apt clean -y
+RUN apt-get update -qq && \
+    apt-get upgrade -y -qq && \
+    apt-get install -y -qq curl gnupg && \
+    apt clean -y -qq
 
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    apt-get update -y && \
-    apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli python3.10-venv && apt clean -y
+    apt-get update -y -qq && \
+    apt-get install -y -qq apt-transport-https ca-certificates gcc g++ \
+    git screen ca-certificates google-perftools google-cloud-cli python3.10-venv && \
+    apt clean -y -qq
 
 # Setup.
 RUN mkdir -p /root
@@ -29,7 +33,9 @@ ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
-RUN pip install --upgrade pip && pip install uv flit && pip cache purge
+RUN pip install -qq --upgrade pip && \
+    pip install -qq uv flit && \
+    pip cache purge
 
 ################################################################################
 # CI container spec.                                                           #
@@ -39,7 +45,8 @@ RUN pip install --upgrade pip && pip install uv flit && pip cache purge
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN uv pip install .[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api] && uv cache clean
+RUN uv pip install -qq .[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api] && \
+    uv cache clean
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
@@ -58,7 +65,7 @@ FROM base AS bastion
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
-RUN uv pip install .[core,gcp,vertexai_tensorboard] && uv cache clean
+RUN uv pip install -qq .[core,gcp,vertexai_tensorboard] && uv cache clean
 
 ################################################################################
 # Dataflow container spec.                                                     #
@@ -69,7 +76,7 @@ FROM base AS dataflow
 # Beam workers default to creating a new virtual environment on startup. Instead, we want them to
 # pickup the venv setup above. An alternative is to install into the global environment.
 ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
-RUN uv pip install .[core,gcp,dataflow] && uv cache clean
+RUN uv pip install -qq .[core,gcp,dataflow] && uv cache clean
 COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
@@ -88,8 +95,8 @@ ARG EXTRAS=
 ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
-RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
-RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
+RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
+RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
 COPY . .
 
 ################################################################################
@@ -105,7 +112,7 @@ RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/com
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-RUN uv pip install .[core,gpu] && uv cache clean
+RUN uv pip install -qq .[core,gpu] && uv cache clean
 COPY . .
 
 ################################################################################

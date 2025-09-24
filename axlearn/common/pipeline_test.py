@@ -50,7 +50,7 @@ class TransposeTest(absltest.TestCase):
         assert_allclose(outputs, inputs)
 
 
-class TestLayer(BaseLayer):
+class _Layer(BaseLayer):
     """A dummy testing layer."""
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
@@ -64,20 +64,20 @@ class TestLayer(BaseLayer):
         return jnp.zeros([batch_size])
 
     def forward(self, carry, forward_state):
-        logging.info("TestLayer: carry=%s forward_state=%s", shapes(carry), shapes(forward_state))
+        logging.info("_Layer: carry=%s forward_state=%s", shapes(carry), shapes(forward_state))
         self.add_summary("carry_mean", jnp.mean(carry))
         self.add_state_update("inc", 1)
         self.add_module_output("out", 2)
         return carry + self.parameters["inc"], forward_state + carry
 
 
-class TestComplicatedLayer(BaseLayer):
+class _ComplicatedLayer(BaseLayer):
     """A dummy testing layer."""
 
     @config_class
     class Config(BaseLayer.Config):
-        layer1: TestLayer.Config = TestLayer.default_config()
-        layer2: TestLayer.Config = TestLayer.default_config()
+        layer1: _Layer.Config = _Layer.default_config()
+        layer2: _Layer.Config = _Layer.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -94,14 +94,14 @@ class TestComplicatedLayer(BaseLayer):
         return carry, forward_state
 
 
-# TODO(markblee): Rename dummy layers to avoid confusion with the actual test cases.
-class TestPipeline(Pipeline):
+# Dummy layers renamed with _ prefix to avoid pytest collection warnings.
+class _Pipeline(Pipeline):
     """A dummy pipeline layer."""
 
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        cfg.layer = TestLayer.default_config()
+        cfg.layer = _Layer.default_config()
         return cfg
 
     def init_forward_state(self, batch_size):
@@ -166,8 +166,8 @@ class PipelineTest(TestCase):
     def test_pipeline(self, remat_spec: Optional[RematSpec], dtype: jnp.dtype):
         batch_size, microbatch_size, num_layers = 14, 2, 4
         num_microbatches = batch_size // microbatch_size
-        layer: TestPipeline = (
-            TestPipeline.default_config()
+        layer: _Pipeline = (
+            _Pipeline.default_config()
             .set(
                 name="test",
                 num_layers=num_layers,
@@ -255,11 +255,11 @@ class PipelineTest(TestCase):
         for multiple_values in range(3):
             batch_size, microbatch_size, num_layers = 14, 2, 4
             num_microbatches = batch_size // microbatch_size
-            layer: TestPipeline = (
-                TestPipeline.default_config()
+            layer: _Pipeline = (
+                _Pipeline.default_config()
                 .set(
                     name="test",
-                    layer=TestComplicatedLayer.default_config(),
+                    layer=_ComplicatedLayer.default_config(),
                     num_layers=num_layers,
                     num_microbatches=num_microbatches,
                     remat_spec=remat_spec,
@@ -377,8 +377,8 @@ class PipelineTest(TestCase):
 
                 return jax.tree.map(inject_nans, x)
 
-        layer: TestPipeline = (
-            TestPipeline.default_config()
+        layer: _Pipeline = (
+            _Pipeline.default_config()
             .set(
                 name="test",
                 num_layers=num_stages,
@@ -438,7 +438,7 @@ class PipelineTest(TestCase):
         schedule_cls = schedule["cls"]
         batch_size, microbatch_size, num_layers, input_dim = schedule["batch_size"], 2, 4, 8
         num_microbatches = batch_size // microbatch_size
-        ref_cfg: TestPipeline.Config = TestPipeline.default_config().set(
+        ref_cfg: _Pipeline.Config = _Pipeline.default_config().set(
             name="test",
             num_layers=num_layers,
             num_microbatches=num_microbatches,
@@ -449,7 +449,7 @@ class PipelineTest(TestCase):
             schedule=cast(type[BaseSchedule], schedule_cls).default_config(),
         )
 
-        def compute_outputs(layer: TestPipeline, inputs):
+        def compute_outputs(layer: _Pipeline, inputs):
             params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(1))
             forward_state = layer.init_forward_state(batch_size)
             return F(
@@ -460,8 +460,8 @@ class PipelineTest(TestCase):
                 prng_key=jax.random.PRNGKey(2),
             )
 
-        ref_layer: TestPipeline = ref_cfg.instantiate(parent=None)
-        test_layer: TestPipeline = test_cfg.instantiate(parent=None)
+        ref_layer: _Pipeline = ref_cfg.instantiate(parent=None)
+        test_layer: _Pipeline = test_cfg.instantiate(parent=None)
 
         inputs = jax.random.uniform(
             jax.random.PRNGKey(2), [batch_size, input_dim], dtype=jnp.float32

@@ -1262,11 +1262,8 @@ class OptimizerTest(TestCase):
     def test_param_ema(self, decay, dtype):
         opt = param_ema(decay=decay)
         param_specs = dict(
-            v=ParameterSpec(
-                dtype=dtype,
-                shape=[4],
-                mesh_axes=PartitionSpec("model"),
-            ),
+            v=ParameterSpec(dtype=dtype, shape=[4], mesh_axes=PartitionSpec("model")),
+            n=ParameterSpec(dtype=jnp.int32, shape=[1], mesh_axes=PartitionSpec("model")),
         )
         opt_specs = opt.partition(param_specs)
         if decay is None:
@@ -1276,7 +1273,10 @@ class OptimizerTest(TestCase):
                 ParamEmaState(
                     count=OptStateSpec(dtype=jnp.int32, shape=[], mesh_axes=PartitionSpec()),
                     ema=dict(
-                        v=OptStateSpec(dtype=dtype, shape=[4], mesh_axes=PartitionSpec("model"))
+                        v=OptStateSpec(dtype=dtype, shape=[4], mesh_axes=PartitionSpec("model")),
+                        n=OptStateSpec(
+                            dtype=jnp.int32, shape=[1], mesh_axes=PartitionSpec("model")
+                        ),
                     ),
                 ),
                 opt_specs,
@@ -1285,6 +1285,11 @@ class OptimizerTest(TestCase):
         params = dict(
             v=OptParam(
                 value=jnp.asarray([0, 1, 2, -3], dtype=jnp.float32),
+                factorization_spec=None,
+                weight_decay_scale=1.0,
+            ),
+            n=OptParam(
+                value=jnp.asarray([41], dtype=jnp.int32),
                 factorization_spec=None,
                 weight_decay_scale=1.0,
             ),
@@ -1303,16 +1308,16 @@ class OptimizerTest(TestCase):
             self.assertEqual(optax.EmptyState(), new_state)
         else:
             self.assertEqual(new_state.count, 1)
+
             if isinstance(decay, float):
-                self.assertNestedAllClose(
-                    jax.tree.map(lambda p: (1 - decay) * p.value, params),
-                    new_state.ema,
+                ema_fn = (
+                    lambda p: (1 - decay) * p.value
+                    if jnp.issubdtype(p.value.dtype, jnp.floating)
+                    else p.value
                 )
             else:
-                self.assertNestedAllClose(
-                    jax.tree.map(lambda p: p.value, params),
-                    new_state.ema,
-                )
+                ema_fn = lambda p: p.value
+            self.assertNestedAllClose(jax.tree.map(ema_fn, params), new_state.ema)
 
     def test_scale_by_schedule(self):
         params = OptParam(
