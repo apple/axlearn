@@ -23,8 +23,8 @@ core = [
     "absl-py==2.3.1",
     "chex==0.1.91",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.8.0.dev20250922",
-    "jaxlib==0.8.0.dev20250922",
+    "jax==0.8.0.dev20250924",
+    "jaxlib==0.8.0.dev20250924",
     "ml-dtypes==0.5.3",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
@@ -34,7 +34,7 @@ core = [
     "protobuf>=3.20.3",
     "tensorboard-plugin-profile==2.20.4",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
-    "tensorflow==2.19.0.1",
+    "tensorflow==2.19.1.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io==0.37.2",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
     "tensorflow-metadata==1.17.2", # Otherwise Seqio will report no core for tfds
@@ -106,7 +106,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.8.0.dev20250922",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.8.0.dev20250924",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
@@ -132,7 +132,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton>=2.1.0",
-    "jax[cuda12]==0.8.0.dev20250922",
+    "jax[cuda12]==0.8.0.dev20250924",
     "nvidia-ml-py==12.560.30",
     # pin nccl version, otherwise jax[cuda12] will pull latest version
     "nvidia-nccl-cu12==2.27.5",
