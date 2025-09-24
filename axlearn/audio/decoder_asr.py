@@ -6,13 +6,14 @@
 
 """ASR decoder layers."""
 
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Union, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import optax
 
+from axlearn.audio.aligner import ctc_aligner
 from axlearn.common import decoding, flax_struct
 from axlearn.common.attention import TransformerAttentionLayer
 from axlearn.common.base_layer import BaseLayer
@@ -618,6 +619,32 @@ class CTCDecoderModel(BaseASRDecoderModel):
             paddings=outputs["paddings"],
             scores=scores,
         )
+
+    def align(self, input_batch: Nested[Tensor]) -> Nested[Tensor]:
+        """Given an input_batch that contains both audio and labels, outputs text-audio alignment.
+        Args:
+            input_batch: See `CTCDecoderModel`'s forward interface. `input_batch` should contain:
+                * inputs: A Tensor of shape [batch_size, num_frames, dim].
+                * paddings: A 0/1 Tensor of shape [batch_size, num_frames].
+                * target_labels: A Tensor of shape [batch_size, label_length].
+                    target_labels < 0 means this is a padding position.
+        Returns:
+            A NestedTensor, converted from `ctc_aligner.AlignmentOutput` object
+        """
+        logits = self.predict(input_batch)
+        log_posterior = jax.nn.log_softmax(logits, axis=-1)
+        log_pos_paddings = cast(Tensor, input_batch["paddings"])
+        labels = cast(Tensor, input_batch["target_labels"])
+        label_paddings = jnp.where(labels >= 0, 0, 1)
+
+        alignment_output = ctc_aligner.ctc_forced_alignment(
+            log_pos=log_posterior,
+            log_pos_paddings=log_pos_paddings,
+            labels=labels,
+            label_paddings=label_paddings,
+            blank_id=self.config.blank_id,
+        )
+        return alignment_output.asdict()
 
 
 def _map_label_sequences(
