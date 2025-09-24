@@ -14,16 +14,11 @@ from axlearn.common.config import config_for_function
 from axlearn.common.layers import L2Norm, Linear
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.poolings import BasePoolingLayer, FirstNTokenPooling
-from axlearn.common.state_builder import (
-    Builder,
-    ChainBuilder,
-    Converter,
-    HuggingFacePreTrainedBuilder,
-    RestoreAndConvertBuilder,
-)
+from axlearn.common.state_builder import Builder, ChainBuilder, Converter, RestoreAndConvertBuilder
 from axlearn.common.text_dual_encoder import TextEmbeddingStreamEncoder
 from axlearn.common.text_encoder import TextEmbeddingEncoder
 from axlearn.huggingface.hf_module import download_hf_models_from_remote
+from axlearn.huggingface.hf_state_builder import HuggingFacePreTrainedBuilder
 
 # Initializer that is consistent with Huggingface's initialization for BERT model.
 HF_PARAM_INIT = DefaultInitializer.default_config().set(

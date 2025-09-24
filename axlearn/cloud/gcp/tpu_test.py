@@ -23,6 +23,7 @@ class TpuUtilsTest(parameterized.TestCase):
         dict(tpu_type="v4-128", version="v4", cores=128, workers=16),
         dict(tpu_type="v5litepod-16", version="v5litepod", cores=16, workers=4),
         dict(tpu_type="v3-64", version="v3", cores=64, workers=8),
+        dict(tpu_type="v6e-8-1", version="v6e", cores=8, workers=2),
     )
     def test_infer_utils(self, tpu_type: str, version: str, cores: int, workers: int):
         self.assertEqual(version, infer_tpu_version(tpu_type))

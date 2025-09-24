@@ -48,7 +48,6 @@ Examples (cloudbuild):
 
 import os
 import subprocess
-import time
 from typing import Optional
 
 from absl import app, flags, logging
@@ -59,7 +58,7 @@ from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import canonicalize_to_list, to_bool
-from axlearn.cloud.gcp.cloud_build import get_cloud_build_status
+from axlearn.cloud.gcp.cloud_build import wait_for_cloud_build
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
@@ -238,36 +237,14 @@ options:
             TimeoutError: If the build does not complete within the overall timeout.
             ValueError: If the async build fails.
         """
-        start_time = time.perf_counter()
         cfg: CloudBuildBundler.Config = self.config
-        while cfg.is_async:
-            elapsed_time = time.perf_counter() - start_time
-            if elapsed_time > wait_timeout:
-                timeout_msg = (
-                    f"Timed out waiting for CloudBuild to finish for more than "
-                    f"{wait_timeout} seconds."
-                )
-                logging.error(timeout_msg)
-                raise TimeoutError(timeout_msg)
-            try:
-                build_status = get_cloud_build_status(
-                    project_id=cfg.project, image_name=self.id(name), tags=[name]
-                )
-            except Exception as e:  # pylint: disable=broad-except
-                # TODO(liang-he,markblee): Distinguish transient from non-transient errors.
-                logging.warning("Failed to get the CloudBuild status, will retry: %s", e)
-            else:
-                if not build_status:
-                    logging.warning("CloudBuild for %s does not exist yet.", name)
-                elif build_status.is_pending():
-                    logging.info("CloudBuild for %s is pending: %s.", name, build_status)
-                elif build_status.is_success():
-                    logging.info("CloudBuild for %s is successful: %s.", name, build_status)
-                    return
-                else:
-                    # Unknown status is also considered a failure.
-                    raise RuntimeError(f"CloudBuild for {name} failed: {build_status}.")
-            time.sleep(30)
+        if cfg.is_async:
+            wait_for_cloud_build(
+                project_id=cfg.project,
+                image_id=self.id(name),
+                tags=[name],
+                wait_timeout=wait_timeout,
+            )
 
 
 def with_tpu_extras(bundler: Bundler.Config) -> Bundler.Config:

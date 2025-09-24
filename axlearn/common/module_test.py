@@ -70,11 +70,11 @@ class OutputCollectionTest(absltest.TestCase):
     def test_module_add_summary_image(self):
         val = jnp.ones((2, 5, 5, 4))  # 4 means RGBA
 
-        class _TestModule(Module):
+        class _ImageModule(Module):
             def forward(self):
                 self.add_summary("img0", ImageSummary(val))
 
-        module = _TestModule.default_config().set(name="tmp").instantiate(parent=None)
+        module = _ImageModule.default_config().set(name="tmp").instantiate(parent=None)
 
         # Test that it works under jit.
         @jax.jit
@@ -88,12 +88,12 @@ class OutputCollectionTest(absltest.TestCase):
         chex.assert_trees_all_equal(output_collection.summaries["img0"].value(), val)
 
 
-class TestModule(Module):
+class _Module(Module):
     pass
 
 
-def new_test_module(name: str) -> TestModule:
-    return TestModule.default_config().set(name=name).instantiate(parent=None)
+def _new_module(name: str) -> _Module:
+    return _Module.default_config().set(name=name).instantiate(parent=None)
 
 
 class InvocationContextTest(test_utils.TestCase):
@@ -102,7 +102,7 @@ class InvocationContextTest(test_utils.TestCase):
             context = InvocationContext(
                 name="root",
                 parent=None,
-                module=new_test_module("test"),
+                module=_new_module("test"),
                 is_training=True,
                 prng_key=None,
                 state={},
@@ -111,7 +111,7 @@ class InvocationContextTest(test_utils.TestCase):
             descendant = context
             for level in range(levels):
                 name = f"mod{level}"
-                descendant.module._add_child(name, TestModule.default_config())
+                descendant.module._add_child(name, _Module.default_config())
                 descendant = descendant.add_child(name)
             descendant.set_state_update((1, 2, 3))
             self.assertEqual(descendant.get_state_updates(), (1, 2, 3))
@@ -126,7 +126,7 @@ class InvocationContextTest(test_utils.TestCase):
         context = InvocationContext(
             name="root",
             parent=None,
-            module=new_test_module("test"),
+            module=_new_module("test"),
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state={"x": 1},
@@ -139,8 +139,8 @@ class InvocationContextTest(test_utils.TestCase):
         self.assertEqual({"z": 3}, context.get_state_updates())
 
     def test_context_stack(self):
-        module1 = new_test_module("test1")
-        module2 = new_test_module("test2")
+        module1 = _new_module("test1")
+        module2 = _new_module("test2")
         context1 = InvocationContext(
             name="context1",
             parent=None,  # root context
@@ -171,8 +171,8 @@ class InvocationContextTest(test_utils.TestCase):
 
     def test_nested_context(self):
         """Test calling `set_current_context(..., require_parent=False)."""
-        module1 = new_test_module("test1")
-        module2 = new_test_module("test2")
+        module1 = _new_module("test1")
+        module2 = _new_module("test2")
         context1 = InvocationContext(
             name="context1",
             parent=None,  # root context
@@ -188,9 +188,9 @@ class InvocationContextTest(test_utils.TestCase):
             self.assertEqual(ctx.parent, None)
 
     def test_context_stack_mutlithread(self):
-        module1 = new_test_module("root")
-        module1._add_child("child1", TestModule.default_config())
-        module1._add_child("child2", TestModule.default_config())
+        module1 = _new_module("root")
+        module1._add_child("child1", _Module.default_config())
+        module1._add_child("child2", _Module.default_config())
         context1 = InvocationContext(
             name="root",
             parent=None,  # root context
@@ -235,8 +235,8 @@ class InvocationContextTest(test_utils.TestCase):
             self.assertEqual(xs, {1, 2})
 
     def test_none_prng_key(self):
-        module1 = new_test_module("test1")
-        module2 = new_test_module("test2")
+        module1 = _new_module("test1")
+        module2 = _new_module("test2")
         context1 = InvocationContext(
             name="context1",
             parent=None,
@@ -268,7 +268,7 @@ class InvocationContextTest(test_utils.TestCase):
         self, value: Nested[Union[Summary, Tensor]], should_raise: bool
     ):
         """Tests validation in `add_summary("summary", value)`."""
-        module1 = new_test_module("test1")
+        module1 = _new_module("test1")
         ctx = InvocationContext(
             name="context1",
             parent=None,
@@ -583,7 +583,7 @@ class ModuleTest(TestWithTemporaryCWD):
     def test_shared_modules(self):
         cfg = ModuleProvidingSharedChild.default_config().set(
             name="root",
-            shared_child=TestModule.default_config(),
+            shared_child=_Module.default_config(),
             child=ModuleConsumingSharedChild.default_config(),
         )
         root: NestedModule = cfg.instantiate(parent=None)
@@ -625,9 +625,9 @@ class ModuleTest(TestWithTemporaryCWD):
     def test_multiple_shared_modules_from_ancestors(self):
         cfg = ModuleProvidingSharedChild.default_config().set(
             name="root",
-            shared_child=TestModule.default_config(),
+            shared_child=_Module.default_config(),
             child=ModuleProvidingSharedChild.default_config().set(
-                shared_child=TestModule.default_config(),
+                shared_child=_Module.default_config(),
                 child=ModuleConsumingSharedChild.default_config(),
             ),
         )
@@ -656,7 +656,7 @@ class ModuleTest(TestWithTemporaryCWD):
             name="root",
             # A subtree that shares modules within.
             shared_child=ModuleProvidingSharedChild.default_config().set(
-                shared_child=TestModule.default_config(),
+                shared_child=_Module.default_config(),
                 child=ModuleConsumingSharedChild.default_config(),
                 shared_module_name="inner_shared",
             ),
@@ -742,8 +742,8 @@ class ModuleTest(TestWithTemporaryCWD):
         class CompositeModule(Module):
             @config_class
             class Config(Module.Config):
-                child1: Module.Config = TestModule.default_config()
-                child2: Module.Config = TestModule.default_config()
+                child1: Module.Config = _Module.default_config()
+                child2: Module.Config = _Module.default_config()
 
             def __init__(self, cfg: Module.Config, *, parent: Optional[Module]):
                 super().__init__(cfg, parent=parent)
@@ -886,7 +886,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
         context = InvocationContext(
             name="root",
             parent=None,
-            module=new_test_module("test"),
+            module=_new_module("test"),
             is_training=True,
             prng_key=jax.random.PRNGKey(123),
             state=jnp.arange(2, dtype=jnp.int32) * 10,

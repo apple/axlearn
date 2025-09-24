@@ -60,7 +60,6 @@ Therefore, unlike with attrs/dataclass, the user does not need to define a defau
 config fields with mutable values, including config values.
 """
 
-# Note: config.py should not depend on jax, torch, or tf.
 import copy
 import dataclasses
 import enum
@@ -82,6 +81,9 @@ from typing import Any, Callable, Generic, Optional, Protocol, Sequence, TypeVar
 # Our config library relies on `__attrs_post_init__` and `on_setattr=_validate_and_transform_field`
 # to apply validation on field names and values.
 import attr
+
+# Note: config.py should not depend on jax, torch, or tf.
+from absl import logging
 
 
 def is_named_tuple(x: Any):
@@ -210,6 +212,32 @@ def validate_config_field_name(name: str) -> None:
         raise InvalidConfigNameError(f'Invalid config field name "{name}"')
 
 
+def validate_config_field_value(value: Any) -> None:
+    """Validates a config field value.
+
+    Validation is handled by validators registered via `register_validator`. `match_fn`s will be
+    invoked in order of registration, and all matched `validate_fn`s will be invoked.
+
+    Args:
+        value: The value to be validated.
+
+    Raises:
+        InvalidConfigValueError: If no validator matched the given value.
+    """
+    matched = False
+    for match_fn, validate_fn in _config_field_validators.items():
+        if match_fn(value):
+            matched = True
+            validate_fn(value)
+
+    # No validators matched.
+    if not matched:
+        raise InvalidConfigValueError(
+            f'Invalid config value type {type(value)} for value "{value}". '
+            f"Consider registering a custom validator with `{register_validator.__name__}`."
+        )
+
+
 # Validate basic types.
 register_validator(
     match_fn=lambda v: (
@@ -278,32 +306,6 @@ def _maybe_register_optional_type(module: str, attribute: str):
 _maybe_register_optional_type("numpy", "dtype")
 # As of 0.6.1, PartitionSpec is no longer a tuple.
 _maybe_register_optional_type("jax.sharding", "PartitionSpec")
-
-
-def validate_config_field_value(value: Any) -> None:
-    """Validates a config field value.
-
-    Validation is handled by validators registered via `register_validator`. `match_fn`s will be
-    invoked in order of registration, and all matched `validate_fn`s will be invoked.
-
-    Args:
-        value: The value to be validated.
-
-    Raises:
-        InvalidConfigValueError: If no validator matched the given value.
-    """
-    matched = False
-    for match_fn, validate_fn in _config_field_validators.items():
-        if match_fn(value):
-            matched = True
-            validate_fn(value)
-
-    # No validators matched.
-    if not matched:
-        raise InvalidConfigValueError(
-            f'Invalid config value type {type(value)} for value "{value}". '
-            f"Consider registering a custom validator with `{register_validator.__name__}`."
-        )
 
 
 def _validate_and_transform_field(instance, attribute, value):
@@ -1055,3 +1057,52 @@ class ConfigModifier(Configurable):
     def __call__(self, cfg: InstantiableConfig[T]) -> InstantiableConfig[T]:
         """A function that modifies the input config, should be defined by subclasses."""
         return cfg
+
+
+def _load_trainer_configs(
+    config_module: str, *, optional: bool = False
+) -> dict[str, TrainerConfigFn]:
+    try:
+        module = importlib.import_module(config_module)
+        return module.named_trainer_configs()
+    except (ImportError, AttributeError):
+        if not optional:
+            raise
+        logging.warning(
+            "Missing dependencies for %s but it's marked optional -- skipping.", config_module
+        )
+    return {}
+
+
+def get_named_trainer_config(config_name: str, *, config_module: str) -> TrainerConfigFn:
+    """Looks up TrainerConfigFn by config name.
+
+    Args:
+        config_name: Candidate config name.
+        config_module: Config module name.
+
+    Returns:
+        A TrainerConfigFn corresponding to the config name.
+
+    Raises:
+        KeyError: Error containing the message to show to the user.
+    """
+    config_map = _load_trainer_configs(config_module)
+    if callable(config_map):
+        return config_map(config_name)
+
+    try:
+        return config_map[config_name]
+    except KeyError as e:
+        similar = similar_names(config_name, set(config_map.keys()))
+        if similar:
+            message = f"Unrecognized config {config_name}; did you mean [{', '.join(similar)}]"
+        else:
+            message = (
+                f"Unrecognized config {config_name} under {config_module}; "
+                f"Please make sure that the following conditions are met:\n"
+                f"    1. {config_module} can be imported; "
+                f"    2. {config_module} defines `named_trainer_configs()`; "
+                f"    3. `named_trainer_configs()` returns a dict with '{config_name}' as a key."
+            )
+        raise KeyError(message) from e

@@ -818,6 +818,80 @@ class TestDecoder(TestCase):
             outputs_2.token_scores[:, :, :-1],
         )
 
+    @parameterized.parameters(None, jnp.float32)
+    def test_logits_forward_dtype(self, logits_forward_dtype):
+        """Tests that logits_forward_dtype config works correctly."""
+        hidden_dim = 12
+        num_heads = 4
+        vocab_size = 24
+        source_length = 11
+
+        decoder_cfg = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=2,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=source_length,
+        )
+        decoder_cfg.logits_forward_dtype = logits_forward_dtype
+
+        decoder = decoder_cfg.set(name="test_logits_dtype").instantiate(parent=None)
+        decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(1), minval=1, maxval=vocab_size, shape=(2, source_length)
+        )
+
+        outputs, _ = functional(
+            decoder,
+            inputs=dict(input_batch=dict(input_ids=input_ids)),
+            state=decoder_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+        )
+
+        # Verify that logits are computed and have the expected shape
+        logits = outputs["logits"]
+        self.assertEqual(logits.shape, (2, source_length, vocab_size))
+        # Verify logits are finite (not NaN or inf)
+        self.assertTrue(jnp.all(jnp.isfinite(logits)))
+
+        # Verify the final logits dtype
+        # The logits should maintain the model's default dtype regardless of forward dtype
+        # since logits_forward_dtype only affects intermediate computation precision
+        expected_dtype = jnp.float32  # Default model dtype
+        self.assertEqual(logits.dtype, expected_dtype)
+
+    def test_logits_forward_dtype_validation(self):
+        """Tests that invalid logits_forward_dtype values raise ValueError."""
+        decoder_cfg = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=2,
+            hidden_dim=12,
+            num_heads=4,
+            vocab_size=24,
+            activation_function="nn.relu",
+            max_position_embeddings=11,
+        )
+
+        # Test that bfloat16 raises ValueError
+        decoder_cfg.logits_forward_dtype = jnp.bfloat16
+        with self.assertRaises(ValueError) as context:
+            decoder_cfg.set(name="test_invalid_dtype").instantiate(parent=None)
+
+        self.assertIn("logits_forward_dtype must be None or jnp.float32", str(context.exception))
+        self.assertIn("bfloat16", str(context.exception))
+
+        # Test that float16 also raises ValueError
+        decoder_cfg.logits_forward_dtype = jnp.float16
+        with self.assertRaises(ValueError) as context:
+            decoder_cfg.set(name="test_invalid_dtype2").instantiate(parent=None)
+
+        self.assertIn("logits_forward_dtype must be None or jnp.float32", str(context.exception))
+        self.assertIn("float16", str(context.exception))
+
 
 class UtilsTest(TestCase):
     @parameterized.parameters(

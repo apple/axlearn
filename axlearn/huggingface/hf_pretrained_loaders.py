@@ -5,8 +5,8 @@ from collections.abc import Sequence
 from typing import Any, Callable
 
 from axlearn.common.config import config_for_function
-from axlearn.common.state_builder import HuggingFacePreTrainedBuilder
 from axlearn.huggingface.hf_module import download_hf_models_from_remote
+from axlearn.huggingface.hf_state_builder import HuggingFacePreTrainedBuilder
 
 
 def auto_model_from_pretrained(  # pytype: disable=name-error

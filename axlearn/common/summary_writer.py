@@ -557,6 +557,13 @@ class WandBWriter(BaseWriter):
         paths = tree_paths(values, separator="/", is_leaf=is_leaf)
         values = jax.tree.map(convert, paths, values, is_leaf=is_leaf)
 
+        # Flatten nested dicts and join the keys with "/"
+        flat_paths_and_values, _ = jax.tree_util.tree_flatten_with_path(values)
+        values = {
+            jax.tree_util.keystr(key_path, separator="/", simple=True): value
+            for key_path, value in flat_paths_and_values
+        }
+
         if cfg.prefix:
             values = {f"{cfg.prefix}/{k}": v for k, v in values.items()}
 

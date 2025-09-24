@@ -70,7 +70,7 @@ from axlearn.common.utils import (
 )
 
 
-class TestModel(BaseModel):
+class _Model(BaseModel):
     """A simple model for test."""
 
     @config_class
@@ -114,7 +114,7 @@ class LearnerTest(TestCase):
 
         # Init a model.
         input_dim = 4
-        model_cfg = TestModel.default_config().set(name="test", dim=input_dim)
+        model_cfg = _Model.default_config().set(name="test", dim=input_dim)
         model = model_cfg.instantiate(parent=None)
         prng_key = jax.random.PRNGKey(123)
         init_key, data_key, fwd_key, learner_key, prng_key = jax.random.split(prng_key, num=5)
@@ -925,7 +925,7 @@ class CompositeLearnerTest(TestCase):
 
         # Init a model.
         input_dim = 4
-        model_cfg = TestModel.default_config().set(name="test", dim=input_dim)
+        model_cfg = _Model.default_config().set(name="test", dim=input_dim)
         model = model_cfg.instantiate(parent=None)
         prng_key = jax.random.PRNGKey(123)
         init_key, data_key, fwd_key, learner_key, prng_key = jax.random.split(prng_key, num=5)

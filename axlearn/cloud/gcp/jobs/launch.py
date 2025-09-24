@@ -402,7 +402,6 @@ class BaseBastionManagedJob(FlagConfigurable):
         """Submits the command to bastion."""
         cfg: BaseBastionManagedJob.Config = self.config
         self._bundler.bundle(cfg.name)
-
         logging.info("Starting run for job name %s", cfg.name)
         logging.info("Command: %s", cfg.command)
         with tempfile.NamedTemporaryFile("w") as f:
