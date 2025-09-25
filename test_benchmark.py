@@ -165,6 +165,8 @@ def main():
     parser = argparse.ArgumentParser(description="Preload model from GCS checkpoint")
     parser.add_argument("--ckpt_path", required=True,
                        help="GCS path to checkpoint directory (e.g., gs://bucket/path/to/checkpoint)")
+    parser.add_argument("--profile_dir", required=True,
+                       help="GCS path to profile directory (e.g., gs://bucket/path/to/checkpoint)")
     parser.add_argument("--verbose", action="store_true",
                        help="Enable verbose logging")
     
@@ -259,7 +261,7 @@ def main():
         print("data_gb_per_device",data_gb_per_device)
 
         start_time = time.perf_counter()
-        jax.profiler.start_trace(args.ckpt_path)
+        jax.profiler.start_trace(args.profile_dir)
 
         for i,v in enumerate(preloaded_values[:4]):
             arr=jax.device_put(v, local_devices[i])
