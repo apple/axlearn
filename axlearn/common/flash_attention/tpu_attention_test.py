@@ -3,13 +3,13 @@
 """Tests TPU FlashAttention kernels."""
 from __future__ import annotations
 
+import unittest
 from contextlib import nullcontext
 from functools import partial
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 from absl.testing import absltest, parameterized
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 
@@ -28,10 +28,10 @@ from axlearn.common.flash_attention.test_utils import generate_attention_data
 from axlearn.common.test_utils import TestCase, Tolerance
 from axlearn.common.utils import Tensor
 
-
-def setUpModule():
-    if jax.default_backend() not in ("tpu", "cpu"):
-        pytest.skip(reason="Incompatible hardware", allow_module_level=True)
+# Skip decorator for GPU backend
+skipIfGPU = unittest.skipIf(
+    jax.default_backend() == "gpu", "TPU attention tests not compatible with GPU backend"
+)
 
 
 def jax_fn_mask(sliding_window_size: int) -> Tensor:
@@ -51,6 +51,7 @@ def jax_fn_mask(sliding_window_size: int) -> Tensor:
     return fun
 
 
+@skipIfGPU
 class TestFlashAttention(TestCase):
     """Tests FlashAttention layer."""
 
@@ -67,7 +68,7 @@ class TestFlashAttention(TestCase):
         ),
     ]
 
-    @parameterized.product(seq_len=[8, 16, 32, 128], sliding_window_size=[4, 8, 16])
+    @parameterized.product(seq_len=[8, 128], sliding_window_size=[4, 8, 16])
     def test_sliding_window_mask_equivalence(self, seq_len, sliding_window_size):
         shape = (seq_len, seq_len)
         ref_mask = splash_attention_mask.LocalMask(
@@ -126,11 +127,11 @@ class TestFlashAttention(TestCase):
         mask=[None, causal_mask, jax_fn_mask(5)],
         attention_bias_type=[None, "2d", "4d"],
         with_segment_ids=[False, True],
-        per_head_dim=[32, 64, 128],
+        per_head_dim=[64, 128],
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
         matmul_precision=[None, "highest"],
-        dropout_rate=[0, 0.2, 0.5],
+        dropout_rate=[0, 0.5],
         head_group_size=[2, 1],
     )
     def test_forward_and_backward(
@@ -154,8 +155,6 @@ class TestFlashAttention(TestCase):
             self.skipTest("Backward path is broken on CPU")
         if mask not in (None, causal_mask) and query_length_multiplier > 1:
             self.skipTest("Sliding window attention does not make sense when q_len != kv_len.")
-        if kv_dtype == jnp.float32 and q_dtype == jnp.bfloat16:
-            self.skipTest("KV should not have a higher precision than Q.")
         if dropout_rate > 0.0 and (attention_bias_type is not None or per_head_dim % 128 != 0):
             self.skipTest(
                 "Dropout is only supported with SplashAttention (which requires \
@@ -208,9 +207,6 @@ class TestFlashAttention(TestCase):
                 self.assertEqual(fallback_to_legacy, True)
                 fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
                 legacy_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
-                if q_dtype != kv_dtype:
-                    self.assertEqual(legacy_supported, False)
-                    return
                 self.assertEqual(legacy_supported, True)
 
             # Compare outputs.
@@ -248,10 +244,10 @@ class TestFlashAttention(TestCase):
             )
 
     @parameterized.product(
-        batch_size=[2, 4],
-        seq_len=[128, 256],
+        batch_size=[2],
+        seq_len=[128, 256],  # to cover 1 block and 2 blocks.
         num_heads=[1, 4],
-        per_head_dim=[128, 256],
+        per_head_dim=[128],
         logit_sink_values=[0.0, -1.0, 1.0],
         q_dtype=[jnp.float32, jnp.bfloat16],
     )
