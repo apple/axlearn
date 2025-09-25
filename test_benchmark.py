@@ -186,8 +186,10 @@ def main():
     print(cpu_devices)
     local_devices=jax.local_devices()
     num_devices=len(local_devices)
+    print("local devices: ",len(local_devices))
 
     with create_mesh():
+        jax.profiler.start_trace(args.profile_dir)
         print("Reading checkpoint structure...")
         state_spec = create_state_spec_from_checkpoint(args.ckpt_path)
         
@@ -261,9 +263,9 @@ def main():
         print("data_gb_per_device",data_gb_per_device)
 
         start_time = time.perf_counter()
-        jax.profiler.start_trace(args.profile_dir)
 
         for i,v in enumerate(preloaded_values[:4]):
+            print(local_devices[i])
             arr=jax.device_put(v, local_devices[i])
             restored_values.append(arr)
         
