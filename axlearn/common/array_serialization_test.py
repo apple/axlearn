@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import tensorstore as ts
 from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import PositionalSharding
@@ -306,31 +307,58 @@ class SerializerTest(parameterized.TestCase):
         @contextmanager
         def get_tensorstore_spec_for_deserialization(arrays: list[jax.Array]):
             tempdir = tempfile.TemporaryDirectory()
+            kvstore_spec = {
+                "driver": "gcs",
+                "bucket": "fake-bucket",
+                "path": f"fake-path/{time.time()}",
+            }
+
             create_spec = lambda arr: {
                 "driver": "zarr",
-                "kvstore": {
-                    "driver": "file",
-                    "path": tempdir.name,
-                },
+                "kvstore": kvstore_spec,
                 "dtype": str(arr.dtype),
                 "create": True,
                 "delete_existing": True,
             }
 
             try:
-                yield [create_spec(arr) for arr in arrays]
+                # Yield the temp path so our mock can redirect GCS writes to a local file.
+                yield [create_spec(arr) for arr in arrays], tempdir.name
             finally:
                 tempdir.cleanup()
 
         manager = BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=max_concurrent_gb)
 
+        captured_specs = []
+        original_ts_open = array_serialization.ts.open
+
+        async def mock_ts_open(spec_arg, *args, **kwargs):
+            # Convert spec to dict for inspection, as it can be a ts.Spec object.
+            spec_dict = spec_arg.to_json() if isinstance(spec_arg, ts.Spec) else spec_arg
+            captured_specs.append(spec_dict)
+
+            # Create a copy to modify for the underlying call.
+            spec_for_call = spec_dict.copy()
+            # If it's a gcs spec (from serialize) or gcs_grpc (from deserialize),
+            # redirect it to a functional file backend to allow the test to complete.
+            if spec_for_call.get("kvstore", {}).get("driver") in ("gcs", "gcs_grpc"):
+                spec_for_call["kvstore"] = {"driver": "file", "path": temp_path}
+
+            # Re-wrap if the original was a ts.Spec object.
+            call_arg = ts.Spec(spec_for_call) if isinstance(spec_arg, ts.Spec) else spec_for_call
+            return await original_ts_open(call_arg, *args, **kwargs)
+
         # Write the data to local files
-        with get_tensorstore_spec_for_deserialization(data) as tensorstore_spec:
+        with get_tensorstore_spec_for_deserialization(data) as (
+            tensorstore_spec,
+            temp_path,
+        ), mock.patch(f"{array_serialization.__name__}.ts.open", new=mock_ts_open):
             manager.serialize(
                 data,
                 tensorstore_spec,
                 on_commit_callback=lambda: None,
             )
+            manager.wait_until_finished()
 
             # Deserialize the data
             load_sharding = [
@@ -341,6 +369,12 @@ class SerializerTest(parameterized.TestCase):
                 tensorstore_spec,
             )
 
+        # Assert that the spec and context passed to ts.open during deserialize was modified.
+        # The calls for deserialize are the last ones captured.
+        deserialize_specs = captured_specs[-len(data) :]
+        self.assertGreater(len(deserialize_specs), 0)
+        for spec in deserialize_specs:
+            self.assertEqual(spec["kvstore"]["driver"], "gcs_grpc")
         # Verify the deserialized data matches the original data
         self.assertEqual(len(data), len(deserialized_data))
         for arr, d_arr in zip(data, deserialized_data):
