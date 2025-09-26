@@ -6,8 +6,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import compiler_options, test_utils
 from axlearn.common.utils import Tensor
@@ -22,8 +21,10 @@ class CompilerOptionsTest(test_utils.TestCase):
         os.environ.clear()
         os.environ.update(self._original_env)
 
-    @pytest.mark.skipif(jax.default_backend() != "tpu", reason="TPU-only test.")
     def test_default_xla_options(self):
+        if jax.default_backend() != "tpu":
+            self.skipTest("TPU-only test.")
+
         @jax.jit
         def f(x: Tensor) -> Tensor:
             return 3 * x
@@ -143,3 +144,7 @@ class CompilerOptionsTest(test_utils.TestCase):
                 )
             ),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()
