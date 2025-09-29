@@ -165,6 +165,52 @@ def _transfer_to_host(data: Tensor) -> Tensor:
     return data
 
 
+def use_gcs_grpc(tensorstore_spec: dict[str, Any]) -> tuple[dict[str, Any], ts.Context]:
+    """
+    Switch TensorStore to the gcs_grpc driver to improve Google Cloud Storage read throughput.
+
+    Why:
+      - gcs_grpc typically yields 2×–4× faster read performance than the standard REST-based
+        gcs driver for checkpoint loading and other high-throughput workloads.
+      - Recommended by the Google GCS team for high-parallelism read patterns.
+
+    Safety:
+      - If a checkpoint was written with the "gcs" driver, it can be deserialized with
+        "gcs_grpc" because both drivers read the same underlying objects; only the protocol
+        differs (REST vs gRPC).
+
+    Context tuning (set when enabling gcs_grpc):
+      - cache_pool: disabled to avoid double caching (TensorStore + our byte limiter).
+      - data_copy_concurrency: shared limit across all TensorStore ops.
+      - gcs_request_concurrency: set to CPU count to drive parallel GCS requests.
+
+    Returns:
+        A tuple containing:
+        - Modified tensorstore_spec with gcs_grpc driver (if applicable)
+        - TensorStore context with optimized settings for gcs_grpc
+    """
+    context = serialization.TS_CONTEXT
+    if tensorstore_spec.get("kvstore", {}).get("driver") == "gcs":
+        tensorstore_spec["kvstore"]["driver"] = "gcs_grpc"
+        context = ts.Context(
+            {
+                "cache_pool": {"total_bytes_limit": 0},
+                "data_copy_concurrency": {"limit": "shared"},
+                "gcs_request_concurrency": {"limit": os.cpu_count()},
+            }
+        )
+    return tensorstore_spec, context
+
+
+def running_on_pathways():
+    """
+    We use GCP only for inference with Pathways. In this setup, JAX_PLATFORMS is set to
+    "proxy", indicating that the JAX program delegates all computation to Pathways and
+    runs only as a proxy.
+    """
+    return os.getenv("JAX_PLATFORMS") == "proxy"
+
+
 async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo]):
     """Slices each shard according to shard info and then copy the sliced result to host.
 
@@ -422,18 +468,15 @@ async def _async_deserialize(
         )
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
 
-    # gcs_grpc provides 2x to 4x better read performance. And this is recommended by Google GCS
-    # team.
+    # gcs_grpc is 2x to 4x faster than gcs on read performance. And this is recommended by Google
+    # GCS team.
+    # Caveats:
+    #   - On AWS (or other non-GCP environments) accessing GCS, gcs_grpc may hit auth/network
+    #     issues due to cross-cloud constraints. So we enable this optimization on Pathways
+    #     which only runs on GCP for now.
     context = serialization.TS_CONTEXT
-    if tensorstore_spec.get("kvstore", {}).get("driver") == "gcs":
-        tensorstore_spec["kvstore"]["driver"] = "gcs_grpc"
-        context = ts.Context(
-            {
-                "cache_pool": {"total_bytes_limit": 0},
-                "data_copy_concurrency": {"limit": "shared"},
-                "gcs_request_concurrency": {"limit": os.cpu_count()},
-            }
-        )
+    if running_on_pathways() or os.getenv("ENABLE_GCS_GRPC") == "true":
+        tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
 
     t = await ts.open(tensorstore_spec, open=True, assume_metadata=False, context=context)
     shape = tuple(t.shape if global_shape is None else global_shape)

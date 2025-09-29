@@ -294,12 +294,16 @@ class SerializerTest(parameterized.TestCase):
         arrays=[[jnp.arange(0, 1024 * 1024)]],
         max_concurrent_gb=[1],
         load_to_pinned_host=[True, False],
+        jax_platforms=["proxy", "gpu", "tpu", "cpu"],
+        enable_gcs_grpc=["true", "false"],
     )
     def test_deserialize(
         self,
         arrays: list[list[int]],
         max_concurrent_gb: int,
         load_to_pinned_host: bool,
+        jax_platforms: str,
+        enable_gcs_grpc: str,
     ):
         if jax.device_count() != 8 or jax.process_count() != 1 or jax.default_backend() == "cpu":
             self.skipTest(
@@ -360,7 +364,11 @@ class SerializerTest(parameterized.TestCase):
         with get_tensorstore_spec_for_deserialization(data) as (
             tensorstore_spec,
             temp_path,
-        ), mock.patch(f"{array_serialization.__name__}.{_ts_open}", new=mock_ts_open):
+        ), mock.patch(
+            f"{array_serialization.__name__}.{_ts_open}", new=mock_ts_open
+        ), mock.patch.dict(
+            "os.environ", {"JAX_PLATFORMS": jax_platforms, "ENABLE_GCS_GRPC": enable_gcs_grpc}
+        ):
             manager.serialize(
                 data,
                 tensorstore_spec,
@@ -382,7 +390,13 @@ class SerializerTest(parameterized.TestCase):
         deserialize_specs = captured_specs[-len(data) :]
         self.assertGreater(len(deserialize_specs), 0)
         for spec in deserialize_specs:
-            self.assertEqual(spec["kvstore"]["driver"], "gcs_grpc")
+            # gcs_grpc driver should be used when either:
+            # - JAX_PLATFORMS is "proxy" (running on GCP/Pathways), OR
+            # - ENABLE_GCS_GRPC is "true" (explicit opt-in)
+            # Otherwise, gcs driver should be used (no change)
+            should_use_grpc = jax_platforms == "proxy" or enable_gcs_grpc == "true"
+            expected_driver = "gcs_grpc" if should_use_grpc else "gcs"
+            self.assertEqual(spec["kvstore"]["driver"], expected_driver)
         # Verify the deserialized data matches the original data
         self.assertEqual(len(data), len(deserialized_data))
         for arr, d_arr in zip(data, deserialized_data):
