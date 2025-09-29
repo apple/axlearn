@@ -23,21 +23,21 @@ core = [
     "absl-py==2.3.1",
     "chex==0.1.91",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.8.0.dev20250924",
-    "jaxlib==0.8.0.dev20250924",
+    "jax==0.8.0.dev20250929",
+    "jaxlib==0.8.0.dev20250929",
     "ml-dtypes==0.5.3",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
     "portpicker",
     "pyarrow<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
-    "protobuf>=3.20.3",
+    "protobuf>4",
     "tensorboard-plugin-profile==2.20.4",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
     "tensorflow==2.19.1.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io==0.37.2",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    "tensorflow-metadata==1.17.2", # Otherwise Seqio will report no core for tfds
+    "tensorflow-metadata==1.18.0.dev0", # Otherwise Seqio will report no core for tfds
     "tensorflow_text==2.19.0", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
@@ -63,7 +63,7 @@ dev = [
     "pika==1.3.2",  # used by event queue
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
-    "pylint==2.17.7",
+    "pylint==2.15.8",
     "pytest",  # test runner
     "pytest-xdist",  # pytest plugin for test parallelism
     "pytype==2024.10.11",  # type checking
@@ -92,7 +92,7 @@ gcp = [
     "google-api-python-client==2.109.0",
     "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
-    "google-cloud-storage==2.16.0",
+    "google-cloud-storage==2.19.0",
     "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
     "google-cloud-build==3.24.1",
@@ -106,7 +106,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.8.0.dev20250924",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.8.0.dev20250929",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
@@ -124,7 +124,7 @@ vertexai_tensorboard = [
 # Dataflow dependencies.
 dataflow = [
     "pyarrow<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21
-    "apache-beam==2.55.1",
+    "apache-beam==2.68.0",
     "apache-beam[gcp]",
     "google-apitools",  # for beam pipeline
     "orjson==3.9.10",
@@ -132,7 +132,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton>=2.1.0",
-    "jax[cuda12]==0.8.0.dev20250924",
+    "jax[cuda12]==0.8.0.dev20250929",
     "nvidia-ml-py==12.560.30",
     # pin nccl version, otherwise jax[cuda12] will pull latest version
     "nvidia-nccl-cu12==2.27.5",
@@ -157,7 +157,7 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.11.15",
+    "orbax-checkpoint==0.11.24",
 ]
 # Audio dependencies.
 audio = [
@@ -212,8 +212,10 @@ profile = "black"
 find-links = [
     "https://storage.googleapis.com/axlearn-wheels/wheels.html",
     "https://storage.googleapis.com/jax-releases/libtpu_releases.html",
-    "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html",
 ]
 extra-index-url = [
     "https://us-python.pkg.dev/ml-oss-artifacts-published/jax-public-nightly-artifacts-registry/simple"
+]
+no-build-isolation-package = [
+    "apache-beam",
 ]
