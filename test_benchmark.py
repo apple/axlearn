@@ -133,6 +133,13 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     
     # Get current mesh for creating shardings
     mesh = thread_resources.env.physical_mesh
+    print("thread resources mesh: ",mesh)
+
+    devices = jax.experimental.mesh_utils.create_device_mesh((4,1),devices=jax.local_devices())
+    mesh_created = jax.sharding.Mesh(devices, axis_names=("data","model"))
+    print("mesh_created: ",mesh_created)
+
+
     if not mesh.shape:
         raise RuntimeError("Checkpoint restoration must take place within the context of a Mesh")
     
@@ -150,7 +157,10 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
             partition_spec = get_inference_partition_spec(path, value.shape)
             
             # Create sharding with the appropriate partition spec
-            sharding = jax.sharding.NamedSharding(mesh, partition_spec)
+            sharding = jax.sharding.NamedSharding(mesh_created, jax.sharding.PartitionSpec('data','model'))#partition_spec)
+            print("Is addressable?", sharding.is_fully_addressable)
+            print("Sharding devices:", sharding.device_set)
+            print("Addressable subset:", sharding.addressable_devices)
             
             tensorstore_specs.append(tensorstore_spec)
             shapes.append(value.shape)
@@ -253,20 +263,23 @@ def main():
         print(f"Preload completed to CPU in {preload_time:.2f} seconds")
         print(f"Preloaded {len(preloaded_values)} arrays")
 
-        print("Transferring arrays to TPU...")
-        restored_values = []
+        total_size = sum(a.size for a in preloaded_values)
+        print("total_size of preloaded: ",total_size)
 
         #### calculate size of the checkpoint ####
-        num_elements = preloaded_values[0].size
-        print("num_elements ",num_elements)
-        data_gb_per_device = (preloaded_values[0].size * preloaded_values[0].dtype.itemsize)/ (1024**3)
-        print("data_gb_per_device",data_gb_per_device)
+        total_gb = (total_size * preloaded_values[0].dtype.itemsize)/ (1024**3)
+        print("total_gb: ",total_gb)
 
+        print("shardings length",len(shardings))
+
+        print("Transferring arrays to TPU...")
+        restored_values = []
+        
         start_time = time.perf_counter()
+        # zip(preloaded_values, shardings)
 
-        for i,v in enumerate(preloaded_values[:4]):
-            print(local_devices[i])
-            arr=jax.device_put(v, local_devices[i])
+        for i in range(4):
+            arr=jax.device_put(preloaded_values[i], shardings[i])
             restored_values.append(arr)
         
         for device_array in restored_values:
@@ -277,15 +290,15 @@ def main():
 
         jax.profiler.stop_trace()
 
-        total_data_moved_gb = data_gb_per_device * 4
-        throughput_gb_s = total_data_moved_gb / transfer_time
+        # total_data_moved_gb = data_gb_per_device * 4
+        # throughput_gb_s = total_data_moved_gb / transfer_time
 
-        print(f"Data per device: {data_gb_per_device:.2f} GiB")
-        print(
-            "Total data transferred from host per operation:"
-            f" {total_data_moved_gb:.2f} GiB"
-        )
-        print(f"Aggregated Host -> Devices Throughput: {throughput_gb_s:.2f} GiB/s")
+        # print(f"Data per device: {data_gb_per_device:.2f} GiB")
+        # print(
+        #     "Total data transferred from host per operation:"
+        #     f" {total_data_moved_gb:.2f} GiB"
+        # )
+        # print(f"Aggregated Host -> Devices Throughput: {throughput_gb_s:.2f} GiB/s")
 
                 
 if __name__ == "__main__":
