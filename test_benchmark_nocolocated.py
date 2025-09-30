@@ -238,7 +238,7 @@ def main():
                 for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
             ]
 
-        @colocated_python.colocated_python
+        #@colocated_python.colocated_python
         def run_deserializer():
         # Object should be created once per process.
         # pylint: disable=protected-access
@@ -266,9 +266,9 @@ def main():
 
 
         
-        run_deserializer = run_deserializer.specialize(
-                devices=cpu_devices,
-                out_specs_fn=output_spec_fn,)
+        # run_deserializer = run_deserializer.specialize(
+        #         devices=cpu_devices,
+        #         out_specs_fn=output_spec_fn,)
                 
         start_time = time.perf_counter()
 
