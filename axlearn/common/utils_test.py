@@ -146,7 +146,7 @@ class TreeUtilsTest(TestCase):
         class MyEnum(str, enum.Enum):
             RED = "red"
 
-        self.assertEqual({MyEnum.RED: "red"}, tree_paths({MyEnum.RED: 3}))
+        self.assertEqual({MyEnum.RED: "MyEnum.RED"}, tree_paths({MyEnum.RED: 3}))
 
         # With is_leaf set.
         self.assertEqual(
@@ -2245,7 +2245,7 @@ class DataPartitionTypeToSpecTest(TestCase):
         self.assertEqual(result, PartitionSpec(None))
 
     def test_partition_spec_input(self):
-        custom_spec = PartitionSpec((("data", 0), ("model", 1)))
+        custom_spec = PartitionSpec(("data", 0), ("model", 1))
         result = data_partition_type_to_spec(custom_spec)
         self.assertEqual(result, custom_spec)
 

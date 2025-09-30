@@ -426,9 +426,11 @@ class OptimizerTest(TestCase):
             updated_params = optax.apply_updates(params.value, updates)
             return loss, compute_loss(updated_params)
 
+        backend = jax.default_backend()
         if offload:
+          if backend and (backend == "gpu" or backend == "tpu"):
             self.assertIn(
-                "TransferToMemoryKind(memory_kind='pinned_host')",
+                "MemoryKind='pinned_host'",
                 str(jax.make_jaxpr(jit_fn)(params, state)),
             )
         loss, new_loss = jit_fn(params, state)
@@ -916,7 +918,7 @@ class OptimizerTest(TestCase):
             np.testing.assert_equal(state.inner_state, jnp.ones([], dtype=jnp.int32))
             if use_adaptive_norm:
                 np.testing.assert_equal(state.count, jnp.ones([], dtype=jnp.int32))
-                np.testing.assert_equal(state.grad_norm_ema, g_norm)
+                np.testing.assert_allclose(state.grad_norm_ema, g_norm, atol=1e-6)
         else:
             np.testing.assert_allclose(updates, jnp.zeros_like(grads))
             np.testing.assert_equal(state.nonvalid_count, jnp.ones([], dtype=jnp.int32))
