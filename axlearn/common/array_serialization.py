@@ -475,7 +475,7 @@ async def _async_deserialize(
     #     issues due to cross-cloud constraints. So we enable this optimization on Pathways
     #     which only runs on GCP for now.
     context = serialization.TS_CONTEXT
-    if running_on_pathways() or os.getenv("ENABLE_GCS_GRPC") == "true":
+    if os.getenv("ENABLE_GCS_GRPC", "false") == "true":
         tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
 
     t = await ts.open(tensorstore_spec, open=True, assume_metadata=False, context=context)
