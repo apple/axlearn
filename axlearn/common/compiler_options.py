@@ -166,11 +166,16 @@ def default_xla_options(
 
     # Validate options. Will never fail if this function is implemented correctly.
     for k, v in options.items():
-        try:
-            int(v)
+        if isinstance(v, (int, bool)):
             continue
-        except ValueError:
-            assert v in [True, False, "true", "false", "megachip_tccontrol", "10m"], (k, v)
+        elif isinstance(v, str):
+            # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str
+            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+                continue
+            else:
+                raise ValueError(f"Invalid string value for option {k}: {v}")
+        else:
+            raise ValueError(f"Invalid type for option {k}: {type(v).__name__} (value: {v})")
 
     return options
 

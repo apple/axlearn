@@ -61,6 +61,26 @@ class CompilerOptionsTest(test_utils.TestCase):
             expected_value,
         )
 
+    @parameterized.parameters(
+        dict(xla_option_override="megascale_graph_hang_threshold=60m", expected_value="60m"),
+        dict(xla_option_override="megascale_graph_hang_threshold=300s", expected_value="300s"),
+    )
+    def test_default_xla_options_override_time_values(
+        self,
+        xla_option_override: str,
+        expected_value: str,
+    ):
+        os.environ["XLA_OPTIONS_OVERRIDE"] = xla_option_override
+        xla_options = compiler_options.default_xla_options(
+            instance_type="tpu-v6e-32",
+            num_slices=2,
+            backend="tpu",
+        )
+        self.assertEqual(
+            xla_options["megascale_graph_hang_threshold"],
+            expected_value,
+        )
+
     def test_xla_flags_from_options(self):
         options = dict(a="true", b="false", c=True, d=False, long_option_name=True)
         result = compiler_options.xla_flags_from_options(options)
