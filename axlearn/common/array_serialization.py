@@ -644,11 +644,6 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         commit_futures = [[] for _ in range(len(tensorstore_specs))]
 
-        async_serialize = {
-            "0.6.2": lambda: serialization.ts_impl.async_serialize,
-            "0.5.3": lambda: serialization.async_serialize,
-        }[jax.__version__]()
-
         # pylint: disable-next=redefined-outer-name
         async def _run_serializer():
             future_writer = jax.tree.map(

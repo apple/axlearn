@@ -36,10 +36,6 @@ from axlearn.common.array_serialization import (
     serialization,
 )
 
-# TODO(wyi): This dictionary is introduced for the temporary peroiod of upgrading JAX from 0.5.3 to
-# 0.6.2. Once the upgrading is complete, we should remove it ASAP.
-_ts_open = {"0.6.2": "ts.open", "0.5.3": "serialization.ts.open"}[jax.__version__]
-
 
 @contextmanager
 def get_tensorstore_spec(arr: jax.Array):

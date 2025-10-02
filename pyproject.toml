@@ -23,8 +23,8 @@ core = [
     "absl-py==2.3.1",
     "chex==0.1.91",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.8.0.dev20250929",
-    "jaxlib==0.8.0.dev20250929",
+    "jax==0.8.0.dev20251001",
+    "jaxlib==0.8.0.dev20251001",
     "ml-dtypes==0.5.3",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
@@ -106,7 +106,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.8.0.dev20250929",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.8.0.dev20251001",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
@@ -132,7 +132,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton>=2.1.0",
-    "jax[cuda12]==0.8.0.dev20250929",
+    "jax[cuda12]==0.8.0.dev20251001",
     "nvidia-ml-py==12.560.30",
     # pin nccl version, otherwise jax[cuda12] will pull latest version
     "nvidia-nccl-cu12==2.27.5",
