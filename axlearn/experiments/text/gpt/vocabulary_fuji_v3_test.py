@@ -15,7 +15,7 @@ from axlearn.common.input_lm import (
     text_to_lm_eval_input,
     text_to_lm_training_input,
 )
-from axlearn.common.input_text_test import make_ds_fn
+from axlearn.common.input_test_utils import make_ds_fn
 from axlearn.common.test_utils import TestCase
 from axlearn.experiments.text.gpt.vocabulary_fuji_v3 import FujiV3Vocabulary
 
