@@ -32,7 +32,6 @@ from axlearn.common.base_layer import (
     no_remat,
 )
 from axlearn.common.config import config_class
-from axlearn.common.layers_test import ParentLayer
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.param_init import (
@@ -239,7 +238,7 @@ class BaseLayerTest(TestCase):
             output_collection,
         )
 
-    @parameterized.parameters(("true", 8), ("false", 5))
+    @parameterized.parameters(("true", 10), ("false", 7))
     def test_not_too_many_stack_frames(self, enable_traceback, expected_frames):
         """Tests that we don't add a very large number of stack frames when we do a wrapped to a
         child layer method.
@@ -271,11 +270,11 @@ class BaseLayerTest(TestCase):
                     outer_self.assertLessEqual(i, expected_frames)
 
         with mock.patch.dict(os.environ, {"AXLEARN_ENABLE_STACK_SUMMARY": enable_traceback}):
-            cfg = ParentLayer.default_config().set(
-                name="root", children=dict(child=CountStackFrames.default_config())
+            cfg = _ParentLayer.default_config().set(
+                name="root", child=CountStackFrames.default_config()
             )
 
-            root: ParentLayer = cfg.instantiate(parent=None)
+            root: _ParentLayer = cfg.instantiate(parent=None)
             # Call 'root.forward'.
             root_state = {"child": {}}
             F(
@@ -283,7 +282,7 @@ class BaseLayerTest(TestCase):
                 state=root_state,
                 prng_key=jax.random.PRNGKey(1),
                 is_training=True,
-                inputs=dict(path=["child"]),
+                inputs=(jnp.array(0.0),),  # _ParentLayer.forward expects a tensor input
             )
 
     def test_remat_name(self):

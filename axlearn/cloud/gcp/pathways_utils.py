@@ -22,6 +22,7 @@ from axlearn.cloud.gcp.jobset_utils import (
 )
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
 from axlearn.cloud.gcp.system_characteristics import (
+    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
     support_twisted_topology,
 )
@@ -48,7 +49,7 @@ _PATHWAYS_WORKER_PORT = 29001
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
+_PATHWAYS_IMAGE_TAG = "shm_proxy_settings"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -133,6 +134,26 @@ def get_xla_options(
         A dictionary containing only XLA-specific options (those starting with 'xla').
     """
     return {k: v for k, v in xla_options.items() if k.startswith("xla_")}
+
+
+def round_up_to_power_of_2(n):
+    """
+    Rounds an integer up to the nearest power of 2.
+
+    Args:
+        n (int): The number to round up. Must be a positive integer.
+
+    Returns:
+        int: The smallest power of 2 that is greater than or equal to n.
+
+    Examples:
+        round_up_to_power_of_2(7)   -> 8
+        round_up_to_power_of_2(8)   -> 8
+        round_up_to_power_of_2(9)   -> 16
+        round_up_to_power_of_2(32)  -> 32
+    """
+    assert isinstance(n, int) and n > 0
+    return 1 << (n - 1).bit_length()
 
 
 class PathwaysReplicatedJob(BaseReplicatedJob):
@@ -275,7 +296,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # In Jax 0.6.2 and beyond this flag can be renamed to
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS as well.
         self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
-
+        # Threshold for using shared memory between Jax client and Pathways proxy.
+        # Setting it to 1 byte so effectively all Jax device_put use shared memory.
+        self._update_env_list(env_list, "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD", "1")
+        self._update_env_list(
+            env_list, "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY", "/tmp/ifrt_proxy"
+        )
         env_list.append(
             {
                 "name": "HOST_ADDRESS",
@@ -315,9 +341,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         head_container["resources"] = resources
+
+        volume_mounts = head_container.get("volumeMounts", [])
+        volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"))
+        head_container["volumeMounts"] = volume_mounts
 
         return head_container
 
@@ -363,9 +392,16 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     # TODO(samos123): Remove this once this becomes the default.
                     {"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"},
                     {"name": "XLA_FLAGS", "value": f"--xla_dump_to=/output/{cfg.name}/xla"},
+                    {
+                        "name": "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY",
+                        "value": "/tmp/ifrt_proxy",
+                    },
                 ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
-                volumeMounts=[dict(name="shared-output", mountPath="/output")],
+                volumeMounts=[
+                    dict(name="shared-output", mountPath="/output"),
+                    dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"),
+                ],
             ),
             dict(
                 name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
@@ -403,6 +439,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+        volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
 
         if cfg.gcsfuse_mount:
             annotations.update(
@@ -481,6 +518,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     ) -> dict:
         """Build the container for the 'pathways-worker' role."""
         cfg: TPUReplicatedJob.Config = self._inner.config
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        host_memory = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS[system.gce_machine_type]
         # pylint: disable-next=protected-access
         container = self._inner._build_container()
 
@@ -537,6 +576,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address={pathways_head_address}:"
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+            # Recycling host memory gives a slight increase in performance.
+            "--tpu_pinned_host_allocation_recycle=true",
+            # The flag below is needed for better H2D performance.
+            # We use 1/4 of the host memory, rounding up to power of 2 as premapped buffer.
+            # Note that pathways worker requires this flag to be a power of 2.
+            f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory//4)*(1<<30)}",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)

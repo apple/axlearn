@@ -24,7 +24,7 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
-from axlearn.common import learner, optimizers, serialization, struct, utils
+from axlearn.common import flax_struct, learner, optimizers, serialization, utils
 from axlearn.common.aot_compilation import get_devices_for_topology, reshape_devices
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import (
@@ -112,7 +112,7 @@ class Combo(NamedTuple):
 
 
 # pylint: disable-next=abstract-method
-class StructContainer(struct.PyTreeNode):
+class StructContainer(flax_struct.PyTreeNode):
     contents: Any
 
 
@@ -130,13 +130,13 @@ class TreeUtilsTest(TestCase):
             tree_paths(Combo(head=1, tail=Combo(head=2, tail=3))),
         )
 
-        # struct.PyTreeNode.
+        # flax_struct.PyTreeNode.
         self.assertEqual(
             WeightedScalar(mean="mean", weight="weight"),
             tree_paths(WeightedScalar(mean=2, weight=3)),
         )
 
-        # Nested struct.PyTreeNode.
+        # Nested flax_struct.PyTreeNode.
         self.assertEqual(
             StructContainer(WeightedScalar(mean="contents/mean", weight="contents/weight")),
             tree_paths(StructContainer(WeightedScalar(mean=2, weight=3))),
@@ -157,7 +157,7 @@ class TreeUtilsTest(TestCase):
             ),
         )
 
-        class DataclassCombo(struct.PyTreeNode):
+        class DataclassCombo(flax_struct.PyTreeNode):
             scalar: int
             dataclass_combo: Any
             none: type[None]
@@ -618,7 +618,7 @@ class TreeUtilsTest(TestCase):
     )
     def test_input_partition_spec(self, mesh_shape, mesh_axis_names):
         if not is_supported_mesh_shape(mesh_shape):
-            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
+            self.skipTest(f"Unsupported mesh {mesh_shape}.")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         with jax.sharding.Mesh(devices, mesh_axis_names):
             self.assertSequenceEqual(
@@ -639,7 +639,7 @@ class TreeUtilsTest(TestCase):
         batch_axis_names: Sequence[str],
     ):
         if not is_supported_mesh_shape(mesh_shape):
-            pytest.skip(reason=f"Unsupported mesh {mesh_shape}.")
+            self.skipTest(f"Unsupported mesh {mesh_shape}.")
         devices = mesh_utils.create_device_mesh(mesh_shape)
         with jax.sharding.Mesh(devices, mesh_axis_names):
             sharded_batch = dispatch_input_batch(
@@ -2031,7 +2031,7 @@ class HostToGlobalArrayTest(TestCase):
         print(f"{device_count=}, {process_count=}")
         # E.g., run on v5e-16.
         if process_count % divisor != 0:
-            pytest.skip(reason="Incompatible process_count/divisor.")
+            self.skipTest("Incompatible process_count/divisor.")
 
         # Use a logical shape that has dim=0 smaller than number of hosts.
         # This requires us to produce padding batches on some hosts.
@@ -2081,7 +2081,7 @@ class HostToGlobalSpecsTest(TestCase):
         dict(partition_spec=PartitionSpec("data"), expect_num_feeds=4),
     )
     # TODO(kcruise,markblee): Add support for AOT test in CI.
-    @pytest.mark.skip(reason="Requires jax[tpu] for AOT.")
+    @absltest.skip("Requires jax[tpu] for AOT.")
     def test_host_to_global_specs(self, partition_spec, expect_num_feeds):
         mesh_shape, topology, num_slices = (-1, 8), "v5p-32", 2
         devices, num_per_slice = get_devices_for_topology(topology, topology_num_slices=num_slices)

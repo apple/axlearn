@@ -165,6 +165,52 @@ def _transfer_to_host(data: Tensor) -> Tensor:
     return data
 
 
+def use_gcs_grpc(tensorstore_spec: dict[str, Any]) -> tuple[dict[str, Any], ts.Context]:
+    """
+    Switch TensorStore to the gcs_grpc driver to improve Google Cloud Storage read throughput.
+
+    Why:
+      - gcs_grpc typically yields 2×–4× faster read performance than the standard REST-based
+        gcs driver for checkpoint loading and other high-throughput workloads.
+      - Recommended by the Google GCS team for high-parallelism read patterns.
+
+    Safety:
+      - If a checkpoint was written with the "gcs" driver, it can be deserialized with
+        "gcs_grpc" because both drivers read the same underlying objects; only the protocol
+        differs (REST vs gRPC).
+
+    Context tuning (set when enabling gcs_grpc):
+      - cache_pool: disabled to avoid double caching (TensorStore + our byte limiter).
+      - data_copy_concurrency: shared limit across all TensorStore ops.
+      - gcs_request_concurrency: set to CPU count to drive parallel GCS requests.
+
+    Returns:
+        A tuple containing:
+        - Modified tensorstore_spec with gcs_grpc driver (if applicable)
+        - TensorStore context with optimized settings for gcs_grpc
+    """
+    context = serialization.TS_CONTEXT
+    if tensorstore_spec.get("kvstore", {}).get("driver") == "gcs":
+        tensorstore_spec["kvstore"]["driver"] = "gcs_grpc"
+        context = ts.Context(
+            {
+                "cache_pool": {"total_bytes_limit": 0},
+                "data_copy_concurrency": {"limit": "shared"},
+                "gcs_request_concurrency": {"limit": os.cpu_count()},
+            }
+        )
+    return tensorstore_spec, context
+
+
+def running_on_pathways():
+    """
+    We use GCP only for inference with Pathways. In this setup, JAX_PLATFORMS is set to
+    "proxy", indicating that the JAX program delegates all computation to Pathways and
+    runs only as a proxy.
+    """
+    return os.getenv("JAX_PLATFORMS") == "proxy"
+
+
 async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo]):
     """Slices each shard according to shard info and then copy the sliced result to host.
 
@@ -219,8 +265,8 @@ async def _async_serialize(
     max_data_shard_degree: int,
     shard_threshold_bytes: int,
 ):
-    """Similar to `serialization.ts_impl.async_serialize`, but limiting peak host memory
-    usage and sharding along data-parallel axis.
+    """Similar to `serialization.ts_impl.async_serialize`, but limiting peak host memory usage and
+    sharding along data-parallel axis.
 
     Specifically, TensorStores are opened only for shards which correspond to the current host, and
     only if
@@ -230,6 +276,7 @@ async def _async_serialize(
     We also simplify the API slightly by assuming replica_id=0 and primary_host=0.
     Reference:
     https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/experimental/array_serialization/serialization.py#L188
+
     """
     shard_infos = _get_shard_infos(
         arr_inp,
@@ -370,6 +417,7 @@ async def _async_deserialize(
     h2d_limiter: serialization._LimitInFlightBytes,
     byte_limiter: serialization._LimitInFlightBytes,
     single_thread_pool: ThreadPoolExecutor,
+    multi_thread_pool: ThreadPoolExecutor,
 ):
     """Modified from
     https://github.com/jax-ml/jax/blob/e7ec418eba9ada336f755613948cbdf4a9e97d59/jax/experimental/array_serialization/serialization.py#L345
@@ -383,7 +431,11 @@ async def _async_deserialize(
        allocating large DMA buffers on-demand and to avoid having extra memory footprint for extra
        DMA buffers. For tensors whose size exceed the entirety of the premapped buffer, their H2D
        will be serialized using a single threaded threadpool. For non TPU backend, no limit on
-       in flight H2D is imposed.
+       in flight H2D is imposed. Note that Pathways checkpoint loading does not require h2d limiter
+       since the H2D doesn't happen in the head node, and each worker has preemapped a chunk of host
+       memory that is larger than the total device memory.
+    4. Let user pass in a multi_thread_pool thread pool for ckpt loading, instead of letting async
+       io to create a default pool, to make it more configurable.
 
     Combination of these optimizations speed up the loading of checkpoints as much as 5x if it's
     not network-bound.
@@ -412,12 +464,18 @@ async def _async_deserialize(
             f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
         )
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Format) else None
-    t = await ts.open(
-        tensorstore_spec,
-        open=True,
-        assume_metadata=False,
-        context=serialization.TS_CONTEXT,
-    )
+
+    # gcs_grpc is 2x to 4x faster than gcs on read performance. And this is recommended by Google
+    # GCS team.
+    # Caveats:
+    #   - On AWS (or other non-GCP environments) accessing GCS, gcs_grpc may hit auth/network
+    #     issues due to cross-cloud constraints. So we enable this optimization on Pathways
+    #     which only runs on GCP for now.
+    context = serialization.TS_CONTEXT
+    if running_on_pathways() or os.getenv("ENABLE_GCS_GRPC") == "true":
+        tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
+
+    t = await ts.open(tensorstore_spec, open=True, assume_metadata=False, context=context)
     shape = tuple(t.shape if global_shape is None else global_shape)
     new_shard_shape = in_sharding.shard_shape(shape)
     loop = asyncio.get_running_loop()
@@ -442,10 +500,15 @@ async def _async_deserialize(
             # the extra values will be filled with 0s.
             out = np.zeros(new_shard_shape, read_ts.dtype.numpy_dtype)
 
+        ts_read_start_time = time.perf_counter()
         await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][restricted_domain].write(
             read_ts
         )
-
+        logging.debug(
+            "Reading %d MB from tensorstore took %.4f seconds.",
+            requested_bytes // 1024 // 1024,
+            time.perf_counter() - ts_read_start_time,
+        )
         # Convert to jnp array so that layouts are initialized properly for
         # sub-byte dtypes.
         # TODO(yashkatariya): This is a band-aid fix. Figure out a better way to
@@ -482,9 +545,14 @@ async def _async_deserialize(
             )
         else:
             try:
-                await h2d_limiter.wait_for_bytes(out_size)
-                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-                await h2d_limiter.release_bytes(out_size)
+                if os.getenv("JAX_PLATFORMS") == "proxy":
+                    result = await loop.run_in_executor(
+                        multi_thread_pool, _blocking_device_put, out, layout
+                    )
+                else:
+                    await h2d_limiter.wait_for_bytes(out_size)
+                    result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+                    await h2d_limiter.release_bytes(out_size)
             except ValueError as e:
                 if "Requested more bytes than we reserved" not in str(e):
                     raise e  # Raise if it's not the type of error we expect.
@@ -549,7 +617,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._loop_thread.start()
-        self._single_thread_pool = ThreadPoolExecutor(1)
+        self._single_thread_pool = ThreadPoolExecutor(max_workers=1)
+        # Use 80% CPU cores for parallel ckpt loading
+        self._multi_thread_pool = ThreadPoolExecutor(max_workers=int(os.cpu_count() * 0.8))
 
     def stop(self):
         """Cleans up any internal threads."""
@@ -573,6 +643,11 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         self.wait_until_finished()
 
         commit_futures = [[] for _ in range(len(tensorstore_specs))]
+
+        async_serialize = {
+            "0.6.2": lambda: serialization.ts_impl.async_serialize,
+            "0.5.3": lambda: serialization.async_serialize,
+        }[jax.__version__]()
 
         # pylint: disable-next=redefined-outer-name
         async def _run_serializer():
@@ -606,6 +681,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         concurrent_gb: int = 32,
     ):
         self.wait_until_finished()
+        start_time = time.perf_counter()
 
         concurrent_bytes = concurrent_gb * 10**9
 
@@ -621,6 +697,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
                     byte_limiter=byte_limiter,
                     h2d_limiter=h2d_limiter,
                     single_thread_pool=self._single_thread_pool,
+                    multi_thread_pool=self._multi_thread_pool,
                 ),
                 shardings,
                 tensorstore_specs,
@@ -630,7 +707,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             return await asyncio.gather(*future_arrays)
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
-        return fut.result()
+        result = fut.result()
+        logging.info("deserialize took %.4f seconds.", time.perf_counter() - start_time)
+        return result
 
 
 class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):

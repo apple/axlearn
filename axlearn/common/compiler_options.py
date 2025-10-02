@@ -73,12 +73,6 @@ def default_xla_options(
             xla_tpu_host_transfer_overlap_limit=24,
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
             xla_max_concurrent_host_send_recv=100,
-            # Flag controlling the HBM memory limit as a percentage of the total HBM size.
-            # Default value is 95. Can tune up or down to give more or less memory for the
-            # scheduler. The scheduler favors more on less memory usage when it's under
-            # memory pressure, instead of hiding latency by overlapping more computations
-            # and communications.
-            xla_tpu_scheduler_percent_shared_memory_limit=90,
             # Flag controlling the number of times the scheduler is run if the scheduled
             # peak memory usage exceeds the initial memory limit, by setting memory limit
             # to 90% of the previous memory limit each time. Default value is 1. Sometimes
@@ -172,11 +166,16 @@ def default_xla_options(
 
     # Validate options. Will never fail if this function is implemented correctly.
     for k, v in options.items():
-        try:
-            int(v)
+        if isinstance(v, (int, bool)):
             continue
-        except ValueError:
-            assert v in [True, False, "true", "false", "megachip_tccontrol", "10m"], (k, v)
+        elif isinstance(v, str):
+            # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str
+            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+                continue
+            else:
+                raise ValueError(f"Invalid string value for option {k}: {v}")
+        else:
+            raise ValueError(f"Invalid type for option {k}: {type(v).__name__} (value: {v})")
 
     return options
 

@@ -91,11 +91,19 @@ ENTRYPOINT ["/opt/apache/beam/boot"]
 FROM base AS tpu
 
 ARG EXTRAS=
+# Install a custom jaxlib that includes backport of Pathways shared memory feature.
+# PR: https://github.com/openxla/xla/pull/31417
+# Needed until Jax is upgraded to 0.8.0 or newer.
+ARG INSTALL_PATHWAYS_JAXLIB=false
 
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
+RUN if [ "$INSTALL_PATHWAYS_JAXLIB" = "true" ]; then \
+      uv pip install --prerelease=allow "jaxlib==0.5.3.dev20250918" \
+        --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html; \
+    fi
 COPY --from=libtpu-target:latest /wheels /wheels
 RUN uv pip install --no-deps /wheels/*.whl && uv cache clean
 COPY . .
