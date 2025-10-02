@@ -50,14 +50,14 @@ _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
 
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server@sha256:73516e07b3ccd9af487100c55cff35b7089025b4909847fd234f0f768d99ebea"
 )
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server_maxtext:latest"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server@sha256:fde763e2bae514d0fa758840e501b71a9ea48781dddafa5d8ed3a0fa316fd1ae"
 )
 _COLOCATED_PYTHON_IMAGE = (
-    "gcr.io/cloud-tpu-multipod-dev/ksadi_sidecar_maxtext:latest"
+    "us-docker.pkg.dev/cloud-tpu-multipod-dev/colocated-images/lk-colocated-image:latest"
 )
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
@@ -192,8 +192,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
-        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
-        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+        fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "8")
+        fv.set_default("pathways_head_mem", fv.pathways_head_mem or "80")
 
     @classmethod
     def default_config(cls):
@@ -323,7 +323,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
+            #"limits": {"cpu": cpu_req, "memory": mem_req},
         }
         head_container["resources"] = resources
 
@@ -366,7 +366,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
-                args=cmd_args,
+                args=cmd_args + ["--sidecar_name=external"],
                 env=proxy_env,
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
             ),

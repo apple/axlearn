@@ -1,0 +1,26 @@
+absl-py==2.1.0
+#chex==0.1.88
+importlab==0.8.1
+ml-dtypes==0.5.1
+msgpack==1.1.0
+nltk==3.7
+#optax==0.1.7
+portpicker
+pyarrow<21.0.0
+protobuf>=3.20.3
+tensorboard-plugin-profile
+tensorflow #==2.14.1
+tensorflow-datasets #>=4.9.2
+tensorflow-io   #>=0.37.1
+tensorflow_text  # >=2.19.0; platform_machine == 'x86_64'
+tensorstore>=0.1.63
+toml
+typing-extensions==4.12.2
+scipy==1.15.0
+seqio>=0.0.15
+#flax==0.10.2
+prefixed==0.9.0
+grain==0.2.7
+#axlearn[gcp]==0.0.1.dev20240211233521
+#pathwaysutils==0.1.1
+jaxlib @ file:///app/patched_jax/dist/jaxlib-0.6.2.dev20250930-cp310-cp310-manylinux2014_x86_64.whl#sha256=1141cab71a7950b5724b110594d7f661e14b7ca123bb6f37ea2976ac415b2a24
