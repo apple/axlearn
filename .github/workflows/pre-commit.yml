@@ -33,4 +33,4 @@ jobs:
             echo "Manually stopping monitor process..."
             kill $MONITOR_PID || true
           fi
-      - run: pytype  --verbosity=2 -j auto .
+      - run: pytype --exclude=/home/runner/work/axlearn/axlearn/build/lib/  --verbosity=2 -j auto .
