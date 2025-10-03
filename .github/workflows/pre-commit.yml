@@ -16,7 +16,7 @@ jobs:
       - run: pip install --upgrade pip
       - run: ls -lh /home/runner/work/axlearn/axlearn/ || True
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
-      - run: pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
+      - run: pip install '.[core,dev,gcp,vertexai_tensorboard,open_api]'
       - run: ls -lh /home/runner/work/axlearn/axlearn/ || True
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
