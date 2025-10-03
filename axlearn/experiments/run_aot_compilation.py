@@ -83,7 +83,6 @@ def _compile_and_dump_programs(
         xla_options.pop("megascale_graph_hang_threshold", None)
         xla_options.pop("megascale_grpc_enable_xor_tracer", None)
         xla_options.pop("megascale_error_reporter_abort_on_hang", None)
-        xla_options.pop("xla_sc_disjoint_spmem", None)
         xla_options.pop("megascale_grpc_premap_memory_bytes", None)
         xla_options.pop("megascale_error_reporter_abort_on_error", None)
 
