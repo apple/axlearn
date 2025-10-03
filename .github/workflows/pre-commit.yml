@@ -8,13 +8,16 @@ jobs:
     # resource_class: large
     steps:
       - uses: actions/checkout@v4
+      - run: ls -lh /home/runner/work/axlearn/axlearn/ | True
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
       - run: pip install --upgrade pip
+      - run: ls -lh /home/runner/work/axlearn/axlearn/ | True
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
       - run: pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
+      - run: ls -lh /home/runner/work/axlearn/axlearn/ | True
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
@@ -33,4 +36,5 @@ jobs:
             echo "Manually stopping monitor process..."
             kill $MONITOR_PID || true
           fi
-      - run: pytype --exclude=/home/runner/work/axlearn/axlearn/build/lib/  --verbosity=2 -j auto .
+      - run: ls -lh /home/runner/work/axlearn/axlearn/ | True
+      - run: pytype -j auto .
