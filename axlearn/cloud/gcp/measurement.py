@@ -59,10 +59,8 @@ class GoodputRecorder(measurement.Recorder):
         upload_interval: Required[int] = REQUIRED
         rolling_window_size: Sequence[int] = []
         jax_backend: Optional[str] = None
-        # Disabled by default because of performance degradation. This doesn't disable goodput
-        # recording.
-        # TODO (apolloreno): once the performance degradation is fixed, will change default to True
-        enable_monitoring: bool = False
+        # Enable or disable monitoring. Recording is always enabled.
+        enable_monitoring: bool = True
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues) -> "GoodputRecorder":
@@ -77,7 +75,7 @@ class GoodputRecorder(measurement.Recorder):
         - rolling_window_size: Comma-separated list of integers representing rolling window
             sizes in seconds.
         - jax_backend: The type of jax backend.
-        - enable_monitoring: Boolean to enable/disable goodput monitoring (default: false).
+        - enable_monitoring: Boolean to enable/disable goodput monitoring (default: true).
         """
         cfg: measurement.Recorder.Config = cls.default_config()
         parsed_flags = parse_kv_flags(fv.recorder_spec, delimiter="=")

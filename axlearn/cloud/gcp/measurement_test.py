@@ -65,7 +65,7 @@ class GoodputRecorderTest(parameterized.TestCase):
         recorder_spec,
         expected_rolling_window_size,
         expected_jax_backend,
-        expected_enable_monitoring=False,
+        expected_enable_monitoring=True,
     ):
         """Tests that flags are correctly parsed into the config."""
         mock_fv = mock.MagicMock(spec=flags.FlagValues)
@@ -403,35 +403,35 @@ class GoodputRecorderTest(parameterized.TestCase):
                 mock_monitor_instance.stop_rolling_window_goodput_uploader.assert_not_called()
 
     @mock.patch("jax.process_index", return_value=0)
-    def test_enable_monitoring_disabled_by_default(self, _):
-        """Tests that monitoring is disabled by default (enable_monitoring=False)."""
+    def test_enable_monitoring_enabled_by_default(self, _):
+        """Tests that monitoring is enabled by default (enable_monitoring=True)."""
         cfg = GoodputRecorder.default_config().set(
-            name="test-disabled",
+            name="test-default-enabled",
             upload_dir="/test",
             upload_interval=30,
-            # enable_monitoring defaults to False
+            # Enable_monitoring defaults to True.
             rolling_window_size=[10, 20],
         )
         recorder = GoodputRecorder(cfg)
 
-        # Verify the flag defaults to False
-        self.assertFalse(recorder.config.enable_monitoring)
+        # Verify the flag defaults to True
+        self.assertTrue(recorder.config.enable_monitoring)
 
         with mock.patch("ml_goodput_measurement.monitoring.GoodputMonitor") as mock_monitor_cls:
-            # Test that cumulative goodput monitoring is skipped
+            # Test that cumulative goodput monitoring is active by default.
             with recorder._maybe_monitor_goodput():
                 pass
-            mock_monitor_cls.assert_not_called()
+            mock_monitor_cls.assert_called()
 
-            # Test that rolling window monitoring is skipped
+            # Test that rolling window monitoring is active by default.
             with recorder._maybe_monitor_rolling_window_goodput():
                 pass
-            mock_monitor_cls.assert_not_called()
+            mock_monitor_cls.assert_called()
 
             # Test that maybe_monitor_all is skipped
             with recorder.maybe_monitor_all():
                 pass
-            mock_monitor_cls.assert_not_called()
+            mock_monitor_cls.assert_called()
 
     @mock.patch("jax.process_index", return_value=0)
     def test_enable_monitoring_explicitly_disabled(self, _):
