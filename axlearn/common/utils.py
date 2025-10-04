@@ -1779,7 +1779,9 @@ def create_device_mesh(
         max(getattr(el, device_attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
     )
     num_devices = len(devices)
-    assert num_devices % num_granules == 0, "Number of devices should divide number of granules."
+    assert (
+        num_devices % num_granules == 0
+    ), "Number of devices must be divisible by number of granules."
     num_devices_per_granule = num_devices // num_granules
 
     # Fallback to a standard mesh if on GPU with incompatible multi-granule mesh.
@@ -1802,11 +1804,13 @@ def create_device_mesh(
                 break
             elif dim != 1:
                 raise ValueError(
-                    f"First non-singleton mesh axis {axis} with value {dim} does not divide "
+                    f"First non-singleton mesh axis {axis} with value {dim} must be divisible by "
                     f"the number of slices/granules {num_granules}."
                 )
         else:
-            raise ValueError(f"At least one axis of {mesh_shape=} must divide {num_granules=}.")
+            raise ValueError(
+                f"At least one axis of {mesh_shape=} must be divisible by {num_granules=}."
+            )
 
         if num_granules > 1:
             logging.info("Building multi-slice/granule device mesh over axis %s.", axis)
