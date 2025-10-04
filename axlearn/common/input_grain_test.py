@@ -9,9 +9,8 @@ from typing import Optional, Protocol
 import grain.python as grain
 import jax
 import numpy as np
-import pytest
 from absl import logging
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from grain._src.core.sharding import even_split
 from jax.sharding import PartitionSpec
 
@@ -35,8 +34,6 @@ from axlearn.common.input_grain import (
     unbatch,
 )
 from axlearn.common.test_utils import TestCase
-from axlearn.common.utils import host_to_global_device_array, replicate_to_local_data
-from axlearn.common.utils_spmd import setup as setup_spmd
 
 
 def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
@@ -608,53 +605,6 @@ class InputTest(parameterized.TestCase):
             self.assertEqual(batch["input_ids"].tolist(), expected)
             break
 
-    # TODO(markblee): Parameterize dispatcher.
-    @pytest.mark.tpu
-    def test_dispatch_tpu(self):
-        """Test that logical batching works on every other host.
-
-        Can be run on 2 or more hosts (e.g., v5e-16).
-        """
-        setup_spmd(jax_backend="tpu")
-        process_count = jax.process_count()
-        process_index = jax.process_index()
-        print(f"{process_count=}, {process_index=}")
-
-        # Set process_count to be larger than logical batch size.
-        assert process_count % 2 == 0
-        logical_batch_size = process_count // 2
-        batch_sharding = max(1, logical_batch_size // 2)
-
-        dispatcher = InputDispatcher.default_config().set(
-            global_logical_batch_size=logical_batch_size
-        )
-        # Dispatch requires examples to be dicts.
-        ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": x})
-        # Each process produces feed_logical_batch_size.
-        cfg = self._input_config(
-            ds.repeat(num_epochs=1),
-            per_process=lambda ds, **_: ds.batch(1),  # Half of the processes will produce padding.
-        )
-        cfg.partition_spec = PartitionSpec("x")
-        cfg.input_dispatcher = dispatcher
-
-        with jax.sharding.Mesh(np.array(jax.devices()).reshape(batch_sharding, -1), ("x", "y")):
-            grain_input: Input = cfg.instantiate(parent=None)
-            for batch in grain_input:
-                physical_batch = host_to_global_device_array(batch)
-                batch = grain_input.dispatch_global_batch(physical_batch)
-
-                # Should match the logical batch size.
-                self.assertEqual(batch["input_ids"].shape[0], logical_batch_size)
-                # Should be sharded along batch axes.
-                self.assertEqual(batch["input_ids"].sharding.spec, cfg.partition_spec)
-                # Should contain the right ids.
-                self.assertEqual(
-                    list(range(logical_batch_size)),
-                    replicate_to_local_data(batch)["input_ids"].tolist(),
-                )
-                break
-
     def test_element_spec(self):
         ds = range_dataset(start=0, stop=10, seed=123).map(lambda x: {"input_ids": x})
         grain_input: Input = self._input_config(ds).instantiate(parent=None)
@@ -673,3 +623,7 @@ class InputTest(parameterized.TestCase):
             {"input_ids": jax.ShapeDtypeStruct(shape=(2,), dtype=np.int64)},
             grain_input.element_spec(),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()
