@@ -17,7 +17,7 @@ from axlearn.common.utils import Nested, Tensor
 
 
 def _compute_minibatch_size(input_batch: Nested[Tensor], *, steps: int) -> int:
-    """Utility function to compute minibatch size from input batch.
+    """Utility function to compute minibatch sizes from input batch.
 
     Args:
         input_batch: A ForwardFn input_batch.
