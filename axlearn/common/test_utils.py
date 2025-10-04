@@ -64,6 +64,16 @@ _PYTEST_OPT_REGISTERED = {}
 
 
 def assert_allclose(actual, desired, atol=1e-6, rtol=1e-3, err_msg=""):
+    # jax.numpy.asarray no longer accepts None as an input as of Jax >= 0.6.0
+    # Adding a manual check and exception to prevent test failure
+    if actual is None and desired is None:
+        return
+    if actual is None or desired is None:
+        raise ValueError(
+            f"Actual={actual} and desired={desired}. Either actual and desired must be None"
+            "or neither should be None"
+        )
+
     actual = jnp.asarray(actual).astype(np.float32)
     desired = jnp.asarray(desired).astype(np.float32)
     # Checks if 'actual' and 'desired' are within (atol + rtol * abs(desired)).

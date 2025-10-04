@@ -34,7 +34,7 @@ import numpy as np
 import tensorstore as ts
 from absl import logging
 from jax._src import array, typing
-from jax._src.layout import Layout
+from jax._src.layout import Format
 from jax.experimental.array_serialization import serialization
 
 from axlearn.common.utils import Tensor
@@ -291,13 +291,14 @@ async def _async_serialize(
     # Await for limiter before D2H.
     if limiter is not None:
         # pylint: disable-next=protected-access
-        if jax.__version__ == "0.6.2" and nbytes > limiter._max_bytes:
+        if nbytes > limiter._max_bytes:
             raise ValueError(
                 "Attempting to read more bytes than we allocated space for in the limiter"
                 # pylint: disable-next=protected-access
                 f"{nbytes} > {limiter._max_bytes}"
             )
-        await limiter.wait_for_bytes(nbytes)
+        else:
+            await limiter.wait_for_bytes(nbytes)
 
     # Fully addressable arrays lead to races between multiple writing hosts.
     assert not (
@@ -305,12 +306,8 @@ async def _async_serialize(
         and jax.process_count() > 1
         and arr_inp.is_fully_addressable
     )
-    # pylint: disable=protected-access
-    spec_has_metadata = {
-        "0.6.2": lambda: serialization.ts_impl._spec_has_metadata,
-        "0.5.3": lambda: serialization._spec_has_metadata,
-    }[jax.__version__]()
-    if not spec_has_metadata(tensorstore_spec):
+    # pylint: disable-next=protected-access
+    if not serialization.ts_impl._spec_has_metadata(tensorstore_spec):
         # pylint: disable-next=protected-access
         tensorstore_spec["metadata"] = serialization._get_metadata(arr_inp)
     if "dtype" not in tensorstore_spec:
@@ -407,12 +404,12 @@ async def _run_serializer(
         raise e
 
 
-def _blocking_device_put(out: Tensor, layout: Layout) -> Tensor:
+def _blocking_device_put(out: Tensor, layout: Format) -> Tensor:
     return jax.block_until_ready(jax.device_put(out, layout))
 
 
 async def _async_deserialize(
-    user_in_sharding: jax.sharding.Sharding | Layout,
+    user_in_sharding: jax.sharding.Sharding | Format,
     tensorstore_spec: dict[str, Any],
     global_shape: Optional[Sequence[int]],
     dtype: Optional[typing.DTypeLike],
@@ -459,14 +456,14 @@ async def _async_deserialize(
     huge pages (THP) can help, but it's only for jax 0.5.1+.
     """
     in_sharding = (
-        user_in_sharding.sharding if isinstance(user_in_sharding, Layout) else user_in_sharding
+        user_in_sharding.sharding if isinstance(user_in_sharding, Format) else user_in_sharding
     )
     if not isinstance(in_sharding, jax.sharding.Sharding):
         raise ValueError(
             "sharding passed to deserialization should be specified, concrete and"
             f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
         )
-    dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
+    dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Format) else None
 
     # gcs_grpc is 2x to 4x faster than gcs on read performance. And this is recommended by Google
     # GCS team.
@@ -486,11 +483,7 @@ async def _async_deserialize(
     async def cb(index: array.Index, device: jax.Device):
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
-        estimate_read_memory_footprint = {
-            "0.6.2": lambda: serialization.ts_impl.estimate_read_memory_footprint,
-            "0.5.3": lambda: serialization.estimate_read_memory_footprint,
-        }[jax.__version__]()
-        requested_bytes = estimate_read_memory_footprint(t, restricted_domain)
+        requested_bytes = serialization.ts_impl.estimate_read_memory_footprint(t, restricted_domain)
         # Limit the bytes read for every shard.
         await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
@@ -528,9 +521,10 @@ async def _async_deserialize(
         mb_256 = 256 * 1024 * 1024
         out_size = math.ceil(out_size / mb_256) * mb_256
 
-        layout = Layout(
+        layout = Format(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
+
         # Jax >= 0.6.2 changes the behavior of _LimitInFlightBytes, where wait_for_bytes no longer
         # throws an exception if requested_bytes > max_bytes
         # pylint: disable-next=protected-access
@@ -566,12 +560,10 @@ async def _async_deserialize(
         await byte_limiter.release_bytes(requested_bytes)
         return result
 
-    # pylint: disable=protected-access
-    create_async_array_from_callback = {
-        "0.6.2": lambda: serialization.ts_impl._create_async_array_from_callback,
-        "0.5.3": lambda: serialization.create_async_array_from_callback,
-    }[jax.__version__]()
-    return await create_async_array_from_callback(shape, in_sharding, cb)
+    # pylint: disable-next=protected-access
+    return await serialization.ts_impl._create_async_array_from_callback(
+        shape, dtype, in_sharding, cb
+    )
 
 
 # Reference:
@@ -652,14 +644,11 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         commit_futures = [[] for _ in range(len(tensorstore_specs))]
 
-        async_serialize = {
-            "0.6.2": lambda: serialization.ts_impl.async_serialize,
-            "0.5.3": lambda: serialization.async_serialize,
-        }[jax.__version__]()
-
         # pylint: disable-next=redefined-outer-name
         async def _run_serializer():
-            future_writer = jax.tree.map(async_serialize, arrays, tensorstore_specs, commit_futures)
+            future_writer = jax.tree.map(
+                serialization.ts_impl.async_serialize, arrays, tensorstore_specs, commit_futures
+            )
             return await asyncio.gather(*future_writer)
 
         # Note: We need to run the coroutine in another event loop driven by a separate thread.
@@ -680,7 +669,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
     def deserialize(
         self,
-        shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
+        shardings: Sequence[Union[jax.sharding.Sharding, Format]],
         tensorstore_specs: Sequence[dict[str, Any]],
         global_shapes: Optional[Sequence[array.Shape]] = None,
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,

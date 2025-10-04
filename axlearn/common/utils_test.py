@@ -14,7 +14,6 @@ from unittest import mock
 
 # pylint: disable=no-self-use
 import jax
-import jaxlib
 import numpy as np
 import pytest
 import tensorflow as tf
@@ -147,7 +146,7 @@ class TreeUtilsTest(TestCase):
         class MyEnum(str, enum.Enum):
             RED = "red"
 
-        self.assertEqual({MyEnum.RED: "red"}, tree_paths({MyEnum.RED: 3}))
+        self.assertEqual({MyEnum.RED: "MyEnum.RED"}, tree_paths({MyEnum.RED: 3}))
 
         # With is_leaf set.
         self.assertEqual(
@@ -1017,7 +1016,7 @@ class ContextManagerTest(TestWithTemporaryCWD):
         # With runtime_checks enabled, we should be able to crash with jittable checks without
         # needing to checkify.
         with runtime_checks():
-            with self.assertRaisesRegex(jaxlib.xla_extension.XlaRuntimeError, "cannot be zero!"):
+            with self.assertRaisesRegex(jax.errors.JaxRuntimeError, "cannot be zero!"):
                 jax.jit(f)(0)
 
     def test_prng_impl(self):
@@ -2246,7 +2245,7 @@ class DataPartitionTypeToSpecTest(TestCase):
         self.assertEqual(result, PartitionSpec(None))
 
     def test_partition_spec_input(self):
-        custom_spec = PartitionSpec((("data", 0), ("model", 1)))
+        custom_spec = PartitionSpec(("data", 0), ("model", 1))
         result = data_partition_type_to_spec(custom_spec)
         self.assertEqual(result, custom_spec)
 

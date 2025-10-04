@@ -256,7 +256,7 @@ class TPUDecoding(BaseSingleStepDecoding):
                 grid=(bs, kv_heads, kv_block_offset_size.max()),
             ),
             out_shape=jax.ShapeDtypeStruct(q.shape, q.dtype),
-            compiler_params=pltpu.TPUCompilerParams(
+            compiler_params=pltpu.CompilerParams(
                 dimension_semantics=("parallel", "parallel", "arbitrary")
             ),
             interpret=self.cfg.interpret,

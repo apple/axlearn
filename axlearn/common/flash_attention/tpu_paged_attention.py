@@ -295,7 +295,7 @@ class TPUPagedAttention(BasePagedAttention):
                 grid=grid,
                 scratch_shapes=scratch_shapes,
             ),
-            compiler_params=pltpu.TPUCompilerParams(
+            compiler_params=pltpu.CompilerParams(
                 dimension_semantics=dimension_semantics,
             ),
             out_shape=jax.ShapeDtypeStruct(query.shape, q_dtype_for_kernel_launch),

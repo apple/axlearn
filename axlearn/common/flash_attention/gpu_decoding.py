@@ -49,7 +49,7 @@ from absl import logging
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import check_compute_capability
 from jax.experimental import pallas as pl
-from jax.experimental.pallas.triton import TritonCompilerParams
+from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
