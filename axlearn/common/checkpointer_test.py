@@ -20,10 +20,7 @@ from typing import Optional, Type, cast
 from unittest import mock
 
 import jax
-
-# pylint: disable=no-self-use,protected-access
 import orbax.checkpoint as ocp
-import pytest
 import tensorflow as tf
 from absl import logging
 from absl.testing import absltest, parameterized
@@ -75,6 +72,9 @@ def _checkpointer_config(
         dir=tempfile.mkdtemp(),
         keep_last_n=1,
     )
+
+
+# pylint: disable=protected-access
 
 
 class CheckpointerTest(test_utils.TestCase):
@@ -146,7 +146,10 @@ class CheckpointerTest(test_utils.TestCase):
             else:
                 with self.assertRaisesRegex(
                     (AssertionError, ValueError),
-                    "Cannot intersect index domain|not compatible",
+                    (
+                        "Cannot intersect index domain|not compatible|"
+                        "Requested shape.*is not compatible with the stored shape"
+                    ),
                 ):
                     ckpt.restore(
                         step=None,
@@ -309,14 +312,14 @@ class CheckpointerTest(test_utils.TestCase):
                 elif checkpointer_cls is OrbaxCheckpointer:
                     ckpt_dir = os.path.join(
                         cast(OrbaxCheckpointer, ckpt)._manager.directory,
-                        f"{ocp.step.TMP_DIR_SUFFIX}{step}",
+                        f"{ocp.utils.TMP_DIR_SUFFIX}{step}",
                     )
                 else:
                     raise NotImplementedError(checkpointer_cls)
                 fs.makedirs(ckpt_dir)
 
                 if checkpointer_cls is OrbaxCheckpointer:
-                    assert not ocp.step.is_checkpoint_finalized(ckpt_dir)
+                    assert not ocp.utils.is_checkpoint_finalized(ckpt_dir)
 
             # Test that we return the same state if no checkpoints valid.
             create_corrupt_ckpt(step=0)
@@ -342,7 +345,7 @@ class CheckpointerTest(test_utils.TestCase):
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
         # Patch is_gcs_path for orbax, since it commits differently on gcs vs local.
-        with _mesh(mesh_shape), mock.patch(f"{ocp.step.__name__}.is_gcs_path", return_value=True):
+        with _mesh(mesh_shape), mock.patch(f"{ocp.utils.__name__}.is_gcs_path", return_value=True):
             cfg = _checkpointer_config(checkpointer_cls)
             ckpt: BaseCheckpointer = cfg.instantiate(parent=None)
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32), y=jnp.ones([2], dtype=jnp.float32))
@@ -358,11 +361,14 @@ class CheckpointerTest(test_utils.TestCase):
                 raise NotImplementedError(type(ckpt))
 
             # Corrupt the checkpoint by removing some files, while ensuring it is non-empty.
-            commit_file = (
-                "index" if isinstance(ckpt, Checkpointer) else ocp.step._COMMIT_SUCCESS_FILE
-            )
-            fs.rmtree(os.path.join(ckpt_dir, commit_file))
-            self.assertGreater(len(fs.listdir(ckpt_dir)), 0)
+            if isinstance(ckpt, Checkpointer):
+                commit_file = "index"
+                fs.rmtree(os.path.join(ckpt_dir, commit_file))
+                self.assertGreater(len(fs.listdir(ckpt_dir)), 0)
+            else:
+                tmp_dir = f"{ckpt_dir}{ocp.utils.TMP_DIR_SUFFIX}"
+                os.rename(ckpt_dir, tmp_dir)
+                self.assertTrue(fs.exists(tmp_dir))
 
             if isinstance(ckpt, OrbaxCheckpointer):
                 ckpt._manager.reload()  # Orbax caches complete checkpoints.
@@ -436,8 +442,8 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.stop()
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
-    @pytest.mark.skip(reason="TODO(mark-b-lee): figure out why it fails on CI.")
     def test_input_iterator(self, checkpointer_cls):
+        self.skipTest("TODO(mark-b-lee): figure out why it fails on CI.")
         mesh_shape = (1, 1)
         if not test_utils.is_supported_mesh_shape(mesh_shape):
             return
@@ -544,8 +550,8 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.stop()
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
-    @pytest.mark.skip(reason="TODO(mark-b-lee): figure out why it fails on CI.")
     def test_grain(self, checkpointer_cls):
+        self.skipTest("TODO(mark-b-lee): figure out why it fails on CI.")
         if not _GRAIN_INSTALLED:
             self.skipTest("Cannot run when grain is not installed.")
         mesh_shape = (1, 1)
@@ -935,27 +941,27 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt: Checkpointer = cfg.instantiate(parent=None)
             state0 = dict(x=jnp.zeros([], dtype=jnp.int32))
 
-            with pytest.raises(ValueError, match=re.escape("evaler_summaries is empty")):
+            with self.assertRaisesRegex(ValueError, re.escape("evaler_summaries is empty")):
                 ckpt.save(step=0, state=state0, evaler_summaries={})
                 ckpt.wait_until_finished()
 
-            with pytest.raises(ValueError, match=re.escape("not found in evaler_summaries")):
+            with self.assertRaisesRegex(ValueError, re.escape("not found in evaler_summaries")):
                 ckpt.save(
                     step=0, state=state0, evaler_summaries={"evaler2": {"metric": jnp.asarray(10)}}
                 )
                 ckpt.wait_until_finished()
 
-            with pytest.raises(ValueError, match=re.escape("not in evaler_summaries")):
+            with self.assertRaisesRegex(ValueError, re.escape("not in evaler_summaries")):
                 ckpt.save(
                     step=0, state=state0, evaler_summaries={"evaler": {"metric2": jnp.asarray(10)}}
                 )
                 ckpt.wait_until_finished()
 
-            with pytest.raises(ValueError, match=re.escape("is None")):
+            with self.assertRaisesRegex(ValueError, re.escape("is None")):
                 ckpt.save(step=0, state=state0, evaler_summaries={"evaler": {"metric": None}})
                 ckpt.wait_until_finished()
 
-            with pytest.raises(ValueError, match=re.escape("scalar")):
+            with self.assertRaisesRegex(ValueError, re.escape("scalar")):
                 ckpt.save(
                     step=0,
                     state=state0,
@@ -1204,8 +1210,11 @@ class TensorStoreStateStorageTest(test_utils.TestCase):
         def make_state(float_dtype):
             return dict(x=jnp.zeros([1024], dtype=jnp.int32), y=jnp.ones([2], dtype=float_dtype))
 
-        with _mesh(mesh_shape), mock.patch.object(
-            axlearn_serialization, "_get_premapped_buffer_size", lambda: premaped_buffer_size
+        with (
+            _mesh(mesh_shape),
+            mock.patch.object(
+                axlearn_serialization, "_get_premapped_buffer_size", lambda: premaped_buffer_size
+            ),
         ):
             state = make_state(float_dtype=jnp.float32)
             storage = TensorStoreStateStorage.default_config().instantiate()
