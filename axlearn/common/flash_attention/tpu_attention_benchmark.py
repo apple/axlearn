@@ -218,7 +218,11 @@ def _benchmark(
 
 
 def main(_):
-    assert jax.default_backend() == "tpu", "Benchmarking requires a TPU backend."
+    # Check if TPU backend is available
+    if jax.default_backend() != "tpu":
+        print(f"Skipping TPU benchmarks: backend is {jax.default_backend()}, not 'tpu'")
+        return
+
     device_kind = jax.devices()[0].device_kind
     if FLAGS.config is not None:
         config_list = [(FLAGS.config, _BENCHMARK_CONFIGS[FLAGS.config])]

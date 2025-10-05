@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests text input processing."""
+
 # pylint: disable=no-self-use
 import os
 from collections.abc import Mapping, Sequence
@@ -16,121 +17,21 @@ from transformers.models.bert.tokenization_bert import BasicTokenizer
 
 from axlearn.common import input_text, input_tf_data, test_utils
 from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
+from axlearn.common.input_test_utils import (
+    assert_oneof,
+    extract_text,
+    extract_text_ragged,
+    make_ds_fn,
+    make_ragged_ds_fn,
+    make_seq2seq_ds_fn,
+    opt_vocab_file,
+    t5_sentence_piece_vocab_file,
+)
 from axlearn.common.input_text import TOKEN_TYPE_IDS, add_token_type_ids, strip_accents, tokenize
 from axlearn.common.vocabulary_bpe import BPEVocabulary
 
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
-_SENTENCEPIECE_DIR = os.path.join(tokenizers_dir, "sentencepiece")
-_BPE_DIR = os.path.join(tokenizers_dir, "bpe")
-_T5_VOCAB_FILE = os.path.join(_SENTENCEPIECE_DIR, "t5-base")
-_OPT_VOCAB_FILE = os.path.join(_BPE_DIR, "opt.model")
-
-
-def count_batches(dataset, max_batches=100):
-    count = 0
-    for _ in dataset:
-        if count >= max_batches:
-            return -1
-        count += 1
-    return count
-
-
-def make_ds_fn(
-    is_training: bool, texts: list[str], repeat: int = 100
-) -> input_tf_data.BuildDatasetFn:
-    del is_training
-
-    def ds_fn() -> tf.data.Dataset:
-        def data_gen():
-            for _ in range(repeat):
-                for index, text in enumerate(texts):
-                    yield {"text": text, "index": index}
-
-        return tf.data.Dataset.from_generator(
-            data_gen,
-            output_signature={
-                "text": tf.TensorSpec(shape=(), dtype=tf.string),
-                "index": tf.TensorSpec(shape=(), dtype=tf.uint32),
-            },
-        )
-
-    return ds_fn
-
-
-def make_ragged_ds_fn(
-    is_training: bool, texts: list[dict], repeat: int = 100
-) -> input_tf_data.BuildDatasetFn:
-    del is_training
-
-    def ds_fn() -> tf.data.Dataset:
-        def data_gen():
-            for _ in range(repeat):
-                for index, item in enumerate(texts):
-                    yield {"text": tf.ragged.constant(item["text"]), "index": index}
-
-        return tf.data.Dataset.from_generator(
-            data_gen,
-            output_signature={
-                "text": tf.RaggedTensorSpec(shape=([None, None]), dtype=tf.string),
-                "index": tf.TensorSpec(shape=(), dtype=tf.int32),
-            },
-        )
-
-    return ds_fn
-
-
-def make_seq2seq_ds_fn(
-    is_training: bool,
-    sources: list[str],
-    targets: list[str],
-    repeat: int = 100,
-    source_key: str = "source",
-    target_key: str = "target",
-) -> input_tf_data.BuildDatasetFn:
-    del is_training
-
-    def ds_fn() -> tf.data.Dataset:
-        def data_gen():
-            for _ in range(repeat):
-                for index, (source, target) in enumerate(zip(sources, targets)):
-                    yield {source_key: source, target_key: target, "index": index}
-
-        return tf.data.Dataset.from_generator(
-            data_gen,
-            output_signature={
-                source_key: tf.TensorSpec(shape=(), dtype=tf.string),
-                target_key: tf.TensorSpec(shape=(), dtype=tf.string),
-                "index": tf.TensorSpec(shape=(), dtype=tf.int32),
-            },
-        )
-
-    return ds_fn
-
-
-def extract_text(example: dict[str, tf.Tensor], input_key: str = "text") -> str:
-    return bytes.decode(example[input_key].numpy(), "utf-8")
-
-
-def assert_oneof(test_case: tf.test.TestCase, actual: tf.Tensor, candidates: Sequence[tf.Tensor]):
-    if not isinstance(test_case, tf.test.TestCase):
-        raise ValueError("test_case should be an instance of tf.test.TestCase")
-    for candidate in candidates:
-        try:
-            test_case.assertAllEqual(actual, candidate)
-            return
-        except AssertionError:
-            pass
-    raise AssertionError(f"Expected {actual} to be equal to one of {candidates}")
-
-
-def extract_text_ragged(example: dict[str, tf.Tensor], input_key: str = "text") -> list[list[str]]:
-    result = []
-    for item in example[input_key].numpy():
-        sub_result = []
-        for sub_item in item:
-            sub_result.append(bytes.decode(sub_item, "utf-8"))
-        result.append(sub_result)
-    return result
+_T5_VOCAB_FILE = t5_sentence_piece_vocab_file
+_OPT_VOCAB_FILE = opt_vocab_file
 
 
 class StripAccentsTest(test_utils.TestCase):
@@ -314,7 +215,7 @@ class AddTokenTypeIDTest(test_utils.TestCase):
 
             def trim_and_pad_batch():
                 def example_fn(
-                    example: dict[str, Union[tf.Tensor, tf.RaggedTensor]]
+                    example: dict[str, Union[tf.Tensor, tf.RaggedTensor]],
                 ) -> dict[str, tf.Tensor]:
                     # pytype: disable=attribute-error
                     for k, v in feature_lengths.items():
@@ -546,7 +447,7 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
         texts = [
             # Huggingface BasicTokenizer test queries:
             # https://github.com/huggingface/transformers/blob/31ec2cb2badfbdd4c1ac9c6c9b8a74e974984206/tests/bert/test_tokenization_bert.py#L121-L184
-            "ah\u535A\u63A8zz",
+            "ah\u535a\u63a8zz",
             " \tHeLLo!how  \n Are yoU?  ",
             # Custom tests.
             "from bert: John Johanson's house",
@@ -580,7 +481,7 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
         ),
     )
     def test_normalize(self, normalizer: InstantiableConfig, expected: list[str]):
-        texts = ["ah\u535A\u63A8zz \tHeLLo!how  \n Are yoU?  "]
+        texts = ["ah\u535a\u63a8zz \tHeLLo!how  \n Are yoU?  "]
         ds_fn = make_ds_fn(False, texts, repeat=1)
         process_fn = normalizer.set(input_key="text").instantiate()
         processed_ds = process_fn(ds_fn())
@@ -624,7 +525,7 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
         texts = [
             {
                 "text": [
-                    ["ah\u535A\u63A8zz \tHeLLo!how  \n Are yoU?  "],
+                    ["ah\u535a\u63a8zz \tHeLLo!how  \n Are yoU?  "],
                     ["I am good  <3", "What about you?!"],
                 ]
             }

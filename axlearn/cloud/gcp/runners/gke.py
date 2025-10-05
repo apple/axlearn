@@ -37,6 +37,7 @@ from axlearn.cloud.common.bastion import (
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import generate_job_name
+from axlearn.cloud.gcp.cloud_build import parse_tag_from_image_id, wait_for_cloud_build
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GKEJob, GKELeaderWorkerSet
@@ -477,10 +478,16 @@ class GKERunnerJob(BaseRunnerJob):
                 self._inner._delete()  # pylint: disable=protected-access
             elif status == GKERunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
+                # pylint: disable-next=protected-access
+                image_id = self._inner._builder.config.image_id
                 try:
-                    # Note: while this is blocking, the bastion will kill the runner process when it
-                    # needs to reschedule.
-                    self._bundler.wait_until_finished(cfg.name)
+                    # Note: while the wait is blocking, the bastion will kill the runner process
+                    # when it needs to reschedule.
+                    if not image_id:
+                        self._bundler.wait_until_finished(cfg.name)
+                    else:
+                        tag = parse_tag_from_image_id(image_id)
+                        wait_for_cloud_build(project_id=cfg.project, image_id=image_id, tags=[tag])
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return
@@ -659,7 +666,7 @@ class LWSRunnerJob(BaseRunnerJob):
         """
 
         name: Required[str] = REQUIRED
-        inner: Required[GKEJob.Config] = REQUIRED
+        inner: Required[GKELeaderWorkerSet.Config] = REQUIRED
         output_dir: Required[str] = REQUIRED
         namespace: str = "default"
         cluster: Required[str] = REQUIRED
@@ -850,10 +857,16 @@ class LWSRunnerJob(BaseRunnerJob):
 
             elif status == LWSRunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
+                # pylint: disable-next=protected-access
+                image_id = self._inner._builder.config.image_id
                 try:
-                    # Note: while this is blocking, the bastion will kill the runner process when it
-                    # needs to reschedule.
-                    self._bundler.wait_until_finished(cfg.name)
+                    # Note: while the wait is blocking, the bastion will kill the runner process
+                    # when it needs to reschedule.
+                    if not image_id:
+                        self._bundler.wait_until_finished(cfg.name)
+                    else:
+                        tag = parse_tag_from_image_id(image_id)
+                        wait_for_cloud_build(project_id=cfg.project, image_id=image_id, tags=[tag])
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return

@@ -95,6 +95,7 @@ class FlinkTPUGKEJob(job.GKEJob):
 
         flink_threads_per_worker: int = 1
         worker_jvm_metaspace_size: str = "256mb"
+        image_id: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -119,6 +120,9 @@ class FlinkTPUGKEJob(job.GKEJob):
             **common_kwargs,
         )
         # pylint: enable=line-too-long
+        flags.DEFINE_string(
+            "image_id", None, "Image used for starting the container.", **common_kwargs
+        )
 
     @classmethod
     def default_config(cls):
@@ -454,7 +458,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     volumeMounts=[
                                         dict(mountPath="/opt/flink/log", name="flink-logs")
                                     ],
-                                    image=self._bundler.id(cfg.name),
+                                    image=cfg.image_id or self._bundler.id(cfg.name),
                                     args=["-worker_pool"],
                                     env=[
                                         dict(name="BEAM_EXTERNAL_HOST", value="0.0.0.0"),
@@ -576,7 +580,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                             dict(
                                 name=cfg.name,
                                 env=[dict(name="PYTHONUNBUFFERED", value="1")],
-                                image=self._bundler.id(cfg.name),
+                                image=cfg.image_id or self._bundler.id(cfg.name),
                                 volumeMounts=[dict(name="shared-output", mountPath="/output")],
                                 command=["/bin/sh", "-c"],
                                 args=[

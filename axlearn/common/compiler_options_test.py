@@ -6,8 +6,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
-import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import compiler_options, test_utils
 from axlearn.common.utils import Tensor
@@ -22,8 +21,10 @@ class CompilerOptionsTest(test_utils.TestCase):
         os.environ.clear()
         os.environ.update(self._original_env)
 
-    @pytest.mark.skipif(jax.default_backend() != "tpu", reason="TPU-only test.")
     def test_default_xla_options(self):
+        if jax.default_backend() != "tpu":
+            self.skipTest("TPU-only test.")
+
         @jax.jit
         def f(x: Tensor) -> Tensor:
             return 3 * x
@@ -57,6 +58,26 @@ class CompilerOptionsTest(test_utils.TestCase):
         )
         self.assertEqual(
             xla_options["xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction"],
+            expected_value,
+        )
+
+    @parameterized.parameters(
+        dict(xla_option_override="megascale_graph_hang_threshold=60m", expected_value="60m"),
+        dict(xla_option_override="megascale_graph_hang_threshold=300s", expected_value="300s"),
+    )
+    def test_default_xla_options_override_time_values(
+        self,
+        xla_option_override: str,
+        expected_value: str,
+    ):
+        os.environ["XLA_OPTIONS_OVERRIDE"] = xla_option_override
+        xla_options = compiler_options.default_xla_options(
+            instance_type="tpu-v6e-32",
+            num_slices=2,
+            backend="tpu",
+        )
+        self.assertEqual(
+            xla_options["megascale_graph_hang_threshold"],
             expected_value,
         )
 
@@ -143,3 +164,7 @@ class CompilerOptionsTest(test_utils.TestCase):
                 )
             ),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

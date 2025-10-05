@@ -14,6 +14,7 @@ from axlearn.cloud.gcp.pathways_utils import (
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY,
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
     _PATHWAYS_PROXY_CONTAINER_NAME,
+    _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
     _PATHWAYS_SERVER_IMAGE,
     get_megascale_options,
     get_xla_options,
@@ -21,6 +22,25 @@ from axlearn.cloud.gcp.pathways_utils import (
 from axlearn.cloud.gcp.test_utils import mock_gcp_settings
 from axlearn.common.compiler_options import default_xla_options, xla_flags_from_options
 from axlearn.common.test_utils import TestCase
+
+
+class HelperFunctionTest(TestCase):
+    def test_round_up_to_power_of_2(self):
+        with self.assertRaises(AssertionError):
+            pathways_utils.round_up_to_power_of_2(-1)
+        with self.assertRaises(AssertionError):
+            pathways_utils.round_up_to_power_of_2(0)
+        with self.assertRaises(AssertionError):
+            pathways_utils.round_up_to_power_of_2(2.2)
+        self.assertEqual(pathways_utils.round_up_to_power_of_2(2), 2)
+        self.assertEqual(pathways_utils.round_up_to_power_of_2(7), 8)
+        self.assertEqual(pathways_utils.round_up_to_power_of_2(8), 8)
+        self.assertEqual(pathways_utils.round_up_to_power_of_2(9), 16)
+        self.assertEqual(pathways_utils.round_up_to_power_of_2(10), 16)
+        # ct5p-hightpu-4t host memory
+        self.assertEqual(pathways_utils.round_up_to_power_of_2(448 // 4), 128)
+        # ct6e-standard-4t host memory
+        self.assertEqual(pathways_utils.round_up_to_power_of_2(720 // 4), 256)
 
 
 class SplitXLAMXLAFlagsTest(TestCase):
@@ -39,7 +59,7 @@ class PathwaysReplicatedJobTest(TestCase):
     """Tests PathwaysReplicatedJob."""
 
     @contextlib.contextmanager
-    def _job_config(self, bundler_cls: type[Bundler], **kwargs):
+    def _job_config(self, bundler_cls: type[Bundler], instance_type: str = "tpu-v5p-16", **kwargs):
         with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
             fv = flags.FlagValues()
             cfg = pathways_utils.PathwaysReplicatedJob.default_config().set(
@@ -48,20 +68,21 @@ class PathwaysReplicatedJobTest(TestCase):
             define_flags(cfg, fv)
 
             fv.set_default("name", "fake-name")
-            fv.set_default("instance_type", "tpu-v5p-16")
+            fv.set_default("instance_type", instance_type)
             for key, value in kwargs.items():
                 if value is not None:
                     setattr(fv, key, value)
             fv.mark_as_parsed()
             cfg = from_flags(cfg, fv)
             bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
-            print("debug: cfg: ", type(cfg))
             yield cfg, bundler_cfg
 
-    def test_build_pathways_head_pod(self):
+    @parameterized.parameters(dict(instance_type="tpu-v5p-16"), dict(instance_type="tpu-v5p-256"))
+    def test_build_pathways_head_pod(self, instance_type):
         with (
             self._job_config(
                 CloudBuildBundler,
+                instance_type,
             ) as (cfg, bundler_cfg),
         ):
             cfg.inner.set(
@@ -99,32 +120,44 @@ class PathwaysReplicatedJobTest(TestCase):
                             }
                         },
                     )
-                # pylint: enable=line-too-long
-                if env_pair["name"] == "REPLICA_ID":
-                    self.assertEqual(
-                        env_pair["valueFrom"],
-                        {
-                            "fieldRef": {
-                                "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
-                            }
-                        },
-                    )
+                if env_pair["name"] == "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD":
+                    self.assertEqual(env_pair["value"], "1")
+                if env_pair["name"] == "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY":
+                    self.assertEqual(env_pair["value"], "/tmp/ifrt_proxy")
 
-            self.assertTrue({"NUM_REPLICAS", "REPLICA_ID"}.issubset(env_vars))
+            self.assertTrue(
+                {
+                    "NUM_REPLICAS",
+                    "REPLICA_ID",
+                    "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD",
+                    "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY",
+                }.issubset(env_vars)
+            )
 
             # Check pathways-proxy container args for XLA flags.
             proxy_container = None
+            rm_container = None
             for container in pod_spec["initContainers"]:
                 if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
                     proxy_container = container
-                    break
+                if container["name"] == _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME:
+                    rm_container = container
             self.assertIsNotNone(proxy_container, "Pathways proxy container not found.")
+            self.assertIsNotNone(rm_container, "Pathways rm container not found.")
 
             # pylint: disable-next=protected-access
             xla_arg_flags = xla_flags_from_options(builder._xla_options).split()
             self.assertTrue(xla_arg_flags, "XLA flags should be present")
             for flag in xla_arg_flags:
                 self.assertIn(flag, proxy_container["args"])
+
+            # Check that instance_type and expected_instances are set
+            if instance_type == "tpu-v5p-16":
+                self.assertIn("--instance_count=1", rm_container["args"])
+                self.assertIn("--instance_type=tpuv5:2x2x2", rm_container["args"])
+            if instance_type == "tpu-v5p-256":
+                self.assertIn("--instance_count=1", rm_container["args"])
+                self.assertIn("--instance_type=tpuv5:4x4x8_untwisted", rm_container["args"])
 
     def test_build_pathways_worker_pod(self):
         with (
@@ -156,6 +189,9 @@ class PathwaysReplicatedJobTest(TestCase):
                 "test-service-account@test-project.iam.gserviceaccount.com",
                 annotations.get("tpu-provisioner.cloud.google.com/node-service-account", None),
             )
+            self.assertIn("--tpu_pinned_host_allocation_recycle=true", worker_container["args"])
+            # 128GiB
+            self.assertIn("--tpu_premapped_buffer_size=137438953472", worker_container["args"])
 
             # Check worker container args for Megascale (MXLA) flags.
             # pylint: disable-next=protected-access

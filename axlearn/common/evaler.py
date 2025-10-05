@@ -17,7 +17,7 @@ from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 from jax.sharding import PartitionSpec
 
-from axlearn.common import input_base, struct, summary_writer, utils
+from axlearn.common import flax_struct, input_base, summary_writer, utils
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import (
     REQUIRED,
@@ -366,7 +366,7 @@ class CompositeMetricCalculator(BaseMetricCalculator):
     actually read the new keys.
     """
 
-    class Dependency(struct.PyTreeNode):
+    class Dependency(flax_struct.PyTreeNode):
         # Source calculator name.
         src: str
         # Destination calculator name.

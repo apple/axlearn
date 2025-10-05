@@ -17,7 +17,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from absl.testing import parameterized
+import tensorstore as ts
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import PositionalSharding
 
@@ -35,6 +36,10 @@ from axlearn.common.array_serialization import (
     futures,
     serialization,
 )
+
+# TODO(wyi): This dictionary is introduced for the temporary peroiod of upgrading JAX from 0.5.3 to
+# 0.6.2. Once the upgrading is complete, we should remove it ASAP.
+_ts_open = {"0.6.2": "ts.open", "0.5.3": "serialization.ts.open"}[jax.__version__]
 
 
 @contextmanager
@@ -96,7 +101,10 @@ class SerializerTest(parameterized.TestCase):
         arr = self._create_partially_replicated_array(sharded)
 
         ts_open_handle: Any = None
-        old_open = array_serialization.serialization.ts.open
+        old_open = {
+            "0.6.2": lambda: array_serialization.ts.open,
+            "0.5.3": lambda: array_serialization.serialization.ts.open,
+        }[jax.__version__]()
 
         async def ts_open_patch(*args, **kwargs):
             nonlocal ts_open_handle
@@ -118,7 +126,7 @@ class SerializerTest(parameterized.TestCase):
 
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts.open",
+            f"{array_serialization.__name__}.{_ts_open}",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec, mock.patch(
             f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
@@ -144,7 +152,7 @@ class SerializerTest(parameterized.TestCase):
         arr_host = jax.device_get(arr)
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts.open",
+            f"{array_serialization.__name__}.{_ts_open}",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec, mock.patch(
             f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
@@ -178,7 +186,7 @@ class SerializerTest(parameterized.TestCase):
 
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts.open",
+            f"{array_serialization.__name__}.{_ts_open}",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec:
             f = _CommitFuture(
@@ -276,8 +284,8 @@ class SerializerTest(parameterized.TestCase):
             mock.patch(
                 f"{array_serialization.__name__}.serialization._get_metadata", lambda *_: {}
             ),
-            mock.patch(f"{array_serialization.__name__}.serialization.ts.open", open_patch),
-            mock.patch(f"{array_serialization.__name__}.serialization.ts.Spec", mock.MagicMock()),
+            mock.patch(f"{array_serialization.__name__}.{_ts_open}", open_patch),
+            mock.patch(f"{array_serialization.__name__}.ts.Spec", mock.MagicMock()),
         ):
             manager.serialize(arrays, tensorstore_specs, on_commit_callback=lambda: None)
             manager.wait_until_finished()
@@ -286,18 +294,23 @@ class SerializerTest(parameterized.TestCase):
         arrays=[[jnp.arange(0, 1024 * 1024)]],
         max_concurrent_gb=[1],
         load_to_pinned_host=[True, False],
-    )
-    @pytest.mark.skipif(
-        jax.device_count() != 8 or jax.process_count() != 1 or jax.default_backend() == "cpu",
-        reason="Skip preloading check if device is CPU "
-        "since CPU does not support pinned host memory kind.",
+        jax_platforms=["proxy", "gpu", "tpu", "cpu"],
+        enable_gcs_grpc=["true", "false"],
     )
     def test_deserialize(
         self,
         arrays: list[list[int]],
         max_concurrent_gb: int,
         load_to_pinned_host: bool,
+        jax_platforms: str,
+        enable_gcs_grpc: str,
     ):
+        if jax.device_count() != 8 or jax.process_count() != 1 or jax.default_backend() == "cpu":
+            self.skipTest(
+                "Skip preloading check if device is CPU since CPU does not support "
+                + "pinned host memory kind."
+            )
+
         devices = mesh_utils.create_device_mesh((8,))
         sharding = PositionalSharding(devices)
         data = [jax.device_put(arr, sharding) for arr in arrays]
@@ -306,31 +319,62 @@ class SerializerTest(parameterized.TestCase):
         @contextmanager
         def get_tensorstore_spec_for_deserialization(arrays: list[jax.Array]):
             tempdir = tempfile.TemporaryDirectory()
+            kvstore_spec = {
+                "driver": "gcs",
+                "bucket": "fake-bucket",
+                "path": f"fake-path/{time.time()}",
+            }
+
             create_spec = lambda arr: {
                 "driver": "zarr",
-                "kvstore": {
-                    "driver": "file",
-                    "path": tempdir.name,
-                },
+                "kvstore": kvstore_spec,
                 "dtype": str(arr.dtype),
                 "create": True,
                 "delete_existing": True,
             }
 
             try:
-                yield [create_spec(arr) for arr in arrays]
+                # Yield the temp path so our mock can redirect GCS writes to a local file.
+                yield [create_spec(arr) for arr in arrays], tempdir.name
             finally:
                 tempdir.cleanup()
 
         manager = BoundedDataShardedAsyncCheckpointManager(max_concurrent_gb=max_concurrent_gb)
 
+        captured_specs = []
+        original_ts_open = array_serialization.ts.open
+
+        async def mock_ts_open(spec_arg, *args, **kwargs):
+            # Convert spec to dict for inspection, as it can be a ts.Spec object.
+            spec_dict = spec_arg.to_json() if isinstance(spec_arg, ts.Spec) else spec_arg
+            captured_specs.append(spec_dict)
+
+            # Create a copy to modify for the underlying call.
+            spec_for_call = spec_dict.copy()
+            # If it's a gcs spec (from serialize) or gcs_grpc (from deserialize),
+            # redirect it to a functional file backend to allow the test to complete.
+            if spec_for_call.get("kvstore", {}).get("driver") in ("gcs", "gcs_grpc"):
+                spec_for_call["kvstore"] = {"driver": "file", "path": temp_path}
+
+            # Re-wrap if the original was a ts.Spec object.
+            call_arg = ts.Spec(spec_for_call) if isinstance(spec_arg, ts.Spec) else spec_for_call
+            return await original_ts_open(call_arg, *args, **kwargs)
+
         # Write the data to local files
-        with get_tensorstore_spec_for_deserialization(data) as tensorstore_spec:
+        with get_tensorstore_spec_for_deserialization(data) as (
+            tensorstore_spec,
+            temp_path,
+        ), mock.patch(
+            f"{array_serialization.__name__}.{_ts_open}", new=mock_ts_open
+        ), mock.patch.dict(
+            "os.environ", {"JAX_PLATFORMS": jax_platforms, "ENABLE_GCS_GRPC": enable_gcs_grpc}
+        ):
             manager.serialize(
                 data,
                 tensorstore_spec,
                 on_commit_callback=lambda: None,
             )
+            manager.wait_until_finished()
 
             # Deserialize the data
             load_sharding = [
@@ -341,6 +385,18 @@ class SerializerTest(parameterized.TestCase):
                 tensorstore_spec,
             )
 
+        # Assert that the spec and context passed to ts.open during deserialize was modified.
+        # The calls for deserialize are the last ones captured.
+        deserialize_specs = captured_specs[-len(data) :]
+        self.assertGreater(len(deserialize_specs), 0)
+        for spec in deserialize_specs:
+            # gcs_grpc driver should be used when either:
+            # - JAX_PLATFORMS is "proxy" (running on GCP/Pathways), OR
+            # - ENABLE_GCS_GRPC is "true" (explicit opt-in)
+            # Otherwise, gcs driver should be used (no change)
+            should_use_grpc = jax_platforms == "proxy" or enable_gcs_grpc == "true"
+            expected_driver = "gcs_grpc" if should_use_grpc else "gcs"
+            self.assertEqual(spec["kvstore"]["driver"], expected_driver)
         # Verify the deserialized data matches the original data
         self.assertEqual(len(data), len(deserialized_data))
         for arr, d_arr in zip(data, deserialized_data):
@@ -406,13 +462,12 @@ class SerializerTest(parameterized.TestCase):
     @parameterized.product(
         max_data_shard_degree=[1, -1, 2, 4, 8], shard_threshold_bytes=[1000 * 1000 * 1000, 1]
     )
-    @pytest.mark.skipif(
-        jax.device_count() != 8 or jax.process_count() != 1,
-        reason="Incorrect device count for mesh.",
-    )
     def test_shard_info_partially_replicated(
         self, max_data_shard_degree: int, shard_threshold_bytes: int
     ):
+        if jax.device_count() != 8 or jax.process_count() != 1:
+            self.skipTest("Incorrect device count for mesh.")
+
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
         sharding = PositionalSharding(devices)
@@ -430,11 +485,9 @@ class SerializerTest(parameterized.TestCase):
     @parameterized.product(
         max_data_shard_degree=[1, -1, 2, 4, 8], shard_threshold_bytes=[1000 * 1000 * 1000, 1]
     )
-    @pytest.mark.skipif(
-        jax.device_count() != 8 or jax.process_count() != 1,
-        reason="Incorrect device count for mesh.",
-    )
     def test_shard_info_fully_sharded(self, max_data_shard_degree: int, shard_threshold_bytes: int):
+        if jax.device_count() != 8 or jax.process_count() != 1:
+            self.skipTest("Incorrect device count for mesh.")
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
         sharding = PositionalSharding(devices)
@@ -453,13 +506,11 @@ class SerializerTest(parameterized.TestCase):
         max_data_shard_degree=[1, -1, 2, 4, 8],
         shard_threshold_bytes=[1000 * 1000 * 1000, 1],
     )
-    @pytest.mark.skipif(
-        jax.device_count() != 8 or jax.process_count() != 1,
-        reason="Incorrect device count for mesh.",
-    )
     def test_shard_info_fully_replicated(
         self, sz: int, max_data_shard_degree: int, shard_threshold_bytes: int
     ):
+        if jax.device_count() != 8 or jax.process_count() != 1:
+            self.skipTest("Incorrect device count for mesh.")
         single_device_arr = jnp.arange(0, sz)
         devices = mesh_utils.create_device_mesh((8,))
         sharding = PositionalSharding(devices)
@@ -498,3 +549,7 @@ class SerializerTest(parameterized.TestCase):
             _ShardInfo(data=data, index=index, slice_arg=None, replica_count=1).shard_coordinate(),
             expected,
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

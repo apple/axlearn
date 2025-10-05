@@ -40,11 +40,10 @@ from absl import app, flags, logging
 from jax.experimental.serialize_executable import serialize
 
 from axlearn.common import aot_compilation, compiler_options
-from axlearn.common.config import TrainerConfigFn
+from axlearn.common.config import TrainerConfigFn, get_named_trainer_config
 from axlearn.common.trainer import SpmdTrainer, aot_model_analysis, select_mesh_config
 from axlearn.common.utils import set_data_dir
 from axlearn.common.utils_spmd import setup
-from axlearn.experiments import get_named_trainer_config
 
 flags.DEFINE_string("module", None, "The trainer config module.", required=True)
 flags.DEFINE_string("config", None, "The trainer config name.", required=True)
@@ -84,7 +83,6 @@ def _compile_and_dump_programs(
         xla_options.pop("megascale_graph_hang_threshold", None)
         xla_options.pop("megascale_grpc_enable_xor_tracer", None)
         xla_options.pop("megascale_error_reporter_abort_on_hang", None)
-        xla_options.pop("xla_sc_disjoint_spmem", None)
         xla_options.pop("megascale_grpc_premap_memory_bytes", None)
         xla_options.pop("megascale_error_reporter_abort_on_error", None)
 

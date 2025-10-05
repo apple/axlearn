@@ -30,7 +30,7 @@ from axlearn.common.utils import (
 )
 
 
-class TestLayer(BaseLayer):
+class _Layer(BaseLayer):
     """A dummy layer."""
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
@@ -44,7 +44,7 @@ class TestLayer(BaseLayer):
         return jnp.zeros([batch_size], dtype=self.dtype())
 
     def forward(self, *, carry, forward_state):
-        logging.info("TestLayer: carry=%s forward_state=%s", shapes(carry), shapes(forward_state))
+        logging.info("_Layer: carry=%s forward_state=%s", shapes(carry), shapes(forward_state))
         forward_state = forward_state + carry
         self.add_summary("carry_mean", jnp.mean(carry))
         self.add_module_output("state", forward_state)
@@ -52,13 +52,13 @@ class TestLayer(BaseLayer):
         return carry + self.parameters["inc"], forward_state
 
 
-class TestComplicatedLayer(BaseLayer):
+class _ComplicatedLayer(BaseLayer):
     """A dummy layer with children."""
 
     @config_class
     class Config(BaseLayer.Config):
-        layer1: TestLayer.Config = TestLayer.default_config()
-        layer2: TestLayer.Config = TestLayer.default_config()
+        layer1: _Layer.Config = _Layer.default_config()
+        layer2: _Layer.Config = _Layer.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -75,13 +75,13 @@ class TestComplicatedLayer(BaseLayer):
         return carry, forward_state
 
 
-class TestRepeat(Repeat):
+class _Repeat(Repeat):
     """A dummy repeat layer."""
 
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        cfg.layer = TestLayer.default_config()
+        cfg.layer = _Layer.default_config()
         return cfg
 
     def init_forward_state(self, batch_size):
@@ -109,14 +109,14 @@ class TestRepeat(Repeat):
         return carry, dict(layer=forward_state)
 
 
-class TestEnsemble(BaseLayer):
+class _Ensemble(BaseLayer):
     """A dummy ensemble layer."""
 
     @config_class
     class Config(BaseLayer.Config):
         num_layers: Required[int] = REQUIRED
-        dummy_layer: TestLayer.Config = TestLayer.default_config()
-        repeat_layer: TestRepeat.Config = TestRepeat.default_config()
+        dummy_layer: _Layer.Config = _Layer.default_config()
+        repeat_layer: _Repeat.Config = _Repeat.default_config()
 
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
@@ -163,15 +163,13 @@ class RepeatTest(TestCase):
     )
     def test_repeat(self, dtype, remat_spec, drop_output, num_layers_total, unroll):
         batch_size, num_layers = 14, 4
-        cfg = TestEnsemble.default_config().set(
-            name="test", num_layers=num_layers_total, dtype=dtype
-        )
+        cfg = _Ensemble.default_config().set(name="test", num_layers=num_layers_total, dtype=dtype)
         cfg.repeat_layer.set(
             remat_spec=remat_spec,
             drop_output=drop_output,
             unroll=unroll,
         )
-        layer: TestEnsemble = cfg.instantiate(parent=None)
+        layer: _Ensemble = cfg.instantiate(parent=None)
         self.assertEqual(
             PartitionSpec(None),
             layer.create_parameter_specs_recursively()["repeat_layer"]["layer"]["inc"].mesh_axes,
@@ -289,10 +287,10 @@ class RepeatTest(TestCase):
         # Testing using modified parameters for feed-forwarding.
         for multiple_values in range(2):
             batch_size, num_layers = 14, 4
-            cfg = TestEnsemble.default_config().set(name="test", num_layers=num_layers, dtype=dtype)
+            cfg = _Ensemble.default_config().set(name="test", num_layers=num_layers, dtype=dtype)
             cfg.repeat_layer.remat_spec = remat_spec
-            cfg.repeat_layer.layer = TestComplicatedLayer.default_config()
-            layer: TestEnsemble = cfg.instantiate(parent=None)
+            cfg.repeat_layer.layer = _ComplicatedLayer.default_config()
+            layer: _Ensemble = cfg.instantiate(parent=None)
             repeat_layer_prebuilt = VDict(
                 {
                     "layer": {
@@ -365,9 +363,9 @@ class RepeatTest(TestCase):
         cfg = ParentLayer.default_config().set(
             shared_modules=["shared_layer"],
             children=dict(
-                shared_layer=TestLayer.default_config().set(remat_spec=remat_spec, dtype=dtype),
+                shared_layer=_Layer.default_config().set(remat_spec=remat_spec, dtype=dtype),
                 # Repeat to a shared module.
-                repeat=TestRepeat.default_config().set(
+                repeat=_Repeat.default_config().set(
                     layer=RedirectToSharedModule.default_config().set(
                         shared_module="shared_layer",
                         remat_spec=remat_spec,
@@ -377,7 +375,7 @@ class RepeatTest(TestCase):
                 # Test nested repeat to a shared module.
                 nested=ParentLayer.default_config().set(
                     children=dict(
-                        repeat=TestRepeat.default_config().set(
+                        repeat=_Repeat.default_config().set(
                             layer=RedirectToSharedModule.default_config().set(
                                 shared_module="shared_layer",
                                 remat_spec=remat_spec,

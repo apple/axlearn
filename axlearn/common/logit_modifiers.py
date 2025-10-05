@@ -236,7 +236,7 @@ def _int32_binary_search(
     solution = jnp.zeros(batched_shape, dtype=jnp.int32)
     # Special case the sign bit (the `jnp.where` choice args are flipped vs non-sign bits).
     predicate_satisfied = predicate(solution)
-    solution = solution | jnp.where(predicate_satisfied, jnp.int32(1 << 31), jnp.int32(0))
+    solution = solution | jnp.where(predicate_satisfied, jnp.int32(-(1 << 31)), jnp.int32(0))
     del predicate_satisfied
 
     def loop_body(i: int, solution: Tensor) -> Tensor:

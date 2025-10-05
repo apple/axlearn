@@ -3,12 +3,15 @@
 """CloudBuild utilities"""
 
 import enum
-from typing import Optional
+import time
+from typing import List, Optional
 
 from absl import logging
 from google.cloud.compute_v1 import ListRegionsRequest, RegionsClient
 from google.cloud.devtools import cloudbuild_v1
 from google.cloud.devtools.cloudbuild_v1.types import Build
+
+POLL_INTERVAL_SECONDS = 30
 
 
 class CloudBuildStatus(enum.Enum):
@@ -232,3 +235,55 @@ def get_cloud_build_status(
 
     # No build found in any region.
     return None
+
+
+def wait_for_cloud_build(
+    *, project_id: str, image_id: str, tags: List[str], wait_timeout: int = 3600
+) -> None:
+    """Waits for CloudBuild to finish by polling for status.
+
+    Args:
+        project_id: the GCP project id of the cloud build.
+        image_id: The cloud build id of the image to wait for.
+        tags: A list of tags used to filter the builds.
+        wait_timeout: Overall timeout in seconds. Defaults to 1 hour.
+
+    Raises:
+        TimeoutError: If the build does not complete within the overall timeout.
+        ValueError: If the async build fails.
+    """
+    start_time = time.perf_counter()
+    while True:
+        elapsed_time = time.perf_counter() - start_time
+        if elapsed_time > wait_timeout:
+            timeout_msg = (
+                f"Timed out waiting for CloudBuild to finish for more than "
+                f"{wait_timeout} seconds."
+            )
+            logging.error(timeout_msg)
+            raise TimeoutError(timeout_msg)
+        try:
+            build_status = get_cloud_build_status(
+                project_id=project_id, image_name=image_id, tags=tags
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            # TODO(liang-he,markblee): Distinguish transient from non-transient errors.
+            logging.warning("Failed to get the CloudBuild status, will retry: %s", e)
+        else:
+            if not build_status:
+                logging.warning("CloudBuild for %s does not exist yet.", image_id)
+            elif build_status.is_pending():
+                logging.info("CloudBuild for %s is pending: %s.", image_id, build_status)
+            elif build_status.is_success():
+                logging.info("CloudBuild for %s is successful: %s.", image_id, build_status)
+                return
+            else:
+                # Unknown status is also considered a failure.
+                raise RuntimeError(f"CloudBuild for {image_id} failed: {build_status}.")
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def parse_tag_from_image_id(image_id: str) -> str:
+    if ":" not in image_id:
+        return ""
+    return image_id.split(":")[1]

@@ -41,6 +41,7 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         env_vars: dict[str, str] = {}
         service_account: Optional[str] = None
         output_dir: Optional[str] = None
+        image_id: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -65,6 +66,9 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         )
         flags.DEFINE_boolean(
             "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
+        )
+        flags.DEFINE_string(
+            "image_id", None, "Image used for starting the container.", **common_kwargs
         )
 
     @classmethod

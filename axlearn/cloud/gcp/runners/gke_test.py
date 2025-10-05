@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests GKERunnerJob."""
+import contextlib
 
 # pylint: disable=no-self-use,protected-access
 from collections.abc import Sequence
@@ -188,6 +189,7 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             _inner=mock.DEFAULT,
             _pre_provisioner=mock.DEFAULT,
         ):
+            job._inner._builder.config.image_id = None
             job._execute()
             job._inner.execute.assert_called()  # pytype: disable=attribute-error
 
@@ -956,36 +958,54 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 job._pre_provisioner.delete_for.assert_called()
                 # pytype: enable=attribute-error
 
-    @parameterized.parameters(None, False, True)
-    def test_start(self, enable_pre_provisioner):
+    @parameterized.product(
+        enable_pre_provisioner=[None, False, True],
+        image_id=[None, "my-image-id:tag"],
+    )
+    def test_start(self, enable_pre_provisioner, image_id):
         cfg = self._job_config(
             command="test-command",
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
+            image_id=image_id,
         )
         job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
 
-        with mock.patch.multiple(
-            job,
-            _get_status=mock.Mock(
-                side_effect=[
-                    runner_gke.GKERunnerJob.Status.NOT_STARTED,
-                    runner_gke.GKERunnerJob.Status.COMPLETED,
-                ]
-            ),
-            _delete=mock.DEFAULT,
-            _inner=mock.DEFAULT,
-            _pre_provisioner=mock.DEFAULT,
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.multiple(
+                    job,
+                    _get_status=mock.Mock(
+                        side_effect=[
+                            runner_gke.GKERunnerJob.Status.NOT_STARTED,
+                            runner_gke.GKERunnerJob.Status.COMPLETED,
+                        ]
+                    ),
+                    _delete=mock.DEFAULT,
+                    _inner=mock.DEFAULT,
+                    _pre_provisioner=mock.DEFAULT,
+                )
+            )
+            mock_wait_for_cloud_build = stack.enter_context(
+                mock.patch("axlearn.cloud.gcp.runners.gke.wait_for_cloud_build")
+            )
+            job._inner._builder.config.image_id = image_id
             job._execute()
 
+            # pytype: disable=attribute-error
             if enable_pre_provisioner:
-                # pytype: disable=attribute-error
                 job._pre_provisioner.create_for.assert_called()
-                # pytype: enable=attribute-error
 
-            job._inner.execute.assert_called()  # pytype: disable=attribute-error
+            if image_id:
+                job._bundler.wait_until_finished.assert_not_called()
+                mock_wait_for_cloud_build.assert_called_with(
+                    project_id="settings-project", image_id="my-image-id:tag", tags=["tag"]
+                )
+            else:
+                job._bundler.wait_until_finished.assert_called_with("test-name")
+            job._inner.execute.assert_called()
+            # pytype: enable=attribute-error
 
     @parameterized.parameters(None, False, True)
     def test_update(self, enable_pre_provisioner):

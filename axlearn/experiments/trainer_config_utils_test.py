@@ -6,7 +6,8 @@ import threading
 from typing import Optional
 
 import jax.numpy as jnp
-from absl.testing import absltest, parameterized
+import pytest
+from absl.testing import parameterized
 
 from axlearn.common.config import (
     REQUIRED,
@@ -44,7 +45,7 @@ def _create_fake_trainer_config_fn() -> TrainerConfigFn:
 
 
 @config_class
-class TestConfigA(ConfigBase):
+class _ConfigA(ConfigBase):
     """A dummy config class."""
 
     data: list[str] = []
@@ -160,7 +161,7 @@ class TestConfigMapCache(parameterized.TestCase):
         shared_data = ["a"]
 
         def config_gen():
-            return TestConfigA().set(data=shared_data)
+            return _ConfigA().set(data=shared_data)
 
         wrapped_config_gen = _wrap_with_deep_copy_with_closure(config_gen)
 
@@ -198,7 +199,7 @@ class TestConfigMapCache(parameterized.TestCase):
 
             def config_gen():
                 shared_state.append(name)
-                return TestConfigA().set(data=shared_state)
+                return _ConfigA().set(data=shared_state)
 
             return config_gen
 
@@ -218,7 +219,7 @@ class TestConfigMapCache(parameterized.TestCase):
 
         def get_config():
             def config_gen(data_dir: Optional[str] = None, **overrides):
-                return TestConfigA().set(data=[data_dir, overrides["k"]])
+                return _ConfigA().set(data=[data_dir, overrides["k"]])
 
             return config_gen
 
@@ -236,7 +237,7 @@ class TestConfigMapCache(parameterized.TestCase):
         """
 
         def init_config():
-            return TestConfigA()
+            return _ConfigA()
 
         def gen_init_config(init_function):
             return init_function()
@@ -260,4 +261,4 @@ class TestConfigMapCache(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    absltest.main()
+    pytest.main()

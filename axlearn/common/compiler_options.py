@@ -64,21 +64,10 @@ def default_xla_options(
         )
     if version == "v6e":
         options.update(
-            # Change to 16GB. The default is 4GB which is too small for larger models. This
-            # cause the step time to be double. You should increase this
-            # further if you see "Allocator failed to allocate". A feature
-            # to dynamically allocate may come later: b/380514965
-            megascale_grpc_premap_memory_bytes=17179869184,
             # Flag controlling the maximum number of overlapping host offloadings.
             xla_tpu_host_transfer_overlap_limit=24,
             # Flag controlling the maximum number of overlapping cross-DCN send/recv.
             xla_max_concurrent_host_send_recv=100,
-            # Flag controlling the HBM memory limit as a percentage of the total HBM size.
-            # Default value is 95. Can tune up or down to give more or less memory for the
-            # scheduler. The scheduler favors more on less memory usage when it's under
-            # memory pressure, instead of hiding latency by overlapping more computations
-            # and communications.
-            xla_tpu_scheduler_percent_shared_memory_limit=90,
             # Flag controlling the number of times the scheduler is run if the scheduled
             # peak memory usage exceeds the initial memory limit, by setting memory limit
             # to 90% of the previous memory limit each time. Default value is 1. Sometimes
@@ -105,7 +94,6 @@ def default_xla_options(
         options.update(
             xla_tpu_use_tc_device_shape_on_sc="true",
             xla_sc_enable_instruction_fusion="false",
-            xla_sc_disjoint_spmem="false",
             xla_sc_disable_megacore_partitioning="true",
         )
 
@@ -139,11 +127,11 @@ def default_xla_options(
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
-            # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
-            megascale_grpc_enable_xor_tracer="false",
         )
+
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
+        # pytype: disable=wrong-arg-types
         options.update(
             # For collectives across multiple slices.
             xla_tpu_enable_megascale_barrier="true",
@@ -153,6 +141,14 @@ def default_xla_options(
             xla_tpu_data_parallel_opt_different_sized_ops="true",
             # Group non-blocking DCN collectives into as few stages as possible.
             xla_tpu_enable_sunk_dcn_allreduce_done_with_host_reduction="true",
+            # Limit the size of tensors for DCN collectives sinking to 64MB, to avoid allocating
+            # unecessary extra HBM which causes OOM.
+            xla_tpu_host_dcn_reduce_max_sinking_limit=64 * 1024 * 1024,
+            # Change to 16GB. The default is 4GB which is too small for larger models. This
+            # cause the step time to be double. You should increase this
+            # further if you see "Allocator failed to allocate". A feature
+            # to dynamically allocate may come later: b/380514965
+            megascale_grpc_premap_memory_bytes=16 * 1024 * 1024 * 1024,
             # Aborting the coordinator after collecting errors from all workers.
             # All workers will also abort after they detect the coordinator is shutdown.
             megascale_error_reporter_abort_on_hang="true",
@@ -165,18 +161,27 @@ def default_xla_options(
             megascale_graph_within_launch_hang_threshold="10m",
             # TODO(ethanli): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
+            megascale_debug_port="8081",
+            # Observed a lot of deadline exceeded error. Default is 45s.
+            megascale_send_rpc_timeout="5m",
         )
+        # pytype: enable=wrong-arg-types
 
     # Apply environment variable overrides
     options = _apply_overrides_from_env(options)
 
     # Validate options. Will never fail if this function is implemented correctly.
     for k, v in options.items():
-        try:
-            int(v)
+        if isinstance(v, (int, bool)):
             continue
-        except ValueError:
-            assert v in [True, False, "true", "false", "megachip_tccontrol", "10m"], (k, v)
+        elif isinstance(v, str):
+            # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str
+            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+                continue
+            else:
+                raise ValueError(f"Invalid string value for option {k}: {v}")
+        else:
+            raise ValueError(f"Invalid type for option {k}: {type(v).__name__} (value: {v})")
 
     return options
 

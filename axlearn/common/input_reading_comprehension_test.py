@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests reading comprehension inputs."""
+
 import json
 import os
 from typing import Callable, Union
@@ -18,11 +19,9 @@ from axlearn.common.input_reading_comprehension import (
     examples_to_jsonl_dataset,
     parse_examples_jsonl,
 )
-
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
-_BPE_DIR = os.path.join(tokenizers_dir, "bpe")
-_ROBERTA_BASE_VOCAB_FILE = os.path.join(_BPE_DIR, "roberta-base-vocab.json")
-_ROBERTA_BASE_MERGES_FILE = os.path.join(_BPE_DIR, "roberta-base-merges.txt")
+from axlearn.common.input_test_utils import BPE_DIR as _BPE_DIR
+from axlearn.common.input_test_utils import roberta_base_merges_file as _ROBERTA_BASE_MERGES_FILE
+from axlearn.common.input_test_utils import roberta_base_vocab_file as _ROBERTA_BASE_VOCAB_FILE
 
 
 def build_hf_roberta_tokenizer() -> RobertaTokenizer:
