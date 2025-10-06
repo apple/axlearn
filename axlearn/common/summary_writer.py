@@ -436,6 +436,8 @@ class WandBWriter(BaseWriter):
         elif fs.exists(wandb_file):  # pytype: disable=module-attr
             with fs.open(wandb_file, "r") as f:  # pytype: disable=module-attr
                 exp_id = f.read().strip()
+        elif os.getenv("WANDB_RUN_ID", None):
+            exp_id = os.environ["WANDB_RUN_ID"]
         else:
             exp_id = wandb.util.generate_id()
             fs.makedirs(cfg.dir)  # pytype: disable=module-attr
