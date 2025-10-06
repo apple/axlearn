@@ -74,13 +74,8 @@ input.batcher.prefetch_buffer_size: -1
 input.input_dispatcher.global_logical_batch_size: 2048
 input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
 input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][0]: 'data'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][1]: 'expert'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][2]: 'fsdp'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][0]: 'data'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][1]: 'expert'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][2]: 'fsdp'
-input.input_partitioner.path_rank_to_partition[(None, 2)][1]: 'seq'
+input.input_partitioner.path_rank_to_partition[(None, 1)]: PartitionSpec(('data', 'expert', 'fsdp'),)
+input.input_partitioner.path_rank_to_partition[(None, 2)]: PartitionSpec(('data', 'expert', 'fsdp'), 'seq')
 input.is_training: True
 input.klass: 'axlearn.common.input_tf_data.Input'
 input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -237,7 +232,7 @@ model.decoder.transformer.layer.self_attention.attention.input_linear.rotary_val
 model.decoder.transformer.layer.self_attention.attention.key_scale.klass: 'axlearn.common.attention.ScaleKey'
 model.decoder.transformer.layer.self_attention.attention.klass: 'axlearn.common.attention.GroupedQueryAttention'
 model.decoder.transformer.layer.self_attention.attention.kv_cache.cache_dtype: 'jax.numpy.bfloat16'
-model.decoder.transformer.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.attention.KVCache'
+model.decoder.transformer.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.kv_cache.kv_cache.KVCache'
 model.decoder.transformer.layer.self_attention.attention.num_heads: 128
 model.decoder.transformer.layer.self_attention.attention.output_linear.bias: False
 model.decoder.transformer.layer.self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'

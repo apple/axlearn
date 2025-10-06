@@ -74,13 +74,8 @@ input.batcher.prefetch_buffer_size: -1
 input.input_dispatcher.global_logical_batch_size: 2048
 input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
 input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][0]: 'data'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][1]: 'expert'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][2]: 'fsdp'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][0]: 'data'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][1]: 'expert'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][2]: 'fsdp'
-input.input_partitioner.path_rank_to_partition[(None, 2)][1]: 'seq'
+input.input_partitioner.path_rank_to_partition[(None, 1)]: PartitionSpec(('data', 'expert', 'fsdp'),)
+input.input_partitioner.path_rank_to_partition[(None, 2)]: PartitionSpec(('data', 'expert', 'fsdp'), 'seq')
 input.is_training: True
 input.klass: 'axlearn.common.input_tf_data.Input'
 input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -318,39 +313,12 @@ model.decoder.transformer.layer.self_attention.attention.key_scale.klass: 'axlea
 model.decoder.transformer.layer.self_attention.attention.klass: 'axlearn.common.flash_attention.layer.FlashAttention'
 model.decoder.transformer.layer.self_attention.attention.kv_cache.cache_dtype: 'jax.numpy.bfloat16'
 model.decoder.transformer.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.kv_cache.kv_cache.KVCache'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][0][0]: 'data'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][0][1]: 'expert'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][1]: None
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][2][0]: 'seq'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][2][1]: 'model'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh'][3]: None
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][0]: 'data'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][1]: 'expert'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh'][1]: None
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh'][2][0]: 'seq'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh'][2][1]: 'model'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh'][3]: None
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts'][0][0]: 'data'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts'][0][1]: 'expert'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts'][0][2]: 'fsdp'
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts'][1]: None
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts'][2]: None
-model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts'][3]: None
+model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bsnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.self_attention.attention.mha_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), None, None, None)
 model.decoder.transformer.layer.self_attention.attention.num_heads: 24
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh'][0][0]: 'data'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh'][0][1]: 'expert'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh'][1]: 'seq'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh'][2]: 'model'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh'][3]: None
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts'][0][0]: 'data'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts'][0][1]: 'expert'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts'][0][2]: 'fsdp'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts'][1]: 'model'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts'][2]: 'seq'
-model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts'][3]: None
+model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), 'seq', 'model', None)
+model.decoder.transformer.layer.self_attention.attention.output_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), 'model', 'seq', None)
 model.decoder.transformer.layer.self_attention.attention.output_linear.bias: False
 model.decoder.transformer.layer.self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'
 model.decoder.transformer.layer.self_attention.attention.output_linear.param_partition_spec[0][0]: 'expert'
