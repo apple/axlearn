@@ -1051,13 +1051,21 @@ class TPUSplashAttention(TPUFlashAttention):
 
         block_size = self.cfg.tpu_block_size
         block_sizes = splash_attention_kernel.BlockSizes(
-            block_q=block_size,
-            block_kv=block_size,
-            block_kv_compute=block_size,
-            block_q_dkv=block_size,
-            block_kv_dkv=block_size,
-            block_kv_dkv_compute=block_size,
-            use_fused_bwd_kernel=True,
+            block_q=self.get_backend_overrides("splash_block_q", block_size),
+            block_kv=self.get_backend_overrides("splash_block_kv", block_size),
+            block_kv_compute=self.get_backend_overrides("splash_block_kv_compute", block_size),
+            block_q_dkv=self.get_backend_overrides("splash_block_q_dkv", block_size),
+            block_kv_dkv=self.get_backend_overrides("splash_block_kv_dkv", block_size),
+            block_kv_dkv_compute=self.get_backend_overrides(
+                "splash_block_kv_dkv_compute", block_size
+            ),
+            block_q_dq=None
+            if self._use_fused
+            else self.get_backend_overrides("splash_block_q_dq", block_size),
+            block_kv_dq=None
+            if self._use_fused
+            else self.get_backend_overrides("splash_block_kv_dq", block_size),
+            use_fused_bwd_kernel=self._use_fused,
         )
 
         kernel = functools.partial(

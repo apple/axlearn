@@ -43,6 +43,7 @@ from axlearn.common.attention_bias import (
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
 from axlearn.common.flash_attention.layer import (
+    BackendOverrideModifier,
     FlashAttention,
     default_mha_dim_to_partition_spec,
     default_output_dim_to_partition_spec,
@@ -1320,6 +1321,50 @@ class TestFlashAttention(TestCase):
 
         # Check that sink parameter does not exist when logit_sink is disabled
         self.assertNotIn("sink", param_specs)
+
+    def test_backend_override_modifier(self):
+        """Tests BackendOverrideModifier."""
+        cfg: DummyModel.Config = DummyModel.default_config()
+        cfg.layer = FlashAttention.default_config()
+
+        # By default we expect backend_overrides = None
+        self.assertIsNone(cfg.layer.backend_overrides)
+
+        cfg_modifier = (
+            BackendOverrideModifier.default_config()
+            .set(
+                backend_overrides=dict(
+                    splash_block_kv_compute=2048,
+                )
+            )
+            .instantiate()
+        )
+
+        cfg = cfg_modifier(cfg)
+        self.assertDictEqual(cfg.layer.backend_overrides, dict(splash_block_kv_compute=2048))
+
+    def test_backend_override_modifier_ignores_none(self):
+        """Tests that BackendOverrideModifier ignores overrides values of None."""
+        cfg: DummyModel.Config = DummyModel.default_config()
+        cfg.layer = FlashAttention.default_config()
+
+        # By default we expect backend_overrides = None
+        self.assertIsNone(cfg.layer.backend_overrides)
+
+        cfg_modifier = (
+            BackendOverrideModifier.default_config()
+            .set(
+                backend_overrides=dict(
+                    splash_block_kv_compute=2048,
+                    splash_block_q=None,
+                )
+            )
+            .instantiate()
+        )
+
+        cfg = cfg_modifier(cfg)
+        # We expect splash_block_q to not appear in backend_overrides since its value = None
+        self.assertDictEqual(cfg.layer.backend_overrides, dict(splash_block_kv_compute=2048))
 
 
 if __name__ == "__main__":
