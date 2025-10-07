@@ -21,7 +21,11 @@ from axlearn.cloud.gcp.jobset_utils import (
     _LoadBalancer,
 )
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
-from axlearn.cloud.gcp.system_characteristics import USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+from axlearn.cloud.gcp.system_characteristics import (
+    GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
+    USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+    support_twisted_topology,
+)
 from axlearn.cloud.gcp.tpu import infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import (
@@ -47,30 +51,20 @@ _COLOCATED_CONTAINER_PORT = 50051
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
+_PATHWAYS_IMAGE_TAG = "2025-10-03"
 
 # The docker image used by pathways proxy container.
 # pylint: disable=line-too-long
-# _PATHWAYS_PROXY_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
 _PATHWAYS_PROXY_IMAGE = (
     # pylint: disable=line-too-long
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server:latest"
+    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/proxy_server:{_PATHWAYS_IMAGE_TAG}"
 )
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
     # pylint: disable=line-too-long
-    # "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server@sha256:fde763e2bae514d0fa758840e501b71a9ea48781dddafa5d8ed3a0fa316fd1ae"
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server:latest"
-    # "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server_maxtext:latest"
+    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/server:{_PATHWAYS_IMAGE_TAG}"
 )
-_COLOCATED_PYTHON_IMAGE = (
-    # "gcr.io/cloud-tpu-multipod-dev/ksadi_sidecar_maxtext:latest"
-    # pylint: disable=line-too-long
-    #"us-docker.pkg.dev/cloud-tpu-multipod-dev/colocated-images/sam:v6"
-    "us-docker.pkg.dev/cloud-tpu-multipod-dev/axlearn/colocated-img13:latest"
-    # "us-docker.pkg.dev/cloud-tpu-multipod-dev/colocated-images/lk-colocated-image:latest"
-    # "gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8"
-)
+
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.
@@ -95,24 +89,19 @@ FLAGS = flags.FLAGS
 
 def get_colocated_python_image(colocated_image_name, fv: flags.FlagValues = FLAGS) -> str:
     repo = gcp_settings("docker_repo", required=False, fv=fv)
-    print(repo)
-    print(colocated_image_name)
-    print(repo+colocated_image_name+":latest")
     return repo+"/"+colocated_image_name+":latest"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
-    """Attempts to convert an XLA flag string value to int, then bool.
+    """Attempts to convert an XLA flag string value to int.
 
     If conversion fails, returns the original string (stripped).
     """
-    bool_mapper = {"true": True, "false": False}
     stripped_value_str = value.strip()
     try:
         return int(stripped_value_str)
     except ValueError:
-        # Not an integer, try boolean conversion.
-        return bool_mapper.get(stripped_value_str.lower(), stripped_value_str)
+        return stripped_value_str
 
 
 def get_pathways_tpu_version(gke_machine_type: str) -> str:
@@ -161,6 +150,25 @@ def get_xla_options(
         A dictionary containing only XLA-specific options (those starting with 'xla').
     """
     return {k: v for k, v in xla_options.items() if k.startswith("xla_")}
+
+def round_up_to_power_of_2(n):
+    """
+    Rounds an integer up to the nearest power of 2.
+
+    Args:
+        n (int): The number to round up. Must be a positive integer.
+
+    Returns:
+        int: The smallest power of 2 that is greater than or equal to n.
+
+    Examples:
+        round_up_to_power_of_2(7)   -> 8
+        round_up_to_power_of_2(8)   -> 8
+        round_up_to_power_of_2(9)   -> 16
+        round_up_to_power_of_2(32)  -> 32
+    """
+    assert isinstance(n, int) and n > 0
+    return 1 << (n - 1).bit_length()
 
 
 class PathwaysReplicatedJob(BaseReplicatedJob):
@@ -311,7 +319,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # In Jax 0.6.2 and beyond this flag can be renamed to
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS as well.
         self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
-
+        # Threshold for using shared memory between Jax client and Pathways proxy.
+        # Setting it to 1 byte so effectively all Jax device_put use shared memory.
+        self._update_env_list(env_list, "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD", "1")
+        self._update_env_list(
+            env_list, "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY", "/tmp/ifrt_proxy"
+        )
         env_list.append(
             {
                 "name": "HOST_ADDRESS",
@@ -351,9 +364,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
-            "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         head_container["resources"] = resources
+
+        volume_mounts = head_container.get("volumeMounts", [])
+        volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"))
+        head_container["volumeMounts"] = volume_mounts
 
         return head_container
 
@@ -384,10 +400,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
-        # This is required for GKE Workload Identity and Mac Jax Client support.
-        # TODO(samos123): Remove this once this becomes the default.
-        proxy_env = [{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}]
-
+        instance_type = f"{pathways_tpu_version}:{system.topology}"
+        if support_twisted_topology(self._tpu_type):
+            instance_type = f"{instance_type}_untwisted"
         return [
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
@@ -396,8 +411,21 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
                 args=cmd_args,
-                env=proxy_env,
+                env=[
+                    # This is required for GKE Workload Identity and Mac Jax Client support.
+                    # TODO(samos123): Remove this once this becomes the default.
+                    {"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"},
+                    {"name": "XLA_FLAGS", "value": f"--xla_dump_to=/output/{cfg.name}/xla"},
+                    {
+                        "name": "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY",
+                        "value": "/tmp/ifrt_proxy",
+                    },
+                ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
+                volumeMounts=[
+                    dict(name="shared-output", mountPath="/output"),
+                    dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"),
+                ],
             ),
             dict(
                 name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
@@ -415,9 +443,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     f"--server_port={_PATHWAYS_RESOURCE_MANAGER_PORT}",
                     "--node_type=resource_manager",
                     f"--instance_count={pathways_instance_count}",
-                    f"--instance_type={pathways_tpu_version}:{system.topology}",
+                    f"--instance_type={instance_type}",
                     f"--gcs_scratch_location={staging_location}",
                 ],
+                volumeMounts=[dict(name="shared-output", mountPath="/output")],
             ),
         ]
 
@@ -425,7 +454,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         cfg: PathwaysReplicatedJob.Config = self.config
         return dict(
             name=_COLOCATED_PYTHON_SIDECAR_NAME,
-            image=get_colocated_python_image(cfg.colocated_image), #_COLOCATED_PYTHON_IMAGE,
+            image=get_colocated_python_image(cfg.colocated_image),
             restartPolicy="Always",
             env=[
                 {
@@ -450,6 +479,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+        volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
 
         if cfg.gcsfuse_mount:
             annotations.update(
@@ -466,7 +496,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         }
 
         head_container = self._build_pathways_head_container()
-        init_containers = self._build_pathways_head_sidecar_containers()
+        init_containers = [
+            *self._build_pathways_head_sidecar_containers(),
+            # pylint: disable-next=protected-access
+            self._inner._build_uploader_container(),
+        ]
 
         # Hardcode metadata.google.internal ip address to avoid transient DNS resolution issue.
         metadata_host_alias = dict(
@@ -524,6 +558,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     ) -> dict:
         """Build the container for the 'pathways-worker' role."""
         cfg: TPUReplicatedJob.Config = self._inner.config
+        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+        host_memory = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS[system.gce_machine_type]
         # pylint: disable-next=protected-access
         container = self._inner._build_container()
 
@@ -583,9 +619,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             # Recycling host memory gives a slight increase in performance.
             "--tpu_pinned_host_allocation_recycle=true",
             # The flag below is needed for better H2D performance.
-            # Rule of thumb: 3x the shard size. So 128GB to be safe.
-            # Decrease if you start running out of host memory on TPU VMs.
-            "--tpu_premapped_buffer_size=137438953472",
+            # We use 1/4 of the host memory, rounding up to power of 2 as premapped buffer.
+            # Note that pathways worker requires this flag to be a power of 2.
+            f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory//4)*(1<<30)}",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
@@ -608,6 +644,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     ) -> Nested[Any]:
         """Conoverts a worker pod to a new pod for the 'pathways-workers' role."""
         cfg: TPUReplicatedJob.Config = self._inner.config
+        pathways_cfg: PathwaysReplicatedJob.Config = self.config
         # pylint: disable-next=protected-access
         pod = self._inner._build_pod()
         worker_pod = copy.deepcopy(pod)
@@ -623,7 +660,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pod_spec["containers"] = [
             self._build_pathways_worker_container(pathways_worker_replicated_job_index)
         ]
-        pod_spec["initContainers"] = [self._colocated_python_container()]
+
+        if pathways_cfg.colocated_image:
+            pod_spec["initContainers"] = [self._colocated_python_container()]
 
         worker_pod["spec"] = pod_spec
 
@@ -965,7 +1004,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         }
         return dict(
             name=cfg.name,
-            image=self._bundler.id(cfg.name),
+            image=cfg.image_id or self._bundler.id(cfg.name),
             command=["bash", "-c", cfg.command],
             env=[
                 {
