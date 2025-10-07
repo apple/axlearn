@@ -1,5 +1,7 @@
 # The AXLearn Library for Deep Learning
 
+[![build-and-test](https://github.com/apple/axlearn/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/apple/axlearn/actions/workflows/build.yml)
+
 **This library is under active development and the API is subject to change.**
 
 ## Table of Contents
