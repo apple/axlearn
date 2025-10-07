@@ -601,7 +601,12 @@ class SpmdTrainer(Module):
                 while True:
                     self._maybe_record_event(measurement.Event.START_DATA_LOADING)
                     try:
+                        input_batch_start_time = time.perf_counter()
                         input_batch = next(input_iterator)
+                        self.summary_writer(
+                            self.step + 1,  # log this at the same step as other metrics below
+                            {"step_time/input_batch": time.perf_counter() - input_batch_start_time},
+                        )
                         self._maybe_record_event(measurement.Event.END_DATA_LOADING)
                         logging.log_first_n(
                             logging.INFO, "host_input_batch=%s", 3, utils.shapes(input_batch)
@@ -626,8 +631,13 @@ class SpmdTrainer(Module):
                         )
                         self.vlog(3, "Done step %s", self.step)
                         num_steps += 1
+
+                        # Record timing metrics
+                        now = time.perf_counter()
+                        self.summary_writer(
+                            self.step, {"step_time/total": now - input_batch_start_time}
+                        )
                         if num_steps % 100 == 0:
-                            now = time.perf_counter()
                             average_step_time = (now - start_time) / num_steps
                             self._step_log("Average step time: %s seconds", average_step_time)
                             self.summary_writer(self.step, {"average_step_time": average_step_time})
@@ -1109,7 +1119,13 @@ class SpmdTrainer(Module):
                 trainer_state=self.trainer_state, input_batch=input_batch, with_xsc=run_with_xsc
             )
             # Run the compiled function.
+            train_step_start_time = time.perf_counter()
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
+            # Wait for step to finish
+            outputs["loss"].block_until_ready()
+            self.summary_writer(
+                self.step, {"step_time/train_step": time.perf_counter() - train_step_start_time}
+            )
 
         if self.step % 100 == 0 or 0 <= self.step <= 5:
             self._step_log(
@@ -1125,7 +1141,12 @@ class SpmdTrainer(Module):
         )
 
         # Checkpointer policy will decide if we should save.
+        save_checkpoint_start_time = time.perf_counter()
         self.save_checkpoint(evaler_summaries=evaler_summaries)
+        self.summary_writer(
+            self.step,
+            {"step_time/save_checkpoint": time.perf_counter() - save_checkpoint_start_time},
+        )
 
         return_dict = {"loss": outputs["loss"], "aux": outputs["aux"]}
         # Returns evaler_summaries if force_run_evals is not None or empty set.
