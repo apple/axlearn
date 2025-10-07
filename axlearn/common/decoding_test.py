@@ -19,9 +19,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
-import seqio
-import tensorflow as tf
+import sentencepiece as spm
 from absl.testing import absltest, parameterized
 
 from axlearn.common import decoding, utils
@@ -1455,31 +1453,41 @@ class DecodeTest(parameterized.TestCase):
         ),
         # pylint: enable=line-too-long
     )
-    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
     def test_sample_decode_with_complex_stopping_condition(
         self,
         fake_decodes: Sequence[Sequence[str]],
         prompts: Sequence[Sequence[str]],
         expected: Sequence[Sequence[str]],
     ):
-        vocab = seqio.SentencePieceVocabulary(_T5_VOCAB_FILE)
+        if not os.path.exists(_T5_VOCAB_FILE):
+            self.skipTest("Missing testdata.")
+        sp = spm.SentencePieceProcessor()
+        sp.Load(_T5_VOCAB_FILE)
         batch_size = len(fake_decodes)
         num_decodes = len(fake_decodes[0])
 
         # Tokenize the test cases.
-        # Ragged of shape [batch_size, num_decodes, None].
-        ragged_prompts = vocab.encode_tf(prompts)
-        ragged_decodes = vocab.encode_tf(fake_decodes)
-        eos_ids = tf.fill([batch_size, num_decodes, 1], vocab.eos_id)
+        encoded_prompts = [[sp.encode_as_ids(s) for s in batch] for batch in prompts]
+        encoded_decodes = [[sp.encode_as_ids(s) for s in batch] for batch in fake_decodes]
 
-        # Construct the fake decodes.
-        # [batch_size, num_decodes, max_decode_len].
-        ragged_tokens = tf.concat([ragged_prompts, ragged_decodes, eos_ids], -1)
-        faked_tokens = ragged_tokens.to_tensor().numpy()
+        # Concatenate prompts + decodes + EOS for each sequence.
+        tokens_with_eos = [
+            [prompt + decode + [sp.eos_id()] for prompt, decode in zip(prompt_batch, decode_batch)]
+            for prompt_batch, decode_batch in zip(encoded_prompts, encoded_decodes)
+        ]
 
-        vocab_size = vocab.vocab_size
+        # Pad to max length.
+        max_len = max(len(tok) for batch in tokens_with_eos for tok in batch)
+        faked_tokens = np.array(
+            [[tok + [0] * (max_len - len(tok)) for tok in batch] for batch in tokens_with_eos],
+            dtype=np.int32,
+        )
+
+        vocab_size = sp.vocab_size()
         # [batch, 1].
-        prompt_length = ragged_prompts.nested_row_lengths()[-1].numpy()[::num_decodes, None]
+        prompt_length = np.array(
+            [[len(encoded_prompts[b][0])] for b in range(batch_size)], dtype=np.int32
+        )
         max_prompt_length = prompt_length.max()
         # Subtract 1 since we drop the conditioning token.
         max_decode_length = int(faked_tokens.shape[-1]) - max_prompt_length - 1
@@ -1520,25 +1528,28 @@ class DecodeTest(parameterized.TestCase):
             cur_iter=jnp.reshape(initial_index, (-1, 1)),
             prompt_length=prompt_length,
         )
-        inputs = ragged_prompts.to_tensor(
-            shape=[batch_size, None, max_decode_length + max_prompt_length],
-            default_value=vocab.pad_id,
+        # Pad prompts to the required length.
+        target_length = max_decode_length + max_prompt_length
+        inputs = np.array(
+            [
+                encoded_prompts[b][0] + [sp.pad_id()] * (target_length - len(encoded_prompts[b][0]))
+                for b in range(batch_size)
+            ],
+            dtype=np.int32,
         )
-        # Select the first prompt of each batch elem.
-        inputs = inputs[:, 0, :].numpy()
         sample_decoding_output = decoding.sample_decode(
             inputs=inputs,
-            time_step=decoding.infer_initial_time_step(inputs, pad_id=vocab.pad_id),
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=sp.pad_id()),
             cache=init_cache,
             tokens_to_scores=tokens_to_scores,
             stop_decoding_condition=decoding.StopOnSubsequence(
                 [
-                    [vocab.eos_id],
-                    vocab.encode("subsequence one"),
-                    vocab.encode("subsequence two"),
+                    [sp.eos_id()],
+                    sp.encode_as_ids("subsequence one"),
+                    sp.encode_as_ids("subsequence two"),
                 ]
             ),
-            pad_id=vocab.pad_id,
+            pad_id=sp.pad_id(),
             num_decodes=num_decodes,
             prng_key=jax.random.PRNGKey(0),
             loop="lax",
@@ -1554,11 +1565,11 @@ class DecodeTest(parameterized.TestCase):
         )
 
         # Compare against expected.
-        target = jnp.asarray(jax.tree.map(vocab.tokenizer.piece_to_id, expected))
+        target = jnp.asarray(jax.tree.map(sp.piece_to_id, expected))
         self.assertTrue(jnp.all(sequences == target))
 
         # Check that the token scores are 0 for pad_id tokens.
-        self.assertTrue(jnp.all(token_scores[sequences == vocab.pad_id] == 0))
+        self.assertTrue(jnp.all(token_scores[sequences == sp.pad_id()] == 0))
         # Check that the token scores are < 0 for non pad_id tokens beyond the initial index.
         # First mask out the token scores before the initial index.
         token_scores = jnp.where(
@@ -1567,7 +1578,7 @@ class DecodeTest(parameterized.TestCase):
             token_scores,
         )
         # Compare the rest of the token scores.
-        self.assertTrue(jnp.all(token_scores[sequences != vocab.pad_id] < 0))
+        self.assertTrue(jnp.all(token_scores[sequences != sp.pad_id()] < 0))
 
     @parameterized.parameters(
         dict(
