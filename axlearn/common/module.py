@@ -29,6 +29,7 @@ Why do we need Module?
    - Output collection (summaries, metrics)
    This avoids manually threading these through every method call.
 
+
 What is a Module?
 =================
 
@@ -96,6 +97,49 @@ class MyModule(Module):
 Module automatically wraps `forward()` via `_wrap_method_with_auto_child_context` during
 `__init__`. This allows parent modules to call `self.my_child.forward(x)` without manually
 creating or passing InvocationContext - it propagates automatically through the module tree.
+
+
+Use a Module
+=============
+
+```
+# 1. Create a config for the module and child module.
+cfg = MyModule.default_config().set(
+    name="my_module",
+    dropout_rate=0.2,
+    child=SomeLayerModule.default_config(),
+)
+
+# 2. Instantiate the module from the config.
+module = cfg.instantiate(parent=None)
+
+# 3. Create state
+# 3.1 For BaseLayer subclasses, we can call initialize_parameters_recursively():
+state = module.initialize_parameters_recursively(
+    prng_key=jax.random.PRNGKey(123),
+    prebuilt=None  # Can provide pre-initialized parameters if needed
+)
+# 3.2 For non-BaseLayer modules (e.g., data loaders, optimizers), state is often
+#     module-specific or can be an empty dict {}.
+state = {"child": {...}}
+
+# 4. Call forward using functional() for pure functional execution
+from axlearn.common.module import functional
+
+outputs, output_collection = functional(
+    module,
+    state=state,
+    method="forward",
+    inputs=dict(x=jnp.ones([batch_size, hidden_dim])),
+    prng_key=jax.random.PRNGKey(42), # part of context
+    is_training=True, # part of context
+)
+# outputs contains the return value from forward()
+# output_collection contains summaries, state updates, etc.
+
+# 4.1 We don't need functional() for calling non-wrapped methods.
+print(module.dropout_rate())
+```
 
 """
 
