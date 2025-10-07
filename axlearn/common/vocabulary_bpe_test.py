@@ -7,6 +7,7 @@
 # Licensed under a modified MIT license.
 
 """Tests BPE vocabulary."""
+
 # pylint: disable=no-self-use,protected-access
 import os
 from typing import Optional, Union
@@ -17,7 +18,7 @@ import tensorflow as tf
 from absl.testing import parameterized
 from transformers import GPT2Tokenizer, PreTrainedTokenizer, RobertaTokenizer
 
-from axlearn.common.input_text_test import tokenizers_dir
+from axlearn.common.input_test_utils import tokenizers_dir
 from axlearn.common.test_utils import TestCase
 from axlearn.common.vocabulary_bpe import BPEVocabulary
 
@@ -36,7 +37,7 @@ TEXTS = [
     " \x85\x85- ",
     "hello world",
     "  this\r  \t\t a\ntest's  11'm'll  \tx  ",
-    "ah\u535A\u63A8zz",
+    "ah\u535a\u63a8zz",
     " \tHeLLo!how  \n Are yoU?  ",
     "from bert: John Johanson's house",
     # Note: this is slightly different from other occurrences, as it doesn't include the null

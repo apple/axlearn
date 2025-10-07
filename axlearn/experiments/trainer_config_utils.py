@@ -5,23 +5,69 @@
 import io
 import pickle
 from functools import cache, wraps
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import cloudpickle
 
 from axlearn.common.config import REQUIRED, TrainerConfigFn, config_class
-from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
+from axlearn.common.flash_attention.layer import BackendOverrideModifier, FlashBlockSizeModifier
 from axlearn.common.utils import get_data_dir
 
 
 class V6eFlashConfigModifier(FlashBlockSizeModifier):
-    """Modified the tpu_block_size config for better performance on TPU v6e."""
+    """Modifies the tpu_block_size config for better performance on TPU v6e."""
 
     @config_class
     class Config(FlashBlockSizeModifier.Config):
         """Configures V6eFlashConfigModifier."""
 
         tpu_block_size: int = 1024
+
+
+class V7xFlashConfigModifier(FlashBlockSizeModifier):
+    """Modifies the tpu_block_size config for better performance on TPU v7x."""
+
+    @config_class
+    class Config(FlashBlockSizeModifier.Config):
+        """Configures V7xFlashConfigModifier."""
+
+        tpu_block_size: int = 2048
+
+
+class SplashAttentionConfigModifier(BackendOverrideModifier):
+    """Modifies the backend_overrides config for TPU Splash Attention."""
+
+    @config_class
+    class Config(BackendOverrideModifier.Config):
+        """Configures SplashAttentionConfigModifier."""
+
+        splash_block_q: Optional[int] = None
+        splash_block_kv: Optional[int] = None
+        splash_block_kv_compute: Optional[int] = None
+        splash_block_q_dkv: Optional[int] = None
+        splash_block_kv_dkv: Optional[int] = None
+        splash_block_kv_dkv_compute: Optional[int] = None
+        splash_block_q_dq: Optional[int] = None
+        splash_block_kv_dq: Optional[int] = None
+
+    def __call__(self, cfg: BackendOverrideModifier.Config) -> BackendOverrideModifier.Config:
+        backend_overrides = {
+            "splash_block_q": self.config.splash_block_q,
+            "splash_block_kv": self.config.splash_block_kv,
+            "splash_block_kv_compute": self.config.splash_block_kv_compute,
+            "splash_block_q_dkv": self.config.splash_block_q_dkv,
+            "splash_block_kv_dkv": self.config.splash_block_kv_dkv,
+            "splash_block_kv_dkv_compute": self.config.splash_block_kv_dkv_compute,
+            "splash_block_q_dq": self.config.splash_block_q_dq,
+            "splash_block_kv_dq": self.config.splash_block_kv_dq,
+        }
+        backend_modifier: BackendOverrideModifier = (
+            BackendOverrideModifier.default_config()
+            .set(backend_overrides=backend_overrides)
+            .instantiate()
+        )
+
+        return backend_modifier.__call__(cfg)
 
 
 class _DummyRequired:

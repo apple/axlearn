@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests masked language modeling inputs."""
+
 # pylint: disable=no-self-use
 import os
 from collections.abc import Iterator
@@ -24,11 +25,9 @@ from axlearn.common.input_mlm import (
     roberta_mlm_actions_combinatorial_ngram,
     text_to_mlm_input,
 )
+from axlearn.common.input_test_utils import assert_oneof, make_ds_fn, t5_sentence_piece_vocab_file
 from axlearn.common.input_text import random_chunking
-from axlearn.common.input_text_test import assert_oneof, make_ds_fn, tokenizers_dir
 from axlearn.common.utils import Tensor
-
-t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
 
 
 class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
@@ -629,14 +628,11 @@ class ApplyMLMTestCombinatorialNgram(parameterized.TestCase, tf.test.TestCase):
         )
         expected = {
             # fmt: off
-            "input_ids": [
-                [mask_id, mask_id, mask_id, pad_id],
-                [8181, 53, 5, pad_id]
-            ],
+            "input_ids": [[mask_id, mask_id, mask_id, pad_id], [8181, 53, 5, pad_id]],
             "target_labels": [
                 [8181, 53, 5, pad_id],
                 [pad_id, pad_id, pad_id, pad_id],
-            ]
+            ],
             # fmt: on
         }
         self.assertEqual(

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests GLUE inputs."""
+
 # pylint: disable=no-self-use
 import os
 from collections.abc import Sequence
@@ -15,9 +16,7 @@ from absl.testing import absltest, parameterized
 from axlearn.common import input_glue, input_tf_data, utils
 from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
 from axlearn.common.input_fake import fake_source
-from axlearn.common.input_text_test import tokenizers_dir
-
-t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
+from axlearn.common.input_test_utils import t5_sentence_piece_vocab_file
 
 
 def _source_cfg(
@@ -49,7 +48,7 @@ class InputGlueForRobertaTest(parameterized.TestCase, tf.test.TestCase):
     ):
         def noop_normalizer(
             # pylint: disable-next=unused-argument
-            input_key: Union[str, tuple[str, str]]
+            input_key: Union[str, tuple[str, str]],
         ) -> input_tf_data.DatasetToDatasetFn:
             return lambda ds: ds
 
@@ -269,27 +268,23 @@ class InputGlueForRobertaTest(parameterized.TestCase, tf.test.TestCase):
                 [
                     [
                         # "I picked up my belongings. What's the CAUSE for this?"
-                        1, 27, 4758, 95, 82, 12770, 7, 5, 363, 31, 7, 8, 3087, 11927, 21, 48, 58,
-                        1, 1,
+                        1, 27, 4758, 95, 82, 12770, 7, 5, 363, 31, 7, 8, 3087, 11927, 21, 48, 58, 1, 1,
                         # "I was hunting for a new apartment."
                         27, 47, 9601, 21, 3, 9, 126, 4579, 5, 1, 0, 0, 0,
                     ],
                     [
-                        1, 27, 4758, 95, 82, 12770, 7, 5, 363, 31, 7, 8, 3087, 11927, 21, 48, 58,
-                        1, 1,
+                        1, 27, 4758, 95, 82, 12770, 7, 5, 363, 31, 7, 8, 3087, 11927, 21, 48, 58, 1, 1,
                         # "I was moving out of my apartment."
                         27, 47, 1735, 91, 13, 82, 4579, 5, 1, 0, 0, 0, 0,
                     ],
                     [
                         # "The girl applied the scissors to the paper. What happened as a RESULT?"
-                        1, 37, 3202, 2930, 8, 28958, 12, 8, 1040, 5, 363, 2817, 38, 3, 9, 4083, 4138, 9012, 58,
-                        1, 1,
+                        1, 37, 3202, 2930, 8, 28958, 12, 8, 1040, 5, 363, 2817, 38, 3, 9, 4083, 4138, 9012, 58, 1, 1,
                         # "The paper sliced apart."
                         37, 1040, 3, 23645, 3943, 5, 1, 0, 0, 0, 0,
                     ],
                     [
-                        1, 37, 3202, 2930, 8, 28958, 12, 8, 1040, 5, 363, 2817, 38, 3, 9, 4083, 4138, 9012, 58,
-                        1, 1,
+                        1, 37, 3202, 2930, 8, 28958, 12, 8, 1040, 5, 363, 2817, 38, 3, 9, 4083, 4138, 9012, 58, 1, 1,
                         # "The paper crinkled."
                         37, 1040, 3, 75, 13419, 1361, 5, 1, 0, 0, 0,
                     ],

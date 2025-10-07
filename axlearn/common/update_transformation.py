@@ -24,7 +24,7 @@ import optax
 from absl import logging
 from jax.sharding import PartitionSpec
 
-from axlearn.common import struct
+from axlearn.common import flax_struct
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -186,7 +186,7 @@ class ConditionalUpdateTransformation(UpdateTransformation):
             return new_updates.delta_updates, new_state
 
         def stop_transform(_):
-            return jax.tree_map(jnp.zeros_like, updates.delta_updates), prev_state
+            return jax.tree.map(jnp.zeros_like, updates.delta_updates), prev_state
 
         # We do the computation regardless of the should_update value, so we could have
         # equally used jnp.where() here instead.
@@ -200,7 +200,7 @@ class ConditionalUpdateTransformation(UpdateTransformation):
         return dataclasses.replace(updates, delta_updates=param_updates)
 
 
-class Updates(struct.PyTreeNode):
+class Updates(flax_struct.PyTreeNode):
     """An update to model params and state that can be transformed."""
 
     # Updates needs to be a pytree for compatibility with `assertNestedAllClose()`
@@ -225,7 +225,7 @@ class Updates(struct.PyTreeNode):
     inplace_updates: Optional[Nested[Union[Tensor, optax.MaskedNode, None]]] = None
 
     # The named forward passes that have previous been invoked.
-    forward_pass: dict[str, ForwardPass] = struct.field(default_factory=dict)
+    forward_pass: dict[str, ForwardPass] = flax_struct.field(default_factory=dict)
 
     def param_values(self) -> Nested[Tensor]:
         """Returns a tree with the same structure as `opt_params` with the value of each param."""
@@ -292,13 +292,13 @@ class Updates(struct.PyTreeNode):
         return dataclasses.replace(self, **replacements)
 
 
-class ForwardPass(struct.PyTreeNode):
+class ForwardPass(flax_struct.PyTreeNode):
     """The result of executing a `ForwardFn`."""
 
     # ForwardPass needs to be a pytree to prevent tracer leaks in `learner._value_and_grad()`.
 
     # The forward function.
-    forward_fn: ForwardFn = struct.field(pytree_node=False)
+    forward_fn: ForwardFn = flax_struct.field(pytree_node=False)
 
     # Inputs to `forward_fn`.
     # The type is any pytree.
@@ -336,7 +336,7 @@ class ForwardBackwardOutputs:
     backward_outputs: BackwardOutputs
 
 
-class ForwardOutputs(struct.PyTreeNode):
+class ForwardOutputs(flax_struct.PyTreeNode):
     # ForwardOutputs needs to be a pytree to prevent tracer leaks in `learner._value_and_grad()`.
     loss: Tensor
     aux: Nested[Tensor]

@@ -24,7 +24,7 @@ from axlearn.common.input_grain_lm import (
     windowed_packing,
 )
 from axlearn.common.input_grain_text import with_regex_mapping
-from axlearn.common.input_grain_text_test import t5_sentence_piece_vocab_file
+from axlearn.common.input_test_utils import t5_sentence_piece_vocab_file
 from axlearn.common.test_utils import TestCase
 
 

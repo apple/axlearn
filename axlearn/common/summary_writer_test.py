@@ -7,6 +7,7 @@ To run tests with Weights & Biases writers, run this file with:
 
     WANDB_API_KEY="..." pytest summary_writer_test.py
 """
+
 import os
 import tempfile
 from enum import Enum
@@ -211,6 +212,7 @@ class WandBWriterTest(TestCase):
                 "loss": WeightedScalar(mean=3, weight=16),
                 "accuracy": WeightedScalar(mean=0.7, weight=16),
                 "learner": {"learning_rate": 0.1},
+                "nested.throughput": 100.2,
                 "image": ImageSummary(jax.numpy.ones((2, 5, 5, 3))),
                 "audio": AudioSummary(jax.numpy.ones((5, 2), dtype=jnp.float32), sample_rate=12345),
             },
@@ -245,7 +247,10 @@ class WandBWriterTest(TestCase):
                 else:
                     self.assertEqual(wandb.run.summary["loss"], 3)
                     self.assertAlmostEqual(wandb.run.summary["accuracy"], 0.7)
-                    self.assertAlmostEqual(wandb.run.summary["learner"]["learning_rate"], 0.1)
+                    # Make sure nested items are flattened and joined with "/"
+                    self.assertAlmostEqual(wandb.run.summary["learner/learning_rate"], 0.1)
+                    # Make sure "." is replaced with "." in keys
+                    self.assertEqual(wandb.run.summary["nested/throughput"], 100.2)
                     if step % write_every_n_steps_map["Image"] == 0:
                         self.assertIn("image", wandb.run.summary.keys())
                         self.assertEqual(len(wandb.run.summary["image"].filenames), 2)

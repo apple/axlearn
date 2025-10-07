@@ -20,10 +20,8 @@ from axlearn.common.input_grain_text import (
     tokenize,
     with_regex_mapping,
 )
+from axlearn.common.input_test_utils import t5_sentence_piece_vocab_file
 from axlearn.common.test_utils import TestCase
-
-tokenizers_dir = os.path.join(os.path.dirname(__file__), "../data/tokenizers")
-t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
 
 
 class _DummyVocabulary:

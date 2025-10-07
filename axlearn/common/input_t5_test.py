@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests T5 inputs."""
+
 import logging
 import os
 
@@ -24,9 +25,7 @@ from axlearn.common.input_t5 import (
     select_random_chunk,
     split_tokens,
 )
-from axlearn.common.input_text_test import tokenizers_dir
-
-t5_sentence_piece_vocab_file = os.path.join(tokenizers_dir, "sentencepiece/t5-base")
+from axlearn.common.input_test_utils import t5_sentence_piece_vocab_file
 
 
 def _t5_vocab():

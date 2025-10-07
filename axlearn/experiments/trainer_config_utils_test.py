@@ -6,7 +6,8 @@ import threading
 from typing import Optional
 
 import jax.numpy as jnp
-from absl.testing import absltest, parameterized
+import pytest
+from absl.testing import parameterized
 
 from axlearn.common.config import (
     REQUIRED,
@@ -23,7 +24,9 @@ from axlearn.common.input_fake import FakeLmInput
 from axlearn.common.test_utils import mock_trainer_config
 from axlearn.common.trainer_test import DummyModel
 from axlearn.experiments.trainer_config_utils import (
+    SplashAttentionConfigModifier,
     V6eFlashConfigModifier,
+    V7xFlashConfigModifier,
     _DeepCopyWithClosureFnWrapper,
     _wrap_with_deep_copy_with_closure,
     config_map_cache,
@@ -44,7 +47,7 @@ def _create_fake_trainer_config_fn() -> TrainerConfigFn:
 
 
 @config_class
-class TestConfigA(ConfigBase):
+class _ConfigA(ConfigBase):
     """A dummy config class."""
 
     data: list[str] = []
@@ -65,12 +68,19 @@ class TrainerConfigUtilsTest(parameterized.TestCase):
         for k, v in kwargs.items():
             self.assertEqual(getattr(new_trainer_config, k), v)
 
-    def test_flash_config_modifier(self):
+    def test_v6e_flash_config_modifier(self):
         cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
         cfg.layer = FlashAttention.default_config()
         cfg_modifier = V6eFlashConfigModifier.default_config().instantiate()
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.layer.tpu_block_size, 1024)
+
+    def test_v7x_flash_config_modifier(self):
+        cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
+        cfg.layer = FlashAttention.default_config()
+        cfg_modifier = V7xFlashConfigModifier.default_config().instantiate()
+        cfg = cfg_modifier(cfg)
+        self.assertEqual(cfg.layer.tpu_block_size, 2048)
 
     def test_gpu_flash_config_modifier(self):
         cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
@@ -78,6 +88,15 @@ class TrainerConfigUtilsTest(parameterized.TestCase):
         cfg_modifier = FlashBlockSizeModifier.default_config().set(gpu_block_size=64).instantiate()
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.layer.gpu_block_size, 64)
+
+    def test_splash_attention_config_modifier(self):
+        cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
+        cfg.layer = FlashAttention.default_config()
+        cfg_modifier = (
+            SplashAttentionConfigModifier.default_config().set(splash_block_q=4096).instantiate()
+        )
+        cfg = cfg_modifier(cfg)
+        self.assertEqual(cfg.layer.backend_overrides["splash_block_q"], 4096)
 
 
 class DeepCopyWithClosureFnWrapperTest(parameterized.TestCase):
@@ -160,7 +179,7 @@ class TestConfigMapCache(parameterized.TestCase):
         shared_data = ["a"]
 
         def config_gen():
-            return TestConfigA().set(data=shared_data)
+            return _ConfigA().set(data=shared_data)
 
         wrapped_config_gen = _wrap_with_deep_copy_with_closure(config_gen)
 
@@ -198,7 +217,7 @@ class TestConfigMapCache(parameterized.TestCase):
 
             def config_gen():
                 shared_state.append(name)
-                return TestConfigA().set(data=shared_state)
+                return _ConfigA().set(data=shared_state)
 
             return config_gen
 
@@ -218,7 +237,7 @@ class TestConfigMapCache(parameterized.TestCase):
 
         def get_config():
             def config_gen(data_dir: Optional[str] = None, **overrides):
-                return TestConfigA().set(data=[data_dir, overrides["k"]])
+                return _ConfigA().set(data=[data_dir, overrides["k"]])
 
             return config_gen
 
@@ -236,7 +255,7 @@ class TestConfigMapCache(parameterized.TestCase):
         """
 
         def init_config():
-            return TestConfigA()
+            return _ConfigA()
 
         def gen_init_config(init_function):
             return init_function()
@@ -260,4 +279,4 @@ class TestConfigMapCache(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    absltest.main()
+    pytest.main()

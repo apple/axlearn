@@ -7,7 +7,6 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests logit modifiers."""
-# pylint: disable=no-self-use
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized
@@ -24,6 +23,7 @@ from axlearn.common.logit_modifiers import (
 from axlearn.common.test_utils import TestCase
 
 
+# pylint: disable=no-self-use
 class TestLogitsTransforms(TestCase):
     """Tests logit modifiers."""
 

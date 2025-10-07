@@ -8,7 +8,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import Literal, NamedTuple, Optional
+from typing import Any, Literal, NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
@@ -150,6 +150,7 @@ class BaseFlashAttention(Configurable):
             interpret: Whether to use interpret mode for Pallas kernels.
             tpu_block_size: Block size for TPU pallas kernels.
             gpu_block_size: Block size for GPU pallas kernels.
+            backend_overrides: Mapping from name of backend specific overrides to their values.
         """
 
         softmax_scale: float = 1.0
@@ -157,10 +158,14 @@ class BaseFlashAttention(Configurable):
         interpret: bool = False
         tpu_block_size: int = 512
         gpu_block_size: int = 128
+        backend_overrides: Optional[dict[str, Any]] = None
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         self.cfg: BaseFlashAttention.Config = self.config
+
+    def get_backend_overrides(self, name: str, default: Any) -> Any:
+        return (self.cfg.backend_overrides or {}).get(name, default)
 
     def name(self) -> str:
         """Returns the class name."""

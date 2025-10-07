@@ -13,7 +13,7 @@ from enum import Enum
 
 from jax import numpy as jnp
 
-from axlearn.common import struct
+from axlearn.common import flax_struct
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.convolution import Conv2D
@@ -22,7 +22,7 @@ from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 
 
-class Detections(struct.PyTreeNode):
+class Detections(flax_struct.PyTreeNode):
     """A data class for detections.
 
     boxes: A float tensor of shape [batch, num_boxes, num_classes * 4] containing encoded box
@@ -192,7 +192,7 @@ class RCNNDetectionHead(BaseLayer):
         return Detections(boxes=boxes, scores=scores)
 
 
-class BoxProposals(struct.PyTreeNode):
+class BoxProposals(flax_struct.PyTreeNode):
     """A data class for bounding box proposals.
 
     boxes: A dictionary of float tensors of shape [batch, height_i, width_i, num_anchors * 4]

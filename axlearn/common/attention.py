@@ -128,7 +128,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache, KVState
-from axlearn.common.kv_cache.kv_cache import KVCache as _KVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.layers import (
     Dropout,
     LayerNorm,
@@ -183,12 +183,6 @@ class ForwardMode(enum.Enum):
     FORWARD = 0
     INIT_STATES = 1
     EXTEND_STEP = 2
-
-
-# This is to prevent golden config changes for configs previously using
-# "axlearn.common.attention.KVCache".
-class KVCache(_KVCache):
-    pass
 
 
 class BaseTransformerLayer(BaseLayer):

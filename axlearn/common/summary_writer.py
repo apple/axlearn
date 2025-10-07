@@ -436,6 +436,8 @@ class WandBWriter(BaseWriter):
         elif fs.exists(wandb_file):  # pytype: disable=module-attr
             with fs.open(wandb_file, "r") as f:  # pytype: disable=module-attr
                 exp_id = f.read().strip()
+        elif os.getenv("WANDB_RUN_ID", None):
+            exp_id = os.environ["WANDB_RUN_ID"]
         else:
             exp_id = wandb.util.generate_id()
             fs.makedirs(cfg.dir)  # pytype: disable=module-attr
@@ -556,6 +558,13 @@ class WandBWriter(BaseWriter):
 
         paths = tree_paths(values, separator="/", is_leaf=is_leaf)
         values = jax.tree.map(convert, paths, values, is_leaf=is_leaf)
+
+        # Flatten nested dicts and join the keys with "/"
+        flat_paths_and_values, _ = jax.tree_util.tree_flatten_with_path(values)
+        values = {
+            jax.tree_util.keystr(key_path, separator="/", simple=True): value
+            for key_path, value in flat_paths_and_values
+        }
 
         if cfg.prefix:
             values = {f"{cfg.prefix}/{k}": v for k, v in values.items()}

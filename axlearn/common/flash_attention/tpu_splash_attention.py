@@ -181,7 +181,14 @@ def flash_attention_kernel(
         else:
             k = pl.load(k_ref, (slice(None), slice_k))
         k = k.astype(q.dtype)
-        qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32)
+
+        # TODO(changlan): Revisit once Mosaic supports higher precision.
+        if q.dtype == jnp.bfloat16:
+            precision = "default"
+        else:
+            precision = None
+
+        qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32, precision=precision)
 
         assert qk.shape == (bq, bkv_compute)
         apply_mask_and_soft_cap = functools.partial(

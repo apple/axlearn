@@ -5,6 +5,7 @@
 
 import functools
 from typing import Any, Union
+from unittest.mock import patch
 
 import jax.random
 import numpy as np
@@ -13,6 +14,7 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
+from axlearn.audio.aligner import ctc_aligner_test
 from axlearn.audio.decoder_asr import (
     CommonPrefixMerger,
     CTCDecoderModel,
@@ -996,6 +998,47 @@ class CTCDecoderModelTest(TestCase):
             ).astype(jnp.bool),
         )
         self.assertNestedEqual(outputs.scores, jnp.array([[28, 28], [36, 36]]))
+
+    def test_align(self):
+        (
+            log_probs,
+            log_prob_paddings,
+            labels,
+            label_paddings,
+        ), expected_align = ctc_aligner_test.generate_batched_test_data(
+            batch_size=2, blank_id=0, max_num_frames=32, max_num_labels=5, vocab_size=64
+        )
+        labels = jnp.where(label_paddings, -1, labels)
+        input_batch = {"inputs": log_probs, "paddings": log_prob_paddings, "target_labels": labels}
+
+        input_dim, vocab_size = 6, 8
+        cfg = CTCDecoderModel.default_config().set(
+            input_dim=input_dim,
+            vocab_size=vocab_size,
+            blank_id=0,
+        )
+        # Initialize layer parameters.
+        layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        with (
+            patch.object(layer, "predict", return_value=log_probs) as mocked_pred,
+            patch("jax.nn.log_softmax", return_value=log_probs) as mocked_softmax,
+        ):
+            outputs, _ = F(
+                layer,
+                inputs=dict(input_batch=input_batch),
+                is_training=False,
+                prng_key=prng_key,
+                state=layer_params,
+                method="align",
+            )
+            mocked_pred.assert_called_once()
+            mocked_softmax.assert_called_once()
+
+        self.assertNestedAllClose(outputs, expected_align.asdict())
 
 
 class RNNPredictionNetworkTest(TestCase):

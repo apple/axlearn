@@ -33,4 +33,4 @@ jobs:
             echo "Manually stopping monitor process..."
             kill $MONITOR_PID || true
           fi
-      - run: pytype -j auto .
+      - run: pytype -j auto axlearn

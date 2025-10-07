@@ -3,7 +3,7 @@
 """FlashAttention layers."""
 
 from collections.abc import Sequence
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 import jax
 import jax.numpy as jnp
@@ -15,6 +15,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import Dropout, ForwardMode, GroupedQueryAttention, KVState
 from axlearn.common.attention_bias import BaseAttentionBias
+from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import ConfigBase, ConfigModifier, config_class
 from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
@@ -61,6 +62,10 @@ class FlashAttention(GroupedQueryAttention):
         # How to partition output values, keyed by dims.
         output_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {}
 
+        # Backend specific config overrides.
+        # TODO(hanzhi-zhou): Unify tpu_block_size and gpu_block_size with backend_overrides.
+        backend_overrides: Optional[dict[str, Any]] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -75,7 +80,20 @@ class FlashAttention(GroupedQueryAttention):
                 f"{type(self.dropout).__module__}.{type(self.dropout).__qualname__}"
             )
         if cfg.tpu_block_size % 128 != 0:
-            raise ValueError("cfg.tpu_block_size must divide 128.")
+            raise ValueError("cfg.tpu_block_size must be divisible by 128.")
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        params = super()._create_layer_parameter_specs()
+
+        # Derive the mesh_axes for sink parameters from mha_dim_to_partition_spec.
+        if cfg.logit_sink:
+            if len(cfg.mha_dim_to_partition_spec["bsnh"]) < 3:
+                params["sink"].mesh_axes = (None,)
+            else:
+                params["sink"].mesh_axes = (cfg.mha_dim_to_partition_spec["bsnh"][2],)
+
+        return params
 
     @classmethod
     def default_config(cls) -> Config:
@@ -216,6 +234,7 @@ class FlashAttention(GroupedQueryAttention):
             gpu_block_size=cfg.gpu_block_size or 128,
             dropout_rate=cfg.dropout.rate,
             page_tables=page_indices,
+            backend_overrides=cfg.backend_overrides,
         )
         if jit_attn is None:
             # Fall back to standard attention if no backend kernels are supported.
@@ -259,7 +278,11 @@ class FlashAttention(GroupedQueryAttention):
             # Bias that can broadcast to [batch_size, num_heads, seq_len, seq_len].
             "bias": attention_logit_biases_spec,
             # Logit sink values of shape [num_heads].
-            "logit_sink": PartitionSpec("model") if logit_sink is not None else PartitionSpec(None),
+            "logit_sink": (
+                PartitionSpec(None)
+                if logit_sink is None or len(cfg.mha_dim_to_partition_spec["bsnh"]) < 3
+                else PartitionSpec(cfg.mha_dim_to_partition_spec["bsnh"][2])
+            ),
             # PagedKVCache's page indices.
             "page_tables": cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None)),
         }
@@ -377,6 +400,41 @@ class FlashBlockSizeModifier(ConfigModifier):
                 value = cast(FlashAttention.Config, value)
                 value.tpu_block_size = tpu_block_size
                 value.gpu_block_size = gpu_block_size
+
+        def enter_fn(_, value, default_kv):
+            return None if is_flash_config(value) else default_kv
+
+        cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+        return cfg
+
+
+class BackendOverrideModifier(ConfigModifier):
+    """Modifies the backend_overrides config of Flash Attention."""
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configures BackendOverrideModifier."""
+
+        backend_overrides: Optional[dict[str, Any]] = None
+
+    def __call__(self, cfg: ConfigBase) -> ConfigBase:
+        backend_overrides = self.config.backend_overrides
+
+        def is_flash_config(cfg):
+            return isinstance(cfg, FlashAttention.Config)
+
+        def visit_fn(_, value):
+            if is_flash_config(value):
+                value = cast(FlashAttention.Config, value)
+                if backend_overrides:
+                    # Instantiate a dict if value.backend_overrides hasn't already been set
+                    if value.backend_overrides is None:
+                        value.backend_overrides = dict()
+                    for override_key, override_value in backend_overrides.items():
+                        # Ensure we don't insert any values equal to None
+                        if override_value:
+                            # Use .update() to avoid overwriting existing overrides
+                            value.backend_overrides.update({override_key: override_value})
 
         def enter_fn(_, value, default_kv):
             return None if is_flash_config(value) else default_kv

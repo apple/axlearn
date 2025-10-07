@@ -145,7 +145,7 @@ class TestFlashAttention(TestCase):
         input_dtype,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         if bias_type == "full":
             bias = ZeroAttentionBias()
@@ -222,7 +222,7 @@ class TestFlashAttention(TestCase):
         page_size,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         if bias_type == "causal":
             bias = CausalAttentionBias(

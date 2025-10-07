@@ -17,17 +17,17 @@ import optax
 from absl.testing import absltest, parameterized
 from jax.tree_util import Partial
 
-from axlearn.common import serialization, struct
+from axlearn.common import flax_struct, serialization
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class _Point:
     x: float
     y: float
-    meta: Any = struct.field(pytree_node=False)
+    meta: Any = flax_struct.field(pytree_node=False)
 
 
-@struct.dataclass
+@flax_struct.dataclass
 class _Box:
     value: int
 
@@ -113,7 +113,7 @@ class SerializationTest(parameterized.TestCase):
         self.assertEqual(restored_tx_state, tx_state_plus1)
 
     def test_collection_serialization(self):
-        @struct.dataclass
+        @flax_struct.dataclass
         class DummyDataClass:
             x: float
 

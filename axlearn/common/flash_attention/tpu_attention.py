@@ -2,6 +2,7 @@
 
 """Wrappers for FlashAttention on TPU in JAX with logit bias support."""
 import functools
+import logging
 from typing import Optional
 
 import jax
@@ -871,14 +872,6 @@ class TPUFlashAttention(BaseFlashAttention):
         block_size = self.cfg.tpu_block_size
         if not self._check_block_size(input_batch=input_batch, block_size=block_size):
             return False
-        query: Tensor = input_batch["query"]
-        if jax.config.jax_default_matmul_precision == "highest" and query.dtype == jnp.bfloat16:
-            # Pallas is having some trouble compiling bfloat with precision default is the highest
-            # precision.
-            raise ValueError(
-                "TPU FlashAttention doesn't support default_matmul_precision=='highest' "
-                "when the query dtype is bfloat16!"
-            )
         return True
 
 
@@ -891,6 +884,10 @@ class TPUSplashAttention(TPUFlashAttention):
 
     In these two cases, we fallback to the legacy implementation.
     """
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self._use_fused = True
 
     def is_supported(
         self,
@@ -912,6 +909,41 @@ class TPUSplashAttention(TPUFlashAttention):
             return self._log_unsupported(
                 f"{head_dim=} is not divisible by {splash_attention_kernel.NUM_LANES=}"
             )
+
+        if (
+            not self.get_backend_overrides("splash_use_fused_bwd_kernel", True)
+            and self.cfg.dropout_rate > 0.0
+        ):
+            # TODO (bailin): Support dropout with non-fused bwd kernel.
+            return self._log_unsupported("dropout with non-fused bwd kernel is not supported.")
+
+        # If user doesn't specify splash_use_fused_bwd_kernel, we have some defaults
+        # or heuristics to decide whether to use fused bwd kernel.
+        if (
+            not self.cfg.backend_overrides
+            or "splash_use_fused_bwd_kernel" not in self.cfg.backend_overrides
+        ):
+            # When dropout is enabled, we always use the fused bwd kernel.
+            if self.cfg.dropout_rate > 0.0:
+                self._use_fused = True
+            else:
+                # Heuristic for sliding window attention.
+                sliding, _ = split(bias, SlidingWindowAttentionBias)
+                key: Tensor = input_batch["key"]
+                kv_seq_len = key.shape[1]
+                # TODO(c_lan): Support logit_sinks for non-fused bwd kernel.
+                if sliding.has_value() and "logit_sinks" not in input_batch:
+                    if kv_seq_len >= 16 * 1024 and kv_seq_len / sliding.sliding_window_size >= 4.0:
+                        logging.info(
+                            "Not using fused kernel for splash attention backward pass for better "
+                            "performance, because sliding_window_size=%d << kv_seq_len=%d.",
+                            sliding.sliding_window_size,
+                            kv_seq_len,
+                        )
+                        self._use_fused = False
+        else:
+            self._use_fused = self.get_backend_overrides("splash_use_fused_bwd_kernel", True)
+
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
@@ -946,16 +978,32 @@ class TPUSplashAttention(TPUFlashAttention):
 
         block_size = self.cfg.tpu_block_size
         block_sizes = splash_attention_kernel.BlockSizes(
-            block_q=block_size,
-            block_kv=block_size,
-            block_kv_compute=block_size,
-            block_q_dkv=block_size,
-            block_kv_dkv=block_size,
-            block_kv_dkv_compute=block_size,
+            block_q=self.get_backend_overrides("splash_block_q", block_size),
+            block_kv=self.get_backend_overrides("splash_block_kv", block_size),
+            block_kv_compute=self.get_backend_overrides("splash_block_kv_compute", block_size),
+            # When fused bwd kernel is used, dq and dk/dv are computed in the same kernel. Only
+            # *dkv* block sizes are used. When fused bwd kernel is not used, dk and dv are computed
+            # in one kernel using *dkv* block sizes, and dq is computed in another kernel using *dq
+            # block sizes.
+            block_q_dkv=self.get_backend_overrides("splash_block_q_dkv", block_size),
+            block_kv_dkv=self.get_backend_overrides("splash_block_kv_dkv", block_size),
+            block_kv_dkv_compute=self.get_backend_overrides(
+                "splash_block_kv_dkv_compute", block_size
+            ),
+            block_q_dq=None
+            if self._use_fused
+            else self.get_backend_overrides("splash_block_q_dq", block_size),
+            block_kv_dq=None
+            if self._use_fused
+            else self.get_backend_overrides("splash_block_kv_dq", block_size),
             # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
             # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
             # and 1.14x in 539.5b.
-            use_fused_bwd_kernel=True,
+            # NOTE(hanzhi-zhou): Fused bwd kernel may require more memory usage because it needs to
+            # keep a temporary unreduced dq tensor of shape (kv_seq_len // block_kv_dkv, *q.shape)
+            # in HBM. If memory usage is a problem, consider increasing block_kv_dkv or disabling
+            # fused kernel.
+            use_fused_bwd_kernel=self._use_fused,
         )
         splash_mask = _to_splash_mask(
             mask, mask_shape=(query.shape[2], key.shape[2]), q_seq_shards=1
@@ -1003,13 +1051,21 @@ class TPUSplashAttention(TPUFlashAttention):
 
         block_size = self.cfg.tpu_block_size
         block_sizes = splash_attention_kernel.BlockSizes(
-            block_q=block_size,
-            block_kv=block_size,
-            block_kv_compute=block_size,
-            block_q_dkv=block_size,
-            block_kv_dkv=block_size,
-            block_kv_dkv_compute=block_size,
-            use_fused_bwd_kernel=True,
+            block_q=self.get_backend_overrides("splash_block_q", block_size),
+            block_kv=self.get_backend_overrides("splash_block_kv", block_size),
+            block_kv_compute=self.get_backend_overrides("splash_block_kv_compute", block_size),
+            block_q_dkv=self.get_backend_overrides("splash_block_q_dkv", block_size),
+            block_kv_dkv=self.get_backend_overrides("splash_block_kv_dkv", block_size),
+            block_kv_dkv_compute=self.get_backend_overrides(
+                "splash_block_kv_dkv_compute", block_size
+            ),
+            block_q_dq=None
+            if self._use_fused
+            else self.get_backend_overrides("splash_block_q_dq", block_size),
+            block_kv_dq=None
+            if self._use_fused
+            else self.get_backend_overrides("splash_block_kv_dq", block_size),
+            use_fused_bwd_kernel=self._use_fused,
         )
 
         kernel = functools.partial(

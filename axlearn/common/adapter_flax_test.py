@@ -4,7 +4,6 @@
 from typing import Callable
 
 import jax.random
-import pytest
 from absl.testing import absltest
 from flax import linen as nn
 from jax import numpy as jnp
@@ -241,7 +240,7 @@ class FlaxLayerTest(TestCase):
     def test_sharding(self):
         mesh_shape = (len(jax.devices()) // 2, 2)
         if not is_supported_mesh_shape(mesh_shape):
-            pytest.skip(f"Unsupported mesh shape {mesh_shape}")
+            self.skipTest(f"Unsupported mesh shape {mesh_shape}")
 
         with jax.sharding.Mesh(utils.create_device_mesh(mesh_shape=mesh_shape), ("data", "model")):
             dim = 4

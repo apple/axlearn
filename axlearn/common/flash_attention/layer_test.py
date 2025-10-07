@@ -24,7 +24,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
@@ -44,6 +43,7 @@ from axlearn.common.attention_bias import (
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
 from axlearn.common.flash_attention.layer import (
+    BackendOverrideModifier,
     FlashAttention,
     default_mha_dim_to_partition_spec,
     default_output_dim_to_partition_spec,
@@ -124,9 +124,11 @@ def _prepare_layers(
         num_heads=num_heads,
         dtype=jnp.bfloat16,
         dropout=Dropout.default_config().set(rate=dropout_rate),
-        input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-        if num_kv_heads is not None
-        else QKVLinear.default_config(),
+        input_linear=(
+            GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+            if num_kv_heads is not None
+            else QKVLinear.default_config()
+        ),
         kv_cache=kv_cache,
     )
     ref_cfg = GroupedQueryAttention.default_config().set(**kwargs)
@@ -429,9 +431,11 @@ class TestFlashAttention(TestCase):
                 value_dim=hidden_dim,
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
-                input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-                if num_kv_heads is not None
-                else QKVLinear.default_config(),
+                input_linear=(
+                    GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+                    if num_kv_heads is not None
+                    else QKVLinear.default_config()
+                ),
                 mha_dim_to_partition_spec={
                     "btnh": PartitionSpec("data", None, "model", None),
                     "bsnh": PartitionSpec("data", None, "model", None),
@@ -478,7 +482,7 @@ class TestFlashAttention(TestCase):
         self, batch, seq_len, num_heads, num_kv_heads, per_head_dim, mesh, mesh_axis_names
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         def as_tensor_bias(bias: Tensor) -> CompositeAttentionBias:
             return CompositeAttentionBias([TensorAttentionBias(bias)])
@@ -550,22 +554,22 @@ class TestFlashAttention(TestCase):
         dropout_rate,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
         if attn_type != "full" and use_bias:
             # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
-            pytest.skip(reason="Only one of causal and use_bias can be True.")
+            self.skipTest("Only one of causal and use_bias can be True.")
         if use_segment_ids and query_len_multiplier != 1:
-            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
+            self.skipTest("Segment IDs are not supported for Q and K with different lengths.")
         # Data=1 with bias matrix in all fp32 format would OOM the H100 SRAM.
         if use_bias and mesh[mesh_axis_names.index("data")] == 1 and input_dtype == jnp.float32:
-            pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
+            self.skipTest("Unsupported large bias matrix in fp32 format.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
-            pytest.skip("Dropout is implemented for GPU only.")
+            self.skipTest("Dropout is implemented for GPU only.")
         if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
             # rows. "custom" is also sliding window, but uses a different function to test support
             # for custom mask fns.
-            pytest.skip(reason="Sliding window attention does not make sense when q_len != kv_len.")
+            self.skipTest("Sliding window attention does not make sense when q_len != kv_len.")
 
         if attn_type == "full":
             mask = None
@@ -651,20 +655,20 @@ class TestFlashAttention(TestCase):
         dropout_rate,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
         if use_segment_ids and query_len_multiplier != 1:
-            pytest.skip("Segment IDs are not supported for Q and K with different lengths.")
+            self.skipTest("Segment IDs are not supported for Q and K with different lengths.")
         if attn_type in ("sliding_window", "custom") and query_len_multiplier > 1:
             # When sliding window is enabled and q_len > kv_len, there might be be fully masked
             # rows. "custom" is also sliding window, but uses a different function to test support
             # for custom mask fns.
-            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
+            self.skipTest("Sliding window attention does not make sense when q_len > kv_len.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
-            pytest.skip("Dropout is implemented for GPU only.")
+            self.skipTest("Dropout is implemented for GPU only.")
 
         if attn_type != "full" and use_bias:
             # TODO(c_lan): Investigate the numerical errors when both causal and bias are used.
-            pytest.skip(reason="Only one of causal and use_bias can be True.")
+            self.skipTest("Only one of causal and use_bias can be True.")
 
         with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
             hidden_dim = num_heads * per_head_dim
@@ -675,9 +679,11 @@ class TestFlashAttention(TestCase):
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
                 dropout=Dropout.default_config().set(rate=dropout_rate),
-                input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-                if num_kv_heads is not None
-                else QKVLinear.default_config(),
+                input_linear=(
+                    GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+                    if num_kv_heads is not None
+                    else QKVLinear.default_config()
+                ),
             )
             if attn_type == "causal":
                 kwargs["mask"] = CausalAttentionBias.default_config()
@@ -771,17 +777,17 @@ class TestFlashAttention(TestCase):
         dtype,
     ):
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         named_sharding = dict(zip(mesh_axis_names, mesh))
         if "seq" in named_sharding and named_sharding["seq"] > 1:
-            pytest.skip(reason="Unsupported seq dim sharding for decoding.")
+            self.skipTest("Unsupported seq dim sharding for decoding.")
         if (
             math.prod(mesh) > 1
             and attn_type == "paged"
             and math.prod(mesh) != named_sharding.get("model", 1)
         ):
-            pytest.skip(reason="Paged attention only supports model sharding.")
+            self.skipTest("Paged attention only supports model sharding.")
 
         if attn_type == "causal":
             mask = CausalAttentionBias.default_config()
@@ -994,7 +1000,7 @@ class TestFlashAttention(TestCase):
     ):
         """Tests logit sink functionality in FlashAttention."""
         if not is_supported_mesh_shape(mesh):
-            pytest.skip(reason=f"Unsupported mesh {mesh}.")
+            self.skipTest(f"Unsupported mesh {mesh}.")
 
         mask = None
         if attn_type == "causal":
@@ -1010,9 +1016,11 @@ class TestFlashAttention(TestCase):
                 num_heads=num_heads,
                 dtype=jnp.bfloat16,
                 dropout=Dropout.default_config().set(rate=0.0),
-                input_linear=GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
-                if num_kv_heads is not None
-                else QKVLinear.default_config(),
+                input_linear=(
+                    GroupedQKVLinear.default_config().set(num_kv_heads=num_kv_heads)
+                    if num_kv_heads is not None
+                    else QKVLinear.default_config()
+                ),
                 logit_sink=logit_sink,
             )
 
@@ -1252,6 +1260,111 @@ class TestFlashAttention(TestCase):
                 self.assertTrue(jnp.all(jnp.isfinite(grads["sink"])))
             else:
                 self.assertNotIn("sink", grads)
+
+    @parameterized.parameters(
+        # (partition_spec, expected_mesh_axes, test_description)
+        (PartitionSpec(None), (None,), "length_1_short_spec"),
+        (PartitionSpec("data", None), (None,), "length_2_short_spec"),
+        (PartitionSpec("data", None, "model"), ("model",), "length_3_exact_boundary"),
+        (PartitionSpec("data", "seq", "fsdp", "expert"), ("fsdp",), "length_4_long_spec"),
+    )
+    def test_create_layer_parameter_specs_with_logit_sink(
+        self, bsnh_partition_spec, expected_mesh_axes, test_description
+    ):
+        """Tests _create_layer_parameter_specs with different partition spec lengths."""
+        del test_description  # Unused, just for test readability
+
+        num_heads = 4
+        per_head_dim = 32
+        hidden_dim = num_heads * per_head_dim
+
+        cfg = FlashAttention.default_config().set(
+            query_dim=hidden_dim,
+            key_dim=hidden_dim,
+            value_dim=hidden_dim,
+            num_heads=num_heads,
+            logit_sink=True,
+            mha_dim_to_partition_spec={
+                "bsnh": bsnh_partition_spec,
+                "btnh": bsnh_partition_spec,
+                "bnts": PartitionSpec(None),
+            },
+            name="test",
+        )
+
+        layer = cfg.instantiate(parent=None)
+        # pylint: disable-next=protected-access
+        param_specs = layer._create_layer_parameter_specs()
+
+        # Check that sink parameter exists and has correct mesh_axes
+        self.assertIn("sink", param_specs)
+        self.assertEqual(param_specs["sink"].mesh_axes, expected_mesh_axes)
+
+    def test_create_layer_parameter_specs_without_logit_sink(self):
+        """Tests _create_layer_parameter_specs when logit_sink is disabled."""
+        num_heads = 4
+        per_head_dim = 32
+        hidden_dim = num_heads * per_head_dim
+
+        cfg = FlashAttention.default_config().set(
+            query_dim=hidden_dim,
+            key_dim=hidden_dim,
+            value_dim=hidden_dim,
+            num_heads=num_heads,
+            logit_sink=False,
+            name="test",
+        )
+
+        layer = cfg.instantiate(parent=None)
+        # pylint: disable-next=protected-access
+        param_specs = layer._create_layer_parameter_specs()
+
+        # Check that sink parameter does not exist when logit_sink is disabled
+        self.assertNotIn("sink", param_specs)
+
+    def test_backend_override_modifier(self):
+        """Tests BackendOverrideModifier."""
+        cfg: DummyModel.Config = DummyModel.default_config()
+        cfg.layer = FlashAttention.default_config()
+
+        # By default we expect backend_overrides = None
+        self.assertIsNone(cfg.layer.backend_overrides)
+
+        cfg_modifier = (
+            BackendOverrideModifier.default_config()
+            .set(
+                backend_overrides=dict(
+                    splash_block_kv_compute=2048,
+                )
+            )
+            .instantiate()
+        )
+
+        cfg = cfg_modifier(cfg)
+        self.assertDictEqual(cfg.layer.backend_overrides, dict(splash_block_kv_compute=2048))
+
+    def test_backend_override_modifier_ignores_none(self):
+        """Tests that BackendOverrideModifier ignores overrides values of None."""
+        cfg: DummyModel.Config = DummyModel.default_config()
+        cfg.layer = FlashAttention.default_config()
+
+        # By default we expect backend_overrides = None
+        self.assertIsNone(cfg.layer.backend_overrides)
+
+        cfg_modifier = (
+            BackendOverrideModifier.default_config()
+            .set(
+                backend_overrides=dict(
+                    splash_block_kv_compute=2048,
+                    splash_block_q=None,
+                )
+            )
+            .instantiate()
+        )
+
+        cfg = cfg_modifier(cfg)
+        # We expect splash_block_q to not appear in backend_overrides since its value = None
+        self.assertDictEqual(cfg.layer.backend_overrides, dict(splash_block_kv_compute=2048))
 
 
 if __name__ == "__main__":

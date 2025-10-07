@@ -39,6 +39,12 @@ def _private_flags(flag_values: flags.FlagValues = FLAGS):
         "End time of the job query, in the format of yyyy-mm-dd or yyyy-mm-ddTH:M:SZ.",
         flag_values=flag_values,
     )
+    flags.DEFINE_boolean(
+        "earliest",
+        False,
+        "Print the earliest logs between start_time and end_time. Default is to print the latest.",
+        flag_values=flag_values,
+    )
     flags.register_validator(
         "num_lines",
         lambda value: value > 0,
@@ -85,7 +91,7 @@ def main(_, *, flag_values: flags.FlagValues = FLAGS):
     entries = client.list_entries(
         filter_=" AND ".join(filters),
         # Use descending so we read out the most recent logs.
-        order_by=cloud_logging.DESCENDING,
+        order_by=cloud_logging.ASCENDING if flag_values.earliest else cloud_logging.DESCENDING,
         max_results=flag_values.num_lines,
     )
     entries = list(entries)

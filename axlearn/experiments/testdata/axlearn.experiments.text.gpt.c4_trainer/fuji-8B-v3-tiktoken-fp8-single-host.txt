@@ -384,7 +384,7 @@ model.decoder.transformer.layer.self_attention.attention.input_linear.rotary_val
 model.decoder.transformer.layer.self_attention.attention.key_scale.klass: 'axlearn.common.attention.ScaleKey'
 model.decoder.transformer.layer.self_attention.attention.klass: 'axlearn.common.attention.GroupedQueryAttention'
 model.decoder.transformer.layer.self_attention.attention.kv_cache.cache_dtype: 'jax.numpy.bfloat16'
-model.decoder.transformer.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.attention.KVCache'
+model.decoder.transformer.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.kv_cache.kv_cache.KVCache'
 model.decoder.transformer.layer.self_attention.attention.num_heads: 32
 model.decoder.transformer.layer.self_attention.attention.output_linear.bias: False
 model.decoder.transformer.layer.self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'

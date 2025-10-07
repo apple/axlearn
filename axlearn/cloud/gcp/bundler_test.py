@@ -125,7 +125,7 @@ class CloudBuildBundlerTest(TestCase):
         with (
             mock.patch("time.sleep"),
             mock.patch(
-                f"{bundler.__name__}.get_cloud_build_status", side_effect=side_effect
+                "axlearn.cloud.gcp.cloud_build.get_cloud_build_status", side_effect=side_effect
             ) as mock_status,
         ):
             yield mock_status
@@ -167,7 +167,8 @@ class CloudBuildBundlerTest(TestCase):
         ) as mock_status:
             b = cfg.set(is_async=True).instantiate()
             with self.assertRaisesRegex(
-                RuntimeError, "CloudBuild for test-name failed: CloudBuildStatus.FAILURE"
+                RuntimeError,
+                "CloudBuild for test-repo/test-image:test-name failed: CloudBuildStatus.FAILURE",
             ):
                 b.wait_until_finished("test-name")
                 self.assertEqual(3, mock_status.call_count)
