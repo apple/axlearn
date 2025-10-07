@@ -1,0 +1,17 @@
+name: close-stale-pr
+on:
+  schedule:
+    - cron: "30 1 * * *" # Runs every day at 1:30 UTC
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v10
+        with:
+          days-before-stale: 60
+          days-before-close: 7
+          stale-pr-message: "This pull request has been automatically marked as stale because it has been inactive for 60 days. It will be closed in 7 days if no further activity occurs. If you would like to continue working on this, please remove the `stale` label or leave a comment."
+          close-pr-message: "This pull request was closed because it has been inactive for more than 7 days since being marked as stale. Please feel free to reopen it if you would like to continue."
+          exempt-pr-labels: "ready-to-merge"
+          stale-pr-label: "stale"
