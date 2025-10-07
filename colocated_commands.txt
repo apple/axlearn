@@ -1,0 +1,30 @@
+#### Different names for these images because they are in same repository #####
+
+
+export NAME=axlearn-img
+export COLOCATED_NAME=colocated-img
+
+axlearn gcp bundle --name=$NAME \
+        --bundler_spec=allow_dirty=True \
+        --bundler_type=artifactregistry \
+        --bundler_spec=dockerfile=Dockerfile \
+        --bundler_spec=image=tpu \
+        --bundler_spec=target=tpu \
+	  --bundler_spec=colocated_image_required=True \
+	--bundler_spec=colocated_image_name=$COLOCATED_NAME \
+	  --bundler_spec=colocated_dockerfile=Dockerfile.colocated
+
+
+
+axlearn gcp launch run --cluster=mlperf-v5p  \
+       --runner_name gke_tpu_pathways  \  
+        --name=$NAME  \      
+        --instance_type=tpu-v5p-32  \
+        --num_replicas=1   \      
+        --bundler_spec=allow_dirty=True  \    
+        --bundler_type=artifactregistry  \
+        --bundler_spec=image=tpu   \      
+        --bundler_spec=dockerfile=Dockerfile  \
+        --bundler_spec=target=tpu \
+        --colocated_image=$COLOCATED_NAME   \  
+        -- TPU_PREMAPPED_BUFFER_SIZE=34359738368   python3 test_benchmark.py --ckpt_path gs://cloud-tpu-multipod-dev-euw4/axlearn-fuji-v3-70b/checkpoints/step_00000100
