@@ -7,6 +7,7 @@ from typing import Callable, Union
 
 import jax
 import numpy as np
+import pytest
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
@@ -74,6 +75,7 @@ class PartitionByPathAndRankTest(TestCase):
             expected=ValueError("No rules matched"),
         ),
     )
+    @pytest.mark.for_8_devices
     def test_partition_by_path_rank(self, config: dict, expected: Union[dict, Exception]):
         if len(jax.devices()) != 8:
             self.skipTest("Test requires 8 devices")
@@ -132,6 +134,7 @@ def dispatch_and_check_sharding(
 class InputTest(TestCase):
     """Tests Input."""
 
+    @pytest.mark.for_8_devices
     def test_dispatch_global_batch(self):
         if len(jax.devices()) != 8:
             self.skipTest("Test requires 8 devices")
@@ -204,6 +207,7 @@ class InputTest(TestCase):
             },
         ),
     )
+    @pytest.mark.for_8_devices
     def test_element_spec(
         self,
         dispatcher: type[BaseInputDispatcher],

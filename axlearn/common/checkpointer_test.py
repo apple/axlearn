@@ -21,6 +21,7 @@ from unittest import mock
 
 import jax
 import orbax.checkpoint as ocp
+import pytest
 import tensorflow as tf
 from absl import logging
 from absl.testing import absltest, parameterized
@@ -171,6 +172,7 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.stop()
 
     @parameterized.parameters(Checkpointer, OrbaxCheckpointer)
+    @pytest.mark.for_8_devices
     def test_save_and_restore_mesh(self, checkpointer_cls: Type[BaseCheckpointer]):
         """Tests that we can save with one sharding and restore with a different sharding."""
         mesh_shape = (4, 2)
@@ -245,6 +247,7 @@ class CheckpointerTest(test_utils.TestCase):
             num_files=6,  # 1 array 4 shards (2 model, 2 data) + 1 array 2 shards (small array).
         ),
     )
+    @pytest.mark.for_8_devices
     def test_save_restore_files_count(
         self, max_data_shard_degree: int, shard_threshold_bytes: int, num_files: int
     ):
@@ -668,9 +671,11 @@ class CheckpointerTest(test_utils.TestCase):
         # pylint: disable=line-too-long
         with (
             _mesh(mesh_shape),
-            mock.patch("axlearn.common.file_system.listdir", patch_tf_io_behavior)
-            if listdir_add_trailing_slash
-            else nullcontext(),
+            (
+                mock.patch("axlearn.common.file_system.listdir", patch_tf_io_behavior)
+                if listdir_add_trailing_slash
+                else nullcontext()
+            ),
             tempfile.TemporaryDirectory() as temp_dir,
         ):
             cfg = Checkpointer.default_config().set(
