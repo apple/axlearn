@@ -3,6 +3,7 @@
 
 export NAME=axlearn-img
 export COLOCATED_NAME=colocated-img
+export CKPT_BUCKET_NAME=<>
 
 axlearn gcp bundle --name=$NAME \
         --bundler_spec=allow_dirty=True \
@@ -27,4 +28,4 @@ axlearn gcp launch run --cluster=mlperf-v5p  \
         --bundler_spec=dockerfile=Dockerfile  \
         --bundler_spec=target=tpu \
         --colocated_image=$COLOCATED_NAME   \  
-        -- TPU_PREMAPPED_BUFFER_SIZE=34359738368   python3 test_benchmark.py --ckpt_path gs://cloud-tpu-multipod-dev-euw4/axlearn-fuji-v3-70b/checkpoints/step_00000100
+        -- TPU_PREMAPPED_BUFFER_SIZE=34359738368   python3 test_benchmark.py --ckpt_path $CKPT_BUCKET_NAME
