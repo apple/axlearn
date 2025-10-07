@@ -1,6 +1,96 @@
 # Copyright © 2023 Apple Inc.
 
-"""Defines BaseLayer, the base class for layer implementations."""
+"""Base layer infrastructure for neural network implementations in AXLearn.
+
+This module provides the foundational classes for building neural network layers with
+support for distributed training, memory optimization, and debugging utilities.
+
+Design Philosophy:
+
+- Declarative Configuration: Parameters and behaviors are specified through configs
+  rather than imperative code, enabling better composition and experimentation.
+- Hierarchical Defaults: Settings cascade down the layer tree, allowing model-wide
+  defaults with local overrides where needed.
+- Separation of Concerns: Layers declare what they need (parameters, monitoring points),
+  while the framework handles how (initialization, sharding, statistics computation).
+
+Key Components:
+
+1. Parameter Specification Classes:
+   - `ParameterSpec`: Comprehensive parameter metadata including shape, dtype, initialization,
+     sharding, and optimizer-specific configurations (factorization, weight decay).
+   - `FactorizationSpec`: Configuration for memory-efficient gradient factorization used by
+     AdaFactor optimizer to reduce memory footprint from O(n×m) to O(n+m).
+
+2. BaseLayer:
+   The foundation class for all neural network layers, providing:
+   - Declarative parameter management with automatic initialization
+   - Hierarchical configuration inheritance (dtype, initialization cascade from parent)
+   - Built-in support for model/data parallelism via parameter sharding
+   - Memory optimization through rematerialization (checkpoint/remat)
+   - Debugging utilities via TensorStats integration
+
+3. Memory Optimization:
+   - `RematSpec`: Configuration for selective recomputation during backprop to trade
+     compute for memory, with customizable policies for fine-grained control.
+
+4. Debugging & Monitoring:
+   - `TensorStats`: Abstract interface for computing statistics on tensors
+   - `TensorRMSNorm`: Computes root mean square norm for gradient monitoring
+   - `TensorMaxAbs`: Tracks maximum absolute values for overflow detection
+   - `CompositeTensorStats`: Combines multiple statistics for comprehensive monitoring
+   - `DefaultTensorStats`: Pre-configured combination of common statistics
+
+5. Training Utilities:
+   - `ParameterNoise`: Interface for parameter perturbation during training
+
+Usage Examples:
+    ```python
+    # Pattern 1: Direct parameter creation
+    class Linear(BaseLayer):
+        def _create_layer_parameter_specs(self):
+            return {
+                "weight": ParameterSpec(
+                    shape=[self.config.input_dim, self.config.output_dim],
+                    mesh_axes=("data", "model"),
+                )
+            }
+
+        def forward(self, x):
+            return jnp.dot(x, self.parameters["weight"])
+
+    # Pattern 2: Composing child layers (more common)
+    class FFN(BaseLayer):
+        @config_class
+        class Config(BaseLayer.Config):
+            input_dim: Required[int] = REQUIRED
+            hidden_dim: Required[int] = REQUIRED
+            output_dim: Required[int] = REQUIRED
+            linear1: BaseLayer.Config = Linear.default_config()
+            linear2: BaseLayer.Config = Linear.default_config()
+            activation: BaseLayer.Config = ReLU.default_config()
+
+        def __init__(self, cfg: Config, *, parent: Optional[Module]):
+            super().__init__(cfg, parent=parent)
+            cfg = self.config
+            # Add child layers using _add_child
+            self._add_child("linear1", cfg.linear1.set(
+                input_dim=cfg.input_dim, output_dim=cfg.hidden_dim
+            ))
+            self._add_child("activation", cfg.activation)
+            self._add_child("linear2", cfg.linear2.set(
+                input_dim=cfg.hidden_dim, output_dim=cfg.output_dim
+            ))
+
+        def forward(self, x):
+            x = self.linear1(x)
+            x = self.activation(x)
+            x = self.linear2(x)
+            return x
+    ```
+
+See individual class docstrings for detailed usage and examples.
+"""
 
 import dataclasses
 import functools
@@ -33,57 +123,80 @@ from axlearn.common.utils import (
 
 @dataclasses.dataclass
 class FactorizationSpec:
-    """A FactorizationSpec describes how to factorize a parameter's gradient. Used for Adafactor."""
+    """A FactorizationSpec describes how to factorize a parameter's gradient.
 
-    # A list of None/str corresponding to the axes of the parameter shape. Each element is either:
-    # None:  no factorization along this axis.
-    # str: the factorization axis name.
-    #
-    # For adafactor, either all axes are None or exactly two of the axes are "row" and "col",
-    # respectively.
+    Used by AdaFactor optimizer for memory-efficient second-moment estimation by factorizing
+    the second-moment matrix into row and column statistics instead of storing the full matrix.
+
+    Attributes:
+        axes: A list of None/str corresponding to the axes of the parameter shape.
+            Each element is either:
+            - None: no factorization along this axis.
+            - str: the factorization axis name (typically "row" or "col").
+
+            For AdaFactor, either:
+            - All axes are None (no factorization, used for small parameters)
+            - Exactly two axes are "row" and "col" (factorized, used for large matrices)
+
+            Example:
+                For a weight matrix of shape [1024, 4096]:
+                axes=["row", "col"] enables factorization
+
+                For a 3D tensor of shape [8, 1024, 4096]:
+                axes=[None, "row", "col"] factorizes only the last two dimensions
+    """
+
     axes: Sequence[Optional[str]]
 
 
-# NestedFactorizationSpec = Dict[str, Union[FactorizationSpec, "NestedFactorizationSpec"]]
+# Ideally this would be a recursive type:
+# Dict[str, Union[FactorizationSpec, "NestedFactorizationSpec"]]
+# but we use Any to avoid issues with recursive type definitions in Python's type system.
 NestedFactorizationSpec = dict[str, Union[FactorizationSpec, Any]]
 
 
-# ParameterSpec is a dataclass so that jax.tree.map does not expand it.
 @dataclasses.dataclass
 class ParameterSpec(TensorSpec):
-    """Specification of a layer parameter."""
+    """Specification of a layer parameter.
 
-    # dtype (defined in TensorSpec):
-    # The data type of the param. If None, uses the layer's default dtype.
-    #
-    # mesh_axes (defined in TensorSpec):
-    # If mesh_axes is None, the parameter will not be partitioned and will be replicated.
-    # If mesh_axes is a sequence, it should have exactly len(shape) elements.
-    # mesh_axes[i] describes partitioning for shape[i], where each value can be:
-    # - None: do not partition along this axis, or
-    # - 'model': partition along this axis across the 'model' dim of the device mesh.
-    # - 'data': partition along this axis across the 'data' dim of the device mesh.
+    This is a dataclass so that jax.tree.map does not expand it, treating it as a leaf node
+    in pytrees. This ensures that ParameterSpec instances are preserved as whole objects
+    during tree transformations rather than being decomposed into their fields.
 
-    # The initializer of the param. If None, uses the layer's default initializer.
+    Inherits from TensorSpec:
+        shape: The shape of the parameter tensor.
+        dtype: The data type of the param. If None, uses the layer's default dtype.
+        mesh_axes: Partitioning specification for the parameter.
+            - If None, the parameter will not be partitioned and will be replicated.
+            - If a sequence, it should have exactly len(shape) elements.
+            - mesh_axes[i] describes partitioning for shape[i], where each value can be:
+              None(do not partition along this axis), 'model', 'data', 'fsdp', 'track', or etc.
+        memory_kind: Optional memory location ('device' or 'pinned_host').
+
+    Attributes:
+        initializer: The initializer of the param. If None, uses the layer's default initializer.
+        factorization: Factorization spec for the parameter. Used by AdaFactor optimizer to
+            determine which dimensions can be factorized for memory-efficient second-moment
+            estimation.
+        fan_axes: Fan axes information for the parameter. Used to compute fan-in/fan-out
+            for initialization schemes like Xavier/He initialization.
+        weight_decay_scale: Per-parameter weight decay / l2 regularization scale.
+            The effective weight decay rate will be:
+                global_weight_decay_rate * param_weight_decay_scale
+
+            Ways to configure:
+            - Layer implementation can override _create_layer_parameter_specs() or
+              create_parameter_specs_recursively() to set weight_decay_scale.
+            - Set to 0 to disable weight decay on specific parameters.
+            - Users can also use `per_param_scale` arg of `add_decayed_weights` or
+              `weight_decay_per_param_scale` arg of optimizers with custom logic.
+
+            Note: ParameterSpec.weight_decay_scale takes precedence over `per_param_scale`.
+    """
+
     initializer: Optional[param_init.Initializer] = None
-    # Factorization spec for the parameter.
     factorization: Optional[FactorizationSpec] = None
-    # Fan axes information for the parameter.
     fan_axes: Optional[FanAxes] = None
-
-    # Per-parameter weight decay / l2 regularization scale.
-    #
-    # The effective weight decay rate will be global_weight_decay_rate * param_weight_decay_scale.
-    #
-    # A layer implementation can override _create_layer_parameter_specs() or
-    # create_parameter_specs_recursively() to set the weight_decay_scale of its parameters.
-    # Specifically, set the scale to 0 to disable weight decay on the parameter.
-    #
-    # User can also set the `per_param_scale` arg of `add_decayed_weights` or the
-    # `weight_decay_per_param_scale` arg of optimizers with custom logic to compute per-parameter
-    # scales given a parameter tree, e.g., by matching parameter paths to regex-based rules.
-    #
-    # Note that ParameterSpec.weight_decay_scale takes precedence over `per_param_scale`.
     weight_decay_scale: Optional[float] = None
 
     def fans(self) -> dict[str, float]:
@@ -108,15 +221,33 @@ class ParameterSpec(TensorSpec):
         return result
 
 
-# For new code, use Nested[ParameterSpec].
+# Legacy type alias. For new code, use Nested[ParameterSpec] from axlearn.common.utils.
 NestedParameterSpec = Optional[Union[ParameterSpec, dict[str, Any]]]
 
 
 @dataclasses.dataclass
 class RematSpec:
-    """RematSpec captures the configurable arguments for 'jax.remat'.
+    """Configuration for rematerialization (remat) / checkpointing of layer computations.
 
-    https://github.com/google/jax/blob/1b79caa/jax/_src/ad_checkpoint.py#L99
+    Rematerialization (also called checkpointing) is a memory-saving technique where
+    intermediate values are recomputed during the backward pass instead of being saved
+    during the forward pass. This trades computation for memory.
+
+    In JAX terminology, "remat" and "checkpoint" are interchangeable names for the same
+    feature - jax.remat() and jax.checkpoint() are aliases. The term "remat" is short
+    for "rematerialization", which refers to recomputing (rematerializing) values when
+    needed rather than storing them.
+
+    Reference:
+        https://github.com/google/jax/blob/1b79caa/jax/_src/ad_checkpoint.py#L99
+        https://docs.jax.dev/en/latest/jep/11830-new-remat-checkpoint.html
+
+    Attributes:
+        prevent_cse: If True, prevents common subexpression elimination optimizations
+            that might defeat the purpose of rematerialization.
+        policy: Optional rematerialization policy that controls which values to save
+            vs. recompute. Can be a custom policy or one from jax.checkpoint_policies
+            (e.g., checkpoint_dots to save only matrix multiplication results).
     """
 
     prevent_cse: bool = True
@@ -132,25 +263,88 @@ class ParameterNoise(Configurable):
 
 
 class TensorStats(Module):
-    """An abstract Module to add summaries about the given Tensors."""
+    """An abstract Module to add summaries about the given Tensors.
+
+    TensorStats provides a flexible way to compute and log statistics (e.g., RMS norm, max abs)
+    about tensors at various points in a model. This is useful for debugging, monitoring training
+    stability, and understanding model behavior.
+
+    Usage pattern:
+    1. Configure a TensorStats implementation in BaseLayer.Config.tensor_stats
+    2. The layer calls self._add_tensor_stats(name, tensor) at points of interest
+    3. The TensorStats implementation computes and logs the requested statistics
+
+    Example:
+        # In layer configuration:
+        layer_cfg.tensor_stats = DefaultTensorStats.default_config()
+
+        # In layer forward method:
+        self._add_tensor_stats("attention_output", attn_output)
+
+        # This logs stats like "layer_name/tensor_stats/attention_output/rms_norm"
+
+    Common implementations:
+        - TensorRMSNorm: Computes RMS norm of tensors
+        - TensorMaxAbs: Computes maximum absolute value
+        - DefaultTensorStats: Combines RMS norm and max abs
+        - CompositeTensorStats: Combines multiple TensorStats implementations
+    """
 
     def add_stats(self, name: str, value: Nested[Tensor]):
-        """Subclasses must implement this method."""
+        """Computes and adds summaries for the given tensor.
+
+        Args:
+            name: Name identifier for the tensor (e.g., "attention_output", "linear1_outputs").
+            value: The tensor or nested structure of tensors to compute stats for.
+
+        Raises:
+            NotImplementedError: Must be implemented by subclasses.
+        """
         raise NotImplementedError(type(self))
 
 
 class CompositeTensorStats(TensorStats):
-    """A TensorStats consisting of multiple child TensorStats."""
+    """A TensorStats that combines multiple child TensorStats implementations.
+
+    This class implements the composition pattern, allowing you to compute multiple
+    statistics on the same tensors without modifying existing implementations.
+    It's useful when you want different views of your tensors for debugging or monitoring.
+
+    Example usage:
+        # Compute both RMS norm and max absolute value:
+        tensor_stats = CompositeTensorStats.default_config().set(
+            tensor_stats={
+                "norm": TensorRMSNorm.default_config(),
+                "max": TensorMaxAbs.default_config(),
+            }
+        )
+
+        # This produces summaries like:
+        # - With inline_child_summaries=False (default):
+        #   "layer/tensor_stats/attention/norm/rms_norm": 0.5
+        #   "layer/tensor_stats/attention/max/max_abs": 1.2
+        # - With inline_child_summaries=True:
+        #   "layer/tensor_stats/attention/rms_norm": 0.5
+        #   "layer/tensor_stats/attention/max_abs": 1.2
+
+    Common use cases:
+        - Debugging gradient explosions: Combine max_abs with percentile stats
+        - Monitoring training stability: Combine RMS norm with mean/variance
+        - Custom analysis: Mix any TensorStats implementations you need
+
+    See DefaultTensorStats for a pre-configured version with common statistics.
+    """
 
     @config_class
     class Config(TensorStats.Config):
+        # Dictionary of child TensorStats configs to apply. Keys become prefixes in summary paths
+        # unless inline_child_summaries is True.
         tensor_stats: dict[str, TensorStats.Config] = {}
-
-        # Whether to inline child summaries.
-        #
-        # Suppose tensor_stats = {"foo": TensorRMSNorm.default_config()},
-        # if inline_child_summaries=False, the summaries will be {"foo": {"rms_norm": norm}};
-        # if inline_child_summaries=True, the summaries will be {"rms_norm": norm}.
+        # Whether to inline child summaries into the parent's summary.
+        #  If False (default), child stats are nested under their keys:
+        #      {"foo": {"rms_norm": value}}
+        #  If True, child summaries are flattened into parent namespace:
+        #      {"rms_norm": value}
         inline_child_summaries: bool = False
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
@@ -177,17 +371,34 @@ class CompositeTensorStats(TensorStats):
 
 
 class TensorRMSNorm(TensorStats):
+    """Computes and logs the root mean square norm of tensors."""
+
     def add_stats(self, name: str, value: Nested[Tensor]):
         self.add_summary("rms_norm", (value**2.0).mean().astype(jnp.float32) ** 0.5)
 
 
 class TensorMaxAbs(TensorStats):
+    """Computes and logs the maximum absolute value of tensors."""
+
     def add_stats(self, name: str, value: Nested[Tensor]):
         self.add_summary("max_abs", jnp.abs(value).max().astype(jnp.float32))
 
 
 class DefaultTensorStats(CompositeTensorStats):
-    """Default tensor stats that compute RMS norm and max value."""
+    """Default tensor stats that compute RMS norm and max value.
+
+    This is a pre-configured CompositeTensorStats that combines the two most
+    commonly used statistics for monitoring neural networks:
+    - RMS norm: Helps detect gradient explosion/vanishing
+    - Max absolute value: Shows the range of tensor values
+
+    The summaries are inlined by default, producing paths like:
+        "layer/tensor_stats/attention/rms_norm": 0.5
+        "layer/tensor_stats/attention/max_abs": 1.2
+
+    This is the recommended starting point for adding tensor monitoring to layers.
+    You can override the configuration if you need different statistics.
+    """
 
     @config_class
     class Config(CompositeTensorStats.Config):
@@ -199,49 +410,80 @@ class DefaultTensorStats(CompositeTensorStats):
 
 
 class BaseLayer(Module):
-    """A base class for layer implementations."""
+    """Base class for all neural network layers in AXLearn.
+
+    BaseLayer extends Module to provide neural network-specific functionality including
+    parameter management, initialization, sharding, and various training utilities.
+    It serves as the foundation for all layer implementations (Linear, Conv, Attention, etc.).
+
+    Key features:
+        1. Parameter Management: Declarative parameter specification with shape, dtype,
+           initialization, and sharding configuration through ParameterSpec.
+
+        2. Hierarchical Configuration: Inherits dtype and initialization from parent layers,
+           allowing model-wide defaults with local overrides.
+
+        3. Distributed Training Support: Built-in parameter sharding via mesh_axes for
+           model parallelism and FSDP.
+
+        4. Memory Optimization: Optional rematerialization (remat_spec) to trade compute
+           for memory during backpropagation.
+
+        5. Debugging & Monitoring: TensorStats integration for tracking layer activations
+           and gradients during training.
+
+        6. Training Utilities: Parameter noise injection for regularization and exploration.
+
+    Layer implementation patterns:
+
+        Pattern 1: Direct parameters (for primitive layers like Linear, Conv):
+            - Override _create_layer_parameter_specs() to declare weight/bias parameters
+            - Access parameters via self.parameters["name"] in forward()
+
+        Pattern 2: Composing child layers (more common for compound layers):
+            - Define child configs in Config class
+            - Use self._add_child() in __init__ to instantiate child layers
+            - Call child layers directly in forward() - context management is automatic
+
+        Both patterns can be mixed in a single layer. See module docstring for examples.
+
+    Subclass implementation guide:
+        1. Define Config class with layer-specific configuration fields
+        2. For direct parameters: Override _create_layer_parameter_specs()
+        3. For child layers: Override __init__ and use _add_child()
+        4. Implement forward() method for the layer's computation
+        5. Optionally use _add_tensor_stats() to monitor intermediate values
+    """
 
     @config_class
     class Config(Module.Config):
-        """Configures BaseLayer."""
+        """Configuration for BaseLayer. These settings cascade down the layer hierarchy - child
+        layers inherit from parents unless explicitly overridden.
+        """
 
-        # If not None, the default parameter dtype.
-        # If None, inherits from the parent module.
+        # Default parameter dtype. If None, inherits from parent module.  Common values:
+        # jnp.float32, jnp.bfloat16 for mixed precision training.
         dtype: Optional[jnp.dtype] = None
-
-        # If not None, parameter initialization config of this module.
-        # If None, inherits from the parent module.
+        # Parameter initialization configuration. If None, inherits from parent. Controls weight
+        # initialization schemes (Xavier, He, etc.).
         param_init: Optional[DefaultInitializer.Config] = None
-
-        # The partition spec for the layer parameters.
-        # When the layer contains a weight parameter and a bias parameter,
-        # the partition spec will be defined in terms of the weight parameter,
-        # while the partition spec of the bias parameter can be derived accordingly.
+        # Sharding specification for distributed training.  Defines how parameters are partitioned
+        # across the device mesh.  For layers with weight and bias, typically only weight spec is
+        # provided; bias spec is derived automatically.
         param_partition_spec: NestedParameterSpec = None
-
-        # A RematSpec containing kwargs used by jax.remat as it wraps this layer.
-        # If None, leaves XLA to figure out how to handle rematerialization without guidance.
+        # Rematerialization (checkpointing) configuration for memory optimization.  When set, wraps
+        # layer methods with jax.checkpoint to trade compute for memory.  If None, XLA handles
+        # rematerialization automatically.
         remat_spec: Optional[RematSpec] = None
-
-        # If not None, BaseLayer.apply_parameter_noise_recursively() will apply noise to the given
-        # parameters.
-        #
-        # `apply_parameter_noise_recursively` is not called by BaseLayer.forward() by default and
-        # should be called by the trainer explicitly.
-        #
-        # `apply_parameter_noise_recursively` calls the child layers to apply noise (if any)
-        # before applying the parent layer's noise (if any).
+        # Parameter noise configuration for regularization/exploration.  Note:
+        # apply_parameter_noise_recursively() must be called explicitly by trainer, not
+        # automatically invoked during forward pass.  Child layer noise is applied before parent
+        # layer noise.
         param_noise: Optional[ParameterNoise.Config] = None
-
-        # If not None, adds stats about the tensors given in the `_add_tensor_stats` calls.
-        #
-        # The tensor_stats abstraction allows users to compute stats (e.g., mean, RMS norm, max abs)
-        # on tensors such as layer inputs/outputs and add them to summaries.
-        #
-        # The abstraction decouples which tensors to collect stats on, which will be controlled by
-        # the layer implementation via `_add_tensor_stats(name, value)` calls, vs. how to compute
-        # and report the stats, which will be controlled by `Config.tensor_stats` and configured
-        # on a per-experiment basis.
+        # Tensor statistics collection for debugging and monitoring.  When configured, enables
+        # _add_tensor_stats() calls within the layer.  The layer implementation controls WHAT to
+        # monitor (via _add_tensor_stats calls), while this config controls HOW to compute stats
+        # (RMS norm, max, etc.).
         tensor_stats: Optional[TensorStats.Config] = None
 
     def __init__(self, cfg: Config, *, parent: Optional["Module"]):
@@ -618,23 +860,42 @@ class BaseLayer(Module):
 
 
 def no_remat(fn: Callable) -> Callable:
-    """Annotates fn so that remat will not be applied to it.
+    """Decorator to exclude a method from rematerialization (remat/checkpoint).
 
-    This can be used to prevent tracers from leaking into helper methods that depend
-    only on data available at compile time when using `remat_spec`. For example, the following
-    method cannot be used in a class that uses remat_spec without using @no_remat:
+    When a layer has remat_spec configured, ALL its methods are wrapped with jax.checkpoint
+    by default, which requires all inputs and outputs to be JAX types (arrays). This causes
+    problems for helper methods that work with Python values like strings or configuration
+    objects.
 
-    ```
-    def fn(self, st: str):
-        if st=='three':
-            return 3
-    ```
+    Use @no_remat to exclude such helper methods from rematerialization.
+
+    When to use @no_remat:
+    - Methods that process non-JAX types (strings, configs, Python objects)
+    - Methods that perform compile-time logic (if/else on string values)
+    - Pure utility methods that don't involve tensor computations
+    - Methods that would fail with "abstract tracer" errors under remat
+
+    Example problematic method that needs @no_remat:
+        ```python
+        @no_remat  # Required because method uses string comparison
+        def get_activation(self, name: str):
+            if name == 'relu':
+                return jax.nn.relu
+            elif name == 'gelu':
+                return jax.nn.gelu
+        ```
+
+    Without @no_remat, the above would fail because remat converts the string
+    argument to an abstract tracer, making string comparison impossible.
+
+    Implementation note: This sets a _no_remat attribute that _maybe_wrap_with_remat
+    checks to skip wrapping the method with jax.checkpoint.
 
     Args:
-        fn: The method to annotate.
+        fn: The method to exclude from rematerialization.
 
     Returns:
-        The input `fn` after having been annotated.
+        The same method marked to skip rematerialization.
     """
     # pylint: disable=protected-access
     fn._no_remat = True
