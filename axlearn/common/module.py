@@ -6,33 +6,97 @@
 # Copyright 2021 The TensorFlow Authors. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 (the "License").
 
-"""Base class of modules.
+"""Foundation module system for AXLearn.
 
-Design choices:
-* All module hyper-parameters are encapsulated by the module's config.
-* Every module has a name, default dtype, and an optional param_init config.
-* Every module has a parent except the root module.
-* A module's config is frozen upon __init__. This prevents the config from being modified by
-  accident.
-* Module.config returns a copy of the module's config. This allows the caller to make changes
-  without affecting the original config.
+Why do we need Module?
+======================
 
-Module.__init__() wraps public methods of subclasses of Module to propagate child context
-automatically. Specifically, suppose we have class MyModule with a method `do_foo`:
+1. JAX is functional - it has no built-in concept of stateful objects like layers or models.  Module
+   provides the base class for all objects. The functional() method converts a Module instance into
+   a pure JAX function.
+
+2. Deep learning needs hierarchies - networks are composed of layers within layers.  Module provides
+   _add_child() to form parent-child trees. For example:
+   - A trainer contains a model, optimizer, and data loader
+   - A model contains layers, which contain sub-layers
+
+3. Hierarchical calls need shared context - when a model calls its layers, they all need access to
+   the same PRNG keys, training mode, etc.  Module automatically wraps public methods to propagate
+   InvocationContext, which carries:
+   - PRNG keys (automatically split for each child)
+   - Training/evaluation mode
+   - State (parameters for neural layers)
+   - Output collection (summaries, metrics)
+   This avoids manually threading these through every method call.
+
+What is a Module?
+=================
+
+A Module is a configurable, composable unit of computation that:
+- Has a nested Config class holding its hyperparameters
+- Maintains a frozen instance of this Config, preventing accidental changes
+- Has a name and parent (parent=None for root modules)
+- Can have child modules, forming a tree structure
+- Automatically wrap public methods to take and propagate the parameter InvocationContext.
+- Collects and propagates outputs (summaries, metrics, state updates)
+
+
+An Example Module
+=================
 
 ```
 class MyModule(Module):
-    def do_foo(self, ...):
-        ...
+    @config_class
+    class Config(Module.Config):
+        dropout_rate: float = 0.1
+        child: Module.Config = ...
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        # Calls cfg.child.instantiate(parent=self) to instantiate the child module.
+        self._add_child("child", cfg.child)
+
+    def _compute_scale(self, x: Tensor) -> float:
+        # Private methods are NOT wrapped - no automatic context access.
+        # Called directly during computation without context overhead.
+        return jnp.sqrt(x.shape[-1])
+
+    @nowrap
+    def dropout_rate(self) -> float:
+        # Public methods marked with @nowrap are NOT wrapped, so it
+        # cannot access context (self.prng_key, self.is_training will fail).
+        return self.config.dropout_rate
+
+    def forward(self, x: Tensor) -> Tensor:
+        # Public methods WITHOUT @nowrap ARE automatically wrapped.
+        # This method receives InvocationContext and can access:
+
+        # 1. Call private method (no context needed)
+        scale = self._compute_scale(x)
+
+        # 2. Call @nowrap-ed public method (no context)
+        dropout_rate = self.dropout_rate()
+
+        # 3. Access context properties (from InvocationContext)
+        key = self.prng_key  # Automatically split PRNG key for this module
+        is_training = self.is_training  # Training mode flag
+
+        # 4. Call child module's wrapped method - context automatically propagates!
+        # Child receives its own context with split PRNG key, same training mode, etc.
+        x = self.child(x)
+
+        # Apply dropout using context
+        if is_training:
+            keep_mask = jax.random.bernoulli(key, 1 - dropout_rate, x.shape)
+            x = x * keep_mask / (1 - dropout_rate)
+
+        return x * scale
 ```
 
-`MyModule.__init__` will identify `MyModule.do_foo` as one of the methods to wrap through
-`Module._methods_to_wrap_for_auto_child_context` (which can be overridden by subclasses, e.g.,
-in RedirectToSharedModule). It will then wrap the method via `_wrap_method_with_auto_child_context`
-and install the wrapped function as `self.do_foo`.
+Module automatically wraps `forward()` via `_wrap_method_with_auto_child_context` during
+`__init__`. This allows parent modules to call `self.my_child.forward(x)` without manually
+creating or passing InvocationContext - it propagates automatically through the module tree.
 
-This allows MyModule's parents to invoke `do_foo` as `self.my_child.do_foo(...)` without having
-to create the child context explicitly.
 """
 
 import contextlib
