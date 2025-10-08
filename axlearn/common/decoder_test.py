@@ -17,7 +17,7 @@ from absl.testing import absltest, parameterized
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import Mesh
 
-from axlearn.common import causal_lm, decoding, logit_modifiers, utils
+from axlearn.common import decoding, logit_modifiers, utils
 from axlearn.common.attention import (
     ALiBiAttentionLogitBiasLayer,
     CausalAttentionLogitBiasLayer,
@@ -32,6 +32,7 @@ from axlearn.common.base_layer import DefaultTensorStats, RematSpec
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.config import InstantiableConfig, config_for_function
 from axlearn.common.decoder import Decoder, LmHead, _segment_ids_from_causal_input_ids
+from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import functional
@@ -672,7 +673,7 @@ class TestDecoder(TestCase):
         logits = jax.random.normal(data_key, [2, 3])
         temperature = 1 / 17
         with unittest.mock.patch.object(
-            causal_lm.TransformerTextEmbeddings, "attend", lambda *args, **kwargs: logits
+            TransformerTextEmbeddings, "attend", lambda *args, **kwargs: logits
         ):
             decoder_cfg = gpt_decoder_config(
                 stack_cfg=StackedTransformerLayer.default_config(),
@@ -945,5 +946,4 @@ class UtilsTest(TestCase):
 
 
 if __name__ == "__main__":
-    with utils.numeric_checks(True):
-        absltest.main()
+    absltest.main()
