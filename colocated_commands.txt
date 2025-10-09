@@ -4,6 +4,7 @@
 export NAME=axlearn-img
 export COLOCATED_NAME=colocated-img
 export CKPT_BUCKET_NAME=<>
+export CLUSTER_NAME=<>
 
 axlearn gcp bundle --name=$NAME \
         --bundler_spec=allow_dirty=True \
@@ -17,7 +18,7 @@ axlearn gcp bundle --name=$NAME \
 
 
 
-axlearn gcp launch run --cluster=mlperf-v5p  \
+axlearn gcp launch run --cluster=$CLUSTER_NAME  \
        --runner_name gke_tpu_pathways  \  
         --name=$NAME  \      
         --instance_type=tpu-v5p-32  \
@@ -29,3 +30,41 @@ axlearn gcp launch run --cluster=mlperf-v5p  \
         --bundler_spec=target=tpu \
         --colocated_image=$COLOCATED_NAME   \  
         -- TPU_PREMAPPED_BUFFER_SIZE=34359738368   python3 test_benchmark.py --ckpt_path $CKPT_BUCKET_NAME
+
+
+#### Commands to build images separately ######
+
+export NAME=lk-axlearnimg13
+export COLOCATED_NAME=colocated-image23
+export CKPT_BUCKET_NAME=<>
+export CLUSTER_NAME=<>
+
+### colocated image #####
+axlearn gcp bundle --name=$COLOCATED_NAME \
+  --bundler_spec=allow_dirty=True \
+  --bundler_type=artifactregistry \
+  --bundler_spec=dockerfile=Dockerfile \
+  --bundler_spec=image=$COLOCATED_NAME \
+  --bundler_spec=target=colocated-python
+
+### axlearn image #####
+axlearn gcp bundle --name=$NAME \
+        --bundler_spec=allow_dirty=True \
+        --bundler_type=artifactregistry \
+        --bundler_spec=dockerfile=Dockerfile \
+        --bundler_spec=image=tpu \
+        --bundler_spec=target=tpu 
+
+axlearn gcp launch run --cluster=$CLUSTER_NAME  \
+       --runner_name gke_tpu_pathways  \  
+        --name=$NAME  \      
+        --instance_type=tpu-v5p-32  \
+        --num_replicas=1   \      
+        --bundler_spec=allow_dirty=True  \    
+        --bundler_type=artifactregistry  \
+        --bundler_spec=image=tpu   \      
+        --bundler_spec=dockerfile=Dockerfile  \
+        --bundler_spec=target=tpu \
+        --colocated_image=$COLOCATED_NAME   \  
+        -- TPU_PREMAPPED_BUFFER_SIZE=34359738368   python3 test_benchmark.py --ckpt_path $CKPT_BUCKET_NAME
+
