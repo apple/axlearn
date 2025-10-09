@@ -2,6 +2,7 @@
 
 ARG TARGET=base
 ARG BASE_IMAGE=ubuntu:22.04
+ARG BASE_IMAGE_COLOCATED=us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/sidecar:2025_10_06-python_3.10-jax_0.6.2
 
 FROM ${BASE_IMAGE} AS base
 
@@ -117,6 +118,30 @@ RUN if [ "$INSTALL_PATHWAYS_JAXLIB" = "true" ]; then \
         --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html; \
     fi
 COPY . .
+
+################################################################################
+# Colocated Python container spec.                                             #
+################################################################################
+
+FROM ${BASE_IMAGE_COLOCATED} as colocated-python
+
+WORKDIR /app
+COPY . .
+
+# Install the additional user-provided dependencies, strictly enforcing the rules
+# from the base image's constraints file.
+RUN \
+    echo "--> Installing user-provided dependencies..." && \
+    uv pip install ".[core,gcp]" -c /opt/venv/server_constraints.txt && \
+    \
+    # 2. Verify that the colocated_python_cpu_client is present.
+    echo "--> Verifying JAX patch integrity..." && \
+    python -c "from jax._src.lib import _jax; _jax.colocated_python_cpu_client" && \
+    echo "--> JAX patch verification successful." && \
+    \
+    # 3. Clean the cache to keep the image slim.
+    uv cache clean
+
 
 ################################################################################
 # GPU container spec.                                                          #
