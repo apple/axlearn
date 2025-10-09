@@ -140,7 +140,7 @@ class ArtifactRegistryBundler(DockerBundler):
             cfg.target=None
             
             colocated_bundler_class = ColocatedArtifactRegistryBundler(cfg=cfg)
-            colocated_image_name = colocated_bundler_class.bundle(tag="latest")
+            colocated_image_name = colocated_bundler_class.bundle(tag=cfg.image)
         
             cfg.dockerfile=actual_dockerfile
             cfg.image=actual_name

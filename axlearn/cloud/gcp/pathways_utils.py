@@ -89,7 +89,7 @@ FLAGS = flags.FLAGS
 
 def get_colocated_python_image(colocated_image_name, fv: flags.FlagValues = FLAGS) -> str:
     repo = gcp_settings("docker_repo", required=False, fv=fv)
-    return repo+"/"+colocated_image_name+":latest"
+    return repo+"/"+colocated_image_name+":"+colocated_image_name
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
