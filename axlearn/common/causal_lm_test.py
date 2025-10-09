@@ -8,13 +8,12 @@ from typing import cast
 import jax
 import jax.random
 import numpy as np
-import pytest
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
 from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
-from axlearn.common import causal_lm, utils
+from axlearn.common import causal_lm
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
     CausalAttentionLogitBiasLayer,
@@ -476,14 +475,12 @@ class ModelTest(TestCase):
         )
 
     # TODO(markblee): Add a pytest marker for multi-device tests.
-    @pytest.mark.skipif(
-        jax.device_count() != 4 or jax.process_count() != 1,
-        reason=(
-            "Incorrect device & process count for mesh.\n"
-            "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
-        ),
-    )
     def test_constrain_input_batch(self):
+        if jax.device_count() != 4 or jax.process_count() != 1:
+            self.skipTest(
+                "Incorrect device & process count for mesh.\n"
+                "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
+            )
         model = (
             self._model_config(vocab_size=10, seq_len=10)
             .set(
@@ -817,5 +814,4 @@ class ModelAuxLossTest(TestCase):
 
 
 if __name__ == "__main__":
-    with utils.numeric_checks(True):
-        absltest.main()
+    absltest.main()
