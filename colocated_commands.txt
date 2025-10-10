@@ -13,8 +13,7 @@ axlearn gcp bundle --name=$NAME \
         --bundler_spec=image=tpu \
         --bundler_spec=target=tpu \
 	  --bundler_spec=colocated_image_required=True \
-	--bundler_spec=colocated_image_name=$COLOCATED_NAME \
-	  --bundler_spec=colocated_dockerfile=Dockerfile.colocated
+	--bundler_spec=colocated_image_name=$COLOCATED_NAME
 
 
 
