@@ -186,6 +186,7 @@ def flash_attention_kernel(
         if q.dtype == jnp.bfloat16:
             precision = "default"
         else:
+            # Use `jax.config.default_matmul_precision`.
             precision = None
 
         qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32, precision=precision)
@@ -813,7 +814,21 @@ def _flash_attention_dq_kernel(
         di = jnp.expand_dims(di_ref[0], -1)
 
         qk_dims = NT_DIM_NUMBERS if k_layout == HEAD_DIM_MINOR else NN_DIM_NUMBERS
-        qk_uncapped = lax.dot_general(q, k, qk_dims, preferred_element_type=float32)
+
+        # TODO(changlan): Revisit once Mosaic supports higher precision.
+        if q.dtype == jnp.bfloat16:
+            precision = "default"
+        else:
+            # Use `jax.config.default_matmul_precision`.
+            precision = None
+
+        qk_uncapped = lax.dot_general(
+            q,
+            k,
+            qk_dims,
+            preferred_element_type=float32,
+            precision=precision,
+        )
 
         qk = _apply_mask_and_soft_cap(
             qk_uncapped,
@@ -843,6 +858,7 @@ def _flash_attention_dq_kernel(
             v,
             dp_dims,
             preferred_element_type=jnp.float32,
+            precision=precision,
         )
         ds = (dp - di) * p
         if attn_logits_soft_cap is not None:
@@ -857,6 +873,7 @@ def _flash_attention_dq_kernel(
             k,
             dq_dims,
             preferred_element_type=jnp.float32,
+            precision=precision,
         )
 
     @pl.when(j == grid_width - 1)
@@ -1183,7 +1200,19 @@ def _flash_attention_dkv_kernel(
         di = pl.load(di_ref, (pl.ds(1), slice(None)))
 
         qk_dims = NT_DIM_NUMBERS if q_layout == HEAD_DIM_MINOR else NN_DIM_NUMBERS
-        qk_uncapped = lax.dot_general(k, q, qk_dims, preferred_element_type=jnp.float32)
+        # TODO(changlan): Revisit once Mosaic supports higher precision.
+        if q.dtype == jnp.bfloat16:
+            precision = "default"
+        else:
+            # Use `jax.config.default_matmul_precision`.
+            precision = None
+        qk_uncapped = lax.dot_general(
+            k,
+            q,
+            qk_dims,
+            preferred_element_type=jnp.float32,
+            precision=precision,
+        )
 
         qk = _apply_mask_and_soft_cap(
             qk_uncapped,
@@ -1206,6 +1235,7 @@ def _flash_attention_dkv_kernel(
             do,
             NT_DIM_NUMBERS,
             preferred_element_type=jnp.float32,
+            precision=precision,
         )
         if dropout_rate > 0.0:
             dm = _generate_blockwise_dropout_mask(
@@ -1227,7 +1257,12 @@ def _flash_attention_dkv_kernel(
         else:
             pr = p
 
-        dv = lax.dot(pr.astype(do.dtype), do, preferred_element_type=jnp.float32)
+        dv = lax.dot(
+            pr.astype(do.dtype),
+            do,
+            preferred_element_type=jnp.float32,
+            precision=precision,
+        )
         dv = dv.astype(dv_scratch_ref.dtype) + pl.load(dv_scratch_ref, (slice_k, slice(None)))
         pl.store(dv_scratch_ref, (slice_k, slice(None)), dv)
 
@@ -1238,7 +1273,13 @@ def _flash_attention_dkv_kernel(
             g = ds * (1 - d)
             ds = g + g * d
         dk_dims = NN_DIM_NUMBERS if q_layout == HEAD_DIM_MINOR else NT_DIM_NUMBERS
-        dk = lax.dot_general(ds.astype(do.dtype), q, dk_dims, preferred_element_type=jnp.float32)
+        dk = lax.dot_general(
+            ds.astype(do.dtype),
+            q,
+            dk_dims,
+            preferred_element_type=jnp.float32,
+            precision=precision,
+        )
         dk = dk.astype(dk_scratch_ref.dtype) + pl.load(dk_scratch_ref, (slice_k, slice(None)))
         pl.store(dk_scratch_ref, (slice_k, slice(None)), dk)
         if dq_scratch_ref is not None or dq_ref is not None:
@@ -1247,6 +1288,7 @@ def _flash_attention_dkv_kernel(
                 k,
                 NN_DIM_NUMBERS,
                 preferred_element_type=jnp.float32,
+                precision=precision,
             )
             if dq_scratch_ref is not None:
                 # Compute block size != memory block size

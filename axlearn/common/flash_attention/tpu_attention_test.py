@@ -184,7 +184,7 @@ class TestFlashAttention(TestCase):
         per_head_dim=[64, 128],
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
-        matmul_precision=[None],  # TODO(c_lan): enable "highest", which causes crash now.
+        matmul_precision=[None, "highest"],
         dropout_rate=[0, 0.5],
         head_group_size=[2, 1],
     )

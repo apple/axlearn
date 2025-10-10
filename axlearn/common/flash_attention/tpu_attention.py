@@ -990,12 +990,16 @@ class TPUSplashAttention(TPUFlashAttention):
             block_kv_dkv_compute=self.get_backend_overrides(
                 "splash_block_kv_dkv_compute", block_size
             ),
-            block_q_dq=None
-            if self._use_fused
-            else self.get_backend_overrides("splash_block_q_dq", block_size),
-            block_kv_dq=None
-            if self._use_fused
-            else self.get_backend_overrides("splash_block_kv_dq", block_size),
+            block_q_dq=(
+                None
+                if self._use_fused
+                else self.get_backend_overrides("splash_block_q_dq", block_size)
+            ),
+            block_kv_dq=(
+                None
+                if self._use_fused
+                else self.get_backend_overrides("splash_block_kv_dq", block_size)
+            ),
             # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
             # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
             # and 1.14x in 539.5b.
@@ -1059,12 +1063,16 @@ class TPUSplashAttention(TPUFlashAttention):
             block_kv_dkv_compute=self.get_backend_overrides(
                 "splash_block_kv_dkv_compute", block_size
             ),
-            block_q_dq=None
-            if self._use_fused
-            else self.get_backend_overrides("splash_block_q_dq", block_size),
-            block_kv_dq=None
-            if self._use_fused
-            else self.get_backend_overrides("splash_block_kv_dq", block_size),
+            block_q_dq=(
+                None
+                if self._use_fused
+                else self.get_backend_overrides("splash_block_q_dq", block_size)
+            ),
+            block_kv_dq=(
+                None
+                if self._use_fused
+                else self.get_backend_overrides("splash_block_kv_dq", block_size)
+            ),
             use_fused_bwd_kernel=self._use_fused,
         )
 
@@ -1099,6 +1107,13 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         logit_sink = input_batch.get("logit_sink", None)
         if logit_sink is not None:
             return self._log_unsupported("LegacyTPUFlashAttention doesn't support logit sink.")
+        if jax.config.jax_default_matmul_precision == "highest" and query.dtype == jnp.bfloat16:
+            # Pallas is having some trouble compiling bfloat16 with highest default
+            # precision.
+            return self._log_unsupported(
+                "LegacyTPUFlashAttention doesn't support default_matmul_precision=='highest' "
+                "when the query dtype is bfloat16."
+            )
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
