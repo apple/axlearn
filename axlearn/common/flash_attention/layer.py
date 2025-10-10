@@ -232,7 +232,7 @@ class FlashAttention(GroupedQueryAttention):
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
             gpu_block_size=cfg.gpu_block_size or 128,
-            dropout_rate=cfg.dropout.rate,
+            dropout_rate=cfg.dropout.rate if self.is_training else 0.0,
             page_tables=page_indices,
             backend_overrides=cfg.backend_overrides,
         )
