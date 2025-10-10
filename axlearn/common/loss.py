@@ -111,8 +111,9 @@ def cross_entropy(
             The per-example loss will be 0 if the corresponding target is masked, or out-of-class
             (i.e. target_labels[i] < 0 or target_labels[i] >= num_classes).
         live_targets: Indicates which examples should contribute to the loss.
-            A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
-            contribute to the loss. If None, infer from 0 <= target_labels < num_classes.
+            A bool, 0/1 int or float Tensor broadcastable to `target_labels`. 1 indicates positions
+            that contribute to the loss. For float, performs weighted sum of the loss. If None,
+            infer from 0 <= target_labels < num_classes.
         z_loss_scale: Coefficient for auxiliary z-loss loss term.
         label_smoothing: The factor to control label smoothing.
         soft_target_labels: Optional labels that are already smoothed/in one-hot form. If provided,
@@ -154,6 +155,7 @@ def cross_entropy(
     )
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
+    live_targets = jnp.broadcast_to(live_targets, per_target_loss.shape)
     live_targets = live_targets.astype(per_target_loss.dtype)
     denominator = jnp.maximum(live_targets.sum(), 1)
     cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / denominator
@@ -188,8 +190,9 @@ def binary_cross_entropy(
         target_labels: An 0/1 int Tensor of the same shape as `logits`.
             The per-example loss will be 0 if the corresponding target is masked.
         live_targets: Indicates which examples should contribute to the loss.
-            A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
-            contribute to the loss. If None, infer from 0 <= target_labels < 2.
+            A bool, 0/1 int or float Tensor broadcastable to `target_labels`. 1 indicates positions
+            that contribute to the loss. For float, performs weighted sum of the loss. If None,
+            infer from 0 <= target_labels < 2.
 
     Returns:
         (loss, all_losses), where
@@ -203,6 +206,7 @@ def binary_cross_entropy(
     per_target_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < 2)
+    live_targets = jnp.broadcast_to(live_targets, per_target_cross_entropy_loss.shape)
     live_targets = live_targets.astype(per_target_cross_entropy_loss.dtype)
     binary_cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / jnp.maximum(
         live_targets.sum(), 1
