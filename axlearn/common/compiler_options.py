@@ -181,8 +181,11 @@ def default_xla_options(
         if isinstance(v, (int, bool)):
             continue
         elif isinstance(v, str):
-            # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str
+            # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str.
             if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+                continue
+            # Allow paths.
+            if v.startswith("/"):
                 continue
             else:
                 raise ValueError(f"Invalid string value for option {k}: {v}")
