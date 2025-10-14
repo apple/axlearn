@@ -27,6 +27,7 @@ from jax import numpy as jnp
 from axlearn.common.checkpointer import every_n_steps_policy
 from axlearn.common.config import TrainerConfigFn
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
+from axlearn.common.module import HF_MODULE_KEY
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.test_utils import (
     ParamInitSpec,
@@ -37,7 +38,6 @@ from axlearn.common.test_utils import (
 )
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.utils import NestedTree, Tensor, flatten_items, set_data_dir
-from axlearn.huggingface.hf_module import HF_MODULE_KEY
 
 
 def named_parameters(

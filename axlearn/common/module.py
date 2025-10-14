@@ -177,6 +177,8 @@ from axlearn.common.utils import (
 
 _CallableT = TypeVar("_CallableT", bound=Callable)
 
+HF_MODULE_KEY = "hf_module"
+
 
 def nowrap(fun: _CallableT) -> _CallableT:
     """Marks the specified module method as one that doesn't need to be wrapped.
