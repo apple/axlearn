@@ -217,6 +217,10 @@ class SpmdTrainer(Module):
         # Defaults to None which is interpreted as True.
         cache_compiled_train_step: Optional[bool] = None
 
+        # Log the loss value every n steps. Defaults to None which is interpreted as every
+        # 100 steps.
+        log_every_n_steps: Optional[int] = None
+
     def __init__(
         self,
         cfg: Config,
@@ -1111,7 +1115,8 @@ class SpmdTrainer(Module):
             # Run the compiled function.
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
-        if self.step % 100 == 0 or 0 <= self.step <= 5:
+        n = self._config.log_every_n_steps or 100
+        if self.step % n == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],
