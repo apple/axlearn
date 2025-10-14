@@ -502,6 +502,29 @@ class TPUJobBuilder(SingleReplicatedJob):
         k8s_env_vars.append(
             {"name": "NODE_NAME", "valueFrom": {"fieldRef": {"fieldPath": "spec.nodeName"}}}
         )
+        # pylint: disable=line-too-long
+        k8s_env_vars.append(
+            {
+                "name": "NUM_REPLICAS",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
+                    }
+                },
+            }
+        )
+        # pylint: enable=line-too-long
+
+        k8s_env_vars.append(
+            {
+                "name": "REPLICA_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+                    }
+                },
+            }
+        )
 
         return dict(
             name=cfg.name,

@@ -359,6 +359,18 @@ class TPUReplicatedJobTest(TestCase):
                 container_env["NODE_IP"]["valueFrom"]["fieldRef"]["fieldPath"],
             )
 
+            # Verify NUM_REPLICAS in container env.
+            self.assertEqual(
+                "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']",
+                container_env["NUM_REPLICAS"]["valueFrom"]["fieldRef"]["fieldPath"],
+            )
+
+            # Verify REPLICA_ID in container env.
+            self.assertEqual(
+                "metadata.annotations['jobset.sigs.k8s.io/job-index']",
+                container_env["REPLICA_ID"]["valueFrom"]["fieldRef"]["fieldPath"],
+            )
+
             # Verify uploader container specs
             self.assertEqual(len(pod_spec["initContainers"]), 1)
 
