@@ -352,10 +352,15 @@ class LayerNorm(LayerNormStateless):
 
 
 class RMSNormStateless(BaseNormalizationLayer):
-    """Stateless version of https://github.com/bzhangGo/rmsnorm."""
+    """Stateless version of https://github.com/bzhangGo/rmsnorm.
+
+    Paper: https://arxiv.org/abs/1910.07467
+    """
 
     @config_class
     class Config(BaseNormalizationLayer.Config):
+        """RMSNormStateless.Config."""
+
         # The epsilon.
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
@@ -364,14 +369,27 @@ class RMSNormStateless(BaseNormalizationLayer):
         input_partition_spec: Optional[tuple[Optional[str]]] = None
         # If not None, how to partition output activation values.
         output_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If True, center the input by subtracting the mean before RMS normalization.
+        # This variant is used in Gemma and Qwen3-Next and provides better numerical stability.
+        zero_centered: Optional[bool] = None
 
     def _forward(self, x: Tensor) -> Tensor:
+        """Applies RMS normalization to the input.
+
+        Args:
+            x: Input tensor to normalize.
+
+        Returns:
+            Normalized tensor with the same shape as input.
+        """
         cfg = self.config
         x = maybe_shard(x, cfg.input_partition_spec)
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
         moment2 = (x * x).mean(axis=-1, keepdims=True)
+        if cfg.zero_centered:
+            x = x - x.mean(axis=-1, keepdims=True)
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
         return x

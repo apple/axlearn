@@ -561,6 +561,35 @@ class LayerTest(TestCase):
         self.assertEqual(calls[1].args[0].dtype, jnp.float32)
         np.testing.assert_array_equal(calls[1].args[0], outputs)
 
+    def test_rms_norm_zero_centered(self):
+        dim = 6
+        cfg = RMSNorm.default_config().set(name="norm", input_dim=dim, zero_centered=True)
+        layer: RMSNorm = cfg.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        # Random inputs with non-zero mean to test zero-centering.
+        prng_key, input_key = jax.random.split(prng_key)
+        inputs = jax.random.normal(input_key, [2, 3, dim]) + 5.0  # Add offset
+        outputs, _ = F(
+            layer,
+            inputs=(inputs,),
+            is_training=True,
+            state=layer_params,
+            prng_key=prng_key,
+        )
+
+        # Manually compute expected output based on zero_centered setting.
+        moment2 = (inputs * inputs).mean(axis=-1, keepdims=True)
+        inputs = inputs - inputs.mean(axis=-1, keepdims=True)
+        expected_normalized = inputs * jax.lax.rsqrt(moment2 + cfg.eps)
+
+        expected_outputs = expected_normalized * layer_params["scale"]
+        self.assertNestedAllClose(outputs, expected_outputs)
+        output_mean = outputs.mean(axis=-1, keepdims=True)
+        self.assertNestedAllClose(output_mean, np.zeros_like(output_mean))
+
     def test_l2_norm(self):
         cfg = L2Norm.default_config().set(name="norm")
         layer: L2Norm = cfg.instantiate(parent=None)
