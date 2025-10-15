@@ -15,3 +15,7 @@ jobs:
           close-pr-message: "This pull request was closed because it has been inactive for more than 7 days since being marked as stale. Please feel free to reopen it if you would like to continue."
           exempt-pr-labels: "ready-to-merge"
           stale-pr-label: "stale"
+permissions:
+  actions: write
+  issues: write
+  pull-requests: write
