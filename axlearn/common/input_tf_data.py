@@ -6,7 +6,72 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 # pylint: disable=too-many-lines
-"""Input generator based on tf.data."""
+"""Input generator based on tf.data.
+
+This module provides building blocks for constructing input pipelines using tf.data.Dataset.
+
+It defines two types:
+
+1. BuildDatasetFn() -> dataset: A function to create a tf.data.Dataset instance.
+2. DatasetToDatasetFn(dataset) -> dataset: A function to create a tf.data.Dataset instance
+   from the given dataset.
+
+
+The input pipeline is composed of three stages.
+
+1. Source: BuildDatasetFn - Creates raw tf.data.Dataset
+   Examples: tfds_dataset(), tfrecord_dataset(), sample_from_datasets()
+
+2. Processor: DatasetToDatasetFn - Transforms examples
+   Examples: rekey(), shuffle(), select_fields(), chain()
+
+3. Batcher: DatasetToDatasetFn - Batches examples
+   Examples: batch(), per_feed_batch(), pack_to_batch()
+
+
+The class Input composes these three stages into a single module.
+
+    # Configure the input pipeline
+    input_cfg = Input.default_config().set(
+        is_training=True,
+        source=config_for_function(tfds_dataset).set(
+            dataset_name="mnist",
+            split="train",
+            train_shuffle_buffer_size=10000,
+        ),
+        processor=config_for_function(chain).set(
+            config_for_function(rekey).set(key_map={"x": "image", "y": "label"}),
+            config_for_function(shuffle).set(shuffle_buffer_size=1000),
+        ),
+        batcher=config_for_function(batch).set(
+            global_batch_size=256,
+            pad_example_fn=default_pad_example_fn,
+        ),
+    )
+
+    # Instantiate and get dataset
+    input_module = input_cfg.instantiate()
+    dataset = input_module.dataset()
+
+    # Iterate over batches
+    for batch in dataset:
+        train_step(batch)
+
+
+The module is designed for multi-host JAX training:
+
+- Automatic data sharding across processes via tfds_read_config()
+- Evaluation padding ensures consistent batch counts across hosts
+- Physical/logical batching supports advanced dispatch patterns
+- All dataset operations are multi-host aware (jax.process_count/index)
+
+
+See Also:
+
+- input_base.Input: Base class
+- input_grain.py: PyGrain-based alternative (preferred for new code)
+
+"""
 
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Optional, Union
@@ -17,7 +82,10 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 try:
-    # Necessary for S3 access. See, e.g: https://github.com/tensorflow/tensorflow/issues/51583
+    # Import tensorflow_io for its side effects of supporting S3.  The following will error
+    # if tensorflow_io is not installed.
+    #   ds = tf.data.TFRecordDataset("s3://my-bucket/data.tfrecord")
+    # For more details, see https://github.com/tensorflow/tensorflow/issues/51583
     # pytype: disable=import-error
     import tensorflow_io as tfio  # pylint: disable=unused-import
 except ImportError:
