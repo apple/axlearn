@@ -306,10 +306,12 @@ async def _async_serialize(
         and arr_inp.is_fully_addressable
     )
     # pylint: disable=protected-access
-    spec_has_metadata = {
-        "0.6.2": lambda: serialization.ts_impl._spec_has_metadata,
-        "0.5.3": lambda: serialization._spec_has_metadata,
-    }[jax.__version__]()
+    if jax.__version__.startswith("0.8.0") or jax.__version__ == "0.6.2":
+        spec_has_metadata = serialization.ts_impl._spec_has_metadata
+    elif jax.__version__ == "0.5.3":
+        spec_has_metadata = serialization._spec_has_metadata
+    else:
+        raise ValueError(f"Unsupported JAX version for spec_has_metadata: {jax.__version__}")
     if not spec_has_metadata(tensorstore_spec):
         # pylint: disable-next=protected-access
         tensorstore_spec["metadata"] = serialization._get_metadata(arr_inp)
