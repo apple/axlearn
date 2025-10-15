@@ -76,8 +76,7 @@ def _compile_and_dump_programs(
     else:
         xla_options = None
 
-    # Remove XLA options that are not supported by JAX 0.4.38.
-    # TODO(kelvin-zou): Remove this when we upgrade JAX.
+    # Remove XLA options that are not supported in AOT.
     if xla_options is not None:
         xla_options.pop("megascale_graph_within_launch_hang_threshold", None)
         xla_options.pop("megascale_graph_hang_threshold", None)
@@ -85,6 +84,7 @@ def _compile_and_dump_programs(
         xla_options.pop("megascale_error_reporter_abort_on_hang", None)
         xla_options.pop("megascale_grpc_premap_memory_bytes", None)
         xla_options.pop("megascale_error_reporter_abort_on_error", None)
+        xla_options.pop("megascale_debug_port", None)
 
     programs = aot_compilation.compile_trainer_programs(
         trainer_config,
