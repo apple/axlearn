@@ -261,7 +261,9 @@ def _maybe_shard_examples(
                 "Proceed to split examples anyway. May result in error if "
                 "number of examples < number of required_shards."
             )
-        shard_index = read_config.shard_index or jax.process_index()  # type: ignore
+        shard_index = (
+            read_config.shard_index if read_config.shard_index is not None else jax.process_index()
+        )
         per_process_split = tfds.even_splits(
             per_process_split, n=required_shards, drop_remainder=False
         )[shard_index]
@@ -357,7 +359,11 @@ def tfds_dataset(
         per_process_split = split
         available_shards = _infer_num_shards(builder, split)
         if available_shards is not None:
-            required_shards = read_config.num_shards or jax.process_count()  # type: ignore
+            required_shards = (
+                read_config.num_shards
+                if read_config.num_shards is not None
+                else jax.process_count()
+            )
             if available_shards < required_shards:
                 per_process_split = _maybe_shard_examples(
                     builder=builder,
