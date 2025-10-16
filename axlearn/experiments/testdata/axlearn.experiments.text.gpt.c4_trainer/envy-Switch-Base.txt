@@ -74,13 +74,8 @@ input.batcher.prefetch_buffer_size: -1
 input.input_dispatcher.global_logical_batch_size: 1024
 input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
 input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][0]: 'data'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][1]: 'expert'
-input.input_partitioner.path_rank_to_partition[(None, 1)][0][2]: 'fsdp'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][0]: 'data'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][1]: 'expert'
-input.input_partitioner.path_rank_to_partition[(None, 2)][0][2]: 'fsdp'
-input.input_partitioner.path_rank_to_partition[(None, 2)][1]: 'seq'
+input.input_partitioner.path_rank_to_partition[(None, 1)]: PartitionSpec(('data', 'expert', 'fsdp'),)
+input.input_partitioner.path_rank_to_partition[(None, 2)]: PartitionSpec(('data', 'expert', 'fsdp'), 'seq')
 input.is_training: True
 input.klass: 'axlearn.common.input_tf_data.Input'
 input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -269,39 +264,12 @@ model.decoder.transformer.layer.layer[0].self_attention.attention.key_scale.norm
 model.decoder.transformer.layer.layer[0].self_attention.attention.key_scale.norm.forward_dtype: None
 model.decoder.transformer.layer.layer[0].self_attention.attention.key_scale.norm.klass: 'axlearn.common.layers.RMSNorm'
 model.decoder.transformer.layer.layer[0].self_attention.attention.klass: 'axlearn.common.flash_attention.layer.FlashAttention'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh'][0][0]: 'data'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh'][1]: None
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh'][2][0]: 'seq'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh'][2][1]: 'model'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh'][3]: None
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][0]: 'data'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh'][1]: None
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh'][2][0]: 'seq'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh'][2][1]: 'model'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh'][3]: None
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bnts'][0][0]: 'data'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bnts'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bnts'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bnts'][1]: None
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bnts'][2]: None
-model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bnts'][3]: None
+model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bsnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.layer[0].self_attention.attention.mha_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), None, None, None)
 model.decoder.transformer.layer.layer[0].self_attention.attention.num_heads: 12
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['btnh'][0][0]: 'data'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['btnh'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['btnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['btnh'][1]: 'seq'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['btnh'][2]: 'model'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['btnh'][3]: None
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['bnts'][0][0]: 'data'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['bnts'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['bnts'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['bnts'][1]: 'model'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['bnts'][2]: 'seq'
-model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['bnts'][3]: None
+model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), 'seq', 'model', None)
+model.decoder.transformer.layer.layer[0].self_attention.attention.output_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), 'model', 'seq', None)
 model.decoder.transformer.layer.layer[0].self_attention.attention.output_linear.bias: False
 model.decoder.transformer.layer.layer[0].self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'
 model.decoder.transformer.layer.layer[0].self_attention.attention.output_linear.param_partition_spec[0][0]: 'expert'
@@ -324,43 +292,14 @@ model.decoder.transformer.layer.layer[0].self_attention.stochastic_depth.mode: '
 model.decoder.transformer.layer.layer[0].self_attention.structure: 'prenorm'
 model.decoder.transformer.layer.layer[1].feed_forward.activation[0]: 'nn.silu'
 model.decoder.transformer.layer.layer[1].feed_forward.activation[1]: 'linear'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['me'][0]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['me'][1]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['emh'][0]: 'expert'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['emh'][1]: 'fsdp'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['emh'][2]: 'model'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ehm'][0]: 'expert'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ehm'][1]: 'model'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ehm'][2]: 'fsdp'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm'][0][1]: 'fsdp'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm'][1]: 'expert'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm'][2]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm'][3]: 'model'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec'][0][1]: 'fsdp'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec'][1]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec'][2]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec'][3]: 'expert'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec'][4]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm'][0][1]: 'fsdp'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm'][1]: 'expert'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm'][2]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm'][3]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm'][4]: 'model'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm'][0][1]: 'fsdp'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm'][1]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm'][2]: 'expert'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm'][3]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm'][4]: 'model'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch'][0][1]: 'fsdp'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch'][1]: 'expert'
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch'][2]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch'][3]: None
-model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch'][4]: 'model'
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['me']: PartitionSpec(None, None)
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['emh']: PartitionSpec('expert', 'fsdp', 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ehm']: PartitionSpec('expert', 'model', 'fsdp')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsm']: PartitionSpec(('data', 'fsdp'), 'expert', None, 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogsec']: PartitionSpec(('data', 'fsdp'), None, None, 'expert', None)
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegcm']: PartitionSpec(('data', 'fsdp'), 'expert', None, None, 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ogecm']: PartitionSpec(('data', 'fsdp'), None, 'expert', None, 'model')
+model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['oegch']: PartitionSpec(('data', 'fsdp'), 'expert', None, None, 'model')
 model.decoder.transformer.layer.layer[1].feed_forward.dropout.klass: 'axlearn.common.layers.Dropout'
 model.decoder.transformer.layer.layer[1].feed_forward.gating.eval_capacity_factor: 2.0
 model.decoder.transformer.layer.layer[1].feed_forward.gating.gating_logit_cap: 0.0
@@ -411,39 +350,12 @@ model.decoder.transformer.layer.layer[1].self_attention.attention.key_scale.norm
 model.decoder.transformer.layer.layer[1].self_attention.attention.key_scale.norm.forward_dtype: None
 model.decoder.transformer.layer.layer[1].self_attention.attention.key_scale.norm.klass: 'axlearn.common.layers.RMSNorm'
 model.decoder.transformer.layer.layer[1].self_attention.attention.klass: 'axlearn.common.flash_attention.layer.FlashAttention'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh'][1]: None
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh'][2][0]: 'seq'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh'][2][1]: 'model'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh'][3]: None
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh'][1]: None
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh'][2][0]: 'seq'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh'][2][1]: 'model'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh'][3]: None
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bnts'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bnts'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bnts'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bnts'][1]: None
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bnts'][2]: None
-model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bnts'][3]: None
+model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bsnh']: PartitionSpec(('data', 'expert', 'fsdp'), None, ('seq', 'model'), None)
+model.decoder.transformer.layer.layer[1].self_attention.attention.mha_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), None, None, None)
 model.decoder.transformer.layer.layer[1].self_attention.attention.num_heads: 12
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['btnh'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['btnh'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['btnh'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['btnh'][1]: 'seq'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['btnh'][2]: 'model'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['btnh'][3]: None
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['bnts'][0][0]: 'data'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['bnts'][0][1]: 'expert'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['bnts'][0][2]: 'fsdp'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['bnts'][1]: 'model'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['bnts'][2]: 'seq'
-model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['bnts'][3]: None
+model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['btnh']: PartitionSpec(('data', 'expert', 'fsdp'), 'seq', 'model', None)
+model.decoder.transformer.layer.layer[1].self_attention.attention.output_dim_to_partition_spec['bnts']: PartitionSpec(('data', 'expert', 'fsdp'), 'model', 'seq', None)
 model.decoder.transformer.layer.layer[1].self_attention.attention.output_linear.bias: False
 model.decoder.transformer.layer.layer[1].self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'
 model.decoder.transformer.layer.layer[1].self_attention.attention.output_linear.param_partition_spec[0][0]: 'expert'

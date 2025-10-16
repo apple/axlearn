@@ -45,7 +45,7 @@ RUN pip install -qq --upgrade pip && \
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN uv pip install -qq .[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api] && \
+RUN uv pip install -qq .[core,audio,orbax,dev,gcp,vertexai_tensorboard] && \
     uv cache clean
 COPY . .
 
@@ -96,7 +96,6 @@ ARG EXTRAS=
 # Needed until Jax is upgraded to 0.8.0 or newer.
 ARG INSTALL_PATHWAYS_JAXLIB=false
 
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
@@ -114,7 +113,6 @@ COPY . .
 FROM base AS gpu
 
 # TODO(markblee): Support extras.
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 # Enable the CUDA repository and install the required libraries (libnvrtc.so)
 RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && \

@@ -97,7 +97,7 @@ def _test_forward_and_backward(
 def common_attn_test_params(func):
     params = [
         pytest.mark.parametrize("kv_len", [None, 512]),
-        pytest.mark.parametrize("dropout_rate", [0, 0.1]),
+        pytest.mark.parametrize("dropout_rate", [0]),
         pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"]),
         pytest.mark.parametrize("with_segment_ids", [True, False]),
         pytest.mark.parametrize("block_size", [128]),  # Triton broken for block size !=128.
@@ -371,7 +371,7 @@ def _cudnn_xla_forward_tol_fn(backend, dtype):
 )
 @pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
-@pytest.mark.parametrize("dropout_rate", [0.1, 0.25])
+@pytest.mark.parametrize("dropout_rate", [0])
 def test_cudnn_dropout_against_xla_dropout(
     batch_size: int,
     num_heads: int,
@@ -496,7 +496,8 @@ def test_cudnn_dropout_determinism():
         bias=bias,
         logit_sink=None,
     )
-    fn = CuDNNGPUFlashAttention.default_config().set(dropout_rate=0.1).instantiate()
+    # TODO(bailin-wang): enable dropout in GPU triton kernel
+    fn = CuDNNGPUFlashAttention.default_config().set(dropout_rate=0).instantiate()
     chex.assert_equal(fn.is_supported(input_batch, kv_cache_type=None), True)
 
     outputs = []

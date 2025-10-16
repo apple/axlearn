@@ -368,7 +368,7 @@ class TestUtils(parameterized.TestCase):
             absl_main(mock_args)
             self.assertEqual(1, len(mock_popen.call_args_list))
             self.assertEqual((expected,), mock_popen.call_args[0])
-            self.assertDictContainsSubset({"text": True}, mock_popen.call_args[1])
+            self.assertTrue({"text": True}.items() <= mock_popen.call_args[1].items())
             self.assertEqual(self.root_module, mock_popen.call_args[1]["env"]["AXLEARN_CLI_NAME"])
 
         shell_cases = [
@@ -397,8 +397,8 @@ class TestUtils(parameterized.TestCase):
                 absl_main(mock_args)
                 self.assertEqual(1, len(mock_popen.call_args_list))
                 self.assertEqual((expected,), mock_popen.call_args[0])
-                self.assertDictContainsSubset(
-                    {"text": True, "shell": True}, mock_popen.call_args[1]
+                self.assertTrue(
+                    {"text": True, "shell": True}.items() <= mock_popen.call_args[1].items()
                 )
                 self.assertEqual(
                     self.root_module, mock_popen.call_args[1]["env"]["AXLEARN_CLI_NAME"]

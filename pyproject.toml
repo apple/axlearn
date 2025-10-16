@@ -23,9 +23,9 @@ core = [
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.5.3",
-    "jaxlib==0.5.3",
-    "ml-dtypes==0.4.1",
+    "jax==0.6.2",
+    "jaxlib==0.6.2",
+    "ml-dtypes>=0.5,<0.6",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -37,6 +37,7 @@ core = [
     "tensorflow==2.17.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
+    "tensorflow-metadata>=1.0.0", # Otherwise Seqio will report no core for tfds
     "tensorflow_text==2.17.0", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
@@ -65,6 +66,7 @@ dev = [
     "pylint==2.17.7",
     "pytest",  # test runner
     "pytest-xdist",  # pytest plugin for test parallelism
+    "pytest-timeout",  # pytest plugin for forcing timeout of tests
     "pytype==2022.4.22",  # type checking
     "scikit-learn==1.5.2",  # test-only
     # Fix AttributeError: module 'scipy.linalg' has no attribute 'tril' and related scipy import errors.
@@ -72,7 +74,7 @@ dev = [
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
     "timm==0.6.12",  # DiT Dependency test-only
-    "torch>=1.12.1",  # test-only
+    "torch>=2.1.1",  # test-only
     "torchvision==0.16.1",  # test-only
     "safetensors<=0.5.3",  # TODO: Remove once torch dependency is >=2.3.0
     "transformers==4.51.3",  # test-only
@@ -105,7 +107,7 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.6.2",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
@@ -131,10 +133,11 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==2.1.0",
-    "jax[cuda12]==0.5.3",
-    "nvidia-ml-py==12.560.30",
+    "jax[cuda12]==0.6.2",
+    "nvidia-ml-py>=12.560.30",
     # pin nccl version, otherwise jax[cuda12] will pull latest version
     "nvidia-nccl-cu12==2.27.5",
+    "nvidia-cudnn-cu12>=9.8.0.87" # Pin CuDNN to at least 9.8 for Jax >= 0.6.2
 ]
 # Open API inference.
 open_api = [
@@ -187,6 +190,7 @@ line-length = 100
 target-version = 'py39'
 
 [tool.pytest.ini_options]
+timeout = 300
 addopts = "-rs -s -p no:warnings --junitxml=test-results/testing.xml"
 markers = [
     "gs_login: tests needing GS login.",
@@ -205,3 +209,14 @@ junit_family="xunit2"
 [tool.isort]
 line_length = 100
 profile = "black"
+
+[tool.uv.pip]
+find-links = [
+    "https://storage.googleapis.com/jax-releases/libtpu_releases.html",
+    "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html",
+]
+
+[tool.uv]
+override-dependencies = [
+    "ml-dtypes>=0.5,<0.6",
+]
