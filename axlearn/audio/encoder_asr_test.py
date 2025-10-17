@@ -10,6 +10,8 @@ from jax import numpy as jnp
 from axlearn.audio import frontend_utils
 from axlearn.audio.encoder_asr import ASREncoder, SpeechContextNetwork, SpeechFeatureLayer
 from axlearn.audio.test_utils import fake_audio
+from axlearn.common.attention import RepeatedTransformerLayer
+from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import Tensor, shapes
@@ -116,6 +118,88 @@ class SpeechContextNetworkTest(TestCase):
         cfg.context.num_layers = num_layers
         cfg.context.layer.self_attention.attention.num_heads = 4
         cfg.context.layer.lconv.dropout.rate = dropout_rate
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key, length_key = jax.random.split(prng_key, num=4)
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        # Generate inputs.
+        batch_size, seq_len = 4, 10
+        inputs = jnp.tile(
+            jax.random.normal(input_key, [batch_size // 2, seq_len, input_dim]), [2, 1, 1]
+        )
+        lengths = jnp.tile(
+            jax.random.randint(length_key, shape=[batch_size // 2, 1], minval=0, maxval=seq_len),
+            [2, 1],
+        )
+        paddings = jnp.arange(seq_len)[None, :] >= lengths
+        padding_data = jax.random.normal(jax.random.PRNGKey(135), inputs.shape)
+        inputs = jnp.where(paddings[..., None], padding_data, inputs)
+
+        # Compute outputs.
+        output_batch, output_collections = F(
+            layer,
+            inputs=dict(inputs=inputs, paddings=paddings),
+            is_training=is_training,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        outputs, output_paddings = output_batch["outputs"], output_batch["paddings"]
+        self.assertSequenceEqual(outputs.shape, (batch_size, seq_len, output_dim))
+        self.assertTrue(jnp.all(output_paddings == paddings))
+
+        # If is_training, outputs should always be different due to augmentation.
+        # Otherwise, outputs should be the same despite differences in padding.
+        self.assertEqual(not is_training, bool(jnp.allclose(outputs[:2], outputs[2:])))
+
+        outputs = outputs * (1 - output_paddings[:, :, None])
+        weights = jnp.sum(1 - output_paddings)
+        output_norms = jnp.sqrt(jnp.sum(outputs**2, axis=2)) / jnp.sqrt(output_dim)
+        expected_outputs_mean = jnp.sum(outputs) / weights / output_dim
+        expected_outputs_norm = jnp.sum(output_norms) / weights
+
+        self.assertNestedAllClose(
+            output_collections.summaries["activations/speech_context_mean"].mean,
+            expected_outputs_mean,
+        )
+        self.assertNestedAllClose(
+            output_collections.summaries["activations/speech_context_norm"].mean,
+            expected_outputs_norm,
+        )
+        self.assertNestedAllClose(
+            output_collections.summaries["activations/speech_context_mean"].weight, weights
+        )
+        self.assertNestedAllClose(
+            output_collections.summaries["activations/speech_context_norm"].weight, weights
+        )
+
+    @parameterized.parameters([True, False])
+    def test_transformer(self, is_training: bool) -> None:
+        """Test the code branch with RepeatedTransformerLayer as context layer.
+
+        Args:
+            is_training: Whether the is_training code path is tested.
+        """
+        input_dim, output_dim, dropout_rate, num_layers = 32, 16, 0.2, 2
+        num_heads = 8
+        hidden_dim = 4 * input_dim
+
+        cfg = SpeechContextNetwork.default_config().set(
+            input_dim=input_dim, output_dim=output_dim, dtype=jnp.float64
+        )
+        cfg.dropout.rate = dropout_rate
+        cfg.context = RepeatedTransformerLayer.default_config().set(num_layers=num_layers)
+        attention = cfg.context.layer.self_attention.attention
+        attention.num_heads = num_heads
+        attention = enable_sliding_window_attention(attention, sliding_window_size=3)
+        cfg.context.layer.self_attention.attention = attention
+        # Dropout in transformer
+        cfg.context.layer.self_attention.dropout.rate = dropout_rate
+        cfg.context.layer.feed_forward.set(
+            hidden_dim=hidden_dim,
+        )
 
         # Initialize layer parameters.
         prng_key = jax.random.PRNGKey(123)
