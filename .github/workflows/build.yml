@@ -1,4 +1,7 @@
 name: build-and-test
+permissions:
+  contents: read
+
 on: [pull_request, push, merge_group]
 
 jobs:
