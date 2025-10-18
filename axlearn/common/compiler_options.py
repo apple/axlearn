@@ -375,6 +375,14 @@ def infer_xla_performance_flags(
     *, mesh_shape: "MeshShape", mesh_axis_names: Sequence[str], device_kind: str
 ) -> dict[str, str]:
     """Performs automatic XLA flag tuning based on mesh shape and device kind."""
+
+    logging.info(
+        "Inferring XLA flags for mesh %s (%s) and device %s",
+        mesh_shape,
+        mesh_axis_names,
+        device_kind,
+    )
+
     if device_kind == "TPU v6 lite":
         device_kind = "TPU v6e"
 

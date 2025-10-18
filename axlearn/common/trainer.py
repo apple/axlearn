@@ -1057,6 +1057,7 @@ class SpmdTrainer(Module):
         options = infer_xla_performance_flags(
             mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
+        logging.log_first_n(logging.INFO, "Compiler options: %s", 1, options)
         if not with_xsc:
             self._maybe_record_event(
                 measurement.Event.START_CUSTOM_BADPUT_EVENT,
