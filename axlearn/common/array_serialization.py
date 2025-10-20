@@ -305,7 +305,7 @@ async def _async_serialize(
         and arr_inp.is_fully_addressable
     )
     # pylint: disable=protected-access
-    if jax.__version__.startswith("0.8.0") or jax.__version__ == "0.6.2":
+    if jax.__version__.startswith("0.8.") or jax.__version__ == "0.6.2":
         spec_has_metadata = serialization.ts_impl._spec_has_metadata
     elif jax.__version__ == "0.5.3":
         spec_has_metadata = serialization._spec_has_metadata
