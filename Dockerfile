@@ -107,15 +107,20 @@ ARG EXTRAS=
 # Install a custom jaxlib that includes backport of Pathways shared memory feature.
 # PR: https://github.com/openxla/xla/pull/31417
 # Needed until Jax is upgraded to 0.8.0 or newer.
-ARG INSTALL_PATHWAYS_JAXLIB=false
+ARG INSTALL_PATHWAYS_JAXLIB=true
 
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
+
+COPY jaxlib-0.6.2.dev20251021-cp310-cp310-manylinux2014_x86_64.whl .
+
+# 2. RUN the pip install command using the new, simple path *inside* the container
 RUN if [ "$INSTALL_PATHWAYS_JAXLIB" = "true" ]; then \
-      uv pip install --prerelease=allow "jaxlib==0.5.3.dev20250918" \
-        --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html; \
+    #   uv pip install --prerelease=allow "jaxlib==0.6.2.dev20251020" \
+    #     --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html; \
+        uv pip install jaxlib-0.6.2.dev20251021-cp310-cp310-manylinux2014_x86_64.whl; \
     fi
 COPY . .
 

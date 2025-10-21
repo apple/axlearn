@@ -43,7 +43,7 @@ core = [
     "tensorflow-metadata==1.17.2", # Otherwise Seqio will report no core for tfds
     "tensorflow-io>=0.37.1",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
     "tensorflow-metadata>=1.0.0", # Otherwise Seqio will report no core for tfds
-    "tensorflow_text==2.17.0", # implied by seqio, but also used directly for text processing
+    "tensorflow_text==2.19.0", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management
     "typing-extensions==4.12.2",
@@ -71,7 +71,6 @@ dev = [
     "pylint==2.17.7",
     "pytest",  # test runner
     "pytest-xdist",  # pytest plugin for test parallelism
-    "pytest-timeout",  # pytest plugin for forcing timeout of tests
     "pytype==2022.4.22",  # type checking
     "scikit-learn==1.5.2",  # test-only
     # Fix AttributeError: module 'scipy.linalg' has no attribute 'tril' and related scipy import errors.
@@ -79,7 +78,7 @@ dev = [
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
     "timm==0.6.12",  # DiT Dependency test-only
-    "torch>=2.1.1",  # test-only
+    "torch>=1.12.1",  # test-only
     "torchvision==0.16.1",  # test-only
     "safetensors<=0.5.3",  # TODO: Remove once torch dependency is >=2.3.0
     "transformers==4.51.3",  # test-only
@@ -199,7 +198,6 @@ line-length = 100
 target-version = 'py39'
 
 [tool.pytest.ini_options]
-timeout = 300
 addopts = "-rs -s -p no:warnings --junitxml=test-results/testing.xml"
 markers = [
     "gs_login: tests needing GS login.",
@@ -219,13 +217,9 @@ junit_family="xunit2"
 line_length = 100
 profile = "black"
 
-[tool.uv.pip]
+[tool.uv]
 find-links = [
+    "https://storage.googleapis.com/axlearn-wheels/wheels.html",
     "https://storage.googleapis.com/jax-releases/libtpu_releases.html",
     "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html",
-]
-
-[tool.uv]
-override-dependencies = [
-    "ml-dtypes>=0.5,<0.6",
 ]
