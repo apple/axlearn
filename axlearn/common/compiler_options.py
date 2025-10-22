@@ -427,7 +427,6 @@ def infer_xla_performance_flags(
                 xla_tpu_enable_all_gather_offload_tracing="true",
                 xla_tpu_enable_reduce_scatter_offload_tracing="true",
                 xla_tpu_enable_all_reduce_offload_tracing="true",
-                xla_tpu_enable_reduce_scatter_legalizer="true",
             )
             # The available bandwidth of non-native mesh shapes is half of that compared to
             # the native mesh shape. Specify the latency modifier so that the latency hiding
