@@ -87,8 +87,6 @@ def default_xla_options(
             xla_latency_hiding_scheduler_rerun=2,
             # Improved performance for v6e.
             xla_tpu_scoped_vmem_limit_kib=98304,
-            # For megascale performance.
-            xla_jf_crs_combiner_threshold_count=10,
             # Disable collective matmul. Collective matmul could negatively affect performance in
             # some cases. Even in cases where collective matmul provides gains, the gains are
             # marginal on v6e due to the high arithmetic intensity.
