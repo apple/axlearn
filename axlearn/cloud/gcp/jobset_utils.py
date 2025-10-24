@@ -587,6 +587,56 @@ class TPUJobBuilder(SingleReplicatedJob):
             "emptyDir": {"medium": "Memory", "sizeLimit": shared_memory},
         }
 
+    def set_up_gcsfuse(self, cfg: "TPUJobBuilder.Config", volumes: list, annotations: dict) -> None:
+        """Sets up GCSFuse volumes and annotations.
+
+        Args:
+            cfg: The TPUJobBuilder configuration.
+            volumes: The list of volumes to append GCSFuse volumes to.
+            annotations: The dictionary of annotations to update with GCSFuse settings.
+        """
+        # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
+        # prefetch is enabled.
+        volumes.append(self._build_shared_memory_volumes(cfg.gcsfuse_mount.shared_memory))
+        # Mount a GCS bucket as a volume.
+        annotations.update(
+            {
+                "gke-gcsfuse/volumes": "true",
+                "gke-gcsfuse/cpu-request": cfg.gcsfuse_mount.cpu,
+                "gke-gcsfuse/memory-request": cfg.gcsfuse_mount.memory,
+                "gke-gcsfuse/ephemeral-storage-request": cfg.gcsfuse_mount.ephemeral_gb,
+                # GCSFuse will set limits=request if we only set requests:
+                # https://github.com/GoogleCloudPlatform/gcs-fuse-csi-driver/blob/main/pkg/webhook/config.go#L110
+                "gke-gcsfuse/cpu-limit": "0",
+                "gke-gcsfuse/memory-limit": "0",
+                "gke-gcsfuse/ephemeral-storage-limit": "0",
+            }
+        )
+        # Parse GCSFuseMount path into bucket, prefix.
+        parsed = urlparse(cfg.gcsfuse_mount.gcs_path)
+        # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
+        # Caveat: --implicit-dirs might have negative impacts on i/o performance. See
+        # https://github.com/googlecloudplatform/gcsfuse/blob/master/docs/semantics.md .
+        # See https://cloud.google.com/storage/docs/cloud-storage-fuse/config-file for more
+        # details about mountOptions.
+        # The mountOptions are following https://github.com/AI-Hypercomputer/maxtext/pull/1070.
+        volumes.append(
+            dict(
+                name=cfg.gcsfuse_mount.name,
+                csi=dict(
+                    driver="gcsfuse.csi.storage.gke.io",
+                    readOnly=cfg.gcsfuse_mount.read_only,
+                    volumeAttributes=dict(
+                        bucketName=parsed.netloc,
+                        # pylint: disable=line-too-long
+                        mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
+                        gcsfuseMetadataPrefetchOnMount="false",  # Improves first-time read.
+                        disableMetrics="false",  # Enables GCSFuse metrics by default.
+                    ),
+                ),
+            )
+        )
+
     def _build_pod(self) -> Nested[Any]:
         """Builds a config for a single Pod, which is a set of containers.
 
@@ -601,47 +651,7 @@ class TPUJobBuilder(SingleReplicatedJob):
 
         volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
-            # Increases the shared memory volumes when enabled gcsfuse. This is useful when grain
-            # prefetch is enabled.
-            volumes.append(self._build_shared_memory_volumes(cfg.gcsfuse_mount.shared_memory))
-            # Mount a GCS bucket as a volume.
-            annotations.update(
-                {
-                    "gke-gcsfuse/volumes": "true",
-                    "gke-gcsfuse/cpu-request": cfg.gcsfuse_mount.cpu,
-                    "gke-gcsfuse/memory-request": cfg.gcsfuse_mount.memory,
-                    "gke-gcsfuse/ephemeral-storage-request": cfg.gcsfuse_mount.ephemeral_gb,
-                    # GCSFuse will set limits=request if we only set requests:
-                    # https://github.com/GoogleCloudPlatform/gcs-fuse-csi-driver/blob/main/pkg/webhook/config.go#L110
-                    "gke-gcsfuse/cpu-limit": "0",
-                    "gke-gcsfuse/memory-limit": "0",
-                    "gke-gcsfuse/ephemeral-storage-limit": "0",
-                }
-            )
-            # Parse GCSFuseMount path into bucket, prefix.
-            parsed = urlparse(cfg.gcsfuse_mount.gcs_path)
-            # https://cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/cloud-storage-fuse-csi-driver#consume-ephemeral-volume-pod
-            # Caveat: --implicit-dirs might have negative impacts on i/o performance. See
-            # https://github.com/googlecloudplatform/gcsfuse/blob/master/docs/semantics.md .
-            # See https://cloud.google.com/storage/docs/cloud-storage-fuse/config-file for more
-            # details about mountOptions.
-            # The mountOptions are following https://github.com/AI-Hypercomputer/maxtext/pull/1070.
-            volumes.append(
-                dict(
-                    name=cfg.gcsfuse_mount.name,
-                    csi=dict(
-                        driver="gcsfuse.csi.storage.gke.io",
-                        readOnly=cfg.gcsfuse_mount.read_only,
-                        volumeAttributes=dict(
-                            bucketName=parsed.netloc,
-                            # pylint: disable=line-too-long
-                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
-                            gcsfuseMetadataPrefetchOnMount="false",  # Improves first-time read.
-                            disableMetrics="false",  # Enables GCSFuse metrics by default.
-                        ),
-                    ),
-                )
-            )
+            self.set_up_gcsfuse(cfg, volumes, annotations)
         if cfg.host_mounts:
             for mount in cfg.host_mounts:
                 volumes.append(

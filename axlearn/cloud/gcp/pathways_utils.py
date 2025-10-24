@@ -439,17 +439,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
-        volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
-
         if cfg.gcsfuse_mount:
-            annotations.update(
-                {
-                    "gke-gcsfuse/volumes": "true",
-                    "gke-gcsfuse/cpu-limit": cfg.gcsfuse_mount.cpu,
-                    "gke-gcsfuse/memory-limit": cfg.gcsfuse_mount.memory,
-                    "gke-gcsfuse/ephemeral-storage-limit": cfg.gcsfuse_mount.ephemeral_gb,
-                }
-            )
+            self._inner.set_up_gcsfuse(cfg, volumes, annotations)
+        else:
+            # gcsfuse mounts shared-memory. To avoid double mounting, we only mount
+            # shared-memory explicitly when gcsfuse_mount is not enabled.
+            volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
 
         node_selector = {
             _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,

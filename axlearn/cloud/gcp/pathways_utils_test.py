@@ -323,6 +323,40 @@ class PathwaysReplicatedJobTest(TestCase):
             ):
                 _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
+    def test_build_pathways_head_pod_with_gcsfuse(self):
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                gcsfuse_mount_spec=["mount_path=/tmp/gcsfuse", "gcs_path=gs://test-bucket/path"],
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            # pylint: disable-next=protected-access
+            pod = builder._build_pathways_head_pod()
+            pod_spec = pod["spec"]
+            annotations = pod["metadata"]["annotations"]
+
+            # Verify gcsfuse annotations are set correctly
+            self.assertEqual(annotations.get("gke-gcsfuse/volumes"), "true")
+            self.assertIn("gke-gcsfuse/cpu-request", annotations)
+            self.assertIn("gke-gcsfuse/memory-request", annotations)
+            self.assertIn("gke-gcsfuse/ephemeral-storage-request", annotations)
+            # Verify limit annotations are set to "0"
+            self.assertEqual(annotations.get("gke-gcsfuse/cpu-limit"), "0")
+            self.assertEqual(annotations.get("gke-gcsfuse/memory-limit"), "0")
+            self.assertEqual(annotations.get("gke-gcsfuse/ephemeral-storage-limit"), "0")
+
+            # Verify shared memory volume is present
+            volume_names = [v["name"] for v in pod_spec["volumes"]]
+            self.assertIn("shared-memory", volume_names)
+
 
 class PathwaysMultiheadReplicatedJobTest(TestCase):
     """Tests PathwaysMultiheadReplicatedJob."""
