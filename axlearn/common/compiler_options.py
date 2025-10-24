@@ -104,8 +104,9 @@ def default_xla_options(
         # fusion and allreduce SC offloading by default.
         options.update(
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
-            # Always enable SparseCore offloading for allreduce.
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
+            # TODO(changlan): Review and enable it later.
+            # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
 
         options.update(
@@ -421,7 +422,9 @@ def infer_xla_performance_flags(
                 xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
                 xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
                 xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
-                xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+                # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
+                # TODO(changlan): Review and enable it later.
+                # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
                 xla_tpu_enable_all_gather_offload_tracing="true",
                 xla_tpu_enable_reduce_scatter_offload_tracing="true",
                 xla_tpu_enable_all_reduce_offload_tracing="true",
