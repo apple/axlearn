@@ -63,9 +63,9 @@ _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.
 _PATHWAYS_PROXY_CONTAINER_NAME = "pathways-proxy"
 # The k8s replicatedJob name for pathways-head pods.
-_PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
+_PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pwhd"
 # The k8s replicatedJob name for pathways-worker pods.
-_PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
+_PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pwwk"
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"

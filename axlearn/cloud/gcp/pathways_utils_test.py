@@ -299,13 +299,13 @@ class PathwaysReplicatedJobTest(TestCase):
         with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 40,
+                name="a" * 49,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
 
             with self.assertRaisesRegex(
-                ValueError, r"pathways-head-1-1-abcde exceeds max \(63\) by 1 chars."
+                ValueError, r"pwhd-1-1-abcde exceeds max \(63\) by 1 chars."
             ):
                 _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
@@ -313,13 +313,14 @@ class PathwaysReplicatedJobTest(TestCase):
         with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 38,
+                name="a" * 49,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
 
+            # Both head and worker have the same name length, so head validation runs first
             with self.assertRaisesRegex(
-                ValueError, r"pathways-worker-1-2-abcde exceeds max \(63\) by 1 chars."
+                ValueError, r"pwhd-1-1-abcde exceeds max \(63\) by 1 chars."
             ):
                 _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
@@ -417,37 +418,33 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
                     annotations.get("axlearn/replicatedjob-load-balancer-port", {}),
                 )
 
-                if replicated_job_name.startswith("pathways-head"):
+                if replicated_job_name.startswith("pwhd"):
                     self.assertEqual(replicated_job["replicas"], num_replicas)
-                elif replicated_job_name.startswith("pathways-worker"):
+                elif replicated_job_name.startswith("pwwk"):
                     self.assertEqual(replicated_job["replicas"], 1)
 
     def test_validate_head_name(self):
         with self._job_config(CloudBuildBundler, 2) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 40,
+                name="a" * 49,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
 
-        with self.assertRaisesRegex(
-            ValueError, r"pathways-head-1-1-abcde exceeds max \(63\) by 1 chars."
-        ):
+        with self.assertRaisesRegex(ValueError, r"pwhd-1-1-abcde exceeds max \(63\) by 1 chars."):
             _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
     def test_validate_worker_name(self):
         with self._job_config(CloudBuildBundler, 2) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 36,
+                name="a" * 47,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
 
-        with self.assertRaisesRegex(
-            ValueError, r"pathways-worker-2-0-2-abcde exceeds max \(63\) by 1 chars."
-        ):
+        with self.assertRaisesRegex(ValueError, r"pwwk-2-0-2-abcde exceeds max \(63\) by 1 chars."):
             _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
 
