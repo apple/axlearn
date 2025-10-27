@@ -6,6 +6,8 @@
 #
 # Downloads install-bundle from metadata:bucket, installs, and sets label:boot_status = 'done'.
 
+set -xv
+
 echo "=== AXLearn start_vm.sh ==="
 
 # Setup logs.
@@ -94,6 +96,8 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
     conda create -y -n py310 python=3.10
     conda activate py310
     conda info --envs
+    # update pip and pre-install needed utilities
+    pip install -U pip swig flit uv
     # Add conda to .profile file, and use login shell to source.
     echo 'source /opt/conda/etc/profile.d/conda.sh && conda activate py310' >> ~/.profile
   }
@@ -105,7 +109,8 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
     # 'Until' seemingly necessary as of 08/06/23 to avoid background setup process damaging partial
     # pip install state.
     # TODO(markblee,tom_gunter): Revisit this and understand why and how to wait until ready.
-    until python3 -m pip install .[gcp]; do
+    export UV_HTTP_TIMEOUT=300
+    until uv pip install .[gcp]; do
       echo "Attempting to install bundle again..."
       sleep 1
     done

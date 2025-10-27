@@ -629,12 +629,12 @@ class BaseTarBundler(Bundler):
         )
         pip_install_cmd = (
             f"if [[ -f {config.CONFIG_DIR}/requirements.txt ]]; then "
-            f"python3 -m pip install -r {config.CONFIG_DIR}/requirements.txt; "
-            "else python3 -m pip install .; fi"
+            f"python3 -m uv pip install -r {config.CONFIG_DIR}/requirements.txt; "
+            "else python3 -m uv pip install .; fi"
         )
         return (
             f"{copy_cmd} && tar -xzf axlearn.tar.gz && "
-            f"python3 -m pip install --upgrade pip && {pip_install_cmd}"
+            f"python3 -m uv pip install --upgrade pip && {pip_install_cmd}"
         )
 
 
