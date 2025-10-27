@@ -391,11 +391,10 @@ class SerializerTest(parameterized.TestCase):
         deserialize_specs = captured_specs[-len(data) :]
         self.assertGreater(len(deserialize_specs), 0)
         for spec in deserialize_specs:
-            # gcs_grpc driver should be used when either:
-            # - JAX_PLATFORMS is "proxy" (running on GCP/Pathways), OR
+            # gcs_grpc driver should be used when:
             # - ENABLE_GCS_GRPC is "true" (explicit opt-in)
             # Otherwise, gcs driver should be used (no change)
-            should_use_grpc = jax_platforms == "proxy" or enable_gcs_grpc == "true"
+            should_use_grpc = enable_gcs_grpc == "true"
             expected_driver = "gcs_grpc" if should_use_grpc else "gcs"
             self.assertEqual(spec["kvstore"]["driver"], expected_driver)
         # Verify the deserialized data matches the original data
