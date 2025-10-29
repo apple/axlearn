@@ -841,11 +841,13 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         cfg = super().default_config()
         return cfg.set(inner=TPULeaderWorkerTemplate.default_config())
 
-    def __init__(self, cfg, *, bundler):
+    def __init__(self, cfg: BaseLeaderWorkerTemplate.Config, *, bundler):
         super().__init__(cfg, bundler=bundler)
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+
         self._bundler = bundler
         self._inner: TPULeaderWorkerTemplate = cfg.inner.instantiate(bundler=self._bundler)
-        self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
+        self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
 
