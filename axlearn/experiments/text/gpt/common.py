@@ -17,6 +17,7 @@ from typing import Literal, Optional, Protocol, Union
 import jax.numpy as jnp
 import tensorflow as tf
 from jax.sharding import PartitionSpec
+from absl import logging
 
 from axlearn.common import (
     base_model,
@@ -690,6 +691,7 @@ def get_trainer_config_fn(
     keep_every_n_steps: int = 50_000,
     save_every_n_steps: Optional[int] = None,
     init_state_builder: Optional[state_builder.Builder.Config] = None,
+    checkpointer: str = "",
 ) -> TrainerConfigFn:
     """Builds a TrainerConfigFn according to the model and input specs.
 
@@ -758,12 +760,54 @@ def get_trainer_config_fn(
             )
             cfg.evalers[name] = evaler_cfg
         # Summaries and checkpoints.
-        cfg.checkpointer.save_policy = config_for_function(every_n_steps_and_last_policy).set(
-            n=save_every_n_steps or min(eval_every_n_steps, 5_000),
-            max_step=max_step,
-        )
-        cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
-        cfg.checkpointer.keep_last_n = 3
+        calculated_save_every_n_steps = save_every_n_steps or min(eval_every_n_steps, 500)
+        logging.info("checkpointer: %s",checkpointer)
+        if not checkpointer:
+            logging.info("In no checkpointer")
+            cfg.checkpointer.save_policy = config_for_function(every_n_steps_and_last_policy).set(
+                n=calculated_save_every_n_steps,
+                max_step=max_step,
+            )
+            cfg.checkpointer.keep_every_n_steps = min(max_step, keep_every_n_steps)
+            cfg.checkpointer.keep_last_n = 3
+        elif checkpointer == "OrbaxCheckpointer":
+            logging.info("In orbax checkpointer")
+            from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
+
+            ckpt_config: OrbaxCheckpointer.Config = (
+                OrbaxCheckpointer.default_config()
+            )
+            ckpt_config.save_policy = config_for_function(every_n_steps_and_last_policy).set(
+                n=calculated_save_every_n_steps,
+                max_step=max_step,
+            )
+            ckpt_config.keep_last_n = 3
+            cfg.checkpointer = ckpt_config
+        elif checkpointer == "OrbaxEmergencyCheckpointer":
+            # Prevent global dependency on Orbax.
+            # pylint: disable-next=import-outside-toplevel
+            from axlearn.common.checkpointer_orbax_emergency import OrbaxEmergencyCheckpointer
+
+            ckpt_config: OrbaxEmergencyCheckpointer.Config = (
+                OrbaxEmergencyCheckpointer.default_config()
+            )
+            ckpt_config.save_policy = config_for_function(every_n_steps_and_last_policy).set(
+                # n=calculated_save_every_n_steps,
+                # Every 15 minures ore more recommended
+                n=200,
+                max_step=max_step,
+            )
+            ckpt_config.local_save_policy = config_for_function(every_n_steps_and_last_policy).set(
+                # n=calculated_save_every_n_steps,
+                # Every 2 minutes or more generally recommended
+                n=30,
+                max_step=max_step,
+            )
+            ckpt_config.local_dir = "/host-tmp/checkpoints"
+            ckpt_config.keep_every_n_steps = min(max_step, keep_every_n_steps)
+            ckpt_config.keep_last_n = 3
+            ckpt_config.replica_axis_index = 1
+            cfg.checkpointer = ckpt_config
         cfg.summary_writer.write_every_n_steps = min(eval_every_n_steps, 100)
         cfg.summary_writer.max_queue = 1000
         if len(mesh_axis_names) != len(mesh_shape):
