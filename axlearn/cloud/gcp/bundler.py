@@ -98,11 +98,29 @@ class ArtifactRegistryBundler(DockerBundler):
 
     TYPE = "artifactregistry"
 
+    @config_class
+    class Config(DockerBundler.Config):
+        """Configures CloudBuildBundler.
+
+        Attributes:
+            colocated_image_required: Bool to build a colocated image
+            colocated_image_name: Colocated Image Name
+            colocated_dockerfile: Colocated Dockerfile
+        """
+        # Build image asynchronously.
+        colocated_image_required: bool = False
+        colocated_image_name: str = None
+        #colocated_dockerfile: str = None
+        
+
     @classmethod
     def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
-        cfg = super().from_spec(spec, fv=fv)
+        cfg: ArtifactRegistryBundler.Config = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
+        cfg.colocated_image_required = cfg.colocated_image_required or gcp_settings("colocated_image_required", required=False, fv=fv)
+        cfg.colocated_image_name = cfg.colocated_image_name or gcp_settings("colocated_image_name", required=False, fv=fv)
+        #cfg.colocated_dockerfile = cfg.colocated_dockerfile or gcp_settings("colocated_dockerfile", required=False, fv=fv)
         return cfg
 
     def _build_and_push(self, *args, **kwargs):
@@ -111,6 +129,43 @@ class ArtifactRegistryBundler(DockerBundler):
             ["gcloud", "auth", "configure-docker", registry_from_repo(cfg.repo)],
             check=True,
         )
+
+        actual_name = cfg.image
+        #actual_dockerfile=cfg.dockerfile
+        actual_target=cfg.target
+        if bool(cfg.colocated_image_required):
+            
+            #cfg.dockerfile=cfg.colocated_dockerfile
+            cfg.image=cfg.colocated_image_name
+            cfg.target="colocated-python"
+            
+            colocated_bundler_class = ColocatedArtifactRegistryBundler(cfg=cfg)
+            colocated_image_name = colocated_bundler_class.bundle(tag=cfg.image)
+        
+            #cfg.dockerfile=actual_dockerfile
+            cfg.image=actual_name
+            cfg.target=actual_target
+  
+        return super()._build_and_push(*args, **kwargs)
+
+
+class ColocatedArtifactRegistryBundler(DockerBundler):
+    """A DockerBundler that reads configs from gcp_settings, and auths to Artifact Registry."""
+
+    @classmethod
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
+        cfg: ColocatedArtifactRegistryBundler.Config = super().from_spec(spec, fv=fv)
+        cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
+        cfg.dockerfile = cfg.colocated_dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
+        return cfg
+
+    def _build_and_push(self, *args, **kwargs):
+        cfg = self.config
+        subprocess.run(
+            ["gcloud", "auth", "configure-docker", registry_from_repo(cfg.repo)],
+            check=True,
+        )
+        
         return super()._build_and_push(*args, **kwargs)
 
 

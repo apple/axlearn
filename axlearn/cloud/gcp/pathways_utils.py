@@ -35,6 +35,7 @@ from axlearn.common.compiler_options import (
 )
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
+from axlearn.cloud.gcp.config import gcp_settings
 
 # The port used by pathways proxy server.
 # The specific value is not important, as long as clients and servers use the same port.
@@ -45,19 +46,25 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 # The port used by pathways worker server.
 # The specific value is not important, as long as clients and servers use the same port.
 _PATHWAYS_WORKER_PORT = 29001
+_COLOCATED_CONTAINER_PORT = 50051
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "shm_proxy_settings"
+_PATHWAYS_IMAGE_TAG = "2025-10-03"
+
 # The docker image used by pathways proxy container.
+# pylint: disable=line-too-long
 _PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+    # pylint: disable=line-too-long
+    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/proxy_server:{_PATHWAYS_IMAGE_TAG}"
 )
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    # pylint: disable=line-too-long
+    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/server:{_PATHWAYS_IMAGE_TAG}"
 )
+
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.
@@ -67,6 +74,9 @@ _PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pwhd"
 # The k8s replicatedJob name for pathways-worker pods.
 _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pwwk"
 
+_COLOCATED_PYTHON_SIDECAR_NAME = "colocated-python-sidecar"
+
+
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
@@ -74,6 +84,12 @@ _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 # Note that the head pod will back of exact this many times.
 # While workers will share #workers * _PATHWAYS_BACK_OFF_LIMIT total times.
 _PATHWAYS_BACK_OFF_LIMIT = 32
+
+FLAGS = flags.FLAGS
+
+def get_colocated_python_image(colocated_image_name, fv: flags.FlagValues = FLAGS) -> str:
+    repo = gcp_settings("docker_repo", required=False, fv=fv)
+    return repo+"/"+colocated_image_name+":"+colocated_image_name
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
@@ -135,7 +151,6 @@ def get_xla_options(
     """
     return {k: v for k, v in xla_options.items() if k.startswith("xla_")}
 
-
 def round_up_to_power_of_2(n):
     """
     Rounds an integer up to the nearest power of 2.
@@ -173,6 +188,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pathways_xla_flags: list[str] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
+        colocated_image: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -201,12 +217,19 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "Memory request for pathways-head container in GiB. Default is 16GiB",
             **common_kwargs,
         )
+        flags.DEFINE_string(
+            "colocated_image",
+            None,
+            "Colocated Image Name",
+            **common_kwargs,
+        )
 
     @classmethod
     def set_defaults(cls, fv):
         super().set_defaults(fv)
         fv.set_default("pathways_head_cpu", fv.pathways_head_cpu or "1")
         fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
+        fv.set_default("colocated_image", fv.colocated_image or None)
 
     @classmethod
     def default_config(cls):
@@ -311,29 +334,29 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             }
         )
 
-        # pylint: disable=line-too-long
-        env_list.append(
-            {
-                "name": "NUM_REPLICAS",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
-                    }
-                },
-            }
-        )
+        # # pylint: disable=line-too-long
+        # env_list.append(
+        #     {
+        #         "name": "NUM_REPLICAS",
+        #         "valueFrom": {
+        #             "fieldRef": {
+        #                 "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
+        #             }
+        #         },
+        #     }
+        # )
         # pylint: enable=line-too-long
 
-        env_list.append(
-            {
-                "name": "REPLICA_ID",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
-                    }
-                },
-            }
-        )
+        # env_list.append(
+        #     {
+        #         "name": "REPLICA_ID",
+        #         "valueFrom": {
+        #             "fieldRef": {
+        #                 "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+        #             }
+        #         },
+        #     }
+        # )
 
         head_container["env"] = env_list
 
@@ -373,6 +396,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
+            "--sidecar_name=external",
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
@@ -425,6 +449,22 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 volumeMounts=[dict(name="shared-output", mountPath="/output")],
             ),
         ]
+
+    def _colocated_python_container(self):
+        cfg: PathwaysReplicatedJob.Config = self.config
+        return dict(
+            name=_COLOCATED_PYTHON_SIDECAR_NAME,
+            image=get_colocated_python_image(cfg.colocated_image),
+            restartPolicy="Always",
+            env=[
+                {
+                    "name": "GRPC_SERVER_ADDRESS",
+                    "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
+                },
+            ],
+            imagePullPolicy="Always",
+            ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
+        )
 
     def _build_pathways_head_pod(self) -> Nested[Any]:
         """Builds a pathways head pod. The pod includes a head container,
@@ -599,6 +639,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     ) -> Nested[Any]:
         """Conoverts a worker pod to a new pod for the 'pathways-workers' role."""
         cfg: TPUReplicatedJob.Config = self._inner.config
+        pathways_cfg: PathwaysReplicatedJob.Config = self.config
         # pylint: disable-next=protected-access
         pod = self._inner._build_pod()
         worker_pod = copy.deepcopy(pod)
@@ -614,6 +655,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pod_spec["containers"] = [
             self._build_pathways_worker_container(pathways_worker_replicated_job_index)
         ]
+
+        if pathways_cfg.colocated_image:
+            pod_spec["initContainers"] = [self._colocated_python_container()]
+
         worker_pod["spec"] = pod_spec
 
         # Service account for nodes.
