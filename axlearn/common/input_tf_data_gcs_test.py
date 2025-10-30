@@ -76,7 +76,11 @@ class TfdsGcsTest(parameterized.TestCase):
                 dataset_name=dataset_name,
             )
             if expected == "even split":
-                shard_index = read_config.shard_index or jax.process_index()
+                shard_index = (
+                    read_config.shard_index
+                    if read_config.shard_index is not None
+                    else jax.process_index()
+                )
                 expected_split = tfds.even_splits(split, n=required_shards, drop_remainder=False)[
                     shard_index
                 ]
