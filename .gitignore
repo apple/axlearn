@@ -176,3 +176,4 @@ bazel-*
 
 # Emacs
 *~
+run_specific_test.sh

@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F_torch
 from absl.testing import parameterized
 from jax._src.mesh import ResourceEnv, thread_resources
 from jax.experimental import mesh_utils
@@ -47,6 +48,8 @@ from axlearn.common.ssm import (
     RepeatedSSMLayer,
     StackedMixedSSMTransformerLayer,
     StackedSSMLayer,
+    default_mamba_dim_to_partition_specs,
+    default_output_partition_spec,
 )
 from axlearn.common.ssm_kernels.ssd_kernels import ssd
 from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
@@ -75,6 +78,7 @@ class MambaConfig(PretrainedConfig):
         vocab_size=50280,
         hidden_size=768,
         state_size=16,
+        *,
         num_hidden_layers=32,
         layer_norm_epsilon=1e-5,
         pad_token_id=0,
@@ -251,7 +255,8 @@ class MambaMixer(torch.nn.Module):
             ssm_parameters, [self.time_step_rank, self.ssm_state_size, self.ssm_state_size], dim=-1
         )
         discrete_time_step = self.dt_proj(time_step)                                    # [batch, seq_len, intermediate_size]
-        discrete_time_step = torch.nn.functional.softplus(discrete_time_step).transpose(1, 2) # [batch, intermediate_size, seq_len]
+        # pylint: disable=not-callable  # softplus is callable, false positive
+        discrete_time_step = F_torch.softplus(discrete_time_step).transpose(1, 2) # [batch, intermediate_size, seq_len]
 
         # 3.b. Discretization: B and C to [batch, seq_len, intermediate_size, ssm_state_size] (SRAM)
         A = -torch.exp(self.A_log.float())                                              # [intermediate_size, ssm_state_size]
@@ -1238,7 +1243,7 @@ class JambaMamba2BlockTest(TestCase):
         dtype=[jnp.float32, jnp.bfloat16],
     )
     def forward(
-        self, input_dim: int, state_dim: int, num_heads: int, num_groups: int, dtype: jnp.dtype
+        self, input_dim: int, *, state_dim: int, num_heads: int, num_groups: int, dtype: jnp.dtype
     ):
         mamba2block_cfg = JambaMamba2Block.default_config().set(
             name="test",
@@ -1281,6 +1286,7 @@ class JambaMamba2BlockTest(TestCase):
         self,
         batch_size: int,
         input_dim: int,
+        *,
         seq_len: int,
         state_dim: int,
         num_heads: int,
@@ -1350,6 +1356,7 @@ class JambaMamba2BlockTest(TestCase):
         self,
         batch_size: int,
         input_dim: int,
+        *,
         seq_len: int,
         state_dim: int,
         num_heads: int,
@@ -1547,3 +1554,68 @@ class GPUMamba2MixerLayerTest(TestCase):
         torch_output_np = torch_output.cpu().detach().numpy()
 
         assert_allclose(torch_output_np, jax_output_np, atol=1e-2, rtol=1e-2)
+
+
+class PartitionSpecTest(TestCase):
+    """Tests for Mamba partition spec helper functions."""
+
+    def test_default_mamba_dim_to_partition_specs_without_seq(self):
+        """Test partition specs without sequence parallelism."""
+        mesh_axis_names = ("data", "fsdp", "model")
+        specs = default_mamba_dim_to_partition_specs(mesh_axis_names)
+
+        # batch should be sharded over data and fsdp
+        # sequence should not be sharded (None)
+        # inner dim should be sharded over model
+        self.assertEqual(specs["btd"], PartitionSpec(("data", "fsdp"), None, "model"))
+        self.assertEqual(specs["sd"], PartitionSpec(None, "model"))
+        self.assertEqual(specs["bts"], PartitionSpec(("data", "fsdp"), None, None))
+        self.assertEqual(specs["1d"], PartitionSpec(None, "model"))
+
+    def test_default_mamba_dim_to_partition_specs_with_seq(self):
+        """Test partition specs with sequence parallelism enabled."""
+        mesh_axis_names = ("data", "fsdp", "seq", "model")
+        specs = default_mamba_dim_to_partition_specs(mesh_axis_names)
+
+        # batch should be sharded over data and fsdp (not seq or model)
+        # sequence should be sharded over seq
+        # inner dim should be sharded over model
+        self.assertEqual(specs["btd"], PartitionSpec(("data", "fsdp"), "seq", "model"))
+        self.assertEqual(specs["sd"], PartitionSpec(None, "model"))
+        self.assertEqual(specs["bts"], PartitionSpec(("data", "fsdp"), "seq", None))
+        self.assertEqual(specs["1d"], PartitionSpec(None, "model"))
+
+    def test_default_mamba_dim_to_partition_specs_only_seq(self):
+        """Test partition specs with only sequence axis."""
+        mesh_axis_names = ("seq",)
+        specs = default_mamba_dim_to_partition_specs(mesh_axis_names)
+
+        # Only seq parallelism, no batch or model sharding
+        self.assertEqual(specs["btd"], PartitionSpec((), "seq", None))
+        self.assertEqual(specs["sd"], PartitionSpec(None, None))
+        self.assertEqual(specs["bts"], PartitionSpec((), "seq", None))
+        self.assertEqual(specs["1d"], PartitionSpec(None, None))
+
+    def test_default_output_partition_spec_without_seq(self):
+        """Test output partition spec without sequence parallelism."""
+        mesh_axis_names = ("data", "fsdp", "model")
+        spec = default_output_partition_spec(mesh_axis_names)
+
+        # batch over data and fsdp, no seq sharding, inner dim over model
+        self.assertEqual(spec, PartitionSpec(("data", "fsdp"), None, "model"))
+
+    def test_default_output_partition_spec_with_seq(self):
+        """Test output partition spec with sequence parallelism enabled."""
+        mesh_axis_names = ("data", "fsdp", "seq", "model")
+        spec = default_output_partition_spec(mesh_axis_names)
+
+        # batch over data and fsdp, sequence over seq, inner dim over model
+        self.assertEqual(spec, PartitionSpec(("data", "fsdp"), "seq", "model"))
+
+    def test_default_output_partition_spec_minimal(self):
+        """Test output partition spec with minimal mesh."""
+        mesh_axis_names = ("model",)
+        spec = default_output_partition_spec(mesh_axis_names)
+
+        # No batch or seq sharding, only model sharding
+        self.assertEqual(spec, PartitionSpec((), None, "model"))

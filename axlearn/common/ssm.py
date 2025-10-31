@@ -409,7 +409,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
 
         # We need to jit a function before shard_mapping it.
         @jax.jit
-        def jit_mamba_scan(x, a, b, c, delta, d):
+        def jit_mamba_scan(x, a, *, b, c, delta, d):
             y = compute_mamba_scan(  # [batch_size, seq_len, inner_dim]
                 x,
                 a,
@@ -445,7 +445,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
         delta = with_sharding_constraint(delta, partition_specs["btd"])
         d = with_sharding_constraint(d, partition_specs["1d"])
         y = with_sharding_constraint(
-            partitioned_mamba_scan(x, a, b, c, delta, d),
+            partitioned_mamba_scan(x, a, b=b, c=c, delta=delta, d=d),
             cfg.output_partition_spec,
         )
         # The Pallas kernel does not return states.
@@ -459,7 +459,8 @@ def default_mamba_dim_to_partition_specs(
     the Pallas-based Mamba implementation.
 
     The inner dimension is sharded over the default tensor-parallel axis name if present,
-    and the the batch is sharded over the remainder of the axes.
+    the sequence dimension is sharded over the sequence-parallel axis name if present,
+    and the batch is sharded over the remainder of the axes.
 
     Args:
         mesh_axis_names: Mesh axis names.
@@ -467,13 +468,14 @@ def default_mamba_dim_to_partition_specs(
     Returns:
         A dictionary keyed by Mamba tensor dims with partition spec values.
     """
-    batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
+    batch_axis_names = tuple(el for el in mesh_axis_names if el not in ("model", "seq"))
     tp_axis_name = "model" if "model" in mesh_axis_names else None
+    seq_axis_name = "seq" if "seq" in mesh_axis_names else None
 
-    # TODO(swiseman): support sequence parallelism.
-    x_spec = PartitionSpec(batch_axis_names, None, tp_axis_name)
+    # Support sequence parallelism by sharding the sequence dimension (middle dim in btd/bts).
+    x_spec = PartitionSpec(batch_axis_names, seq_axis_name, tp_axis_name)
     a_spec = PartitionSpec(None, tp_axis_name)
-    b_spec = PartitionSpec(batch_axis_names, None, None)
+    b_spec = PartitionSpec(batch_axis_names, seq_axis_name, None)
     d_spec = PartitionSpec(None, tp_axis_name)
     partition_specs = {"btd": x_spec, "sd": a_spec, "bts": b_spec, "1d": d_spec}
     return partition_specs
@@ -486,7 +488,8 @@ def default_output_partition_spec(
     implementation.
 
     The inner dimension is sharded over the default tensor-parallel axis name if present,
-    and the the batch is sharded over the remainder of the axes.
+    the sequence dimension is sharded over the sequence-parallel axis name if present,
+    and the batch is sharded over the remainder of the axes.
 
     Args:
         mesh_axis_names: Mesh axis names.
@@ -494,10 +497,11 @@ def default_output_partition_spec(
     Returns:
         A PartitionSpec.
     """
-    batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
+    batch_axis_names = tuple(el for el in mesh_axis_names if el not in ("model", "seq"))
     tp_axis_name = "model" if "model" in mesh_axis_names else None
-    # TODO(swiseman): support sequence parallelism.
-    return PartitionSpec(batch_axis_names, None, tp_axis_name)
+    seq_axis_name = "seq" if "seq" in mesh_axis_names else None
+    # Support sequence parallelism by sharding the sequence dimension.
+    return PartitionSpec(batch_axis_names, seq_axis_name, tp_axis_name)
 
 
 def _at_least_float32(x: Tensor) -> Tensor:
@@ -560,10 +564,10 @@ class MambaMixerLayer(BaseLayer):
         # The recurrence implementation to use for full-sequence inputs.
         mamba_recurrence: BaseMambaRecurrence = LinearScanMambaRecurrence.default_config()
         # The recurrence implementation to use for inference.
-        inference_mamba_recurrence: BaseMambaRecurrence = (
-            LinearScanMambaRecurrence.default_config().set(
-                output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
-            )
+        inference_mamba_recurrence: (
+            BaseMambaRecurrence
+        ) = LinearScanMambaRecurrence.default_config().set(
+            output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
         )
 
     class MambaOutput(NamedTuple):
@@ -1768,10 +1772,10 @@ class Mamba2MixerLayer(BaseLayer):
         # The recurrence implementation to use for full-sequence inputs.
         ssd_recurrence: BaseSSDRecurrence = PallasSSDRecurrence.default_config()
         # The recurrence implementation to use for inference.
-        inference_mamba_recurrence: BaseSSDRecurrence = (
-            LinearScanSSDRecurrence.default_config().set(
-                output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
-            )
+        inference_mamba_recurrence: (
+            BaseSSDRecurrence
+        ) = LinearScanSSDRecurrence.default_config().set(
+            output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
         )
 
     class Mamba2Output(NamedTuple):
