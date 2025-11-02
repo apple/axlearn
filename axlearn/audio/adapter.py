@@ -215,7 +215,7 @@ class ASRModelAdapter(BaseLayer):
         if state is not None and prng_key is not None:
             outputs, _ = F(
                 self.encoder_adapter,
-                inputs=features,
+                inputs=(features,),
                 is_training=is_training,
                 prng_key=prng_key,
                 state=state,
@@ -245,7 +245,7 @@ class ASRModelAdapter(BaseLayer):
         if state is not None and prng_key is not None:
             outputs, _ = F(
                 self.decoder_adapter,
-                inputs=features,
+                inputs=(features,),
                 is_training=is_training,
                 prng_key=prng_key,
                 state=state,

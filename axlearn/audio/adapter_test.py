@@ -33,7 +33,7 @@ class AudioModelAdapterTest(TestCase):
 
         outputs, _ = F(
             layer,
-            inputs=inputs,
+            inputs=(inputs,),
             is_training=True,
             prng_key=prng_key,
             state=layer_params,
@@ -61,7 +61,7 @@ class AudioModelAdapterTest(TestCase):
 
         outputs, _ = F(
             layer,
-            inputs=inputs,
+            inputs=(inputs,),
             is_training=True,
             prng_key=prng_key,
             state=layer_params,
@@ -88,7 +88,7 @@ class AudioModelAdapterTest(TestCase):
 
         outputs, _ = F(
             layer,
-            inputs=inputs,
+            inputs=(inputs,),
             is_training=True,
             prng_key=prng_key,
             state=layer_params,
@@ -119,7 +119,7 @@ class AudioModelAdapterTest(TestCase):
 
         outputs, _ = F(
             layer,
-            inputs=inputs,
+            inputs=(inputs,),
             is_training=True,
             prng_key=prng_key,
             state=layer_params,
@@ -147,7 +147,7 @@ class AudioModelAdapterTest(TestCase):
 
         outputs, _ = F(
             layer,
-            inputs=inputs,
+            inputs=(inputs,),
             is_training=True,
             prng_key=prng_key,
             state=layer_params,
@@ -175,20 +175,23 @@ class AudioModelAdapterTest(TestCase):
         up_proj_weight = layer_params["up_proj"]["weight"]
         up_proj_bias = layer_params["up_proj"]["bias"]
         layer_norm_scale = layer_params["layer_norm"]["scale"]
+        layer_norm_bias = layer_params["layer_norm"]["bias"]
 
         self.assertEqual(down_proj_weight.shape, (input_dim, bottleneck_dim))
         self.assertEqual(down_proj_bias.shape, (bottleneck_dim,))
         self.assertEqual(up_proj_weight.shape, (bottleneck_dim, input_dim))
         self.assertEqual(up_proj_bias.shape, (input_dim,))
         self.assertEqual(layer_norm_scale.shape, (input_dim,))
+        self.assertEqual(layer_norm_bias.shape, (input_dim,))
 
         total_params = np.prod(down_proj_weight.shape)
         total_params += np.prod(down_proj_bias.shape)
         total_params += np.prod(up_proj_weight.shape)
         total_params += np.prod(up_proj_bias.shape)
         total_params += np.prod(layer_norm_scale.shape)
+        total_params += np.prod(layer_norm_bias.shape)
 
-        self.assertEqual(total_params, 82368)
+        self.assertEqual(total_params, 33664)
 
     @parameterized.parameters([True, False])
     def test_training_vs_eval_mode(self, is_training: bool):
@@ -209,7 +212,7 @@ class AudioModelAdapterTest(TestCase):
 
         outputs, _ = F(
             layer,
-            inputs=inputs,
+            inputs=(inputs,),
             is_training=is_training,
             prng_key=prng_key,
             state=layer_params,
