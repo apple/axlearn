@@ -195,7 +195,7 @@ class ASRModelAdapter(BaseLayer):
                 ),
             )
 
-    def adapt_encoder_features(self, features, *, is_training=False, prng_key=None, state=None):
+    def adapt_encoder_features(self, features, *, is_training=False, prng_key, state):
         """Apply adaptation to encoder features.
 
         Args:
@@ -211,21 +211,16 @@ class ASRModelAdapter(BaseLayer):
         if not cfg.adapt_encoder:
             return features
 
-        # Use functional API if state and prng_key are provided
-        if state is not None and prng_key is not None:
-            outputs, _ = F(
-                self.encoder_adapter,
-                inputs=(features,),
-                is_training=is_training,
-                prng_key=prng_key,
-                state=state["encoder_adapter"],
-            )
-            return outputs
+        outputs, _ = F(
+            self.encoder_adapter,
+            inputs=(features,),
+            is_training=is_training,
+            prng_key=prng_key,
+            state=state["encoder_adapter"],
+        )
+        return outputs
 
-        # Fall back to direct call if no state/prng_key
-        return self.encoder_adapter(features)
-
-    def adapt_decoder_features(self, features, *, is_training=False, prng_key=None, state=None):
+    def adapt_decoder_features(self, features, *, is_training=False, prng_key, state):
         """Apply adaptation to decoder features.
 
         Args:
@@ -241,16 +236,11 @@ class ASRModelAdapter(BaseLayer):
         if not cfg.adapt_decoder or not hasattr(self, "decoder_adapter"):
             return features
 
-        # Use functional API if state and prng_key are provided
-        if state is not None and prng_key is not None:
-            outputs, _ = F(
-                self.decoder_adapter,
-                inputs=(features,),
-                is_training=is_training,
-                prng_key=prng_key,
-                state=state["decoder_adapter"],
-            )
-            return outputs
-
-        # Fall back to direct call if no state/prng_key
-        return self.decoder_adapter(features)
+        outputs, _ = F(
+            self.decoder_adapter,
+            inputs=(features,),
+            is_training=is_training,
+            prng_key=prng_key,
+            state=state["decoder_adapter"],
+        )
+        return outputs

@@ -364,12 +364,16 @@ class ASRModelAdapterTest(TestCase):
         )
         layer = cfg.set(name="test").instantiate(parent=None)
 
-        # Initialize params (required for layer setup, but not used in this direct call test)
-        _ = layer.initialize_parameters_recursively(jax.random.PRNGKey(123))
-        encoder_features = jax.random.normal(
-            jax.random.PRNGKey(456), (batch_size, seq_len, encoder_dim)
-        )
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key = jax.random.split(prng_key, num=3)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        encoder_features = jax.random.normal(input_key, (batch_size, seq_len, encoder_dim))
 
-        adapted_features = layer.adapt_encoder_features(encoder_features, is_training=True)
+        adapted_features = layer.adapt_encoder_features(
+            encoder_features,
+            is_training=True,
+            prng_key=prng_key,
+            state=layer_params,
+        )
 
         self.assertEqual(adapted_features.shape, encoder_features.shape)
