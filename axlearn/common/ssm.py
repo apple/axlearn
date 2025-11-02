@@ -483,7 +483,7 @@ def default_mamba_dim_to_partition_specs(
 
 def default_output_partition_spec(
     mesh_axis_names: Sequence[str],
-) -> dict[str, PartitionSpec]:
+) -> PartitionSpec:
     """Builds a default output partition spec for the shard_mapped Pallas-based Mamba
     implementation.
 
