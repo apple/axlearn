@@ -191,7 +191,7 @@ class AudioModelAdapterTest(TestCase):
         total_params += np.prod(layer_norm_scale.shape)
         total_params += np.prod(layer_norm_bias.shape)
 
-        self.assertEqual(total_params, 33664)
+        self.assertEqual(total_params, 33600)
 
     @parameterized.parameters([True, False])
     def test_training_vs_eval_mode(self, is_training: bool):

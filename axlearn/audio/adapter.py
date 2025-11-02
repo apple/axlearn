@@ -218,7 +218,7 @@ class ASRModelAdapter(BaseLayer):
                 inputs=(features,),
                 is_training=is_training,
                 prng_key=prng_key,
-                state=state,
+                state=state["encoder_adapter"],
             )
             return outputs
 
@@ -248,7 +248,7 @@ class ASRModelAdapter(BaseLayer):
                 inputs=(features,),
                 is_training=is_training,
                 prng_key=prng_key,
-                state=state,
+                state=state["decoder_adapter"],
             )
             return outputs
 
