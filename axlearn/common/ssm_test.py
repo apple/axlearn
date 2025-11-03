@@ -15,6 +15,7 @@
 
 
 """Tests Mamba/Mamba2 and Jamba implementations."""
+# pytype: disable=module-attr
 import math
 from typing import Optional
 
