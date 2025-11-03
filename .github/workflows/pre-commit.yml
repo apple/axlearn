@@ -15,9 +15,14 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-      - run: pip install --upgrade pip
+      - run: |
+          echo "VIRTUAL_ENV: $VIRTUAL_ENV"
+          echo "Python location: ${{ env.pythonLocation }}"
+          which python
+          which uv || echo "uv not found yet"
+      - run: pip install --upgrade pip uv
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
-      - run: pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
+      - run: uv pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
