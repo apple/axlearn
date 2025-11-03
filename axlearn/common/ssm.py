@@ -409,7 +409,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
 
         # We need to jit a function before shard_mapping it.
         @jax.jit
-        def jit_mamba_scan(x, a, *, b, c, delta, d):
+        def jit_mamba_scan(x, a, b, c, delta, d):  # pylint: disable=too-many-positional-arguments
             y = compute_mamba_scan(  # [batch_size, seq_len, inner_dim]
                 x,
                 a,
@@ -445,7 +445,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
         delta = with_sharding_constraint(delta, partition_specs["btd"])
         d = with_sharding_constraint(d, partition_specs["1d"])
         y = with_sharding_constraint(
-            partitioned_mamba_scan(x, a, b=b, c=c, delta=delta, d=d),
+            partitioned_mamba_scan(x, a, b, c, delta, d),
             cfg.output_partition_spec,
         )
         # The Pallas kernel does not return states.
