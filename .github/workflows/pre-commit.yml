@@ -18,7 +18,10 @@ jobs:
       - run: pip install --upgrade pip
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
       # Using --use-deprecated=legacy-resolver to handle ml-dtypes conflict
-      - run: pip install --use-deprecated=legacy-resolver '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
+      - run: |
+          pip install --use-deprecated=legacy-resolver '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
+          # Reinstall google-cloud-aiplatform to fix pytype imports (legacy-resolver may have broken it)
+          pip install --force-reinstall --no-deps 'google-cloud-aiplatform[tensorboard]==1.61.0'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
