@@ -60,6 +60,7 @@ from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import canonicalize_to_list, to_bool
 from axlearn.cloud.gcp.cloud_build import wait_for_cloud_build
 from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.pathways_utils import _COLOCATED_PYTHON_SIDECAR_NAME
 from axlearn.cloud.gcp.utils import common_flags
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
 
@@ -98,20 +99,46 @@ class ArtifactRegistryBundler(DockerBundler):
 
     TYPE = "artifactregistry"
 
+    @config_class
+    class Config(DockerBundler.Config):
+        """Configures ArtifactRegistryBundler.
+
+        Attributes:
+            enable_colocated_python: Applicable only to Pathways jobs. Whether to build a Colocated
+                Python sidecar image alongside the main image. The sidecar image name will be
+                "{main_image_name}-colocated-sidecar".
+        """
+
+        enable_colocated_python: bool = False
+
     @classmethod
     def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> DockerBundler.Config:
-        cfg = super().from_spec(spec, fv=fv)
+        cfg: ArtifactRegistryBundler.Config = super().from_spec(spec, fv=fv)
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
+        cfg.enable_colocated_python = cfg.enable_colocated_python or gcp_settings(
+            "enable_colocated_python", required=False, fv=fv
+        )
         return cfg
 
-    def _build_and_push(self, *args, **kwargs):
+    def _build_and_push(self, *args, image: str, **kwargs):
         cfg = self.config
         subprocess.run(
             ["gcloud", "auth", "configure-docker", registry_from_repo(cfg.repo)],
             check=True,
         )
-        return super()._build_and_push(*args, **kwargs)
+
+        if cfg.enable_colocated_python:
+            # Build Colocated Python sidecar image
+            _, tag = image.rsplit(":", maxsplit=1)
+            colocated_bundler = cfg.set(
+                image=_COLOCATED_PYTHON_SIDECAR_NAME,
+                target="colocated-python",
+                enable_colocated_python=False,
+            ).instantiate()
+            colocated_bundler.bundle(tag=tag)
+
+        return super()._build_and_push(*args, image=image, **kwargs)
 
 
 @register_bundler
@@ -129,6 +156,9 @@ class CloudBuildBundler(BaseDockerBundler):
                 from flags.
             is_async: Whether to build asynchronously. If True, callers should invoke
                 `wait_until_finished()` to wait for bundling to complete.
+            enable_colocated_python: Applicable only to Pathways jobs. Whether to build a Colocated
+                Python sidecar image alongside the main image. The sidecar image name will be
+                "{main_image_name}-colocated-sidecar".
         """
 
         # GCP project.
@@ -138,6 +168,7 @@ class CloudBuildBundler(BaseDockerBundler):
         # If provided, should be the identifier of a private worker pool.
         # See: https://cloud.google.com/build/docs/private-pools/private-pools-overview
         private_worker_pool: Optional[str] = None
+        enable_colocated_python: bool = False
 
     @classmethod
     def from_spec(
@@ -148,6 +179,9 @@ class CloudBuildBundler(BaseDockerBundler):
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         cfg.is_async = to_bool(cfg.is_async)
+        cfg.enable_colocated_python = cfg.enable_colocated_python or gcp_settings(
+            "enable_colocated_python", required=False, fv=fv
+        )
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument
@@ -175,9 +209,14 @@ class CloudBuildBundler(BaseDockerBundler):
         )
         image_path, image_tag = image.rsplit(":", maxsplit=1)
         latest_tag = f"{image_path}:latest"
-        cloudbuild_yaml = f"""
-steps:
-- name: "gcr.io/cloud-builders/docker"
+
+        # Build steps - start with main image
+        build_steps = []
+        images_list = [f'"{image}"', f'"{latest_tag}"']
+
+        # Main image build step
+        build_steps.append(
+            f"""- name: "gcr.io/cloud-builders/docker"
   args: [
     "build",
     "-f", "{os.path.relpath(dockerfile, context)}",
@@ -193,11 +232,43 @@ steps:
     "."
   ]
   env:
-  - "DOCKER_BUILDKIT=1"
+  - "DOCKER_BUILDKIT=1\""""
+        )
+
+        # Add colocated image build step if required
+        if cfg.enable_colocated_python:
+            colocated_image_path = f"{cfg.repo}/{_COLOCATED_PYTHON_SIDECAR_NAME}"
+            colocated_image = f"{colocated_image_path}:{image_tag}"
+            colocated_latest_image = f"{colocated_image_path}:latest"
+
+            build_steps.append(
+                f"""- name: "gcr.io/cloud-builders/docker"
+  args: [
+    "build",
+    "-f", "{os.path.relpath(dockerfile, context)}",
+    "-t", "{colocated_image}",
+    "-t", "{colocated_latest_image}",
+    "--target", "colocated-python",
+    "--cache-from", "{colocated_image}",
+    "--cache-from", "{colocated_latest_image}",
+    {cache_from}
+    {build_platform}
+    {build_args}
+    {labels}
+    "."
+  ]
+  env:
+  - "DOCKER_BUILDKIT=1\""""
+            )
+
+            images_list.extend([f'"{colocated_image}"', f'"{colocated_latest_image}"'])
+
+        cloudbuild_yaml = f"""
+steps:
+{chr(10).join(build_steps)}
 timeout: 3600s
 images:
-- "{image}"
-- "{latest_tag}"
+{chr(10).join([f"- {img}" for img in images_list])}
 tags: [{image_tag}]
 options:
   logging: CLOUD_LOGGING_ONLY
