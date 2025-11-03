@@ -15,13 +15,14 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-      - run: pip install --upgrade pip
+      - name: Create and activate venv for uv
+        run: |
+          python -m venv .venv
+          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+      - run: pip install --upgrade pip uv
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
-      # Using --use-deprecated=legacy-resolver to handle ml-dtypes conflict
-      - run: |
-          pip install --use-deprecated=legacy-resolver '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
-          # Reinstall packages that legacy-resolver may have broken (needed for pytype)
-          pip install --force-reinstall --no-deps 'google-cloud-aiplatform[tensorboard]==1.61.0' 'transformers==4.51.3'
+      - run: uv pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
