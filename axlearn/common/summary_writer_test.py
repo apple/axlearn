@@ -321,6 +321,28 @@ class WandBWriterTest(TestCase):
             finally:
                 wandb.finish()
 
+    @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
+    @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
+    def test_wandb_settings_kwargs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            try:
+                _: WandBWriter = (
+                    WandBWriter.default_config()
+                    .set(
+                        name="test",
+                        exp_name="wandb-testSettings",
+                        dir=tempdir,
+                        mode="offline",
+                        wandb_settings_kwargs={"silent": True, "disable_code": True},
+                    )
+                    .instantiate(parent=None)
+                )
+                # Verify the settings were applied
+                self.assertTrue(wandb.run.settings.silent)
+                self.assertTrue(wandb.run.settings.disable_code)
+            finally:
+                wandb.finish()
+
 
 if __name__ == "__main__":
     absltest.main()

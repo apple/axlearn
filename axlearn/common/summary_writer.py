@@ -402,6 +402,10 @@ class WandBWriter(BaseWriter):
         # If True, convert any 2D Tensors to wandb.Image before passing to wandb.log.
         convert_2d_to_image: bool = False
 
+        # Dictionary kwargs to pass to wandb.Settings().
+        # If None, no additional custom settings will be configured.
+        wandb_settings_kwargs: Optional[dict[str, Any]] = None
+
     @classmethod
     def default_config(cls: Config) -> Config:
         cfg = super().default_config()
@@ -444,6 +448,11 @@ class WandBWriter(BaseWriter):
             with fs.open(wandb_file, "w") as f:  # pytype: disable=module-attr
                 f.write(exp_id)
 
+        # Build custom settings from configured kwargs
+        wandb_settings = (
+            wandb.Settings(**cfg.wandb_settings_kwargs) if cfg.wandb_settings_kwargs else None
+        )
+
         wandb.init(
             id=exp_id,
             name=cfg.exp_name,
@@ -456,6 +465,7 @@ class WandBWriter(BaseWriter):
             resume=cfg.resume,
             dir=cfg.dir,
             group=cfg.group,
+            settings=wandb_settings,
         )
 
     @staticmethod
