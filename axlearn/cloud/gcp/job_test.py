@@ -111,7 +111,7 @@ class TPUGKEJobTest(TestCase):
         patch_delete = mock.patch(f"{job.__name__}.delete_k8s_jobset")
         with patch_delete as mock_delete:
             cfg, _ = self._job_config(command="test-command", bundler_cls=CloudBuildBundler)
-            gke_job = cfg.instantiate(bundler=mock.Mock())
+            gke_job = cfg.instantiate(bundler=mock.create_autospec(Bundler))
             gke_job._delete()  # pylint: disable=protected-access
             mock_delete.assert_called()
 
@@ -295,6 +295,6 @@ class TPUGKELeaderWorkerSetTest(TestCase):
         patch_delete = mock.patch(f"{job.__name__}.delete_k8s_leaderworkerset")
         with patch_delete as mock_delete:
             cfg, _ = self._job_config(command="test-command", bundler_cls=CloudBuildBundler)
-            gke_job = cfg.instantiate(bundler=mock.Mock())
+            gke_job = cfg.instantiate(bundler=mock.create_autospec(Bundler))
             gke_job._delete()  # pylint: disable=protected-access
             mock_delete.assert_called()

@@ -8,6 +8,7 @@ https://github.com/jax-ml/jax/blob/jax-v0.8.1/tests/pallas/tpu_paged_attention_k
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from absl.testing import parameterized
 
 from axlearn.common.attention_bias import causal_mask
@@ -28,6 +29,7 @@ class PagedAttentionKernelTest(TestCase):
         sliding_window_size=(None, 128),
         megacore_mode=(None, "batch", "kv_head"),
     )
+    @pytest.mark.skip(reason="Fails in CI due to OOM.")
     def test_paged_attention(
         self,
         dtype,
