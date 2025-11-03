@@ -20,8 +20,8 @@ jobs:
       # Using --use-deprecated=legacy-resolver to handle ml-dtypes conflict
       - run: |
           pip install --use-deprecated=legacy-resolver '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
-          # Reinstall google-cloud-aiplatform to fix pytype imports (legacy-resolver may have broken it)
-          pip install --force-reinstall --no-deps 'google-cloud-aiplatform[tensorboard]==1.61.0'
+          # Reinstall packages that legacy-resolver may have broken (needed for pytype)
+          pip install --force-reinstall --no-deps 'google-cloud-aiplatform[tensorboard]==1.61.0' 'transformers==4.51.3'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
