@@ -38,7 +38,9 @@ import jax.numpy as jnp
 import numpy as np
 from absl import logging
 from jax import lax
-from jax._src.cudnn.fused_attention_stablehlo import MaskType
+from jax._src.cudnn.fused_attention_stablehlo import (
+    MaskType,
+)
 from jax._src.cudnn.fused_attention_stablehlo import (
     dot_product_attention as cudnn_dot_product_attention,
 )
@@ -111,7 +113,7 @@ def _key_value_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Ten
     return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
 
 
-def _mha_forward_kernel(
+def _mha_forward_kernel(  # pylint: disable=too-many-positional-arguments
     q_ref,
     k_ref,
     v_ref,
@@ -245,7 +247,7 @@ def _mha_forward_kernel(
 
 # pylint: disable=unused-argument
 @functools.partial(jax.custom_vjp, nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-def flash_attention(
+def flash_attention(  # pylint: disable=too-many-positional-arguments
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -286,7 +288,7 @@ def flash_attention(
 
 
 # pylint: enable=unused-argument
-def _flash_attention_impl(
+def _flash_attention_impl(  # pylint: disable=too-many-positional-arguments
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -429,7 +431,7 @@ def _mha_forward(*args: Any):
 
 
 # TODO(lezhi): Add support arbitrary per-head-dim in backward pass.
-def _mha_backward_kernel_dkdv(
+def _mha_backward_kernel_dkdv(  # pylint: disable=too-many-positional-arguments
     # Inputs.
     q_ref,
     k_ref,
@@ -524,7 +526,7 @@ def _mha_backward_kernel_dkdv(
     pl.store(dk_ref, (curr_k_slice, slice(None)), dk.astype(dk_ref.dtype))
 
 
-def _mha_backward_kernel_dq(
+def _mha_backward_kernel_dq(  # pylint: disable=too-many-positional-arguments
     # Inputs.
     q_ref,
     k_ref,
@@ -610,7 +612,7 @@ def _mha_backward_kernel_dq(
     pl.store(dq_ref, (curr_q_slice, slice(None)), dq.astype(dq_ref.dtype))
 
 
-def _mha_backward(
+def _mha_backward(  # pylint: disable=too-many-positional-arguments
     softmax_scale: float,
     mask_fn: Optional[MaskFn],
     dropout_rate: float,

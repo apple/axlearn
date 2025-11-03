@@ -27,7 +27,9 @@ from axlearn.experiments.text.gpt.common import (
     mesh_shape_from_axes,
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
-from axlearn.experiments.text.gpt.common import scaled_hidden_dim
+from axlearn.experiments.text.gpt.common import (
+    scaled_hidden_dim,
+)
 
 _VOCAB_SIZE = 32 * 1024
 _MAX_SEQUENCE_LENGTH = 1024

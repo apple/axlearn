@@ -8,7 +8,9 @@ import jax
 from absl import logging
 from tpu_info import device
 
-from axlearn.cloud.gcp.monitoring.tpu_client import TPU_DEVICE_PLUGIN_METRICS_SERVER_ADDR
+from axlearn.cloud.gcp.monitoring.tpu_client import (
+    TPU_DEVICE_PLUGIN_METRICS_SERVER_ADDR,
+)
 from axlearn.cloud.gcp.monitoring.tpu_client import MetricV2Name as MetricName
 from axlearn.cloud.gcp.monitoring.tpu_client import get_chip_metrics_v2 as get_chip_metrics
 from axlearn.cloud.gcp.monitoring.tpu_client import (
