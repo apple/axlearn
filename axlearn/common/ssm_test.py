@@ -73,12 +73,11 @@ class MambaConfig(PretrainedConfig):
 
     model_type = "mamba"
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-positional-arguments
         self,
         vocab_size=50280,
         hidden_size=768,
         state_size=16,
-        *,
         num_hidden_layers=32,
         layer_norm_epsilon=1e-5,
         pad_token_id=0,
