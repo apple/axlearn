@@ -24,8 +24,8 @@ jobs:
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
       - run: |
           uv pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
-          # Pin torch to a pytype-friendly version (newer torch confuses old pytype)
-          uv pip install 'torch==2.1.1' 'torchvision==0.16.1'
+          # Ensure PyTorch installs CPU wheels (with stubs) so pytype can resolve torch.nn
+          uv pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.1.1' 'torchvision==0.16.1'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
