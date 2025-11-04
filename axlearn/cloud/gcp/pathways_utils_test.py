@@ -120,6 +120,15 @@ class PathwaysReplicatedJobTest(TestCase):
                             }
                         },
                     )
+                if env_pair["name"] == "REPLICA_ID":
+                    self.assertEqual(
+                        env_pair["valueFrom"],
+                        {
+                            "fieldRef": {
+                                "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+                            }
+                        },
+                    )
                 if env_pair["name"] == "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD":
                     self.assertEqual(env_pair["value"], "1")
                 if env_pair["name"] == "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY":
