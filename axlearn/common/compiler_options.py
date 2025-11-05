@@ -275,7 +275,7 @@ class NotTpuError(ValueError):
 def infer_tpu_type(instance_type: str) -> str:
     """Infers tpu type (e.g. v4-8 or v6e-8-1) from instance type
     (e.g. tpu-v4-8, v4-8, tpu-v6e-8-1 or v6e-8-1)."""
-    if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
+    if not (instance_type and re.fullmatch(r"(tpu-)?v?.+-\d+", instance_type)):
         raise NotTpuError(f"Invalid TPU instance: {instance_type}")
     return instance_type.replace("tpu-", "")
 
@@ -366,8 +366,8 @@ def infer_xsc_compiler_options(
     return options
 
 
-_TPU_VERSION_ALIASES = {"v5e": "v5litepod"}
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")
+_TPU_VERSION_ALIASES = {"v5e": "v5litepod", "v7x": "7x"}
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e", "7x")
 
 
 def infer_xla_performance_flags(
