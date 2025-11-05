@@ -86,23 +86,30 @@ class TimeStepEmbedding(BaseLayer):
             jnp.log(max_timescale) / jnp.maximum(1, pos_emb_dim // 2)
         2. The output is the concatenation of [sin, cos] emb, which is not the standard [cos, sin].
 
+        Note: Positional embeddings are computed in float32 for numerical stability, following the
+        reference implementation.
         Ref: https://github.com/facebookresearch/DiT/blob/main/models.py#L27-L64
 
         Args:
-            positions: an int Tensor of shape [batch_size, 1].
+            positions: a float Tensor of shape [batch_size].
 
         Returns:
-            Sinusoidal positional embeddings of shape [batch_size, pos_emb_dim]
+            Sinusoidal positional embeddings of shape [batch_size, pos_emb_dim] in float32.
         """
         cfg = self.config
         num_timescales = cfg.pos_embed_dim // 2
         log_timescale_increment = jnp.log(cfg.max_timescale) / jnp.maximum(1, num_timescales)
 
-        # [num_timescales].
-        inv_timescales = jnp.exp(jnp.arange(num_timescales) * -log_timescale_increment)
+        # pylint: disable-next=line-too-long
+        # see https://github.com/facebookresearch/DiT/blob/ed81ce2229091fd4ecc9a223645f95cf379d582b/models.py#L52-L55
+        # Note: Computed in float32 for numerical stability.
+        # [num_timescales]
+        inv_timescales = jnp.exp(
+            jnp.arange(num_timescales, dtype=jnp.float32) * -log_timescale_increment
+        )
 
         # [..., num_timescales].
-        scaled_time = jnp.expand_dims(positions, -1) * inv_timescales
+        scaled_time = jnp.expand_dims(positions, -1).astype(jnp.float32) * inv_timescales
 
         # [..., pos_embed_dim].
         signal = jnp.concatenate([jnp.cos(scaled_time), jnp.sin(scaled_time)], axis=-1)
@@ -117,16 +124,18 @@ class TimeStepEmbedding(BaseLayer):
         """Computes time step positional embeddings.
 
         Args:
-            positions: an int Tensor of shape [batch_size, 1].
+            positions: a float Tensor of shape [batch_size].
 
         Returns:
             A Tensor of shape [batch_size, output_dim].
         """
         cfg = self.config
-        # pos_emb shape [batch_size, pos_embed_dim]
+        # pos_emb shape [batch_size, pos_embed_dim] in float32
         pos_emb = self.dit_sinusoidal_positional_embeddings(positions)
+
         # x shape [batch_size, output_dim]
-        x = self.embed_proj(pos_emb)
+        # The input is cast to match the positions' parameter dtype in the forward method.
+        x = self.embed_proj(pos_emb.astype(positions.dtype))
         x = get_activation_fn(self.config.activation)(x)
         # output shape [batch_size, output_dim]
         output = self.output_proj(x)
