@@ -95,6 +95,8 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
     https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L70-L82
     """
     pathways_tpu_devices = {
+        # 7x
+        "tpu7x-standard-4t": "tpu7x",
         # v6e
         "ct6e-standard-4t": "tpuv6e",
         # v5p
