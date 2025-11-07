@@ -417,6 +417,7 @@ class WandBWriter(BaseWriter):
         tags = os.environ.get("WANDB_TAGS")
         cfg.tags = tags.split(",") if tags else None
         cfg.dir = os.environ.get("WANDB_DIR")
+        cfg.mode = os.environ.get("WANDB_MODE", "online")
         return cfg
 
     def __init__(self, cfg: SummaryWriter.Config, *, parent: Optional[Module]):
