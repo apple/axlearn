@@ -12,6 +12,7 @@ from google.cloud.aiplatform.tensorboard import uploader, uploader_utils
 from axlearn.cloud.gcp import config as gcp_config
 from axlearn.cloud.gcp import test_utils
 from axlearn.cloud.gcp.vertexai_tensorboard import (
+    _VERTEXAI_EXP_NAME_MAX_LEN,
     VertexAITensorboardUploader,
     _vertexai_experiment_name_from_output_dir,
 )
@@ -79,5 +80,10 @@ class VertexAITensorboardUploaderTest(absltest.TestCase):
 
 class ExperimentNameTest(absltest.TestCase):
     def test_exp_name_len(self):
-        with self.assertRaises(ValueError):
-            _vertexai_experiment_name_from_output_dir("gs://abc/" + "a" * 128)
+        # Test that long experiment names are properly truncated
+        long_input = "gs://abc/" + "a" * _VERTEXAI_EXP_NAME_MAX_LEN
+        result = _vertexai_experiment_name_from_output_dir(long_input)
+        self.assertLessEqual(len(result), _VERTEXAI_EXP_NAME_MAX_LEN)
+        self.assertGreater(len(result), 0)
+        # The result should end with a hash suffix when truncated
+        self.assertRegex(result, r"-[a-f0-9]{8}$")
