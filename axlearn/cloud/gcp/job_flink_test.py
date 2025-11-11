@@ -98,6 +98,18 @@ expected_flink_deployment_json = """
       "resource": {
         "memory": "2g",
         "cpu": 1
+      },
+      "podTemplate": {
+        "metadata": {
+          "annotations": {
+            "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+          }
+        },
+        "spec": {
+          "nodeSelector": {
+            "axlearn/nodepool_type": "workload"
+          }
+        }
       }
     },
     "taskManager": {
@@ -107,6 +119,9 @@ expected_flink_deployment_json = """
         "memory": "179Gi"
       },
       "podTemplate": {
+        "metadata": {
+          "annotations": {}
+        },
         "spec": {
           "nodeSelector": {
             "pre-provisioner-id": "fake-name",
@@ -293,6 +308,9 @@ expected_jobsubmission_json = """
     "backoffLimit": 0,
     "template": {
       "metadata": {
+        "annotations": {
+          "cluster-autoscaler.kubernetes.io/safe-to-evict": "false"
+        },
         "labels": {
           "app": "fake-name",
           "app_type": "beam_pipline_submitter"
@@ -362,7 +380,10 @@ expected_jobsubmission_json = """
             ]
           }
         ],
-        "restartPolicy": "Never"
+        "restartPolicy": "Never",
+        "nodeSelector": {
+          "axlearn/nodepool_type": "workload"
+        }
       }
     }
   }
@@ -402,6 +423,7 @@ class FlinkTPUGKEJobTest(TestCase):
         bundler_cls: type[Bundler],
         command: str = "python -m fake --command",
         location_hint: Optional[str] = None,
+        image_id: Optional[str] = None,
         **kwargs,
     ) -> tuple[job_flink.FlinkTPUGKEJob.Config, Bundler.Config]:
         self._settings["location_hint"] = location_hint
@@ -418,6 +440,8 @@ class FlinkTPUGKEJobTest(TestCase):
                 setattr(fv, key, value)
         fv.mark_as_parsed()
         cfg = from_flags(cfg, fv, command=command)
+        if image_id:
+            cfg.builder.image_id = image_id
         bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
         return cfg, bundler_cfg
 
