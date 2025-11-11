@@ -545,8 +545,6 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
 
     TPU Pallas lowering doesn't yet support DotAlgorithmPreset. Use Precision instead.
     """
-    if jax.default_backend() == "cpu":
-        return get_cpu_dot_precision(dtype)
     if dtype == jnp.float32:
         # HIGHEST uses BF16_BF16_F32_X6, which emulates higher precision with 6 BF16 passes.
         # Note: jax.lax.Precision.HIGH (BF16_BF16_F32_X3) is not yet supported. We should use it

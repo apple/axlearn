@@ -8,15 +8,17 @@ https://docs.google.com/document/d/1Y5IdmvAZA7UtMHAWkRh8k2PscVoG5FvMH9-E6hygsyY/
 
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from functools import partial
+from typing import Dict, List, Optional, Tuple, Union, cast
 
 import jax
-import jax.random
+import jax.numpy as jnp
 import numpy as np
 from jax.experimental.topologies import get_topology_desc
 
+from axlearn.common.inference import InferenceRunner
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.utils import HybridMeshShape, MeshShape, infer_mesh_shape
+from axlearn.common.utils import HybridMeshShape, MeshShape, Nested, TensorSpec, infer_mesh_shape
 
 os.environ["TPU_SKIP_MDS_QUERY"] = "1"
 
@@ -283,3 +285,76 @@ def compile_trainer_programs(
     trainer: SpmdTrainer = cfg.instantiate(parent=None, devices=topology_devices)
     compiled_train_step = trainer.compile_train_step(compiler_options=compiler_options)
     return {"train_step": compiled_train_step}
+
+
+def compile_inference_programs(
+    inferencer_config: InferenceRunner.Config,
+    *,
+    input_batch_spec: Nested[TensorSpec],
+    topology: str,
+    topology_num_slices: int = 1,
+    compiler_options: Optional[Dict[str, Union[str, bool]]] = None,
+    method: str = "sample_decode",
+) -> Dict[str, jax.stages.Compiled]:
+    """Returns compiled XLA programs for the given inference runner.
+
+    Args:
+        inferencer_config: The inference runner config.
+        input_batch_spec: A nested TensorSpec of input batch.
+        topology: A string representing the TPU topology, e.g., "v4-8". Must be a key in
+            USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
+            If None, use CPU devices.
+        topology_num_slices: The number of TPU slices.
+        compiler_options: Options to pass to XLA. See `compiler_options.py` for examples.
+        method: The method name to compile.
+
+    Returns:
+        A dict containing the following programs:
+        * "sample_decode": a program to run a sample_decode loop.
+
+    Raises:
+        NotImplementedError: if `topology` is not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.
+    """
+    topology_devices, devices_per_slice = get_devices_for_topology(topology, topology_num_slices)
+
+    cfg = inferencer_config.clone()
+    cfg.mesh_axis_names = cfg.mesh_axis_names or ("data", "model")
+
+    # Use a default mesh_shape if None or REQUIRED.
+    cfg.mesh_shape = cfg.mesh_shape or [len(topology_devices)] + [1] * (
+        len(cfg.mesh_axis_names) - 1
+    )
+
+    topology_devices, mesh_shape = reshape_devices(
+        devices=topology_devices,
+        mesh_shape=cfg.mesh_shape,
+        devices_per_slice=devices_per_slice,
+        num_slices=topology_num_slices,
+    )
+    cfg.mesh_shape = mesh_shape
+
+    inferencer: InferenceRunner = cfg.instantiate(
+        parent=None, devices=topology_devices, fake_state=True
+    )
+
+    method_runner = inferencer.create_method_runner(method=method)
+
+    with inferencer.mesh():
+        jitted_fn = cast(
+            partial, method_runner._jit_run_on_batch  # pylint: disable=protected-access
+        )
+        prng_key = jax.ShapeDtypeStruct(dtype=jnp.uint32, shape=[4])
+        input_batch = jax.tree.map(
+            lambda x: jax.ShapeDtypeStruct(
+                shape=x.shape,
+                dtype=x.dtype,
+                sharding=x.sharding,
+            ),
+            input_batch_spec,
+        )
+        lowered = jitted_fn.func.lower(
+            jitted_fn.args[0], prng_key, input_batch
+        )  # pytype: disable=attribute-error
+        compiled = lowered.compile(compiler_options=compiler_options)
+
+    return {"sample_decode": compiled}
