@@ -23,7 +23,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 from axlearn.common.config import config_class
 from axlearn.common.evaler_test import DummyModel
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.summary import AudioSummary, ImageSummary
 from axlearn.common.summary_writer import (
     CheckpointerAction,
@@ -75,8 +75,8 @@ class SummaryWriterTest(TestCase):
                 writer(
                     step=step,
                     values={
-                        "loss": WeightedScalar(mean=3, weight=16),
-                        "accuracy": WeightedScalar(mean=0.7, weight=16),
+                        "loss": WeightedSummary(mean=3, weight=16),
+                        "accuracy": WeightedSummary(mean=0.7, weight=16),
                         "learner": {"learning_rate": 0.1},
                         "image": ImageSummary(jnp.array(image)),
                     },
@@ -168,8 +168,8 @@ class CompositeWriterTest(TestCase):
             writer(
                 step=100,
                 values={
-                    "loss": WeightedScalar(mean=3, weight=16),
-                    "accuracy": WeightedScalar(mean=0.7, weight=16),
+                    "loss": WeightedSummary(mean=3, weight=16),
+                    "accuracy": WeightedSummary(mean=0.7, weight=16),
                     "learner": {"learning_rate": 0.1},
                 },
             )
@@ -209,8 +209,8 @@ class WandBWriterTest(TestCase):
         writer(
             step=step,
             values={
-                "loss": WeightedScalar(mean=3, weight=16),
-                "accuracy": WeightedScalar(mean=0.7, weight=16),
+                "loss": WeightedSummary(mean=3, weight=16),
+                "accuracy": WeightedSummary(mean=0.7, weight=16),
                 "learner": {"learning_rate": 0.1},
                 "nested.throughput": 100.2,
                 "image": ImageSummary(jax.numpy.ones((2, 5, 5, 3))),

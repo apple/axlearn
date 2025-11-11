@@ -27,7 +27,7 @@ from axlearn.common.config import (
     config_for_function,
 )
 from axlearn.common.evaler import ModelSummaryAccumulator
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module
 from axlearn.common.utils import Nested, Tensor, replicate_to_local_data
 
@@ -225,17 +225,17 @@ class WordErrorRateMetricCalculator(ModelSummaryAccumulator):
             # TODO(zhiyunlu): investigate whether we should keep empty references.
             self._metric_accumulator.update(
                 {
-                    "word_errors/wer": WeightedScalar(metrics.num_total / denom, num_words),
-                    "word_errors/deletions": WeightedScalar(
+                    "word_errors/wer": WeightedSummary(metrics.num_total / denom, num_words),
+                    "word_errors/deletions": WeightedSummary(
                         metrics.num_deletions / denom, num_words
                     ),
-                    "word_errors/insertions": WeightedScalar(
+                    "word_errors/insertions": WeightedSummary(
                         metrics.num_insertions / denom, num_words
                     ),
-                    "word_errors/substitutions": WeightedScalar(
+                    "word_errors/substitutions": WeightedSummary(
                         metrics.num_substitutions / denom, num_words
                     ),
-                    "word_errors/sentence_accuracy": WeightedScalar(
+                    "word_errors/sentence_accuracy": WeightedSummary(
                         int(metrics.num_total == 0), int(num_words > 0)
                     ),
                 }

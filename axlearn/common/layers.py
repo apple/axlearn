@@ -40,7 +40,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.convolution import Conv2D
 from axlearn.common.loss import binary_cross_entropy, categorical_hinge_loss, cross_entropy
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.metrics_classification import precision_recall_f_score
 from axlearn.common.module import Module, child_context, nowrap
 from axlearn.common.normalize import l2_normalize
@@ -1017,13 +1017,13 @@ class ClassificationMetric(BaseClassificationMetric):
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / jnp.maximum(1, num_examples)
 
-        self.add_summary("loss", WeightedScalar(loss, num_examples))
-        self.add_summary("z_loss", WeightedScalar(all_losses["z_loss"], num_examples))
+        self.add_summary("loss", WeightedSummary(loss, num_examples))
+        self.add_summary("z_loss", WeightedSummary(all_losses["z_loss"], num_examples))
         self.add_summary(
-            "cross_entropy_loss", WeightedScalar(all_losses["cross_entropy_loss"], num_examples)
+            "cross_entropy_loss", WeightedSummary(all_losses["cross_entropy_loss"], num_examples)
         )
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_examples))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_examples))
+        self.add_summary("perplexity", WeightedSummary(jnp.exp(loss), num_examples))
+        self.add_summary("accuracy", WeightedSummary(accuracy, num_examples))
 
         return loss
 
@@ -1085,11 +1085,11 @@ class BinaryClassificationMetric(BaseClassificationMetric):
         )
         self.add_summary("precision", scores["precision"])
         self.add_summary("recall", scores["recall"])
-        self.add_summary("f_score", WeightedScalar(scores["f_score"], num_examples))
-        self.add_summary("loss", WeightedScalar(loss, num_examples))
+        self.add_summary("f_score", WeightedSummary(scores["f_score"], num_examples))
+        self.add_summary("loss", WeightedSummary(loss, num_examples))
         self.add_summary(
             "binary_cross_entropy_loss",
-            WeightedScalar(all_losses["binary_cross_entropy_loss"], num_examples),
+            WeightedSummary(all_losses["binary_cross_entropy_loss"], num_examples),
         )
 
         return loss
@@ -1150,9 +1150,9 @@ class CategoricalHingeLossMetric(BaseClassificationMetric):
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / denominator
 
-        self.add_summary("loss", WeightedScalar(loss, num_live_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_live_targets))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_live_targets))
+        self.add_summary("loss", WeightedSummary(loss, num_live_targets))
+        self.add_summary("perplexity", WeightedSummary(jnp.exp(loss), num_live_targets))
+        self.add_summary("accuracy", WeightedSummary(accuracy, num_live_targets))
 
         return loss
 

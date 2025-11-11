@@ -37,7 +37,7 @@ from axlearn.common.config import (
     similar_names,
 )
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.repeat import Repeat
@@ -132,14 +132,14 @@ class TreeUtilsTest(TestCase):
 
         # flax_struct.PyTreeNode.
         self.assertEqual(
-            WeightedScalar(mean="mean", weight="weight"),
-            tree_paths(WeightedScalar(mean=2, weight=3)),
+            WeightedSummary(mean="mean", weight="weight"),
+            tree_paths(WeightedSummary(mean=2, weight=3)),
         )
 
         # Nested flax_struct.PyTreeNode.
         self.assertEqual(
-            StructContainer(WeightedScalar(mean="contents/mean", weight="contents/weight")),
-            tree_paths(StructContainer(WeightedScalar(mean=2, weight=3))),
+            StructContainer(WeightedSummary(mean="contents/mean", weight="contents/weight")),
+            tree_paths(StructContainer(WeightedSummary(mean=2, weight=3))),
         )
 
         # str-Enum key.

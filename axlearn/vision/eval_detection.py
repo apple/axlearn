@@ -10,7 +10,7 @@ import numpy as np
 from axlearn.common.base_model import BaseModel
 from axlearn.common.config import config_class
 from axlearn.common.evaler import BaseMetricCalculator
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module
 from axlearn.common.utils import NestedPartitionSpec, NestedTensor, Tensor, replicate_to_local_data
 from axlearn.vision import coco_evaluator
@@ -125,7 +125,7 @@ class COCOMetricCalculator(BaseMetricCalculator):
         model_params: Optional[NestedTensor] = None,
         state: Optional[NestedTensor] = None,
         all_forward_outputs: Optional[list[NestedTensor]] = None,
-    ) -> dict[str, Union[WeightedScalar, np.ndarray]]:
+    ) -> dict[str, Union[WeightedSummary, np.ndarray]]:
         # Compute COCO metrics after aggregating outputs for all eval steps.
         metrics = self._coco_metric.result()
 

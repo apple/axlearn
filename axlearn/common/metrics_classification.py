@@ -16,7 +16,7 @@ from jax.experimental import checkify
 from jax.experimental.sparse import BCOO
 from jax.scipy.integrate import trapezoid
 
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import MetricSummary, WeightedSummary
 from axlearn.common.utils import Tensor
 
 
@@ -60,7 +60,7 @@ def precision_recall_f_score(
     beta: float = 1.0,
     eps: float = 1e-8,
     weight: Optional[Tensor] = None,
-) -> dict[str, WeightedScalar]:
+) -> dict[str, MetricSummary]:
     """Computes precision, recall, and F-beta score for binary classification.
 
     References:
@@ -93,8 +93,8 @@ def precision_recall_f_score(
     precision = tp / jnp.maximum(tp_fp, 1)
     recall = tp / jnp.maximum(tp_fn, 1)
     return dict(
-        precision=WeightedScalar(precision, tp_fp),
-        recall=WeightedScalar(recall, tp_fn),
+        precision=WeightedSummary(precision, tp_fp),
+        recall=WeightedSummary(recall, tp_fn),
         f_score=(1 + beta2) * precision * recall / (beta2 * precision + recall + eps),
     )
 

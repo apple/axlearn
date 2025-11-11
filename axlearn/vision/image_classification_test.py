@@ -17,7 +17,7 @@ from torchvision.models.resnet import resnet18, resnet34, resnet50, resnet101, r
 
 from axlearn.common import utils
 from axlearn.common.config import InstantiableConfig
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase, set_threefry_partitionable
 from axlearn.common.utils import as_tensor
@@ -205,11 +205,11 @@ class ViTClassificationModelTest(TestCase):
             self.assertEqual(loss, 0)
         self.assertIn("logits", aux)
         self.assertAlmostEqual(
-            output_collection.summaries["metric"]["loss"], WeightedScalar(loss, num_valid_examples)
+            output_collection.summaries["metric"]["loss"], WeightedSummary(loss, num_valid_examples)
         )
         self.assertAlmostEqual(
             output_collection.summaries["metric"]["accuracy"],
-            WeightedScalar(0.0, num_valid_examples),
+            WeightedSummary(0.0, num_valid_examples),
         )
 
 

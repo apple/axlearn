@@ -567,7 +567,7 @@ class SpmdTrainer(Module):
             force run at the last training step. The dict will have evaler names as keys and
             metrics summary dict as values (None for evalers not included in force run).
             The metrics summary dict has string keys for the name of the metrics and can have
-            different types of values such as WeightedScalar, Tensor, or string, depending on
+            different types of values such as WeightedSummary, Tensor, or string, depending on
             the specific `metric_calculator` config of the evaler.
         """
         with (

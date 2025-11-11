@@ -29,7 +29,7 @@ from axlearn.common.learner import (
     _value_and_grad,
     should_update_with_optimizers,
 )
-from axlearn.common.metrics import MetricAccumulator, WeightedScalar
+from axlearn.common.metrics import MetricAccumulator, WeightedSummary
 from axlearn.common.module import OutputCollection, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection
@@ -738,7 +738,7 @@ class LearnerTest(TestCase):
             loss = -jax.nn.log_softmax(model_params["weight"] + model_params["moving_mean"])[1]
             output_collection = new_output_collection()
             output_collection.state_updates["weight"] = model_params["weight"] + 1
-            output_collection.summaries["loss"] = WeightedScalar(loss, 1)
+            output_collection.summaries["loss"] = WeightedSummary(loss, 1)
             return ForwardOutputs(loss=loss, aux={}, output_collection=output_collection)
 
         loss, grads = jax.value_and_grad(lambda x: loss_fn(model_params=x, inputs=None).loss)(

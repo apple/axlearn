@@ -28,7 +28,7 @@ from transformers.models.xlm_roberta.modeling_flax_xlm_roberta import (
     FlaxXLMRobertaPreTrainedModel,
 )
 
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import NestedTensor
 from axlearn.common.utils import Tensor
 from axlearn.huggingface.hf_module import HfModuleWrapper
@@ -288,8 +288,8 @@ class _HfExtractiveQuestionAnsweringWrapper(HfModuleWrapper):
                 * is_valid_input
             ).sum() / jnp.maximum(1, num_inputs)
             loss = (start_loss + end_loss) / 2
-            self.add_summary("start_loss", WeightedScalar(start_loss, num_inputs))
-            self.add_summary("end_loss", WeightedScalar(end_loss, num_inputs))
+            self.add_summary("start_loss", WeightedSummary(start_loss, num_inputs))
+            self.add_summary("end_loss", WeightedSummary(end_loss, num_inputs))
 
         return loss, hf_output
 
