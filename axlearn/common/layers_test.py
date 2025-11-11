@@ -1282,14 +1282,31 @@ class EmbedTest(parameterized.TestCase):
         )
         np.testing.assert_array_equal(state["weight"][ixs], actual_embeds)
 
-    def test_embed_with_scale(self):
+    @parameterized.parameters(
+        [
+            # (scale_type, scale_constant, expected_scale_factor)
+            (None, None, 1.0),  # No scaling
+            (Embedding.Scale.UNIT, None, None),  # Unit scaling (sqrt(dim))
+            (Embedding.Scale.CONSTANT, 2.0, 2.0),  # Constant scaling
+            (Embedding.Scale.CONSTANT, 0.5, 0.5),  # Constant scaling
+            (Embedding.Scale.CONSTANT, 10.0, 10.0),  # Constant scaling
+        ]
+    )
+    def test_embed_with_scale(self, scale_type, scale_constant, expected_scale_factor):
         dim = 256
         num_embeddings = 16
         prng_key = jax.random.PRNGKey(123)
         prng_key, input_key, fwd_key = jax.random.split(prng_key, num=3)
-        embedder, state = EmbedTest.build_embedder(
-            dim, num_embeddings, input_key, scale=Embedding.Scale.UNIT
-        )
+
+        # Build config with scaling parameters
+        kwargs = {}
+        if scale_type is not None:
+            kwargs["scale"] = scale_type
+        if scale_constant is not None:
+            kwargs["scale_constant"] = scale_constant
+
+        embedder, state = EmbedTest.build_embedder(dim, num_embeddings, input_key, **kwargs)
+
         batch, seq_len = 5, 8
         ixs = jax.random.randint(input_key, minval=0, maxval=num_embeddings, shape=(batch, seq_len))
 
@@ -1301,8 +1318,77 @@ class EmbedTest(parameterized.TestCase):
             prng_key=fwd_key,
         )
 
-        assert_allclose(jnp.mean(outputs), 0.0, atol=0.05)
-        assert_allclose(jnp.std(outputs), 1.0, atol=0.05)
+        # Get unscaled embeddings for comparison
+        unscaled_embeddings = state["weight"][ixs]
+
+        if scale_type is None:
+            # No scaling - outputs should match unscaled embeddings
+            assert_allclose(outputs, unscaled_embeddings)
+        elif scale_type == Embedding.Scale.UNIT:
+            # Unit scaling - check that scaling factor is sqrt(dim)
+            expected_outputs = unscaled_embeddings * jnp.sqrt(dim)
+            assert_allclose(outputs, expected_outputs, rtol=1e-6)
+            # Also check statistical properties
+            assert_allclose(jnp.mean(outputs), 0.0, atol=0.05)
+            assert_allclose(jnp.std(outputs), 1.0, atol=0.05)
+        elif scale_type == Embedding.Scale.CONSTANT:
+            # Constant scaling - check that scaling factor matches expected
+            expected_outputs = unscaled_embeddings * expected_scale_factor
+            assert_allclose(outputs, expected_outputs, rtol=1e-6)
+
+    def test_embed_with_constant_scale_validation(self):
+        """Test that CONSTANT scaling requires scale_constant to be specified."""
+        dim = 16
+        num_embeddings = 10
+        rng = jax.random.PRNGKey(1)
+
+        # This should raise an error - CONSTANT scaling without scale_constant
+        with self.assertRaises(ValueError) as cm:
+            EmbedTest.build_embedder(
+                dim,
+                num_embeddings,
+                rng,
+                scale=Embedding.Scale.CONSTANT
+                # Missing scale_constant
+            )
+        self.assertIn("scale_constant must be specified", str(cm.exception))
+
+        # This should work - CONSTANT scaling with scale_constant
+        embedder, state = EmbedTest.build_embedder(
+            dim, num_embeddings, rng, scale=Embedding.Scale.CONSTANT, scale_constant=3.0
+        )
+        self.assertIsNotNone(embedder)
+        self.assertIsNotNone(state)
+
+    @parameterized.parameters(
+        [
+            # Test different scale types with attend method
+            (None, None),
+            (Embedding.Scale.UNIT, None),
+            (Embedding.Scale.CONSTANT, 1.5),
+        ]
+    )
+    def test_embed_attend_with_scale(self, scale_type, scale_constant):
+        """Test that attend method is not affected by scaling (it uses raw weights)."""
+        seq_len, dim, num_embeddings = 7, 16, 10
+        rng = jax.random.PRNGKey(1)
+
+        kwargs = {}
+        if scale_type is not None:
+            kwargs["scale"] = scale_type
+        if scale_constant is not None:
+            kwargs["scale_constant"] = scale_constant
+
+        embedder, state = EmbedTest.build_embedder(dim, num_embeddings, rng, **kwargs)
+        x = jax.random.normal(rng, shape=(3, seq_len, dim))
+
+        actual_attends = module.functional(
+            embedder, rng, state=state, inputs=[x], is_training=True, method="attend"
+        )[0]
+
+        # attend should always use raw weights, regardless of scaling
+        expected_attends = jnp.dot(x, state["weight"].T)
+        assert_allclose(expected_attends, actual_attends)
 
     @parameterized.parameters(itertools.product((5, 7), (2, 16), (10, 100), (True, False)))
     def test_embed_attend(self, seq_len, dim, num_embeddings, is_training):

@@ -130,7 +130,7 @@ class RedirectToSharedModule(BaseLayer):
             return super().__getattr__(name)
         except AttributeError as e:
             raise AttributeError(
-                f"{', '.join(e.args)}. Should '{name}' be specified in `cfg.method_map`?"
+                f"{', '.join(e.args)}. Should \"{name}\" be specified in cfg.method_map?"
             ) from e
 
     def _redirect(self, *args, redirection_target_method: str, **kwargs) -> Any:
@@ -853,9 +853,14 @@ class Embedding(BaseLayer):
         maintain the desired scale. e.g. Gemma [1]
         [1]
         https://github.com/google-deepmind/gemma/blob/0d6ae857591248422127ca14c027909546362e6a/gemma/modules.py#L80
+
+        2. **CONSTANT**: Scale the activation by a constant factor.
+
+        The activation is multiplied by a user-specified constant value.
         """
 
         UNIT = "unit"
+        CONSTANT = "constant"
 
     @config_class
     class Config(BaseLayer.Config):
@@ -871,6 +876,8 @@ class Embedding(BaseLayer):
         output_partition_spec: Optional[tuple[Optional[str]]] = None
         # Optional scaling of the embedding activations.
         scale: Optional["Embedding.Scale"] = None
+        # Constant scaling factor (required when scale=Scale.CONSTANT).
+        scale_constant: Optional[float] = None
 
     @classmethod
     def default_config(cls):
@@ -894,6 +901,12 @@ class Embedding(BaseLayer):
             }
         )
         return cfg
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        # Validate that scale_constant is provided when using CONSTANT scaling
+        if cfg.scale == self.Scale.CONSTANT and cfg.scale_constant is None:
+            raise ValueError("scale_constant must be specified when scale=Scale.CONSTANT")
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
@@ -926,6 +939,9 @@ class Embedding(BaseLayer):
         x = x.astype(jnp.float32)
         if cfg.scale == self.Scale.UNIT:
             x = x * math.sqrt(x.shape[-1])
+        elif cfg.scale == self.Scale.CONSTANT:
+            # scale_constant is guaranteed to be not None due to __init__ validation
+            x = x * cfg.scale_constant
         else:
             raise ValueError(f"Unknown scale {cfg.scale}.")
         x = x.astype(x_dtype)
