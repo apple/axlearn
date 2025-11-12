@@ -31,6 +31,7 @@ from axlearn.common.attention import (
     RoFormerQKVLinear,
     StackedTransformerLayer,
 )
+from absl import logging
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import TrainerConfigFn, config_for_function
 from axlearn.common.decoder import LmHead
@@ -398,6 +399,9 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "7B":
+        import jax
+
+        gbs = len(jax.devices())
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=32,
@@ -410,7 +414,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=gbs,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -665,6 +669,9 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "70B":
+        import jax
+
+        devices = len(jax.devices())
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=80,
@@ -680,7 +687,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=devices*1,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -992,22 +999,40 @@ def trainer_configs(
     """
     arch = "fuji"
     config_map = {}
-    for version, model_size, flash_attention in itertools.product(
-        Version, MODEL_SIZES, [True, False]
+    orbax_options = [
+        (True, False),   # use_orbax_emergency_ckpt = True,  use_orbax_ckpt = False
+        (False, True),   # use_orbax_emergency_ckpt = False, use_orbax_ckpt = True
+        (False, False),  # Neither is used
+    ]
+    for version, model_size, flash_attention, (use_orbax_emergency_ckpt, use_orbax_ckpt) in itertools.product(
+        Version, MODEL_SIZES, [True, False], orbax_options
     ):
         if model_size not in TOTAL_TOKENS[version]:  # This combination does not exist.
             continue
         vocab_size = VOCAB_SIZE[version]
+
+        current_suffix_parts = []
+        if flash_attention:
+            current_suffix_parts.append("-flash")
+        if use_orbax_emergency_ckpt:
+            current_suffix_parts.append("-orbaxem")
+        elif use_orbax_ckpt:
+            current_suffix_parts.append("-orbax")
+
+        current_suffix = "".join(current_suffix_parts)
+        logging.info(current_suffix)
         config_name = make_config_name(
             arch=arch,
             model_size=model_size,
             version=f"v{version.value}",
-            suffix="-flash" if flash_attention else "",
+            suffix=current_suffix,
         )
         kwargs = get_trainer_kwargs(
             model_size, vocab_size=vocab_size, version=version, flash_attention=flash_attention
         )
         max_sequence_length = kwargs.pop("max_sequence_length")
+        checkpointer_str = "OrbaxEmergencyCheckpointer" if use_orbax_emergency_ckpt else ""
+        checkpointer_str = "OrbaxCheckpointer" if use_orbax_ckpt else ""
         # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
         config_map[config_name] = get_trainer_config_fn(
             train_input_source=train_input_source(
@@ -1017,6 +1042,7 @@ def trainer_configs(
             evalers=evaler_config_dict(
                 eval_input_sources(vocab_size=vocab_size, max_sequence_length=max_sequence_length),
             ),
+            checkpointer=checkpointer_str,
             **kwargs,
         )
 
