@@ -97,6 +97,7 @@ from typing import Any, Callable, NamedTuple, Optional, Protocol, Sequence, Unio
 import jax
 from absl import logging
 from jax import numpy as jnp
+from jax._src.mesh import thread_resources
 
 from axlearn.common import param_init
 from axlearn.common.attention_bias import (
@@ -166,6 +167,7 @@ from axlearn.common.utils import (
     save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
+    with_sharding_constraint,
 )
 
 
@@ -1064,6 +1066,20 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
         q_proj, k_proj, v_proj = jnp.split(
             proj, [cfg.num_heads, cfg.num_heads + cfg.num_kv_heads], axis=-2
         )
+        # This sharding hint is needed since compiler sometimes will generate large allgather
+        # before the split and then slice, which is not the ideal compilation. Ensure sharding
+        # after the split to ensure allgather is inserted after the split.
+        axis_names = thread_resources.env.physical_mesh.axis_names
+        batch_axes = tuple(x for x in axis_names if x in ("data", "fsdp")) or None
+        spec = PartitionSpec(
+            batch_axes,
+            "seq" if "seq" in axis_names else None,
+            "model" if "model" in axis_names else None,
+            None,
+        )
+        q_proj = with_sharding_constraint(q_proj, spec)
+        k_proj = with_sharding_constraint(k_proj, spec)
+        v_proj = with_sharding_constraint(v_proj, spec)
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
