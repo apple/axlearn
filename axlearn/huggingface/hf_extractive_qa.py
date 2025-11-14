@@ -41,6 +41,8 @@ class _FlaxRobertaForQuestionAnsweringModule(FlaxRobertaForQuestionAnsweringModu
     https://github.com/huggingface/transformers/blob/fc63914399b6/src/transformers/models/roberta/modeling_flax_roberta.py#L1318-L1358
     """
 
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def __call__(
         self,
         input_ids: Tensor,
@@ -94,6 +96,8 @@ class _FlaxXLMRobertaForQuestionAnsweringModule(FlaxXLMRobertaForQuestionAnsweri
     https://github.com/huggingface/transformers/blob/fc63914399b/src/transformers/models/xlm_roberta/modeling_flax_xlm_roberta.py#L1333-L1373
     """
 
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def __call__(
         self,
         input_ids: Tensor,
@@ -147,6 +151,8 @@ class _FlaxBertForQuestionAnsweringModule(FlaxBertForQuestionAnsweringModule):
     https://github.com/huggingface/transformers/blob/fc63914399b6/src/transformers/models/bert/modeling_flax_bert.py#L1543-L1583
     """
 
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def __call__(
         self,
         input_ids: Tensor,

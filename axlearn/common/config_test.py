@@ -272,7 +272,7 @@ class ConfigTest(parameterized.TestCase):
         with self.assertRaisesRegex(config.UnknownFieldError, r".*did you mean: \[num_layers\].*"):
             cfg.num_layer = 5  # pylint: disable=attribute-defined-outside-init
 
-    def _non_copyable_proxy(self, fn_or_cls) -> wrapt.ObjectProxy:
+    def _non_copyable_proxy(self, fn_or_cls) -> wrapt.BaseObjectProxy:
         """Returns a proxy which cannot be copied."""
 
         @wrapt.decorator
@@ -282,7 +282,7 @@ class ConfigTest(parameterized.TestCase):
 
         fn_or_cls = decorator(fn_or_cls)  # pylint: disable=no-value-for-parameter
 
-        self.assertIsInstance(fn_or_cls, wrapt.ObjectProxy)
+        self.assertIsInstance(fn_or_cls, wrapt.BaseObjectProxy)
         with self.assertRaises(NotImplementedError):
             copy.deepcopy(fn_or_cls)
 

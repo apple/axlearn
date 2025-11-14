@@ -45,6 +45,8 @@ from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.utils import Nested, Tensor
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _tpu_decoding_kernel(
     # Scalars.
     kv_seq_len_ref,

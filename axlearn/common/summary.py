@@ -125,7 +125,7 @@ class AudioSummary(Summary):
 
 
 class CallbackSummary(Summary):
-    # pylint: disable=not-callable,super-init-not-called
+    # pylint: disable=super-init-not-called
     """A summary defined using a callback that is only called outside of JIT. The arguments
     to the callback are treated as pytrees whose leaves are converted to numpy arrays before
     calling the callback.

@@ -292,7 +292,7 @@ class Updates(flax_struct.PyTreeNode):
         return dataclasses.replace(self, **replacements)
 
 
-class ForwardPass(flax_struct.PyTreeNode):
+class ForwardPass(flax_struct.PyTreeNode):  # pytype: disable=invalid-function-definition
     """The result of executing a `ForwardFn`."""
 
     # ForwardPass needs to be a pytree to prevent tracer leaks in `learner._value_and_grad()`.

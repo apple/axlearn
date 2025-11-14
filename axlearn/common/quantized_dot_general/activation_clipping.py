@@ -49,7 +49,8 @@ class BaseActivationClippingLayer(BaseLayer):
             out_of_range_mean: Tensor = jnp.mean(out_of_range_mask)
             total_element_count: float = float(jnp.size(out_of_range_mask))
             self.add_summary(
-                "clipped_activation", WeightedSummary(out_of_range_mean, total_element_count)
+                "clipped_activation",
+                WeightedSummary(out_of_range_mean, total_element_count),
             )
 
     def forward(

@@ -245,6 +245,8 @@ def _mha_forward_kernel(
 
 # pylint: disable=unused-argument
 @functools.partial(jax.custom_vjp, nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def flash_attention(
     query: Tensor,
     key: Tensor,
@@ -286,6 +288,8 @@ def flash_attention(
 
 
 # pylint: enable=unused-argument
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention_impl(
     query: Tensor,
     key: Tensor,
@@ -429,6 +433,8 @@ def _mha_forward(*args: Any):
 
 
 # TODO(lezhi): Add support arbitrary per-head-dim in backward pass.
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _mha_backward_kernel_dkdv(
     # Inputs.
     q_ref,
@@ -524,6 +530,8 @@ def _mha_backward_kernel_dkdv(
     pl.store(dk_ref, (curr_k_slice, slice(None)), dk.astype(dk_ref.dtype))
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _mha_backward_kernel_dq(
     # Inputs.
     q_ref,
@@ -610,6 +618,8 @@ def _mha_backward_kernel_dq(
     pl.store(dq_ref, (curr_q_slice, slice(None)), dq.astype(dq_ref.dtype))
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _mha_backward(
     softmax_scale: float,
     mask_fn: Optional[MaskFn],

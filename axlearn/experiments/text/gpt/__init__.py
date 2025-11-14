@@ -2,7 +2,7 @@
 
 """AXLearn GPT experiments."""
 
-from axlearn.experiments.text.gpt import (
+from axlearn.experiments.text.gpt import (  # pytype: disable=pyi-error
     c4_trainer,
     deterministic_trainer,
     pajama_sigmoid_trainer,

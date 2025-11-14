@@ -15,10 +15,10 @@ Example commands:
 import pytest
 from absl.testing import parameterized
 
-from axlearn.experiments import test_utils
-from axlearn.experiments.audio import conformer
+from axlearn.experiments import test_utils  # pytype: disable=pyi-error
+from axlearn.experiments.audio import conformer  # pytype: disable=pyi-error
 from axlearn.experiments.text import gpt
-from axlearn.experiments.vision import resnet
+from axlearn.experiments.vision import resnet  # pytype: disable=pyi-error
 
 _CONFIGS = [
     *test_utils.named_parameters(resnet.imagenet_trainer),

@@ -165,9 +165,9 @@ class TreeUtilsTest(TestCase):
 
         # Nested custom pytree.
         self.assertEqual(
-            DataclassCombo(
+            DataclassCombo(  # pytype: disable=wrong-arg-types
                 scalar="scalar",
-                dataclass_combo=DataclassCombo(
+                dataclass_combo=DataclassCombo(  # pytype: disable=wrong-arg-types
                     scalar="dataclass_combo/scalar",
                     dataclass_combo=Combo(
                         head="dataclass_combo/dataclass_combo/head",
@@ -183,9 +183,9 @@ class TreeUtilsTest(TestCase):
                 },
             ),
             tree_paths(
-                DataclassCombo(
+                DataclassCombo(  # pytype: disable=wrong-arg-types
                     scalar=1,
-                    dataclass_combo=DataclassCombo(
+                    dataclass_combo=DataclassCombo(  # pytype: disable=wrong-arg-types
                         scalar="hello",
                         dataclass_combo=Combo(head="head", tail="tail"),
                         none=None,

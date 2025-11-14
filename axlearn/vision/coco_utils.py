@@ -28,7 +28,7 @@ from axlearn.vision import utils_detection
 
 
 # pylint: disable=arguments-renamed, too-many-branches, too-many-statements, unused-argument, unused-variable
-class COCOWrapper(coco.COCO):
+class COCOWrapper(coco.COCO):  # pytype: disable=annotation-type-mismatch,base-class-error
     """COCO wrapper class.
 
     This class wraps COCO API object, which provides the following additional
@@ -99,7 +99,9 @@ class COCOWrapper(coco.COCO):
             elif self._eval_type == "mask":
                 ann["area"] = mask_api.area(ann["segmentation"])
 
-        res.dataset["annotations"] = copy.deepcopy(predictions)
+        res.dataset["annotations"] = copy.deepcopy(
+            predictions
+        )  # pytype: disable=annotation-type-mismatch
         res.createIndex()
         return res
 

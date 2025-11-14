@@ -737,6 +737,8 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         }
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def set_captioning_cfg(
     num_layers: int,
     model_dim: int,

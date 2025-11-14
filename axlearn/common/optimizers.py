@@ -1839,13 +1839,13 @@ def adastar_optimizer(
 
     class _AdastarState(flax_struct.PyTreeNode):
         count: Tensor
-        pps: Nested[_AdastarPerParamState]
+        pps: Nested[_AdastarPerParamState]  # pytype: disable=invalid-annotation
 
     class _AdastarUpdateResult(flax_struct.PyTreeNode):
         """Opaque container that is not traversed by jax.tree.map."""
 
         updates: Tensor  # the update to apply to params.
-        pps: _AdastarPerParamState
+        pps: _AdastarPerParamState  # pytype: disable=invalid-annotation
 
     update_schedule = schedule.as_schedule_fn(update_schedule)
 

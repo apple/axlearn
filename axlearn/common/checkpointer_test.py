@@ -563,6 +563,7 @@ class CheckpointerTest(test_utils.TestCase):
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
             ckpt: Checkpointer = cfg.instantiate(parent=None)
+            # pylint: disable-next=possibly-used-before-assignment
             ds = iter(range_dataset(start=1, stop=4))
             # Move the input_iter.
             self.assertEqual(next(ds), 1)

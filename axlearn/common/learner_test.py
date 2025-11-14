@@ -51,7 +51,7 @@ from axlearn.common.quantized_dot_general.layers import (
     get_all_fp8_param_names,
 )
 from axlearn.common.test_utils import TestCase
-from axlearn.common.update_transformation import (
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     ForwardOutputs,
     ForwardPass,
     OverrideInplaceUpdateTransformation,

@@ -263,6 +263,7 @@ register_validator(
 # Validate container types.
 register_validator(
     match_fn=lambda v: isinstance(v, (list, tuple)),
+    # pylint: disable-next=used-before-assignment
     validate_fn=lambda v: (validate_config_field_value(x) for x in v),
 )
 register_validator(

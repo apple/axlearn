@@ -3,6 +3,7 @@
 """Tests classification metrics."""
 
 # pylint: disable=no-self-use
+# pytype: disable=attribute-error
 import logging
 
 import evaluate

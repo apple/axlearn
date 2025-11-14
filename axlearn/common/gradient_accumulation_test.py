@@ -14,7 +14,7 @@ from jax.experimental.pjit import pjit
 from axlearn.common import gradient_accumulation, test_utils
 from axlearn.common.metrics import MetricAccumulator, WeightedSummary
 from axlearn.common.module import new_output_collection
-from axlearn.common.update_transformation import ForwardOutputs
+from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
 from axlearn.common.utils import Nested, PartitionSpec, Tensor, tree_paths
 
 

@@ -87,7 +87,7 @@ class DummyInput(Input):
         yield from it
 
     def dataset(self):
-        cfg: DummyInput.Config = self.config
+        cfg: DummyInput.Config = self.config  # pytype: disable=annotation-type-mismatch
         num_batches = 0
         shape = [cfg.batch_size, *cfg.shape]
         while cfg.total_num_batches is None or num_batches < cfg.total_num_batches:
@@ -590,7 +590,12 @@ class CompositeMetricCalculatorTest(TestCase):
                     ),
                 ),
             )
-            calculator, model_params, state, outputs = self.setup_model_and_calculator_inputs(
+            (
+                calculator,
+                model_params,
+                state,
+                outputs,
+            ) = self.setup_model_and_calculator_inputs(  # pytype: disable=wrong-arg-types
                 calculator_cfg
             )
 
@@ -615,7 +620,12 @@ class CompositeMetricCalculatorTest(TestCase):
                 ),
             )
 
-            calculator, model_params, state, outputs = self.setup_model_and_calculator_inputs(
+            (
+                calculator,
+                model_params,
+                state,
+                outputs,
+            ) = self.setup_model_and_calculator_inputs(  # pytype: disable=wrong-arg-types
                 calculator_cfg
             )
 
@@ -627,12 +637,12 @@ class CompositeMetricCalculatorTest(TestCase):
             self.assertIn("calculator1/mean_prediction", summaries)
             self.assertIn("calculator2/mean_prediction", summaries)
             self.assertEqual(
-                summaries["calculator1/mean_prediction"].mean,
-                summaries["calculator2/mean_prediction"].mean,
+                summaries["calculator1/mean_prediction"].mean,  # pytype: disable=attribute-error
+                summaries["calculator2/mean_prediction"].mean,  # pytype: disable=attribute-error
             )
             self.assertEqual(
-                summaries["calculator1/mean_prediction"].weight,
-                summaries["calculator2/mean_prediction"].weight,
+                summaries["calculator1/mean_prediction"].weight,  # pytype: disable=attribute-error
+                summaries["calculator2/mean_prediction"].weight,  # pytype: disable=attribute-error
             )
 
     @parameterized.parameters(

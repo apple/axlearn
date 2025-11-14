@@ -210,7 +210,9 @@ class TierSchedulerTest(parameterized.TestCase):
             sched.schedule(resource_limits=[], **common_kwargs)
 
         with self.assertRaisesRegex(ValueError, "sequence"):
-            sched.schedule(resource_limits={"v4": 10, "v3": 3}, **common_kwargs)
+            sched.schedule(
+                resource_limits={"v4": 10, "v3": 3}, **common_kwargs
+            )  # pytype: disable=wrong-arg-types
 
         sched.schedule(resource_limits=[{"v4": 10, "v3": 3}], **common_kwargs)
 
@@ -582,7 +584,7 @@ class TierSchedulerTest(parameterized.TestCase):
         {"unused_limits": [{"v4": 4}, {"v4": 8}]},
     )
     def test_schedule_result(self, unused_limits: Optional[Sequence[ResourceMap[int]]]):
-        schedule_result = BaseScheduler.ScheduleResults(
+        schedule_result = BaseScheduler.ScheduleResults(  # pytype: disable=wrong-arg-types
             project_limits={"a": {"v4": 5}, "b": {"unknown": 0, "v4": 1}},
             project_usages={"a": {"v4": 5}, "b": {"unknown": 0, "v4": 1}},
             job_verdicts={"a1": True, "a2": False, "b1": False, "b2": True},

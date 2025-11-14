@@ -103,6 +103,8 @@ def _generate_blockwise_dropout_mask(
     return jax.random.bernoulli(sub_key, dropout_rate, (q_block_size, kv_block_size))
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def flash_attention_kernel(
     # Prefetched inputs
     data_next_ref,
@@ -274,6 +276,8 @@ def flash_attention_kernel(
 
 
 @overload
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _splash_attention_forward(
     fwd_mask_info: mask_info_lib.MaskInfo,
     q: jax.Array,
@@ -296,6 +300,8 @@ def _splash_attention_forward(
 
 
 @overload
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _splash_attention_forward(
     fwd_mask_info: mask_info_lib.MaskInfo,
     q: jax.Array,
@@ -317,6 +323,8 @@ def _splash_attention_forward(
     ...
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _splash_attention_forward(
     fwd_mask_info: mask_info_lib.MaskInfo,
     q: jax.Array,
@@ -646,6 +654,8 @@ def _splash_attention_forward(
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(8, 9, 10, 11, 12, 13, 14, 15, 17))
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _splash_attention_custom(
     fwd_mask_info: mask_info_lib.MaskInfo,
     dq_mask_info: mask_info_lib.MaskInfo | None,
@@ -697,6 +707,8 @@ def _splash_attention_custom(
     )
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _splash_attention_fwd(
     fwd_mask_info: mask_info_lib.MaskInfo,
     dq_mask_info: mask_info_lib.MaskInfo | None,
@@ -752,6 +764,8 @@ def _splash_attention_fwd(
     )
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention_dq_kernel(
     # Prefetched inputs
     data_next_ref,
@@ -1093,6 +1107,8 @@ def _splash_attention_bwd_dq(
     return dq
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention_dkv_kernel(
     # Prefetched inputs
     data_next_ref,
@@ -1689,6 +1705,8 @@ def _splash_attention_bwd_dkv(
     return dq, dk, dv
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _splash_attention_bwd(
     save_residuals: bool,
     mask_value: float,

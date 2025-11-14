@@ -480,7 +480,7 @@ class WandBWriter(BaseWriter):
             return type(val)({str(k): WandBWriter.format_config(v) for k, v in val.items()})
         elif isinstance(val, (tuple, list)):
             # wandb config stores tuple as list so no type(val)(...)
-            return [WandBWriter.format_config(v) for v in val]
+            return [WandBWriter.format_config(v) for v in val]  # pytype: disable=bad-return-type
         elif isinstance(val, (type, FunctionType)):
             # wandb config stores type as fully qualified str (same as Configurable.debug_string())
             return f"{val.__module__}.{val.__name__}"

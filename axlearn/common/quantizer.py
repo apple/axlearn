@@ -606,7 +606,7 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
         )
         return params
 
-    def forward(
+    def forward(  # pytype: disable=signature-mismatch
         self, inputs: Tensor, *, paddings: Tensor
     ) -> tuple[BaseQuantizer.Output, dict[str, Tensor]]:
         """Quantization using Gumbel softmax trick.
@@ -672,4 +672,4 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
             self.add_module_output("probs", y_soft)
             self.add_summary("codebook/temperature_schedule_step", self.parameters["step"])
             self.add_summary("codebook/temperature", tau)
-        return outputs
+        return outputs  # pytype: disable=bad-return-type

@@ -49,8 +49,11 @@ from axlearn.common.config import (
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
-from axlearn.experiments.text.gpt import envy, fuji, gspmd
-from axlearn.experiments.text.gpt.common import mixture_train_input_source, tfds_input
+from axlearn.experiments.text.gpt import envy, fuji, gspmd  # pytype: disable=pyi-error
+from axlearn.experiments.text.gpt.common import (  # pytype: disable=pyi-error
+    mixture_train_input_source,
+    tfds_input,
+)
 from axlearn.experiments.text.gpt.vocabulary_fuji_v3 import FujiV3Vocabulary
 
 

@@ -657,7 +657,8 @@ def residual_initializer_cfg(num_layers, scale=0.02):
     return init_cfg
 
 
-# pylint: disable=too-many-positional-arguments
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def gpt_decoder_config(
     stack_cfg: TransformerStackConfig,
     num_layers: int,

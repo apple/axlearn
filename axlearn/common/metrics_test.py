@@ -163,7 +163,7 @@ class MinSummaryTest(test_utils.TestCase):
         (1, None, ValueError("MinSummary value must be a Tensor, but got <class 'int'>.")),
     )
     def test_min_summary(self, value, other_value, expected):
-        min_summary = MinSummary(value)
+        min_summary = MinSummary(value)  # pytype: disable=wrong-arg-count
         if isinstance(expected, ValueError):
             ctx = self.assertRaisesRegex(ValueError, expected.args[0])
         else:
@@ -171,7 +171,9 @@ class MinSummaryTest(test_utils.TestCase):
         with ctx:
             min_summary.validate()
             if not isinstance(expected, ValueError):
-                new_summary = min_summary.accumulate(MinSummary(other_value))
+                new_summary = min_summary.accumulate(
+                    MinSummary(other_value)  # pytype: disable=wrong-arg-count
+                )
                 chex.assert_trees_all_close(new_summary.value(), expected)
 
 
@@ -183,7 +185,7 @@ class MaxSummaryTest(test_utils.TestCase):
         (1, None, ValueError("MaxSummary value must be a Tensor, but got <class 'int'>.")),
     )
     def test_max_summary(self, value, other_value, expected):
-        max_summary = MaxSummary(value)
+        max_summary = MaxSummary(value)  # pytype: disable=wrong-arg-count
         if isinstance(expected, ValueError):
             ctx = self.assertRaisesRegex(ValueError, expected.args[0])
         else:
@@ -191,7 +193,9 @@ class MaxSummaryTest(test_utils.TestCase):
         with ctx:
             max_summary.validate()
             if not isinstance(expected, ValueError):
-                new_summary = max_summary.accumulate(MaxSummary(other_value))
+                new_summary = max_summary.accumulate(
+                    MaxSummary(other_value)  # pytype: disable=wrong-arg-count
+                )
                 chex.assert_trees_all_close(new_summary.value(), expected)
 
 
@@ -207,7 +211,7 @@ class SumSummaryTest(test_utils.TestCase):
         (1, None, ValueError("SumSummary value must be a Tensor, but got <class 'int'>.")),
     )
     def test_sum_summary(self, value, other_value, expected):
-        sum_summary = SumSummary(value)
+        sum_summary = SumSummary(value)  # pytype: disable=wrong-arg-count
         if isinstance(expected, ValueError):
             ctx = self.assertRaisesRegex(ValueError, expected.args[0])
         else:
@@ -215,7 +219,9 @@ class SumSummaryTest(test_utils.TestCase):
         with ctx:
             sum_summary.validate()
             if not isinstance(expected, ValueError):
-                new_summary = sum_summary.accumulate(SumSummary(other_value))
+                new_summary = sum_summary.accumulate(
+                    SumSummary(other_value)  # pytype: disable=wrong-arg-count
+                )
                 chex.assert_trees_all_close(new_summary.value(), expected)
 
 

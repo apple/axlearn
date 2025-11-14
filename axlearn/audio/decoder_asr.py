@@ -1013,7 +1013,7 @@ class TransducerDecoderModel(BaseASRDecoderModel):
 
         return tokens_to_scores
 
-    def beam_search_decode(
+    def beam_search_decode(  # pytype: disable=signature-mismatch
         self,
         input_batch: Nested[Tensor],
         num_decodes: int,
@@ -1225,7 +1225,7 @@ class LASDecoderModel(BaseASRDecoderModel):
         if "prefix" not in input_batch:
             raise ValueError("Input batch is expected to contain `prefix`.")
 
-    def beam_search_decode(
+    def beam_search_decode(  # pytype: disable=signature-mismatch
         self,
         input_batch: Nested[Tensor],
         num_decodes: int,

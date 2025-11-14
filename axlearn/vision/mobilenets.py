@@ -481,7 +481,9 @@ class MobileNets(BaseModel):
             k: v for (k, v) in self._block_to_endpoint_name.items() if v in endpoints_names
         }
 
-    def forward(self, input_batch: Tensor) -> dict[str, Tensor]:
+    def forward(
+        self, input_batch: Tensor
+    ) -> dict[str, Tensor]:  # pytype: disable=signature-mismatch
         """Compute prediction on an input batch.
 
         Args:

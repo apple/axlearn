@@ -40,7 +40,10 @@ from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.update_transformation import ForwardBackwardOutputs, ForwardOutputs
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
+    ForwardBackwardOutputs,
+    ForwardOutputs,
+)
 from axlearn.common.utils import Tensor
 
 

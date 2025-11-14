@@ -302,13 +302,19 @@ class WordErrorRateMetricCalculatorTest(TestCase):
 
         # Without brevity penalty, outputs match exactly.
         outputs = _compute_metrics(hypotheses, references, vocab_file=_1K_VOCAB_FILE)
-        self.assertNestedAllClose(outputs["word_errors/wer"].mean, 0.0)
-        self.assertNestedAllClose(outputs["word_errors/sentence_accuracy"].mean, 1.0)
+        self.assertNestedAllClose(
+            outputs["word_errors/wer"].mean, 0.0  # pytype: disable=attribute-error
+        )
+        self.assertNestedAllClose(
+            outputs["word_errors/sentence_accuracy"].mean, 1.0  # pytype: disable=attribute-error
+        )
 
         # With brevity penalty, DummyModel should emit fewer tokens.
         brevity_penalty = brevity_penalty_fn(alpha=0.9, bp_type="t5")
         outputs = _compute_metrics(
             hypotheses, references, brevity_penalty=brevity_penalty, vocab_file=_1K_VOCAB_FILE
         )
-        self.assertGreater(outputs["word_errors/wer"].mean, 0.0)
-        self.assertNestedAllClose(outputs["word_errors/sentence_accuracy"].mean, 0.0)
+        self.assertGreater(outputs["word_errors/wer"].mean, 0.0)  # pytype: disable=attribute-error
+        self.assertNestedAllClose(
+            outputs["word_errors/sentence_accuracy"].mean, 0.0  # pytype: disable=attribute-error
+        )

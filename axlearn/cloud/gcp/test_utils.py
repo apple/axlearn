@@ -86,5 +86,6 @@ def mock_job(job, *, bundler_kwargs: Optional[dict] = None):
         mock_construct = mock.patch.object(job, "from_flags", return_value=mock_cfg)
     elif hasattr(job, "default_config"):
         mock_construct = mock.patch.object(job, "default_config", return_value=mock_cfg)
+    # pylint: disable-next=possibly-used-before-assignment
     with mock_construct:
         yield mock_cfg, mock_bundler, mock_instance

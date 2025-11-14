@@ -579,6 +579,8 @@ def alibi_get_slopes(num_heads: int) -> list:
 class MultiheadAttention(TorchModule):
     """See AXLearn's module of the same name for docs."""
 
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def __init__(
         self,
         query_dim: int,
@@ -867,7 +869,7 @@ class TransformerLayer(BaseTransformerLayer):
             cross_attention_probs=cross_attention_probs,
         )
 
-    def init_state(
+    def init_state(  # pytype: disable=signature-mismatch
         self, *, target_batch_size: int, target_max_len: int
     ) -> BaseTransformerLayer.CacheState:
         """Cached state for autoregressive decoding."""
@@ -946,7 +948,7 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
             cross_attention_probs=out.cross_attention_probs,
         )
 
-    def init_state(
+    def init_state(  # pytype: disable=signature-mismatch
         self, *, target_batch_size: int, target_max_len: int
     ) -> BaseTransformerLayer.CacheState:
         """Cached state for autoregressive decoding."""
@@ -1636,6 +1638,8 @@ class ViTModelBuilder:
         return cls.from_args(**cfg)
 
     @classmethod
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def from_args(
         cls,
         num_layers: int,
@@ -2209,6 +2213,8 @@ class AdapterCausalLmModelBuilder(CausalLmModelBuilder):
 class CoCaImageStreamEncoder(TorchModule):
     """See AXLearn's module of the same name for docs."""
 
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def __init__(
         self,
         image_encoder: VisionTransformer,

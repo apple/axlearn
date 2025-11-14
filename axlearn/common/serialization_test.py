@@ -37,7 +37,7 @@ def _to_state_dict(box: _Box):
 
 
 def _from_state_dict(box: _Box, state: Any):
-    return box.replace(value=state["value"])
+    return box.replace(value=state["value"])  # pytype: disable=attribute-error
 
 
 serialization.register_serialization_state(_Box, _to_state_dict, _from_state_dict, override=True)

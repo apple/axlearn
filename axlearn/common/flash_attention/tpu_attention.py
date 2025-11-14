@@ -139,6 +139,8 @@ def _pallas_tpu_flash_attention(
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 10))
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention(
     q,
     k,
@@ -169,6 +171,8 @@ def _flash_attention(
     )
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention_fwd(
     q,
     k,
@@ -266,6 +270,8 @@ def _flash_attention_bwd(
 _flash_attention.defvjp(fwd=_flash_attention_fwd, bwd=_flash_attention_bwd)
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention_impl(
     q,
     k,

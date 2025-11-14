@@ -96,7 +96,7 @@ class TPULeaderWorkerTemplate(TPUJobBuilder):
 
     def __call__(self) -> Sequence[Nested[Any]]:
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        return dict(
+        return dict(  # pytype: disable=bad-return-type
             size=system.vms_per_slice,
             workerTemplate=self._build_pod(),
         )

@@ -33,7 +33,7 @@ from axlearn.common.learner_base import LearnerModule
 from axlearn.common.module import Module, child_context, new_output_collection
 from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
 from axlearn.common.optimizers import param_ema
-from axlearn.common.update_transformation import (
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     BackwardOutputs,
     ForwardBackwardOutputs,
     ForwardFn,

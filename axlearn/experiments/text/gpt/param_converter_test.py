@@ -18,8 +18,8 @@ from axlearn.common.module import InvocationContext
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.param_converter import parameters_from_llama_3
-from axlearn.common.test_utils import TestCase
-from axlearn.common.update_transformation import ForwardOutputs
+from axlearn.common.test_utils import TestCase  # pytype: disable=pyi-error
+from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
 from axlearn.common.utils import NestedTensor
 from axlearn.experiments.text.gpt import c4_trainer
 

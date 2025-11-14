@@ -119,7 +119,7 @@ class COCOMetricCalculator(BaseMetricCalculator):
             per_example=model_outputs,
         )
 
-    def get_summaries(
+    def get_summaries(  # pytype: disable=signature-mismatch
         self,
         *,
         model_params: Optional[NestedTensor] = None,

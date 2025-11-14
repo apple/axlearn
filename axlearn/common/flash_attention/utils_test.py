@@ -131,6 +131,8 @@ class TestFlashAttention(TestCase):
         input_dtype=[jnp.float32],
     )
     @pytest.mark.for_8_devices
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_forward(
         self,
         batch,
@@ -208,6 +210,8 @@ class TestFlashAttention(TestCase):
         page_size=[16, None],
     )
     @pytest.mark.for_8_devices
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_decoding(
         self,
         batch,

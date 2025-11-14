@@ -342,6 +342,7 @@ class DiTFeedForwardLayer(BaseLayer):
         elif cfg.structure == "postnorm":
             x = input
 
+        # pylint: disable-next=used-before-assignment
         x = modulate(x=x, shift=shift, scale=scale)
         x = self.linear1(x)
         x = self._remat_name(x, remat_pt1)

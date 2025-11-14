@@ -1021,7 +1021,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "spec": leader_pod_spec,
         }
 
-    def __call__(self) -> Nested[Any]:
+    def __call__(self) -> Nested[Any]:  # pytype: disable=signature-mismatch
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
             subGroupPolicy=dict(

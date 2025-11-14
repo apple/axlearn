@@ -33,6 +33,7 @@ def _sort_fields(klass: _T) -> _T:
 
 
 def field(pytree_node: bool = True, **kwargs):
+    # pylint: disable-next=invalid-field-call
     return dataclasses.field(metadata={"pytree_node": pytree_node}, **kwargs)
 
 

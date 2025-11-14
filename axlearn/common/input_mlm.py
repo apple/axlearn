@@ -206,7 +206,7 @@ def roberta_mlm_actions_combinatorial_ngram(
     """
     keep_prob = 1 - (mask_prob + swap_prob)
     swap_or_keep_prob = 1 - mask_prob  # Always >= swap_prob >= 0.
-    if not mask_prob + swap_prob + keep_prob == 1:
+    if mask_prob + swap_prob + keep_prob != 1:
         raise ValueError("Expected sum of probabilities to be equal to 1.")
 
     # seq_len: int32 scalar tensor.

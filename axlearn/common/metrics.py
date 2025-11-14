@@ -95,7 +95,7 @@ class _ReducerSummary(MetricSummary):
         if self.value().shape != other.value().shape:
             raise ValueError(f"Shape mismatch: {self.value().shape} vs {other.value().shape}.")
         combined_value = self._accumulate_op(self.value(), other.value())
-        return type(self)(combined_value)
+        return type(self)(combined_value)  # pytype: disable=wrong-arg-count
 
 
 class MinSummary(_ReducerSummary):

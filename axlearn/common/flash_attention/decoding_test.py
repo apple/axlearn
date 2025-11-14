@@ -80,13 +80,17 @@ class DecodingTest(TestCase):
             ]
         ],
         attention_bias_type=[None, "2d", "4d"],
+        # pylint: disable-next=possibly-used-before-assignment
         input_dtype=dtypes,
         padding=[0, 111],
         kv_head_factor=[1, 8],
         window_len=[-1, 127],
         page_size=[16],
+        # pylint: disable-next=possibly-used-before-assignment
         decoding_fn=paged_attn_decoding_fns,
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_paged_attention_against_ref(
         self,
         batch_size: int,
@@ -173,8 +177,11 @@ class DecodingTest(TestCase):
         padding=[0, 111],
         kv_head_factor=[1, 4, 8],
         window_len=[-1, 16, 127],
+        # pylint: disable-next=possibly-used-before-assignment
         decoding_fn=decoding_fns,
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_decode_against_ref(
         self,
         batch_size: int,
