@@ -293,6 +293,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
         self._update_env_list(env_list, "TPU_SKIP_MDS_QUERY", "true")
+        # Prevents missing logs when there is crash.
+        self._update_env_list(env_list, "PYTHONUNBUFFERED", "1")
         # This is required to be able to run a Jax client when using
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS=true.
         # In Jax 0.6.2 and beyond this flag can be renamed to
@@ -952,6 +954,10 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 {
                     "name": "TEST_UNDECLARED_OUTPUTS_DIR",
                     "value": "true",
+                },
+                {
+                    "name": "PYTHONUNBUFFERED",
+                    "value": "1",
                 },
             ],
             imagePullPolicy="Always",
