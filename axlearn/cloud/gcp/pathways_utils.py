@@ -453,7 +453,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "initContainers": init_containers,
             "volumes": volumes,
             "serviceAccountName": cfg.service_account,
-            "hostNetwork": True,
             "dnsPolicy": "ClusterFirstWithHostNet",
         }
 
@@ -586,9 +585,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pod_spec = worker_pod.get("spec", {})
         # Use default value - OnFailure.
         pod_spec.pop("restartPolicy")
-        # Need to enable host network to improve head <> worker communucation.
-        # It should not be required but current Pathways only support host network.
-        pod_spec["hostNetwork"] = True
         # Only set dnsPolicy if it's not already set
         pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
         pod_spec["containers"] = [
@@ -861,7 +857,6 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         pod_spec = worker_pod.get("spec", {})
         pod_spec.pop("restartPolicy")
-        pod_spec["HostNetwork"] = True
         pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
         pod_spec["containers"] = [self._build_pathways_worker_container()]
         worker_pod["spec"] = pod_spec
@@ -1012,7 +1007,6 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "containers": containers,
             "volumes": volumes,
             "serviceAccountName": cfg.service_account,
-            "hostNetwork": True,
             "dnsPolicy": "ClusterFirstWithHostNet",
         }
 

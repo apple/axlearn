@@ -189,7 +189,6 @@ class PathwaysReplicatedJobTest(TestCase):
 
             host_alias = pod_spec["hostAliases"]
             self.assertEqual(1, len(host_alias))
-            self.assertEqual(pod_spec.get("hostNetwork"), True)
             self.assertEqual(pod_spec.get("dnsPolicy"), "ClusterFirstWithHostNet")
             worker_container = pod_spec.get("containers")[0]
             self.assertEqual(worker_container["image"], _PATHWAYS_SERVER_IMAGE)
