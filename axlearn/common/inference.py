@@ -232,18 +232,6 @@ class InferenceRunner(Module):
             self._inference_runner_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._inference_runner_state_specs
             )
-            logging.info("Building ckpt state from %s", cfg.init_state_builder.klass.__name__)
-            builder = cfg.init_state_builder.set(
-                name="init_state_builder",
-            ).instantiate(parent=None)
-
-            # Check that builder should expect tensor specs.
-            if builder.input_state_type() != Builder.StateType.TENSOR_SPECS:
-                logging.warning(
-                    "init_state_builder %s expects input_state_type StateType.TENSOR "
-                    "but inference runner gives StateType.TENSOR_SPECS.",
-                    cfg.init_state_builder.klass.__name__,
-                )
 
             if fake_state:
                 self._inference_runner_state = jax.tree.map(
@@ -251,6 +239,18 @@ class InferenceRunner(Module):
                     self._inference_runner_state_specs,
                 )
             else:
+                logging.info("Building ckpt state from %s", cfg.init_state_builder.klass.__name__)
+                builder = cfg.init_state_builder.set(
+                    name="init_state_builder",
+                ).instantiate(parent=None)
+
+                # Check that builder should expect tensor specs.
+                if builder.input_state_type() != Builder.StateType.TENSOR_SPECS:
+                    logging.warning(
+                        "init_state_builder %s expects input_state_type StateType.TENSOR "
+                        "but inference runner gives StateType.TENSOR_SPECS.",
+                        cfg.init_state_builder.klass.__name__,
+                    )
                 # See "On compatible trainer checkpoints for `InferenceRunner`" in the file
                 # docstring.
                 self._inference_runner_state = builder(
