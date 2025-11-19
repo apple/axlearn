@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import jax
 import orbax.checkpoint as ocp
 import tensorflow as tf
+from contextlib import contextmanager
 from absl import logging
 
 from axlearn.common import utils
@@ -44,6 +45,15 @@ except ImportError:
     logging.warning("grain is not installed; checkpointing grain iterators will not work.")
     _GRAIN_INSTALLED = False
 
+
+@contextmanager
+def setup(spec: str):
+    """Setups any required values as required by Orbax.
+
+    
+    """
+    
+    yield
 
 class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     """Serializes tf.data.Iterator.
@@ -237,7 +247,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
             options=ocp.CheckpointManagerOptions(
                 create=True,
                 max_to_keep=cfg.keep_last_n,
-                enable_async_checkpointing=True,
+                enable_async_checkpointing=False,
                 step_name_format=self._name_format,
                 should_save_fn=save_fn_with_summaries,
                 enable_background_delete=True,
@@ -345,8 +355,8 @@ class OrbaxCheckpointer(BaseCheckpointer):
             )
         except FileNotFoundError as e:
             # Orbax raises FileNotFoundError if there are no checkpoints.
-            if step is not None:
-                raise ValueError(f"Failed to restore at step {step}.") from e
+            # if step is not None:
+            #     raise ValueError(f"Failed to restore at step {step}.") from e
             logging.info("Could not find any completed checkpoints under %s: %s", cfg.dir, e)
             return None, state  # Return the input state.
 
