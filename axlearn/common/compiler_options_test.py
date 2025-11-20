@@ -164,6 +164,24 @@ class CompilerOptionsTest(test_utils.TestCase):
                 )
             ),
         )
+        self.assertTrue(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[16, 128, 16, 1],
+                    mesh_axis_names=("data", "fsdp", "track", "model"),
+                    device_kind="TPU v5p",
+                )
+            ),
+        )
+        self.assertTrue(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[16, 256, 8, 1],
+                    mesh_axis_names=("data", "fsdp", "track", "model"),
+                    device_kind="TPU v5p",
+                )
+            ),
+        )
 
 
 if __name__ == "__main__":

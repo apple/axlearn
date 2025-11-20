@@ -30,10 +30,11 @@ import optax
 import pytest
 import tensorflow as tf
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from torch import nn
 from torchvision.ops import generalized_box_iou_loss
 
+from axlearn.common.ein_ops import repeat
 from axlearn.common.loss import (
     ReductionMethod,
     _reduce_loss,
@@ -58,7 +59,7 @@ from axlearn.common.loss import (
     symmetric_contrastive_loss_from_features,
     symmetric_contrastive_loss_from_logits,
 )
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import Tensor
 
@@ -66,68 +67,89 @@ from axlearn.common.utils import Tensor
 np.random.seed(123)
 
 
-def test_cross_entropy():
-    logits = jnp.asarray([[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 100.0]])
-    targets = jnp.asarray([0, 1, 2])
-    assert jnp.allclose(cross_entropy(logits, targets)[0], 0.0)
+class LossTest(TestCase):
+    def test_cross_entropy(self):
+        logits = jnp.asarray([[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 100.0]])
+        targets = jnp.asarray([0, 1, 2])
+        self.assertNestedAllClose(cross_entropy(logits, targets)[0], 0.0)
+
+    def test_cross_entropy_with_live_targets(self):
+        l_key, t_key, m_key = jax.random.split(jax.random.PRNGKey(123), num=3)
+        b, t, n, v = 2, 5, 3, 10
+        logits = jax.random.uniform(l_key, (b, t, n, v))
+        targets = jax.random.randint(t_key, (b, t, n), minval=0, maxval=v)
+        mask = jax.random.bernoulli(m_key, 0.8, (b, t, 1))
+        loss1 = cross_entropy(logits, targets, live_targets=mask)[0]
+        mask = repeat(mask, "b t 1 -> b t n", n=n)
+        loss2 = cross_entropy(logits, targets, live_targets=mask)[0]
+        self.assertNestedAllClose(loss1, loss2)
+
+    def test_accuracy(self):
+        pad_token_id = 0
+        logits = jnp.asarray(
+            [
+                # Predicted labels: 1, 2, 0.
+                [[0.0, 100.0, 0.0], [0.0, 0.0, 100.0], [100.0, 0.0, 0.0]],
+                # Predicted labels: 1, 0, 0.
+                [[0.0, 100.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
+            ]
+        )
+        targets = jnp.asarray(
+            [
+                [1, 2, pad_token_id],
+                [2, pad_token_id, pad_token_id],
+            ]
+        )
+        live_targets = targets != pad_token_id
+        _, loss_dict = cross_entropy(logits, targets, live_targets=live_targets)
+        self.assertNestedAllClose(loss_dict["accuracy"], 2 / 3)
+
+    def test_binary_cross_entropy(self):
+        logits = jnp.asarray([[100.0, 5.0, 0.0], [0.0, 100.0, 25.0], [0.0, 2000.0, 100.0]])
+        targets = jnp.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]], dtype=jnp.bool)
+        tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+        tf_cross_entropy = tf_bce(targets, logits)
+        self.assertNestedAllClose(
+            binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+            tf_cross_entropy.numpy(),
+        )
+
+        logits = jnp.asarray([[100.0, 5.0, 0.0], [5.0, 100.0, 25.0], [0.0, 2000.0, 100.0]])
+        targets = jnp.asarray([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
+        live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]], dtype=jnp.bool)
+        tf_cross_entropy = tf_bce(targets, logits)
+        self.assertNestedAllClose(
+            binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+            tf_cross_entropy.numpy(),
+        )
+
+    def test_binary_cross_entropy_zero_loss(self):
+        logits = jnp.asarray(
+            [[100.0, -100.0, -100.0], [-100.0, 100.0, -100.0], [-100.0, -100.0, 100.0]]
+        )
+        targets = jnp.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]], dtype=jnp.bool)
+        tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+        tf_cross_entropy = tf_bce(targets, logits)
+        self.assertNestedAllClose(
+            binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
+            tf_cross_entropy.numpy(),
+        )
+
+    def test_binary_cross_entropy_with_live_targets(self):
+        l_key, t_key, m_key = jax.random.split(jax.random.PRNGKey(123), num=3)
+        b, t, n = 2, 5, 3
+        logits = jax.random.uniform(l_key, (b, t, n))
+        targets = jax.random.bernoulli(t_key, 0.5, (b, t, n)).astype(jnp.int32)
+        mask = jax.random.bernoulli(m_key, 0.8, (b, t, 1))
+        loss1 = binary_cross_entropy(logits, target_labels=targets, live_targets=mask)[0]
+        mask = repeat(mask, "b t 1 -> b t n", n=n)
+        loss2 = binary_cross_entropy(logits, target_labels=targets, live_targets=mask)[0]
+        self.assertNestedAllClose(loss1, loss2)
 
 
-def test_accuracy():
-    pad_token_id = 0
-    logits = jnp.asarray(
-        [
-            # Predicted labels: 1, 2, 0.
-            [[0.0, 100.0, 0.0], [0.0, 0.0, 100.0], [100.0, 0.0, 0.0]],
-            # Predicted labels: 1, 0, 0.
-            [[0.0, 100.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
-        ]
-    )
-    targets = jnp.asarray(
-        [
-            [1, 2, pad_token_id],
-            [2, pad_token_id, pad_token_id],
-        ]
-    )
-    live_targets = (targets != pad_token_id).astype(jnp.float32)
-    _, loss_dict = cross_entropy(logits, targets, live_targets=live_targets)
-    assert jnp.allclose(loss_dict["accuracy"], 2 / 3)
-
-
-def test_binary_cross_entropy():
-    logits = jnp.asarray([[100.0, 5.0, 0.0], [0.0, 100.0, 25.0], [0.0, 2000.0, 100.0]])
-    targets = jnp.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-    live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
-    tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    tf_cross_entropy = tf_bce(targets, logits)
-    assert jnp.allclose(
-        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
-        tf_cross_entropy.numpy(),
-    )
-
-    logits = jnp.asarray([[100.0, 5.0, 0.0], [5.0, 100.0, 25.0], [0.0, 2000.0, 100.0]])
-    targets = jnp.asarray([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
-    live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
-    tf_cross_entropy = tf_bce(targets, logits)
-    assert jnp.allclose(
-        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
-        tf_cross_entropy.numpy(),
-    )
-
-
-def test_binary_cross_entropy_zero_loss():
-    logits = jnp.asarray(
-        [[100.0, -100.0, -100.0], [-100.0, 100.0, -100.0], [-100.0, -100.0, 100.0]]
-    )
-    targets = jnp.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-    live_targets = jnp.asarray([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
-    tf_bce = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    tf_cross_entropy = tf_bce(targets, logits)
-    assert jnp.allclose(
-        binary_cross_entropy(logits, target_labels=targets, live_targets=live_targets)[0],
-        tf_cross_entropy.numpy(),
-    )
-
-
+# TODO(dhwang2): move below inside LossTest.
 def test_cross_entropy_with_label_smoothing():
     logits = jnp.asarray([[100.0, 0.0, 0.0, 0.0], [0.0, 100.0, 0.0, 0.0], [0.0, 0.0, 100.0, 0.0]])
     targets = jnp.asarray([0, 1, 2])
@@ -312,31 +334,31 @@ def test_cross_entropy_soft_target_labels():
 @pytest.mark.parametrize(
     "preds,targets,expected,weights",
     [
-        ([], [], WeightedScalar(0, 0), None),  # No targets.
+        ([], [], WeightedSummary(0, 0), None),  # No targets.
         (
             [0.0, 1.0, 2.0],
             [jnp.nan, jnp.nan, jnp.nan],
-            WeightedScalar(0, 0),
+            WeightedSummary(0, 0),
             [False, False, False],
         ),  # No targets.
-        ([jnp.inf], [0], WeightedScalar(jnp.inf, 1), None),  # inf - 0 is inf.
-        ([jnp.inf], [jnp.inf], WeightedScalar(jnp.nan, 1), None),  # inf - inf is nan.
+        ([jnp.inf], [0], WeightedSummary(jnp.inf, 1), None),  # inf - 0 is inf.
+        ([jnp.inf], [jnp.inf], WeightedSummary(jnp.nan, 1), None),  # inf - inf is nan.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [1.0, 2.0, 3.0, 4.0, 5.0],
-            WeightedScalar(1.0, 5),
+            WeightedSummary(1.0, 5),
             None,
         ),  # Basic case.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [2.0, jnp.nan, 2.0, 2.0, jnp.nan],
-            WeightedScalar(5.0 / 3.0, 3),
+            WeightedSummary(5.0 / 3.0, 3),
             [True, False, True, True, False],
         ),  # Basic case.
         (
             [7, 5, 11],
             [3, 2, 13],
-            WeightedScalar(12, 3),
+            WeightedSummary(12, 3),
             [2, 0, 1],
         ),  # Test non-boolean weights.
     ],
@@ -344,7 +366,7 @@ def test_cross_entropy_soft_target_labels():
 def test_mean_squared_error(
     preds: Sequence[float],
     targets: Sequence[float],
-    expected: WeightedScalar,
+    expected: WeightedSummary,
     weights: Optional[Sequence[float]],
 ):
     preds = jnp.asarray(preds)
@@ -361,7 +383,7 @@ def test_mean_squared_error(
 
 def test_l1_loss():
     actual = l1_loss(jnp.array([1, 2, 3]), jnp.array([5, 7, 13]))
-    expected = WeightedScalar((4 + 5 + 10) / 3, 3)
+    expected = WeightedSummary((4 + 5 + 10) / 3, 3)
     chex.assert_trees_all_close(actual.mean, expected.mean)
 
 
@@ -1144,3 +1166,7 @@ class ReduceLossTest(parameterized.TestCase):
             loss=loss, sample_weight=sample_weights, reduction=ReductionMethod.MEAN
         )
         self.assertAlmostEqual(reduced_loss, expected_loss)
+
+
+if __name__ == "__main__":
+    absltest.main()

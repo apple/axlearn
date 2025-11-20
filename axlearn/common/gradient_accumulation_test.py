@@ -12,9 +12,9 @@ from absl.testing import absltest, parameterized
 from jax.experimental.pjit import pjit
 
 from axlearn.common import gradient_accumulation, test_utils
-from axlearn.common.metrics import MetricAccumulator, WeightedScalar
+from axlearn.common.metrics import MetricAccumulator, WeightedSummary
 from axlearn.common.module import new_output_collection
-from axlearn.common.update_transformation import ForwardOutputs
+from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
 from axlearn.common.utils import Nested, PartitionSpec, Tensor, tree_paths
 
 
@@ -96,7 +96,7 @@ class TestMinibatchSharding(test_utils.TestCase):
             loss = -jax.nn.log_softmax(model_params["w"] + model_params["b"])[1]
             output_collection = new_output_collection()
             output_collection.state_updates["w"] = model_params["w"] + 1
-            output_collection.state_updates["loss"] = WeightedScalar(loss, 1)
+            output_collection.state_updates["loss"] = WeightedSummary(loss, 1)
             return ForwardOutputs(loss=loss, aux={}, output_collection=output_collection)
 
         return loss_fn
@@ -160,7 +160,7 @@ class TestMinibatchSteps(test_utils.TestCase):
             loss = -jax.nn.log_softmax(model_params["w"] + model_params["b"])[1]
             output_collection = new_output_collection()
             output_collection.state_updates["w"] = model_params["w"] + 1
-            output_collection.state_updates["loss"] = WeightedScalar(loss, 1)
+            output_collection.state_updates["loss"] = WeightedSummary(loss, 1)
             # This output_collection entry is used to check if the gradient accumulation decorator
             # correctly handles outputs that depend on batch size during carry buffer creation.
             output_collection.summaries["output_with_batch_dimension"] = inputs["input_batch"]

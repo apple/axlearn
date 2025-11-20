@@ -10,7 +10,7 @@ from jax import numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module
 from axlearn.common.utils import Tensor
 
@@ -49,7 +49,8 @@ class BaseActivationClippingLayer(BaseLayer):
             out_of_range_mean: Tensor = jnp.mean(out_of_range_mask)
             total_element_count: float = float(jnp.size(out_of_range_mask))
             self.add_summary(
-                "clipped_activation", WeightedScalar(out_of_range_mean, total_element_count)
+                "clipped_activation",
+                WeightedSummary(out_of_range_mean, total_element_count),
             )
 
     def forward(

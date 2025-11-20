@@ -393,7 +393,7 @@ class TestBaseBastionManagedJob(parameterized.TestCase):
 class TestBastionManagedGKEJob(TestWithTemporaryCWD):
     """Tests BastionManagedGKEJob."""
 
-    def run(self, **kwargs):
+    def run(self, **kwargs):  # pytype: disable=signature-mismatch
         # Run tests under mock settings.
         self._settings = default_mock_settings()
         patch_name = mock.patch(f"{launch.__name__}.generate_job_name", return_value="job-name")
@@ -439,6 +439,8 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
         ],
         action=_ACTIONS,
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_tpu_flags(
         self,
         action,

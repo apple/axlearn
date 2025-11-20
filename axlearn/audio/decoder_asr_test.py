@@ -30,7 +30,7 @@ from axlearn.common.config import config_for_function
 from axlearn.common.decoder import _scores_from_logits
 from axlearn.common.decoding import NEG_INF
 from axlearn.common.logit_modifiers import top_k_logits
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
@@ -522,7 +522,7 @@ class CTCDecoderModelTest(TestCase):
         assert_allclose(np.sum(ref_per_example_loss) / np.sum(per_example_weight), loss)
 
     def _check_summary(
-        self, summary_collection: dict[str, Any], name: str, value: Union[Tensor, WeightedScalar]
+        self, summary_collection: dict[str, Any], name: str, value: Union[Tensor, WeightedSummary]
     ):
         self.assertIn(name, summary_collection)
         msg = f"mismatch in {name}: {summary_collection[name]} vs {value}"
@@ -570,8 +570,8 @@ class CTCDecoderModelTest(TestCase):
         )
         summaries = output_collections.summaries
         # 6 out of 8 examples are valid, therefore the average example weight is 0.75
-        self._check_summary(summaries, "loss/example_weight", WeightedScalar(0.75, 8))
-        self._check_summary(summaries, "loss/ctc_loss", WeightedScalar(6972.135, 6))
+        self._check_summary(summaries, "loss/example_weight", WeightedSummary(0.75, 8))
+        self._check_summary(summaries, "loss/ctc_loss", WeightedSummary(6972.135, 6))
         self._check_summary(summaries, "loss/invalid_seq_percent", 0.25)
         total_ctc_loss = summaries["loss/ctc_loss"].weight * summaries["loss/ctc_loss"].mean
         num_valid_frames = jnp.sum(safe_not(paddings) * per_example_weight[:, None])
@@ -580,28 +580,28 @@ class CTCDecoderModelTest(TestCase):
         self._check_summary(
             summaries,
             "loss/per_frame_ctc_loss",
-            WeightedScalar(total_ctc_loss / num_valid_frames, num_valid_frames),
+            WeightedSummary(total_ctc_loss / num_valid_frames, num_valid_frames),
         )
         self._check_summary(
             summaries,
             "loss/per_label_ctc_loss",
-            WeightedScalar(total_ctc_loss / num_valid_labels, num_valid_labels),
+            WeightedSummary(total_ctc_loss / num_valid_labels, num_valid_labels),
         )
 
         self._check_summary(
             summaries,
             "input_stats/average_target_length",
-            WeightedScalar(num_valid_labels / num_valid_examples, num_valid_examples),
+            WeightedSummary(num_valid_labels / num_valid_examples, num_valid_examples),
         )
         self._check_summary(
             summaries,
             "input_stats/average_source_length",
-            WeightedScalar(num_valid_frames / num_valid_examples, num_valid_examples),
+            WeightedSummary(num_valid_frames / num_valid_examples, num_valid_examples),
         )
         self._check_summary(
             summaries,
             "input_stats/frame_packing_efficiency",
-            WeightedScalar(num_valid_frames / paddings.size, paddings.size),
+            WeightedSummary(num_valid_frames / paddings.size, paddings.size),
         )
 
     def _check_paddings(self, outputs: DecodeOutputs, *, blank_id: int):

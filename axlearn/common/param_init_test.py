@@ -324,6 +324,7 @@ class FanAxesTest(TestCase):
             FanAxes(in_axis=0, out_axis=(2,)),
         )
 
+    # pytype: disable=attribute-error
     def test_prepend_axis(self):
         initial = FanAxes(in_axis=0, out_axis=1, batch_axis=-1)
         self.assertEqual(
@@ -352,6 +353,8 @@ class FanAxesTest(TestCase):
             maybe_prepend_axis(initial, axis_type=FanAxes.AxisType.OUT_AXIS),
             FanAxes(in_axis=1, out_axis=(0, 2), batch_axis=-1),
         )
+
+    # pytype: enable=attribute-error
 
 
 if __name__ == "__main__":

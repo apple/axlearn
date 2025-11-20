@@ -52,7 +52,9 @@ class TrainerConfigTest(TestCase):
         # axis for multiple dims.
         for v in cfg.input.input_partitioner.path_rank_to_partition.values():
             visited = set()
-            for axis in jax.tree_util.tree_leaves(tuple(v)):  # Cast leaf PartitionSpec to tuple
+            for axis in jax.tree_util.tree_leaves(
+                tuple(v)
+            ):  # Cast to tuple since PartitionSpec is a leaf.
                 self.assertNotIn(axis, visited)
                 visited.add(axis)
             self.assertGreater(len(visited), 0)

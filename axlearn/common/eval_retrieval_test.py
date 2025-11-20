@@ -73,7 +73,7 @@ def _compute_metrics(
         A dict containing:
         "class_embeddings": a Tensor of shape [num_classes, emb_dim] computed from text_labels
             and text_embeddings.
-        "summaries": a Dict of WeightedScalar values computed by
+        "summaries": a Dict of WeightedSummary values computed by
             ZeroShotImageClassificationMetricCalculator.
     """
     with jax.sharding.Mesh(

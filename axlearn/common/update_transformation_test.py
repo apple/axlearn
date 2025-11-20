@@ -23,7 +23,7 @@ from axlearn.common.optimizer_base import (
     OptParam,
     PartitionedGradientTransformation,
 )
-from axlearn.common.update_transformation import (
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     ConditionalUpdateTransformation,
     ForwardOutputs,
     OverrideInplaceUpdateTransformation,
@@ -268,8 +268,10 @@ class UpdatesTest(test_utils.TestCase):
         inplace_updates = expected_result(updates.inplace_updates)
 
         # Expected value of `masked` with default fields.
-        expected_default = axlearn.common.update_transformation.Updates(
-            opt_params=opt_params, delta_updates=delta_updates, inplace_updates=inplace_updates
+        expected_default = (
+            axlearn.common.update_transformation.Updates(  # pytype: disable=pyi-error
+                opt_params=opt_params, delta_updates=delta_updates, inplace_updates=inplace_updates
+            )
         )
         expected = dataclasses.replace(
             updates, **{field: getattr(expected_default, field) for field in fields}

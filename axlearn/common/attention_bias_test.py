@@ -5,7 +5,6 @@ from typing import Optional
 
 import chex
 import jax.numpy as jnp
-import jax.util
 from absl.testing import absltest, parameterized
 from jax.sharding import PartitionSpec
 
@@ -120,7 +119,7 @@ class AttentionBiasTest(test_utils.TestCase):
         bias = attention_bias.ZeroAttentionBias()
         self.assertEqual(bias.value(), None)
 
-        bias = attention_bias.MaskFnAttentionBias(
+        bias = attention_bias.MaskFnAttentionBias(  # pytype: disable=wrong-arg-types
             None, target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
         )
         self.assertNotIsInstance(bias, attention_bias.ZeroAttentionBias)
@@ -382,7 +381,7 @@ class AttentionBiasTest(test_utils.TestCase):
         )
         new_bias_list = [b if b.has_value() else None for b in new_bias_list]
         expected = [causal, segment_ids, mask, None]
-        for b1, b2 in jax.util.safe_zip(new_bias_list, expected):
+        for b1, b2 in zip(new_bias_list, expected, strict=True):
             self.assertIs(b1, b2)
 
     def test_tensor_attention_bias(self):
@@ -425,7 +424,10 @@ class AttentionBiasTest(test_utils.TestCase):
         )
 
         self.assertNestedEqual(
-            attention_bias.MaskFnAttentionBias.from_sequence([b1, b2]).value(), (b1 + b2).value()
+            attention_bias.MaskFnAttentionBias.from_sequence(
+                [b1, b2]
+            ).value(),  # pytype: disable=attribute-error
+            (b1 + b2).value(),
         )
         self.assertIsInstance(
             attention_bias.MaskFnAttentionBias.from_sequence([b1]),

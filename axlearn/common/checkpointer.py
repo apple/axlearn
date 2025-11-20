@@ -39,7 +39,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import (
     InvocationContext,
     Module,
@@ -676,7 +676,7 @@ class BestMetricPolicy(Configurable):
             raise ValueError(f'evaler_summaries["{evaler_name}"]["{metric_name}"] is None!')
 
         metric = evaler_summaries[evaler_name][metric_name]
-        if isinstance(metric, WeightedScalar):
+        if isinstance(metric, WeightedSummary):
             metric = metric.mean
 
         if metric.shape != ():

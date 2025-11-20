@@ -40,7 +40,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.convolution import Conv2D
 from axlearn.common.loss import binary_cross_entropy, categorical_hinge_loss, cross_entropy
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.metrics_classification import precision_recall_f_score
 from axlearn.common.module import Module, child_context, nowrap
 from axlearn.common.normalize import l2_normalize
@@ -130,7 +130,7 @@ class RedirectToSharedModule(BaseLayer):
             return super().__getattr__(name)
         except AttributeError as e:
             raise AttributeError(
-                f"{', '.join(e.args)}. Should '{name}' be specified in `cfg.method_map`?"
+                f"{', '.join(e.args)}. Should \"{name}\" be specified in cfg.method_map?"
             ) from e
 
     def _redirect(self, *args, redirection_target_method: str, **kwargs) -> Any:
@@ -352,10 +352,15 @@ class LayerNorm(LayerNormStateless):
 
 
 class RMSNormStateless(BaseNormalizationLayer):
-    """Stateless version of https://github.com/bzhangGo/rmsnorm."""
+    """Stateless version of https://github.com/bzhangGo/rmsnorm.
+
+    Paper: https://arxiv.org/abs/1910.07467
+    """
 
     @config_class
     class Config(BaseNormalizationLayer.Config):
+        """RMSNormStateless.Config."""
+
         # The epsilon.
         eps: float = 1e-8
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
@@ -364,14 +369,27 @@ class RMSNormStateless(BaseNormalizationLayer):
         input_partition_spec: Optional[tuple[Optional[str]]] = None
         # If not None, how to partition output activation values.
         output_partition_spec: Optional[tuple[Optional[str]]] = None
+        # If True, center the input by subtracting the mean before RMS normalization.
+        # This variant is used in Gemma and Qwen3-Next and provides better numerical stability.
+        zero_centered: Optional[bool] = None
 
     def _forward(self, x: Tensor) -> Tensor:
+        """Applies RMS normalization to the input.
+
+        Args:
+            x: Input tensor to normalize.
+
+        Returns:
+            Normalized tensor with the same shape as input.
+        """
         cfg = self.config
         x = maybe_shard(x, cfg.input_partition_spec)
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
         moment2 = (x * x).mean(axis=-1, keepdims=True)
+        if cfg.zero_centered:
+            x = x - x.mean(axis=-1, keepdims=True)
         x = x * jax.lax.rsqrt(moment2 + cfg.eps)
         x = x.astype(x_dtype)
         return x
@@ -835,9 +853,14 @@ class Embedding(BaseLayer):
         maintain the desired scale. e.g. Gemma [1]
         [1]
         https://github.com/google-deepmind/gemma/blob/0d6ae857591248422127ca14c027909546362e6a/gemma/modules.py#L80
+
+        2. **CONSTANT**: Scale the activation by a constant factor.
+
+        The activation is multiplied by a user-specified constant value.
         """
 
         UNIT = "unit"
+        CONSTANT = "constant"
 
     @config_class
     class Config(BaseLayer.Config):
@@ -853,6 +876,8 @@ class Embedding(BaseLayer):
         output_partition_spec: Optional[tuple[Optional[str]]] = None
         # Optional scaling of the embedding activations.
         scale: Optional["Embedding.Scale"] = None
+        # Constant scaling factor (required when scale=Scale.CONSTANT).
+        scale_constant: Optional[float] = None
 
     @classmethod
     def default_config(cls):
@@ -876,6 +901,12 @@ class Embedding(BaseLayer):
             }
         )
         return cfg
+
+    def __init__(self, cfg: Config, *, parent: Optional[Module]):
+        super().__init__(cfg, parent=parent)
+        # Validate that scale_constant is provided when using CONSTANT scaling
+        if cfg.scale == self.Scale.CONSTANT and cfg.scale_constant is None:
+            raise ValueError("scale_constant must be specified when scale=Scale.CONSTANT")
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
@@ -908,6 +939,9 @@ class Embedding(BaseLayer):
         x = x.astype(jnp.float32)
         if cfg.scale == self.Scale.UNIT:
             x = x * math.sqrt(x.shape[-1])
+        elif cfg.scale == self.Scale.CONSTANT:
+            # scale_constant is guaranteed to be not None due to __init__ validation
+            x = x * cfg.scale_constant
         else:
             raise ValueError(f"Unknown scale {cfg.scale}.")
         x = x.astype(x_dtype)
@@ -999,13 +1033,13 @@ class ClassificationMetric(BaseClassificationMetric):
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / jnp.maximum(1, num_examples)
 
-        self.add_summary("loss", WeightedScalar(loss, num_examples))
-        self.add_summary("z_loss", WeightedScalar(all_losses["z_loss"], num_examples))
+        self.add_summary("loss", WeightedSummary(loss, num_examples))
+        self.add_summary("z_loss", WeightedSummary(all_losses["z_loss"], num_examples))
         self.add_summary(
-            "cross_entropy_loss", WeightedScalar(all_losses["cross_entropy_loss"], num_examples)
+            "cross_entropy_loss", WeightedSummary(all_losses["cross_entropy_loss"], num_examples)
         )
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_examples))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_examples))
+        self.add_summary("perplexity", WeightedSummary(jnp.exp(loss), num_examples))
+        self.add_summary("accuracy", WeightedSummary(accuracy, num_examples))
 
         return loss
 
@@ -1067,11 +1101,11 @@ class BinaryClassificationMetric(BaseClassificationMetric):
         )
         self.add_summary("precision", scores["precision"])
         self.add_summary("recall", scores["recall"])
-        self.add_summary("f_score", WeightedScalar(scores["f_score"], num_examples))
-        self.add_summary("loss", WeightedScalar(loss, num_examples))
+        self.add_summary("f_score", WeightedSummary(scores["f_score"], num_examples))
+        self.add_summary("loss", WeightedSummary(loss, num_examples))
         self.add_summary(
             "binary_cross_entropy_loss",
-            WeightedScalar(all_losses["binary_cross_entropy_loss"], num_examples),
+            WeightedSummary(all_losses["binary_cross_entropy_loss"], num_examples),
         )
 
         return loss
@@ -1132,9 +1166,9 @@ class CategoricalHingeLossMetric(BaseClassificationMetric):
         predictions = jnp.argmax(logits, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / denominator
 
-        self.add_summary("loss", WeightedScalar(loss, num_live_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_live_targets))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_live_targets))
+        self.add_summary("loss", WeightedSummary(loss, num_live_targets))
+        self.add_summary("perplexity", WeightedSummary(jnp.exp(loss), num_live_targets))
+        self.add_summary("accuracy", WeightedSummary(accuracy, num_live_targets))
 
         return loss
 

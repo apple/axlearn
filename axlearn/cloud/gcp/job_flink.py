@@ -95,7 +95,6 @@ class FlinkTPUGKEJob(job.GKEJob):
 
         flink_threads_per_worker: int = 1
         worker_jvm_metaspace_size: str = "256mb"
-        image_id: Optional[str] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -118,10 +117,6 @@ class FlinkTPUGKEJob(job.GKEJob):
             "JVM Metaspace Size for the TaskManagers. See this link for more details."
             "https://nightlies.apache.org/flink/flink-docs-release-1.13/docs/deployment/memory/mem_setup_tm/",
             **common_kwargs,
-        )
-        # pylint: enable=line-too-long
-        flags.DEFINE_string(
-            "image_id", None, "Image used for starting the container.", **common_kwargs
         )
 
     @classmethod
@@ -366,6 +361,12 @@ class FlinkTPUGKEJob(job.GKEJob):
 
     def _build_flink_deployment(self, system: _SystemCharacteristics) -> Dict[str, Any]:
         cfg: FlinkTPUGKEJob.Config = self.config
+        annotations, volumes, volume_mounts = (
+            {},
+            [dict(name="flink-logs", emptyDir={})],
+            [dict(mountPath="/opt/flink/log", name="flink-logs")],
+        )
+
         return dict(
             apiVersion="flink.apache.org/v1beta1",
             kind="FlinkDeployment",
@@ -420,7 +421,17 @@ class FlinkTPUGKEJob(job.GKEJob):
                 # job manager's responsibility is lightweight, it is only responsible to
                 # accept one request from one job submitter in this setup. So a minimum
                 # resource is good enough.
-                jobManager=dict(resource=dict(memory="2g", cpu=1)),
+                jobManager=dict(
+                    resource=dict(memory="2g", cpu=1),
+                    podTemplate=dict(
+                        metadata=dict(
+                            annotations={"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"},
+                        ),
+                        spec=dict(
+                            nodeSelector={"axlearn/nodepool_type": "workload"},
+                        ),
+                    ),
+                ),
                 taskManager=dict(
                     # We use large slices as multiple independent single nodes in inference
                     replicas=self._get_num_of_tpu_nodes(system),
@@ -430,6 +441,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                         memory_percentage=_FINK_MAIN_CONTAINER_MEMORY_PERCENTAGE,
                     ),
                     podTemplate=dict(
+                        metadata=dict(annotations=annotations),
                         spec=dict(
                             nodeSelector=self._build_tpu_node_selector(system=system),
                             tolerations=[
@@ -458,7 +470,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     volumeMounts=[
                                         dict(mountPath="/opt/flink/log", name="flink-logs")
                                     ],
-                                    image=cfg.image_id or self._bundler.id(cfg.name),
+                                    image=cfg.builder.image_id or self._bundler.id(cfg.name),
                                     args=["-worker_pool"],
                                     env=[
                                         dict(name="BEAM_EXTERNAL_HOST", value="0.0.0.0"),
@@ -512,13 +524,11 @@ class FlinkTPUGKEJob(job.GKEJob):
                                 ),
                                 dict(
                                     name="flink-main-container",
-                                    volumeMounts=[
-                                        dict(mountPath="/opt/flink/log", name="flink-logs")
-                                    ],
+                                    volumeMounts=volume_mounts,
                                 ),
                             ],
-                            volumes=[dict(name="flink-logs", emptyDir={})],
-                        )
+                            volumes=volumes,
+                        ),
                     ),
                 ),
             ),
@@ -528,6 +538,12 @@ class FlinkTPUGKEJob(job.GKEJob):
         self, job_manager_ip: str, system: _SystemCharacteristics
     ) -> Dict[str, Any]:
         cfg: FlinkTPUGKEJob.Config = self.config
+
+        annotations, volumes, volume_mounts = (
+            {"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"},
+            [dict(name="shared-output", emptyDir={})],
+            [dict(name="shared-output", mountPath="/output")],
+        )
         user_command = cfg.builder.command
         # --flink_parallelism controls the number of replicas of all stages in the Beam pipeline
         # it executes.
@@ -556,19 +572,22 @@ class FlinkTPUGKEJob(job.GKEJob):
         return dict(
             apiVersion="batch/v1",
             kind="Job",
-            metadata=dict(name=cfg.name),
+            metadata=dict(
+                name=cfg.name,
+            ),
             spec=dict(
                 backoffLimit=0,
                 template=dict(
                     metadata=dict(
+                        annotations=annotations,
                         labels=dict(
                             app=cfg.name,
                             app_type=BEAM_SUBMITTER_LABEL,
-                        )
+                        ),
                     ),
                     spec=dict(
                         serviceAccountName=cfg.builder.service_account,
-                        volumes=[dict(name="shared-output", emptyDir={})],
+                        volumes=volumes,
                         # Makes sure all logs are uploaded before terminating the pod.
                         terminationGracePeriodSeconds=100,
                         # pylint: disable=protected-access
@@ -580,8 +599,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                             dict(
                                 name=cfg.name,
                                 env=[dict(name="PYTHONUNBUFFERED", value="1")],
-                                image=cfg.image_id or self._bundler.id(cfg.name),
-                                volumeMounts=[dict(name="shared-output", mountPath="/output")],
+                                image=cfg.builder.image_id or self._bundler.id(cfg.name),
+                                volumeMounts=volume_mounts,
                                 command=["/bin/sh", "-c"],
                                 args=[
                                     user_command,
@@ -589,6 +608,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                             )
                         ],
                         restartPolicy="Never",
+                        nodeSelector={"axlearn/nodepool_type": "workload"},
                     ),
                 ),
             ),

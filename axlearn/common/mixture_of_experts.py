@@ -41,7 +41,7 @@ from axlearn.common.layers import (
     StochasticDepth,
     get_activation_fn,
 )
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module, child_context
 from axlearn.common.param_init import FanAxes, constant_initializer
 from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
@@ -482,13 +482,13 @@ class Top2Gating(BaseGating):
         router_z_loss = _router_z_loss(logits)
 
         # Adding auxiliary losses and gating statistics to job summary.
-        self.add_summary("load_balance_loss", WeightedScalar(aux_loss, 1))
-        self.add_summary("router_z_loss", WeightedScalar(router_z_loss, 1))
-        self.add_summary("dispatch_0", WeightedScalar(dispatch_0, 1))
-        self.add_summary("dispatch_1", WeightedScalar(dispatch_1, 1))
-        self.add_summary("dispatch_2", WeightedScalar(dispatch_2, 1))
-        self.add_summary("over_capacity_1", WeightedScalar(over_capacity_1, 1))
-        self.add_summary("over_capacity_2", WeightedScalar(over_capacity_2, 1))
+        self.add_summary("load_balance_loss", WeightedSummary(aux_loss, 1))
+        self.add_summary("router_z_loss", WeightedSummary(router_z_loss, 1))
+        self.add_summary("dispatch_0", WeightedSummary(dispatch_0, 1))
+        self.add_summary("dispatch_1", WeightedSummary(dispatch_1, 1))
+        self.add_summary("dispatch_2", WeightedSummary(dispatch_2, 1))
+        self.add_summary("over_capacity_1", WeightedSummary(over_capacity_1, 1))
+        self.add_summary("over_capacity_2", WeightedSummary(over_capacity_2, 1))
 
         if cfg.adaptive_load_balance_loss is None:
             self.add_summary("load_balance_loss", aux_loss)
@@ -674,15 +674,15 @@ class TopKGating(BaseGating):
         router_z_loss = _router_z_loss(logits)
 
         # Add auxiliary losses and gating statistics to job summary.
-        self.add_summary("load_balance_loss", WeightedScalar(aux_loss, 1))
-        self.add_summary("router_z_loss", WeightedScalar(router_z_loss, 1))
+        self.add_summary("load_balance_loss", WeightedSummary(aux_loss, 1))
+        self.add_summary("router_z_loss", WeightedSummary(router_z_loss, 1))
         # Summary for number of tokens dispatched to 0, 1, ..., k experts.
         for i in range(cfg.top_k + 1):
             dispatch_i = jnp.sum(dispatch_count_tensor == i)
-            self.add_summary(f"dispatch_{i}", WeightedScalar(dispatch_i, 1))
+            self.add_summary(f"dispatch_{i}", WeightedSummary(dispatch_i, 1))
         # Over capacity ratios for top-k experts.
         for i, over_capacity_i in enumerate(over_capacity_list):
-            self.add_summary(f"over_capacity_{i + 1}", WeightedScalar(over_capacity_i, 1))
+            self.add_summary(f"over_capacity_{i + 1}", WeightedSummary(over_capacity_i, 1))
 
         if cfg.adaptive_load_balance_loss is None:
             self.add_summary("load_balance_loss", aux_loss)

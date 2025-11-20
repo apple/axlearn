@@ -2,6 +2,7 @@
 
 """Tools to upload model summaries to VertexAI Tensorboard."""
 
+import hashlib
 import multiprocessing
 import re
 import resource
@@ -34,10 +35,15 @@ def _vertexai_experiment_name_from_output_dir(output_dir: str) -> str:
     # Vertex AI Tensorboard requires experiment_name to match "[a-z0-9][a-z0-9-]+".
     experiment_name = match.group(1).lower().replace("/", "-").replace("_", "-").replace(".", "-")
     if len(experiment_name) >= _VERTEXAI_EXP_NAME_MAX_LEN:  # Vertex AI length limit.
-        raise ValueError(
-            rf"Experiment name must be less than {_VERTEXAI_EXP_NAME_MAX_LEN} chars long."
-            rf"{experiment_name} is {len(experiment_name)} chars."
+        logging.warning(
+            "Experiment name '%s' is %d chars (exceeds %d limit). Truncating to fit.",
+            experiment_name,
+            len(experiment_name),
+            _VERTEXAI_EXP_NAME_MAX_LEN,
         )
+        hash_suffix = hashlib.md5(experiment_name.encode()).hexdigest()[:8]
+        max_name_len = _VERTEXAI_EXP_NAME_MAX_LEN - 1 - len(hash_suffix)
+        experiment_name = f"{experiment_name[:max_name_len]}-{hash_suffix}"
     return experiment_name
 
 

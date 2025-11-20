@@ -335,11 +335,15 @@ def get_trainer_kwargs(
     )
 
     # Update the model_kwargs
-    model_kwargs: dict[str, Any] = merged_trainer_kwargs.pop("model_kwargs")
+    model_kwargs: dict[str, Any] = merged_trainer_kwargs.pop(
+        "model_kwargs"
+    )  # pytype: disable=annotation-type-mismatch
     model_kwargs.update(trainer_kwargs.get("model_kwargs", {}))
     model_kwargs.setdefault("vocab_size", vocab_size)
 
-    learner_kwargs: dict[str, Any] = merged_trainer_kwargs.pop("learner_kwargs")
+    learner_kwargs: dict[str, Any] = merged_trainer_kwargs.pop(
+        "learner_kwargs"
+    )  # pytype: disable=annotation-type-mismatch
     learner_kwargs.update(trainer_kwargs.get("learner_kwargs", {}))
 
     mesh_shape = merged_trainer_kwargs.get("mesh_shape", mesh_shape_from_axes(data=-1))

@@ -2778,6 +2778,8 @@ class MultiheadAttentionTest(TestCase):
         scale_kv_before_cache_update=(False, True),
         page_size=(None, 16),  # None means not using PagedKVCache
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_extend_step(
         self,
         dtype: jnp.dtype,
@@ -2910,6 +2912,8 @@ class MultiheadAttentionTest(TestCase):
         extend_step_len=(1, 4),
         page_size=(None, 1, 16),  # None means not using PagedKVCache.
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_gqa_extend_step(
         self,
         dtype: jnp.dtype,

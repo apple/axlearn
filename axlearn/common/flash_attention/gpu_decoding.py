@@ -71,6 +71,8 @@ else:
 
 
 # Note: split_k_seq_len must be a multiple of block_k.
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _attn_forward_kernel(
     # Inputs:
     q_ref,  # [block_h, head_dim]
@@ -190,6 +192,8 @@ def _get_sm_count() -> int:
     return 0
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _decode_attn_unbatched(
     q,  # [kv_heads, qhead_per_kvhead, head_dim]
     k,  # [k_seq_len, kv_heads, head_dim]

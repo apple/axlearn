@@ -12,7 +12,10 @@ from jax import numpy as jnp
 from axlearn.common import utils
 from axlearn.common.config import ConfigOr, maybe_instantiate
 from axlearn.common.metrics import MetricAccumulator
-from axlearn.common.update_transformation import ForwardFn, ForwardOutputs
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
+    ForwardFn,
+    ForwardOutputs,
+)
 from axlearn.common.utils import Nested, Tensor
 
 

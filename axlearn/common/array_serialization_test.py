@@ -20,7 +20,6 @@ import pytest
 import tensorstore as ts
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
-from jax.sharding import PositionalSharding
 
 from axlearn.common import array_serialization
 from axlearn.common.array_serialization import (
@@ -91,8 +90,9 @@ class SerializerTest(parameterized.TestCase):
             if jax.device_count() != 8 or jax.process_count() != 1:
                 self.skipTest("Incorrect device count for mesh.")
             devices = mesh_utils.create_device_mesh((8,))
-            sharding = PositionalSharding(devices)
-            arr = jax.device_put(single_device_arr, sharding.reshape(4, 2).replicate(0))
+            mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+            sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, "y"))
+            arr = jax.device_put(single_device_arr, sharding)
             return arr
         return single_device_arr
 
@@ -312,7 +312,8 @@ class SerializerTest(parameterized.TestCase):
             )
 
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
+        mesh = jax.sharding.Mesh(devices, "x")
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(("x",)))
         data = [jax.device_put(arr, sharding) for arr in arrays]
 
         # create a temporary tensorstore spec for the arrays
@@ -390,11 +391,10 @@ class SerializerTest(parameterized.TestCase):
         deserialize_specs = captured_specs[-len(data) :]
         self.assertGreater(len(deserialize_specs), 0)
         for spec in deserialize_specs:
-            # gcs_grpc driver should be used when either:
-            # - JAX_PLATFORMS is "proxy" (running on GCP/Pathways), OR
+            # gcs_grpc driver should be used when:
             # - ENABLE_GCS_GRPC is "true" (explicit opt-in)
             # Otherwise, gcs driver should be used (no change)
-            should_use_grpc = jax_platforms == "proxy" or enable_gcs_grpc == "true"
+            should_use_grpc = enable_gcs_grpc == "true"
             expected_driver = "gcs_grpc" if should_use_grpc else "gcs"
             self.assertEqual(spec["kvstore"]["driver"], expected_driver)
         # Verify the deserialized data matches the original data
@@ -470,9 +470,10 @@ class SerializerTest(parameterized.TestCase):
 
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
+        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None, "y"))
 
-        arr = jax.device_put(single_device_arr, sharding.reshape(4, 2).replicate(0))
+        arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
         self.assertEqual(replica_count[((None, None, None), (0, 512, None))], 4)
@@ -490,9 +491,10 @@ class SerializerTest(parameterized.TestCase):
             self.skipTest("Incorrect device count for mesh.")
         single_device_arr = jnp.arange(0, 1024 * 1024).reshape(1024, 1024)
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
+        mesh = jax.sharding.Mesh(devices.reshape((4, 2)), ("x", "y"))
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("x", "y"))
 
-        arr = jax.device_put(single_device_arr, sharding.reshape(4, 2))
+        arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
         self.assertEqual(replica_count[((0, 256, None), (0, 512, None))], 1)
@@ -513,9 +515,10 @@ class SerializerTest(parameterized.TestCase):
             self.skipTest("Incorrect device count for mesh.")
         single_device_arr = jnp.arange(0, sz)
         devices = mesh_utils.create_device_mesh((8,))
-        sharding = PositionalSharding(devices)
+        mesh = jax.sharding.Mesh(devices, "x")
+        sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(None))
 
-        arr = jax.device_put(single_device_arr, sharding.replicate(0))
+        arr = jax.device_put(single_device_arr, sharding)
 
         replica_count = _num_replicas_per_shard(arr)
         # Fully replicated on 8 devices.

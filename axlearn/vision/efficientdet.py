@@ -175,9 +175,11 @@ class PredictionHead(BaseLayer):
             x = inputs[level]
             for layer in range(cfg.num_layers):
                 if cfg.conv is not None:
+                    # pylint: disable-next=contextmanager-generator-missing-cleanup
                     with _get_weight_shared_module(f"conv{layer}", cfg.conv_weight_sharing) as conv:
                         x = conv(x)
                 if cfg.norm is not None:
+                    # pylint: disable-next=contextmanager-generator-missing-cleanup
                     with _get_weight_shared_module(f"norm{layer}", cfg.norm_weight_sharing) as norm:
                         x = norm(x)
                 x = get_activation_fn(cfg.activation)(x)

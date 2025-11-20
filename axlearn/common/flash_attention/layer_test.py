@@ -537,6 +537,8 @@ class TestFlashAttention(TestCase):
         input_dtype=[jnp.bfloat16, jnp.float32],
         dropout_rate=[0.0, 0.1],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_forward(
         self,
         batch,
@@ -588,6 +590,7 @@ class TestFlashAttention(TestCase):
                 num_kv_heads=num_kv_heads,
                 per_head_dim=per_head_dim,
                 mesh_axis_names=mesh_axis_names,
+                # pylint: disable-next=possibly-used-before-assignment
                 mask=mask,
                 dropout_rate=dropout_rate,
                 tpu_block_size=128,
@@ -638,6 +641,8 @@ class TestFlashAttention(TestCase):
         set_layer_bias_recursively=[False, True],
         dropout_rate=[0.0, 0.1],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_backward(
         self,
         batch,
@@ -764,6 +769,8 @@ class TestFlashAttention(TestCase):
         attn_type=["causal", "sliding_window", "paged"],
         dtype=[jnp.float32, jnp.bfloat16],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_extend_step(
         self,
         batch,
@@ -811,6 +818,7 @@ class TestFlashAttention(TestCase):
                 num_kv_heads=num_kv_heads,
                 per_head_dim=per_head_dim,
                 mesh_axis_names=mesh_axis_names,
+                # pylint: disable-next=possibly-used-before-assignment
                 mask=mask,
                 kv_cache=kv_cache,
                 inference=True,
@@ -985,6 +993,8 @@ class TestFlashAttention(TestCase):
         attn_type=["full", "causal"],
         input_dtype=[jnp.bfloat16, jnp.float32],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_logit_sink(
         self,
         batch,

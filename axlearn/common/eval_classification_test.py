@@ -52,7 +52,7 @@ def _compute_metrics(
         calculator_cfg: A subclass of ClassificationMetricCalculator.Config used to
             instantiate the metric calculator.
     Returns:
-        "summaries": a Dict of WeightedScalar values computed by
+        "summaries": a Dict of WeightedSummary values computed by
             A subclass of ClassificationMetricCalculator.
     """
     with jax.sharding.Mesh(

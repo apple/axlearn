@@ -25,7 +25,7 @@ from axlearn.common.config import InstantiableConfig, config_for_class, config_f
 from axlearn.common.decoding import BrevityPenaltyFn, brevity_penalty_fn
 from axlearn.common.input_fake import fake_source
 from axlearn.common.input_tf_data import with_processor
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import MetricSummary, WeightedSummary
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import as_tensor
 
@@ -125,7 +125,7 @@ def _compute_metrics(
     vocab_file: str,
     num_decodes: int = 1,
     brevity_penalty: Optional[BrevityPenaltyFn] = None,
-) -> dict[str, WeightedScalar]:
+) -> dict[str, MetricSummary]:
     max_decode_len = 32
     with jax.sharding.Mesh(mesh_utils.create_device_mesh((1, 1)), ("data", "model")):
         model = _DummyAsrModel.default_config().set(name="test-model").instantiate(parent=None)
@@ -235,11 +235,11 @@ class WordErrorRateMetricCalculatorTest(TestCase):
                 ],
                 num_decodes=2,
                 expected={
-                    "word_errors/wer": WeightedScalar(4.0 / 14, 14),
-                    "word_errors/deletions": WeightedScalar(2.0 / 14, 14),
-                    "word_errors/insertions": WeightedScalar(1.0 / 14, 14),
-                    "word_errors/substitutions": WeightedScalar(1.0 / 14, 14),
-                    "word_errors/sentence_accuracy": WeightedScalar(1.0 / 5, 5),
+                    "word_errors/wer": WeightedSummary(4.0 / 14, 14),
+                    "word_errors/deletions": WeightedSummary(2.0 / 14, 14),
+                    "word_errors/insertions": WeightedSummary(1.0 / 14, 14),
+                    "word_errors/substitutions": WeightedSummary(1.0 / 14, 14),
+                    "word_errors/sentence_accuracy": WeightedSummary(1.0 / 5, 5),
                 },
                 vocab_file=_1K_VOCAB_FILE,
             ),
@@ -259,11 +259,11 @@ class WordErrorRateMetricCalculatorTest(TestCase):
                 ],
                 num_decodes=1,
                 expected={
-                    "word_errors/wer": WeightedScalar(3.0 / 7, 7),
-                    "word_errors/deletions": WeightedScalar(0.0 / 7, 7),
-                    "word_errors/insertions": WeightedScalar(1.0 / 7, 7),
-                    "word_errors/substitutions": WeightedScalar(2.0 / 7, 7),
-                    "word_errors/sentence_accuracy": WeightedScalar(1.0 / 3, 3),
+                    "word_errors/wer": WeightedSummary(3.0 / 7, 7),
+                    "word_errors/deletions": WeightedSummary(0.0 / 7, 7),
+                    "word_errors/insertions": WeightedSummary(1.0 / 7, 7),
+                    "word_errors/substitutions": WeightedSummary(2.0 / 7, 7),
+                    "word_errors/sentence_accuracy": WeightedSummary(1.0 / 3, 3),
                 },
                 vocab_file=_32K_VOCAB_FILE,
             ),
@@ -273,11 +273,11 @@ class WordErrorRateMetricCalculatorTest(TestCase):
                 hypotheses=["INVALID", "", "", "HELLO"],
                 num_decodes=2,
                 expected={
-                    "word_errors/wer": WeightedScalar(1.0 / 1, 1),
-                    "word_errors/deletions": WeightedScalar(1.0 / 1, 1),
-                    "word_errors/insertions": WeightedScalar(0.0 / 1, 1),
-                    "word_errors/substitutions": WeightedScalar(0.0 / 1, 1),
-                    "word_errors/sentence_accuracy": WeightedScalar(0.0 / 1, 1),
+                    "word_errors/wer": WeightedSummary(1.0 / 1, 1),
+                    "word_errors/deletions": WeightedSummary(1.0 / 1, 1),
+                    "word_errors/insertions": WeightedSummary(0.0 / 1, 1),
+                    "word_errors/substitutions": WeightedSummary(0.0 / 1, 1),
+                    "word_errors/sentence_accuracy": WeightedSummary(0.0 / 1, 1),
                 },
                 vocab_file=_1K_VOCAB_FILE,
             ),
@@ -288,7 +288,7 @@ class WordErrorRateMetricCalculatorTest(TestCase):
         hypotheses: list[str],
         references: list[str],
         num_decodes: int,
-        expected: dict[str, WeightedScalar],
+        expected: dict[str, MetricSummary],
         vocab_file: str,
     ):
         actual = _compute_metrics(
@@ -302,13 +302,19 @@ class WordErrorRateMetricCalculatorTest(TestCase):
 
         # Without brevity penalty, outputs match exactly.
         outputs = _compute_metrics(hypotheses, references, vocab_file=_1K_VOCAB_FILE)
-        self.assertNestedAllClose(outputs["word_errors/wer"].mean, 0.0)
-        self.assertNestedAllClose(outputs["word_errors/sentence_accuracy"].mean, 1.0)
+        self.assertNestedAllClose(
+            outputs["word_errors/wer"].mean, 0.0  # pytype: disable=attribute-error
+        )
+        self.assertNestedAllClose(
+            outputs["word_errors/sentence_accuracy"].mean, 1.0  # pytype: disable=attribute-error
+        )
 
         # With brevity penalty, DummyModel should emit fewer tokens.
         brevity_penalty = brevity_penalty_fn(alpha=0.9, bp_type="t5")
         outputs = _compute_metrics(
             hypotheses, references, brevity_penalty=brevity_penalty, vocab_file=_1K_VOCAB_FILE
         )
-        self.assertGreater(outputs["word_errors/wer"].mean, 0.0)
-        self.assertNestedAllClose(outputs["word_errors/sentence_accuracy"].mean, 0.0)
+        self.assertGreater(outputs["word_errors/wer"].mean, 0.0)  # pytype: disable=attribute-error
+        self.assertNestedAllClose(
+            outputs["word_errors/sentence_accuracy"].mean, 0.0  # pytype: disable=attribute-error
+        )

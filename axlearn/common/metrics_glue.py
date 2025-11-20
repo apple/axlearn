@@ -11,7 +11,7 @@ import jax.numpy as jnp
 
 from axlearn.common.config import REQUIRED, Configurable, Required, config_class
 from axlearn.common.evaler import ModelSummaryAccumulator
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import MetricSummary, WeightedSummary
 from axlearn.common.metrics_classification import f_score
 from axlearn.common.metrics_correlation import (
     matthews_corrcoef,
@@ -58,7 +58,7 @@ class GLUEMetricAccumulator(Configurable):
         self._gt.append(target_labels)
         self._mask.append(mask)
 
-    def summaries(self) -> dict[str, WeightedScalar]:
+    def summaries(self) -> dict[str, MetricSummary]:
         preds = jnp.hstack(self._preds)
         gt = jnp.hstack(self._gt)
         mask = jnp.hstack(self._mask)
@@ -112,7 +112,7 @@ class GLUEMetricCalculator(ModelSummaryAccumulator):
         )
 
         num_targets = live_targets.sum()
-        summaries["loss"] = WeightedScalar(loss, num_targets)
+        summaries["loss"] = WeightedSummary(loss, num_targets)
         return dict(
             replicated=dict(
                 prng_key=next_key,
@@ -128,7 +128,7 @@ def glue_metrics(
     target_labels: Tensor,
     preds: Tensor,
     mask: Tensor,
-) -> dict[str, WeightedScalar]:
+) -> dict[str, MetricSummary]:
     """Computes the corresponding metrics for tasks.
 
     Args:
@@ -142,26 +142,26 @@ def glue_metrics(
 
     Returns:
         A dict with metric names as keys and corresponding metric values as values.
-        Each metric value is a WeightedScalar.
+        Each metric value is a WeightedSummary.
     """
     summaries_dict = {}
     num_targets = mask.sum()
 
     if task == "stsb":
-        summaries_dict["pearson_corr"] = WeightedScalar(
+        summaries_dict["pearson_corr"] = WeightedSummary(
             pearson_corrcoef(preds, target_labels, weight=mask), num_targets
         )
-        summaries_dict["spearman_corr"] = WeightedScalar(
+        summaries_dict["spearman_corr"] = WeightedSummary(
             spearman_corrcoef(preds, target_labels, mask=mask), num_targets
         )
     else:
         accuracy = jnp.sum(mask * (preds == target_labels)) / jnp.maximum(num_targets, 1)
-        summaries_dict["accuracy"] = WeightedScalar(accuracy, num_targets)
+        summaries_dict["accuracy"] = WeightedSummary(accuracy, num_targets)
 
     # Add additional metrics for some tasks.
     if task == "cola":
         # Compute metrics on the normalized values.
-        summaries_dict["matthews_corr"] = WeightedScalar(
+        summaries_dict["matthews_corr"] = WeightedSummary(
             matthews_corrcoef(
                 target_labels,
                 preds,
@@ -174,7 +174,7 @@ def glue_metrics(
         invalid_mask = jnp.logical_and(preds != 0, preds != 1)
         preds = jnp.where(invalid_mask, 1 - target_labels, preds)
 
-        summaries_dict["f1"] = WeightedScalar(
+        summaries_dict["f1"] = WeightedSummary(
             f_score(target_labels, preds, beta=1, weight=mask), num_targets
         )
     return summaries_dict

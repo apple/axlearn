@@ -120,6 +120,15 @@ class PathwaysReplicatedJobTest(TestCase):
                             }
                         },
                     )
+                if env_pair["name"] == "REPLICA_ID":
+                    self.assertEqual(
+                        env_pair["valueFrom"],
+                        {
+                            "fieldRef": {
+                                "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+                            }
+                        },
+                    )
                 if env_pair["name"] == "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD":
                     self.assertEqual(env_pair["value"], "1")
                 if env_pair["name"] == "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY":
@@ -299,13 +308,13 @@ class PathwaysReplicatedJobTest(TestCase):
         with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 40,
+                name="a" * 49,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
 
             with self.assertRaisesRegex(
-                ValueError, r"pathways-head-1-1-abcde exceeds max \(63\) by 1 chars."
+                ValueError, r"pwhd-1-1-abcde exceeds max \(63\) by 1 chars."
             ):
                 _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
@@ -313,15 +322,50 @@ class PathwaysReplicatedJobTest(TestCase):
         with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 38,
+                name="a" * 49,
+                command="test_command",
+                output_dir="FAKE",
+            )
+
+            # Both head and worker have the same name length, so head validation runs first
+            with self.assertRaisesRegex(
+                ValueError, r"pwhd-1-1-abcde exceeds max \(63\) by 1 chars."
+            ):
+                _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+    def test_build_pathways_head_pod_with_gcsfuse(self):
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                gcsfuse_mount_spec=["mount_path=/tmp/gcsfuse", "gcs_path=gs://test-bucket/path"],
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
                 command="test_command",
                 output_dir="FAKE",
             ).instantiate(bundler=bundler_cfg.instantiate())
 
-            with self.assertRaisesRegex(
-                ValueError, r"pathways-worker-1-2-abcde exceeds max \(63\) by 1 chars."
-            ):
-                _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            # pylint: disable-next=protected-access
+            pod = builder._build_pathways_head_pod()
+            pod_spec = pod["spec"]
+            annotations = pod["metadata"]["annotations"]
+
+            # Verify gcsfuse annotations are set correctly
+            self.assertEqual(annotations.get("gke-gcsfuse/volumes"), "true")
+            self.assertIn("gke-gcsfuse/cpu-request", annotations)
+            self.assertIn("gke-gcsfuse/memory-request", annotations)
+            self.assertIn("gke-gcsfuse/ephemeral-storage-request", annotations)
+            # Verify limit annotations are set to "0"
+            self.assertEqual(annotations.get("gke-gcsfuse/cpu-limit"), "0")
+            self.assertEqual(annotations.get("gke-gcsfuse/memory-limit"), "0")
+            self.assertEqual(annotations.get("gke-gcsfuse/ephemeral-storage-limit"), "0")
+
+            # Verify shared memory volume is present
+            volume_names = [v["name"] for v in pod_spec["volumes"]]
+            self.assertIn("shared-memory", volume_names)
 
 
 class PathwaysMultiheadReplicatedJobTest(TestCase):
@@ -383,37 +427,33 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
                     annotations.get("axlearn/replicatedjob-load-balancer-port", {}),
                 )
 
-                if replicated_job_name.startswith("pathways-head"):
+                if replicated_job_name.startswith("pwhd"):
                     self.assertEqual(replicated_job["replicas"], num_replicas)
-                elif replicated_job_name.startswith("pathways-worker"):
+                elif replicated_job_name.startswith("pwwk"):
                     self.assertEqual(replicated_job["replicas"], 1)
 
     def test_validate_head_name(self):
         with self._job_config(CloudBuildBundler, 2) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 40,
+                name="a" * 49,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
 
-        with self.assertRaisesRegex(
-            ValueError, r"pathways-head-1-1-abcde exceeds max \(63\) by 1 chars."
-        ):
+        with self.assertRaisesRegex(ValueError, r"pwhd-1-1-abcde exceeds max \(63\) by 1 chars."):
             _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
     def test_validate_worker_name(self):
         with self._job_config(CloudBuildBundler, 2) as (cfg, bundler_cfg):
             cfg.inner.set(
                 project="test-project",
-                name="a" * 36,
+                name="a" * 47,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
 
-        with self.assertRaisesRegex(
-            ValueError, r"pathways-worker-2-0-2-abcde exceeds max \(63\) by 1 chars."
-        ):
+        with self.assertRaisesRegex(ValueError, r"pwwk-2-0-2-abcde exceeds max \(63\) by 1 chars."):
             _ = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
 

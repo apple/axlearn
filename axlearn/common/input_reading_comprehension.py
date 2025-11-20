@@ -595,6 +595,8 @@ def _get_doc_subtoken_chunks(
     return doc_subtoken_chunks
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _featurize_chunks(
     tokenizer: TokenizerForReadingComprehension,
     model_input_names: list[str],

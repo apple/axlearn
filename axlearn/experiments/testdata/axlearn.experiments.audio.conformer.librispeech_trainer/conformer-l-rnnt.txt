@@ -24,6 +24,7 @@ evalers['eval_train'].input.processor.vocab_cfg.extra_ids: 0
 evalers['eval_train'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['eval_train'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['eval_train'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['eval_train'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['eval_train'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['eval_train'].input.source.download: False
 evalers['eval_train'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -51,6 +52,7 @@ evalers['eval_dev_clean'].input.processor.vocab_cfg.extra_ids: 0
 evalers['eval_dev_clean'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['eval_dev_clean'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['eval_dev_clean'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['eval_dev_clean'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['eval_dev_clean'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['eval_dev_clean'].input.source.download: False
 evalers['eval_dev_clean'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -78,6 +80,7 @@ evalers['eval_dev_other'].input.processor.vocab_cfg.extra_ids: 0
 evalers['eval_dev_other'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['eval_dev_other'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['eval_dev_other'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['eval_dev_other'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['eval_dev_other'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['eval_dev_other'].input.source.download: False
 evalers['eval_dev_other'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -105,6 +108,7 @@ evalers['decoder_dev_clean'].input.processor.vocab_cfg.extra_ids: 0
 evalers['decoder_dev_clean'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_dev_clean'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['decoder_dev_clean'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_dev_clean'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['decoder_dev_clean'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['decoder_dev_clean'].input.source.download: False
 evalers['decoder_dev_clean'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -122,6 +126,7 @@ evalers['decoder_dev_clean'].metric_calculator.vocab.extra_ids: 0
 evalers['decoder_dev_clean'].metric_calculator.vocab.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_dev_clean'].metric_calculator.vocab.reverse_extra_ids: True
 evalers['decoder_dev_clean'].metric_calculator.vocab.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_dev_clean'].metric_calculator.vocab.use_fast_tokenizer: False
 evalers['decoder_dev_clean'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['decoder_dev_clean'].summary_writer.write_every_n_steps: 1
 evalers['decoder_dev_other'].eval_dtype: 'jax.numpy.float32'
@@ -140,6 +145,7 @@ evalers['decoder_dev_other'].input.processor.vocab_cfg.extra_ids: 0
 evalers['decoder_dev_other'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_dev_other'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['decoder_dev_other'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_dev_other'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['decoder_dev_other'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['decoder_dev_other'].input.source.download: False
 evalers['decoder_dev_other'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -157,6 +163,7 @@ evalers['decoder_dev_other'].metric_calculator.vocab.extra_ids: 0
 evalers['decoder_dev_other'].metric_calculator.vocab.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_dev_other'].metric_calculator.vocab.reverse_extra_ids: True
 evalers['decoder_dev_other'].metric_calculator.vocab.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_dev_other'].metric_calculator.vocab.use_fast_tokenizer: False
 evalers['decoder_dev_other'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['decoder_dev_other'].summary_writer.write_every_n_steps: 1
 evalers['decoder_test_clean'].eval_dtype: 'jax.numpy.float32'
@@ -175,6 +182,7 @@ evalers['decoder_test_clean'].input.processor.vocab_cfg.extra_ids: 0
 evalers['decoder_test_clean'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_test_clean'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['decoder_test_clean'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_test_clean'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['decoder_test_clean'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['decoder_test_clean'].input.source.download: False
 evalers['decoder_test_clean'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -192,6 +200,7 @@ evalers['decoder_test_clean'].metric_calculator.vocab.extra_ids: 0
 evalers['decoder_test_clean'].metric_calculator.vocab.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_test_clean'].metric_calculator.vocab.reverse_extra_ids: True
 evalers['decoder_test_clean'].metric_calculator.vocab.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_test_clean'].metric_calculator.vocab.use_fast_tokenizer: False
 evalers['decoder_test_clean'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['decoder_test_clean'].summary_writer.write_every_n_steps: 1
 evalers['decoder_test_other'].eval_dtype: 'jax.numpy.float32'
@@ -210,6 +219,7 @@ evalers['decoder_test_other'].input.processor.vocab_cfg.extra_ids: 0
 evalers['decoder_test_other'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_test_other'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['decoder_test_other'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_test_other'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['decoder_test_other'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['decoder_test_other'].input.source.download: False
 evalers['decoder_test_other'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -227,6 +237,7 @@ evalers['decoder_test_other'].metric_calculator.vocab.extra_ids: 0
 evalers['decoder_test_other'].metric_calculator.vocab.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_test_other'].metric_calculator.vocab.reverse_extra_ids: True
 evalers['decoder_test_other'].metric_calculator.vocab.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_test_other'].metric_calculator.vocab.use_fast_tokenizer: False
 evalers['decoder_test_other'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['decoder_test_other'].summary_writer.write_every_n_steps: 1
 evalers['decoder_train'].eval_dtype: 'jax.numpy.float32'
@@ -245,6 +256,7 @@ evalers['decoder_train'].input.processor.vocab_cfg.extra_ids: 0
 evalers['decoder_train'].input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_train'].input.processor.vocab_cfg.reverse_extra_ids: True
 evalers['decoder_train'].input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_train'].input.processor.vocab_cfg.use_fast_tokenizer: False
 evalers['decoder_train'].input.source.dataset_name: 'librispeech:2.1.0'
 evalers['decoder_train'].input.source.download: False
 evalers['decoder_train'].input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'
@@ -262,6 +274,7 @@ evalers['decoder_train'].metric_calculator.vocab.extra_ids: 0
 evalers['decoder_train'].metric_calculator.vocab.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 evalers['decoder_train'].metric_calculator.vocab.reverse_extra_ids: True
 evalers['decoder_train'].metric_calculator.vocab.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+evalers['decoder_train'].metric_calculator.vocab.use_fast_tokenizer: False
 evalers['decoder_train'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
 evalers['decoder_train'].summary_writer.write_every_n_steps: 1
 input.batcher.fn: 'axlearn.common.input_tf_data.batch'
@@ -276,6 +289,7 @@ input.processor.vocab_cfg.extra_ids: 0
 input.processor.vocab_cfg.klass: 'seqio.vocabularies.SentencePieceVocabulary'
 input.processor.vocab_cfg.reverse_extra_ids: True
 input.processor.vocab_cfg.sentencepiece_model_file: '$DATA_DIR/tokenizers/sentencepiece/librispeech_bpe_1024.model'
+input.processor.vocab_cfg.use_fast_tokenizer: False
 input.source.dataset_name: 'librispeech:2.1.0'
 input.source.download: False
 input.source.fn: 'axlearn.common.input_tf_data.tfds_dataset'

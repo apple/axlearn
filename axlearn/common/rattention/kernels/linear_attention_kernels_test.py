@@ -56,6 +56,8 @@ class LinearAttentionPallasKernelTest(TestCase):
         chunk_size=[128, 256],
         seed=[0, 1],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_rla_forward_and_backward(
         self,
         batch_size,

@@ -1,7 +1,6 @@
 # Copyright © 2024 Apple Inc.
 """Runtime and compiler options for JAX/XLA."""
 
-import math
 import os
 
 # This module must not depend on any jax/axlearn modules so that
@@ -62,6 +61,15 @@ def default_xla_options(
             xla_enable_async_all_gather="true",  # Allow async all-gather.
             xla_enable_async_collective_permute="true",  # Allow async collective permute.
         )
+
+    if version == "v5p":
+        # These flags enable SparseCore (SC).
+        options.update(
+            xla_tpu_use_tc_device_shape_on_sc="true",
+            xla_sc_enable_instruction_fusion="false",
+            xla_sc_disable_megacore_partitioning="true",
+        )
+
     if version == "v6e":
         options.update(
             # Flag controlling the maximum number of overlapping host offloadings.
@@ -79,11 +87,6 @@ def default_xla_options(
             xla_latency_hiding_scheduler_rerun=2,
             # Improved performance for v6e.
             xla_tpu_scoped_vmem_limit_kib=98304,
-            # For megascale performance.
-            xla_jf_crs_combiner_threshold_count=10,
-            # TODO(hanzhi-zhou): temporary workaround to avoid PCIe overload when using multi-slice
-            # v6e training caused by allreduce over DCN. This flag doesn't impact performance.
-            xla_tpu_iova_dma_chunk_size_bytes=1048576,
             # Disable collective matmul. Collective matmul could negatively affect performance in
             # some cases. Even in cases where collective matmul provides gains, the gains are
             # marginal on v6e due to the high arithmetic intensity.
@@ -101,8 +104,9 @@ def default_xla_options(
         # fusion and allreduce SC offloading by default.
         options.update(
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
-            # Always enable SparseCore offloading for allreduce.
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
+            # TODO(changlan): Review and enable it later.
+            # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
 
         options.update(
@@ -162,8 +166,6 @@ def default_xla_options(
             # TODO(ethanli): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
             megascale_debug_port="8081",
-            # Observed a lot of deadline exceeded error. Default is 45s.
-            megascale_send_rpc_timeout="5m",
         )
         # pytype: enable=wrong-arg-types
 
@@ -175,8 +177,11 @@ def default_xla_options(
         if isinstance(v, (int, bool)):
             continue
         elif isinstance(v, str):
-            # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str
+            # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str.
             if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+                continue
+            # Allow paths.
+            if v.startswith("/"):
                 continue
             else:
                 raise ValueError(f"Invalid string value for option {k}: {v}")
@@ -187,7 +192,7 @@ def default_xla_options(
 
 
 def _apply_overrides_from_env(
-    options: dict[str, Union[str, bool, int]]
+    options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Apply environment variable overrides to XLA options.
 
@@ -270,7 +275,7 @@ class NotTpuError(ValueError):
 def infer_tpu_type(instance_type: str) -> str:
     """Infers tpu type (e.g. v4-8 or v6e-8-1) from instance type
     (e.g. tpu-v4-8, v4-8, tpu-v6e-8-1 or v6e-8-1)."""
-    if not (instance_type and re.fullmatch(r"(tpu-)?v.+-\d+", instance_type)):
+    if not (instance_type and re.fullmatch(r"(tpu-)?v?.+-\d+", instance_type)):
         raise NotTpuError(f"Invalid TPU instance: {instance_type}")
     return instance_type.replace("tpu-", "")
 
@@ -362,53 +367,79 @@ def infer_xsc_compiler_options(
 
 
 _TPU_VERSION_ALIASES = {"v5e": "v5litepod"}
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e", "7x")
 
 
 def infer_xla_performance_flags(
     *, mesh_shape: "MeshShape", mesh_axis_names: Sequence[str], device_kind: str
 ) -> dict[str, str]:
     """Performs automatic XLA flag tuning based on mesh shape and device kind."""
-    if device_kind not in ["TPU v6e", "TPU v6 lite"]:
+
+    logging.info(
+        "Inferring XLA flags for mesh %s (%s) and device %s",
+        mesh_shape,
+        mesh_axis_names,
+        device_kind,
+    )
+
+    if device_kind == "TPU v6 lite":
+        device_kind = "TPU v6e"
+
+    if device_kind not in ["TPU v6e", "TPU v5p"]:
         return {}
+
     # Sparse core offloading all collectives can improve performance of model parallelism on
     # v6e. However, it negative impacts the performance of some pure FSDP runs by about 6%.
     # Therefore, we enable them selectively on mesh shapes that have model parallelism and are
     # verified to have improved performance with sparse core offloading.
     # TODO(hanzhi-zhou): Check if these flags also improve performance on fsdp=16, model=16.
-    mesh_configurations_for_sparse_core_offloading = []
-    for a, b in [(32, 8), (64, 4), (16, 8)]:
-        mesh_configurations_for_sparse_core_offloading.append(dict(fsdp=a, track=b))
-        mesh_configurations_for_sparse_core_offloading.append(dict(fsdp=a, model=b))
-    current_configuration = {}
+    sparse_core_offloading_configs = [
+        dict(mesh=(32, 8), kind="TPU v6e", native=False),  # 16x16 (non-native)
+        dict(mesh=(64, 4), kind="TPU v6e", native=False),  # 16x16 (non-native)
+        dict(mesh=(16, 8), kind="TPU v6e", native=True),  # 8x16 (native)
+        dict(mesh=(128, 16), kind="TPU v5p", native=True),  # 8x16x16 (native)
+        dict(mesh=(256, 8), kind="TPU v5p", native=True),  # 8x16x16 (native)
+    ]
+
+    current_mesh = {}
     for name, size in zip(mesh_axis_names, mesh_shape):
         if name in ("fsdp", "track", "model") and size != 1:
-            current_configuration[name] = size
-    if current_configuration in mesh_configurations_for_sparse_core_offloading:
-        flags = dict(
-            # Must disable continuation fusion to enable sparse core offloading.
-            xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
-            xla_tpu_enable_async_collective_fusion_fuse_all_reduce="false",
-            xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
-            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
-            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
-            xla_tpu_enable_all_gather_offload_tracing="true",
-            xla_tpu_enable_reduce_scatter_offload_tracing="true",
-            xla_tpu_enable_all_reduce_offload_tracing="true",
-        )
-        # 64x4 and 32x8 are non-native mesh shapes for v6e-256. The only native native for v6e-256
-        # is 16x16 (or 256). The available bandwidth of non-native mesh shapes is half of that
-        # compared to the native mesh shape. Specify the latency modifier so that the latency
-        # hiding scheduler can model the actual latency better.
-        if math.prod(current_configuration.values()) == 256:
-            flags.update(xla_tpu_sparse_core_all_gather_latency_multiplier="2")
-        logging.log_first_n(
-            logging.INFO,
-            "Adding new XLA flags for %s:\n%s",
-            1,
-            str(current_configuration),
-            str(flags),
-        )
-        return flags
+            current_mesh[name] = size
+
+    if "fsdp" in current_mesh and "model" in current_mesh:
+        current_mesh = (current_mesh["fsdp"], current_mesh["model"])
+    elif "fsdp" in current_mesh and "track" in current_mesh:
+        current_mesh = (current_mesh["fsdp"], current_mesh["track"])
+    else:
+        current_mesh = None
+
+    for config in sparse_core_offloading_configs:
+        if current_mesh == config["mesh"] and device_kind == config["kind"]:
+            flags = dict(
+                # Must disable continuation fusion to enable sparse core offloading.
+                xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
+                xla_tpu_enable_async_collective_fusion_fuse_all_reduce="false",
+                xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
+                xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+                xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+                # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
+                # TODO(changlan): Review and enable it later.
+                # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+                xla_tpu_enable_all_gather_offload_tracing="true",
+                xla_tpu_enable_reduce_scatter_offload_tracing="true",
+                xla_tpu_enable_all_reduce_offload_tracing="true",
+            )
+            # The available bandwidth of non-native mesh shapes is half of that compared to
+            # the native mesh shape. Specify the latency modifier so that the latency hiding
+            # scheduler can model the actual latency better.
+            if not config["native"]:
+                flags.update(xla_tpu_sparse_core_all_gather_latency_multiplier="2")
+            logging.log_first_n(
+                logging.INFO,
+                "Adding new XLA flags for %s:\n%s",
+                1,
+                str(config),
+                str(flags),
+            )
+            return flags
     return {}

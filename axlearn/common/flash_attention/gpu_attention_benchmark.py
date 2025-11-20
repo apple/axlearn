@@ -203,6 +203,8 @@ def measure(f: BenchFn, *args: Tensor) -> tuple[Tensor, float]:
     return outs, float(elapsed)
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def bench_flash_attention(
     library: str,
     bs: int,

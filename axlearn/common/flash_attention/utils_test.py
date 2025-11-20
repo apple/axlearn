@@ -131,6 +131,8 @@ class TestFlashAttention(TestCase):
         input_dtype=[jnp.float32],
     )
     @pytest.mark.for_8_devices
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_forward(
         self,
         batch,
@@ -181,6 +183,8 @@ class TestFlashAttention(TestCase):
                 bias=bias,
                 tpu_block_size=128,
             )
+            if test_fn is None:
+                raise ValueError("Attention implementation is not available.")
             with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
                 prng_key = jax.random.PRNGKey(0)
                 input_batch = dict(
@@ -192,7 +196,7 @@ class TestFlashAttention(TestCase):
                     logit_sink=None,
                 )
                 ref_out = ref_fn(input_batch)
-                test_out = test_fn(input_batch)
+                test_out = test_fn.fn(input_batch)
                 self.assertNestedAllClose(ref_out, test_out, atol=0.015)
         jax.clear_caches()
 
@@ -206,6 +210,8 @@ class TestFlashAttention(TestCase):
         page_size=[16, None],
     )
     @pytest.mark.for_8_devices
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_decoding(
         self,
         batch,
@@ -275,6 +281,8 @@ class TestFlashAttention(TestCase):
                 bias=bias,
                 tpu_block_size=128,
             )
+            if fwd_fn is None:
+                raise ValueError("Attention implementation is not available.")
             dummy_query_step = query[:, :1]
             decode_fn = utils.flash_attention_implementation(
                 backend,
@@ -299,7 +307,7 @@ class TestFlashAttention(TestCase):
                     bias=bias,
                     logit_sink=None,
                 )
-                fwd_out = fwd_fn(forward_batch)
+                fwd_out = fwd_fn.fn(forward_batch)
                 # Limit generation length to 16 to save test time.
                 query_len = 16
                 query = query[:, :query_len]
@@ -331,7 +339,7 @@ class TestFlashAttention(TestCase):
                         bias=bias_step,
                         logit_sink=None,
                     )
-                    decoding_out = decode_fn(input_batch=decode_batch)
+                    decoding_out = decode_fn.fn(input_batch=decode_batch)
                     decoding_output.append(decoding_out)
                 decoding_output = jnp.concatenate(decoding_output, axis=1)
                 self.assertNestedAllClose(fwd_out, decoding_output, atol=0.02)

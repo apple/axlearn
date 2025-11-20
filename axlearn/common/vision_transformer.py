@@ -529,14 +529,14 @@ def _set_model_config(
     if use_pos_emb:
         encoder_cfg.pos_emb.shape = (seq_len,)
 
-    # pylint: disable=attribute-error
+    # pytype: disable=attribute-error
     if feed_forward_dim is not None:
         encoder_cfg.transformer.layer.feed_forward.hidden_dim = feed_forward_dim
     encoder_cfg.transformer.layer.self_attention.attention.num_heads = num_heads
 
     if atten_logit_cap is not None:
         encoder_cfg.transformer.layer.self_attention.attention.atten_logit_cap = atten_logit_cap
-    # pylint: enable=attribute-error
+    # pytype: enable=attribute-error
 
     set_dropout_rate_recursively(cfg, dropout_rate)
     if peak_stochastic_depth_rate is not None:

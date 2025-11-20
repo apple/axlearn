@@ -59,7 +59,7 @@ class ASRModel(BaseEncoderDecoderModel):
         )
         return dict(logits=logits)
 
-    def forward(
+    def forward(  # pytype: disable=signature-mismatch
         self, input_batch: Nested[Tensor], *, return_aux: bool = False
     ) -> tuple[Tensor, Nested[Tensor]]:
         """Computes loss and predictions (such as logits) in auxiliary outputs.
@@ -95,7 +95,7 @@ class ASRModel(BaseEncoderDecoderModel):
         )
         return loss, aux_outputs if return_aux else {}
 
-    def beam_search_decode(
+    def beam_search_decode(  # pytype: disable=signature-mismatch
         self, input_batch: Nested[Tensor], num_decodes: int, **kwargs
     ) -> DecodeOutputs:
         """Performs beam search decoding.

@@ -471,6 +471,7 @@ class MobileNetsParamConverter(ClassificationModelParamConverter):
                 "bn_pw": MobileNetsParamConverter._params_from_bn(ref.bn2),
             }
         if hasattr(ref, "se"):
+            # pylint: disable-next=possibly-used-before-assignment
             params["se"] = MobileNetsParamConverter._params_from_squeeze_excitation(ref.se)
         return params
 

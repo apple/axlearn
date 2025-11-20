@@ -190,6 +190,8 @@ class TPUReplicatedJobTest(TestCase):
         additional_node_networks=[None, "network-1:subnet-1,network-2:subnet-2"],
         image_id=[None, "my-image-id"],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_build_pod(
         self,
         bundler_cls: type[Bundler],
@@ -357,6 +359,18 @@ class TPUReplicatedJobTest(TestCase):
             self.assertEqual(
                 "status.hostIP",
                 container_env["NODE_IP"]["valueFrom"]["fieldRef"]["fieldPath"],
+            )
+
+            # Verify NUM_REPLICAS in container env.
+            self.assertEqual(
+                "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']",
+                container_env["NUM_REPLICAS"]["valueFrom"]["fieldRef"]["fieldPath"],
+            )
+
+            # Verify REPLICA_ID in container env.
+            self.assertEqual(
+                "metadata.annotations['jobset.sigs.k8s.io/job-index']",
+                container_env["REPLICA_ID"]["valueFrom"]["fieldRef"]["fieldPath"],
             )
 
             # Verify uploader container specs

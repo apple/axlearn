@@ -94,7 +94,7 @@ def create_axlearn_state_dict(axlearn_state: NestedTensor) -> OrderedDict[str, t
     # Note: Python3 dicts preserve insertion order by default.
     state = {
         el[0]: torch.as_tensor(np.array(el[1]))
-        for el in flatten_items(axlearn_state, separator=".")  # pytype: disable=not-callable
+        for el in flatten_items(axlearn_state, separator=".")
     }
     return cast(OrderedDict, state)
 

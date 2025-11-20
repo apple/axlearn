@@ -46,7 +46,7 @@ from axlearn.common.inference_output import (
 )
 from axlearn.common.input_base import Input
 from axlearn.common.layers import Linear
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import REQUIRED, Module, OutputCollection, Required
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.test_utils import DummyForwardModel, TestCase
@@ -87,7 +87,7 @@ class DummyInput(Input):
         yield from it
 
     def dataset(self):
-        cfg: DummyInput.Config = self.config
+        cfg: DummyInput.Config = self.config  # pytype: disable=annotation-type-mismatch
         num_batches = 0
         shape = [cfg.batch_size, *cfg.shape]
         while cfg.total_num_batches is None or num_batches < cfg.total_num_batches:
@@ -132,7 +132,7 @@ class DummyModel(BaseModel):
         inputs = input_batch["inputs"]
         self.forward_dtypes.append(inputs.dtype)
         logits = self.linear(inputs)
-        self.add_summary("model_logits_sum", WeightedScalar(logits.sum(), logits.shape[0]))
+        self.add_summary("model_logits_sum", WeightedSummary(logits.sum(), logits.shape[0]))
         return logits.mean(), {"logits": logits}
 
     # pylint: disable-next=no-self-use,unused-argument
@@ -179,15 +179,15 @@ class DummyMetricCalculator(ModelSummaryAccumulator):
         _, aux_out = model_outputs
         predictions = jax.nn.sigmoid(aux_out["logits"])
         if "mean_prediction" in cfg.metrics:
-            model_output_collection.summaries["mean_prediction"] = WeightedScalar(
+            model_output_collection.summaries["mean_prediction"] = WeightedSummary(
                 jnp.mean(predictions), predictions.shape[0]
             )
         if "min_prediction" in cfg.metrics:
-            model_output_collection.summaries["min_prediction"] = WeightedScalar(
+            model_output_collection.summaries["min_prediction"] = WeightedSummary(
                 jnp.min(predictions), predictions.shape[0]
             )
         if "max_prediction" in cfg.metrics:
-            model_output_collection.summaries["max_prediction"] = WeightedScalar(
+            model_output_collection.summaries["max_prediction"] = WeightedSummary(
                 jnp.max(predictions), predictions.shape[0]
             )
         return model_outputs, model_output_collection
@@ -517,29 +517,29 @@ class ModelSummaryAccumulatorTest(absltest.TestCase):
             update(
                 collection_from(
                     summaries=dict(
-                        a=WeightedScalar(1, 1),
-                        b=dict(b1=WeightedScalar(2, 6), b2=WeightedScalar(3, 12)),
-                        c=WeightedScalar(2, 4),
-                        d=dict(d1=WeightedScalar(1, 1), d2=WeightedScalar(6, 12)),
+                        a=WeightedSummary(1, 1),
+                        b=dict(b1=WeightedSummary(2, 6), b2=WeightedSummary(3, 12)),
+                        c=WeightedSummary(2, 4),
+                        d=dict(d1=WeightedSummary(1, 1), d2=WeightedSummary(6, 12)),
                     )
                 ),
             )
             update(
                 collection_from(
                     summaries=dict(
-                        a=WeightedScalar(3, 1),
-                        b=dict(b1=WeightedScalar(12, 24), b2=WeightedScalar(15, 3)),
-                        c=WeightedScalar(1, 1),
-                        d=dict(d1=WeightedScalar(2, 4), d2=WeightedScalar(1, 4)),
+                        a=WeightedSummary(3, 1),
+                        b=dict(b1=WeightedSummary(12, 24), b2=WeightedSummary(15, 3)),
+                        c=WeightedSummary(1, 1),
+                        d=dict(d1=WeightedSummary(2, 4), d2=WeightedSummary(1, 4)),
                     )
                 ),
             )
             self.assertEqual(
                 {
-                    "a": WeightedScalar(2.0, 2),
-                    "b": {"b1": WeightedScalar(10.0, 30), "b2": WeightedScalar(5.4, 15)},
-                    "c": WeightedScalar(1.8, 5),
-                    "d": {"d1": WeightedScalar(1.8, 5), "d2": WeightedScalar(4.75, 16)},
+                    "a": WeightedSummary(2.0, 2),
+                    "b": {"b1": WeightedSummary(10.0, 30), "b2": WeightedSummary(5.4, 15)},
+                    "c": WeightedSummary(1.8, 5),
+                    "d": {"d1": WeightedSummary(1.8, 5), "d2": WeightedSummary(4.75, 16)},
                 },
                 accumulator.get_summaries(model_params={}, state=state, all_forward_outputs=[]),
             )
@@ -590,7 +590,12 @@ class CompositeMetricCalculatorTest(TestCase):
                     ),
                 ),
             )
-            calculator, model_params, state, outputs = self.setup_model_and_calculator_inputs(
+            (
+                calculator,
+                model_params,
+                state,
+                outputs,
+            ) = self.setup_model_and_calculator_inputs(  # pytype: disable=wrong-arg-types
                 calculator_cfg
             )
 
@@ -615,7 +620,12 @@ class CompositeMetricCalculatorTest(TestCase):
                 ),
             )
 
-            calculator, model_params, state, outputs = self.setup_model_and_calculator_inputs(
+            (
+                calculator,
+                model_params,
+                state,
+                outputs,
+            ) = self.setup_model_and_calculator_inputs(  # pytype: disable=wrong-arg-types
                 calculator_cfg
             )
 
@@ -627,12 +637,12 @@ class CompositeMetricCalculatorTest(TestCase):
             self.assertIn("calculator1/mean_prediction", summaries)
             self.assertIn("calculator2/mean_prediction", summaries)
             self.assertEqual(
-                summaries["calculator1/mean_prediction"].mean,
-                summaries["calculator2/mean_prediction"].mean,
+                summaries["calculator1/mean_prediction"].mean,  # pytype: disable=attribute-error
+                summaries["calculator2/mean_prediction"].mean,  # pytype: disable=attribute-error
             )
             self.assertEqual(
-                summaries["calculator1/mean_prediction"].weight,
-                summaries["calculator2/mean_prediction"].weight,
+                summaries["calculator1/mean_prediction"].weight,  # pytype: disable=attribute-error
+                summaries["calculator2/mean_prediction"].weight,  # pytype: disable=attribute-error
             )
 
     @parameterized.parameters(

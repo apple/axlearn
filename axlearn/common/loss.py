@@ -35,7 +35,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.utils import Tensor
 
@@ -111,8 +111,9 @@ def cross_entropy(
             The per-example loss will be 0 if the corresponding target is masked, or out-of-class
             (i.e. target_labels[i] < 0 or target_labels[i] >= num_classes).
         live_targets: Indicates which examples should contribute to the loss.
-            A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
-            contribute to the loss. If None, infer from 0 <= target_labels < num_classes.
+            A bool, 0/1 int or float Tensor broadcastable to `target_labels`. 1 indicates positions
+            that contribute to the loss. For float, performs weighted sum of the loss. If None,
+            infer from 0 <= target_labels < num_classes.
         z_loss_scale: Coefficient for auxiliary z-loss loss term.
         label_smoothing: The factor to control label smoothing.
         soft_target_labels: Optional labels that are already smoothed/in one-hot form. If provided,
@@ -154,6 +155,7 @@ def cross_entropy(
     )
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < num_classes)
+    live_targets = jnp.broadcast_to(live_targets, per_target_loss.shape)
     live_targets = live_targets.astype(per_target_loss.dtype)
     denominator = jnp.maximum(live_targets.sum(), 1)
     cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / denominator
@@ -188,8 +190,9 @@ def binary_cross_entropy(
         target_labels: An 0/1 int Tensor of the same shape as `logits`.
             The per-example loss will be 0 if the corresponding target is masked.
         live_targets: Indicates which examples should contribute to the loss.
-            A bool or 0/1 Tensor broadcastable to `target_labels`. 1 indicates positions that
-            contribute to the loss. If None, infer from 0 <= target_labels < 2.
+            A bool, 0/1 int or float Tensor broadcastable to `target_labels`. 1 indicates positions
+            that contribute to the loss. For float, performs weighted sum of the loss. If None,
+            infer from 0 <= target_labels < 2.
 
     Returns:
         (loss, all_losses), where
@@ -203,6 +206,7 @@ def binary_cross_entropy(
     per_target_cross_entropy_loss = sigmoid_cross_entropy_with_logits(logits, target_labels)
     if live_targets is None:
         live_targets = jnp.logical_and(0 <= target_labels, target_labels < 2)
+    live_targets = jnp.broadcast_to(live_targets, per_target_cross_entropy_loss.shape)
     live_targets = live_targets.astype(per_target_cross_entropy_loss.dtype)
     binary_cross_entropy_loss = (per_target_cross_entropy_loss * live_targets).sum() / jnp.maximum(
         live_targets.sum(), 1
@@ -330,7 +334,7 @@ def _weighted_mean(
     *,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes the weighted average of arr without dividing by 0.
 
     Args:
@@ -340,7 +344,7 @@ def _weighted_mean(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar with the result.
+        A WeightedSummary with the result.
     """
     if sample_weight is None:
         sample_weight = jnp.array(1.0)
@@ -349,7 +353,7 @@ def _weighted_mean(
     sample_weight = jnp.broadcast_to(sample_weight, arr.shape)
     total_weight = sample_weight.sum()
     loss = jnp.sum(sample_weight * arr) / jnp.maximum(total_weight, eps)
-    return WeightedScalar(loss, total_weight)
+    return WeightedSummary(loss, total_weight)
 
 
 def mean_squared_error(
@@ -357,7 +361,7 @@ def mean_squared_error(
     targets: Tensor,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes mean squared error loss.
 
     Args:
@@ -368,8 +372,8 @@ def mean_squared_error(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar consisting of the loss and the number of examples that contributed to the
-        loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
+        A WeightedSummary consisting of the loss and the number of examples that contributed to the
+        loss. If there are no targets, a WeightedSummary with 0 loss and 0 weight is returned.
     """
     diff = (preds - targets) ** 2
     return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)
@@ -382,7 +386,7 @@ def bilinear_mean_squared_error(
     shape: tuple[int, ...],
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes the mean squared error loss after bilinear downsampling to shape `shape`.
 
     Args:
@@ -395,11 +399,11 @@ def bilinear_mean_squared_error(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar consisting of the loss and the number of examples that contributed to the
-        loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
+        A WeightedSummary consisting of the loss and the number of examples that contributed to the
+        loss. If there are no targets, a WeightedSummary with 0 loss and 0 weight is returned.
     """
     src_shape = jnp.broadcast_shapes(preds.shape, targets.shape)
-    for dim, new_dim in jax.util.safe_zip(src_shape, shape):
+    for dim, new_dim in zip(src_shape, shape, strict=True):
         if not (dim % new_dim == 0 or new_dim % dim == 0):
             raise NotImplementedError(
                 f"The dimensions in shape and (preds-targets).shape must be "
@@ -416,7 +420,7 @@ def l1_loss(
     targets: Tensor,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes mean l1 loss.
 
     Args:
@@ -427,8 +431,8 @@ def l1_loss(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar consisting of the loss and the number of examples that contributed to the
-        loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
+        A WeightedSummary consisting of the loss and the number of examples that contributed to the
+        loss. If there are no targets, a WeightedSummary with 0 loss and 0 weight is returned.
     """
     diff = jnp.abs(preds - targets)
     return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)

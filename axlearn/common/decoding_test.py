@@ -19,9 +19,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
-import seqio
-import tensorflow as tf
+import sentencepiece as spm
 from absl.testing import absltest, parameterized
 
 from axlearn.common import decoding, utils
@@ -907,128 +905,31 @@ class DecodeTest(parameterized.TestCase):
 
     @parameterized.parameters(
         dict(
-            # All in prompt, all zeros.
             stopper=decoding.StopOnSubsequence([[0]]),
             index=jnp.array(0),
-            out_of_prompt=jnp.array([[False, False], [False, False]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # All out of prompt.
-            # Seqs (0, 0), (0, 1), (1, 0) are zero at index 0.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(0),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([0, 0]),
             expected=jnp.array([[True, True], [True, False]]),
         ),
         dict(
-            # Seq (1, 0) is zero at index 1, but is in prompt.
             stopper=decoding.StopOnSubsequence([[0]]),
             index=jnp.array(1),
-            out_of_prompt=jnp.array([[True, True], [False, False]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # Seq (1, 0) is zero at index 1, and is out of prompt.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(1),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([1, 2]),
             expected=jnp.array([[False, False], [True, False]]),
         ),
         dict(
-            # Seq (1, 1) is zero at index 3.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(3),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, True]]),
-        ),
-        dict(
-            # Seq (0, 0), (1, 1) are zero at index 4.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(4),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[True, False], [False, True]]),
-        ),
-        dict(
-            # No matches.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(0),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # No matches.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(1),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # Seq (1, 1) matches [1, 2, 3] at index 2.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(2),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, True]]),
-        ),
-        dict(
-            # Seqs (0, 0) and (0, 1) match [1, 2, 3] at index 3.
-            # Seq (1, 0) matches [3, 4].
             stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
             index=jnp.array(3),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([1, 2]),
             expected=jnp.array([[True, True], [True, False]]),
         ),
         dict(
-            # Seq (0, 1) matches [3, 4] at index 4.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(4),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, True], [False, False]]),
-        ),
-        # Test when different batch elements are at different indices.
-        dict(
-            # Seqs (0, :) are at index 2, (1, :) are at 0.
-            # No matches.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([2, 0]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # Seqs (0, :) are at index 3, (1, :) are at 1.
-            # Seq (0, 0) and (0, 1) match [1, 2, 3].
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([3, 1]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[True, True], [False, False]]),
-        ),
-        dict(
-            # Seqs (0, :) are at index 4, (1, :) are at 2.
-            # Seq (0, 1) matches [3, 4].
-            # Seq (1, 1) matches [1, 2, 3].
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([4, 2]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, True], [False, True]]),
-        ),
-        dict(
-            # Seqs (0, :) are at index 4, (1, :) are at 3.
-            # Seqs (0, 1) and (1, 0) match [3, 4].
             stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
             index=jnp.array([4, 3]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([3, 2]),
             expected=jnp.array([[False, True], [True, False]]),
         ),
-        dict(
-            # Seqs (0, :) are at index 4, (1, :) are at 3.
-            # Seqs (0, 1) and (1, 0) match [3, 4], but (1, 0) is in prompt.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([4, 3]),
-            out_of_prompt=jnp.array([[True, True], [False, False]]),
-            expected=jnp.array([[False, True], [False, False]]),
-        ),
     )
-    def test_stop_on_subsequence(self, stopper, index, out_of_prompt, expected):
+    def test_stop_on_subsequence(self, stopper, index, prefix_len, expected):
         sequences = jnp.array(
             [
                 [
@@ -1038,8 +939,64 @@ class DecodeTest(parameterized.TestCase):
                 [[0, 0, 3, 4, 5], [1, 2, 3, 0, 0]],
             ]
         )
-        actual = stopper(index=index, sequences=sequences, out_of_prompt=out_of_prompt)
+        actual = stopper(index=index, sequences=sequences, prefix_len=prefix_len)
         self.assertTrue(jnp.all(expected == actual))
+
+    @parameterized.parameters(
+        dict(
+            stopper=decoding.StopOnMaxLength(max_num_decodes=5),
+            index=jnp.array(5),
+            prefix_len=jnp.array([0, 0]),
+            expected=jnp.array([[True, True], [True, True]]),
+        ),
+        dict(
+            stopper=decoding.StopOnMaxLength(max_num_decodes=5),
+            index=jnp.array(5),
+            prefix_len=jnp.array([2, 2]),
+            expected=jnp.array([[False, False], [False, False]]),
+        ),
+        dict(
+            stopper=decoding.StopOnMaxLength(max_num_decodes=5),
+            index=jnp.array([6, 6]),
+            prefix_len=jnp.array([1, 2]),
+            expected=jnp.array([[True, True], [True, True]]),
+        ),
+    )
+    def test_stop_on_max_length(self, stopper, index, prefix_len, expected):
+        sequences = jnp.array(
+            [
+                [[0, 1, 2, 3, 0, 0], [0, 1, 2, 3, 4, 5]],
+                [[0, 0, 3, 4, 5, 6], [1, 2, 3, 0, 0, 0]],
+            ]
+        )
+        actual = stopper(index=index, sequences=sequences, prefix_len=prefix_len)
+        self.assertTrue(jnp.all(expected == actual))
+
+    def test_composite_decoding_condition(self):
+        """Test CompositeDecodingCondition combines multiple conditions with OR logic."""
+        sequences = jnp.array(
+            [
+                [[0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]],
+                [[0, 1, 2, 4, 5, 6], [0, 1, 2, 4, 5, 6]],
+            ]
+        )
+        prefix_len = jnp.array([1, 2])
+
+        stop_on_3 = decoding.StopOnSubsequence([[3]])
+        stop_on_max = decoding.StopOnMaxLength(max_num_decodes=5)
+        composite = decoding.CompositeDecodingCondition([stop_on_3, stop_on_max])
+
+        # Token [3] triggers for batch 0 only
+        result = composite(index=jnp.array(3), sequences=sequences, prefix_len=prefix_len)
+        self.assertTrue(jnp.all(result == jnp.array([[True, True], [False, False]])))
+
+        # Max length triggers: batch 0 at index 6 (1+5), batch 1 at index 7 (2+5)
+        result = composite(index=jnp.array([6, 7]), sequences=sequences, prefix_len=prefix_len)
+        self.assertTrue(jnp.all(result == jnp.array([[True, True], [True, True]])))
+
+        # Validate empty list
+        with self.assertRaisesRegex(ValueError, "conditions must contain at least one"):
+            decoding.CompositeDecodingCondition([])
 
     def test_sample_decode_init(self):
         batch_size, num_decodes, max_decode_len = 2, 3, 7
@@ -1455,31 +1412,41 @@ class DecodeTest(parameterized.TestCase):
         ),
         # pylint: enable=line-too-long
     )
-    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
     def test_sample_decode_with_complex_stopping_condition(
         self,
         fake_decodes: Sequence[Sequence[str]],
         prompts: Sequence[Sequence[str]],
         expected: Sequence[Sequence[str]],
     ):
-        vocab = seqio.SentencePieceVocabulary(_T5_VOCAB_FILE)
+        if not os.path.exists(_T5_VOCAB_FILE):
+            self.skipTest("Missing testdata.")
+        sp = spm.SentencePieceProcessor()
+        sp.Load(_T5_VOCAB_FILE)
         batch_size = len(fake_decodes)
         num_decodes = len(fake_decodes[0])
 
         # Tokenize the test cases.
-        # Ragged of shape [batch_size, num_decodes, None].
-        ragged_prompts = vocab.encode_tf(prompts)
-        ragged_decodes = vocab.encode_tf(fake_decodes)
-        eos_ids = tf.fill([batch_size, num_decodes, 1], vocab.eos_id)
+        encoded_prompts = [[sp.encode_as_ids(s) for s in batch] for batch in prompts]
+        encoded_decodes = [[sp.encode_as_ids(s) for s in batch] for batch in fake_decodes]
 
-        # Construct the fake decodes.
-        # [batch_size, num_decodes, max_decode_len].
-        ragged_tokens = tf.concat([ragged_prompts, ragged_decodes, eos_ids], -1)
-        faked_tokens = ragged_tokens.to_tensor().numpy()
+        # Concatenate prompts + decodes + EOS for each sequence.
+        tokens_with_eos = [
+            [prompt + decode + [sp.eos_id()] for prompt, decode in zip(prompt_batch, decode_batch)]
+            for prompt_batch, decode_batch in zip(encoded_prompts, encoded_decodes)
+        ]
 
-        vocab_size = vocab.vocab_size
+        # Pad to max length.
+        max_len = max(len(tok) for batch in tokens_with_eos for tok in batch)
+        faked_tokens = np.array(
+            [[tok + [0] * (max_len - len(tok)) for tok in batch] for batch in tokens_with_eos],
+            dtype=np.int32,
+        )
+
+        vocab_size = sp.vocab_size()
         # [batch, 1].
-        prompt_length = ragged_prompts.nested_row_lengths()[-1].numpy()[::num_decodes, None]
+        prompt_length = np.array(
+            [[len(encoded_prompts[b][0])] for b in range(batch_size)], dtype=np.int32
+        )
         max_prompt_length = prompt_length.max()
         # Subtract 1 since we drop the conditioning token.
         max_decode_length = int(faked_tokens.shape[-1]) - max_prompt_length - 1
@@ -1520,25 +1487,28 @@ class DecodeTest(parameterized.TestCase):
             cur_iter=jnp.reshape(initial_index, (-1, 1)),
             prompt_length=prompt_length,
         )
-        inputs = ragged_prompts.to_tensor(
-            shape=[batch_size, None, max_decode_length + max_prompt_length],
-            default_value=vocab.pad_id,
+        # Pad prompts to the required length.
+        target_length = max_decode_length + max_prompt_length
+        inputs = np.array(
+            [
+                encoded_prompts[b][0] + [sp.pad_id()] * (target_length - len(encoded_prompts[b][0]))
+                for b in range(batch_size)
+            ],
+            dtype=np.int32,
         )
-        # Select the first prompt of each batch elem.
-        inputs = inputs[:, 0, :].numpy()
         sample_decoding_output = decoding.sample_decode(
             inputs=inputs,
-            time_step=decoding.infer_initial_time_step(inputs, pad_id=vocab.pad_id),
+            time_step=decoding.infer_initial_time_step(inputs, pad_id=sp.pad_id()),
             cache=init_cache,
             tokens_to_scores=tokens_to_scores,
             stop_decoding_condition=decoding.StopOnSubsequence(
                 [
-                    [vocab.eos_id],
-                    vocab.encode("subsequence one"),
-                    vocab.encode("subsequence two"),
+                    [sp.eos_id()],
+                    sp.encode_as_ids("subsequence one"),
+                    sp.encode_as_ids("subsequence two"),
                 ]
             ),
-            pad_id=vocab.pad_id,
+            pad_id=sp.pad_id(),
             num_decodes=num_decodes,
             prng_key=jax.random.PRNGKey(0),
             loop="lax",
@@ -1554,11 +1524,11 @@ class DecodeTest(parameterized.TestCase):
         )
 
         # Compare against expected.
-        target = jnp.asarray(jax.tree.map(vocab.tokenizer.piece_to_id, expected))
+        target = jnp.asarray(jax.tree.map(sp.piece_to_id, expected))
         self.assertTrue(jnp.all(sequences == target))
 
         # Check that the token scores are 0 for pad_id tokens.
-        self.assertTrue(jnp.all(token_scores[sequences == vocab.pad_id] == 0))
+        self.assertTrue(jnp.all(token_scores[sequences == sp.pad_id()] == 0))
         # Check that the token scores are < 0 for non pad_id tokens beyond the initial index.
         # First mask out the token scores before the initial index.
         token_scores = jnp.where(
@@ -1567,7 +1537,7 @@ class DecodeTest(parameterized.TestCase):
             token_scores,
         )
         # Compare the rest of the token scores.
-        self.assertTrue(jnp.all(token_scores[sequences != vocab.pad_id] < 0))
+        self.assertTrue(jnp.all(token_scores[sequences != sp.pad_id()] < 0))
 
     @parameterized.parameters(
         dict(

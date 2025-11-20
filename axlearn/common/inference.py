@@ -197,6 +197,7 @@ class InferenceRunner(Module):
         *,
         parent: Optional[Module],
         devices: Optional[np.ndarray] = None,
+        fake_state: bool = False,
     ):
         super().__init__(cfg, parent=parent)
 
@@ -244,12 +245,19 @@ class InferenceRunner(Module):
                     cfg.init_state_builder.klass.__name__,
                 )
 
-            # See "On compatible trainer checkpoints for `InferenceRunner`" in the file docstring.
-            self._inference_runner_state = builder(
-                Builder.State(
-                    step=0, trainer_state=self._inference_runner_state_specs, built_keys=set()
+            if fake_state:
+                self._inference_runner_state = jax.tree.map(
+                    lambda spec: jax.ShapeDtypeStruct(shape=spec.shape, dtype=spec.dtype),
+                    self._inference_runner_state_specs,
                 )
-            ).trainer_state
+            else:
+                # See "On compatible trainer checkpoints for `InferenceRunner`" in the file
+                # docstring.
+                self._inference_runner_state = builder(
+                    Builder.State(
+                        step=0, trainer_state=self._inference_runner_state_specs, built_keys=set()
+                    )
+                ).trainer_state
 
     @property
     def inference_runner_state(self):
@@ -347,17 +355,17 @@ class InferenceRunner(Module):
                     **kwargs,
                 )
 
-            data_partition_spec = utils.data_partition_type_to_spec(cfg.input_batch_partition_spec)
+            input_partition_spec = utils.data_partition_type_to_spec(cfg.input_batch_partition_spec)
             jit_inference_iter_fn = pjit(
                 inference_iter,
                 in_shardings=(
                     self._inference_runner_state_partition_specs.model,
                     self._inference_runner_state_partition_specs.prng_key,
-                    data_partition_spec,  # Input batch.
+                    input_partition_spec,  # Input batch.
                 ),
                 out_shardings=(
                     self._inference_runner_state_partition_specs.prng_key,
-                    data_partition_spec,  # Output batch.
+                    None,  # Output batch.
                     None,  # Summaries.
                     None,  # Module outputs.
                 ),

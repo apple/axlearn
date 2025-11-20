@@ -310,6 +310,8 @@ def crop_augment_whiten(
     return image
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _process_example(
     is_training: bool,
     image_size: tuple[int, int],

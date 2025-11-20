@@ -2,47 +2,81 @@
 
 """A simple cloud-agnostic job orchestrator.
 
-The bastion is designed to have minimal dependencies:
+Bastion is designed to have minimal dependencies:
 1. It uses a cloud storage directory (such as GCS or S3) to store job states and logs.
-2. It runs on a single VM.
+2. For each cluster/environment listed in ~/.axlearn.config, a Bastion instance runs on a VM to
+   orchestrate training jobs running on that cluster/environment.
 
-The cloud storage directory has the following structure:
+The Bastion instance persists job states on GCS. To trace the states of jobs, it maintains the
+following directory structure:
 
-    ROOT=<cloud_storage_path>/<bastion_name>
+    ROOT/
+    │
+    ├── jobs/
+    │   ├── active/              # Active jobspecs submitted by users
+    │   ├── complete/            # Completed jobspecs
+    │   ├── states/              # Bastion-managed job states
+    │   └── user_states/         # User-initiated state changes (e.g., cancellation)
+    │
+    ├── logs/
+    │   ├── <bastion_name>       # Bastion orchestrator logs
+    │   ├── <job_name>           # Individual job execution logs
+    │   └── <job_name>.cleanup   # Cleanup command logs
+    │
+    └── history/
+        ├── jobs/
+        │   └── <job_name>       # Per-job scheduling history
+        ├── projects/
+        │   └── <project_name>/
+        │       └── <date>       # Per-project daily scheduling history
+        └── scheduler/
+            └── <timestamp>      # Scheduler decision history
 
-    Active jobspecs: $ROOT/jobs/active/
-    Complete jobspecs: $ROOT/jobs/complete/
-    Active job states: $ROOT/jobs/states/
-    User written job states: $ROOT/jobs/user_states/
-
-    Bastion logs: $ROOT/logs/<bastion_name>
-    Job logs: $ROOT/logs/<job_name>
-    Cleanup command logs: $ROOT/logs/<job_name>.cleanup
-
-    Job scheduling history: $ROOT/history/jobs/<job_name>
-    Project scheduling history: $ROOT/history/projects/<project_name>/<date>
+ROOT = gs://<permanent_bucket>/<bastion_name>/. For each cluster/environment listed in
+~/.axlearn.config, you can find permanent_bucket and bastion_name in the corresponding section.  For
+example: gs://public-permanent-us-east5-0rxn/prod-gke-bastion/
 
 At a high level, the submit flow works as follows:
-1. User submits a job to the bastion by uploading a job spec to the 'active jobspecs' path above
-    (serialized via `JobSpec`).
-2. Bastion polls the cloud storage directory. Each update, it syncs all new jobspecs from the
-    directory and runs them asynchronously inside a docker container. Log outputs are emitted back
-    to the directory.
-3. Once a job is completed, its corresponding jobspec is removed from the cloud storage directory.
-4. The bastion also supports user interaction. For instance, if a user wants to cancel a job, a
-    "cancelling" state file (serialized via `JobState`) can be written to the cloud storage
-    directory. The bastion will read these "user states" and terminate the jobs appropriately, as
-    well as cleanup any processed "user state" files.
 
-Bastion jobs should:
-1. Be executable via invoking a bash command.
-2. Be resumable via invoking the same command. This allows the bastion to be pre-emptible; when
-    bastion restarts, it can simply resume the in-flight jobs by re-running each job command.
-3. Be responsible for cleaning up any external resources that it creates (e.g. via the cleanup
-    command in the jobspec).
-4. Sync their own artifacts/logs to external storage (like a cloud storage directory), if persisting
-    outputs is desired.
-5. Handle retries internally, if retries are desired.
+1. User submits a job to Bastion by uploading a JSON file (a serialization of `JobSpec`) to
+   ROOT/jobs/active/.
+
+2. Bastion polls ROOT/jobs/active/ for jobspecs. Each update, it downloads all jobspecs from GCS to
+   synchronize its local state, determines which jobs should run based on quota and priority, and
+   executes the command for each scheduled job as a subprocess.  The command typically invokes a
+   runner, for example,
+
+   python3 -m axlearn.cloud.gcp.jobs.launch run \
+     --runner_name=gke_tpu_single \
+     ...
+
+   The GKE runner gke_tpu_single calls the Kubernetes API to start the training job as a JobSet,
+   which provisions TPU node pools and schedules pods on TPU VMs. The runner subprocess continues
+   running, polling the Kubernetes API every 30 seconds to monitor the JobSet status until it
+   completes (succeeds or fails). The subprocess output (runner logs) is captured and uploaded to
+   ROOT/logs/<job_name>.  Note that the actual training job logs from pods are sent to Google Cloud
+   Logging and can be viewed via `axlearn gcp logs` or the GCP Console.
+
+3. Bastion monitors the subprocess to detect job completion. When the subprocess exits (i.e., the
+   runner completes), Bastion transitions the job to CLEANING state and runs any optional cleanup
+   commands. Once cleanup finishes, the job moves to COMPLETED state, and the garbage collector
+   removes its jobspec from ROOT/jobs/active/ and moves it to ROOT/jobs/complete/.
+
+4. Bastion also supports user interaction. For instance, to cancel a job, write a JSON file
+   (a serialization of `JobState` with status=CANCELLING) to ROOT/jobs/user_states/<job_name>.
+   Bastion reads these "user states" and terminates the jobs, then cleans up the processed
+   "user state" files.
+
+Job commands must satisfy the following requirements to work with Bastion:
+
+- Executable as a bash command
+- Resumable: running the same command multiple times should resume the job (allows Bastion to be
+  pre-emptible and restart jobs after interruption)
+- Self-cleaning: responsible for deleting any external resources via the cleanup command in the
+  jobspec
+- Self-logging: persist artifacts and logs to external storage (e.g., GCS) if needed
+- Self-retrying: handle retries internally if desired
+
 """
 
 # pylint: disable=consider-using-with,too-many-branches,too-many-instance-attributes,too-many-lines

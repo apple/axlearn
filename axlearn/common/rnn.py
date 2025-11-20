@@ -290,7 +290,7 @@ class StackedRNNLayer(BaseRNNCell):
         states_list = [layer.init_states(batch_size=batch_size) for layer in self._layers]
         return states_list
 
-    def extend_step(
+    def extend_step(  # pytype: disable=signature-mismatch
         self,
         *,
         cached_states: list[Nested[Tensor]],

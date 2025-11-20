@@ -16,9 +16,12 @@ from typing import Optional
 import pytest
 from absl.testing import absltest
 
+# pytype: disable=pyi-error
 from axlearn.common.aot_compilation import compile_trainer_programs, get_devices_for_topology
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.experiments import test_utils
+
+# pytype: enable=pyi-error
 from axlearn.experiments.text.gpt import c4_trainer
 
 

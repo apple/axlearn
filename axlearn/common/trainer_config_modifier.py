@@ -24,7 +24,9 @@ from axlearn.common.quantized_dot_general.layers import (
     get_all_fp8_param_names,
 )
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.update_transformation import OverrideInplaceUpdateTransformation
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
+    OverrideInplaceUpdateTransformation,
+)
 from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
 
 

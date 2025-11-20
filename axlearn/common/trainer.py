@@ -45,7 +45,7 @@ from axlearn.common.optimizer_base import NestedOptParam, OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
-from axlearn.common.update_transformation import ForwardOutputs
+from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
 from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
@@ -217,6 +217,10 @@ class SpmdTrainer(Module):
         # Defaults to None which is interpreted as True.
         cache_compiled_train_step: Optional[bool] = None
 
+        # Log the loss value every n steps. Defaults to None which is interpreted as every
+        # 100 steps.
+        log_every_n_steps: Optional[int] = None
+
     def __init__(
         self,
         cfg: Config,
@@ -382,7 +386,7 @@ class SpmdTrainer(Module):
         # and self.config does an expensive deep copy.
         if self._config.learner.ema.decay is not None:
             logging.log_first_n(logging.INFO, "Using model parameter EMA for eval", 10)
-            return state.learner["ema"].ema
+            return state.learner["ema"].ema  # pytype: disable=attribute-error
         return state.model
 
     def _step_log(self, msg, *args, **kwargs):
@@ -563,7 +567,7 @@ class SpmdTrainer(Module):
             force run at the last training step. The dict will have evaler names as keys and
             metrics summary dict as values (None for evalers not included in force run).
             The metrics summary dict has string keys for the name of the metrics and can have
-            different types of values such as WeightedScalar, Tensor, or string, depending on
+            different types of values such as WeightedSummary, Tensor, or string, depending on
             the specific `metric_calculator` config of the evaler.
         """
         with (
@@ -681,10 +685,10 @@ class SpmdTrainer(Module):
             logging.info("Creating state from init_state_builder after initialization.")
             self._init_with_prebuilt_state(prng_key, prebuilt_state=None)
             built_state = self._restore_from_builder()
-            self._step = built_state.step
+            self._step = built_state.step  # pytype: disable=attribute-error
             self._trainer_state = jax.tree.map(
                 lambda state, spec: jax.device_put(state, spec.sharding),
-                built_state.trainer_state,
+                built_state.trainer_state,  # pytype: disable=attribute-error
                 self._trainer_state_specs,
             )
 
@@ -1053,6 +1057,7 @@ class SpmdTrainer(Module):
         options = infer_xla_performance_flags(
             mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
+        logging.log_first_n(logging.INFO, "Compiler options: %s", 1, options)
         if not with_xsc:
             self._maybe_record_event(
                 measurement.Event.START_CUSTOM_BADPUT_EVENT,
@@ -1111,7 +1116,8 @@ class SpmdTrainer(Module):
             # Run the compiled function.
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
-        if self.step % 100 == 0 or 0 <= self.step <= 5:
+        n = self._config.log_every_n_steps or 100
+        if self.step % n == 0 or 0 <= self.step <= 5:
             self._step_log(
                 "loss=%s aux=%s",
                 outputs["loss"],

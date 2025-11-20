@@ -63,9 +63,9 @@ _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.
 _PATHWAYS_PROXY_CONTAINER_NAME = "pathways-proxy"
 # The k8s replicatedJob name for pathways-head pods.
-_PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
+_PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pwhd"
 # The k8s replicatedJob name for pathways-worker pods.
-_PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
+_PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pwwk"
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
@@ -95,6 +95,8 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
     https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L70-L82
     """
     pathways_tpu_devices = {
+        # 7x
+        "tpu7x-standard-4t": "tpu7x",
         # v6e
         "ct6e-standard-4t": "tpuv6e",
         # v5p
@@ -291,6 +293,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
         self._update_env_list(env_list, "TPU_SKIP_MDS_QUERY", "true")
+        # Prevents missing logs when there is crash.
+        self._update_env_list(env_list, "PYTHONUNBUFFERED", "1")
         # This is required to be able to run a Jax client when using
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS=true.
         # In Jax 0.6.2 and beyond this flag can be renamed to
@@ -307,30 +311,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 "name": "HOST_ADDRESS",
                 "valueFrom": {
                     "fieldRef": {"fieldPath": "metadata.labels['jobset.sigs.k8s.io/coordinator']"}
-                },
-            }
-        )
-
-        # pylint: disable=line-too-long
-        env_list.append(
-            {
-                "name": "NUM_REPLICAS",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
-                    }
-                },
-            }
-        )
-        # pylint: enable=line-too-long
-
-        env_list.append(
-            {
-                "name": "REPLICA_ID",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
-                    }
                 },
             }
         )
@@ -439,17 +419,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
-        volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
-
         if cfg.gcsfuse_mount:
-            annotations.update(
-                {
-                    "gke-gcsfuse/volumes": "true",
-                    "gke-gcsfuse/cpu-limit": cfg.gcsfuse_mount.cpu,
-                    "gke-gcsfuse/memory-limit": cfg.gcsfuse_mount.memory,
-                    "gke-gcsfuse/ephemeral-storage-limit": cfg.gcsfuse_mount.ephemeral_gb,
-                }
-            )
+            self._inner.set_up_gcsfuse(cfg, volumes, annotations)
+        else:
+            # gcsfuse mounts shared-memory. To avoid double mounting, we only mount
+            # shared-memory explicitly when gcsfuse_mount is not enabled.
+            volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
 
         node_selector = {
             _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
@@ -846,11 +821,13 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         cfg = super().default_config()
         return cfg.set(inner=TPULeaderWorkerTemplate.default_config())
 
-    def __init__(self, cfg, *, bundler):
+    def __init__(self, cfg: BaseLeaderWorkerTemplate.Config, *, bundler):
         super().__init__(cfg, bundler=bundler)
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+
         self._bundler = bundler
         self._inner: TPULeaderWorkerTemplate = cfg.inner.instantiate(bundler=self._bundler)
-        self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
+        self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
 
@@ -978,6 +955,10 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                     "name": "TEST_UNDECLARED_OUTPUTS_DIR",
                     "value": "true",
                 },
+                {
+                    "name": "PYTHONUNBUFFERED",
+                    "value": "1",
+                },
             ],
             imagePullPolicy="Always",
             resources=resources,
@@ -1046,7 +1027,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "spec": leader_pod_spec,
         }
 
-    def __call__(self) -> Nested[Any]:
+    def __call__(self) -> Nested[Any]:  # pytype: disable=signature-mismatch
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
             subGroupPolicy=dict(

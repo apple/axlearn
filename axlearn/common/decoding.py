@@ -823,12 +823,11 @@ class SampleOutputs(flax_struct.PyTreeNode):
 
 
 class StopDecodingCondition(Protocol):
-    """Callable which, given index, sequences and prompt mask, returns
+    """Callable which, given index, sequences and prefix length, returns
     a bool tensor indicating if a sequence should stop decoding."""
 
-    def __call__(self, *, index: Tensor, sequences: Tensor, out_of_prompt: Tensor) -> Tensor:
-        """Given the current index, tensor sequences (batch x decodes x length) tensor, and
-        a boolean mask indicating if we out out of the prompt, return a (batch x decodes) boolean
+    def __call__(self, *, index: Tensor, sequences: Tensor, prefix_len: Tensor) -> Tensor:
+        """Given the current index and sequences, return a (batch x decodes) boolean
         tensor indicating if the given sequences have reached some stop condition.
 
         Args:
@@ -836,15 +835,15 @@ class StopDecodingCondition(Protocol):
                 token.
             sequences: Decoded tokens. Values past index are not defined. Shape
                 float[batch, decodes, max_length].
-            out_of_prompt: Prompt mask. Useful to not terminate if we see a sequence in the prompt.
-                Shape bool[batch, decodes].
+            prefix_len: Tensor of shape [batch], giving the prefix length for each example.
+                Used to determine if we are still in the prompt region.
 
         Returns:
             bool[batch, decodes] boolean tensor indicating if decoding should stop.
         """
 
 
-class StopOnSubsequence:
+class StopOnSubsequence(StopDecodingCondition):
     """Early stopping on suffix-matches."""
 
     def __init__(
@@ -884,7 +883,7 @@ class StopOnSubsequence:
             ]
         )
 
-    def __call__(self, *, index: Tensor, sequences: Tensor, out_of_prompt: Tensor) -> Tensor:
+    def __call__(self, *, index: Tensor, sequences: Tensor, prefix_len: Tensor) -> Tensor:
         sequences = jnp.pad(
             sequences, [(0, 0), (0, 0), (self.longest - 1, 0)], constant_values=self.pad_value
         )
@@ -902,7 +901,77 @@ class StopOnSubsequence:
         token_match = (self.targets[None, None, :, :] == sequences[:, :, None, :]) | (
             self.targets == self.pad_value
         )
-        return token_match.all(-1).any(-1) & out_of_prompt
+        return token_match.all(-1).any(-1)
+
+
+class StopOnMaxLength(StopDecodingCondition):
+    """Early stopping when reaching maximum generation length."""
+
+    def __init__(self, max_num_decodes: int):
+        """Stops decoding when generation reaches max_num_decodes.
+
+        Args:
+            max_num_decodes: Maximum generation length (excluding prefix) at which to stop.
+        """
+        self.max_num_decodes = max_num_decodes
+
+    def __call__(self, *, index: Tensor, sequences: Tensor, prefix_len: Tensor) -> Tensor:
+        """Returns True when generation length >= max_num_decodes.
+
+        Args:
+            index: Scalar or Tensor of shape [batch], giving the index of the most recently decoded
+                token.
+            sequences: Decoded tokens. Shape [batch, decodes, max_length].
+            prefix_len: Tensor of shape [batch], giving the prefix length for each example.
+
+        Returns:
+            bool[batch, decodes] boolean tensor indicating if max generation length is reached.
+        """
+        batch_size, _, seq_len = sequences.shape
+        if index.ndim == 0:
+            index = jnp.broadcast_to(index, (batch_size,))
+        max_decode_len = self.max_num_decodes + prefix_len
+        reached_max = index[:, None] >= jnp.minimum(max_decode_len[:, None], seq_len)
+        return reached_max
+
+
+class CompositeDecodingCondition(StopDecodingCondition):
+    """Combines multiple stopping conditions with OR logic."""
+
+    def __init__(self, conditions: Sequence[StopDecodingCondition]):
+        """Stops decoding when ANY of the conditions is met.
+
+        Args:
+            conditions: List of StopDecodingCondition instances to combine.
+
+        Raises:
+            ValueError: if conditions is empty.
+        """
+        if not conditions:
+            raise ValueError("conditions must contain at least one StopDecodingCondition")
+        self.conditions = conditions
+
+    def __call__(self, *, index: Tensor, sequences: Tensor, prefix_len: Tensor) -> Tensor:
+        """Returns True when ANY condition is met.
+
+        Args:
+            index: Scalar or Tensor of shape [batch], giving the index of the most recently decoded
+                token.
+            sequences: Decoded tokens. Shape [batch, decodes, max_length].
+            prefix_len: Tensor of shape [batch], giving the prefix length for each example.
+
+        Returns:
+            bool[batch, decodes] boolean tensor indicating if any condition is met.
+        """
+        # Start with all False
+        batch_size, num_decodes, _ = sequences.shape
+        should_stop = jnp.zeros((batch_size, num_decodes), dtype=jnp.bool)
+        # OR all conditions together
+        for condition in self.conditions:
+            should_stop = should_stop | condition(
+                index=index, sequences=sequences, prefix_len=prefix_len
+            )
+        return should_stop
 
 
 def sample_decode(
@@ -1054,11 +1123,14 @@ def sample_decode(
             state.token_scores * (1 - oh_indices)
             + jnp.expand_dims(next_token_log_prob, 2) * oh_indices
         )
-        updated_stop_decoding = state.stop_decoding | stop_decoding_condition(
+        # TODO(dhwang2): unify out_of_prompt and prefix_len as out_of_prompt become redundant.
+        prefix_len = time_step + 1
+        should_stop = out_of_prompt & stop_decoding_condition(
             index=jnp.minimum(next_index, max_decode_len - 1),
             sequences=updated_sequences,
-            out_of_prompt=out_of_prompt,
+            prefix_len=prefix_len,
         )
+        updated_stop_decoding = state.stop_decoding | should_stop
         return DecodingState(
             cur_index=next_index,
             token_scores=updated_token_scores,

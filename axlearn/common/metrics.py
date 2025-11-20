@@ -13,8 +13,12 @@ from axlearn.common.summary import Summary
 from axlearn.common.utils import NestedTensor, Tensor
 
 
-class WeightedScalarValue(Summary):
-    """A weighted scalar value represents a mean value and a weight."""
+class MetricSummary(Summary):
+    """Base class for metric summaries computed during training/evaluation."""
+
+
+class WeightedValue(MetricSummary):
+    """A weighted mean tensor represents a mean value and a weight."""
 
     mean: NestedTensor | int | float
     weight: NestedTensor | int | float
@@ -28,14 +32,14 @@ class WeightedScalarValue(Summary):
         return self.mean
 
 
-class WeightedScalar(WeightedScalarValue):
-    """A weighted scalar represents a weighted Summable value.
+class WeightedSummary(WeightedValue):
+    """A weighted tensor represents a weighted Summable value.
 
-    Weight should be a scalar and is assumed to be non-negative.
+    Weight should be a tensor and is assumed to be non-negative.
     A weight of zero corresponds to zero mean.
     """
 
-    def __add__(self, other: "WeightedScalar") -> "WeightedScalar":
+    def __add__(self, other: "WeightedSummary") -> "WeightedSummary":
         # TODO(markblee): Handle possible overflows.
         weight = self.weight + other.weight
         # Use the "double-where" trick to avoid division by 0.
@@ -47,54 +51,72 @@ class WeightedScalar(WeightedScalarValue):
             / jnp.where(weight > 0, weight, 1),
             0.0,
         )
-        return WeightedScalar(mean, weight)
+        return WeightedSummary(mean, weight)
 
     def accumulate(self, other: Summary) -> Summary:
-        if not isinstance(other, WeightedScalar):
-            raise TypeError(f"Expected WeightedScalar, got {type(other)}.")
+        if not isinstance(other, WeightedSummary):
+            raise TypeError(f"Expected WeightedSummary, got {type(other)}.")
         return self + other
 
 
-class MinSummary(Summary):
+class _ReducerSummary(MetricSummary):
+    """Base class for summaries that reduce tensor elements across accumulation.
+
+    Subclasses should implement the _accumulate_op method to define
+    how values are combined during reduction.
+    """
+
+    _value: Tensor
+
+    def value(self) -> Tensor:
+        return self._value
+
+    def validate(self):
+        val = self._value
+        class_name = type(self).__name__
+        if not isinstance(val, Tensor):
+            raise ValueError(f"{class_name} value must be a Tensor, but got {str(type(val))}.")
+
+    def _accumulate_op(self, this_value: Tensor, other_value: Tensor) -> Tensor:
+        """Defines how two values are combined during accumulation.
+
+        Args:
+            this_value: The value from this summary.
+            other_value: The value from the other summary.
+
+        Returns:
+            The combined value.
+        """
+        raise NotImplementedError(type(self))
+
+    def accumulate(self, other: "_ReducerSummary") -> "_ReducerSummary":
+        if not isinstance(other, type(self)):
+            raise TypeError(f"Expected {type(self).__name__}, got {type(other)}.")
+        if self.value().shape != other.value().shape:
+            raise ValueError(f"Shape mismatch: {self.value().shape} vs {other.value().shape}.")
+        combined_value = self._accumulate_op(self.value(), other.value())
+        return type(self)(combined_value)  # pytype: disable=wrong-arg-count
+
+
+class MinSummary(_ReducerSummary):
     """A summary that computes the minimum value across tensor elements."""
 
-    _value: Tensor
-
-    def value(self) -> Tensor:
-        return self._value
-
-    def validate(self):
-        val = self._value
-        if not isinstance(val, Tensor):
-            raise ValueError(f"MinSummary value must be a Tensor, but got {str(type(val))}.")
-        if val.ndim >= 1:
-            raise ValueError(f"MinSummary value must be a scalar, but got {val.ndim=}.")
-
-    def accumulate(self, other: Summary) -> Summary:
-        if not isinstance(other, MinSummary):
-            raise TypeError(f"Expected MinSummary, got {type(other)}.")
-        return MinSummary(jnp.minimum(self.value(), other.value()))
+    def _accumulate_op(self, this_value: Tensor, other_value: Tensor) -> Tensor:
+        return jnp.minimum(this_value, other_value)
 
 
-class MaxSummary(Summary):
+class MaxSummary(_ReducerSummary):
     """A summary that computes the maximum value across tensor elements."""
 
-    _value: Tensor
+    def _accumulate_op(self, this_value: Tensor, other_value: Tensor) -> Tensor:
+        return jnp.maximum(this_value, other_value)
 
-    def value(self) -> Tensor:
-        return self._value
 
-    def validate(self):
-        val = self._value
-        if not isinstance(val, Tensor):
-            raise ValueError(f"MaxSummary value must be a Tensor, but got {str(type(val))}.")
-        if val.ndim >= 1:
-            raise ValueError(f"MaxSummary value must be a scalar, but got {val.ndim=}.")
+class SumSummary(_ReducerSummary):
+    """A summary that computes the sum of values across tensor elements."""
 
-    def accumulate(self, other: Summary) -> Summary:
-        if not isinstance(other, MaxSummary):
-            raise TypeError(f"Expected MaxSummary, got {type(other)}.")
-        return MaxSummary(jnp.maximum(self.value(), other.value()))
+    def _accumulate_op(self, this_value: Tensor, other_value: Tensor) -> Tensor:
+        return this_value + other_value
 
 
 class MetricAccumulator(Configurable):

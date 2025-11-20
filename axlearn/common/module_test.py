@@ -17,7 +17,7 @@ from jax import numpy as jnp
 from axlearn.common import summary, test_utils
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.layers import Linear
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import (
     InvocationContext,
     Module,
@@ -872,7 +872,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
                     output=x_i,
                 ),
             )
-            ctx.add_summary("carry", WeightedScalar(carry_i.mean(), carry_i.size))
+            ctx.add_summary("carry", WeightedSummary(carry_i.mean(), carry_i.size))
             return carry_i + 1, x_i + carry_i + state_i
 
         xs["xs"] = jnp.arange(num_iters, dtype=jnp.int32)[:, None] * jnp.ones(
@@ -944,7 +944,7 @@ class ScanInContextTest(TestWithTemporaryCWD):
             # Summary values are put in `{child_name_prefix}{i}`.
             self.assertNestedEqual(
                 {
-                    f"{child_name_prefix}{i}": {"carry": WeightedScalar(i, 1)}
+                    f"{child_name_prefix}{i}": {"carry": WeightedSummary(i, 1)}
                     for i in range(num_iters)
                 },
                 ctx.output_collection.summaries,

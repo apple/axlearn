@@ -263,6 +263,7 @@ register_validator(
 # Validate container types.
 register_validator(
     match_fn=lambda v: isinstance(v, (list, tuple)),
+    # pylint: disable-next=used-before-assignment
     validate_fn=lambda v: (validate_config_field_value(x) for x in v),
 )
 register_validator(
@@ -510,12 +511,14 @@ class ConfigBase:
         def enter(key: str, val: Any, default_result: Optional[list]) -> Optional[list]:
             if dataclasses.is_dataclass(val) and not isinstance(val, type):
                 fields_default_dict = {}
+                cur_key_to_field_dict = {}
                 for field in dataclasses.fields(val):
                     # Concatenate field name to key as the full field key name.
                     # Eg: key="my_config.cats[0]", field.name="adopted"
                     #     cur_key="my_config.cats[0]['adopted']"
                     cur_key = f"{key}['{field.name}']"
                     fields_default_dict[cur_key] = field.default
+                    cur_key_to_field_dict[cur_key] = field
 
                 kvs_to_traverse = []
                 for cur_key, cur_val in default_result:
@@ -523,6 +526,12 @@ class ConfigBase:
                         raise KeyError(
                             f"Field name {cur_key} is not found for dataclass type value."
                         )
+                    # Get the field to check metadata
+                    field = cur_key_to_field_dict[cur_key]
+                    # Skip fields marked with skip_serialization=True in metadata
+                    if field and field.metadata.get("skip_serialization", False):
+                        continue
+
                     default_val = fields_default_dict[cur_key]
                     if cur_val is default_val and default_val in omit_default_values:
                         continue

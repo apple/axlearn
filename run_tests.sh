@@ -10,6 +10,9 @@ export TF_DISABLE_TRT=1  # Suppress TF-TRT Warning: Could not find TensorRT
 # Requirements should already be cached in the docker image.
 pip install -qq -e .
 
+# output state of python packages
+pip freeze
+
 exit_if_error() {
   local exit_code=$1
   shift

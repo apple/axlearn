@@ -423,7 +423,7 @@ class DefaultInitializer(Initializer):
         raise NotImplementedError(f"Unsupported parameter name ({name})")
 
     # pylint: disable-next=arguments-differ
-    def debug_string(
+    def debug_string(  # pytype: disable=signature-mismatch
         self,
         *,
         name: str,

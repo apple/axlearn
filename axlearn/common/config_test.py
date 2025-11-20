@@ -272,7 +272,7 @@ class ConfigTest(parameterized.TestCase):
         with self.assertRaisesRegex(config.UnknownFieldError, r".*did you mean: \[num_layers\].*"):
             cfg.num_layer = 5  # pylint: disable=attribute-defined-outside-init
 
-    def _non_copyable_proxy(self, fn_or_cls) -> wrapt.ObjectProxy:
+    def _non_copyable_proxy(self, fn_or_cls) -> wrapt.BaseObjectProxy:
         """Returns a proxy which cannot be copied."""
 
         @wrapt.decorator
@@ -282,7 +282,7 @@ class ConfigTest(parameterized.TestCase):
 
         fn_or_cls = decorator(fn_or_cls)  # pylint: disable=no-value-for-parameter
 
-        self.assertIsInstance(fn_or_cls, wrapt.ObjectProxy)
+        self.assertIsInstance(fn_or_cls, wrapt.BaseObjectProxy)
         with self.assertRaises(NotImplementedError):
             copy.deepcopy(fn_or_cls)
 
@@ -1043,6 +1043,75 @@ class ConfigTest(parameterized.TestCase):
 
         except ImportError:
             pass
+
+    def test_skip_serialization_metadata(self):
+        """Tests that dataclass fields with skip_serialization metadata are excluded
+        from serialization.
+        """
+
+        @dataclasses.dataclass
+        class DataWithNonTrainingFields:
+            """Test class that has fields excluded from serialization"""
+
+            important_field: str
+            # Field with skip_serialization metadata should be excluded
+            internal_cache: dict = dataclasses.field(
+                default_factory=dict, metadata={"skip_serialization": True}
+            )
+            # Another field with skip_serialization metadata
+            debug_info: str = dataclasses.field(
+                default="debug", metadata={"skip_serialization": True}
+            )
+            # Regular field without metadata
+            regular_field: int = 42
+
+        @config_class
+        class TestConfig(ConfigBase):
+            data: DataWithNonTrainingFields = DataWithNonTrainingFields(
+                important_field="test"
+            )  # pytype: disable=invalid-annotation
+
+        cfg = TestConfig()
+
+        # Test with omit_default_values=set() to ensure fields are excluded regardless of defaults
+        flat_dict = cfg.to_flat_dict(omit_default_values=set())
+
+        # Check that skip_serialization fields are excluded
+        self.assertNotIn("data['internal_cache']", flat_dict)
+        self.assertNotIn("data['debug_info']", flat_dict)
+
+        # Check that regular fields are included
+        self.assertIn("data['important_field']", flat_dict)
+        self.assertIn("data['regular_field']", flat_dict)
+        self.assertEqual(flat_dict["data['important_field']"], "test")
+        self.assertEqual(flat_dict["data['regular_field']"], 42)
+
+        # Test debug_string as well
+        debug_str = cfg.debug_string(omit_default_values=set())
+        self.assertNotIn("internal_cache", debug_str)
+        self.assertNotIn("debug_info", debug_str)
+        self.assertIn("important_field", debug_str)
+        self.assertIn("regular_field", debug_str)
+
+        # Test that fields are excluded even when values are assigned
+        cfg.data = DataWithNonTrainingFields(
+            important_field="updated",
+            internal_cache={"key": "value"},  # Assign a value
+            debug_info="updated debug",  # Assign a value
+            regular_field=100,
+        )
+
+        flat_dict = cfg.to_flat_dict(omit_default_values=set())
+
+        # Even with values assigned, skip_serialization fields should still be excluded
+        self.assertNotIn("data['internal_cache']", flat_dict)
+        self.assertNotIn("data['debug_info']", flat_dict)
+
+        # Regular fields should still be included with updated values
+        self.assertIn("data['important_field']", flat_dict)
+        self.assertIn("data['regular_field']", flat_dict)
+        self.assertEqual(flat_dict["data['important_field']"], "updated")
+        self.assertEqual(flat_dict["data['regular_field']"], 100)
 
 
 if __name__ == "__main__":

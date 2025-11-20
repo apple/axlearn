@@ -52,6 +52,7 @@ class RCNNDetectionHeadTest(parameterized.TestCase):
             box_output_dim = 4
         elif box_prediction_type is BoxPredictionType.CLASS_SPECIFIC:
             box_output_dim = 4 * num_classes
+        # pylint: disable-next=possibly-used-before-assignment
         self.assertEqual((batch_size, num_rois, box_output_dim), outputs.boxes.shape)
         self.assertEqual((batch_size, num_rois, num_classes), outputs.scores.shape)
 

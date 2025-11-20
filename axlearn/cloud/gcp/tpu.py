@@ -63,7 +63,7 @@ def infer_tpu_workers(tpu_type: str) -> int:
     try:
         if match is not None:
             tpu_version, tpu_cores = match.groups()
-            if tpu_version in {"v3", "v4", "v5p"}:
+            if tpu_version in {"v3", "v4", "v5p", "7x"}:
                 return int(tpu_cores) // 8
             if tpu_version in {"v5litepod", "v6e"}:
                 return int(tpu_cores) // 4

@@ -821,6 +821,8 @@ class DataPartitionType(Enum):
     FULL = "full"
     # Data are fully replicated across all devices.
     REPLICATED = "replicated"
+    # Data are partitioned across batch axes and sequence axes.
+    BATCH = "batch"
 
 
 def data_partition_type_to_spec(
@@ -831,6 +833,8 @@ def data_partition_type_to_spec(
         return input_partition_spec()
     elif partition == DataPartitionType.REPLICATED:
         return PartitionSpec(None)
+    elif partition == DataPartitionType.BATCH:
+        return PartitionSpec(("data", "fsdp"), "seq")
     elif isinstance(partition, PartitionSpec):
         return partition
     elif isinstance(partition, dict):

@@ -16,7 +16,7 @@ import jax.numpy as jnp
 from axlearn.audio.frontend import LogMelFrontend
 from axlearn.audio.spectrum_augmenter import SpectrumAugmenter
 from axlearn.audio.subsamplers import ConvSubSampler
-from axlearn.common.attention import SinusoidalPositionalEmbedding
+from axlearn.common.attention import RepeatedTransformerLayer, SinusoidalPositionalEmbedding
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.conformer import RepeatedConformerLayer
@@ -165,11 +165,23 @@ class SpeechContextNetwork(BaseLayer):
             - outputs: A Tensor of shape [batch_size, seq_len, output_dim].
             - output_paddings: A 0/1 Tensor of shape [batch_size, seq_len].
         """
+        cfg = self.config
         # [batch, seq_len, input_dim].
         x = self.input_linear(inputs)
         x = self.dropout(x)
-        x = x + self.pos_emb(jnp.arange(x.shape[1]))
-        x = self.context(inputs=x, paddings=paddings)
+
+        if isinstance(cfg.context, RepeatedConformerLayer.Config):
+            x = x + self.pos_emb(jnp.arange(x.shape[1]))
+            x = self.context(inputs=x, paddings=paddings)
+        elif isinstance(cfg.context, RepeatedTransformerLayer.Config):
+            # We don't need to do add pos_emb for transformer block
+            x = self.context(data=x)
+            x = x.data
+        else:
+            raise ValueError(
+                f"The type of `self.context` ({cfg.context.klass}) "
+                "is not supported by SpeechContextNetwork."
+            )
         self._add_activation_summary(
             name="speech_context",
             activations=x,

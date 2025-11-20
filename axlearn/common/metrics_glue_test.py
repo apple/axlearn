@@ -2,6 +2,7 @@
 
 """Tests GLUE metrics."""
 # pylint: disable=no-self-use
+# pytype: disable=attribute-error
 from typing import Union
 
 import jax

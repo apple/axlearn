@@ -28,7 +28,7 @@ from axlearn.common.config import (
     maybe_set_config,
 )
 from axlearn.common.inference_output import BaseOutputWriter
-from axlearn.common.metrics import MetricAccumulator, WeightedScalar
+from axlearn.common.metrics import MetricAccumulator, MetricSummary, WeightedSummary
 from axlearn.common.module import Module, OutputCollection
 from axlearn.common.module import functional as F
 from axlearn.common.utils import (
@@ -148,7 +148,7 @@ class BaseMetricCalculator(Module):
         model_params: NestedTensor,
         state: NestedTensor,
         all_forward_outputs: list[NestedTensor],
-    ) -> dict[str, WeightedScalar]:
+    ) -> dict[str, MetricSummary]:
         """Computes summaries.
 
         Will be called at the end of an evaluation step.
@@ -268,7 +268,7 @@ class BaseMetricCalculator(Module):
 class ModelSummaryAccumulator(BaseMetricCalculator):
     """Accumulates model summaries over evaluation batches.
 
-    Currently only accumulates WeightedScalar summaries.
+    Currently only accumulates WeightedSummary summaries.
     """
 
     @config_class
@@ -353,7 +353,7 @@ class ModelSummaryAccumulator(BaseMetricCalculator):
         model_params: NestedTensor,
         state: NestedTensor,
         all_forward_outputs: list[NestedTensor],
-    ) -> dict[str, WeightedScalar]:
+    ) -> dict[str, MetricSummary]:
         return self._metric_accumulator.summaries()
 
 
@@ -501,7 +501,7 @@ class CompositeMetricCalculator(BaseMetricCalculator):
         model_params: NestedTensor,
         state: NestedTensor,
         all_forward_outputs: list[NestedTensor],
-    ) -> dict[str, WeightedScalar]:
+    ) -> dict[str, MetricSummary]:
         all_forward_outputs_grouped_by_name: dict[str, list[NestedTensor]] = defaultdict(list)
         for d in all_forward_outputs:
             for name in self._calculators:
@@ -895,7 +895,7 @@ class GlobalMetricCalculator(BaseMetricCalculator):
         model_params: NestedTensor,
         state: NestedTensor,
         all_forward_outputs: list[PredictionOutputs],
-    ) -> dict[str, Union[WeightedScalar, Tensor]]:
+    ) -> dict[str, Union[WeightedSummary, Tensor]]:
         if self._use_jit_for_metric_calculation:
             metrics = self._jit_compute_metrics(
                 model_params,

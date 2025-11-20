@@ -105,7 +105,7 @@ from jax import numpy as jnp
 
 from axlearn.common import param_init
 from axlearn.common.config import ConfigOr, Configurable, config_class, maybe_instantiate
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module, child_context, current_context, new_output_collection
 from axlearn.common.param_init import DefaultInitializer, FanAxes
 from axlearn.common.traceback_util import no_stack_summary
@@ -854,9 +854,11 @@ class BaseLayer(Module):
             ) / jnp.maximum(1, weights)
 
         # All hidden units average.
-        self.add_summary(f"activations/{name}_mean", WeightedScalar(activations_mean, weights))
+        self.add_summary(f"activations/{name}_mean", WeightedSummary(activations_mean, weights))
         # Average of per hidden unit norm.
-        self.add_summary(f"activations/{name}_norm", WeightedScalar(activations_norm_mean, weights))
+        self.add_summary(
+            f"activations/{name}_norm", WeightedSummary(activations_norm_mean, weights)
+        )
 
 
 def no_remat(fn: Callable) -> Callable:

@@ -71,7 +71,9 @@ class PrecisionRecallMetricCalculator(GlobalMetricCalculator):
             output=self.Output(input_batch[self.config.label_field], y_scores),
         )
 
-    def _calculate_metrics(self, outputs: Output) -> dict[str, Tensor]:
+    def _calculate_metrics(
+        self, outputs: Output
+    ) -> dict[str, Tensor]:  # pytype: disable=signature-mismatch
         """Calculates metrics from concatenated_outputs of the whole evaluation set.
 
            If no threshold can satisfy the target level, the precision / recall will be -1

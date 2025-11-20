@@ -68,6 +68,8 @@ def generate_paged_attention_data(
     return q, key, value, page_tables, bias
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def generate_attention_data(
     batch_size: int,
     query_len: int,

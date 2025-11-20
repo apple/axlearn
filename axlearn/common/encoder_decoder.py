@@ -14,7 +14,7 @@ from axlearn.common.decoding import BeamSearchOutputs, SampleOutputs
 from axlearn.common.encoder import Encoder
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.loss import cross_entropy
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.utils import Nested, validate_contains_paths
 
@@ -179,9 +179,9 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
             label_smoothing=cfg.label_smoothing,
         )
         per_token_loss = loss_dict["per_target_loss"] * live_targets
-        self.add_summary("loss", WeightedScalar(loss, num_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
-        self.add_summary("token_accuracy", WeightedScalar(loss_dict["accuracy"], num_targets))
+        self.add_summary("loss", WeightedSummary(loss, num_targets))
+        self.add_summary("perplexity", WeightedSummary(jnp.exp(loss), num_targets))
+        self.add_summary("token_accuracy", WeightedSummary(loss_dict["accuracy"], num_targets))
         return loss, dict(per_token_loss=per_token_loss)
 
     def beam_search_decode(

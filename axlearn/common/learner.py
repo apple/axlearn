@@ -12,10 +12,11 @@ from __future__ import annotations
 import dataclasses
 import enum
 from collections.abc import Mapping, Sequence
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, List, Optional, Union, cast
 
 import jax
 import optax
+from absl import logging
 from jax import numpy as jnp
 
 from axlearn.common.base_layer import ParameterSpec
@@ -32,7 +33,7 @@ from axlearn.common.learner_base import LearnerModule
 from axlearn.common.module import Module, child_context, new_output_collection
 from axlearn.common.optimizer_base import OptParam, PartitionedGradientTransformation
 from axlearn.common.optimizers import param_ema
-from axlearn.common.update_transformation import (
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     BackwardOutputs,
     ForwardBackwardOutputs,
     ForwardFn,
@@ -47,6 +48,7 @@ from axlearn.common.utils import (
     Nested,
     Tensor,
     flatten_items,
+    get_recursively,
     match_regex_rules,
     prune_empty,
     register_per_param_settings,
@@ -166,9 +168,10 @@ class Learner(BaseLearner):
         #
         # See optimizers.param_ema for more details.
         ema: InstantiableConfig = config_for_function(param_ema)
-        # Whether to add per variable gradient and norm summaries. Enable it will make
-        # the training slower since the summary is computed for every step.
-        enable_per_variable_summaries: bool = False
+        # Whether to add per variable gradient and norm summaries. Enable it will make the training
+        # slower since the summary is computed for every step. When a list of strings is provided,
+        # the global norm for each  specified component (prefix-matched) is computed.
+        enable_per_variable_summaries: Union[bool, List[str]] = False
         # Optional decorator for the ForwardFn. An example use would be to enable gradient
         # accumulation by using `with_minibatch_steps` decorator defined below. E.g.
         # learner.forward_fn_transformation = config.config_for_function(with_minibatch_steps).set(
@@ -269,7 +272,7 @@ class Learner(BaseLearner):
         state_updates: Nested[Tensor],
     ) -> Nested[Tensor]:
         cfg = self.config
-        if cfg.enable_per_variable_summaries:
+        if cfg.enable_per_variable_summaries is True:
             param_rms = jax.tree.map(
                 lambda p: optax.safe_root_mean_squares(p.value, min_rms=1e-3), opt_params
             )
@@ -280,6 +283,20 @@ class Learner(BaseLearner):
             )
             for p, g_n in flatten_items(grad_rms):
                 self.add_summary(f"grad_rms/{p}", g_n)
+        elif isinstance(cfg.enable_per_variable_summaries, list):
+            # Expecting a list of strings for which to get grad norm summaries,
+            # e.g., ["comp_1", "comp_2/weight"]
+            for variable_prefix in cfg.enable_per_variable_summaries:
+                try:
+                    variable_grad_norm = get_recursively(gradients, variable_prefix)
+                except KeyError:
+                    # fail gracefully to not interrupt training
+                    logging.error("Could not get grad norm for %s", variable_prefix)
+                    variable_grad_norm = {}
+
+                # Using global norm when subcomponents are used.
+                variable_grad_norm = optax.global_norm(variable_grad_norm)
+                self.add_summary(f"grad_norm/{variable_prefix}", variable_grad_norm)
 
         # Set `parameter_updates` to 0 if the param is not updated by the optimizer.
         parameter_updates = jax.tree.map(

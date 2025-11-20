@@ -19,6 +19,7 @@ from jax.experimental import pallas as pl
 from axlearn.common.attention import compute_gqa_context, compute_gqa_logits, softmax_with_biases
 from axlearn.common.attention_bias import BaseAttentionBias, MaskFn, SegmentIdAttentionBias
 from axlearn.common.config import Configurable, config_class
+from axlearn.common.flash_attention.types import FlashAttentionWithShardMapSpecs
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache, reconstruct_kv
@@ -292,6 +293,27 @@ class BaseFlashAttention(Configurable):
             return False
         return True
 
+    def build(
+        self, input_batch: Nested[Tensor | BaseAttentionBias]  # pylint: disable=unused-argument
+    ) -> FlashAttentionWithShardMapSpecs:
+        """Builds sharding specifications for the flash attention operation.
+
+        This method is called to build the sharding map specifications that will be used
+        to distribute the attention computation across devices. The base implementation simply
+        wraps `self` in a FlashAttentionShardWithMapSpecs, but subclasses may override this to
+        create more sophisticated specs based on the input batch characteristics.
+
+        Args:
+            input_batch: A dict containing the input tensors and attention biases. While unused
+                in the base implementation, this parameter allows subclasses to inspect input
+                properties when building custom sharding specifications.
+
+        Returns:
+            FlashAttentionShardWithMapSpecs containing the attention function and any
+                additional sharding metadata required for distributed execution.
+        """
+        return FlashAttentionWithShardMapSpecs(fn=self)
+
 
 class BaseSingleStepDecoding(BaseFlashAttention):
     """Wraps the common checks for single step decoding kernels."""
@@ -545,8 +567,6 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
 
     TPU Pallas lowering doesn't yet support DotAlgorithmPreset. Use Precision instead.
     """
-    if jax.default_backend() == "cpu":
-        return get_cpu_dot_precision(dtype)
     if dtype == jnp.float32:
         # HIGHEST uses BF16_BF16_F32_X6, which emulates higher precision with 6 BF16 passes.
         # Note: jax.lax.Precision.HIGH (BF16_BF16_F32_X3) is not yet supported. We should use it

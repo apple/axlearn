@@ -95,7 +95,7 @@ class BaseParamConverterTest(TestCase):
 
     # We test by copying params from test to ref, instead of in parent _compute_layer_outputs.
     # pylint: disable-next=arguments-differ
-    def _compute_layer_outputs(
+    def _compute_layer_outputs(  # pytype: disable=signature-mismatch
         self,
         *,
         test_layer: BaseLayer,
