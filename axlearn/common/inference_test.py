@@ -824,6 +824,96 @@ class InferenceTest(test_utils.TestCase):
                 mock_summary_writer.assert_any_call(step=1, values=mock.ANY)
                 mock_summary_writer.assert_any_call(step=2, values=mock.ANY)
 
+    @parameterized.parameters(
+        filter(
+            lambda params: is_supported(*params),
+            itertools.product(
+                ("cpu", "gpu", "tpu"),  # platform,
+                ((1, 1), (8, 1), (4, 1)),  # mesh_shape
+                (jnp.float32,),  # param_dtype
+                (jnp.float32,),  # inference_dtype
+                (16,),  # global_batch_size
+                (DataPartitionType.FULL,),  # data_partition
+            ),
+        )
+    )
+    def test_runner_with_passed_state(
+        self,
+        platform: str,
+        mesh_shape: tuple[int, int],
+        param_dtype: jnp.dtype,
+        inference_dtype: Optional[jnp.dtype],
+        global_batch_size: int,
+        data_partition: DataPartitionType,
+    ):
+        """Test that InferenceRunner can accept a pre-built inference_runner_state."""
+        logging.info(
+            "platform=%s mesh_shape=%s global_batch_size=%s data_partition=%s",
+            platform,
+            mesh_shape,
+            global_batch_size,
+            data_partition,
+        )
+        with tempfile.TemporaryDirectory() as local_tmp_dir:
+            prng_key = jax.random.PRNGKey(11)
+            local_run = jax.process_count() == 1
+            root_dir = local_tmp_dir if local_run else "gs://axlearn-public/testdata/inference_test"
+            mesh_axis_names = ("data", "model")
+
+            # Save ckpt.
+            _, ckpt_dir = self._build_ckpt(
+                prng_key=prng_key,
+                root_dir=root_dir,
+                mesh_shape=mesh_shape,
+                mesh_axis_names=mesh_axis_names,
+            )
+
+            # First, create a runner that loads state from checkpoint.
+            cfg1 = self._runner_config(
+                mesh_shape=mesh_shape,
+                mesh_axis_names=mesh_axis_names,
+                param_dtype=param_dtype,
+                inference_dtype=inference_dtype,
+                ckpt_dir=ckpt_dir,
+                data_partition=data_partition,
+            )
+            inference_runner1 = cfg1.set(name="test_inference_runner1").instantiate(parent=None)
+            loaded_state = inference_runner1.inference_runner_state
+
+            # Now create a second runner with the loaded state passed directly.
+            # Pass the state directly without using fake_state to ensure builder is bypassed.
+            cfg2 = self._runner_config(
+                mesh_shape=mesh_shape,
+                mesh_axis_names=mesh_axis_names,
+                param_dtype=param_dtype,
+                inference_dtype=inference_dtype,
+                ckpt_dir=ckpt_dir,
+                data_partition=data_partition,
+            )
+            inference_runner2 = cfg2.set(name="test_inference_runner2").instantiate(
+                parent=None, inference_runner_state=loaded_state
+            )
+
+            # Verify that both runners have the same state.
+            self.assertNestedEqual(
+                inference_runner1.inference_runner_state, inference_runner2.inference_runner_state
+            )
+
+            # Verify that inference works with the passed state.
+            input_generator_fn = _build_input(global_batch_size, data_partition=data_partition)
+            outputs1 = []
+            outputs2 = []
+
+            for batch1, batch2 in zip(
+                inference_runner1.run(input_generator_fn(), method="predict"),
+                inference_runner2.run(input_generator_fn(), method="predict"),
+            ):
+                outputs1.append(utils.replicate_to_local_data(batch1["outputs"]))
+                outputs2.append(utils.replicate_to_local_data(batch2["outputs"]))
+
+            # Outputs should be identical since they use the same state.
+            self.assertNestedAllClose(outputs1, outputs2)
+
 
 if __name__ == "__main__":
     # TODO(altimofeev): The following doesn't have any effect since `utils_spmd.setup()` was
