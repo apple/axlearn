@@ -112,5 +112,4 @@ def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     config_map = {}
     config_map.update(fuji.trainer_configs(_train_input_source, _eval_input_sources))
     config_map.update(gspmd.trainer_configs(_train_input_source, _eval_input_sources))
-    config_map.update(envy.trainer_configs(_train_input_source, _eval_input_sources))
     return config_map
