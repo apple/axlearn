@@ -1,4 +1,5 @@
 """Implementation of RAttention with residual linear attention."""
+
 from functools import partial
 from typing import Callable, Optional, Union
 

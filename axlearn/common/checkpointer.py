@@ -474,9 +474,11 @@ class TensorStoreStateStorage(StateStorage):
                     spec.shardings.append(
                         jax.sharding.NamedSharding(
                             mesh,
-                            jax.sharding.PartitionSpec()
-                            if value.mesh_axes is None
-                            else value.mesh_axes,
+                            (
+                                jax.sharding.PartitionSpec()
+                                if value.mesh_axes is None
+                                else value.mesh_axes
+                            ),
                         )
                     )
             elif isinstance(value, tf.data.Iterator):

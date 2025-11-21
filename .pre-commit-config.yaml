@@ -14,16 +14,19 @@ repos:
   - id: black
     name: black
     entry: black
-    language: system
+    language: python
+    additional_dependencies: ['black==23.12.0']
     types: [python]
   - id: isort
     name: isort
     entry: isort
-    language: system
+    language: python
+    additional_dependencies: ['isort==5.13.2']
     types: [python]
   - id: pylint
     name: pylint
     entry: pylint
     args: ['--msg-template="{abspath}:{line}: [{msg_id}({symbol}), {obj}] {msg}"']
-    language: system
+    language: python
+    additional_dependencies: ['pylint==3.3.7']
     types: [python]

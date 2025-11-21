@@ -237,6 +237,7 @@ class MambaMixer(torch.nn.Module):
                     hidden_states += self.conv1d.bias
                 hidden_states = self.act(hidden_states).to(dtype).unsqueeze(-1)         # [batch, intermediate_size, 1] : decoding
             else:
+                # pylint: disable=not-callable  # pad is callable, false positive
                 conv_state = torch.nn.functional.pad(
                     hidden_states,
                     (self.conv_kernel_size - hidden_states.shape[-1], 0)

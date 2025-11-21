@@ -779,10 +779,13 @@ class InferenceTest(test_utils.TestCase):
 
         mock_summary_writer = mock.Mock(return_value=None)
 
-        with mock.patch(
-            "axlearn.common.summary_writer.SummaryWriter.Config.instantiate",
-            mock.MagicMock(return_value=mock_summary_writer),
-        ), tempfile.TemporaryDirectory() as local_tmp_dir:
+        with (
+            mock.patch(
+                "axlearn.common.summary_writer.SummaryWriter.Config.instantiate",
+                mock.MagicMock(return_value=mock_summary_writer),
+            ),
+            tempfile.TemporaryDirectory() as local_tmp_dir,
+        ):
             root_dir = local_tmp_dir if local_run else "gs://axlearn-public/testdata/inference_test"
             with set_data_dir(root_dir):
                 prng_key = jax.random.PRNGKey(11)
