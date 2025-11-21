@@ -11,7 +11,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
+from jax._src.mesh import thread_resources
+from jax.experimental import mesh_utils
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+from jax.experimental.shard_map import shard_map
+from jax.sharding import Mesh, PartitionSpec
 
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
@@ -24,8 +28,9 @@ from axlearn.common.attention_bias import (
 )
 from axlearn.common.flash_attention import tpu_attention
 from axlearn.common.flash_attention.common import ReferenceMHA
+from axlearn.common.flash_attention.layer import default_mha_dim_to_partition_spec
 from axlearn.common.flash_attention.test_utils import generate_attention_data
-from axlearn.common.test_utils import TestCase, Tolerance
+from axlearn.common.test_utils import TestCase, Tolerance, is_supported_mesh_shape
 from axlearn.common.utils import Tensor
 
 # Skip decorator for GPU backend
@@ -188,6 +193,8 @@ class TestFlashAttention(TestCase):
         dropout_rate=[0, 0.5],
         head_group_size=[2, 1],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_gradient(
         self,
         batch_size,
@@ -455,6 +462,157 @@ class TestFlashAttention(TestCase):
             self.assertEqual(fn._use_fused, expected_use_fused)
 
         jit_fn()
+
+    @parameterized.product(
+        batch_size=[4],
+        seq_len=[1024],
+        num_heads=[4],
+        per_head_dim=[128],
+        mesh=[
+            ((1, 1, 4), ("data", "model", "seq")),
+            ((2, 1, 2), ("data", "model", "seq")),
+            ((1, 2, 2), ("data", "model", "seq")),
+        ],
+        sliding_window_sz=[
+            512,
+        ],
+        with_segment_ids=[
+            False,
+            True,
+        ],
+    )
+    def test_all_gather_attention(
+        self,
+        batch_size,
+        seq_len,
+        num_heads,
+        per_head_dim,
+        mesh,
+        sliding_window_sz,
+        with_segment_ids,
+    ):
+        """
+        Test TPUSplashAttentionWithAllGather forward and gradient computation
+        with sequence parallelism
+        """
+        mesh_shape, mesh_axis_names = mesh
+        if not is_supported_mesh_shape(mesh_shape):
+            self.skipTest(f"Unsupported mesh shape: {mesh_shape}")
+
+        num_kv_heads = num_heads
+        q, k, v, bias = generate_attention_data(
+            batch_size,
+            seq_len,
+            seq_len,
+            num_heads,
+            per_head_dim,
+            num_kv_heads,
+            sliding_window_sz=sliding_window_sz,
+            with_segment_ids=with_segment_ids,
+            dtype=jnp.bfloat16,
+        )
+
+        with Mesh(mesh_utils.create_device_mesh(mesh_shape), mesh_axis_names):
+            tpu_block_size = 128
+            cfg = dict(
+                interpret=False,
+                softmax_scale=per_head_dim**-0.5,
+                tpu_block_size=tpu_block_size,
+                dropout_rate=0.0,
+                backend_overrides={"all_gather_attention": True},
+            )
+
+            attention = (
+                tpu_attention.TPUSplashAttentionWithAllGather.default_config()
+                .set(**cfg)
+                .instantiate()
+            )
+            ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+
+            prng_key = jax.random.PRNGKey(42)
+            input_batch = dict(
+                query=q,
+                key=k,
+                value=v,
+                bias=bias,
+                prng_key=prng_key,
+                logit_sink=None,
+            )
+
+            if not attention.is_supported(input_batch=input_batch, kv_cache_type=None):
+                self.skipTest("Configuration not supported by TPUSplashAttentionWithAllGather")
+
+            # Build the sharded attention function directly
+            specs = attention.build(input_batch=input_batch)
+
+            mesh = thread_resources.env.physical_mesh
+            batch_axis = tuple(x for x in mesh_axis_names if x in ("data", "fsdp")) or None
+
+            # Create sharded input batch
+            input_batch = {
+                "query": q,
+                "key": k,
+                "value": v,
+                "bias": bias,
+                "prng_key": prng_key,
+                **specs.additional_kwargs,
+            }
+
+            # Create in_specs for shard_map
+            in_specs = {
+                "query": PartitionSpec(batch_axis, "seq", "model", None),
+                "key": PartitionSpec(batch_axis, None, "model", None),
+                "value": PartitionSpec(batch_axis, None, "model", None),
+                "bias": bias.partition_spec(default_mha_dim_to_partition_spec(mesh_axis_names)),
+                "prng_key": PartitionSpec(),
+                **specs.additional_in_specs,
+            }
+
+            # Run attention with shard_map
+            partitioned_fn = shard_map(
+                specs.fn,
+                mesh=mesh,
+                in_specs=(in_specs,),
+                out_specs=PartitionSpec(batch_axis, "seq", "model", None),
+                check_rep=False,
+            )
+            out = partitioned_fn(input_batch)
+
+            # Compare with reference
+            ref_out = ref_fn(input_batch)
+            self.assertAllCloseWithOutliers(
+                out, ref_out, tolerance_map={1.0: Tolerance(atol=5e-2), 0.98: Tolerance(atol=1e-2)}
+            )
+
+            # Compare gradients
+            def grad_fn(q, k, v):
+                input_batch_grad = {
+                    "query": q,
+                    "key": k,
+                    "value": v,
+                    "bias": bias,
+                    "prng_key": prng_key,
+                    **specs.additional_kwargs,
+                }
+                return partitioned_fn(input_batch_grad).mean()
+
+            grad_out = jax.grad(grad_fn, argnums=(0, 1, 2))(q, k, v)
+
+            def ref_grad_fn(q, k, v):
+                return ref_fn(
+                    dict(query=q, key=k, value=v, bias=bias, prng_key=prng_key, logit_sink=None)
+                ).mean()
+
+            ref_grad_out = jax.grad(ref_grad_fn, argnums=(0, 1, 2))(q, k, v)
+
+            self.assertNestedAllCloseWithOutliers(
+                grad_out,
+                ref_grad_out,
+                tolerance_map={
+                    1.0: Tolerance(atol=5e-2),
+                    0.98: Tolerance(atol=1e-2),
+                },
+            )
 
 
 if __name__ == "__main__":

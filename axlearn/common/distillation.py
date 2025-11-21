@@ -16,7 +16,7 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.config import InstantiableConfig
 from axlearn.common.layers import Linear
 from axlearn.common.loss import kl_divergence, negative_cosine_similarity_loss
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import (
     REQUIRED,
     Module,
@@ -135,11 +135,11 @@ class KLDivergenceMetric(BaseLayer):
 
         predictions = jnp.argmax(predictions, axis=-1)
         accuracy = jnp.equal(predictions, label).sum() / denominator
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_examples))
+        self.add_summary("accuracy", WeightedSummary(accuracy, num_examples))
 
         predictions_t = jnp.argmax(targets, axis=-1)
         accuracy_t = jnp.equal(predictions_t, label).sum() / denominator
-        self.add_summary("accuracy_teacher", WeightedScalar(accuracy_t, num_examples))
+        self.add_summary("accuracy_teacher", WeightedSummary(accuracy_t, num_examples))
 
         return loss
 
@@ -269,13 +269,13 @@ class DeiTDistillationMetric(BaseLayer):
         # logits.
         predictions = jnp.argmax(logits_classification + logits_distillation, axis=-1)
         accuracy = jnp.equal(predictions, labels).sum() / denominator
-        self.add_summary("loss", WeightedScalar(loss, num_examples))
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_examples))
+        self.add_summary("loss", WeightedSummary(loss, num_examples))
+        self.add_summary("accuracy", WeightedSummary(accuracy, num_examples))
 
         # Log accuracy for the teacher model.
         predictions_t = jnp.argmax(logits_teacher, axis=-1)
         accuracy_t = jnp.equal(predictions_t, labels).sum() / denominator
-        self.add_summary("accuracy_teacher", WeightedScalar(accuracy_t, num_examples))
+        self.add_summary("accuracy_teacher", WeightedSummary(accuracy_t, num_examples))
         return loss
 
 

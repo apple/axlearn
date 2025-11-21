@@ -23,7 +23,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 from axlearn.common.config import config_class
 from axlearn.common.evaler_test import DummyModel
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.summary import AudioSummary, ImageSummary
 from axlearn.common.summary_writer import (
     CheckpointerAction,
@@ -75,8 +75,8 @@ class SummaryWriterTest(TestCase):
                 writer(
                     step=step,
                     values={
-                        "loss": WeightedScalar(mean=3, weight=16),
-                        "accuracy": WeightedScalar(mean=0.7, weight=16),
+                        "loss": WeightedSummary(mean=3, weight=16),
+                        "accuracy": WeightedSummary(mean=0.7, weight=16),
                         "learner": {"learning_rate": 0.1},
                         "image": ImageSummary(jnp.array(image)),
                     },
@@ -168,8 +168,8 @@ class CompositeWriterTest(TestCase):
             writer(
                 step=100,
                 values={
-                    "loss": WeightedScalar(mean=3, weight=16),
-                    "accuracy": WeightedScalar(mean=0.7, weight=16),
+                    "loss": WeightedSummary(mean=3, weight=16),
+                    "accuracy": WeightedSummary(mean=0.7, weight=16),
                     "learner": {"learning_rate": 0.1},
                 },
             )
@@ -209,8 +209,8 @@ class WandBWriterTest(TestCase):
         writer(
             step=step,
             values={
-                "loss": WeightedScalar(mean=3, weight=16),
-                "accuracy": WeightedScalar(mean=0.7, weight=16),
+                "loss": WeightedSummary(mean=3, weight=16),
+                "accuracy": WeightedSummary(mean=0.7, weight=16),
                 "learner": {"learning_rate": 0.1},
                 "nested.throughput": 100.2,
                 "image": ImageSummary(jax.numpy.ones((2, 5, 5, 3))),
@@ -318,6 +318,28 @@ class WandBWriterTest(TestCase):
                 # We need to make sure that we can log at the same training step multiple times.
                 for step in [30, 40, 50, 60]:
                     self._write_per_step(writer, step)
+            finally:
+                wandb.finish()
+
+    @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
+    @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
+    def test_wandb_settings_kwargs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            try:
+                _: WandBWriter = (
+                    WandBWriter.default_config()
+                    .set(
+                        name="test",
+                        exp_name="wandb-testSettings",
+                        dir=tempdir,
+                        mode="offline",
+                        wandb_settings_kwargs={"silent": True, "disable_code": True},
+                    )
+                    .instantiate(parent=None)
+                )
+                # Verify the settings were applied
+                self.assertTrue(wandb.run.settings.silent)
+                self.assertTrue(wandb.run.settings.disable_code)
             finally:
                 wandb.finish()
 

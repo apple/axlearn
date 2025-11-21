@@ -10,6 +10,7 @@ import jax.ad_checkpoint
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
+from jax._src.mesh import thread_resources
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 from jax.experimental.pallas.ops.tpu.flash_attention import (
@@ -29,6 +30,7 @@ from jax.experimental.pallas.ops.tpu.flash_attention import (
 )
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds as SplashSegmentIds
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+from jax.sharding import NamedSharding, PartitionSpec
 
 import axlearn.common.flash_attention.tpu_splash_attention as splash_attention_kernel
 from axlearn.common.attention_bias import (
@@ -46,6 +48,7 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.flash_attention.types import FlashAttentionWithShardMapSpecs
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested, Tensor
 
@@ -136,6 +139,8 @@ def _pallas_tpu_flash_attention(
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=range(5, 10))
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention(
     q,
     k,
@@ -166,6 +171,8 @@ def _flash_attention(
     )
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention_fwd(
     q,
     k,
@@ -263,6 +270,8 @@ def _flash_attention_bwd(
 _flash_attention.defvjp(fwd=_flash_attention_fwd, bwd=_flash_attention_bwd)
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _flash_attention_impl(
     q,
     k,
@@ -441,14 +450,12 @@ def _flash_attention_impl(
         out_shape=out_shape,
         debug=debug,
         interpret=interpret,
-        compiler_params=dict(
-            mosaic=dict(
-                dimension_semantics=(
-                    "parallel",
-                    "parallel",
-                    "parallel",
-                    "arbitrary",
-                )
+        compiler_params=pltpu.CompilerParams(
+            dimension_semantics=(
+                "parallel",
+                "parallel",
+                "parallel",
+                "arbitrary",
             )
         ),
     )(q, k, v, ab, q_segment_ids, kv_segment_ids)
@@ -649,14 +656,12 @@ def _flash_attention_bwd_dkv(
             out_shape=out_shapes,
             debug=debug,
             interpret=interpret,
-            compiler_params=dict(
-                mosaic=dict(
-                    dimension_semantics=(
-                        "parallel",
-                        "parallel",
-                        "parallel",
-                        "arbitrary",
-                    )
+            compiler_params=pltpu.CompilerParams(
+                dimension_semantics=(
+                    "parallel",
+                    "parallel",
+                    "parallel",
+                    "arbitrary",
                 )
             ),
         )(q, k, v, ab, q_segment_ids, kv_segment_ids, l, m, do, di)
@@ -842,14 +847,12 @@ def _flash_attention_bwd_dq(
             out_shape=out_shapes,
             debug=debug,
             interpret=interpret,
-            compiler_params=dict(
-                mosaic=dict(
-                    dimension_semantics=(
-                        "parallel",
-                        "parallel",
-                        "parallel",
-                        "arbitrary",
-                    )
+            compiler_params=pltpu.CompilerParams(
+                dimension_semantics=(
+                    "parallel",
+                    "parallel",
+                    "parallel",
+                    "arbitrary",
                 )
             ),
         )(q, k, v, ab, q_segment_ids, kv_segment_ids, l, m, do, di)
@@ -969,6 +972,31 @@ class TPUSplashAttention(TPUFlashAttention):
         key = jnp.einsum("bsnh->bnsh", key)
         value = jnp.einsum("bsnh->bnsh", value)
 
+        block_sizes = self.get_block_sizes()
+        splash_mask = _to_splash_mask(
+            mask, mask_shape=(query.shape[2], key.shape[2]), q_seq_shards=1
+        )
+
+        num_heads = query.shape[1]
+        mha_mask = splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads)
+
+        num_heads = query.shape[1]
+        kernel = splash_attention_kernel.make_splash_mha(
+            mask=mha_mask,
+            block_sizes=block_sizes,
+            # TODO(dhwang2): support "seq" and "model" shard.
+            head_shards=1,
+            q_seq_shards=1,
+            dropout_rate=cfg.dropout_rate,
+            interpret=self.cfg.interpret,
+            residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
+        )
+        p_kernel = functools.partial(kernel, prng_key=prng_key, logit_sink=logit_sink)
+        vp_kernel = jax.vmap(p_kernel, axis_name="batch")
+        context = vp_kernel(q=query, k=key, v=value, segment_ids=seg_ids)
+        return jnp.einsum("bnth->btnh", context)
+
+    def get_block_sizes(self):
         block_size = self.cfg.tpu_block_size
         block_sizes = splash_attention_kernel.BlockSizes(
             block_q=self.get_backend_overrides("splash_block_q", block_size),
@@ -1002,28 +1030,7 @@ class TPUSplashAttention(TPUFlashAttention):
             # fused kernel.
             use_fused_bwd_kernel=self._use_fused,
         )
-        splash_mask = _to_splash_mask(
-            mask, mask_shape=(query.shape[2], key.shape[2]), q_seq_shards=1
-        )
-
-        num_heads = query.shape[1]
-        mha_mask = splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads)
-
-        num_heads = query.shape[1]
-        kernel = splash_attention_kernel.make_splash_mha(
-            mask=mha_mask,
-            block_sizes=block_sizes,
-            # TODO(dhwang2): support "seq" and "model" shard.
-            head_shards=1,
-            q_seq_shards=1,
-            dropout_rate=cfg.dropout_rate,
-            interpret=self.cfg.interpret,
-            residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
-        )
-        p_kernel = functools.partial(kernel, prng_key=prng_key, logit_sink=logit_sink)
-        vp_kernel = jax.vmap(p_kernel, axis_name="batch")
-        context = vp_kernel(q=query, k=key, v=value, segment_ids=seg_ids)
-        return jnp.einsum("bnth->btnh", context)
+        return block_sizes
 
     def get_dropout_mask(
         self,
@@ -1046,28 +1053,7 @@ class TPUSplashAttention(TPUFlashAttention):
         query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
         key = jnp.einsum("bsnh->bnsh", key)
 
-        block_size = self.cfg.tpu_block_size
-        block_sizes = splash_attention_kernel.BlockSizes(
-            block_q=self.get_backend_overrides("splash_block_q", block_size),
-            block_kv=self.get_backend_overrides("splash_block_kv", block_size),
-            block_kv_compute=self.get_backend_overrides("splash_block_kv_compute", block_size),
-            block_q_dkv=self.get_backend_overrides("splash_block_q_dkv", block_size),
-            block_kv_dkv=self.get_backend_overrides("splash_block_kv_dkv", block_size),
-            block_kv_dkv_compute=self.get_backend_overrides(
-                "splash_block_kv_dkv_compute", block_size
-            ),
-            block_q_dq=(
-                None
-                if self._use_fused
-                else self.get_backend_overrides("splash_block_q_dq", block_size)
-            ),
-            block_kv_dq=(
-                None
-                if self._use_fused
-                else self.get_backend_overrides("splash_block_kv_dq", block_size)
-            ),
-            use_fused_bwd_kernel=self._use_fused,
-        )
+        block_sizes = self.get_block_sizes()
 
         kernel = functools.partial(
             splash_attention_kernel.get_dropout_mask,
@@ -1078,6 +1064,153 @@ class TPUSplashAttention(TPUFlashAttention):
         v_kernel = jax.vmap(kernel, axis_name="batch")
         dropout_mask = v_kernel(query, key)
         return dropout_mask
+
+
+class TPUSplashAttentionWithAllGather(TPUSplashAttention):
+    # TODO(dmytro-babych): Unify with TPUSplashAttention. Since the underlying kernel is the same,
+    #  there is no fundamental reason to have a separate class, other than being cautious.
+    """Context parallel attention implementation with all-gather for sequence-sharded Q/K/V.
+
+    This kernel implements NVIDIA-style context parallelism for TPU, where the sequence dimension
+    is partitioned across devices after QKV projection. During attention computation:
+    - Query (Q) remains sequence-sharded throughout attention computation
+    - Key (K) and Value (V) are all-gathered from sequence-sharded to full-length right before
+      attention, ensuring each device has the complete K/V sequences
+    - Each Q shard attends to the full (all-gathered) K/V sequences
+    - Attention output remains sequence-sharded, matching the input Q sharding
+
+    Usage:
+        - Only enabled when `all_gather_attention=True` in backend_overrides
+        - Only applicable when inputs are sharded with "seq" axis along the sequence dimension
+        - Requires "seq" axis in the mesh with size > 1
+
+    The build() method returns FlashAttentionShardWithMapSpecs containing:
+        - fn: The sharded computation function to use in shard_map
+        - additional_in_specs: Sharding specs for mask metadata
+        - additional_kwargs: Pre-computed mask information for efficient attention
+
+    For more context see:
+    https://docs.nvidia.com/megatron-core/developer-guide/latest/api-guide/context_parallel.html
+    """
+
+    def is_supported(
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
+            return False
+        mesh = thread_resources.env.physical_mesh
+
+        if not self.get_backend_overrides("all_gather_attention", False):
+            return False
+
+        if "seq" in mesh.shape and mesh.shape["seq"] == 1:
+            # we use this kernel only if sequence parallel is enabled
+            logging.info("Skipping TPUSplashAttentionWithAllGather because seq axis is not set.")
+            return False
+
+        return True
+
+    def build(self, input_batch: Nested[Tensor | BaseAttentionBias]):
+        cfg = self.config
+        bias: BaseAttentionBias = input_batch["bias"]
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+
+        mask, _, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        if mask.has_value():
+            assert isinstance(mask, MaskFnAttentionBias)
+
+        num_heads = query.shape[2]
+        mask_shape = (query.shape[1], key.shape[1])
+        splash_mask = _to_splash_mask(mask, mask_shape=mask_shape)
+        mesh = thread_resources.env.physical_mesh
+
+        sharding = NamedSharding(mesh, PartitionSpec(None, "seq"))
+        q_seq_shards = sharding.mesh.shape["seq"]
+
+        mha_mask = splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads)
+        kernel = splash_attention_kernel.make_splash_mha(
+            mask=mha_mask,
+            block_sizes=self.get_block_sizes(),
+            head_shards=1,
+            q_seq_shards=q_seq_shards,
+            interpret=cfg.interpret,
+            residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
+        )
+        # args contains fwd_mask_info, dq_mask_info and dkv_mask_info, corresponding to the
+        # first three positional arguments to `splash_attention_kernel._splash_attention`.
+        additional_args_keys = ["fwd_mask_info", "dq_mask_info", "dkv_mask_info"]
+        args, _ = kernel.tree_flatten()
+        specs, _ = kernel.manual_sharding_spec(sharding).tree_flatten()
+        kwargs = dict(zip(additional_args_keys, args))
+        specs = dict(zip(additional_args_keys, specs))
+        splash_fn = functools.partial(
+            splash_attention_kernel._splash_attention,  # pylint: disable=protected-access
+            **kernel.kwargs,
+        )
+
+        def shard_fn(batch):
+            batch["query"] *= cfg.softmax_scale
+            _, segment_ids, _ = split(batch["bias"], MaskFnAttentionBias, SegmentIdAttentionBias)
+            # Note: we cannot pass bias to vmap directly since it's possible that not all its
+            # tensors have the same batch dimension, which is required by vmap. For example,
+            # `target_positions` and `source_positions` from MaskFnAttentionBias may have
+            # batch dim == 1. Therefore, we extract the info we need from bias that pass that
+            # to vmap instead.
+            seg_ids = None
+            if hasattr(segment_ids, "segment_ids"):
+                seg_ids = segment_ids.segment_ids
+            return jax.vmap(vmap_fn, in_axes=(0, 0, 0, 0) + (None,) * 4, axis_name="batch")(
+                batch["query"],
+                batch["key"],
+                batch["value"],
+                seg_ids,
+                batch["prng_key"],
+                *[batch[k] for k in additional_args_keys],
+            )
+
+        def vmap_fn(q_proj, k_proj, v_proj, kv_seg_ids, prng_key, *args):
+            assert len(args) == 3
+            if kv_seg_ids is None:
+                seg_ids = None
+            else:
+                # SplashAttention requires q_seg_ids to have the same sequence length q_proj and
+                # kv_seg_ids to have the same sequence length as k|v_proj. Therefore, we pass in a
+                # segment id that's not sharded in the sequence dimension, and manually slice the
+                # sequence dim to populate q_seg_ids.
+                if q_seq_shards == 1:
+                    q_shard_idx = 0
+                else:
+                    q_shard_idx = jax.lax.axis_index("seq")
+                q_shard_size = kv_seg_ids.shape[0] // q_seq_shards
+                q_seg_ids = jax.lax.dynamic_slice_in_dim(
+                    kv_seg_ids, q_shard_idx * q_shard_size, q_shard_size
+                )
+                seg_ids = splash_attention_kernel.SegmentIds(q_seg_ids, kv_seg_ids)
+
+            q_proj = jnp.einsum("tnh->nth", q_proj)
+            k_proj = jnp.einsum("snh->nsh", k_proj)
+            v_proj = jnp.einsum("snh->nsh", v_proj)
+
+            # TODO (dmytro-babych) add and test logits sink
+            out = splash_fn(
+                *args,
+                q_proj,
+                k_proj,
+                v_proj,
+                seg_ids,
+                prng_key=prng_key,
+            )
+            return jnp.einsum("nth->tnh", out)
+
+        return FlashAttentionWithShardMapSpecs(
+            fn=shard_fn,
+            additional_in_specs=specs,
+            additional_kwargs=kwargs,
+        )
 
 
 class LegacyTPUFlashAttention(TPUFlashAttention):

@@ -273,6 +273,8 @@ def _ssd_forward(
     return o, (q, k, v, cum_log_alpha, gamma_expanded, chunk_states, final_state)
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _ssd_backward_kernel(
     q_ref: Tensor,
     k_ref: Tensor,

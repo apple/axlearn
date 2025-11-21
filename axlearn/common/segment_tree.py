@@ -56,7 +56,7 @@ class SegmentTree(Generic[T]):
         elif isinstance(default_value, bool):
             return np.bool_
         else:
-            return object
+            return object  # pytype: disable=bad-return-type
 
     def update(self, index: int, value: T) -> None:
         """Update value at given index and propagate changes upward."""

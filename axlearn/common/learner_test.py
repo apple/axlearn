@@ -29,7 +29,7 @@ from axlearn.common.learner import (
     _value_and_grad,
     should_update_with_optimizers,
 )
-from axlearn.common.metrics import MetricAccumulator, WeightedScalar
+from axlearn.common.metrics import MetricAccumulator, WeightedSummary
 from axlearn.common.module import OutputCollection, child_context
 from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection
@@ -51,7 +51,7 @@ from axlearn.common.quantized_dot_general.layers import (
     get_all_fp8_param_names,
 )
 from axlearn.common.test_utils import TestCase
-from axlearn.common.update_transformation import (
+from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     ForwardOutputs,
     ForwardPass,
     OverrideInplaceUpdateTransformation,
@@ -586,7 +586,11 @@ class LearnerTest(TestCase):
 
         self.assertNestedAllClose(dict(v=expected_new_v), updated_params, atol=1e-6)
 
-    def test_per_variable_summaries(self):
+    @parameterized.parameters(
+        (True,),
+        (["comp_1", "comp_2/weight"],),
+    )
+    def test_per_variable_summaries(self, enable_per_variable_summaries):
         sgd_cfg = config_for_function(sgd_optimizer).set(
             learning_rate=1.0,
             decouple_weight_decay=True,
@@ -596,31 +600,58 @@ class LearnerTest(TestCase):
             args=(config_for_function(clip_by_global_norm), sgd_cfg),
         )
         cfg = Learner.default_config().set(
-            name="test", optimizer=optimizer_cfg, enable_per_variable_summaries=True
+            name="test",
+            optimizer=optimizer_cfg,
+            enable_per_variable_summaries=enable_per_variable_summaries,
         )
         learner: Learner = cfg.instantiate(parent=None)
         params = dict(
-            weight=OptParam(
-                value=jnp.asarray([0, 2, 2, -3], dtype=jnp.float32),
-                factorization_spec=None,
-                weight_decay_scale=1.0,
+            comp_1=dict(
+                weight=OptParam(
+                    value=jnp.asarray([0, 2, 2, -3], dtype=jnp.float32),
+                    factorization_spec=None,
+                    weight_decay_scale=1.0,
+                ),
+                moving_mean=OptParam(
+                    value=jnp.array([0, -1, 0, 0], dtype=jnp.float32),
+                    factorization_spec=None,
+                    weight_decay_scale=0.0,
+                ),
             ),
-            moving_mean=OptParam(
-                value=jnp.array([0, -1, 0, 0], dtype=jnp.float32),
-                factorization_spec=None,
-                weight_decay_scale=0.0,
+            comp_2=dict(
+                weight=OptParam(
+                    value=jnp.asarray([0, 2, 2, -3], dtype=jnp.float32),
+                    factorization_spec=None,
+                    weight_decay_scale=1.0,
+                ),
+                bias=OptParam(
+                    value=jnp.array([0, -1, 0, 0], dtype=jnp.float32),
+                    factorization_spec=None,
+                    weight_decay_scale=0.0,
+                ),
             ),
         )
         state = learner.init(model_params=params)
 
         def loss_fn(x):
-            return -jax.nn.log_softmax(x["weight"] + x["moving_mean"])[1]
+            return -jax.nn.log_softmax(
+                x["comp_1"]["weight"]
+                + x["comp_1"]["moving_mean"]
+                + x["comp_2"]["weight"]
+                + x["comp_2"]["bias"]
+            )[1]
 
         loss, grads = jax.value_and_grad(loss_fn)(jax.tree.map(lambda p: p.value, params))
-        np.testing.assert_allclose(loss, 1.412078, atol=1e-6, rtol=1e-6)
-        expected_grad = jnp.asarray([0.089629, -0.756364, 0.662272, 0.004462])
+        np.testing.assert_allclose(loss, 2.142971, atol=1e-6, rtol=1e-6)
+        expected_grad = jnp.asarray([0.01587562, -0.8826942, 0.86677927, 0.00003935])
         self.assertNestedAllClose(
-            dict(weight=expected_grad, moving_mean=expected_grad), grads, atol=1e-6, rtol=1e-6
+            dict(
+                comp_1=dict(weight=expected_grad, moving_mean=expected_grad),
+                comp_2=dict(weight=expected_grad, bias=expected_grad),
+            ),
+            grads,
+            atol=1e-6,
+            rtol=1e-6,
         )
         _, output_collection = F(
             learner,
@@ -632,22 +663,44 @@ class LearnerTest(TestCase):
                 Updates(
                     delta_updates=grads,
                     opt_params=params,
-                    inplace_updates=dict(moving_mean=params["moving_mean"].value + 1),
+                    inplace_updates=dict(
+                        dict(comp_1=dict(moving_mean=params["comp_1"]["moving_mean"].value + 1))
+                    ),
                 )
             ],
         )
+        expected_summaries = {
+            "optimizer/learning_rate": 1.0,
+            "optimizer/lr_schedule_step": 1,
+            "optimizer/gradient_norm": jnp.sqrt(jnp.sum(4 * expected_grad**2)),
+            "optimizer/schedule_step": 1,
+            "optimizer/schedule_scale": -1.0,
+        }
+
+        if enable_per_variable_summaries is True:
+            expected_summaries = {
+                **expected_summaries,
+                **{
+                    "param_rms/comp_1/weight": jnp.sqrt((0 + 4 + 4 + 9) / 4),
+                    "param_rms/comp_1/moving_mean": 0.5,
+                    "param_rms/comp_2/weight": jnp.sqrt((0 + 4 + 4 + 9) / 4),
+                    "param_rms/comp_2/bias": 0.5,
+                    "grad_rms/comp_1/weight": jnp.sqrt(jnp.mean(expected_grad**2)),
+                    "grad_rms/comp_1/moving_mean": jnp.sqrt(jnp.mean(expected_grad**2)),
+                    "grad_rms/comp_2/weight": jnp.sqrt(jnp.mean(expected_grad**2)),
+                    "grad_rms/comp_2/bias": jnp.sqrt(jnp.mean(expected_grad**2)),
+                },
+            }
+        else:
+            expected_summaries = {
+                **expected_summaries,
+                **{
+                    "grad_norm/comp_1": jnp.sqrt(jnp.sum(2 * expected_grad**2)),
+                    "grad_norm/comp_2/weight": jnp.sqrt(jnp.sum(expected_grad**2)),
+                },
+            }
         self.assertNestedAllClose(
-            {
-                "optimizer/learning_rate": 1.0,
-                "optimizer/lr_schedule_step": 1,
-                "optimizer/gradient_norm": jnp.sqrt(jnp.sum(2 * expected_grad**2)),
-                "param_rms/weight": jnp.sqrt((0 + 4 + 4 + 9) / 4),
-                "param_rms/moving_mean": 0.5,
-                "grad_rms/weight": jnp.sqrt(jnp.mean(expected_grad**2)),
-                "grad_rms/moving_mean": jnp.sqrt(jnp.mean(expected_grad**2)),
-                "optimizer/schedule_step": 1,
-                "optimizer/schedule_scale": -1.0,
-            },
+            expected_summaries,
             output_collection.summaries,
         )
 
@@ -738,7 +791,7 @@ class LearnerTest(TestCase):
             loss = -jax.nn.log_softmax(model_params["weight"] + model_params["moving_mean"])[1]
             output_collection = new_output_collection()
             output_collection.state_updates["weight"] = model_params["weight"] + 1
-            output_collection.summaries["loss"] = WeightedScalar(loss, 1)
+            output_collection.summaries["loss"] = WeightedSummary(loss, 1)
             return ForwardOutputs(loss=loss, aux={}, output_collection=output_collection)
 
         loss, grads = jax.value_and_grad(lambda x: loss_fn(model_params=x, inputs=None).loss)(

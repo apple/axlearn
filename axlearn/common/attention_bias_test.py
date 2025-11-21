@@ -119,7 +119,7 @@ class AttentionBiasTest(test_utils.TestCase):
         bias = attention_bias.ZeroAttentionBias()
         self.assertEqual(bias.value(), None)
 
-        bias = attention_bias.MaskFnAttentionBias(
+        bias = attention_bias.MaskFnAttentionBias(  # pytype: disable=wrong-arg-types
             None, target_positions=jnp.arange(5)[None], source_positions=jnp.arange(5)[None]
         )
         self.assertNotIsInstance(bias, attention_bias.ZeroAttentionBias)
@@ -424,7 +424,10 @@ class AttentionBiasTest(test_utils.TestCase):
         )
 
         self.assertNestedEqual(
-            attention_bias.MaskFnAttentionBias.from_sequence([b1, b2]).value(), (b1 + b2).value()
+            attention_bias.MaskFnAttentionBias.from_sequence(
+                [b1, b2]
+            ).value(),  # pytype: disable=attribute-error
+            (b1 + b2).value(),
         )
         self.assertIsInstance(
             attention_bias.MaskFnAttentionBias.from_sequence([b1]),

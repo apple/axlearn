@@ -59,7 +59,7 @@ from axlearn.common.loss import (
     symmetric_contrastive_loss_from_features,
     symmetric_contrastive_loss_from_logits,
 )
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.test_utils import TestCase
 from axlearn.common.utils import Tensor
 
@@ -334,31 +334,31 @@ def test_cross_entropy_soft_target_labels():
 @pytest.mark.parametrize(
     "preds,targets,expected,weights",
     [
-        ([], [], WeightedScalar(0, 0), None),  # No targets.
+        ([], [], WeightedSummary(0, 0), None),  # No targets.
         (
             [0.0, 1.0, 2.0],
             [jnp.nan, jnp.nan, jnp.nan],
-            WeightedScalar(0, 0),
+            WeightedSummary(0, 0),
             [False, False, False],
         ),  # No targets.
-        ([jnp.inf], [0], WeightedScalar(jnp.inf, 1), None),  # inf - 0 is inf.
-        ([jnp.inf], [jnp.inf], WeightedScalar(jnp.nan, 1), None),  # inf - inf is nan.
+        ([jnp.inf], [0], WeightedSummary(jnp.inf, 1), None),  # inf - 0 is inf.
+        ([jnp.inf], [jnp.inf], WeightedSummary(jnp.nan, 1), None),  # inf - inf is nan.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [1.0, 2.0, 3.0, 4.0, 5.0],
-            WeightedScalar(1.0, 5),
+            WeightedSummary(1.0, 5),
             None,
         ),  # Basic case.
         (
             [0.0, 1.0, 2.0, 3.0, 4.0],
             [2.0, jnp.nan, 2.0, 2.0, jnp.nan],
-            WeightedScalar(5.0 / 3.0, 3),
+            WeightedSummary(5.0 / 3.0, 3),
             [True, False, True, True, False],
         ),  # Basic case.
         (
             [7, 5, 11],
             [3, 2, 13],
-            WeightedScalar(12, 3),
+            WeightedSummary(12, 3),
             [2, 0, 1],
         ),  # Test non-boolean weights.
     ],
@@ -366,7 +366,7 @@ def test_cross_entropy_soft_target_labels():
 def test_mean_squared_error(
     preds: Sequence[float],
     targets: Sequence[float],
-    expected: WeightedScalar,
+    expected: WeightedSummary,
     weights: Optional[Sequence[float]],
 ):
     preds = jnp.asarray(preds)
@@ -383,7 +383,7 @@ def test_mean_squared_error(
 
 def test_l1_loss():
     actual = l1_loss(jnp.array([1, 2, 3]), jnp.array([5, 7, 13]))
-    expected = WeightedScalar((4 + 5 + 10) / 3, 3)
+    expected = WeightedSummary((4 + 5 + 10) / 3, 3)
     chex.assert_trees_all_close(actual.mean, expected.mean)
 
 

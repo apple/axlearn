@@ -336,7 +336,8 @@ class Summable(Protocol):
 
 # TODO(markblee): Link to docs on invocation contexts.
 @functools.partial(flax_struct.dataclass, frozen=False)
-class InvocationContext:  # pylint: disable=too-many-instance-attributes
+# pylint: disable-next=too-many-instance-attributes
+class InvocationContext:  # pytype: disable=invalid-annotation
     """The invocation context for `Module.__call__()`.
 
     Attributes:
@@ -388,7 +389,7 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
         if "parent" in override_kwargs:
             raise ValueError("Overriding parent is not allowed")
         kwargs = {}  # type: dict[str, Any]
-        for field in dataclasses.fields(self):
+        for field in dataclasses.fields(self):  # pytype: disable=wrong-arg-types
             k = field.name
             if k in override_kwargs:
                 kwargs[k] = override_kwargs[k]
@@ -514,14 +515,14 @@ class InvocationContext:  # pylint: disable=too-many-instance-attributes
 class ContextStack(threading.local):
     """See `install_context_stack` on how to ensure thread-safety of the global stack."""
 
-    stack: list[InvocationContext]
+    stack: list[InvocationContext]  # pytype: disable=invalid-annotation
     thread_id: int
 
 
 _global_context_stack = ContextStack(stack=[], thread_id=threading.get_ident())
 
 
-def clone_context_stack() -> list[InvocationContext]:
+def clone_context_stack() -> list[InvocationContext]:  # pytype: disable=invalid-annotation
     """Returns a copy of the current InvocationContext stack.
 
     This is often used together with `install_context_stack` to ensure that different threads
@@ -530,7 +531,7 @@ def clone_context_stack() -> list[InvocationContext]:
     return list(_global_context_stack.stack)
 
 
-def install_context_stack(stack: list[InvocationContext]):
+def install_context_stack(stack: list[InvocationContext]):  # pytype: disable=invalid-annotation
     """Installs the given context stack.
 
     `install_context_stack` should be called in every child thread to ensure that each thread
@@ -557,14 +558,16 @@ def install_context_stack(stack: list[InvocationContext]):
     _global_context_stack.stack = stack
 
 
-def current_context() -> Optional[InvocationContext]:
+def current_context() -> Optional[InvocationContext]:  # pytype: disable=invalid-annotation
     if not _global_context_stack.stack:
         return None
     return _global_context_stack.stack[-1]
 
 
 @contextlib.contextmanager
-def set_current_context(context: InvocationContext, *, require_parent: bool = True):
+def set_current_context(
+    context: InvocationContext, *, require_parent: bool = True
+):  # pytype: disable=invalid-annotation
     if _global_context_stack.stack:
         cur_context = _global_context_stack.stack[-1]
         if context.parent is not cur_context and require_parent:
@@ -995,7 +998,9 @@ class Module(Configurable, metaclass=_PostInitMeta):
         # pylint: disable=protected-access
         context = self.get_invocation_context()
 
-        def context_shares_module(ctx: InvocationContext) -> bool:
+        def context_shares_module(
+            ctx: InvocationContext,
+        ) -> bool:  # pytype: disable=invalid-annotation
             if isinstance(shared_module_or_name, str):
                 return shared_module_or_name in ctx.module._paths_to_shared_modules
             elif isinstance(shared_module_or_name, Module):
@@ -1034,7 +1039,7 @@ class Module(Configurable, metaclass=_PostInitMeta):
             module=target_module, state=target_state, name=shared_module_or_name
         )
 
-    def get_invocation_context(self) -> InvocationContext:
+    def get_invocation_context(self) -> InvocationContext:  # pytype: disable=invalid-annotation
         context = current_context()
         if not context:
             raise RuntimeError(
@@ -1102,14 +1107,16 @@ class Module(Configurable, metaclass=_PostInitMeta):
 
 
 @functools.partial(flax_struct.dataclass, frozen=False)
-class _Functional:
+class _Functional:  # pytype: disable=invalid-annotation
     """A pure functional call to `method_fn`."""
 
     # The function to call.
     method_fn: Callable = flax_struct.field(pytree_node=False)
     # The context to call method_fn in.
     # This will be copied to prevent method_fn from mutating the original.
-    context: InvocationContext = flax_struct.field(pytree_node=True)
+    context: InvocationContext = flax_struct.field(
+        pytree_node=True
+    )  # pytype: disable=invalid-annotation
     # Whether to require that context.parent is current_context().
     require_parent: bool = flax_struct.field(pytree_node=False)
     # Whether to copy the argument pytrees to prevent method_fn from mutating the original.
@@ -1146,7 +1153,7 @@ class _Functional:
             context, args, kwargs = jax.tree.map(lambda x: x, (self.context, args, kwargs))
 
         with set_current_context(context, require_parent=self.require_parent):
-            # pylint: disable-next=not-an-iterable,not-a-mapping,not-callable
+            # pylint: disable-next=not-an-iterable,not-a-mapping
             method_outputs = self.method_fn(*args, **kwargs)
         return method_outputs, context.output_collection
 

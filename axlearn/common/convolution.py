@@ -462,7 +462,9 @@ class Conv1DWithPadding(Conv1D):
 
     # We add a kwargs "paddings" to the forward method.
     # pylint: disable-next=arguments-differ
-    def forward(self, x: Tensor, *, paddings: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(
+        self, x: Tensor, *, paddings: Tensor
+    ) -> tuple[Tensor, Tensor]:  # pytype: disable=signature-mismatch
         """Computes convolution outputs and paddings.
 
         Args:
@@ -685,7 +687,9 @@ class Conv2DWith1DPadding(Conv2D):
 
     # We add a kwargs "paddings" to the forward method.
     # pylint: disable-next=arguments-differ
-    def forward(self, x: Tensor, *, paddings: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(
+        self, x: Tensor, *, paddings: Tensor
+    ) -> tuple[Tensor, Tensor]:  # pytype: disable=signature-mismatch
         """Computes convolution outputs and paddings.
 
         Args:
@@ -1620,7 +1624,9 @@ class Conv2DTransposeWith1DPadding(Conv2DTranspose):
 
     # We add a kwargs "paddings" to the forward method.
     # pylint: disable-next=arguments-differ
-    def forward(self, x: Tensor, *, paddings: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(
+        self, x: Tensor, *, paddings: Tensor
+    ) -> tuple[Tensor, Tensor]:  # pytype: disable=signature-mismatch
         """Computes convolution outputs and paddings.
 
         Args:

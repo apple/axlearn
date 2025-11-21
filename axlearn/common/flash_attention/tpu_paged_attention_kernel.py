@@ -186,6 +186,8 @@ def _make_index_map(
     return dense_index_map
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _paged_flash_attention_sparse_kernel(
     # Scalars
     kv_block_offset,  # (batch_size, num_kv_blocks)
@@ -389,6 +391,8 @@ def _paged_flash_attention_sparse_kernel(
         o_ref[...] = ((l_prev_corr * o_ref[...] + beta * o_curr) / l_next).astype(o_ref.dtype)
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _paged_flash_attention_kernel(
     # inputs
     lengths_ref,  # (batch_size,)

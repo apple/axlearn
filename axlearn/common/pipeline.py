@@ -703,7 +703,9 @@ class Pipeline(BaseLayer):
                 mesh_axes=PartitionSpec("pipeline", *spec.mesh_axes),
                 factorization=transform_factorization_spec(spec.factorization),
                 fan_axes=param_init.maybe_prepend_axis(
-                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                    spec.fan_axes,
+                    # pylint: disable-next=line-too-long
+                    axis_type=param_init.FanAxes.AxisType.BATCH_AXIS,  # pytype: disable=attribute-error
                 ),
             ),
             specs,

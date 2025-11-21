@@ -36,7 +36,7 @@ import jax.numpy as jnp
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Linear, MultiLinear
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import InvocationContext, Module, current_context
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.param_init import (
@@ -290,22 +290,22 @@ def _add_codebook_summaries(*, context: InvocationContext, onehots: Tensor, padd
     num_frames = jnp.sum(safe_not(paddings))
     context.add_summary(
         "codebook/num_frames",
-        WeightedScalar(num_frames.astype(jnp.float32) / batch_size, batch_size),
+        WeightedSummary(num_frames.astype(jnp.float32) / batch_size, batch_size),
     )
     # Mean coverage of all codebooks.
     context.add_summary(
         "codebook/coverage",
-        WeightedScalar(coverage, jnp.maximum(1, num_frames)),
+        WeightedSummary(coverage, jnp.maximum(1, num_frames)),
     )
     # Mean perplexity of all codebooks.
     context.add_summary(
         "codebook/pplx",
-        WeightedScalar(pplx, jnp.maximum(1, num_frames)),
+        WeightedSummary(pplx, jnp.maximum(1, num_frames)),
     )
     # Mean entropy of all codebooks.
     context.add_summary(
         "codebook/entropy",
-        WeightedScalar(entropy, jnp.maximum(1, num_frames)),
+        WeightedSummary(entropy, jnp.maximum(1, num_frames)),
     )
 
 
@@ -606,7 +606,7 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
         )
         return params
 
-    def forward(
+    def forward(  # pytype: disable=signature-mismatch
         self, inputs: Tensor, *, paddings: Tensor
     ) -> tuple[BaseQuantizer.Output, dict[str, Tensor]]:
         """Quantization using Gumbel softmax trick.
@@ -672,4 +672,4 @@ class GumbelSoftmaxVectorQuantizer(BaseQuantizer):
             self.add_module_output("probs", y_soft)
             self.add_summary("codebook/temperature_schedule_step", self.parameters["step"])
             self.add_summary("codebook/temperature", tau)
-        return outputs
+        return outputs  # pytype: disable=bad-return-type

@@ -50,7 +50,9 @@ class EmptyInput(Input):
     def dataset(self):
         return self.__iter__()  # pylint: disable=unnecessary-dunder-call
 
-    def batches(self, it: tf.data.Iterator) -> Iterable[Nested[Tensor]]:
+    def batches(
+        self, it: tf.data.Iterator
+    ) -> Iterable[Nested[Tensor]]:  # pytype: disable=signature-mismatch
         for input_batch in it:
             yield as_numpy_array(input_batch)
 

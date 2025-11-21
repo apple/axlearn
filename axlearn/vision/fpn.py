@@ -725,7 +725,7 @@ class BiFPNLayer(BaseLayer):
         return range(cfg.min_level, cfg.max_level + 1)
 
     def _get_levels_down(self) -> Iterable:
-        return reversed(self._get_levels_up())
+        return reversed(self._get_levels_up())  # pytype: disable=wrong-arg-types
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)

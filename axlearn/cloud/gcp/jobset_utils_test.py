@@ -190,6 +190,8 @@ class TPUReplicatedJobTest(TestCase):
         additional_node_networks=[None, "network-1:subnet-1,network-2:subnet-2"],
         image_id=[None, "my-image-id"],
     )
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
     def test_build_pod(
         self,
         bundler_cls: type[Bundler],

@@ -117,7 +117,9 @@ class InputDispatcher(BaseInputDispatcher):
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         cfg = cfg.clone()
         cfg.num_physical_feeds = cfg.num_physical_feeds or jax.process_count()
-        cfg.physical_feed_index = cfg.physical_feed_index or jax.process_index()
+        cfg.physical_feed_index = (
+            cfg.physical_feed_index if cfg.physical_feed_index is not None else jax.process_index()
+        )
         if cfg.logical_feed_indices is None:
             num_logical_feeds = min(cfg.global_logical_batch_size, cfg.num_physical_feeds)
             cfg.logical_feed_indices = list(range(num_logical_feeds))

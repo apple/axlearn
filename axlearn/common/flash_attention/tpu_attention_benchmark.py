@@ -180,6 +180,8 @@ def _benchmark(
         kv_cache_type=kv_cache_type,
         page_tables=page_tables,
     )
+    if mha_impl is None:
+        raise ValueError("Attention implementation is not available.")
 
     input_batch = dict(query=q, key=k, value=v, bias=bias, page_tables=page_tables)
     if FLAGS.run_reference:
@@ -191,14 +193,14 @@ def _benchmark(
         ref_fwd_time = _time_call(lambda: ref_mha_impl(input_batch))
         print(f"ref_fwd: {ref_fwd_time:.4f}s")
 
-    flash_fwd_time = _time_call(lambda: mha_impl(input_batch))
+    flash_fwd_time = _time_call(lambda: mha_impl.fn(input_batch))
     print(f"flash_fwd:{flash_fwd_time:.4f}s")
 
     if kv_cache_type is None:
 
         def grad_test(float_inputs, aux_inputs):
             full_batch = {**float_inputs, **aux_inputs}
-            return mha_impl(full_batch).mean()
+            return mha_impl.fn(full_batch).mean()
 
         if FLAGS.run_reference:
 

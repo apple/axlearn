@@ -142,7 +142,7 @@ class CloudBuildBundlerTest(TestCase):
         # Should be a no-op if is_async=False.
         cfg = self._get_test_cloud_build_bundler()
 
-        with self._mock_status(None) as mock_status:
+        with self._mock_status(None) as mock_status:  # pytype: disable=wrong-arg-types
             b = cfg.set(is_async=False).instantiate()
             b.wait_until_finished("test-name")
             self.assertFalse(mock_status.called)
@@ -151,7 +151,7 @@ class CloudBuildBundlerTest(TestCase):
         # Tests happy path: transitions from no status -> pending -> success.
         cfg = self._get_test_cloud_build_bundler()
 
-        with self._mock_status(
+        with self._mock_status(  # pytype: disable=wrong-arg-types
             None, CloudBuildStatus.PENDING, CloudBuildStatus.SUCCESS
         ) as mock_status:
             b = cfg.set(is_async=True).instantiate()
@@ -162,7 +162,7 @@ class CloudBuildBundlerTest(TestCase):
         # Tests that we raise a runtime error if CloudBuildStatus.FAILURE status is returned.
         cfg = self._get_test_cloud_build_bundler()
 
-        with self._mock_status(
+        with self._mock_status(  # pytype: disable=wrong-arg-types
             None, CloudBuildStatus.PENDING, CloudBuildStatus.FAILURE
         ) as mock_status:
             b = cfg.set(is_async=True).instantiate()
@@ -177,7 +177,9 @@ class CloudBuildBundlerTest(TestCase):
         # Tests that the query is retried if retrieving status fails with a RuntimeError.
         cfg = self._get_test_cloud_build_bundler()
 
-        with self._mock_status(RuntimeError("fake error"), CloudBuildStatus.SUCCESS) as mock_status:
+        with self._mock_status(
+            RuntimeError("fake error"), CloudBuildStatus.SUCCESS
+        ) as mock_status:  # pytype: disable=wrong-arg-types
             b = cfg.set(is_async=True).instantiate()
             b.wait_until_finished("test-name")
             self.assertEqual(2, mock_status.call_count)
@@ -189,7 +191,7 @@ class CloudBuildBundlerTest(TestCase):
         with mock.patch("time.perf_counter") as mock_perf_counter:
             mock_perf_counter.side_effect = [0, 10, 500, 3601]
 
-            with self._mock_status(
+            with self._mock_status(  # pytype: disable=wrong-arg-types
                 None, CloudBuildStatus.PENDING, CloudBuildStatus.PENDING
             ) as mock_status:
                 b = cfg.set(is_async=True).instantiate()

@@ -74,7 +74,9 @@ class MambaConfig(PretrainedConfig):
 
     model_type = "mamba"
 
-    def __init__(  # pylint: disable=too-many-positional-arguments
+    # TODO: Try to reduce positional arguments
+    # pylint: disable-next=too-many-positional-arguments
+    def __init__(
         self,
         vocab_size=50280,
         hidden_size=768,

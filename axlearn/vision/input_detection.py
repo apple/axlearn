@@ -319,6 +319,8 @@ def _parser(
     return image_data, labels
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _process_example(
     is_training: bool,
     image_size: tuple[int, int],

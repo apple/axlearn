@@ -742,6 +742,7 @@ class RAttention(FlashAttention):
             )
             if cfg.residual_la is not None:
                 swa_context = self.swa_norm(swa_context)
+                # pylint: disable-next=possibly-used-before-assignment
                 rla_context = self.rla_norm(rla_output)
                 context = swa_context + rla_context
             else:

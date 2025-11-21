@@ -50,7 +50,7 @@ from axlearn.common.checkpointer import (
 )
 from axlearn.common.checkpointer_orbax import _GRAIN_INSTALLED, OrbaxCheckpointer
 from axlearn.common.file_system import listdir
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.summary_writer import SummaryWriter
 from axlearn.common.utils import VDict
 
@@ -563,6 +563,7 @@ class CheckpointerTest(test_utils.TestCase):
         with _mesh(mesh_shape):
             cfg = _checkpointer_config(checkpointer_cls)
             ckpt: Checkpointer = cfg.instantiate(parent=None)
+            # pylint: disable-next=possibly-used-before-assignment
             ds = iter(range_dataset(start=1, stop=4))
             # Move the input_iter.
             self.assertEqual(next(ds), 1)
@@ -886,7 +887,7 @@ class CheckpointerTest(test_utils.TestCase):
             if metric_type == "array":
                 return jnp.asarray(value)
             elif metric_type == "weighted_scalar":
-                return WeightedScalar(mean=jnp.asarray(value), weight=jnp.asarray(1.0))
+                return WeightedSummary(mean=jnp.asarray(value), weight=jnp.asarray(1.0))
             else:
                 raise ValueError("Unsupported metric type!")
 

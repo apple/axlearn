@@ -167,6 +167,8 @@ def _forward_kernel_boundary_hs(
     mutable_boundary_hs_ref[:] = h_T
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _backward_kernel(
     dy_ref: Tensor,
     x_ref: Tensor,

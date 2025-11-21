@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Copyright © 2023 Apple Inc.
+# Copyright © 2025 Apple Inc.
 #
 # Boot script for GCP VM.
 #
@@ -27,6 +27,10 @@ trap 'echo "Bootstrap failed." >> ${SETUP_LOG_PATH}; \
       gcloud storage cp ${SETUP_LOG_PATH} "${GS_JOB_PATH}/logs/setup_log-$(hostname)"; \
       gcloud compute instances add-labels ${JOB_NAME} --labels=boot_status=failed --zone ${ZONE}; \
       exit 1' ERR
+
+# Ensure gcloud is not installed via snap.
+# This causes a permissions issue where the snap data directory is not writeable when using gcloud.
+snap remove --purge google-cloud-cli || echo "Ignoring snap removal failure..."
 
 # Ensure that gcloud is installed.
 while [[ ! -x $(which gcloud) ]]
@@ -88,18 +92,16 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
 
   # Install + activate Python 3.10.
   install_py310() {
-    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
-    /bin/bash miniconda.sh -b -p /opt/conda
-    source /opt/conda/etc/profile.d/conda.sh
-    # Accept conda ToS to allow conda env creation
-    conda tos accept
-    conda create -y -n py310 python=3.10
-    conda activate py310
-    conda info --envs
-    # update pip and pre-install needed utilities
-    pip install -U pip swig flit uv
-    # Add conda to .profile file, and use login shell to source.
-    echo 'source /opt/conda/etc/profile.d/conda.sh && conda activate py310' >> ~/.profile
+    # Install Python 3.10 with the required venv module
+    apt-get update && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y python3.10-venv python3.10-dev && \
+      apt clean -y
+    mkdir -p /opt/venv
+    # Create a new virtual environment
+    python3.10 -m venv /opt/venv
+    /opt/venv/bin/python3.10 -m pip install -U pip swig flit uv
+    echo 'source /opt/venv/bin/activate' >> ~/.profile
+    source /opt/venv/bin/activate
   }
   install_py310 >> ${SETUP_LOG_PATH} 2>&1
   log "Using python3: $(which python3)"

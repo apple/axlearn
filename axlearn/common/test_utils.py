@@ -44,7 +44,7 @@ from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
 from axlearn.common.param_init import FanAxes, Initializer, Shape
 from axlearn.common.trainer import SpmdTrainer
-from axlearn.common.update_transformation import Updates
+from axlearn.common.update_transformation import Updates  # pytype: disable=pyi-error
 from axlearn.common.utils import (
     Nested,
     NestedTensor,

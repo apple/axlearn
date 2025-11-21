@@ -45,7 +45,7 @@ from axlearn.common.optimizer_base import NestedOptParam, OptParam
 from axlearn.common.param_init import DefaultInitializer
 from axlearn.common.state_builder import Builder as TrainerStateBuilder
 from axlearn.common.summary_writer import BaseWriter, SummaryWriter
-from axlearn.common.update_transformation import ForwardOutputs
+from axlearn.common.update_transformation import ForwardOutputs  # pytype: disable=pyi-error
 from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
@@ -386,7 +386,7 @@ class SpmdTrainer(Module):
         # and self.config does an expensive deep copy.
         if self._config.learner.ema.decay is not None:
             logging.log_first_n(logging.INFO, "Using model parameter EMA for eval", 10)
-            return state.learner["ema"].ema
+            return state.learner["ema"].ema  # pytype: disable=attribute-error
         return state.model
 
     def _step_log(self, msg, *args, **kwargs):
@@ -567,7 +567,7 @@ class SpmdTrainer(Module):
             force run at the last training step. The dict will have evaler names as keys and
             metrics summary dict as values (None for evalers not included in force run).
             The metrics summary dict has string keys for the name of the metrics and can have
-            different types of values such as WeightedScalar, Tensor, or string, depending on
+            different types of values such as WeightedSummary, Tensor, or string, depending on
             the specific `metric_calculator` config of the evaler.
         """
         with (
@@ -685,10 +685,10 @@ class SpmdTrainer(Module):
             logging.info("Creating state from init_state_builder after initialization.")
             self._init_with_prebuilt_state(prng_key, prebuilt_state=None)
             built_state = self._restore_from_builder()
-            self._step = built_state.step
+            self._step = built_state.step  # pytype: disable=attribute-error
             self._trainer_state = jax.tree.map(
                 lambda state, spec: jax.device_put(state, spec.sharding),
-                built_state.trainer_state,
+                built_state.trainer_state,  # pytype: disable=attribute-error
                 self._trainer_state_specs,
             )
 

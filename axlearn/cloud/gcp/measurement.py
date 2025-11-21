@@ -30,16 +30,16 @@ from ml_goodput_measurement import goodput
 from ml_goodput_measurement import monitoring as goodput_monitoring
 
 from axlearn.cloud.common.utils import parse_kv_flags, to_bool
-from axlearn.common import measurement
+from axlearn.common import measurement_base
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
 
 
-@measurement.register_recorder("goodput")
-class GoodputRecorder(measurement.Recorder):
+@measurement_base.register_recorder("goodput")
+class GoodputRecorder(measurement_base.Recorder):
     """Records overall training goodput."""
 
     @config_class
-    class Config(measurement.Recorder.Config):
+    class Config(measurement_base.Recorder.Config):
         """Configures GoodputRecorder.
 
         Attributes:
@@ -77,7 +77,7 @@ class GoodputRecorder(measurement.Recorder):
         - jax_backend: The type of jax backend.
         - enable_monitoring: Boolean to enable/disable goodput monitoring (default: true).
         """
-        cfg: measurement.Recorder.Config = cls.default_config()
+        cfg: measurement_base.Recorder.Config = cls.default_config()
         parsed_flags = parse_kv_flags(fv.recorder_spec, delimiter="=")
         if "upload_interval" in parsed_flags:
             parsed_flags["upload_interval"] = int(parsed_flags["upload_interval"])
@@ -100,7 +100,7 @@ class GoodputRecorder(measurement.Recorder):
         self._logger_name = f"goodput_logger_{cfg.name}"
 
     @contextlib.contextmanager
-    def record_event(self, event: measurement.EventType, *args, **kwargs):
+    def record_event(self, event: measurement_base.EventType, *args, **kwargs):
         """Records a goodput event using a context manager."""
         # Lazily instantiate the recorder if it hasn't been already.
         if self._recorder is None:
@@ -225,7 +225,7 @@ class GoodputRecorder(measurement.Recorder):
 
         return monitor_goodput()
 
-    def record(self, event: measurement.Event, *args, **kwargs):
+    def record(self, event: measurement_base.Event, *args, **kwargs):
         """Deprecated: `record()` is not used in GoodputRecorder.
         Use the record_event context manager instead.
         """
@@ -238,27 +238,27 @@ class GoodputRecorder(measurement.Recorder):
                 logging_enabled=(jax.process_index() == 0),
             )
 
-        if event == measurement.Event.START_JOB:
+        if event == measurement_base.Event.START_JOB:
             self._recorder.record_job_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_JOB:
+        elif event == measurement_base.Event.END_JOB:
             self._recorder.record_job_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_STEP:
+        elif event == measurement_base.Event.START_STEP:
             self._recorder.record_step_start_time(*args, **kwargs)
-        elif event == measurement.Event.START_ACCELERATOR_INIT:
+        elif event == measurement_base.Event.START_ACCELERATOR_INIT:
             self._recorder.record_tpu_init_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_ACCELERATOR_INIT:
+        elif event == measurement_base.Event.END_ACCELERATOR_INIT:
             self._recorder.record_tpu_init_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_TRAINING_PREPARATION:
+        elif event == measurement_base.Event.START_TRAINING_PREPARATION:
             self._recorder.record_training_preparation_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_TRAINING_PREPARATION:
+        elif event == measurement_base.Event.END_TRAINING_PREPARATION:
             self._recorder.record_training_preparation_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_DATA_LOADING:
+        elif event == measurement_base.Event.START_DATA_LOADING:
             self._recorder.record_data_loading_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_DATA_LOADING:
+        elif event == measurement_base.Event.END_DATA_LOADING:
             self._recorder.record_data_loading_end_time(*args, **kwargs)
-        elif event == measurement.Event.START_CUSTOM_BADPUT_EVENT:
+        elif event == measurement_base.Event.START_CUSTOM_BADPUT_EVENT:
             self._recorder.record_custom_badput_event_start_time(*args, **kwargs)
-        elif event == measurement.Event.END_CUSTOM_BADPUT_EVENT:
+        elif event == measurement_base.Event.END_CUSTOM_BADPUT_EVENT:
             self._recorder.record_custom_badput_event_end_time(*args, **kwargs)
         else:
             logging.log_first_n(

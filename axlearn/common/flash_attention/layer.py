@@ -220,7 +220,7 @@ class FlashAttention(GroupedQueryAttention):
         # Get logit sink parameter if configured.
         logit_sink = self.parameters.get("sink", None)
 
-        jit_attn = flash_attention_implementation(
+        flash_specs = flash_attention_implementation(
             backend=backend,
             query=q_proj,
             key=k_proj,
@@ -236,7 +236,7 @@ class FlashAttention(GroupedQueryAttention):
             page_tables=page_indices,
             backend_overrides=cfg.backend_overrides,
         )
-        if jit_attn is None:
+        if flash_specs is None:
             # Fall back to standard attention if no backend kernels are supported.
             return super()._compute_attention(
                 mode=mode,
@@ -265,7 +265,6 @@ class FlashAttention(GroupedQueryAttention):
         v_proj = with_sharding_constraint(v_proj, cfg.mha_dim_to_partition_spec[kv_partition])
 
         # We need to manually partition pallas | jax-triton calls.
-        # Note: shard_map doesn't support kwargs.
         input_batch_specs = {
             # Q [batch_size, seq_len, num_heads, per_head_dim].
             "query": cfg.mha_dim_to_partition_spec["btnh"],
@@ -285,9 +284,10 @@ class FlashAttention(GroupedQueryAttention):
             ),
             # PagedKVCache's page indices.
             "page_tables": cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None)),
+            **flash_specs.additional_in_specs,
         }
         partitioned_mha = shard_map(
-            jit_attn,
+            flash_specs.fn,
             mesh=thread_resources.env.physical_mesh,
             in_specs=(input_batch_specs,),
             # O [batch_size, seq_len, num_heads, per_head_dim].
@@ -307,6 +307,7 @@ class FlashAttention(GroupedQueryAttention):
             "bias": attention_logit_biases,
             "logit_sink": logit_sink,
             "page_tables": page_indices,
+            **flash_specs.additional_kwargs,
         }
         outputs = with_sharding_constraint(
             partitioned_mha(
@@ -345,7 +346,7 @@ def default_mha_dim_to_partition_spec(
     Returns:
         A dictionary keyed by MHA tensor dims with partition spec values.
     """
-    batch_axis_names = tuple(el for el in mesh_axis_names if el != "model")
+    batch_axis_names = tuple(el for el in mesh_axis_names if el in ["data", "fsdp"])
     tp_axis_name = "model" if "model" in mesh_axis_names else None
     return {
         "btnh": PartitionSpec(batch_axis_names, None, tp_axis_name, None),
@@ -369,7 +370,7 @@ def default_output_dim_to_partition_spec(
     Returns:
         A dictionary keyed by FlashAttention output tensor dims with partition spec values.
     """
-    batch_axis_names = tuple(el for el in mesh_axis_names if el not in ["seq", "model"])
+    batch_axis_names = tuple(el for el in mesh_axis_names if el in ["data", "fsdp"])
     tp_axis_name = "model" if "model" in mesh_axis_names else None
     sp_axis_name = "seq" if "seq" in mesh_axis_names else None
     return {

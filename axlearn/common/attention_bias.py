@@ -52,7 +52,7 @@ B = TypeVar("B", bound="BaseAttentionBias")
 
 
 @functools.partial(flax_struct.dataclass, eq=False)
-class BaseAttentionBias:
+class BaseAttentionBias:  # pytype: disable=invalid-annotation
     """Base class representing attention logit biases."""
 
     # The dtype of the biases to return in `value()`.
@@ -117,8 +117,8 @@ class BaseAttentionBias:
 
     def astype(self, dtype: jnp.dtype) -> "BaseAttentionBias":
         """Return a new bias whose dtype is `dtype`."""
-        result = dataclasses.replace(self, dtype=dtype)
-        result = cast(BaseAttentionBias, result)
+        result = dataclasses.replace(self, dtype=dtype)  # pytype: disable=wrong-arg-types
+        result = cast(BaseAttentionBias, result)  # pytype: disable=invalid-annotation
         return result
 
     @classmethod
@@ -202,7 +202,7 @@ class BiasAndResidual(BaseAttentionBias, Generic[B]):
     """
 
     bias: Optional[B]
-    residual: BaseAttentionBias
+    residual: BaseAttentionBias  # pytype: disable=invalid-annotation
 
     def _value(self) -> Optional[Tensor]:
         biases = [self.bias] if self.bias is not None else []
@@ -225,7 +225,7 @@ class CompositeAttentionBias(BaseAttentionBias):
     """
 
     # The biases to add to obtain the final bias.
-    biases: Sequence[BaseAttentionBias]
+    biases: Sequence[BaseAttentionBias]  # pytype: disable=invalid-annotation
 
     def _value(self) -> Optional[Tensor]:
         """Returns the sum of the biases.
@@ -246,10 +246,12 @@ class CompositeAttentionBias(BaseAttentionBias):
             result += bias.value()
         return result
 
-    def __add__(self, other: BaseAttentionBias) -> "CompositeAttentionBias":
+    def __add__(
+        self, other: BaseAttentionBias
+    ) -> "CompositeAttentionBias":  # pytype: disable=invalid-annotation
         return self.__class__([self, other])
 
-    def _nonzero(self) -> Sequence[BaseAttentionBias]:
+    def _nonzero(self) -> Sequence[BaseAttentionBias]:  # pytype: disable=invalid-annotation
         """Returns an sequence of biases in this collection except those detected as zero.
 
         Returned biases are not guaranteed to be nonzero, but are guaranteed to not return None.
@@ -289,8 +291,8 @@ class CompositeAttentionBias(BaseAttentionBias):
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
-    ) -> Union[BaseAttentionBias, PartitionSpec]:
-        return CompositeAttentionBias(
+    ) -> Union[BaseAttentionBias, PartitionSpec]:  # pytype: disable=invalid-annotation
+        return CompositeAttentionBias(  # pytype: disable=wrong-keyword-args
             [
                 b.partition_spec(mha_dim_to_partition_spec) if b is not None else PartitionSpec()
                 for b in self.biases
@@ -314,7 +316,9 @@ class CompositeAttentionBias(BaseAttentionBias):
         return CompositeAttentionBias(biases)
 
 
-def split(bias: BaseAttentionBias, *cls: Type[BaseAttentionBias]) -> Iterable[BaseAttentionBias]:
+def split(
+    bias: BaseAttentionBias, *cls: Type[BaseAttentionBias]
+) -> Iterable[BaseAttentionBias]:  # pytype: disable=invalid-annotation
     """Split `bias` into an iterable of biases of `len(cls) + 1` instances, where the ith instances
     has type cls[i] or ZeroAttentionBias.
 
@@ -362,7 +366,7 @@ class TensorAttentionBias(BaseAttentionBias):
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
-    ) -> Union[BaseAttentionBias, PartitionSpec]:
+    ) -> Union[BaseAttentionBias, PartitionSpec]:  # pytype: disable=invalid-annotation
         shape = self.eval_shape()
         spec = mha_dim_to_partition_spec["bnts"]
         return _spec_for_explicit_bias(spec=spec, shape=shape)
@@ -379,7 +383,7 @@ class TensorAttentionBias(BaseAttentionBias):
 
 def _spec_for_explicit_bias(
     spec: PartitionSpec, shape: tuple[int, ...]
-) -> Union[BaseAttentionBias, PartitionSpec]:
+) -> Union[BaseAttentionBias, PartitionSpec]:  # pytype: disable=invalid-annotation
     """Return a PartionSpec for an explicit bias tensor of the given shape baed on `spec`."""
     # Explicit attention bias: [batch_size, num_heads, target_len, source_len].
     if spec != PartitionSpec(None):
@@ -438,12 +442,19 @@ class SegmentIdAttentionBias(BoolAttentionBias):
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
-    ) -> Union[BaseAttentionBias, PartitionSpec]:
+    ) -> Union[BaseAttentionBias, PartitionSpec]:  # pytype: disable=invalid-annotation
         # Segment IDs: [batch_size, seq_len].
-        q_spec = mha_dim_to_partition_spec["btnh"]
-        if q_spec == PartitionSpec(None):
+        # We use the partition spec of KV (which are not sequence sharded) for segment ids. This is
+        # because Splash requires two seg ids, q_seg and kv_seg. Therefore, we pass a not seq
+        # sharded seg ids into the shard map, and manually shard it inside for q_seg and not
+        # shard it for kv_seg.
+        kv_spec = mha_dim_to_partition_spec["bsnh"]
+        if kv_spec == PartitionSpec(None):
             return PartitionSpec(None)
-        return PartitionSpec(q_spec[0], q_spec[1])
+
+        if kv_spec[1] is not None:
+            raise ValueError("The partition spec of `s` in `bsnh` should be None.")
+        return PartitionSpec(kv_spec[0], kv_spec[1])
 
 
 class MaskFn(Protocol):
@@ -528,7 +539,7 @@ class MaskFnAttentionBias(BoolAttentionBias):
 
         target_positions = jnp.expand_dims(target_positions, axis=2)  # [batch, target_length, 1]
         source_positions = jnp.expand_dims(source_positions, axis=1)  # [batch, 1, source_length]
-        return self.mask(target_positions, source_positions)  # pylint: disable=not-callable
+        return self.mask(target_positions, source_positions)
 
     @classmethod
     def from_sequence(
@@ -566,7 +577,7 @@ class MaskFnAttentionBias(BoolAttentionBias):
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
-    ) -> Union[BaseAttentionBias, PartitionSpec]:
+    ) -> Union[BaseAttentionBias, PartitionSpec]:  # pytype: disable=invalid-annotation
         if mha_dim_to_partition_spec["bnts"] == PartitionSpec(None):
             batch = target = source = None
         else:
@@ -603,7 +614,7 @@ class BoolTensorAttentionBias(BoolAttentionBias):
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
-    ) -> Union[BaseAttentionBias, PartitionSpec]:
+    ) -> Union[BaseAttentionBias, PartitionSpec]:  # pytype: disable=invalid-annotation
         shape = self.eval_shape()
         spec = mha_dim_to_partition_spec["bnts"]
         return _spec_for_explicit_bias(spec=spec, shape=shape)
@@ -698,7 +709,7 @@ class ZeroAttentionBias(BoolAttentionBias):
 
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
-    ) -> Union[BaseAttentionBias, PartitionSpec]:
+    ) -> Union[BaseAttentionBias, PartitionSpec]:  # pytype: disable=invalid-annotation
         # Nothing to shard.
         return PartitionSpec()
 

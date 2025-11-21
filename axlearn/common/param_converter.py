@@ -1660,7 +1660,10 @@ def _parameters_from_t5_stack(src: hf_t5.T5Stack, *, dst_layer: Optional[BaseLay
                 layer=jax.tree.map(
                     lambda *inputs: jnp.stack(inputs),
                     *[
-                        _parameters_from_t5_block(src.block[i], dst_layer=dst_layer.repeat.layer)
+                        _parameters_from_t5_block(
+                            src.block[i],
+                            dst_layer=dst_layer.repeat.layer,  # pytype: disable=attribute-error
+                        )
                         for i in range(num_layers)
                     ],
                 )

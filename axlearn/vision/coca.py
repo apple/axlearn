@@ -43,7 +43,7 @@ from axlearn.common.layers import (
     set_norm_recursively,
 )
 from axlearn.common.loss import cross_entropy
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module
 from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, StreamEncoder
 from axlearn.common.poolings import AttentionPooling, BasePoolingLayer, LastNTokenPooling
@@ -643,10 +643,10 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         num_valid_seqs = live_seqs.sum()
         accuracy_macro = (seq_accuracy * live_seqs).sum() / jnp.maximum(1, num_valid_seqs)
 
-        self.add_summary("accuray_micro", WeightedScalar(accuracy_micro, num_targets))
-        self.add_summary("accuray_macro", WeightedScalar(accuracy_macro, num_valid_seqs))
-        self.add_summary("loss_weighted", WeightedScalar(loss, num_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
+        self.add_summary("accuray_micro", WeightedSummary(accuracy_micro, num_targets))
+        self.add_summary("accuray_macro", WeightedSummary(accuracy_macro, num_valid_seqs))
+        self.add_summary("loss_weighted", WeightedSummary(loss, num_targets))
+        self.add_summary("perplexity", WeightedSummary(jnp.exp(loss), num_targets))
 
         return loss, {"logits": logits}
 
@@ -737,6 +737,8 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         }
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def set_captioning_cfg(
     num_layers: int,
     model_dim: int,

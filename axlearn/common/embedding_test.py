@@ -14,7 +14,7 @@ from transformers import BertConfig
 
 from axlearn.common import module, utils
 from axlearn.common.attention import LearnedPositionalEmbedding
-from axlearn.common.embedding import TransformerTextEmbeddings
+from axlearn.common.embedding import ModalityEmbedding, ModalityVocabInfo, TransformerTextEmbeddings
 from axlearn.common.layers import Embedding, LayerNorm
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
@@ -140,6 +140,117 @@ class TestTransformerTextEmbeddings(TestCase):
 
         assert_allclose(jnp.mean(outputs), 0.0, atol=0.05)
         assert_allclose(jnp.std(outputs), 1.0, atol=0.05)
+
+
+class TestModalityEmbedding(TestCase):
+    """Tests ModalityEmbedding."""
+
+    @staticmethod
+    def _mock_config(dim: int, modality_vocab_info: ModalityVocabInfo) -> ModalityEmbedding.Config:
+        class MockedEmbedding(ModalityEmbedding):
+            """Mocked ModalityEmbedding."""
+
+            def __init__(self, cfg, *, parent):
+                super().__init__(cfg, parent=parent)
+                cfg = self.config
+                self.id_val = self.config.modality_vocab_info.vocab_start + 1
+                self.logit_val = 2.0
+
+            def forward(self, input_batch):
+                return self.Output(
+                    ids=jnp.ones_like(input_batch["placeholders"]) * self.id_val,
+                    embeddings=input_batch["embeddings"],
+                    paddings=None,
+                    batch_idx=input_batch.get("batch_idx", None),
+                )
+
+            def attend(self, x):
+                if self.config.modality_vocab_info.generate_logits:
+                    return (
+                        jnp.ones([*x.shape[:2], self.config.modality_vocab_info.vocab_size])
+                        * self.logit_val
+                    )
+                return None
+
+            def lookup_modality_embeddings(self, input_ids, accum):
+                del input_ids
+                return accum
+
+        return MockedEmbedding.default_config().set(
+            dim=dim,
+            modality_vocab_info=modality_vocab_info,
+        )
+
+    @parameterized.parameters(True, False)
+    def test_forward(self, is_training: bool):
+        dim = 12
+        modality_vocab_info = ModalityVocabInfo(
+            modality_name="fake",
+            placeholder_start=10,
+            placeholder_end=20,
+            vocab_start=100,
+            vocab_end=200,
+        )
+        emb = self._mock_config(dim, modality_vocab_info).set(name="test").instantiate(parent=None)
+        state = emb.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        # Constructs a dummy batch.
+        placeholders = jnp.array(
+            [
+                [10, 11, 12, 13, 14],
+                [15, 16, 17, 18, 19],
+            ]
+        )
+        embeddings = placeholders[..., None] * jnp.ones([dim])
+        input_batch = dict(placeholders=placeholders, embeddings=embeddings)
+
+        # Test forward.
+        outputs, _ = module.functional(
+            emb,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(input_batch=input_batch),
+            is_training=is_training,
+            drop_output_collections=(),
+        )
+        self.assertEqual(outputs.ids.shape, placeholders.shape)
+        assert_allclose(outputs.ids, emb.id_val)
+        assert_allclose(outputs.embeddings, embeddings)
+
+    @parameterized.product(
+        is_training=[True, False],
+        generate_logits=[True, False],
+    )
+    def test_attend(self, is_training: bool, generate_logits: bool):
+        dim = 12
+        modality_vocab_info = ModalityVocabInfo(
+            modality_name="fake",
+            placeholder_start=10,
+            placeholder_end=20,
+            vocab_start=100,
+            vocab_end=200,
+            generate_logits=generate_logits,
+        )
+        emb = self._mock_config(dim, modality_vocab_info).set(name="test").instantiate(parent=None)
+        state = emb.initialize_parameters_recursively(jax.random.PRNGKey(0))
+
+        # Test attend.
+        seq_len = 4
+        x = jax.random.normal(jax.random.PRNGKey(123), shape=(3, seq_len, dim))
+        outputs, _ = module.functional(
+            emb,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(x=x),
+            is_training=is_training,
+            drop_output_collections=(),
+            method="attend",
+        )
+        if generate_logits:
+            self.assertEqual(outputs.shape, (3, seq_len, modality_vocab_info.vocab_size))
+            assert_allclose(outputs, emb.logit_val)
+        else:
+            self.assertEqual(outputs, None)
 
 
 if __name__ == "__main__":

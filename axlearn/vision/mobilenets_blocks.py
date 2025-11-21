@@ -133,6 +133,7 @@ def _compute_same_padding(
         padding = (total_padding // 2, total_padding - total_padding // 2)
     elif padding_type == SamePaddingType.SYMMETRIC:
         padding = (math.ceil(total_padding / 2), math.ceil(total_padding / 2))
+    # pylint: disable-next=possibly-used-before-assignment
     return [padding, padding]
 
 
@@ -348,7 +349,9 @@ class MobileBlock(BaseLayer):
             elif cfg.se_reduce_ref == SeReduceReference.NUM_FEATURES:
                 se_reduce_ref_dim = num_features
             num_reduced_filters = _make_divisible(
-                se_reduce_ref_dim * cfg.se_layer.se_ratio, divisor=cfg.se_reduction_divisor
+                # pylint: disable-next=possibly-used-before-assignment
+                se_reduce_ref_dim * cfg.se_layer.se_ratio,
+                divisor=cfg.se_reduction_divisor,
             )
             self._add_child(
                 "se",

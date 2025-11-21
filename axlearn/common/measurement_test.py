@@ -8,7 +8,7 @@ from unittest import mock
 from absl import flags
 from absl.testing import parameterized
 
-from axlearn.common import measurement
+from axlearn.common import measurement, measurement_base
 
 
 class UtilsTest(parameterized.TestCase):
@@ -16,26 +16,26 @@ class UtilsTest(parameterized.TestCase):
 
     def setUp(self):
         self._orig_recorder = measurement.global_recorder
-        self._orig_recorders = measurement._recorders
+        self._orig_recorders = measurement_base._recorders.copy()
         measurement.global_recorder = None
-        measurement._recorders = {}
 
     def tearDown(self):
         measurement.global_recorder = self._orig_recorder
-        measurement._recorders = self._orig_recorders
+        measurement_base._recorders.clear()
+        measurement_base._recorders.update(self._orig_recorders)
 
     def test_register(self):
-        self.assertEqual({}, measurement._recorders)
+        self.assertNotIn("test_register_dummy", measurement_base._recorders)
 
-        @measurement.register_recorder("test")
+        @measurement.register_recorder("test_register_dummy")
         class DummyRecorder(measurement.Recorder):
             pass
 
-        self.assertEqual(DummyRecorder, measurement._recorders.get("test"))
+        self.assertEqual(DummyRecorder, measurement_base._recorders.get("test_register_dummy"))
 
         # Registering twice should fail.
         with self.assertRaisesRegex(ValueError, "already registered"):
-            measurement.register_recorder("test")(DummyRecorder)
+            measurement.register_recorder("test_register_dummy")(DummyRecorder)
 
     @parameterized.parameters(
         # No-op if no recorder_type provided.
@@ -44,7 +44,7 @@ class UtilsTest(parameterized.TestCase):
             expected=None,
         ),
         dict(
-            recorder_type="test",
+            recorder_type="test_initialize_mock",
             expected="Mock",
         ),
         # Try initializing from another module.
@@ -58,7 +58,7 @@ class UtilsTest(parameterized.TestCase):
     )
     def test_initialize(self, recorder_type, expected):
         mock_recorder = mock.MagicMock()
-        measurement.register_recorder("test")(mock_recorder)
+        measurement.register_recorder("test_initialize_mock")(mock_recorder)
 
         fv = flags.FlagValues()
         measurement.define_flags(flag_values=fv)
@@ -75,10 +75,10 @@ class UtilsTest(parameterized.TestCase):
             return
 
         recorder_name = recorder_type.split(":", 1)[-1]
-        if recorder_name == "test":
+        if recorder_name == "test_initialize_mock":
             self.assertTrue(mock_recorder.from_flags.called)
 
-        self.assertIn(expected, str(measurement._recorders.get(recorder_name, None)))
+        self.assertIn(expected, str(measurement_base._recorders.get(recorder_name, None)))
         self.assertIn(expected, str(measurement.global_recorder))
 
         # Ensure that record_event does not fail.
@@ -96,3 +96,26 @@ class UtilsTest(parameterized.TestCase):
         # Ensure that maybe_monitor_all does not fail (just enter and exit context).
         with measurement.global_recorder.maybe_monitor_all():
             pass
+
+    def test_initialize_gcp_goodput_recorder(self):
+        """Test that GCP goodput recorder can be dynamically imported."""
+        from axlearn.cloud.gcp import measurement as _  # pylint: disable=import-outside-toplevel
+
+        fv = flags.FlagValues()
+        measurement.define_flags(flag_values=fv)
+        fv.set_default("recorder_type", "axlearn.cloud.gcp.measurement:goodput")
+        fv.set_default(
+            "recorder_spec",
+            [
+                "name=test-goodput",
+                "upload_dir=/tmp/test",
+                "upload_interval=30",
+            ],
+        )
+        fv.mark_as_parsed()
+
+        self.assertIsNone(measurement.global_recorder)
+        measurement.initialize(fv)
+
+        self.assertIsNotNone(measurement.global_recorder)
+        self.assertIn("GoodputRecorder", str(type(measurement.global_recorder)))

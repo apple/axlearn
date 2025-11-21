@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 from absl import logging
 from absl.testing import absltest, parameterized
-from jax.experimental import checkify, mesh_utils
+from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
 from axlearn.common import decoding, logit_modifiers, utils
@@ -491,180 +491,156 @@ class TestDecoder(TestCase):
         pad_token_id: int,
     ):
         """Test beam search and sample decoding from a randomly initialized decoder."""
-        with jax.checking_leaks():
-            batch_size, src_len, tgt_len, vocab_size = prefix_length.shape[0], 11, 10, 6
-            bos_id = eos_id = 1
-            num_layers, num_heads = 3, 4
-            hidden_dim, src_dim = 12, 10
-            dropout_rate = 0.1
+        batch_size, src_len, tgt_len, vocab_size = prefix_length.shape[0], 11, 10, 6
+        bos_id = eos_id = 1
+        num_layers, num_heads = 3, 4
+        hidden_dim, src_dim = 12, 10
+        dropout_rate = 0.1
 
-            if isinstance(stack_cfg, RepeatedTransformerLayer.Config):
-                remat_spec = RematSpec(prevent_cse=False)
+        if isinstance(stack_cfg, RepeatedTransformerLayer.Config):
+            remat_spec = RematSpec(prevent_cse=False)
+        else:
+            remat_spec = None
+
+        cfg = gpt_decoder_config(
+            stack_cfg=stack_cfg,
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=tgt_len,
+            dropout_rate=dropout_rate,
+            layer_remat=remat_spec,
+        )
+        cfg.set(pad_token_id=pad_token_id)
+
+        cross_attention_data = None
+        cross_attention_logit_biases = None
+        if cross_attention_mode != "none":
+            # Add cross attention
+            cfg.transformer.layer.cross_attention = TransformerAttentionLayer.default_config().set(
+                target_dim=hidden_dim,
+                source_dim=src_dim,
+            )
+            cfg.transformer.layer.cross_attention.attention.num_heads = num_heads
+            cross_attention_data = jnp.ones((batch_size, src_len, src_dim))
+
+            if cross_attention_mode == "full":
+                cross_attention_tgt_len = tgt_len
+            elif cross_attention_mode == "broadcast":
+                cross_attention_tgt_len = 1
             else:
-                remat_spec = None
+                raise ValueError(f"Unrecognized cross_attention_mode {cross_attention_mode}")
 
-            cfg = gpt_decoder_config(
-                stack_cfg=stack_cfg,
-                num_layers=num_layers,
-                hidden_dim=hidden_dim,
-                num_heads=num_heads,
-                vocab_size=vocab_size,
-                activation_function="nn.relu",
-                max_position_embeddings=tgt_len,
-                dropout_rate=dropout_rate,
-                layer_remat=remat_spec,
-            )
-            cfg.set(pad_token_id=pad_token_id)
-
-            cross_attention_data = None
-            cross_attention_logit_biases = None
-            if cross_attention_mode != "none":
-                # Add cross attention
-                cfg.transformer.layer.cross_attention = (
-                    TransformerAttentionLayer.default_config().set(
-                        target_dim=hidden_dim,
-                        source_dim=src_dim,
-                    )
+            cross_attention_logit_biases = (
+                jax.random.randint(
+                    jax.random.PRNGKey(123),
+                    shape=[batch_size, cross_attention_tgt_len, src_len],
+                    minval=0,
+                    maxval=2,
                 )
-                cfg.transformer.layer.cross_attention.attention.num_heads = num_heads
-                cross_attention_data = jnp.ones((batch_size, src_len, src_dim))
-
-                if cross_attention_mode == "full":
-                    cross_attention_tgt_len = tgt_len
-                elif cross_attention_mode == "broadcast":
-                    cross_attention_tgt_len = 1
-                else:
-                    raise ValueError(f"Unrecognized cross_attention_mode {cross_attention_mode}")
-
-                cross_attention_logit_biases = (
-                    jax.random.randint(
-                        jax.random.PRNGKey(123),
-                        shape=[batch_size, cross_attention_tgt_len, src_len],
-                        minval=0,
-                        maxval=2,
-                    )
-                    * NEG_INF
-                )
-
-            decoder: Decoder = cfg.set(name="test_tied", eos_token_id=eos_id).instantiate(
-                parent=None
-            )
-            decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
-
-            prefix = jax.random.randint(
-                jax.random.PRNGKey(124),
-                shape=[batch_size, tgt_len],
-                # Prefix can consist of any tokens, including pad and eos.
-                minval=0,
-                maxval=vocab_size,
-            )
-            # Explicitly fill positions >= prefix_length with pad_token_id.
-            # Note that each batch example may have a different prefix length.
-            # [batch_size, tgt_len].
-            prefix_mask = jnp.arange(tgt_len) < prefix_length[:, None]
-            prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
-            # Set last token to a non-pad token, to fix the prefix length.
-            oh_indices = jax.nn.one_hot(prefix_length - 1, tgt_len, dtype=prefix.dtype)
-            prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
-
-            inputs = dict(
-                input_batch=dict(prefix=prefix),
-                max_sequence_length=tgt_len,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
-                num_decodes=num_decodes,
+                * NEG_INF
             )
 
-            if method == "sample_decode":
-                # Modify logits so that we will always sample the last token ID.
-                def logits_modifier_fn():
-                    return lambda logits: jnp.full_like(logits, decoding.NEG_INF).at[:, -1].set(0)
+        decoder: Decoder = cfg.set(name="test_tied", eos_token_id=eos_id).instantiate(parent=None)
+        decoder_state = decoder.initialize_parameters_recursively(jax.random.PRNGKey(0))
 
-                inputs["logits_modifier"] = config_for_function(logits_modifier_fn)
+        prefix = jax.random.randint(
+            jax.random.PRNGKey(124),
+            shape=[batch_size, tgt_len],
+            # Prefix can consist of any tokens, including pad and eos.
+            minval=0,
+            maxval=vocab_size,
+        )
+        # Explicitly fill positions >= prefix_length with pad_token_id.
+        # Note that each batch example may have a different prefix length.
+        # [batch_size, tgt_len].
+        prefix_mask = jnp.arange(tgt_len) < prefix_length[:, None]
+        prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
+        # Set last token to a non-pad token, to fix the prefix length.
+        oh_indices = jax.nn.one_hot(prefix_length - 1, tgt_len, dtype=prefix.dtype)
+        prefix = prefix * (1 - oh_indices) + bos_id * oh_indices
 
-            # pylint: disable=protected-access
-            mock_ctx = contextlib.nullcontext()
+        inputs = dict(
+            input_batch=dict(prefix=prefix),
+            max_sequence_length=tgt_len,
+            cross_attention_data=cross_attention_data,
+            cross_attention_logit_biases=cross_attention_logit_biases,
+            num_decodes=num_decodes,
+        )
 
-            # If prefilling, check that initial cache is non-empty.
-            if jnp.any(prefix_length > 1):
-                orig_tokens_to_scores = decoder._decoding._tokens_to_scores
+        if method == "sample_decode":
+            # Modify logits so that we will always sample the last token ID.
+            def logits_modifier_fn():
+                return lambda logits: jnp.full_like(logits, decoding.NEG_INF).at[:, -1].set(0)
 
-                def mock_tokens_to_scores(*args, **kwargs):
-                    fn = orig_tokens_to_scores(*args, **kwargs)
+            inputs["logits_modifier"] = config_for_function(logits_modifier_fn)
 
-                    # Ensure that cache is not initially empty.
-                    def tokens_to_scores(token_ids, cache):
-                        checkify.check(
-                            jnp.any(cache["time_step"] != 0),
-                            "Expected non-zero timesteps: {x}",
-                            x=cache["time_step"],
-                        )
-                        checkify.check(
-                            jnp.any(cache["input_ids"] != pad_token_id),
-                            "Expected non-pad tokens: {x}",
-                            x=cache["input_ids"],
-                        )
-                        return fn(token_ids, cache)
+        # pylint: disable=protected-access
+        mock_ctx = contextlib.nullcontext()
 
-                    return tokens_to_scores
+        # If prefilling, check that initial cache is non-empty.
+        if jnp.any(prefix_length > 1):
+            orig_tokens_to_scores = decoder._decoding._tokens_to_scores
 
-                mock_ctx = mock.patch.object(
-                    decoder._decoding,
-                    orig_tokens_to_scores.__name__,
-                    side_effect=mock_tokens_to_scores,
-                )
+            def mock_tokens_to_scores(*args, **kwargs):
+                fn = orig_tokens_to_scores(*args, **kwargs)
 
-            # Drop any module outputs added in `method` to avoid leaking tracers via checkify.
-            def method_fn(*args, **kwargs):
-                out = getattr(decoder, method)(*args, **kwargs)
-                decoder.get_invocation_context().get_module_outputs().clear()
-                return out
+                # Ensure that cache is not initially empty.
+                def tokens_to_scores(token_ids, cache):
+                    chex.assert_trees_all_equal(jnp.any(cache["time_step"] != 0), True)
+                    chex.assert_trees_all_equal(jnp.any(cache["input_ids"] != pad_token_id), True)
+                    return fn(token_ids, cache)
 
-            # Checkify the decoding method being called.
-            decoder._checked_method = checkify.checkify(method_fn)
+                return tokens_to_scores
 
-            # pylint: enable=protected-access
-            with mock_ctx:
-                (err, outputs), _ = functional(
-                    decoder,
-                    inputs=inputs,
-                    state=decoder_state,
-                    is_training=False,
-                    prng_key=jax.random.PRNGKey(2),
-                    method="_checked_method",
-                )
-                err.throw()
-            sequences = outputs.sequences
-            self.assertTrue(sequences.shape == (batch_size, num_decodes, tgt_len))
-            if method == "beam_search_decode":
-                # Per sequence scores for beam search decode.
-                self.assertTrue(outputs.scores.shape == (batch_size, num_decodes))
-            elif method == "sample_decode":
-                # Per token scores for sample-decoding.
-                self.assertTrue(outputs.token_scores.shape == (batch_size, num_decodes, tgt_len))
-            else:
-                raise NotImplementedError(f"Don't know how to test method {method}.")
-
-            # Shift prefix/mask to drop dummy BOS.
-            prefix_mask = jnp.concatenate(
-                [prefix_mask[:, 1:], jnp.zeros([batch_size, 1], dtype=prefix_mask.dtype)], axis=1
+            mock_ctx = mock.patch.object(
+                decoder._decoding,
+                orig_tokens_to_scores.__name__,
+                side_effect=mock_tokens_to_scores,
             )
-            prefix = jnp.concatenate(
-                [prefix[:, 1:], jnp.full([batch_size, 1], pad_token_id, dtype=prefix.dtype)], axis=1
-            )
-            # Expand num_heads dim.
-            prefix_mask = prefix_mask[:, None, :]
-            prefix = prefix[:, None, :]
 
-            # Check that all hypotheses start with the prefix.
-            # Note that mask excludes the dummy BOS token.
-            self.assertTrue(jnp.all(sequences * prefix_mask == prefix * prefix_mask))
-            # If sample-decoding, test that the remainder of the tokens are equal to
-            # the last token-id (due to adding the logits modifier).
-            if method == "sample_decode":
-                self.assertTrue(
-                    jnp.all(sequences * (1 - prefix_mask) == (vocab_size - 1) * (1 - prefix_mask))
-                )
+        with mock_ctx, chex.fake_jit():
+            outputs, _ = functional(
+                decoder,
+                inputs=inputs,
+                state=decoder_state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(2),
+                method=method,
+            )
+        sequences = outputs.sequences
+        self.assertTrue(sequences.shape == (batch_size, num_decodes, tgt_len))
+        if method == "beam_search_decode":
+            # Per sequence scores for beam search decode.
+            self.assertTrue(outputs.scores.shape == (batch_size, num_decodes))
+        elif method == "sample_decode":
+            # Per token scores for sample-decoding.
+            self.assertTrue(outputs.token_scores.shape == (batch_size, num_decodes, tgt_len))
+        else:
+            raise NotImplementedError(f"Don't know how to test method {method}.")
+
+        # Shift prefix/mask to drop dummy BOS.
+        prefix_mask = jnp.concatenate(
+            [prefix_mask[:, 1:], jnp.zeros([batch_size, 1], dtype=prefix_mask.dtype)], axis=1
+        )
+        prefix = jnp.concatenate(
+            [prefix[:, 1:], jnp.full([batch_size, 1], pad_token_id, dtype=prefix.dtype)], axis=1
+        )
+        # Expand num_heads dim.
+        prefix_mask = prefix_mask[:, None, :]
+        prefix = prefix[:, None, :]
+
+        # Check that all hypotheses start with the prefix.
+        # Note that mask excludes the dummy BOS token.
+        self.assertTrue(jnp.all(sequences * prefix_mask == prefix * prefix_mask))
+        # If sample-decoding, test that the remainder of the tokens are equal to
+        # the last token-id (due to adding the logits modifier).
+        if method == "sample_decode":
+            self.assertTrue(
+                jnp.all(sequences * (1 - prefix_mask) == (vocab_size - 1) * (1 - prefix_mask))
+            )
 
     def test_output_logits_modifier(self):
         """Tests the output_logits_modifier config property of `Decoder`."""

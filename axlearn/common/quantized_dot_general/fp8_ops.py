@@ -59,6 +59,8 @@ def _dequantize(x: Tensor, scale: Tensor, *, dq_dtype: DTypeLike):
     return x.astype(dq_dtype) * jnp.broadcast_to(scale.astype(dq_dtype), x.shape)
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _q_dot_dq_impl(
     lhs: Tensor,
     rhs: Tensor,
@@ -121,6 +123,8 @@ def _q_dot_dq_impl(
 
 # pylint: disable=unused-argument
 @partial(custom_vjp, nondiff_argnums=(8, 9, 10))
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def q_dot_q(
     lhs: Tensor,
     rhs: Tensor,
@@ -161,6 +165,8 @@ def q_dot_q(
     return _q_dot_dq_impl(**locals(), is_training=False)
 
 
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def _q_dot_dq_fwd(
     lhs: Tensor,
     rhs: Tensor,

@@ -158,7 +158,7 @@ def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
 
         config_file = os.path.join(trainer_config.dir, "launch_trainer_flags")
         with fs.open(config_file, "w") as f:
-            json.dump(
+            json.dump(  # pytype: disable=wrong-arg-types
                 {
                     **FLAGS.flag_values_dict(),
                     "data_dir": get_data_dir(),

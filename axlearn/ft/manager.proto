@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package axlearn.ft.manager;
+
+import "google/protobuf/timestamp.proto";
+
+// Worker identity
+message WorkerIdentity {
+  int32 replica_id = 1;                         // Replica ID
+  int32 worker_id = 2;                          // Worker ID within replica
+  string hostname = 3;                          // Worker hostname
+}
+
+// Worker status
+message WorkerStatus {
+  int64 training_step = 1;                      // Current training step in the worker, -1 if not training
+}
+
+// Status update from worker to replica head
+message StatusUpdate {
+  WorkerIdentity worker_identity = 1;
+  WorkerStatus worker_status = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message StatusUpdateResponse {
+  bool acknowledged = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+// Worker status with identity
+message WorkerStatusEntry {
+  WorkerIdentity worker_identity = 1;
+  WorkerStatus worker_status = 2;
+  google.protobuf.Timestamp last_update = 3;     // When this worker last reported
+}
+
+// Status of a replica
+message ReplicaStatus {
+  int32 total_workers = 1;
+  int32 reported_workers = 2;
+  repeated WorkerStatusEntry worker_statuses = 3;    // List of individual worker statuses with identity
+}
+
+// Aggregated replica status for global head
+message ReplicaStatusUpdate {
+  int32 replica_id = 1;
+  ReplicaStatus replica_status = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message ReplicaStatusResponse {
+  bool acknowledged = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+// Restart training in a replica request
+message RestartReplicaRequest {
+  int32 replica_id = 1;
+  string reason = 2;                            // Reason for restart
+  google.protobuf.Timestamp timestamp = 3;     // When restart was initiated
+}
+
+message RestartReplicaResponse {
+  bool acknowledged = 1;
+  string message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+// Restart training in a host request
+message RestartRequest {
+  WorkerIdentity worker_identity = 1;
+  string reason = 2;                            // Reason for restart
+  google.protobuf.Timestamp timestamp = 3;     // When restart was initiated
+}
+
+message RestartResponse {
+  bool acknowledged = 1;
+  string message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+// FT manager service
+service ManagerService {
+  // Worker to replica head status reporting
+  rpc ReportStatus(StatusUpdate) returns (StatusUpdateResponse);
+
+  // Replica head to global head status reporting
+  rpc ReportReplicaStatus(ReplicaStatusUpdate) returns (ReplicaStatusResponse);
+
+  // Global head to replica head restart command
+  rpc RestartReplicaTraining(RestartReplicaRequest) returns (RestartReplicaResponse);
+
+  // Replica head to worker restart command
+  rpc RestartTraining(RestartRequest) returns (RestartResponse);
+}

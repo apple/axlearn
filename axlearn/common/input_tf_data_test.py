@@ -1167,7 +1167,7 @@ class PadToBatchTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_pad_to_batch(self, examples: dict[str, tf.Tensor], expected: dict[str, tf.Tensor]):
         processor = pad_to_batch(batch_size=5)
-        source = fake_source(
+        source = fake_source(  # pytype: disable=wrong-arg-types
             is_training=False,
             examples=examples,
             spec={

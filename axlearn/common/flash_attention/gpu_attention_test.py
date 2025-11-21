@@ -73,7 +73,6 @@ def _test_forward_and_backward(
     input_batch = {**float_batch, **aux_batch}
     ref_fn = jax.jit(ref_fn)
     test_fn = jax.jit(test_fn)
-    # pylint: disable=not-callable
     jax_out = test_fn(input_batch)
     jax_ref_out = ref_fn(input_batch)
     backend = jax.default_backend()
@@ -123,6 +122,8 @@ def common_attn_test_params(func):
     ],
 )
 @common_attn_test_params
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def test_triton_fwd_only_against_ref(
     batch_size: int,
     query_len: int,
@@ -189,6 +190,8 @@ def test_triton_fwd_only_against_ref(
     ],
 )
 @common_attn_test_params
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
 def test_triton_against_xla_ref(
     batch_size: int,
     num_heads: int,

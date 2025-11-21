@@ -23,7 +23,7 @@ from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config
 from axlearn.common.decoder import Decoder
 from axlearn.common.decoding import BeamSearchOutputs
 from axlearn.common.layers import Linear
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module, child_context
 from axlearn.common.utils import (
     NestedTensor,
@@ -335,7 +335,7 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         live_targets = (targets != cfg.textual.pad_token_id).astype(jnp.float32)
         num_targets = live_targets.sum()
         accuracy = jnp.equal(jnp.argmax(logits, axis=-1), targets).sum() / num_targets
-        self.add_summary("accuracy", WeightedScalar(accuracy, num_targets))
+        self.add_summary("accuracy", WeightedSummary(accuracy, num_targets))
         if logits.dtype in (jnp.bfloat16, jnp.float16):
             # Cast to fp32 for softmax loss.
             # TODO(tom_gunter): Implement a more stable cross entropy loss like:
@@ -352,8 +352,8 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
         # an abstract tracer value when a concrete value is expected.
         # See https://jax.readthedocs.io/en/latest/errors.html#jax.errors.ConcretizationTypeError
         loss = per_token_loss.sum() / num_targets
-        self.add_summary("loss", WeightedScalar(loss, num_targets))
-        self.add_summary("perplexity", WeightedScalar(jnp.exp(loss), num_targets))
+        self.add_summary("loss", WeightedSummary(loss, num_targets))
+        self.add_summary("perplexity", WeightedSummary(jnp.exp(loss), num_targets))
         return dict(
             loss=loss,
             per_token_loss=per_token_loss,

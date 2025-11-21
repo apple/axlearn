@@ -905,128 +905,31 @@ class DecodeTest(parameterized.TestCase):
 
     @parameterized.parameters(
         dict(
-            # All in prompt, all zeros.
             stopper=decoding.StopOnSubsequence([[0]]),
             index=jnp.array(0),
-            out_of_prompt=jnp.array([[False, False], [False, False]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # All out of prompt.
-            # Seqs (0, 0), (0, 1), (1, 0) are zero at index 0.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(0),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([0, 0]),
             expected=jnp.array([[True, True], [True, False]]),
         ),
         dict(
-            # Seq (1, 0) is zero at index 1, but is in prompt.
             stopper=decoding.StopOnSubsequence([[0]]),
             index=jnp.array(1),
-            out_of_prompt=jnp.array([[True, True], [False, False]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # Seq (1, 0) is zero at index 1, and is out of prompt.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(1),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([1, 2]),
             expected=jnp.array([[False, False], [True, False]]),
         ),
         dict(
-            # Seq (1, 1) is zero at index 3.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(3),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, True]]),
-        ),
-        dict(
-            # Seq (0, 0), (1, 1) are zero at index 4.
-            stopper=decoding.StopOnSubsequence([[0]]),
-            index=jnp.array(4),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[True, False], [False, True]]),
-        ),
-        dict(
-            # No matches.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(0),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # No matches.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(1),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # Seq (1, 1) matches [1, 2, 3] at index 2.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(2),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, True]]),
-        ),
-        dict(
-            # Seqs (0, 0) and (0, 1) match [1, 2, 3] at index 3.
-            # Seq (1, 0) matches [3, 4].
             stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
             index=jnp.array(3),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([1, 2]),
             expected=jnp.array([[True, True], [True, False]]),
         ),
         dict(
-            # Seq (0, 1) matches [3, 4] at index 4.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array(4),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, True], [False, False]]),
-        ),
-        # Test when different batch elements are at different indices.
-        dict(
-            # Seqs (0, :) are at index 2, (1, :) are at 0.
-            # No matches.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([2, 0]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, False], [False, False]]),
-        ),
-        dict(
-            # Seqs (0, :) are at index 3, (1, :) are at 1.
-            # Seq (0, 0) and (0, 1) match [1, 2, 3].
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([3, 1]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[True, True], [False, False]]),
-        ),
-        dict(
-            # Seqs (0, :) are at index 4, (1, :) are at 2.
-            # Seq (0, 1) matches [3, 4].
-            # Seq (1, 1) matches [1, 2, 3].
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([4, 2]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
-            expected=jnp.array([[False, True], [False, True]]),
-        ),
-        dict(
-            # Seqs (0, :) are at index 4, (1, :) are at 3.
-            # Seqs (0, 1) and (1, 0) match [3, 4].
             stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
             index=jnp.array([4, 3]),
-            out_of_prompt=jnp.array([[True, True], [True, True]]),
+            prefix_len=jnp.array([3, 2]),
             expected=jnp.array([[False, True], [True, False]]),
         ),
-        dict(
-            # Seqs (0, :) are at index 4, (1, :) are at 3.
-            # Seqs (0, 1) and (1, 0) match [3, 4], but (1, 0) is in prompt.
-            stopper=decoding.StopOnSubsequence([[1, 2, 3], [3, 4]]),
-            index=jnp.array([4, 3]),
-            out_of_prompt=jnp.array([[True, True], [False, False]]),
-            expected=jnp.array([[False, True], [False, False]]),
-        ),
     )
-    def test_stop_on_subsequence(self, stopper, index, out_of_prompt, expected):
+    def test_stop_on_subsequence(self, stopper, index, prefix_len, expected):
         sequences = jnp.array(
             [
                 [
@@ -1036,8 +939,64 @@ class DecodeTest(parameterized.TestCase):
                 [[0, 0, 3, 4, 5], [1, 2, 3, 0, 0]],
             ]
         )
-        actual = stopper(index=index, sequences=sequences, out_of_prompt=out_of_prompt)
+        actual = stopper(index=index, sequences=sequences, prefix_len=prefix_len)
         self.assertTrue(jnp.all(expected == actual))
+
+    @parameterized.parameters(
+        dict(
+            stopper=decoding.StopOnMaxLength(max_num_decodes=5),
+            index=jnp.array(5),
+            prefix_len=jnp.array([0, 0]),
+            expected=jnp.array([[True, True], [True, True]]),
+        ),
+        dict(
+            stopper=decoding.StopOnMaxLength(max_num_decodes=5),
+            index=jnp.array(5),
+            prefix_len=jnp.array([2, 2]),
+            expected=jnp.array([[False, False], [False, False]]),
+        ),
+        dict(
+            stopper=decoding.StopOnMaxLength(max_num_decodes=5),
+            index=jnp.array([6, 6]),
+            prefix_len=jnp.array([1, 2]),
+            expected=jnp.array([[True, True], [True, True]]),
+        ),
+    )
+    def test_stop_on_max_length(self, stopper, index, prefix_len, expected):
+        sequences = jnp.array(
+            [
+                [[0, 1, 2, 3, 0, 0], [0, 1, 2, 3, 4, 5]],
+                [[0, 0, 3, 4, 5, 6], [1, 2, 3, 0, 0, 0]],
+            ]
+        )
+        actual = stopper(index=index, sequences=sequences, prefix_len=prefix_len)
+        self.assertTrue(jnp.all(expected == actual))
+
+    def test_composite_decoding_condition(self):
+        """Test CompositeDecodingCondition combines multiple conditions with OR logic."""
+        sequences = jnp.array(
+            [
+                [[0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]],
+                [[0, 1, 2, 4, 5, 6], [0, 1, 2, 4, 5, 6]],
+            ]
+        )
+        prefix_len = jnp.array([1, 2])
+
+        stop_on_3 = decoding.StopOnSubsequence([[3]])
+        stop_on_max = decoding.StopOnMaxLength(max_num_decodes=5)
+        composite = decoding.CompositeDecodingCondition([stop_on_3, stop_on_max])
+
+        # Token [3] triggers for batch 0 only
+        result = composite(index=jnp.array(3), sequences=sequences, prefix_len=prefix_len)
+        self.assertTrue(jnp.all(result == jnp.array([[True, True], [False, False]])))
+
+        # Max length triggers: batch 0 at index 6 (1+5), batch 1 at index 7 (2+5)
+        result = composite(index=jnp.array([6, 7]), sequences=sequences, prefix_len=prefix_len)
+        self.assertTrue(jnp.all(result == jnp.array([[True, True], [True, True]])))
+
+        # Validate empty list
+        with self.assertRaisesRegex(ValueError, "conditions must contain at least one"):
+            decoding.CompositeDecodingCondition([])
 
     def test_sample_decode_init(self):
         batch_size, num_decodes, max_decode_len = 2, 3, 7

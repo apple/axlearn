@@ -95,6 +95,8 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
     https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L70-L82
     """
     pathways_tpu_devices = {
+        # 7x
+        "tpu7x-standard-4t": "tpu7x",
         # v6e
         "ct6e-standard-4t": "tpuv6e",
         # v5p
@@ -291,6 +293,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
         self._update_env_list(env_list, "TPU_SKIP_MDS_QUERY", "true")
+        # Prevents missing logs when there is crash.
+        self._update_env_list(env_list, "PYTHONUNBUFFERED", "1")
         # This is required to be able to run a Jax client when using
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS=true.
         # In Jax 0.6.2 and beyond this flag can be renamed to
@@ -307,30 +311,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 "name": "HOST_ADDRESS",
                 "valueFrom": {
                     "fieldRef": {"fieldPath": "metadata.labels['jobset.sigs.k8s.io/coordinator']"}
-                },
-            }
-        )
-
-        # pylint: disable=line-too-long
-        env_list.append(
-            {
-                "name": "NUM_REPLICAS",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
-                    }
-                },
-            }
-        )
-        # pylint: enable=line-too-long
-
-        env_list.append(
-            {
-                "name": "REPLICA_ID",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
-                    }
                 },
             }
         )
@@ -841,11 +821,13 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         cfg = super().default_config()
         return cfg.set(inner=TPULeaderWorkerTemplate.default_config())
 
-    def __init__(self, cfg, *, bundler):
+    def __init__(self, cfg: BaseLeaderWorkerTemplate.Config, *, bundler):
         super().__init__(cfg, bundler=bundler)
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+
         self._bundler = bundler
         self._inner: TPULeaderWorkerTemplate = cfg.inner.instantiate(bundler=self._bundler)
-        self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
+        self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
 
@@ -973,6 +955,10 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                     "name": "TEST_UNDECLARED_OUTPUTS_DIR",
                     "value": "true",
                 },
+                {
+                    "name": "PYTHONUNBUFFERED",
+                    "value": "1",
+                },
             ],
             imagePullPolicy="Always",
             resources=resources,
@@ -1041,7 +1027,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "spec": leader_pod_spec,
         }
 
-    def __call__(self) -> Nested[Any]:
+    def __call__(self) -> Nested[Any]:  # pytype: disable=signature-mismatch
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(
             subGroupPolicy=dict(

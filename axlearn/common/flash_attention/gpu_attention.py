@@ -245,7 +245,9 @@ def _mha_forward_kernel(  # pylint: disable=too-many-positional-arguments
 
 # pylint: disable=unused-argument
 @functools.partial(jax.custom_vjp, nondiff_argnums=[6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-def flash_attention(  # pylint: disable=too-many-positional-arguments
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
+def flash_attention(
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -286,7 +288,9 @@ def flash_attention(  # pylint: disable=too-many-positional-arguments
 
 
 # pylint: enable=unused-argument
-def _flash_attention_impl(  # pylint: disable=too-many-positional-arguments
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
+def _flash_attention_impl(
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -429,7 +433,9 @@ def _mha_forward(*args: Any):
 
 
 # TODO(lezhi): Add support arbitrary per-head-dim in backward pass.
-def _mha_backward_kernel_dkdv(  # pylint: disable=too-many-positional-arguments
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
+def _mha_backward_kernel_dkdv(
     # Inputs.
     q_ref,
     k_ref,
@@ -524,7 +530,9 @@ def _mha_backward_kernel_dkdv(  # pylint: disable=too-many-positional-arguments
     pl.store(dk_ref, (curr_k_slice, slice(None)), dk.astype(dk_ref.dtype))
 
 
-def _mha_backward_kernel_dq(  # pylint: disable=too-many-positional-arguments
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
+def _mha_backward_kernel_dq(
     # Inputs.
     q_ref,
     k_ref,
@@ -610,7 +618,9 @@ def _mha_backward_kernel_dq(  # pylint: disable=too-many-positional-arguments
     pl.store(dq_ref, (curr_q_slice, slice(None)), dq.astype(dq_ref.dtype))
 
 
-def _mha_backward(  # pylint: disable=too-many-positional-arguments
+# TODO: Try to reduce positional arguments
+# pylint: disable-next=too-many-positional-arguments
+def _mha_backward(
     softmax_scale: float,
     mask_fn: Optional[MaskFn],
     dropout_rate: float,

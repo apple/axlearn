@@ -35,7 +35,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from axlearn.common.metrics import WeightedScalar
+from axlearn.common.metrics import WeightedSummary
 from axlearn.common.normalize import l2_normalize
 from axlearn.common.utils import Tensor
 
@@ -334,7 +334,7 @@ def _weighted_mean(
     *,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes the weighted average of arr without dividing by 0.
 
     Args:
@@ -344,7 +344,7 @@ def _weighted_mean(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar with the result.
+        A WeightedSummary with the result.
     """
     if sample_weight is None:
         sample_weight = jnp.array(1.0)
@@ -353,7 +353,7 @@ def _weighted_mean(
     sample_weight = jnp.broadcast_to(sample_weight, arr.shape)
     total_weight = sample_weight.sum()
     loss = jnp.sum(sample_weight * arr) / jnp.maximum(total_weight, eps)
-    return WeightedScalar(loss, total_weight)
+    return WeightedSummary(loss, total_weight)
 
 
 def mean_squared_error(
@@ -361,7 +361,7 @@ def mean_squared_error(
     targets: Tensor,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes mean squared error loss.
 
     Args:
@@ -372,8 +372,8 @@ def mean_squared_error(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar consisting of the loss and the number of examples that contributed to the
-        loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
+        A WeightedSummary consisting of the loss and the number of examples that contributed to the
+        loss. If there are no targets, a WeightedSummary with 0 loss and 0 weight is returned.
     """
     diff = (preds - targets) ** 2
     return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)
@@ -386,7 +386,7 @@ def bilinear_mean_squared_error(
     shape: tuple[int, ...],
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes the mean squared error loss after bilinear downsampling to shape `shape`.
 
     Args:
@@ -399,8 +399,8 @@ def bilinear_mean_squared_error(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar consisting of the loss and the number of examples that contributed to the
-        loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
+        A WeightedSummary consisting of the loss and the number of examples that contributed to the
+        loss. If there are no targets, a WeightedSummary with 0 loss and 0 weight is returned.
     """
     src_shape = jnp.broadcast_shapes(preds.shape, targets.shape)
     for dim, new_dim in zip(src_shape, shape, strict=True):
@@ -420,7 +420,7 @@ def l1_loss(
     targets: Tensor,
     sample_weight: Optional[Tensor] = None,
     eps: float = 1e-7,
-) -> WeightedScalar:
+) -> WeightedSummary:
     """Computes mean l1 loss.
 
     Args:
@@ -431,8 +431,8 @@ def l1_loss(
         eps: If the total weight used to compute the mean is below eps, it is increased to eps.
 
     Returns:
-        A WeightedScalar consisting of the loss and the number of examples that contributed to the
-        loss. If there are no targets, a WeightedScalar with 0 loss and 0 weight is returned.
+        A WeightedSummary consisting of the loss and the number of examples that contributed to the
+        loss. If there are no targets, a WeightedSummary with 0 loss and 0 weight is returned.
     """
     diff = jnp.abs(preds - targets)
     return _weighted_mean(diff, sample_weight=sample_weight, eps=eps)
