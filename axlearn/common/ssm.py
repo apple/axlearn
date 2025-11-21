@@ -560,10 +560,10 @@ class MambaMixerLayer(BaseLayer):
         # The recurrence implementation to use for full-sequence inputs.
         mamba_recurrence: BaseMambaRecurrence = LinearScanMambaRecurrence.default_config()
         # The recurrence implementation to use for inference.
-        inference_mamba_recurrence: BaseMambaRecurrence = (
-            LinearScanMambaRecurrence.default_config().set(
-                output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
-            )
+        inference_mamba_recurrence: (
+            BaseMambaRecurrence
+        ) = LinearScanMambaRecurrence.default_config().set(
+            output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
         )
 
     class MambaOutput(NamedTuple):
@@ -1768,10 +1768,10 @@ class Mamba2MixerLayer(BaseLayer):
         # The recurrence implementation to use for full-sequence inputs.
         ssd_recurrence: BaseSSDRecurrence = PallasSSDRecurrence.default_config()
         # The recurrence implementation to use for inference.
-        inference_mamba_recurrence: BaseSSDRecurrence = (
-            LinearScanSSDRecurrence.default_config().set(
-                output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
-            )
+        inference_mamba_recurrence: (
+            BaseSSDRecurrence
+        ) = LinearScanSSDRecurrence.default_config().set(
+            output_mode=MambaRecurrenceOutputMode.OUTPUTS_AND_STATES
         )
 
     class Mamba2Output(NamedTuple):

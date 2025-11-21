@@ -125,11 +125,13 @@ class SerializerTest(parameterized.TestCase):
             return old_transfer(*args, **kwargs)
 
         d2h_future = array_serialization.futures.Future()
-        with mock.patch(
-            f"{array_serialization.__name__}.{_ts_open}",
-            ts_open_patch,
-        ), get_tensorstore_spec(arr) as spec, mock.patch(
-            f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
+        with (
+            mock.patch(
+                f"{array_serialization.__name__}.{_ts_open}",
+                ts_open_patch,
+            ),
+            get_tensorstore_spec(arr) as spec,
+            mock.patch(f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch),
         ):
             # Either RuntimeError(Array has been deleted with shape) or
             # ValueError(...Buffer has been deleted or donated...) may occur.
@@ -151,11 +153,13 @@ class SerializerTest(parameterized.TestCase):
         arr = self._create_partially_replicated_array(sharded)
         arr_host = jax.device_get(arr)
         d2h_future = array_serialization.futures.Future()
-        with mock.patch(
-            f"{array_serialization.__name__}.{_ts_open}",
-            ts_open_patch,
-        ), get_tensorstore_spec(arr) as spec, mock.patch(
-            f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
+        with (
+            mock.patch(
+                f"{array_serialization.__name__}.{_ts_open}",
+                ts_open_patch,
+            ),
+            get_tensorstore_spec(arr) as spec,
+            mock.patch(f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch),
         ):
             f = _CommitFuture(
                 _run_serializer(
@@ -185,10 +189,13 @@ class SerializerTest(parameterized.TestCase):
             raise RuntimeError("Test")
 
         d2h_future = array_serialization.futures.Future()
-        with mock.patch(
-            f"{array_serialization.__name__}.{_ts_open}",
-            ts_open_patch,
-        ), get_tensorstore_spec(arr) as spec:
+        with (
+            mock.patch(
+                f"{array_serialization.__name__}.{_ts_open}",
+                ts_open_patch,
+            ),
+            get_tensorstore_spec(arr) as spec,
+        ):
             f = _CommitFuture(
                 _run_serializer(
                     [arr], [spec], [d2h_future], max_data_shard_degree=-1, shard_threshold_bytes=-1
@@ -202,10 +209,13 @@ class SerializerTest(parameterized.TestCase):
             raise RuntimeError("Test")
 
         d2h_future = array_serialization.futures.Future()
-        with mock.patch(
-            f"{array_serialization.__name__}._transfer_to_host",
-            transfer_to_host_patch,
-        ), get_tensorstore_spec(arr) as spec:
+        with (
+            mock.patch(
+                f"{array_serialization.__name__}._transfer_to_host",
+                transfer_to_host_patch,
+            ),
+            get_tensorstore_spec(arr) as spec,
+        ):
             f = _CommitFuture(
                 _run_serializer(
                     [arr], [spec], [d2h_future], max_data_shard_degree=-1, shard_threshold_bytes=-1
@@ -237,9 +247,7 @@ class SerializerTest(parameterized.TestCase):
         arrays = [
             mock.Mock(
                 addressable_shards=[
-                    mock.Mock(
-                        replica_id=0, **{"data.nbytes": int(shard * 10**9), "data.shape": ()}
-                    )
+                    mock.Mock(replica_id=0, **{"data.nbytes": int(shard * 10**9), "data.shape": ()})
                     for shard in array
                 ],
                 nbytes=int(sum(array) * 10**9),
@@ -362,13 +370,15 @@ class SerializerTest(parameterized.TestCase):
             return await original_ts_open(call_arg, *args, **kwargs)
 
         # Write the data to local files
-        with get_tensorstore_spec_for_deserialization(data) as (
-            tensorstore_spec,
-            temp_path,
-        ), mock.patch(
-            f"{array_serialization.__name__}.{_ts_open}", new=mock_ts_open
-        ), mock.patch.dict(
-            "os.environ", {"JAX_PLATFORMS": jax_platforms, "ENABLE_GCS_GRPC": enable_gcs_grpc}
+        with (
+            get_tensorstore_spec_for_deserialization(data) as (
+                tensorstore_spec,
+                temp_path,
+            ),
+            mock.patch(f"{array_serialization.__name__}.{_ts_open}", new=mock_ts_open),
+            mock.patch.dict(
+                "os.environ", {"JAX_PLATFORMS": jax_platforms, "ENABLE_GCS_GRPC": enable_gcs_grpc}
+            ),
         ):
             manager.serialize(
                 data,

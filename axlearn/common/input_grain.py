@@ -69,14 +69,12 @@ class RaggedTensor(list):
 
 @runtime_checkable
 class _CallableTransform(Protocol):
-    def __call__(self, example: Any) -> Any:
-        ...
+    def __call__(self, example: Any) -> Any: ...
 
 
 @runtime_checkable
 class _RandomCallableTransform(Protocol):
-    def __call__(self, example: Any, rng: np.random.Generator) -> Any:
-        ...
+    def __call__(self, example: Any, rng: np.random.Generator) -> Any: ...
 
 
 # Grain supports a set of predefined transformations (e.g. grain.MapTransform), as well as callables
@@ -125,8 +123,7 @@ class DispatchConfig:
 class BuildDatasetFn(Protocol):
     """A function to create a grain data source."""
 
-    def __call__(self, dispatch_config: DispatchConfig) -> Dataset:
-        ...
+    def __call__(self, dispatch_config: DispatchConfig) -> Dataset: ...
 
 
 def _copy_tree(x: _T) -> _T:

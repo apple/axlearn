@@ -232,7 +232,7 @@ def split_tokens(
 
     @seqio.map_over_dataset
     def split_tokens_example(
-        x: dict[str, tf.Tensor]
+        x: dict[str, tf.Tensor],
     ) -> tuple[dict[str, tf.Tensor], dict[str, tf.Tensor]]:
         """Split one token sequence into multiple sequences."""
         tokens = x[input_key]

@@ -33,7 +33,6 @@ from axlearn.common.utils import Nested
 
 
 class _ServiceProtocol(enum.Enum):
-
     """https://kubernetes.io/docs/reference/networking/service-protocols/"""
 
     TCP = "TCP"
@@ -42,7 +41,6 @@ class _ServiceProtocol(enum.Enum):
 
 
 class _ServiceType(enum.Enum):
-
     """https://cloud.google.com/kubernetes-engine/docs/concepts/service#types-of-services sss"""
 
     CLUSTER_IP = "ClusterIP"

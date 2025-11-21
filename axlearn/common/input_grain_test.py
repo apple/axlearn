@@ -434,8 +434,7 @@ class UtilsTest(TestCase):
 class _PerProcessFn(Protocol):
     """Processes per-host data."""
 
-    def __call__(self, ds: Dataset, *, dispatch_config: DispatchConfig) -> Dataset:
-        ...
+    def __call__(self, ds: Dataset, *, dispatch_config: DispatchConfig) -> Dataset: ...
 
 
 class InputTest(parameterized.TestCase):

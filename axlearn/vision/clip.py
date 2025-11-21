@@ -138,9 +138,9 @@ class CLIPImageStreamEncoder(StreamEncoder):
         output_dim: Required[int] = REQUIRED
         # The hidden dim of `image_encoder`. If None, uses output_dim.
         hidden_dim: Optional[int] = None
-        image_encoder: Union[
-            VisionTransformer.Config, MobileNets.Config
-        ] = VisionTransformer.default_config()
+        image_encoder: Union[VisionTransformer.Config, MobileNets.Config] = (
+            VisionTransformer.default_config()
+        )
         output_proj: Optional[Linear.Config] = None
         # Coca uses LayerNorm instead.
         output_norm: Optional[BaseNormalizationLayer.Config] = None
@@ -457,8 +457,7 @@ def set_bert_text_encoder_config(
 class _ContrastiveLossFn(Protocol):
     def __call__(
         self, x_y_logits: Tensor, y_x_logits: Tensor, *, temperature: Union[Tensor, float]
-    ) -> Tensor:
-        ...
+    ) -> Tensor: ...
 
 
 class CLIPFusionNetwork(FusionNetwork):

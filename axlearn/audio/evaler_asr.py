@@ -150,8 +150,7 @@ class WordErrorRateMetricCalculator(ModelSummaryAccumulator):
     class Scorer(Protocol):
         """A function that computes word errors."""
 
-        def __call__(self, hypotheses: list[str], reference: list[str]) -> WordErrors:
-            ...
+        def __call__(self, hypotheses: list[str], reference: list[str]) -> WordErrors: ...
 
     def __init__(
         self,

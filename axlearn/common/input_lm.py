@@ -628,7 +628,7 @@ def map_targets_out_of_class(example: dict[str, tf.Tensor]) -> dict[str, tf.Tens
 
 
 def _trim_and_pack_with_segments(
-    feature_lengths: dict[str, int]
+    feature_lengths: dict[str, int],
 ) -> input_tf_data.DatasetToDatasetFn:
     """Trim and pack inputs, injecting `*_segment_ids` and `*_positions`.
 
@@ -683,7 +683,7 @@ def _trim_and_pack_with_segments(
 
 
 def _trim_and_pad_with_segments(
-    feature_lengths: dict[str, int]
+    feature_lengths: dict[str, int],
 ) -> input_tf_data.DatasetToDatasetFn:
     """Trim and pad inputs, injecting `*_segment_ids`, `*_positions`.
 

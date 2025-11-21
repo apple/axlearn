@@ -1,4 +1,5 @@
 """Tests for RAttention and ResidualLinearAttention."""
+
 import copy
 
 import jax

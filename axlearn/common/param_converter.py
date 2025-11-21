@@ -72,13 +72,11 @@ NestedTorchTensor = Union[torch.Tensor, dict[str, Any]]
 
 
 class AXLearnToTorchFn(Protocol):
-    def __call__(self, *, src: BaseLayer, params: NestedTensor, dst: torch.nn.Module):
-        ...
+    def __call__(self, *, src: BaseLayer, params: NestedTensor, dst: torch.nn.Module): ...
 
 
 class TorchToAXLearnFn(Protocol):
-    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, type]]):
-        ...
+    def __call__(self, *, src: torch.nn.Module, dst: Optional[Union[BaseLayer, type]]): ...
 
 
 # Mapping from (src_type, dst_type) to converter.
@@ -2431,26 +2429,26 @@ def parameters_from_llama_3(llama: LlamaForCausalLM, state: dict) -> dict:
         o.append(layer.self_attn.o_proj.weight.reshape(-1, o_shape[-2], o_shape[-1]))
         input_norm.append(layer.input_layernorm.weight)
         post_attention_norm.append(layer.post_attention_layernorm.weight)
-    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_0"][
-        "weight"
-    ] = torch.stack(gate_proj)
-    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_1"][
-        "weight"
-    ] = torch.stack(up_proj)
-    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear2"][
-        "weight"
-    ] = torch.stack(down_proj)
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_0"]["weight"] = (
+        torch.stack(gate_proj)
+    )
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear1_1"]["weight"] = (
+        torch.stack(up_proj)
+    )
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["linear2"]["weight"] = (
+        torch.stack(down_proj)
+    )
     state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"]["o_proj"][
         "weight"
     ] = torch.stack(o)
     state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["attention"]["i_proj"][
         "i_proj"
     ]["qkv_proj"]["weight"] = torch.stack(qkv)
-    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["norm"][
-        "scale"
-    ] = torch.stack(input_norm)
-    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["norm"][
-        "scale"
-    ] = torch.stack(post_attention_norm)
+    state["decoder"]["transformer"]["repeat"]["layer"]["self_attention"]["norm"]["scale"] = (
+        torch.stack(input_norm)
+    )
+    state["decoder"]["transformer"]["repeat"]["layer"]["feed_forward"]["norm"]["scale"] = (
+        torch.stack(post_attention_norm)
+    )
     state["decoder"]["output_norm"]["scale"] = llama.model.norm.weight
     return as_tensor(state)

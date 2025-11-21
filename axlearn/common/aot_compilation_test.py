@@ -1,4 +1,5 @@
 """Tests aot_compilation utils."""
+
 from typing import cast
 
 from axlearn.common import test_utils

@@ -287,8 +287,7 @@ class StateStorage(Configurable):
 
 
 class IndexFileWriter(Protocol):
-    def __call__(self, ckpt_dir: str, index: Any):
-        ...
+    def __call__(self, ckpt_dir: str, index: Any): ...
 
 
 def write_index_file(*, ckpt_dir: str, index: Any):
@@ -474,9 +473,11 @@ class TensorStoreStateStorage(StateStorage):
                     spec.shardings.append(
                         jax.sharding.NamedSharding(
                             mesh,
-                            jax.sharding.PartitionSpec()
-                            if value.mesh_axes is None
-                            else value.mesh_axes,
+                            (
+                                jax.sharding.PartitionSpec()
+                                if value.mesh_axes is None
+                                else value.mesh_axes
+                            ),
                         )
                     )
             elif isinstance(value, tf.data.Iterator):

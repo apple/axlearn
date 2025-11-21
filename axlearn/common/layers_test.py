@@ -383,9 +383,7 @@ class LayerTest(TestCase):
                     else paddings[:, :, None, None, None]
                 )
                 mask = 1 - expanded_paddings
-                square_sum = jnp.sum(
-                    outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True
-                )
+                square_sum = jnp.sum(outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True)
                 square_count = jnp.sum(
                     jnp.ones_like(outputs_by_group) * mask, axis=reduction_axis, keepdims=True
                 )
@@ -1348,7 +1346,7 @@ class EmbedTest(parameterized.TestCase):
                 dim,
                 num_embeddings,
                 rng,
-                scale=Embedding.Scale.CONSTANT
+                scale=Embedding.Scale.CONSTANT,
                 # Missing scale_constant
             )
         self.assertIn("scale_constant must be specified", str(cm.exception))

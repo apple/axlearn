@@ -152,13 +152,11 @@ BenchFnResult = Union[tuple[Tensor], Tensor]
 
 
 class BenchFn(Protocol):
-    def __call__(self, *args: Tensor) -> BenchFnResult:
-        ...
+    def __call__(self, *args: Tensor) -> BenchFnResult: ...
 
 
 class SweepFn(Protocol):
-    def __call__(self, library: str, *args: Any, **kwargs: Any) -> tuple[BenchFnResult, float]:
-        ...
+    def __call__(self, library: str, *args: Any, **kwargs: Any) -> tuple[BenchFnResult, float]: ...
 
 
 def measure(f: BenchFn, *args: Tensor) -> tuple[Tensor, float]:

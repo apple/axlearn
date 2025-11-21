@@ -1,6 +1,6 @@
 # Copyright © 2024 Apple Inc.
 
-""" Pallas kernels for Mamba2
+"""Pallas kernels for Mamba2
 
 High-level idea: this kernel implements a two-level chunking algorithm to
 balance memory consumption and running speed. Intuitively, we store chunk-level

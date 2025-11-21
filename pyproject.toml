@@ -56,7 +56,7 @@ apple-silicon = [
 ]
 # Requirements for testing and development.
 dev = [
-    "black==23.12.0",  # formatting
+    "black==25.11.0",  # formatting
     "einops==0.8.0",  # for unittests only. Do not use it in core impl because it's not thread-safe.
     "evaluate",
     "isort==5.13.2",  # formatting
