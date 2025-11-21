@@ -111,7 +111,7 @@ def _key_value_iterator_indices(block_mask_map: np.ndarray) -> Tuple[Tensor, Ten
     return jnp.asarray(index_offset), jnp.asarray(index_offset_size)
 
 
-def _mha_forward_kernel(
+def _mha_forward_kernel(  # pylint: disable=too-many-positional-arguments
     q_ref,
     k_ref,
     v_ref,

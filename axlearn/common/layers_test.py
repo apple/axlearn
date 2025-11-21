@@ -1348,7 +1348,7 @@ class EmbedTest(parameterized.TestCase):
                 dim,
                 num_embeddings,
                 rng,
-                scale=Embedding.Scale.CONSTANT
+                scale=Embedding.Scale.CONSTANT,
                 # Missing scale_constant
             )
         self.assertIn("scale_constant must be specified", str(cm.exception))

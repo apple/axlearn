@@ -179,7 +179,7 @@ def add_token_type_ids(
         input_key = [input_key]
 
     def example_fn(
-        example: dict[str, Union[tf.Tensor, tf.RaggedTensor]]
+        example: dict[str, Union[tf.Tensor, tf.RaggedTensor]],
     ) -> dict[str, Union[tf.Tensor, tf.RaggedTensor]]:
         token_type_ids = []
         for i, key in enumerate(input_key):

@@ -177,9 +177,10 @@ class GoodputRecorderTest(parameterized.TestCase):
         recorder = GoodputRecorder(cfg)
 
         with mock.patch("jax.process_index", return_value=0):
-            with mock.patch(
-                "ml_goodput_measurement.goodput.GoodputRecorder"
-            ) as mock_recorder_cls, mock.patch.object(logging, "warning") as mock_warning:
+            with (
+                mock.patch("ml_goodput_measurement.goodput.GoodputRecorder") as mock_recorder_cls,
+                mock.patch.object(logging, "warning") as mock_warning,
+            ):
                 mock_instance = mock_recorder_cls.return_value
 
                 def raise_runtime_error(*args, **kwargs):

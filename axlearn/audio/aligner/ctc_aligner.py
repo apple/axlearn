@@ -15,6 +15,7 @@ See docs/audio/ctc_alignment_alg.pdf for discussions and pseduo algorithms.
 
 
 """
+
 from dataclasses import asdict, dataclass
 from typing import Literal, NamedTuple, Optional, Tuple
 

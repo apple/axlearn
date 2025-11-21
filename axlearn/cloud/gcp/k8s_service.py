@@ -1,4 +1,5 @@
-""" k8s service module."""
+"""k8s service module."""
+
 import copy
 import logging
 from typing import Any, Optional

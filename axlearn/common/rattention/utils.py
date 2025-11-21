@@ -1,4 +1,5 @@
 """Utilities for RAttention."""
+
 from typing import Optional
 
 import jax

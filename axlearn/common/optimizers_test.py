@@ -1310,8 +1310,8 @@ class OptimizerTest(TestCase):
             self.assertEqual(new_state.count, 1)
 
             if isinstance(decay, float):
-                ema_fn = (
-                    lambda p: (1 - decay) * p.value
+                ema_fn = lambda p: (
+                    (1 - decay) * p.value
                     if jnp.issubdtype(p.value.dtype, jnp.floating)
                     else p.value
                 )

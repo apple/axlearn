@@ -47,8 +47,11 @@ class TpuUtilsTest(parameterized.TestCase):
 
     def test_global_health_check(self):
         # On CPU CI, this should pass.
-        with mock.patch("os.kill") as mock_exit, mock.patch.dict(
-            os.environ, {"HOSTNAME": "h", "NODE_NAME": "n", "MEGASCALE_NUM_SLICES": "1"}
+        with (
+            mock.patch("os.kill") as mock_exit,
+            mock.patch.dict(
+                os.environ, {"HOSTNAME": "h", "NODE_NAME": "n", "MEGASCALE_NUM_SLICES": "1"}
+            ),
         ):
             global_health_check("global=180", output_dir="")
             mock_exit.assert_not_called()
@@ -63,10 +66,12 @@ class TpuUtilsTest(parameterized.TestCase):
             self.fail("should not reach here")
 
     def test_global_health_check_timeout(self):
-        with mock.patch(
-            "os.kill"
-        ) as mock_exit, tempfile.TemporaryDirectory() as d, mock.patch.dict(
-            os.environ, {"HOSTNAME": "h", "NODE_NAME": "n", "MEGASCALE_NUM_SLICES": "1"}
+        with (
+            mock.patch("os.kill") as mock_exit,
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(
+                os.environ, {"HOSTNAME": "h", "NODE_NAME": "n", "MEGASCALE_NUM_SLICES": "1"}
+            ),
         ):
             global_health_check("global=0.000001", output_dir=d)
             mock_exit.assert_called_once()
@@ -79,10 +84,13 @@ class TpuUtilsTest(parameterized.TestCase):
             pairwise_slice_health_check("pairwise=1", output_dir="")
 
     def test_global_health_check_failure(self):
-        with mock.patch("os.kill") as mock_exit, mock.patch(
-            f"{tpu_health_check_main.__name__}.main", lambda: False
-        ), tempfile.TemporaryDirectory() as d, mock.patch.dict(
-            os.environ, {"HOSTNAME": "h", "NODE_NAME": "n", "MEGASCALE_NUM_SLICES": "1"}
+        with (
+            mock.patch("os.kill") as mock_exit,
+            mock.patch(f"{tpu_health_check_main.__name__}.main", lambda: False),
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(
+                os.environ, {"HOSTNAME": "h", "NODE_NAME": "n", "MEGASCALE_NUM_SLICES": "1"}
+            ),
         ):
             global_health_check("global=180", output_dir=d)
             mock_exit.assert_called_once()

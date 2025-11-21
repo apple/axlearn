@@ -179,6 +179,7 @@ class Embedding(nn.Embedding, TorchModule):
 
 
 class LayerNorm(nn.LayerNorm, TorchModule):
+    # pylint: disable=useless-parent-delegation  # maintains interface compatibility
     def __init__(self, *args, eps=1e-6, **kwargs):
         super().__init__(*args, eps=eps, **kwargs)
 

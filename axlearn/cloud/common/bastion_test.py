@@ -1690,10 +1690,9 @@ class BastionTest(parameterized.TestCase):
         mock_validator_cfg = MockStatefulJobValidator.default_config()
         mock_append_to_job_history = mock.MagicMock()
 
-        with self._patch_bastion(
-            validator_cfg=mock_validator_cfg
-        ) as mock_bastion, mock.patch.object(
-            mock_bastion, "_append_to_job_history", mock_append_to_job_history
+        with (
+            self._patch_bastion(validator_cfg=mock_validator_cfg) as mock_bastion,
+            mock.patch.object(mock_bastion, "_append_to_job_history", mock_append_to_job_history),
         ):
             os.makedirs(mock_bastion._active_dir, exist_ok=True)
             os.makedirs(_JOB_DIR, exist_ok=True)
@@ -1802,10 +1801,9 @@ class BastionTest(parameterized.TestCase):
         mock_validator_cfg = MockAlwaysInvalidValidator.default_config()
         mock_append_to_job_history = mock.MagicMock()
 
-        with self._patch_bastion(
-            validator_cfg=mock_validator_cfg
-        ) as mock_bastion, mock.patch.object(
-            mock_bastion, "_append_to_job_history", mock_append_to_job_history
+        with (
+            self._patch_bastion(validator_cfg=mock_validator_cfg) as mock_bastion,
+            mock.patch.object(mock_bastion, "_append_to_job_history", mock_append_to_job_history),
         ):
             os.makedirs(mock_bastion._active_dir, exist_ok=True)
             os.makedirs(_JOB_DIR, exist_ok=True)

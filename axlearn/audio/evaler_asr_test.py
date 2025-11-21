@@ -133,13 +133,13 @@ def _compute_metrics(
         if brevity_penalty:
             decode_kwargs["brevity_penalty"] = brevity_penalty
 
-        cfg: WordErrorRateMetricCalculator.Config = (
-            WordErrorRateMetricCalculator.default_config().set(
-                vocab=config_for_class(seqio.SentencePieceVocabulary).set(
-                    sentencepiece_model_file=vocab_file,
-                ),
-                model_method_kwargs=decode_kwargs,
-            )
+        cfg: (
+            WordErrorRateMetricCalculator.Config
+        ) = WordErrorRateMetricCalculator.default_config().set(
+            vocab=config_for_class(seqio.SentencePieceVocabulary).set(
+                sentencepiece_model_file=vocab_file,
+            ),
+            model_method_kwargs=decode_kwargs,
         )
         calculator: WordErrorRateMetricCalculator = cfg.set(name="test-metric").instantiate(
             parent=None, model=model, model_param_partition_specs={}
