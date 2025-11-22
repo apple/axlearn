@@ -242,7 +242,6 @@ class OrbaxCheckpointer(BaseCheckpointer):
                 should_save_fn=save_fn_with_summaries,
                 enable_background_delete=True,
                 async_options=ocp.options.AsyncOptions(timeout_secs=cfg.async_timeout_secs),
-                todelete_full_path="_trash",
             ),
             item_handlers={
                 # NOTE: we make a relatively weak assumption that index files are JSON serialized
