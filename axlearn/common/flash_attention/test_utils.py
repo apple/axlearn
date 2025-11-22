@@ -35,7 +35,7 @@ def generate_paged_attention_data(
     attention_bias_type: Literal[None, "2d", "4d"] = None,
     with_segment_ids: bool = False,
     dtype=jnp.bfloat16,
-    query_offset: int = 0,
+    query_offset: Tensor | int = 0,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, CompositeAttentionBias]:
     """Generates query, key value pages, and page tables for paged attention testing."""
     bias = generate_attention_data(
@@ -83,7 +83,7 @@ def generate_attention_data(
     with_segment_ids: bool = False,
     dtype=jnp.bfloat16,
     kv_dtype=None,
-    query_offset: int = 0,
+    query_offset: Tensor | int = 0,
 ) -> tuple[Tensor, Tensor, Tensor, CompositeAttentionBias]:
     """Generates QKV and Bias for unit test purposes."""
     if sliding_window_sz is not None and sliding_window_sz != -1:
@@ -113,9 +113,11 @@ def generate_attention_data(
         segment_ids = jnp.cumsum(segment_ids, axis=1)
 
     bias_list = []
+    if isinstance(query_offset, Tensor) and len(query_offset.shape) == 1:
+        query_offset = jnp.expand_dims(query_offset, 1)
     pos = dict(
-        target_positions=jnp.arange(query_len)[None] + query_offset,
-        source_positions=jnp.arange(kv_len)[None],
+        target_positions=jnp.tile(jnp.arange(query_len), (batch_size, 1)) + query_offset,
+        source_positions=jnp.tile(jnp.arange(kv_len), (batch_size, 1)),
     )
     if mask_fn is not None:
         if mask_fn is causal_mask:
