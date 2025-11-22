@@ -34,9 +34,9 @@ core = [
     "protobuf>=4,<5",
     "tensorboard-plugin-profile==2.20.4",
     # This has both x86 and arm64 wheels. Underneath the hood it uses tensorflow-macos since 2.13.
-    "tensorflow==2.19.1.1",
+    "tensorflow==2.19.1.2",
     "tensorflow-datasets==4.9.9",
-    "tensorflow-io==0.37.2",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
+    "tensorflow-io==0.37.3",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
     "tensorflow-metadata==1.18.0.dev0", # Otherwise Seqio will report no core for tfds
     "tensorflow_text==2.19.0", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
@@ -158,7 +158,7 @@ mmau = [
 # Orbax checkpointing.
 orbax = [
     "humanize==4.10.0",
-    "orbax-checkpoint==0.11.15",
+    "orbax-checkpoint==0.11.29",
 ]
 # Audio dependencies.
 audio = [
