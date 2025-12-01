@@ -213,6 +213,47 @@ class ModelTest(TestCase):
         bits_per_byte = per_token_loss.sum() / jnp.maximum(1, total_bytes) / jnp.log(2)
         self.assertAlmostEqual(bits_per_byte, summaries["bits_per_byte"].mean)
 
+    def test_metric_summary_to_scalar(self):
+        """Test that _metrics converts all MetricSummary types to scalars."""
+        batch_size, seq_len, vocab_size = 2, 3, 10
+
+        model = (
+            self._model_config(vocab_size=vocab_size, seq_len=seq_len)
+            .set(name="metrics_test")
+            .instantiate(parent=None)
+        )
+
+        prng_key, init_key = jax.random.split(jax.random.PRNGKey(123))
+        model_params = model.initialize_parameters_recursively(init_key)
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=0, maxval=vocab_size
+        )
+        target_labels = jax.random.randint(
+            jax.random.PRNGKey(123), shape=[batch_size, seq_len], minval=-1, maxval=vocab_size
+        )
+        input_batch = dict(input_ids=input_ids, target_labels=target_labels)
+
+        # Call forward with return_aux=True to get metrics
+        (loss, aux), _ = functional(
+            model,
+            inputs=dict(input_batch=input_batch, return_aux=True),
+            is_training=True,
+            prng_key=prng_key,
+            state=model_params,
+        )
+
+        # Verify loss is scalar
+        self.assertIsInstance(loss, (float, int, jnp.ndarray))
+        # Verify all metrics are scalars (not MetricSummary objects)
+        metrics = aux["metrics"]
+        for key, value in metrics.items():
+            self.assertIsInstance(
+                value,
+                (float, int, jnp.ndarray),
+                f"Metric '{key}' should be scalar, but got {type(value).__name__}",
+            )
+
     def test_segment_ids(self):
         batch_size, seq_len, vocab_size = 3, 10, 10
 
@@ -407,7 +448,7 @@ class ModelTest(TestCase):
                 module_outputs={"parent_output": 1, "metrics": {"metrics_output": 0}},
                 state_updates={"parent_state": 1, "metrics": {"metrics_state": 0}},
             ),
-            {"metrics_output": WeightedSummary(0, 1)},
+            {"metrics_output": 0.0},
         )
         for flatten_metrics in (None, True):
             test_no_conflict(
@@ -434,10 +475,10 @@ class ModelTest(TestCase):
                     },
                 ),
                 {
-                    "child1_output": WeightedSummary(0, 1),
-                    "child2_output": WeightedSummary(0, 1),
-                    "loss_child1": WeightedSummary(0, 1),
-                    "loss_child2": WeightedSummary(0, 1),
+                    "child1_output": 0.0,
+                    "child2_output": 0.0,
+                    "loss_child1": 0.0,
+                    "loss_child2": 0.0,
                 },
             )
 
@@ -467,12 +508,12 @@ class ModelTest(TestCase):
             ),
             {
                 "child1": {
-                    "child1_output": WeightedSummary(0, 1),
-                    "loss_child1": WeightedSummary(0, 1),
+                    "child1_output": 0.0,
+                    "loss_child1": 0.0,
                 },
                 "child2": {
-                    "child2_output": WeightedSummary(0, 1),
-                    "loss_child2": WeightedSummary(0, 1),
+                    "child2_output": 0.0,
+                    "loss_child2": 0.0,
                 },
             },
         )
@@ -729,15 +770,13 @@ class ModelAuxLossTest(TestCase):
         if aux_loss_regex is not None:
             self.assertIn("aux_loss", aux["metrics"])
             if aux_loss_regex == ".*/aux_loss" and use_aux_layer:
-                self.assertEqual(aux["metrics"]["aux_loss"].value(), 1.0)
+                self.assertEqual(aux["metrics"]["aux_loss"], 1.0)
             else:
-                self.assertEqual(aux["metrics"]["aux_loss"].value(), 0.0)
-            self.assertEqual(
-                aux["metrics"]["cross_entropy"].value() + aux["metrics"]["aux_loss"].value(), loss
-            )
+                self.assertEqual(aux["metrics"]["aux_loss"], 0.0)
+            self.assertEqual(aux["metrics"]["cross_entropy"] + aux["metrics"]["aux_loss"], loss)
         else:
             self.assertNotIn("aux_loss", aux)
-            self.assertEqual(aux["metrics"]["cross_entropy"].value(), loss)
+            self.assertEqual(aux["metrics"]["cross_entropy"], loss)
 
     @parameterized.product(
         stack_cfg=(
