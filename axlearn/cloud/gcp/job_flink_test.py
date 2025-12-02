@@ -96,8 +96,8 @@ expected_flink_deployment_json = """
     },
     "jobManager": {
       "resource": {
-        "memory": "2g",
-        "cpu": 1
+        "memory": "100g",
+        "cpu": 20
       },
       "podTemplate": {
         "metadata": {
@@ -230,7 +230,7 @@ expected_flink_deployment_json = """
                 },
                 {
                   "name": "XLA_FLAGS",
-                  "value": "--xla_dump_to=/output/fake-name/xla"
+                  "value": "--xla_dump_to=/opt/flink/log"
                 },
                 {
                   "name": "TF_CPP_MIN_LOG_LEVEL",
