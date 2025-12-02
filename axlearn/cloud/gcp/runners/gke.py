@@ -1,6 +1,48 @@
 # Copyright © 2024 Apple Inc.
 
-"""Runs and monitors Jobsets on GKE.
+"""Runs and monitors Kubernetes JobSet (https://github.com/kubernetes-sigs/jobset) on GKE.
+
+## How It Works
+
+When we submit a job to Bastion, it starts a subprocess to run the GKERunnerJob._execute() method.
+The GKERunnerJob._execute() method polls the Kubernetes API every 30 seconds to monitor the JobSet
+status until it completes (succeeds or fails).  Here follows the detailed flow of the subprocess.
+
+Bastion starts: python3 -m axlearn.cloud.gcp.runners.gke run ...
+    ↓
+GKERunnerJob._execute() starts:
+    ↓
+while True:  # Poll every 30 seconds
+    │
+    ├─ _get_status() → Query Kubernetes API for JobSet status and returns a status.
+    │
+    ├─ if NOT_STARTED:
+    │      • Wait for docker image build to complete
+    │      • Pre-provision TPU node pools (if enabled)
+    │      • Submit JobSet to Kubernetes cluster
+    │
+    ├─ elif READY or PENDING:
+    │      • Log current status
+    │      • Upload Tensorboard logs (if configured)
+    │      • Continue monitoring
+    │
+    ├─ elif SUCCEEDED or COMPLETED or FAILED:
+    │      • Publish completion event
+    │      • return → EXIT SUBPROCESS ──────────┐
+    │                                           │
+    ├─ elif RESCHEDULED:                        │
+    │      • Delete JobSet                      │
+    │      • Delete node pools                  │
+    │                                           │
+    └─ sleep(30 seconds)                        │
+       (loop back to top)                       │
+                                                │
+                                                ↓
+                                    Subprocess exits
+                                                ↓
+                                    Bastion detects exit
+                                                ↓
+                                    Job → CLEANING state
 
 This also supports mounting GCS paths as GCS FUSE volumes.
 The common usage is via a bastion using `axlearn gcp launch`.
@@ -17,7 +59,6 @@ Example:
         --bundler_type=artifactregistry --bundler_spec=image=tpu \
         --bundler_spec=dockerfile=Dockerfile \
         -- "sleep 10; echo hello >> /output/tmp.txt"
-
 """
 
 import enum
