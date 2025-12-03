@@ -158,6 +158,13 @@ class CloudBuildBundlerTest(TestCase):
             b.wait_until_finished("test-name")
             self.assertEqual(3, mock_status.call_count)
 
+        with self._mock_status(  # pytype: disable=wrong-arg-types
+            None, CloudBuildStatus.PENDING, CloudBuildStatus.SUCCESS
+        ) as mock_status:
+            b = cfg.set(is_async=True).instantiate()
+            b.wait_until_finished("test-repo/test-target:test-name")
+            self.assertEqual(3, mock_status.call_count)
+
     def test_wait_until_finished_raises_runtime_error_with_cloud_build_status_failure(self):
         # Tests that we raise a runtime error if CloudBuildStatus.FAILURE status is returned.
         cfg = self._get_test_cloud_build_bundler()

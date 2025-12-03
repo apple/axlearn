@@ -78,7 +78,6 @@ from axlearn.cloud.common.bastion import (
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.event_queue import BaseQueueClient
 from axlearn.cloud.common.utils import generate_job_name
-from axlearn.cloud.gcp.cloud_build import parse_tag_from_image_id, wait_for_cloud_build
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.event_queue import event_queue_from_config
 from axlearn.cloud.gcp.job import GKEJob, GKELeaderWorkerSet
@@ -524,11 +523,7 @@ class GKERunnerJob(BaseRunnerJob):
                 try:
                     # Note: while the wait is blocking, the bastion will kill the runner process
                     # when it needs to reschedule.
-                    if not image_id:
-                        self._bundler.wait_until_finished(cfg.name)
-                    else:
-                        tag = parse_tag_from_image_id(image_id)
-                        wait_for_cloud_build(project_id=cfg.project, image_id=image_id, tags=[tag])
+                    self._bundler.wait_until_finished(image_id or cfg.name)
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return
@@ -903,11 +898,7 @@ class LWSRunnerJob(BaseRunnerJob):
                 try:
                     # Note: while the wait is blocking, the bastion will kill the runner process
                     # when it needs to reschedule.
-                    if not image_id:
-                        self._bundler.wait_until_finished(cfg.name)
-                    else:
-                        tag = parse_tag_from_image_id(image_id)
-                        wait_for_cloud_build(project_id=cfg.project, image_id=image_id, tags=[tag])
+                    self._bundler.wait_until_finished(image_id or cfg.name)
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return

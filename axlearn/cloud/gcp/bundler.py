@@ -58,7 +58,7 @@ from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import canonicalize_to_list, to_bool
-from axlearn.cloud.gcp.cloud_build import wait_for_cloud_build
+from axlearn.cloud.gcp.cloud_build import parse_tag_from_image_id, wait_for_cloud_build
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
@@ -239,12 +239,20 @@ options:
         """
         cfg: CloudBuildBundler.Config = self.config
         if cfg.is_async:
-            wait_for_cloud_build(
-                project_id=cfg.project,
-                image_id=self.id(name),
-                tags=[name],
-                wait_timeout=wait_timeout,
-            )
+            if tag := parse_tag_from_image_id(name):
+                wait_for_cloud_build(
+                    project_id=cfg.project,
+                    image_id=name,
+                    tags=[tag],
+                    wait_timeout=wait_timeout,
+                )
+            else:
+                wait_for_cloud_build(
+                    project_id=cfg.project,
+                    image_id=self.id(name),
+                    tags=[name],
+                    wait_timeout=wait_timeout,
+                )
 
 
 def with_tpu_extras(bundler: Bundler.Config) -> Bundler.Config:

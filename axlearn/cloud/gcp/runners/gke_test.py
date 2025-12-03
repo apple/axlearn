@@ -987,9 +987,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     _pre_provisioner=mock.DEFAULT,
                 )
             )
-            mock_wait_for_cloud_build = stack.enter_context(
-                mock.patch("axlearn.cloud.gcp.runners.gke.wait_for_cloud_build")
-            )
             job._inner._builder.config.image_id = image_id
             job._execute()
 
@@ -998,10 +995,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 job._pre_provisioner.create_for.assert_called()
 
             if image_id:
-                job._bundler.wait_until_finished.assert_not_called()
-                mock_wait_for_cloud_build.assert_called_with(
-                    project_id="settings-project", image_id="my-image-id:tag", tags=["tag"]
-                )
+                job._bundler.wait_until_finished.assert_called_with(image_id)
             else:
                 job._bundler.wait_until_finished.assert_called_with("test-name")
             job._inner.execute.assert_called()
