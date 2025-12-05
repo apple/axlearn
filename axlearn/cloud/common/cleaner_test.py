@@ -4,6 +4,7 @@
 
 import datetime
 from collections.abc import Sequence
+from unittest import mock
 
 from absl.testing import parameterized
 
@@ -15,7 +16,7 @@ from axlearn.cloud.common.cleaner import (
     UnschedulableCleaner,
 )
 from axlearn.cloud.common.quota import QuotaInfo
-from axlearn.cloud.common.scheduler import JobMetadata, JobScheduler
+from axlearn.cloud.common.scheduler import BaseScheduler, JobMetadata, JobScheduler, JobVerdict
 from axlearn.cloud.common.types import JobSpec
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 
@@ -116,3 +117,99 @@ class UnschedulableCleanerTest(parameterized.TestCase):
         cleaner = cfg.instantiate()
         result = cleaner.sweep(jobs)
         self.assertSequenceEqual(result, list(unschedulable_jobs.keys()))
+
+    def test_sweep_missing_job_in_verdicts(self):
+        """Test that sweep handles the case when job is not in job_verdicts."""
+        # Create a mock schedule result without the job being scheduled
+        mock_schedule_result = BaseScheduler.ScheduleResults(
+            project_limits={},
+            project_usages={},
+            job_verdicts={},  # empty job verdicts
+            unused_limits=None,
+        )
+
+        # Create a simple job
+        job = new_jobspec(
+            name="test_job",
+            command="echo hello",
+            metadata=JobMetadata(
+                user_id="user_1",
+                project_id="default",
+                creation_time=datetime.datetime(1900, 1, 1, 0, 0, 0),
+                resources={"aws_4:p5.48xlarge": 1},
+            ),
+        )
+        jobs = {"test_job": job}
+
+        # Create cleaner
+        quota = QuotaInfo(
+            total_resources=[{"aws_4:p5.48xlarge": 10}],
+            project_resources={},
+            project_membership={},
+        )
+        cfg = UnschedulableCleaner.default_config().set(
+            scheduler=JobScheduler.default_config().set(
+                quota=config_for_function(lambda: lambda: quota)
+            )
+        )
+        cleaner = cfg.instantiate()
+
+        # Patch the scheduler.schedule method to return our mock result
+        # and verify the logging
+        with self.assertLogs(level="INFO") as log_context:
+            with mock.patch.object(JobScheduler, "schedule", return_value=mock_schedule_result):
+                result = cleaner.sweep(jobs)
+
+            # Should return empty list since "my_job" is not in job_verdicts
+            self.assertSequenceEqual(result, [])
+
+        # Verify the log message was emitted
+        self.assertTrue(
+            any(
+                "job test_job does not exist in the verdicts, skipping" in log
+                for log in log_context.output
+            )
+        )
+
+    def test_sweep_job_with_over_limits(self):
+        """Test that sweep correctly identifies jobs with over_limits."""
+        # Create a mock schedule result with a verdict that has over_limits
+        mock_schedule_result = BaseScheduler.ScheduleResults(
+            project_limits={},
+            project_usages={},
+            job_verdicts={"my_job": JobVerdict(over_limits={"aws_4:p5.48xlarge"})},
+            unused_limits=None,
+        )
+
+        # Create a simple job
+        job = new_jobspec(
+            name="test_job",
+            command="echo hello",
+            metadata=JobMetadata(
+                user_id="user_1",
+                project_id="default",
+                creation_time=datetime.datetime(1900, 1, 1, 0, 0, 0),
+                resources={"aws_4:p5.48xlarge": 100},
+            ),
+        )
+        jobs = {"test_job": job}
+
+        # Create cleaner
+        quota = QuotaInfo(
+            total_resources=[{"aws_4:p5.48xlarge": 10}],
+            project_resources={},
+            project_membership={},
+        )
+        cfg = UnschedulableCleaner.default_config().set(
+            scheduler=JobScheduler.default_config().set(
+                quota=config_for_function(lambda: lambda: quota)
+            )
+        )
+        cleaner = cfg.instantiate()
+
+        # Patch the scheduler.schedule method to return our mock result
+        with mock.patch.object(JobScheduler, "schedule", return_value=mock_schedule_result):
+            result = cleaner.sweep(jobs)
+
+        # Should return the job since it has over_limits
+        self.assertSequenceEqual(result, ["test_job"])
