@@ -114,7 +114,7 @@ class TPUReplicatedJobTest(TestCase):
             self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, _),
         ):
             cfg.set(name="invalid_underscore_name", command="", output_dir="")
-            cfg.instantiate(bundler=mock.Mock())
+            cfg.instantiate(bundler=mock.create_autospec(Bundler))
 
     @parameterized.product(
         [
@@ -603,7 +603,7 @@ class CompositeReplicatedJobTest(TestCase):
             self.assertEqual(cfg.inner[child].name, child)
             self.assertEqual(cfg.inner[child].command, f"{child}_command")
 
-        composite = cfg.instantiate(bundler=mock.Mock())
+        composite = cfg.instantiate(bundler=mock.create_autospec(Bundler))
         self.assertNestedEqual(
             [{"name": "a", "command": "a_command"}, {"name": "b", "command": "b_command"}],
             composite(),
