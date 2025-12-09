@@ -813,7 +813,10 @@ def data_partition_type_to_spec(
     elif partition == DataPartitionType.REPLICATED:
         return PartitionSpec(None)
     elif partition == DataPartitionType.BATCH:
-        return PartitionSpec(("data", "fsdp"), "seq")
+        mesh = thread_resources.env.physical_mesh
+        batch_axis_names = tuple(name for name in mesh.axis_names if name in ("data", "fsdp"))
+        seq_axis_names = tuple(name for name in mesh.axis_names if name in ("seq",))
+        return PartitionSpec(batch_axis_names, seq_axis_names)
     elif isinstance(partition, PartitionSpec):
         return partition
     elif isinstance(partition, dict):

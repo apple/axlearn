@@ -177,8 +177,11 @@ class InferenceRunner(Module):
         # N.B. Model dtypes restored from ckpt are controlled in the model cfg.
         inference_dtype: Optional[jnp.dtype] = None
 
-        # How to partition input batches. Also used for output batches.
+        # How to partition input batches.
         input_batch_partition_spec: DataPartitionType = DataPartitionType.FULL
+
+        # How to partition output batches.
+        output_batch_partition_spec: DataPartitionType = DataPartitionType.BATCH
 
     @classmethod
     def config_from_trainer(cls, trainer_cfg: SpmdTrainer.Config) -> Config:
@@ -327,7 +330,8 @@ class InferenceRunner(Module):
             method: the method name of self.model to invoke. The method should take an
                 `input_batch` arg and return a NestedTensor. Both `input_batch` and the
                 returned value are NestedTensors containing Tensors with a leading dimension of
-                `batch_size` and will be partitioned with input_batch_partition_spec.
+                `batch_size` and will be partitioned with `input_batch_partition_spec` and
+                `output_batch_partition_spec` respectively.
             prng_key: the random key used for inference. Use restored key if None.
             drop_module_outputs: A callable that takes a path and outputs a decision of whether to
                 drop the module output at the given path, where True means we drop. By default, the
@@ -363,6 +367,9 @@ class InferenceRunner(Module):
                 )
 
             input_partition_spec = utils.data_partition_type_to_spec(cfg.input_batch_partition_spec)
+            output_partition_spec = utils.data_partition_type_to_spec(
+                cfg.output_batch_partition_spec
+            )
             jit_inference_iter_fn = pjit(
                 inference_iter,
                 in_shardings=(
@@ -372,7 +379,7 @@ class InferenceRunner(Module):
                 ),
                 out_shardings=(
                     self._inference_runner_state_partition_specs.prng_key,
-                    None,  # Output batch.
+                    output_partition_spec,  # Output batch.
                     None,  # Summaries.
                     None,  # Module outputs.
                 ),
