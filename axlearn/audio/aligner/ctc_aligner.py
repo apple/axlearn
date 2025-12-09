@@ -292,19 +292,46 @@ def find_max_along_last_axis(value: Tensor, indices: Tensor) -> Tuple[Tensor, Te
             max_indices[b, u] = argmax_k(value[b, k) for k \in indices[b, u, :] and k > 0;
             or -1 if incides[b, u, :] < 0
     """
-    valid_mask = indices >= 0  # [B, U]
-    safe_indices = jnp.where(valid_mask, indices, 0)  # [B, U, 3]
-    gathered_values = jnp.take_along_axis(value[:, None], safe_indices, axis=-1)  # [B, U, 3]
-    masked_values = jnp.where(valid_mask, gathered_values, -jnp.inf)  # [B, U, 3]
+    # Optimized version that avoids take_along_axis by using direct indexing
+    # indices shape: [B, U, 3]
+    valid_mask = indices >= 0  # [B, U, 3]
 
-    max_values = jnp.max(masked_values, axis=-1)  # [B, U]
-    max_positions = jnp.argmax(masked_values, axis=-1)  # [B, U]
-    # Use max_positions to extract the corresponding indices from `indices`
-    max_indices = jnp.take_along_axis(indices, max_positions[..., None], axis=-1).squeeze(-1)
+    # Extract the three index positions
+    idx0 = indices[:, :, 0]  # [B, U]
+    idx1 = indices[:, :, 1]  # [B, U]
+    idx2 = indices[:, :, 2]  # [B, U]
 
+    # Create batch indices for advanced indexing
+    batch_size, _ = value.shape
+    batch_idx = jnp.arange(batch_size)[:, None]  # [B, 1]
+
+    # Gather values using advanced indexing instead of take_along_axis
+    # Clamp indices to valid range to avoid out-of-bounds
+    safe_idx0 = jnp.where(valid_mask[:, :, 0], idx0, 0)
+    safe_idx1 = jnp.where(valid_mask[:, :, 1], idx1, 0)
+    safe_idx2 = jnp.where(valid_mask[:, :, 2], idx2, 0)
+
+    val0 = value[batch_idx, safe_idx0]  # [B, U]
+    val1 = value[batch_idx, safe_idx1]  # [B, U]
+    val2 = value[batch_idx, safe_idx2]  # [B, U]
+
+    # Mask invalid values
+    val0 = jnp.where(valid_mask[:, :, 0], val0, -jnp.inf)
+    val1 = jnp.where(valid_mask[:, :, 1], val1, -jnp.inf)
+    val2 = jnp.where(valid_mask[:, :, 2], val2, -jnp.inf)
+
+    # Stack values and find max
+    stacked_values = jnp.stack([val0, val1, val2], axis=-1)  # [B, U, 3]
+    max_values = jnp.max(stacked_values, axis=-1)  # [B, U]
+    max_positions = jnp.argmax(stacked_values, axis=-1)  # [B, U]
+
+    # Extract corresponding indices based on max_positions
+    # Use where to select from idx0, idx1, idx2 based on max_positions
+    max_indices = jnp.where(max_positions == 0, idx0, jnp.where(max_positions == 1, idx1, idx2))
+
+    # Handle all-invalid cases
     all_invalid_mask = jnp.all(~valid_mask, axis=-1)
     max_values = jnp.where(all_invalid_mask, -jnp.inf, max_values)
-    # If max_values is -inf, then the corresponding max_indices should be -1
     max_indices = jnp.where(all_invalid_mask, -1, max_indices)
     max_indices = jnp.where(jnp.isinf(max_values), -1, max_indices)
 
@@ -318,23 +345,26 @@ class AlignmentLoopState(NamedTuple):
     # `stop_alignment`: a [B]-shaped tensor, indicating whether it has reached padding part, which
     # can be used to determine whether to early stop
     stop_alignment: Tensor
-    # `search_lattices`: a [B, T+1, 2*(max_num_labels + 1)]-shaped tensor
+    # `search_lattices`: a [T+1, B, 2*(max_num_labels + 1)]-shaped tensor
+    # Note: Transposed to [T+1, B, ...] for efficient memory access during scan along T axis
     search_lattices: Tensor
-    # `backtrace`: a [B, T+1, 2*(max_num_labels + 1)]-shaped int tensor
+    # `backtrace`: a [T+1, B, 2*(max_num_labels + 1)]-shaped int tensor
+    # Note: Transposed to [T+1, B, ...] for efficient memory access during scan along T axis
     backtrace: Tensor
 
     @classmethod
     def init(cls, batch_size: int, max_num_frames: int, max_num_labels: int):
+        # Initialize with [T+1, B, 2*(L+1)] shape for efficient memory access
         search_lattices = jnp.full(
-            (batch_size, max_num_frames + 1, 2 * (max_num_labels + 1)), fill_value=-jnp.inf
+            (max_num_frames + 1, batch_size, 2 * (max_num_labels + 1)), fill_value=-jnp.inf
         )
-        search_lattices = search_lattices.at[:, 0, 0].set(0.0)
+        search_lattices = search_lattices.at[0, :, 0].set(0.0)
         init_state = AlignmentLoopState(
             step=0,
             stop_alignment=jnp.array([False] * batch_size, dtype=jnp.bool_),
             search_lattices=search_lattices,
             backtrace=jnp.full(
-                (batch_size, max_num_frames + 1, 2 * (max_num_labels + 1)), fill_value=-1
+                (max_num_frames + 1, batch_size, 2 * (max_num_labels + 1)), fill_value=-1
             ),
         )
         return init_state
@@ -348,11 +378,55 @@ def search_on_lattices(
     blank_id: int,
     loop: Literal["lax", "python"] = "lax",
 ) -> AlignmentLoopState:
+    """Given the log_posterior and the label sequence, generate search lattices.
+
+    Args:
+        log_pos: [B, T, V]-shaped tensor; if `is_normalized_log_pos`, exp(log_pos).sum(axis=-1)
+            is 1.0;
+        log_pos_paddings: [B, T]-shaped bool tensor; 1 indicates padding;
+        labels: [B, U]-shaped tensor, where U = 2 * (max_num_labels + 1);
+        label_paddings: [B, U]-shaped tensor, indicating whether (b, u)-position is a padding;
+        blank_id: blank symbol id;
+        loop: loop style; python for debugging purpose;
+
+    Returns:
+        An AlignmentLoopState object.
+    """
     batch_size, max_num_frames, _ = log_pos.shape
     _, max_num_labels = labels.shape
-    frame_lengths = jnp.sum(1.0 - log_pos_paddings, axis=-1).astype(jnp.int32)
 
-    log_pos = jnp.where(log_pos_paddings[:, :, None], -jnp.inf, log_pos)
+    frame_lengths = jnp.sum(1.0 - log_pos_paddings, axis=-1).astype(jnp.int32)
+    log_pos_transposed = jnp.swapaxes(log_pos, 1, 2)  # [B, V, T]
+
+    def gather_time_vecotrs(matrix, label_indices):
+        # Matrix is a [V, T]-shaped tensor, label_indices is a [U]-shaped tensor
+        # --> [U, T]-shaped tensor
+        return jnp.take(matrix, label_indices, axis=0)
+
+    # Pre-compute transit costs for all frames before the loop
+    # This avoids repeated gathering inside the loop (800 iterations)
+    safe_labels = jnp.where(labels < 0, 0, labels)
+    precomputed_label_costs = jax.vmap(gather_time_vecotrs)(log_pos_transposed, safe_labels)
+    # [B, U, T] -> [B, T, U]
+    precomputed_label_costs = jnp.swapaxes(precomputed_label_costs, 1, 2)
+    # Apply padding mask to label costs only (much smaller than full log_pos)
+    precomputed_label_costs = jnp.where(
+        label_paddings[:, None, :], -jnp.inf, precomputed_label_costs
+    )
+    # Apply frame padding mask to label costs
+    precomputed_label_costs = jnp.where(
+        log_pos_paddings[:, :, None], -jnp.inf, precomputed_label_costs
+    )
+    # Transpose to [T, B, U] for efficient access in the loop
+    precomputed_label_costs = jnp.transpose(precomputed_label_costs, (1, 0, 2))
+
+    # Pre-compute blank log posteriors for all frames: [B, T]
+    precomputed_blank_costs = log_pos[:, :, blank_id]
+    # Apply frame padding mask to blank costs
+    precomputed_blank_costs = jnp.where(log_pos_paddings, -jnp.inf, precomputed_blank_costs)
+    # Transpose to [T, B] for efficient access in the loop
+    precomputed_blank_costs = jnp.transpose(precomputed_blank_costs, (1, 0))
+
     prev_extend_labels = calculate_prev_extend_labels(labels=labels, label_paddings=label_paddings)
     # [B, 2*(max_num_labels + 1), 3]
 
@@ -372,28 +446,42 @@ def search_on_lattices(
 
         def non_zero_step(state: AlignmentLoopState) -> AlignmentLoopState:
             step = state.step
+            # Access with transposed layout: [T+1, B, 2*(L+1)] -> [B, 2*(L+1)]
             max_values, max_indices = find_max_along_last_axis(
-                value=state.search_lattices[:, step - 1, :], indices=prev_extend_labels
+                value=state.search_lattices[step - 1, :, :], indices=prev_extend_labels
             )
             # Both shape: [B, 2*(max_num_labels+1)]
 
-            # For odd-index extend label, using blank posterior
-            search_lattices = state.search_lattices.at[:, step, 1::2].set(
-                max_values[:, 1::2] + log_pos[:, step - 1, blank_id : blank_id + 1]
-            )
-            # For even-index extend label, using the log_pos indexed by ground truth label
-            safe_labels = jnp.where(labels < 0, 0, labels)
-            # pylint: disable-next=invalid-unary-operand-type
-            transit_cost = -jnp.take_along_axis(
-                log_pos[:, step - 1, :], safe_labels, axis=-1
-            )  # shape: [B, num_labels]
-            transit_cost = jnp.where(label_paddings, jnp.inf, transit_cost)
-            search_lattices = search_lattices.at[:, step, 2::2].set(
-                max_values[:, 2::2] - transit_cost
-            )
+            # For odd-index extend label, use pre-computed blank costs
+            # Access precomputed_blank_costs with shape [T, B]
+            blank_cost_step = precomputed_blank_costs[step - 1, :]  # shape: [B]
+            odd_updates = max_values[:, 1::2] + blank_cost_step[:, None]
+            # odd_updates shape: [B, max_num_labels+1]
+
+            # For even-index extend label, use pre-computed label costs
+            # Access precomputed_label_costs with shape [T, B, L]
+            transit_cost = -precomputed_label_costs[step - 1, :, :]  # shape: [B, L]
+            even_updates = max_values[:, 2::2] - transit_cost
+            # even_updates shape: [B, max_num_labels]
+
+            # Interleave even and odd updates without strided indexing
+            # Prepend the 0-th element (which stays at -inf) to even_updates
+            even_updates_with_zero = jnp.concatenate(
+                [state.search_lattices[step, :, 0:1], even_updates], axis=-1
+            )  # [B, max_num_labels+1]
+
+            # Stack and reshape to interleave: [even, odd, even, odd, ...]
+            # Stack along new axis: [B, max_num_labels+1, 2]
+            stacked = jnp.stack([even_updates_with_zero, odd_updates], axis=-1)
+            # Reshape to interleave: [B, 2*(max_num_labels+1)]
+            new_lattice_row = jnp.reshape(stacked, (batch_size, -1))
+
+            # Single contiguous update for the entire row
+            search_lattices = state.search_lattices.at[step, :, :].set(new_lattice_row)
+
             stop_alignment = (state.step - 1) >= frame_lengths
             max_indices = jnp.where(state.stop_alignment[:, None], -1, max_indices)
-            backtrace = state.backtrace.at[:, step, :].set(max_indices)
+            backtrace = state.backtrace.at[step, :, :].set(max_indices)
             step += 1
 
             return AlignmentLoopState(
@@ -415,39 +503,42 @@ def search_on_lattices(
         raise NotImplementedError(loop)
 
     # Also make sure state.backtrace is masked out when step > frame_length.
-    steps = jnp.arange(max_num_frames + 1)[None, :, None]
-    backtrace = jnp.where(steps > frame_lengths[:, None, None], -1, state.backtrace)
+    # With transposed layout [T+1, B, 2*(L+1)], we need to broadcast correctly
+    steps = jnp.arange(max_num_frames + 1)[:, None, None]  # [T+1, 1, 1]
+    backtrace = jnp.where(steps > frame_lengths[None, :, None], -1, state.backtrace)
     state = state._replace(backtrace=backtrace)
     return state
 
 
 def find_alignment_for_last_frame(
     search_lattices: Tensor, frame_length: Tensor, label_length: Tensor
-) -> Tensor:
+) -> Tuple[Tensor, Tensor]:
     """Finds alignment for the last frame.
 
     Args:
-        search_lattices: a [B, T+1, 2*(max_num_frames + 1)]-shaped tensor. See `AlignmentLoopState`
-            for details.
+        search_lattices: a [T+1, B, 2*(max_num_frames + 1)]-shaped tensor. See `AlignmentLoopState`
+            for details. Note: transposed layout.
         frame_length: a [B, ]-shaped int32 tensor.
         label_length: a [B, ]-shaped int32 tensor.
 
     Returns:
-        a [B, ]-shaped int32 tensor, indicating which label the last frame of b-th sequence aligned
-            to.
+        align_index: a [B, ]-shaped int32 tensor, indicating which label the last frame of b-th
+            sequence aligned to.
+        align_score: a [B, ]-shaped float32 tensor, indicating the alignment score.
 
     Note: this function is equivalent to the following python code:
         for b in range(0, B):
-            if search_lattices[b, frame_length[b], 2 * label_length[b]] == -inf and
-            search_lattices[b, frame_length[b], 2 * label_length[b] +1 ] == -inf:
+            if search_lattices[frame_length[b], b, 2 * label_length[b]] == -inf and
+            search_lattices[frame_length[b], b, 2 * label_length[b] +1 ] == -inf:
                 last_frame_align[b] = -1
             else:
                 last_frame_align[b] = 2 * label_length
-                if search_lattices[b, frame_length[b], 2 * label_length] is bigger
+                if search_lattices[frame_length[b], b, 2 * label_length] is bigger
                 else 2 * label_length + 1
     """
 
     def _find_alignment_for_last_frame(search_lattices, frame_length, label_length):
+        # Access with transposed layout: search_lattices[frame_length, b, :]
         end_with_label_score = search_lattices[frame_length, 2 * label_length]
         end_with_blank_score = search_lattices[frame_length, 2 * label_length + 1]
         max_score_index = jax.lax.cond(
@@ -463,7 +554,8 @@ def find_alignment_for_last_frame(
         align_score = jnp.maximum(end_with_blank_score, end_with_label_score)
         return align_index, align_score
 
-    return jax.vmap(_find_alignment_for_last_frame, in_axes=0, out_axes=0)(
+    # vmap over batch dimension (axis 1 in transposed layout)
+    return jax.vmap(_find_alignment_for_last_frame, in_axes=(1, 0, 0), out_axes=0)(
         search_lattices, frame_length, label_length
     )
 
@@ -606,18 +698,22 @@ def traceback_to_alignment(
         last_frame_align
     )
 
+    # Transpose align_to_extend_labels to [T+1, B] for efficient memory access in the loop
+    # This avoids strided access patterns that are slow on TPU
+    align_to_extend_labels_transposed = jnp.transpose(align_to_extend_labels, (1, 0))  # [T+1, B]
+
     class LoopState(NamedTuple):
         step: int
-        align_to_extend_labels: Tensor  # [B, T+1]-shaped int32 tensor
+        align_to_extend_labels: Tensor  # [T+1, B]-shaped int32 tensor (transposed)
         # The following tensor are read-only in the loop body
         last_frame_alignment: Tensor  # [B, ]-shaped int32 tensor
         label_length: Tensor  # [B, ]-shaped int32 tensor
         frame_length: Tensor  # [B, ]-shaped int32 tensor
-        backtrace: Tensor  # [B, T+1, 2*(L+1)]-shaped int32 tensor
+        backtrace: Tensor  # [T+1, B, 2*(L+1)]-shaped int32 tensor (transposed)
 
     state = LoopState(
         step=max_num_frames,
-        align_to_extend_labels=align_to_extend_labels,
+        align_to_extend_labels=align_to_extend_labels_transposed,
         last_frame_alignment=last_frame_align,
         label_length=label_lengths,
         frame_length=frame_lengths,
@@ -632,15 +728,17 @@ def traceback_to_alignment(
                 align_prev_frame < 0, lambda: -1, lambda: traceback[align_prev_frame]
             )
 
+        # Access with transposed layout: align_to_extend_labels[step, :] and backtrace[step, :, :]
+        # Both are now contiguous memory accesses, which is efficient on TPU
         alignment = jax.vmap(_per_seq_fn, in_axes=(0, 0), out_axes=0)(
-            loop_state.align_to_extend_labels[:, step], loop_state.backtrace[:, step]
+            loop_state.align_to_extend_labels[step, :], loop_state.backtrace[step, :, :]
         )
         alignment = jnp.where(
             loop_state.frame_length >= step,
             alignment,
-            loop_state.align_to_extend_labels[:, step - 1],
+            loop_state.align_to_extend_labels[step - 1, :],
         )
-        align_to_extend_labels = loop_state.align_to_extend_labels.at[:, step - 1].set(alignment)
+        align_to_extend_labels = loop_state.align_to_extend_labels.at[step - 1, :].set(alignment)
         loop_state = loop_state._replace(
             align_to_extend_labels=align_to_extend_labels,
             step=step - 1,
@@ -656,8 +754,10 @@ def traceback_to_alignment(
         while _loop_cond(state):
             state = _loop_body(state)
 
+    # Transpose back to [B, T+1] before slicing
+    align_to_extend_labels_final = jnp.transpose(state.align_to_extend_labels, (1, 0))  # [B, T+1]
     alignment = extend_label_alignment_to_label_alignment(
-        extend_label_alignment=state.align_to_extend_labels[:, 1:], labels=labels, blank_id=blank_id
+        extend_label_alignment=align_to_extend_labels_final[:, 1:], labels=labels, blank_id=blank_id
     )
     return alignment, align_score
 
@@ -692,24 +792,28 @@ def ctc_forced_alignment(
     chex.assert_shape(label_paddings, labels.shape)
     chex.assert_equal(log_pos.shape[0], labels.shape[0])
 
-    search_state = search_on_lattices(
-        log_pos,
-        log_pos_paddings=log_pos_paddings,
-        labels=labels,
-        label_paddings=label_paddings,
-        blank_id=blank_id,
-        loop=loop,
-    )
+    with jax.named_scope("search_on_lattices"):
+        search_state = search_on_lattices(
+            log_pos,
+            log_pos_paddings=log_pos_paddings,
+            labels=labels,
+            label_paddings=label_paddings,
+            blank_id=blank_id,
+            loop=loop,
+        )
 
-    alignment, align_score = traceback_to_alignment(
-        search_state,
-        frame_paddings=log_pos_paddings,
-        labels=labels,
-        label_paddings=label_paddings,
-        blank_id=blank_id,
-        loop=loop,
-    )
-    segments = alignment_to_segments(alignment, blank_id=blank_id)
+    with jax.named_scope("traceback"):
+        alignment, align_score = traceback_to_alignment(
+            search_state,
+            frame_paddings=log_pos_paddings,
+            labels=labels,
+            label_paddings=label_paddings,
+            blank_id=blank_id,
+            loop=loop,
+        )
+
+    with jax.named_scope("convert_to_segments"):
+        segments = alignment_to_segments(alignment, blank_id=blank_id)
     # Some edge cases are handled here:
     # 1. if the label length is 0, then this is non-alignable.
     # 2. if the log_pos length is 0, then this is also non-alignable.

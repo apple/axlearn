@@ -488,8 +488,11 @@ class SearchOnLatticesTest(test_utils.TestCase):
         expected_search_lattice = np.where(
             np.isinf(self.expected_search_lattices), 0.0, self.expected_search_lattices
         )
+        # Transpose expected to match new [T+1, B, 2*(L+1)] layout
+        expected_search_lattice = np.transpose(expected_search_lattice, (1, 0, 2))
+        expected_backtrace = np.transpose(self.expected_backtrace, (1, 0, 2))
         self.assertNestedAllClose(search_lattice, expected_search_lattice)
-        self.assertNestedEqual(state.backtrace, self.expected_backtrace)
+        self.assertNestedEqual(state.backtrace, expected_backtrace)
 
     @parameterized.parameters(("python",), ("lax",))
     def test_to_alignment(self, loop):
@@ -557,6 +560,7 @@ class FindAlignmentForLastFrameTest(test_utils.TestCase):
         # pylint: disable=invalid-name
         T = 4
         L = 3
+        # Create in [B, T+1, 2*(L+1)] format first
         search_lattices = np.full((3, (T + 1), 2 * (L + 1)), fill_value=-np.inf)
         frame_lengths = np.array([3, 4, 3], dtype=np.int32)
         label_lengths = np.array([2, 3, 2], dtype=np.int32)
@@ -570,6 +574,9 @@ class FindAlignmentForLastFrameTest(test_utils.TestCase):
         # the third sequence, only path ending with label is viable
         search_lattices[2, frame_lengths[2], 2 * label_lengths[2]] = 10.0
         search_lattices[2, frame_lengths[2], 2 * label_lengths[2] + 1] = -np.inf
+
+        # Transpose to [T+1, B, 2*(L+1)] to match the new layout
+        search_lattices = np.transpose(search_lattices, (1, 0, 2))
 
         self.search_lattices = jnp.array(search_lattices)
         self.frame_lengths = jnp.array(frame_lengths)
