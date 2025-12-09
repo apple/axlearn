@@ -12,6 +12,7 @@ Usage:
 import argparse
 import asyncio
 import functools
+import logging
 import os
 import sys
 import time
@@ -20,7 +21,7 @@ from typing import Any, Dict, Sequence
 
 import jax
 import jax.numpy as jnp
-import pathwaysutils
+import pathwaysutils  # pytype: disable=import-error
 from jax._src.mesh import thread_resources
 from jax.experimental import colocated_python, mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
@@ -30,7 +31,6 @@ from axlearn.common import utils
 from axlearn.common.array_serialization import _async_deserialize
 from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
-import logging
 
 
 def _colocated_deserialize(
@@ -69,7 +69,7 @@ def _colocated_deserialize(
         # print("Print statement inside colocated")
         logging.info("Logging statement inside colocated")
         sys.stderr.write("Stdder statement in colocated")
-        start_colocated_time=time.perf_counter()
+        start_colocated_time = time.perf_counter()
         byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
         h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
         thread_pool = ThreadPoolExecutor(1)
@@ -93,7 +93,7 @@ def _colocated_deserialize(
             return await asyncio.gather(*future_arrays)
 
         result = asyncio.run(gather_func())
-        logging.info(f"Deserialize took {time.perf_counter() - start_colocated_time:.2f} seconds")
+        logging.info("Deserialize took %.2f seconds", time.perf_counter() - start_colocated_time)
         return result
 
     run_deserializer = run_deserializer.specialize(
@@ -111,7 +111,9 @@ def create_mesh(mesh_shape=(1, 1, 1, 1, 1, 1, -1)):
     inferred_mesh_shape = infer_mesh_shape(mesh_shape)
     print(f"Using mesh shape {inferred_mesh_shape} for {len(jax.devices())} devices")
     devices = mesh_utils.create_device_mesh(inferred_mesh_shape)
-    return jax.sharding.Mesh(devices, ("pipeline", "data", "expert", "fsdp", "seq", "track", "model"))
+    return jax.sharding.Mesh(
+        devices, ("pipeline", "data", "expert", "fsdp", "seq", "track", "model")
+    )
 
 
 def create_state_spec_from_checkpoint(ckpt_path: str):
@@ -158,13 +160,13 @@ def is_learner_path(path: str) -> bool:
     return path.startswith("learner/")
 
 
+# pylint: disable-next=unused-argument
 def get_inference_partition_spec(path: str, shape: tuple) -> jax.sharding.PartitionSpec:
     """Get inference-friendly partition spec based on tensor path and shape."""
     if "track" in path:
         return jax.sharding.PartitionSpec(None, "track", "model")
 
     return jax.sharding.PartitionSpec()
-
 
 
 def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
@@ -235,6 +237,7 @@ def _default_deserialize(
 
     async def gather_func():
         return await asyncio.gather(*future_arrays)
+
     result = asyncio.run(gather_func())
     return result
 
