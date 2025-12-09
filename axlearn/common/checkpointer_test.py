@@ -49,6 +49,7 @@ from axlearn.common.checkpointer import (
     restore_tf_savables,
 )
 from axlearn.common.checkpointer_orbax import _GRAIN_INSTALLED, OrbaxCheckpointer
+from axlearn.common.elastic_input import ElasticDatasetIterator
 from axlearn.common.file_system import listdir
 from axlearn.common.metrics import WeightedSummary
 from axlearn.common.summary_writer import SummaryWriter
@@ -443,6 +444,108 @@ class CheckpointerTest(test_utils.TestCase):
             )
             self.assertNestedEqual(state0, restored_state)
             ckpt.stop()
+
+    def test_elastic_input_iterator(self):
+        # In this test case, we want to simulate the training with
+        # SpmdInputDispatcher. We have 4 slices, 2 process per each slice and
+        # these two processes are replicated. The batch size per device is 4. In
+        # elastic mode, we lost 1 slice. So we have to increase the batch size
+        # by 4 * (1/(4-1)) round up to 2. Now process 0 and 1 will have a
+        # elastic feed pointing to the first and second half from process 3.
+        # While process 2 will not have elastic feeds. To check the checkpoints
+        # are correctly saved, we first run for `n_steps_of_stage1` in the
+        # normal mode with 4 processes and save the checkpoints. Then restore in
+        # the elastic mode with 3 processes and train and checkpoint after
+        # `n_steps_of_stage2` steps. Now resume again in the normal mode. Check
+        # that the data iterators are pointing to the expected batches.
+        with _mesh((1, 1)):
+            with tempfile.TemporaryDirectory() as ckpt_dir:
+                n_processes = 8
+                n_processes_in_elastic_mode = 6
+                n_replicas = 2  # every two processes are replicated
+                n_feeds = n_processes // n_replicas
+
+                ckpts = [
+                    Checkpointer.default_config()
+                    .set(
+                        name="test",
+                        dir=ckpt_dir,
+                        keep_last_n=10,
+                    )
+                    .instantiate(parent=None)
+                    for i in range(n_processes)
+                ]
+
+                feeds = [tf.data.Dataset.range(i * 10, (i + 1) * 10) for i in range(n_feeds)]
+                input_iters = [
+                    ElasticDatasetIterator(
+                        primary_iterator=iter(feeds[i // n_replicas]),
+                        elastic_iterator=None,
+                        elastic_process_ids=[],
+                        is_primary_for_checkpoint=False,
+                    )
+                    for i in range(n_processes)
+                ]
+                elastic_input_iters = [
+                    ElasticDatasetIterator(
+                        primary_iterator=input_iters[i].primary_iterator,
+                        elastic_iterator=iter(feeds[-1]) if i < 4 else None,
+                        # assuming only the first two feeds (4 processes) has backups
+                        elastic_process_ids=(
+                            list(range(n_processes_in_elastic_mode, n_processes)) if i < 4 else []
+                        ),
+                        is_primary_for_checkpoint=i == 0,
+                    )
+                    for i in range(n_processes_in_elastic_mode)  # Simulate N-1 slice case
+                ]
+
+                # simulate training in normal mode
+                n_steps_of_stage1 = 2
+                for _ in range(n_steps_of_stage1):
+                    for it in input_iters:
+                        next(it)
+
+                for pid in range(n_processes):
+                    with mock.patch("jax.process_index", return_value=pid):
+                        ckpts[pid].save(
+                            step=n_steps_of_stage1, state={"input_iter": input_iters[pid]}
+                        )
+                        ckpts[pid].wait_until_finished()
+
+                # keep progressing for several steps
+                n_steps_of_stage2 = 3
+                for _ in range(n_steps_of_stage2):
+                    for it in input_iters:
+                        next(it)
+
+                # restore in elastic mode
+                for pid in range(n_processes_in_elastic_mode):
+                    with mock.patch("jax.process_index", return_value=pid):
+                        ckpts[pid].restore(
+                            step=None, state={"input_iter": elastic_input_iters[pid]}
+                        )
+
+                for _ in range(n_steps_of_stage2):
+                    for i in range(n_processes_in_elastic_mode):
+                        next(elastic_input_iters[i])
+
+                # save in elastic mode
+                for pid in range(n_processes_in_elastic_mode):
+                    with mock.patch("jax.process_index", return_value=pid):
+                        ckpts[pid].save(
+                            step=n_steps_of_stage1 + n_steps_of_stage2,
+                            state={"input_iter": elastic_input_iters[pid]},
+                        )
+                        ckpts[pid].wait_until_finished()
+
+                # restore in normal mode
+                for pid in range(n_processes):
+                    with mock.patch("jax.process_index", return_value=pid):
+                        ckpts[pid].restore(step=None, state={"input_iter": input_iters[pid]})
+                        assert (
+                            next(input_iters[pid].primary_iterator)
+                            == (pid // n_replicas) * 10 + n_steps_of_stage1 + n_steps_of_stage2
+                        )
 
     @parameterized.parameters([Checkpointer, OrbaxCheckpointer])
     def test_input_iterator(self, checkpointer_cls):

@@ -39,6 +39,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
+from axlearn.common.elastic_input import ElasticDatasetIterator
 from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import (
     InvocationContext,
@@ -152,17 +153,19 @@ def _upload_dir(src_dir_handle: tempfile.TemporaryDirectory, *, dst_dir: str):
 
     Temporary dir will be deleted after the upload is complete.
     """
-    src_dir = src_dir_handle.name
-    src_files = fs.listdir(src_dir)
-    # src_files will be empty if there are no tf savables (i.e., don't have any tf state to save).
-    # In this case, do not create empty dst_dirs.
-    if len(src_files):
-        fs.makedirs(dst_dir)
-    for item in src_files:
-        src_file = os.path.join(src_dir, item)
-        dst_file = os.path.join(dst_dir, item)
-        assert not fs.isdir(src_file)
-        fs.copy(src_file, dst_file, overwrite=True)
+    for sub_dir in fs.listdir(src_dir_handle.name):
+        src_dir = os.path.join(src_dir_handle.name, sub_dir)
+        dest_dir = os.path.join(dst_dir, sub_dir)
+        src_files = fs.listdir(src_dir)
+        # src_files will be empty if there are no tf savables (i.e., don't have
+        # any tf state to save). In this case, do not create empty dst_dirs.
+        if len(src_files):
+            fs.makedirs(dest_dir)
+        for item in src_files:
+            src_file = os.path.join(src_dir, item)
+            dst_file = os.path.join(dest_dir, item)
+            assert not fs.isdir(src_file)
+            fs.copy(src_file, dst_file, overwrite=True)
     src_dir_handle.cleanup()
 
 
@@ -178,8 +181,21 @@ def async_save_tf_savables(
     # pylint: disable-next=consider-using-with
     f = tempfile.TemporaryDirectory()
     for path, value in utils.flatten_items(value_map):
-        tf_checkpoint = tf.train.Checkpoint(value)
-        tf_checkpoint.write(os.path.join(f.name, path))
+        if isinstance(value, tf.data.Iterator):
+            tf_checkpoint = tf.train.Checkpoint(value)
+            tf_checkpoint.write(os.path.join(f.name, f"tf_{jax.process_index()}", path))
+        elif isinstance(value, ElasticDatasetIterator):
+            primary_tf_checkpoint = tf.train.Checkpoint(value.primary_iterator)
+            primary_tf_checkpoint.write(os.path.join(f.name, f"tf_{jax.process_index()}", path))
+
+            if value.elastic_iterator is not None:
+                if value.is_primary_for_checkpoint:
+                    for pid in value.elastic_process_ids:
+                        elastic_tf_checkpoint = tf.train.Checkpoint(value.elastic_iterator)
+                        elastic_tf_checkpoint.write(os.path.join(f.name, f"tf_{pid}", path))
+        else:
+            raise NotImplementedError(f"Unknown dataset iterator: {value}")
+
     return executor.submit(_upload_dir, f, dst_dir=dir)
 
 
@@ -188,8 +204,21 @@ def restore_tf_savables(value_map: Nested[Any], *, dir: str) -> Nested[Any]:
     """Restores TF savables from `dir` into `value_map` in-place."""
 
     for path, value in utils.flatten_items(value_map):
-        tf_checkpoint = tf.train.Checkpoint(value)
-        tf_checkpoint.read(os.path.join(dir, path))
+        if isinstance(value, tf.data.Iterator):
+            tf_checkpoint = tf.train.Checkpoint(value)
+            tf_checkpoint.read(os.path.join(dir, f"tf_{jax.process_index()}", path))
+        elif isinstance(value, ElasticDatasetIterator):
+            primary_tf_checkpoint = tf.train.Checkpoint(value.primary_iterator)
+            primary_tf_checkpoint.read(os.path.join(dir, f"tf_{jax.process_index()}", path))
+
+            if value.elastic_iterator is not None:
+                # restore elastic dataset iterator from the first one
+                elastic_tf_checkpoint = tf.train.Checkpoint(value.elastic_iterator)
+                elastic_tf_checkpoint.read(
+                    os.path.join(dir, f"tf_{value.elastic_process_ids[0]}", path)
+                )
+        else:
+            raise NotImplementedError(f"Unknown dataset iterator: {value}")
 
     return value_map
 
@@ -480,7 +509,7 @@ class TensorStoreStateStorage(StateStorage):
                             ),
                         )
                     )
-            elif isinstance(value, tf.data.Iterator):
+            elif isinstance(value, (tf.data.Iterator, ElasticDatasetIterator)):
                 logging.vlog(3, "Adding value (%s) to tf_ckpt_map", value)
                 spec.index.append((path, str(type(value))))
                 spec.tf_ckpt_map[path] = value
@@ -519,10 +548,11 @@ class TensorStoreStateStorage(StateStorage):
         multihost_utils.sync_global_devices(ckpt_dir)
         # Each worker writes its tf checkpoints under a different path.
         save_tf_future = async_save_tf_savables(
-            spec.tf_ckpt_map,
-            executor=self._executor,
-            dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}"),
+            spec.tf_ckpt_map, executor=self._executor, dir=ckpt_dir
         )
+
+        # TODO(jtian22): Below code needs to change when we work on supporting
+        # Elastic training in grain input pipeline.
         maybe_save_python_savables(
             spec.python_ckpt_map, dir=os.path.join(ckpt_dir, f"python_{jax.process_index()}")
         )
@@ -562,9 +592,10 @@ class TensorStoreStateStorage(StateStorage):
         check_state_structure(
             read_index_file(ckpt_dir), target_structure=spec.index, validation=validation
         )
-        restore_tf_savables(
-            spec.tf_ckpt_map, dir=os.path.join(ckpt_dir, f"tf_{jax.process_index()}")
-        )
+        restore_tf_savables(spec.tf_ckpt_map, dir=ckpt_dir)
+
+        # TODO(jtian22): Below code needs to change when we work on supporting
+        # Elastic training in grain input pipeline.
         maybe_restore_python_savables(
             spec.python_ckpt_map, dir=os.path.join(ckpt_dir, f"python_{jax.process_index()}")
         )

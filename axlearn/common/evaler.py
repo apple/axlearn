@@ -27,6 +27,7 @@ from axlearn.common.config import (
     config_for_function,
     maybe_set_config,
 )
+from axlearn.common.elastic_input import ElasticInput
 from axlearn.common.inference_output import BaseOutputWriter
 from axlearn.common.metrics import MetricAccumulator, MetricSummary, WeightedSummary
 from axlearn.common.module import Module, OutputCollection
@@ -650,6 +651,19 @@ class SpmdEvaler(Module):
         if not force_run and not self._eval_policy(
             step=step, train_summaries=(train_summaries or {})
         ):
+            return prng_key, None, None
+
+        if isinstance(self.input, ElasticInput) and self.input.is_in_elastic_mode:
+            # TODO(jtian22): When evaluating in elastic mode, the
+            # `_pad_for_evaluation` is called when iterating the elastic feed.
+            # However, there's a global sync inside and not all processes are
+            # participating, which will result in a hang issue. Here we simply
+            # skip it in the elastic mode. We'll support it as a future work.
+            # Related code:
+            # https://github.com/apple/axlearn/blob/dffc5135669ae3548a81de2b8cfa4c9d43f4a5de/axlearn/common/input_tf_data.py#L730-L734
+            logging.warning(
+                "Evaluation in elastic mode is currently not supported and will be skipped."
+            )
             return prng_key, None, None
 
         self.vlog(

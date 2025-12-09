@@ -959,7 +959,11 @@ class SpmdTrainer(Module):
                         step,
                         restore_input_iter,
                     )
-            except ValueError as e:
+
+            # Possible exceptions are ValueError and RuntimeError from
+            # tensorflow when tensorflow dataset iterator checkpoints are not found
+            # pylint: disable-next=broad-exception-caught
+            except Exception as e:
                 logging.warning(
                     "Attempt to restore checkpoint with restore_input_iter=%s failed: %s",
                     restore_input_iter,
