@@ -14,6 +14,7 @@ from axlearn.ft.utils import (
     DEFAULT_MANAGER_PORT,
     create_current_timestamp,
     create_worker_identity_proto,
+    get_global_manager_hostname,
     retry,
 )
 
@@ -275,6 +276,60 @@ class ManagerClient:
                 port,
                 replica_id,
                 worker_id,
+                reason,
+                str(e),
+            )
+            return False
+
+    @retry(max_attempts=3)
+    def report_pod_shutdown(
+        self, reason: str = "Pod termination", port: Optional[int] = None
+    ) -> bool:
+        """Report pod shutdown to global manager.
+
+        Args:
+            reason: Reason for shutdown
+            port: Port of the global manager (uses default_port if None)
+
+        Returns:
+            bool: True if shutdown was acknowledged, False otherwise
+        """
+        target_hostname = get_global_manager_hostname()
+        if port is None:
+            port = self.port
+        try:
+            # Create request
+            request = manager_pb2.PodShutdownRequest()
+            request.worker_identity.CopyFrom(create_worker_identity_proto())
+            request.reason = reason
+            request.timestamp.CopyFrom(create_current_timestamp())
+
+            logging.warning(
+                "Reporting pod shutdown to global manager: target=%s:%d, reason='%s'",
+                target_hostname,
+                port,
+                reason,
+            )
+
+            # Send request
+            stub = self._create_stub(target_hostname, port)
+            response = stub.ReportPodShutdown(request, timeout=self.timeout)
+
+            logging.info(
+                "Pod shutdown reported: target=%s:%d, acknowledged=%s, message='%s'",
+                target_hostname,
+                port,
+                response.acknowledged,
+                response.message,
+            )
+
+            return response.acknowledged
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logging.error(
+                "Pod shutdown report failed: target=%s:%d, reason='%s', error=%s",
+                target_hostname,
+                port,
                 reason,
                 str(e),
             )

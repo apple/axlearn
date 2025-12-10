@@ -36,6 +36,11 @@ class ManagerServiceStub(object):
             request_serializer=axlearn_dot_ft_dot_manager__pb2.RestartRequest.SerializeToString,
             response_deserializer=axlearn_dot_ft_dot_manager__pb2.RestartResponse.FromString,
         )
+        self.ReportPodShutdown = channel.unary_unary(
+            "/axlearn.ft.manager.ManagerService/ReportPodShutdown",
+            request_serializer=axlearn_dot_ft_dot_manager__pb2.PodShutdownRequest.SerializeToString,
+            response_deserializer=axlearn_dot_ft_dot_manager__pb2.PodShutdownResponse.FromString,
+        )
 
 
 class ManagerServiceServicer(object):
@@ -65,6 +70,12 @@ class ManagerServiceServicer(object):
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
+    def ReportPodShutdown(self, request, context):
+        """Pod shutdown notification"""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details("Method not implemented!")
+        raise NotImplementedError("Method not implemented!")
+
 
 def add_ManagerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -87,6 +98,11 @@ def add_ManagerServiceServicer_to_server(servicer, server):
             servicer.RestartTraining,
             request_deserializer=axlearn_dot_ft_dot_manager__pb2.RestartRequest.FromString,
             response_serializer=axlearn_dot_ft_dot_manager__pb2.RestartResponse.SerializeToString,
+        ),
+        "ReportPodShutdown": grpc.unary_unary_rpc_method_handler(
+            servicer.ReportPodShutdown,
+            request_deserializer=axlearn_dot_ft_dot_manager__pb2.PodShutdownRequest.FromString,
+            response_serializer=axlearn_dot_ft_dot_manager__pb2.PodShutdownResponse.SerializeToString,
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -205,6 +221,35 @@ class ManagerService(object):
             "/axlearn.ft.manager.ManagerService/RestartTraining",
             axlearn_dot_ft_dot_manager__pb2.RestartRequest.SerializeToString,
             axlearn_dot_ft_dot_manager__pb2.RestartResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+        )
+
+    @staticmethod
+    def ReportPodShutdown(
+        request,
+        target,
+        options=(),
+        channel_credentials=None,
+        call_credentials=None,
+        insecure=False,
+        compression=None,
+        wait_for_ready=None,
+        timeout=None,
+        metadata=None,
+    ):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            "/axlearn.ft.manager.ManagerService/ReportPodShutdown",
+            axlearn_dot_ft_dot_manager__pb2.PodShutdownRequest.SerializeToString,
+            axlearn_dot_ft_dot_manager__pb2.PodShutdownResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -45,8 +45,24 @@ def run_ft_agent():
 
     # Set up signal handling
     def signal_handler(signum, *_):
-        logging.info("FT Agent: Received signal %d, terminating trainer", signum)
-        process_controller.terminate_training(f"Signal {signum}")
+        logging.warning(
+            "FT Agent: Received signal %d, reporting to global manager",
+            signum,
+        )
+
+        # Report pod shutdown to global manager for coordination
+        try:
+            monitor.manager.report_pod_shutdown(f"Pod shutdown signal {signum}")
+            logging.info("FT Agent: Pod shutdown reported to global manager")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logging.error("FT Agent: Failed to report pod shutdown: %s", e)
+
+        # Terminate the trainer process
+        logging.info("FT Agent: Terminating trainer due to signal %d", signum)
+        process_controller.terminate_training(f"Pod shutdown signal {signum}")
+
+        logging.warning("FT Agent: exit with non-zero code due to signal %d recieved.", signum)
+        sys.exit(1)
 
     signal.signal(signal.SIGTERM, signal_handler)
 

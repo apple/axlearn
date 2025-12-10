@@ -22,8 +22,10 @@ from axlearn.ft.utils import (
     WorkerIdentity,
     WorkerStatusRecord,
     create_current_timestamp,
+    extract_worker_id_from_hostname,
     get_all_worker_hostnames,
-    get_worker_id,
+    get_num_replicas,
+    get_replica_head_hostname,
     get_worker_identity,
     worker_status_record_to_proto,
 )
@@ -311,6 +313,9 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
 
             logging.info("Worker processing restart request")
 
+            # Check if this is a shutdown request (not a restart)
+            is_shutdown = request.reason.startswith("IMMEDIATE_SHUTDOWN:")
+
             # Attempt to terminate the trainer process
             success = False
             message = ""
@@ -318,8 +323,15 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
             if self.process_controller:
                 success = self.process_controller.terminate_training(request.reason)
                 if success:
-                    message = f"Worker {worker_identity.hostname} training termination initiated"
+                    action = "shutdown" if is_shutdown else "restart"
+                    message = f"Worker {worker_identity.hostname} training {action} initiated"
                     logging.info(message)
+
+                    # For shutdown requests, exit immediately (don't restart)
+                    if is_shutdown:
+                        logging.warning("Immediate shutdown requested, exiting after termination")
+                        # The FT agent should not restart after this termination
+
                 else:
                     message = f"Worker {worker_identity.hostname} has no active training process"
                     logging.warning(message)
@@ -339,6 +351,76 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 context, grpc.StatusCode.INTERNAL, f"RestartTraining error: {e}"
             )
             raise
+
+    def ReportPodShutdown(
+        self, request: manager_pb2.PodShutdownRequest, context
+    ) -> manager_pb2.PodShutdownResponse:
+        """Handle pod shutdown reports (global managers only)."""
+        try:
+            self._validate_role("global_manager", "handle pod shutdown reports")
+
+            worker_identity = request.worker_identity
+
+            logging.warning(
+                "Pod shutdown reported: worker=%s (replica=%d, worker=%d), reason='%s'",
+                worker_identity.hostname,
+                worker_identity.replica_id,
+                worker_identity.worker_id,
+                request.reason,
+            )
+
+            # Trigger coordinated shutdown and restart
+            self._handle_pod_shutdown(worker_identity, request.reason)
+
+            return self._create_success_response(
+                manager_pb2.PodShutdownResponse,
+                message=f"Pod shutdown acknowledged for worker {worker_identity.hostname} "
+                f"(replica={worker_identity.replica_id}, worker={worker_identity.worker_id})",
+            )
+
+        except grpc.RpcError:
+            raise
+        except Exception as e:
+            self._create_error_response(
+                context, grpc.StatusCode.INTERNAL, f"ReportPodShutdown error: {e}"
+            )
+            raise
+
+    def _handle_pod_shutdown(self, affected_worker: WorkerIdentity, reason: str):
+        """Handle pod shutdown by terminating specific worker and restarting all replicas."""
+        logging.warning(
+            "Handling pod shutdown for worker %s (replica=%d, worker=%d): %s",
+            affected_worker.hostname,
+            affected_worker.replica_id,
+            affected_worker.worker_id,
+            reason,
+        )
+
+        with ManagerClient() as client:
+            # Step 1: Terminate the specific affected worker
+            shutdown_reason = f"IMMEDIATE_SHUTDOWN: Pod shutdown - {reason}"
+            logging.info("Terminating affected worker %s", affected_worker.hostname)
+
+            client.restart_worker(
+                affected_worker.hostname,
+                affected_worker.replica_id,
+                shutdown_reason,
+                affected_worker.worker_id,
+            )
+
+            # Step 2: Restart ALL replicas for JAX re-initialization
+            restart_reason = f"JAX re-init after pod shutdown: {affected_worker.hostname}"
+            logging.info("Restarting all replicas for JAX re-initialization")
+
+            try:
+                num_replicas = get_num_replicas()
+                for replica_id in range(num_replicas):
+                    replica_hostname = get_replica_head_hostname(replica_id)
+                    client.restart_replica(replica_hostname, replica_id, restart_reason)
+
+            except ValueError as e:
+                logging.error("Failed to restart replicas: %s", e)
+                raise
 
     def _forward_restart_to_workers(self, reason: str) -> Dict[str, bool]:
         """Forward restart request to all workers in this replica (replica manager only).
@@ -361,7 +443,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 try:
                     logging.info("Forwarding restart to worker: %s", hostname)
 
-                    worker_id = get_worker_id()
+                    worker_id = extract_worker_id_from_hostname(hostname)
 
                     success = client.restart_worker(
                         hostname, self._worker_identity.replica_id, reason, worker_id

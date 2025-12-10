@@ -170,6 +170,20 @@ class Manager:
 
         return results
 
+    def report_pod_shutdown(self, reason: str = "Pod termination") -> bool:
+        """Report pod shutdown to global manager.
+
+        Args:
+            reason: Reason for shutdown
+
+        Returns:
+            bool: True if shutdown was reported successfully
+        """
+        if not self._client:
+            raise RuntimeError("Client not available for pod shutdown reporting")
+
+        return self._client.report_pod_shutdown(reason)
+
     def restart_local_training(self, reason: str = "Manual restart") -> bool:
         """Restart local training process if available.
 

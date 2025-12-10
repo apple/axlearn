@@ -80,6 +80,19 @@ message RestartResponse {
   google.protobuf.Timestamp timestamp = 3;
 }
 
+// Pod shutdown notification
+message PodShutdownRequest {
+  WorkerIdentity worker_identity = 1;
+  string reason = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message PodShutdownResponse {
+  bool acknowledged = 1;
+  string message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
+
 // FT manager service
 service ManagerService {
   // Worker to replica head status reporting
@@ -93,4 +106,7 @@ service ManagerService {
 
   // Replica head to worker restart command
   rpc RestartTraining(RestartRequest) returns (RestartResponse);
+
+  // Pod shutdown notification
+  rpc ReportPodShutdown(PodShutdownRequest) returns (PodShutdownResponse);
 }
