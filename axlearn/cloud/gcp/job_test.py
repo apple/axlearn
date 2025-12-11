@@ -115,6 +115,40 @@ class TPUGKEJobTest(TestCase):
             gke_job._delete()  # pylint: disable=protected-access
             mock_delete.assert_called()
 
+    @parameterized.product(
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        labels=[None, {"env": "tpu-test"}, {"team": "research", "experiment": "training"}],
+    )
+    def test_build_jobset_labels_tpu(
+        self,
+        bundler_cls,
+        labels: Optional[dict] = None,
+    ):
+        cfg, bundler_cfg = self._job_config(
+            command="test-command",
+            bundler_cls=bundler_cls,
+        )
+        # Set labels on the config
+        cfg = cfg.set(labels=labels)
+        gke_job: job.GKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        # pylint: disable-next=protected-access
+        jobset = gke_job._build_jobset()
+        jobset_metadata = jobset["metadata"]
+        jobset_labels = jobset_metadata.get("labels", {})
+
+        # Test basic metadata
+        self.assertEqual(jobset_metadata["name"], cfg.name)
+
+        # Test labels
+        if labels is None:
+            # When labels is None, labels dict should be empty
+            self.assertEqual(jobset_labels, {})
+        else:
+            # When labels is provided, they should be present in metadata
+            for key, value in labels.items():
+                self.assertIn(key, jobset_labels)
+                self.assertEqual(jobset_labels[key], value)
+
 
 class GPUGKEJobTest(TestCase):
     """Tests GKEJob with GPUs."""
@@ -190,11 +224,13 @@ class GPUGKEJobTest(TestCase):
     @parameterized.product(
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
         queue=[None, "queue-name"],
+        labels=[None, {"env": "gpu-test"}, {"team": "ml-gpu", "priority": "high"}],
     )
     def test_build_jobset(
         self,
         bundler_cls,
         queue: Optional[str] = None,
+        labels: Optional[dict] = None,
     ):
         cfg, bundler_cfg = self._job_config(
             command="",
@@ -202,15 +238,33 @@ class GPUGKEJobTest(TestCase):
             instance_type="gpu-a3-highgpu-8g-256",
             queue=queue,
         )
+        # Set labels on the config
+        cfg = cfg.set(labels=labels)
         gke_job: job.GKEJob = cfg.set(name="test").instantiate(bundler=bundler_cfg.instantiate())
         # pylint: disable-next=protected-access
         jobset = gke_job._build_jobset()
-        jobset_annotations = jobset["metadata"]["annotations"]
-        self.assertEqual(jobset["metadata"]["name"], cfg.name)
+        jobset_metadata = jobset["metadata"]
+        jobset_annotations = jobset_metadata["annotations"]
+        jobset_labels = jobset_metadata.get("labels", {})
+
+        # Test basic metadata
+        self.assertEqual(jobset_metadata["name"], cfg.name)
+
+        # Test queue annotations
         if queue is None:
             self.assertNotIn("kueue.x-k8s.io/queue-name", jobset_annotations)
         else:
             self.assertEqual(jobset_annotations["kueue.x-k8s.io/queue-name"], queue)
+
+        # Test labels
+        if labels is None:
+            # When labels is None, labels dict should be empty
+            self.assertEqual(jobset_labels, {})
+        else:
+            # When labels is provided, they should be present in metadata
+            for key, value in labels.items():
+                self.assertIn(key, jobset_labels)
+                self.assertEqual(jobset_labels[key], value)
 
 
 class TPUGKELeaderWorkerSetTest(TestCase):

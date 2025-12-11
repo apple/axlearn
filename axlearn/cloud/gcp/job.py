@@ -102,6 +102,7 @@ class GKEJob(GCPJob):
                 https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
             annotations: JobSet annotations (or config instantiating to annotations).
+            labels: JobSet labels (or config instantiating to labels).
         """
 
         builder: Required[BaseReplicatedJob.Config] = REQUIRED
@@ -109,6 +110,7 @@ class GKEJob(GCPJob):
         # TODO(markblee): queue can be expressed with `annotations`.
         queue: Optional[str] = None
         annotations: Optional[ConfigOr[dict]] = None
+        labels: Optional[ConfigOr[dict]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -154,10 +156,11 @@ class GKEJob(GCPJob):
         """
         cfg: GKEJob.Config = self.config
         annotations = maybe_instantiate(cfg.annotations or {})
+        labels = maybe_instantiate(cfg.labels or {})
         if cfg.queue:
             annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
         return dict(
-            metadata=dict(name=cfg.name, annotations=annotations),
+            metadata=dict(name=cfg.name, annotations=annotations, labels=labels),
             spec=dict(
                 failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
                 replicatedJobs=self._builder(),
