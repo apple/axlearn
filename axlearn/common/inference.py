@@ -355,9 +355,32 @@ class InferenceRunner(Module):
             )
 
         with self.mesh():
+            input_partition_spec = utils.data_partition_type_to_spec(cfg.input_batch_partition_spec)
+            output_partition_spec = utils.data_partition_type_to_spec(
+                cfg.output_batch_partition_spec
+            )
+
+            def reshard_fn(x: Tensor, partition_spec: PartitionSpec) -> Tensor:
+                if partition_spec in [PartitionSpec(), PartitionSpec(None)]:
+                    return jax.lax.with_sharding_constraint(x, PartitionSpec(None))
+                elif x.ndim == 0:
+                    return jax.lax.with_sharding_constraint(x, PartitionSpec(None))
+                elif x.ndim == 1:
+                    return jax.lax.with_sharding_constraint(x, PartitionSpec(*partition_spec[:1]))
+                else:
+                    return jax.lax.with_sharding_constraint(x, partition_spec)
 
             def inference_iter(model_params, prng_key, input_batch):
-                return self._inference_iter(
+                model_params = jax.lax.with_sharding_constraint(
+                    model_params, self._inference_runner_state_partition_specs.model
+                )
+                prng_key = jax.lax.with_sharding_constraint(
+                    prng_key, self._inference_runner_state_partition_specs.prng_key
+                )
+                input_batch = jax.tree.map(
+                    lambda x: reshard_fn(x, input_partition_spec), input_batch
+                )
+                key, output, summaries, module_outputs = self._inference_iter(
                     prng_key,
                     model_params,
                     input_batch,
@@ -365,25 +388,16 @@ class InferenceRunner(Module):
                     drop_module_outputs=drop_module_outputs,
                     **kwargs,
                 )
+                return (
+                    jax.lax.with_sharding_constraint(
+                        key, self._inference_runner_state_partition_specs.prng_key
+                    ),
+                    jax.tree.map(lambda x: reshard_fn(x, output_partition_spec), output),
+                    summaries,
+                    module_outputs,
+                )
 
-            input_partition_spec = utils.data_partition_type_to_spec(cfg.input_batch_partition_spec)
-            output_partition_spec = utils.data_partition_type_to_spec(
-                cfg.output_batch_partition_spec
-            )
-            jit_inference_iter_fn = pjit(
-                inference_iter,
-                in_shardings=(
-                    self._inference_runner_state_partition_specs.model,
-                    self._inference_runner_state_partition_specs.prng_key,
-                    input_partition_spec,  # Input batch.
-                ),
-                out_shardings=(
-                    self._inference_runner_state_partition_specs.prng_key,
-                    output_partition_spec,  # Output batch.
-                    None,  # Summaries.
-                    None,  # Module outputs.
-                ),
-            )
+            jit_inference_iter_fn = pjit(inference_iter)
             self.vlog(1, "jit complete for %s", method)
             prng_key = self._inference_runner_state.prng_key if prng_key is None else prng_key
 

@@ -804,6 +804,10 @@ class DataPartitionType(Enum):
     BATCH = "batch"
 
 
+_BATCH_AXES = ("data", "fsdp")
+_SEQ_AXES = ("seq",)
+
+
 def data_partition_type_to_spec(
     partition: Union[DataPartitionType, Nested[PartitionSpec]],
 ) -> Nested[PartitionSpec]:
@@ -814,8 +818,8 @@ def data_partition_type_to_spec(
         return PartitionSpec(None)
     elif partition == DataPartitionType.BATCH:
         mesh = thread_resources.env.physical_mesh
-        batch_axis_names = tuple(name for name in mesh.axis_names if name in ("data", "fsdp"))
-        seq_axis_names = tuple(name for name in mesh.axis_names if name in ("seq",))
+        batch_axis_names = tuple(name for name in mesh.axis_names if name in _BATCH_AXES)
+        seq_axis_names = tuple(name for name in mesh.axis_names if name in _SEQ_AXES)
         return PartitionSpec(batch_axis_names, seq_axis_names)
     elif isinstance(partition, PartitionSpec):
         return partition
@@ -866,6 +870,13 @@ def host_to_global_array(
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
             global_shape = (x.shape[0], *x.shape[1:])
+        elif partition == DataPartitionType.BATCH:
+            if not any(axis in mesh.shape for axis in _BATCH_AXES):
+                raise ValueError(
+                    f"Mesh {mesh} does not have 'data' or 'fsdp' axis for batch partitioning."
+                )
+            batch_count = math.prod(mesh.shape.get(axis, 1) for axis in _BATCH_AXES)
+            global_shape = (x.shape[0] * batch_count, *x.shape[1:])
         elif isinstance(partition, (PartitionSpec, dict)):
             global_shape = None  # Allow jax to infer.
         else:
