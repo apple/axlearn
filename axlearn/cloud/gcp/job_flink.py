@@ -419,6 +419,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                     "rest.address": "0.0.0.0",
                     # Store checkpointing for retry.
                     "execution.checkpointing.interval": "10m",
+                    "pekko.ask.timeout": "10m",
                     "execution.checkpointing.mode": "EXACTLY_ONCE",
                     # Fixed-delay restart strategy.
                     "restart-strategy.type": "fixed-delay",

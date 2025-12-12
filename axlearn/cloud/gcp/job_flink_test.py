@@ -89,6 +89,7 @@ expected_flink_deployment_json = """
       "taskmanager.network.bind-host": "0.0.0.0",
       "rest.address": "0.0.0.0",
       "execution.checkpointing.interval": "10m",
+      "pekko.ask.timeout": "10m",
       "execution.checkpointing.mode": "EXACTLY_ONCE",
       "restart-strategy.type": "fixed-delay",
       "restart-strategy.fixed-delay.attempts": "3",
