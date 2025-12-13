@@ -314,7 +314,11 @@ class InferenceRunner(Module):
                 runner_output.output_batch,
                 utils.flatten_items(runner_output.summaries),
             )
-            yield {"inputs": runner_output.input_batch, "outputs": runner_output.output_batch}
+            yield {
+                "inputs": runner_output.input_batch,
+                "outputs": runner_output.output_batch,
+                "module_outputs": runner_output.module_outputs,
+            }
 
     def create_method_runner(
         self,
