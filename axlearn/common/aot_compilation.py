@@ -334,7 +334,9 @@ def compile_inference_programs(
     cfg.mesh_shape = mesh_shape
 
     inferencer: InferenceRunner = cfg.instantiate(
-        parent=None, devices=topology_devices, fake_state=True
+        parent=None,
+        devices=topology_devices,
+        inference_runner_state=True,
     )
 
     method_runner = inferencer.create_method_runner(method=method)
