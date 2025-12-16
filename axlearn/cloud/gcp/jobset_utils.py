@@ -19,6 +19,7 @@ from axlearn.cloud.common.bastion import (
     deserialize_jobspec,
 )
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.user_command_patcher import UserCommandPatcher
 from axlearn.cloud.common.utils import (
     AcceleratorConfig,
     FlagConfigurable,
@@ -168,6 +169,7 @@ class BaseReplicatedJob(FlagConfigurable):
         name: Required[str] = REQUIRED
         output_dir: Optional[str] = None
         image_id: Optional[str] = None
+        user_command_patcher: Optional[UserCommandPatcher.Config] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -437,6 +439,9 @@ class TPUJobBuilder(SingleReplicatedJob):
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
+        self._user_command_patcher = (
+            cfg.user_command_patcher.instantiate() if cfg.user_command_patcher else None
+        )
         cfg: TPUJobBuilder.Config = self.config
         if cfg.output_dir is None:
             raise ValueError("cfg.output_dir is required.")
@@ -526,6 +531,18 @@ class TPUJobBuilder(SingleReplicatedJob):
             }
         )
 
+        # Apply command transformation if configured
+        command = cfg.command
+        if self._user_command_patcher:
+            # Get user_id from Bastion environment if available
+            user_id = None
+            if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
+                spec = deserialize_jobspec(
+                    io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
+                )
+                user_id = spec.metadata.user_id
+            command = self._user_command_patcher.patch(command, user_id=user_id)
+
         return dict(
             name=cfg.name,
             image=cfg.image_id or self._bundler.id(cfg.name),
@@ -539,7 +556,7 @@ class TPUJobBuilder(SingleReplicatedJob):
             ],
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
-            command=["bash", "-c", cfg.command],
+            command=["bash", "-c", command],
             resources=resources,
             # Env var values should always be strings.
             env=k8s_env_vars,

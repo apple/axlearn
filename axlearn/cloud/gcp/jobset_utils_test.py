@@ -68,6 +68,11 @@ def _create_serialized_job_spec(job_priority: int, user_id: str):
     return serialized_jobspec.getvalue()
 
 
+class MockUserCommandPatcher(jobset_utils.UserCommandPatcher):
+    def patch(self, command: str, **kwargs: dict) -> str:
+        return f"{command} && ./postfix_command.sh"
+
+
 class TPUReplicatedJobTest(TestCase):
     """Tests TPUReplicatedJob."""
 
@@ -189,6 +194,7 @@ class TPUReplicatedJobTest(TestCase):
         priority_class=[None, "such-high-priority"],
         additional_node_networks=[None, "network-1:subnet-1,network-2:subnet-2"],
         image_id=[None, "my-image-id"],
+        user_command_patcher=[None, MockUserCommandPatcher.default_config()],
     )
     # TODO: Try to reduce positional arguments
     # pylint: disable-next=too-many-positional-arguments
@@ -209,6 +215,7 @@ class TPUReplicatedJobTest(TestCase):
         priority_class: Optional[str] = None,
         additional_node_networks: Optional[str] = None,
         image_id: Optional[str] = None,
+        user_command_patcher: Optional[jobset_utils.UserCommandPatcher] = None,
     ):
         with (
             mock.patch("os.environ", env),
@@ -231,6 +238,7 @@ class TPUReplicatedJobTest(TestCase):
                 command="test_command",
                 output_dir="FAKE",
                 additional_node_networks=additional_node_networks,
+                user_command_patcher=user_command_patcher,
             ).instantiate(bundler=bundler_cfg.instantiate())
             # pylint: disable-next=protected-access
             pod = gke_job._build_pod()
@@ -285,7 +293,12 @@ class TPUReplicatedJobTest(TestCase):
             # Verify worker container specs
             container = pod_spec["containers"][0]
             # Check command.
-            self.assertIn("test_command", container["command"])
+            if user_command_patcher is None:
+                self.assertIn("test_command", container["command"])
+            else:
+                user_command = container["command"][-1]
+                self.assertTrue("test_command" in user_command)
+                self.assertTrue("&& ./postfix_command.sh" in user_command)
             if image_id:
                 self.assertEqual(image_id, container["image"])
             else:
