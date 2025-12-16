@@ -546,3 +546,29 @@ GCE_MACHINE_TYPE_TO_CPU_CHARACTERISTICS = {
 # And there is no twisted topology for v6e
 def support_twisted_topology(tpu_type: str):
     return tpu_type in {"v5p-256", "v5p-512", "v5p-2048", "v5p-4096"}
+
+
+# Map TPU version to the base subblock configuration
+_SUBBLOCK_MAPPING = {
+    "7x": "7x-128",  # 4x4x4 topology, 64 chips (128 cores) per subblock
+}
+
+
+def get_subblock_characteristics(tpu_version: str) -> _SystemCharacteristics | None:
+    """Returns the characteristics for one subblock for the given TPU version.
+
+    For super slicing support, returns the subblock size that can be
+    combined to create larger topologies.
+
+    Args:
+        tpu_version: TPU version string (e.g., "7x", "v5p")
+
+    Returns:
+        _SystemCharacteristics for one subblock, or None if super slicing
+        is not configured for this TPU version.
+    """
+    subblock_name = _SUBBLOCK_MAPPING.get(tpu_version)
+    if subblock_name is None:
+        return None
+
+    return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.get(subblock_name)
