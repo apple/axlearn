@@ -1444,9 +1444,16 @@ class VariationalNoise(ParameterNoise):
         cfg = self.config
         if cfg.vn_std <= 0:
             return params
-        return jax.tree.map(
-            lambda x: x + jax.random.normal(prng_key, x.shape, dtype=x.dtype) * cfg.vn_std, params
-        )
+
+        # Split PRNG key for each parameter to ensure independent noise
+        flat_params, tree_def = jax.tree.flatten(params)
+        keys = jax.random.split(prng_key, len(flat_params))
+
+        def add_noise(x, key):
+            return x + jax.random.normal(key, x.shape, dtype=x.dtype) * cfg.vn_std
+
+        noisy_flat_params = [add_noise(p, k) for p, k in zip(flat_params, keys)]
+        return jax.tree.unflatten(tree_def, noisy_flat_params)
 
 
 class SeparableSpaceTimePositionalEmbedding(BaseLayer):
