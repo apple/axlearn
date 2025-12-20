@@ -509,7 +509,6 @@ class WandBWriter(BaseWriter):
             n_steps = cfg.write_every_n_steps_map.get(kind, cfg.write_every_n_steps)
             return step % n_steps == 0
 
-    @processor_zero_only
     def __call__(self, step: int, values: dict[str, Any]) -> None:
         """Convert nested summary values to wandb acceptable format and upload run data."""
         cfg = self.config
@@ -524,9 +523,9 @@ class WandBWriter(BaseWriter):
 
             self.vlog(3, "WandbWriter %s: %s=%s", self.path(), path, raw_value)
 
-            # Ensure all arrays are cast to numpy.
-            # Wandb will crash if jax.Array is present.
+            # Ensure all arrays are cast to numpy. Wandb will crash if jax.Array is present.
             if isinstance(raw_value, jax.Array):
+                # It internally call jax.device_get() to copy TPU/GPU tensor to CPU.
                 raw_value = np.asarray(raw_value)
 
             if _match_summary_type("Image", value=value, raw_value=raw_value):
@@ -584,4 +583,11 @@ class WandBWriter(BaseWriter):
         # and will create the proper nesting if we replace `.` with `/`.
         values = {k.replace(".", "/"): v for k, v in values.items() if v is not None}
 
-        wandb.log(values, step=step)
+        # Jax SPMD execution model requires that all JAX collective API calls (such as
+        # `jax.device_get()`) be invoked simultaneously on all processes. OTOH, reporting to
+        # W&B should be performed only on process 0 to avoid duplicated reports.
+        @processor_zero_only
+        def _upload(values, step):
+            wandb.log(values, step=step)
+
+        _upload(values, step)
