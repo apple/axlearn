@@ -1,4 +1,10 @@
 # Copyright © 2024 Apple Inc.
+#
+# Some of the code in this file is adapted from:
+#
+# AI-Hypercomputer/maxtext:
+# Copyright 2023–2025 Google LLC
+# Licensed under the Apache License, Version 2.0 (the "License").
 
 """Checkpointing utilities using orbax.
 
@@ -8,14 +14,19 @@ See also checkpointer.py for other checkpointing utilities and checkpointer_test
 import asyncio
 import copy
 import dataclasses
+import functools
 import os
 from concurrent import futures
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import jax
+import numpy as np
 import orbax.checkpoint as ocp
 import tensorflow as tf
 from absl import logging
+from orbax.checkpoint._src.metadata import array_metadata_store as array_metadata_store_lib
+from orbax.checkpoint._src.serialization.type_handlers import ArrayHandler
+from orbax.checkpoint.checkpoint_manager import _ShouldSaveFnPolicy
 
 from axlearn.common import utils
 from axlearn.common.checkpointer import (
@@ -24,11 +35,9 @@ from axlearn.common.checkpointer import (
     BaseCheckpointer,
     CheckpointValidationType,
     PythonSavable,
-    async_save_tf_savables,
     check_state_structure,
     maybe_restore_python_savables,
     maybe_save_python_savables,
-    restore_tf_savables,
 )
 from axlearn.common.config import config_class
 from axlearn.common.module import Module
@@ -55,6 +64,11 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     instances), we construct and cleanup the executor per-serialize/deserialize call.
     """
 
+    def __init__(self):
+        super().__init__()
+        self._executor = futures.ThreadPoolExecutor()
+        self._tf_ckpt_cache: dict[tf.data.Iterator, tf.train.Checkpoint] = {}
+
     # Must be a subclass of RestoreArgs for `PyTreeRestore` to recognize it.
     @dataclasses.dataclass
     class RestoreArgs(ocp.type_handlers.RestoreArgs):
@@ -65,7 +79,17 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
 
     def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
         # Each worker writes its tf checkpoints under a different path.
-        return os.path.join(info.parent_dir, f"tf_{jax.process_index()}")
+        return os.path.join(
+            os.path.dirname(info.parent_dir), "tfds", f"tf_{jax.process_index()}", info.name
+        )
+
+    def _get_or_create_tf_ckpt(self, value: tf.data.Iterator) -> tf.train.Checkpoint:
+        # This is to avoid recreating `tf.train.Checkpoint` instances on each
+        # checkpointing. When `enable_async` is `True` the resources will only
+        # be released at the end of program.
+        if value not in self._tf_ckpt_cache:
+            self._tf_ckpt_cache[value] = tf.train.Checkpoint(value)
+        return self._tf_ckpt_cache[value]
 
     async def serialize(
         self,
@@ -76,13 +100,10 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
         """Serializes `values` into corresponding `info.path`s."""
         del args  # Unused.
         futs = []
-        with futures.ThreadPoolExecutor(max_workers=1) as executor:
-            for value, info in zip(values, infos):
-                futs.append(
-                    async_save_tf_savables(
-                        {info.name: value}, executor=executor, dir=self._ckpt_dir(info)
-                    )
-                )
+        for value, info in zip(values, infos, strict=False):
+            tf_ckpt = self._get_or_create_tf_ckpt(value)
+            tf_ckpt.write(self._ckpt_dir(info), tf.train.CheckpointOptions(enable_async=True))
+            futs.append(self._executor.submit(tf_ckpt.sync))
         return futs
 
     async def deserialize(
@@ -92,17 +113,21 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
     ) -> Sequence[tf.data.Iterator]:
         if args is None:
             raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
-        futs = []
-        with futures.ThreadPoolExecutor(max_workers=1) as executor:
-            for arg, info in zip(args, infos):
 
-                def restore(arg=arg, info=info):
-                    return restore_tf_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
-                        info.name
-                    ]
+        tf_ckpts = []
+        for arg, info in zip(args, infos, strict=False):
+            tf_ckpt = self._get_or_create_tf_ckpt(arg.item)
+            tf_ckpt.read(self._ckpt_dir(info), tf.train.CheckpointOptions(enable_async=True))
+            tf_ckpts.append(tf_ckpt)
 
-                futs.append(asyncio.get_event_loop().run_in_executor(executor, restore))
-        return await asyncio.gather(*futs)
+        await asyncio.gather(
+            *(
+                asyncio.get_event_loop().run_in_executor(self._executor, ckpt.sync)
+                for ckpt in tf_ckpts
+            )
+        )
+
+        return [arg.item for arg in args]
 
     async def metadata(
         self, infos: Sequence[ocp.type_handlers.ParamInfo]
@@ -111,12 +136,27 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
 
 
 ocp.type_handlers.register_type_handler(tf.data.Iterator, _TfIteratorHandler(), override=True)
+ocp.type_handlers.register_type_handler(
+    jax.Array,
+    ArrayHandler(
+        array_metadata_store=array_metadata_store_lib.Store(),
+        use_replica_parallel=False,
+        enable_write_sharding_file=False,
+    ),
+    override=True,
+)
 
 
 if _GRAIN_INSTALLED:
     # TODO(markblee): Generalize to PythonSavableHandler.
     class _GrainDatasetIteratorHandler(ocp.type_handlers.TypeHandler):
         """Serializes grain dataset iterators."""
+
+        def __init__(self):
+            super().__init__()
+            self._executor = futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="GrainDatasetIteratorHandler"
+            )
 
         @dataclasses.dataclass
         class RestoreArgs(ocp.type_handlers.RestoreArgs):
@@ -127,7 +167,11 @@ if _GRAIN_INSTALLED:
 
         def _ckpt_dir(self, info: ocp.type_handlers.ParamInfo) -> str:
             # Each worker writes its grain checkpoints under a different path.
-            return os.path.join(info.parent_dir, f"python_{jax.process_index()}")
+            return os.path.join(
+                os.path.dirname(info.parent_dir),
+                "python",
+                f"python_{jax.process_index()}",
+            )
 
         async def serialize(
             self,
@@ -137,9 +181,17 @@ if _GRAIN_INSTALLED:
         ) -> List[futures.Future]:
             """Serializes `values` into corresponding `info.path`s."""
             del args  # Unused.
-            for value, info in zip(values, infos):
-                maybe_save_python_savables({info.name: value}, dir=self._ckpt_dir(info))
-            return []
+            futs = []
+            for value, info in zip(values, infos, strict=False):
+                futs.append(
+                    self._executor.submit(
+                        maybe_save_python_savables,
+                        {info.name: value},
+                        dir=self._ckpt_dir(info),
+                    )
+                )
+
+            return futs
 
         async def deserialize(
             self,
@@ -148,14 +200,22 @@ if _GRAIN_INSTALLED:
         ) -> Sequence[_GrainIterator]:
             if args is None:
                 raise ValueError(f"{self.RestoreArgs.__name__} should be supplied as args.")
-            ret = []
-            for arg, info in zip(args, infos):
-                ret.append(
-                    maybe_restore_python_savables({info.name: arg.item}, dir=self._ckpt_dir(info))[
-                        info.name
-                    ]
+
+            await asyncio.gather(
+                *(
+                    asyncio.get_event_loop().run_in_executor(
+                        self._executor,
+                        functools.partial(
+                            maybe_restore_python_savables,
+                            {info.name: arg.item},
+                            dir=self._ckpt_dir(info),
+                        ),
+                    )
+                    for arg, info in zip(args, infos, strict=False)
                 )
-            return ret
+            )
+
+            return [arg.item for arg in args]
 
         async def metadata(
             self, infos: Sequence[ocp.type_handlers.ParamInfo]
@@ -183,19 +243,30 @@ class OrbaxCheckpointer(BaseCheckpointer):
 
     @config_class
     class Config(BaseCheckpointer.Config):
-        """Configures OrbaxCheckpointer.
+        """Configures OrbaxCheckpointer."""
 
-        Attributes:
-            keep_last_n: Keep this many past ckpts.
-            validation_type: Checkpoint validation during restore.
-            async_timeout_secs: Timeout for async barrier in seconds.
-        """
-
+        # Keep this many past ckpts.
         keep_last_n: int = 1
+        # If > 0, permanently retain checkpoints at step intervals divisible by this value.
+        # This is the Orbax equivalent of `keep_every_n_steps` in the default AXLearn checkpointer.
+        keep_period: Optional[int] = None
+        # Checkpoint validation during restore.
         validation_type: CheckpointValidationType = CheckpointValidationType.EXACT
-        async_timeout_secs: int = 300
+        # Will be passed to ocp.options.AsyncOptions(timeout_secs).
+        # It is the timeout for async checkpointing operations in Orbax.
+        async_timeout_secs: int = 600
         max_concurrent_save_gb: Optional[int] = None
         max_concurrent_restore_gb: Optional[int] = None
+        # An AXLearn training job may use multiple TPU slices. When restoring, by default, all
+        # slices read the checkpoint from GCS. If True, only the first replica loads from GCS and
+        # broadcasts to other slices via the training cluster network.
+        enable_single_replica_ckpt_restoring: bool = False
+        # Defaults to the `data` dimension
+        replica_axis_index: int = 1
+        # The step to save may already exist in a incomplete state. This option
+        # controls whether to skip that saving or not. The benefit of skipping
+        # is to save the time on deleting an incomplete checkpoint folder.
+        skip_uncommitted_checkpoint: bool = True
 
     @classmethod
     def checkpoint_paths(cls, base_dir: str) -> List[str]:
@@ -213,6 +284,16 @@ class OrbaxCheckpointer(BaseCheckpointer):
         cfg: OrbaxCheckpointer.Config = self.config
         save_policy = cfg.save_policy.instantiate()
 
+        if cfg.enable_single_replica_ckpt_restoring:
+            array_handler = ocp.type_handlers.SingleReplicaArrayHandler(
+                replica_axis_index=cfg.replica_axis_index,
+                primary_replica_id=0,
+                array_metadata_store=array_metadata_store_lib.Store(),
+                use_replica_parallel=False,
+                enable_write_sharding_file=False,
+            )
+            ocp.type_handlers.register_type_handler(jax.Array, array_handler, override=True)
+
         # self._eval_summaries will be set in save() and used by save_fn_with_summaries() to decide
         # whether to save at the step.
         #
@@ -224,24 +305,50 @@ class OrbaxCheckpointer(BaseCheckpointer):
         # even if the verdict from `cfg.save_policy` is negative.
         self._eval_summaries = None
 
-        def save_fn_with_summaries(step: int, last_saved_step: Optional[int]) -> bool:
-            del last_saved_step
-            return save_policy(step=step, evaler_summaries=self._eval_summaries)
-
         self._name_format = ocp.step.standard_name_format(
             step_prefix=STEP_PREFIX,
             step_format_fixed_length=STEP_NUM_DIGITS,
         )
+
+        # pylint: disable-next=unused-argument
+        def save_fn_with_summaries(step: int, last_saved_step: Optional[int]) -> bool:
+            is_save = save_policy(step=step, evaler_summaries=self._eval_summaries)
+
+            if (
+                is_save
+                and cfg.skip_uncommitted_checkpoint
+                and ocp.path.step.build_step_path(cfg.dir, self._name_format, step).exists()
+            ):
+                logging.warning(
+                    (
+                        "Step %s exists and will be skipped since"
+                        "`skip_uncommitted_checkpoint` is configured to be `True`"
+                    ),
+                    step,
+                )
+                return False
+
+            return is_save
+
         self._manager = ocp.CheckpointManager(
             directory=cfg.dir,
             options=ocp.CheckpointManagerOptions(
                 create=True,
                 max_to_keep=cfg.keep_last_n,
+                keep_period=cfg.keep_period,
                 enable_async_checkpointing=True,
                 step_name_format=self._name_format,
                 should_save_fn=save_fn_with_summaries,
                 enable_background_delete=True,
-                async_options=ocp.options.AsyncOptions(timeout_secs=cfg.async_timeout_secs),
+                async_options=ocp.options.AsyncOptions(
+                    timeout_secs=cfg.async_timeout_secs,
+                    create_directories_asynchronously=False,
+                ),
+                # Explicitly wrapped in `_ShouldSaveFnPolicy`, otherwise
+                # `PreemptionCheckpointingPolicy` is auto injected
+                save_decision_policy=_ShouldSaveFnPolicy(save_fn_with_summaries),
+                lightweight_initialize=True,
+                cleanup_tmp_directories=True,
             ),
             item_handlers={
                 # NOTE: we make a relatively weak assumption that index files are JSON serialized
@@ -279,7 +386,11 @@ class OrbaxCheckpointer(BaseCheckpointer):
         return str(ocp.step.build_step_path(dir, self._name_format, step))
 
     def save(
-        self, *, step: int, state: Nested[Tensor], evaler_summaries: Optional[Dict[str, Any]] = None
+        self,
+        *,
+        step: int,
+        state: Nested[Tensor],
+        evaler_summaries: Optional[Dict[str, Any]] = None,
     ):
         """See `BaseCheckpointer.save` for details.
 
@@ -323,9 +434,31 @@ class OrbaxCheckpointer(BaseCheckpointer):
 
         def _restore_args(x: Any) -> ocp.RestoreArgs:
             if isinstance(x, (Tensor, TensorSpec)):
-                return ocp.checkpoint_utils.construct_restore_args(
+                arg = ocp.checkpoint_utils.construct_restore_args(
                     jax.ShapeDtypeStruct(shape=x.shape, dtype=x.dtype, sharding=x.sharding)
                 )
+                if cfg.enable_single_replica_ckpt_restoring and isinstance(
+                    arg, ocp.type_handlers.ArrayRestoreArgs
+                ):
+                    mesh = x.sharding.mesh
+                    arg = ocp.type_handlers.SingleReplicaArrayRestoreArgs(
+                        restore_type=arg.restore_type,
+                        dtype=arg.dtype,
+                        mesh=arg.mesh,
+                        mesh_axes=arg.mesh_axes,
+                        sharding=arg.sharding,
+                        global_shape=arg.global_shape,
+                        shape=arg.shape,
+                        strict=arg.strict,
+                        single_replica_sharding=jax.sharding.NamedSharding(
+                            jax.sharding.Mesh(
+                                _replica_devices(mesh.devices, cfg.replica_axis_index),
+                                mesh.axis_names,
+                            ),
+                            x.sharding.spec,
+                        ),
+                    )
+                return arg
             elif isinstance(x, tf.data.Iterator):
                 return _TfIteratorHandler.RestoreArgs(item=x)
             elif _GRAIN_INSTALLED and isinstance(x, _GrainIterator):
@@ -375,3 +508,33 @@ class OrbaxCheckpointer(BaseCheckpointer):
     def stop(self, *, has_exception: bool = False):
         """See `BaseCheckpointer.stop` for details."""
         self._manager.close()
+
+
+# Below are adapted from:
+# https://github.com/AI-Hypercomputer/maxtext/blob/3d9378d77759a7756e20ae2940ce71dcaa17ef13/src/MaxText/checkpointing.py#L333-L356
+
+
+def _find_idx(array: np.ndarray, replica_axis_idx: int) -> int:
+    """Returns the index along given dimension that the current host belongs to."""
+    idx = None
+    for idx, val in np.ndenumerate(array):
+        if val.process_index == jax.process_index():
+            break
+    return idx[replica_axis_idx]
+
+
+def _replica_devices(device_array: np.ndarray, replica_axis_idx: int) -> np.ndarray:
+    """Returns the devices from the replica that current host belongs to.
+
+    Replicas are assumed to be restricted to the first axis.
+
+    Args:
+      device_array: devices of the mesh that can be obtained by mesh.devices()
+      replica_axis_idx: axis dimension along which replica is taken
+
+    Returns:
+      devices inside the replica that current host is in
+    """
+    idx = _find_idx(device_array, replica_axis_idx)
+    replica_result = np.take(device_array, idx, axis=replica_axis_idx)
+    return np.expand_dims(replica_result, axis=replica_axis_idx)
