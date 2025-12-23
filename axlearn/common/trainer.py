@@ -821,7 +821,7 @@ class SpmdTrainer(Module):
             self._step_log(msg, *args, **kwargs)
             analysis_logs.append(msg % args)
 
-        _step_log("##################### Model analysis #####################\n")
+        _step_log("##################### Model analysis #####################")
         _step_log("## Parameters:")
         fmt = "%10d %-20s %s"
         flatten_name_and_spec = flatten_items(self._model_param_specs)
@@ -832,7 +832,7 @@ class SpmdTrainer(Module):
         _step_log("Total number of model params: %s", f"{total_num_params:,}")
         self.summary_writer(0, {"num_model_params": total_num_params})
 
-        _step_log("\n## Trainer States:")
+        _step_log("## Trainer States:")
         # Training state size.
         total_state_bytes = 0
         total_sharded_state_bytes = 0
@@ -856,16 +856,15 @@ class SpmdTrainer(Module):
             max_sharded_state_gb = total_sharded_state_gb
 
         _step_log(
-            "Training state size: %.2f GiB\n"
-            "Training state size (partitioned): %.2f GiB\n"
+            "Training state size: %.2f GiB\t"
+            "Training state size (partitioned): %.2f GiB\t"
             "Max training state size (partitioned): %.2f GiB",
             total_state_bytes / 1024**3,
             total_sharded_state_gb,
             max_sharded_state_gb,
         )
-
-        _step_log("\n##########################################################")
-        return "\n".join(analysis_logs)
+        _step_log("##########################################################")
+        return "\t".join(analysis_logs)
 
     def _prepare_training(self, prng_key: Tensor) -> bool:
         """Prepares training.
