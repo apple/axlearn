@@ -6,7 +6,6 @@ import json
 import sys
 
 from absl import app, flags
-from tabulate import tabulate
 
 from axlearn.common.user_profile import UserProfileManager, get_user_profile, save_user_profile
 
@@ -195,8 +194,10 @@ def main(_):
             
             if FLAGS.category:
                 profile.track_interest(FLAGS.category, FLAGS.subcategory)
-                print(f"Tracked interest: {FLAGS.category}" + 
-                      (f" > {FLAGS.subcategory}" if FLAGS.subcategory else ""))
+                msg = f"Tracked interest: {FLAGS.category}"
+                if FLAGS.subcategory:
+                    msg += f" > {FLAGS.subcategory}"
+                print(msg)
             
             if FLAGS.command:
                 profile.track_command(FLAGS.command)

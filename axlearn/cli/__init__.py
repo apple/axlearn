@@ -54,9 +54,15 @@ def main(**kwargs):
     
     # Register profile command (always available)
     try:
-        from axlearn.cli.utils import get_root_command_group
-        root = get_root_command_group()
-        root.add_cmd_from_module("profile", "axlearn.cli.profile")
+        def add_profile_cmd(*, parent):
+            """Add profile command to the parent command group."""
+            parent.add_cmd_from_module(
+                "profile",
+                module="axlearn.cli.profile",
+                help="Manage user profile and preferences"
+            )
+        
+        register_root_command_group(add_profile_cmd, name="profile")
     except (ImportError, ModuleNotFoundError):
         # Profile module not available
         pass
