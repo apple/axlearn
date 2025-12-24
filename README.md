@@ -13,6 +13,7 @@
 | [Concepts](docs/02-concepts.md) | Core concepts and design principles. |
 | [CLI User Guide](docs/03-cli.md) | How to use the CLI. |
 | [Infrastructure](docs/04-infrastructure.md) | Core infrastructure components. |
+| [User Profile](docs/user_profile.md) | Personalized learning about your preferences and habits. |
 
 ## Introduction
 
@@ -36,5 +37,9 @@ per-accelerator basis.
 AXLearn supports a wide range of applications, including natural language processing, computer
 vision, and speech recognition and contains baseline configurations for training state-of-the-art
 models.
+
+**New**: AXLearn now includes a user profile system that learns your preferences, habits, and 
+interests to provide a personalized experience. See the [User Profile Guide](docs/user_profile.md) 
+for more details.
 
 Please see [Concepts](docs/02-concepts.md) for more details on the core components and design of AXLearn, or [Getting Started](docs/01-start.md) if you want to get your hands dirty.
