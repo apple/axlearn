@@ -64,8 +64,7 @@ flags.DEFINE_integer(
 flags.DEFINE_integer(
     "trainer_log_every_n_steps",
     None,
-    "Logging frequency for the loss value during training. "
-    "If None, defaults to every 100 steps.",
+    "Logging frequency for the loss value during training. If None, defaults to every 100 steps.",
 )
 flags.DEFINE_enum(
     "device_monitor",
@@ -150,7 +149,9 @@ def get_trainer_config(
 def run_trainer(trainer_config: SpmdTrainer.Config) -> Any:
     measurement.record_event(measurement.Event.START_JOB)
     trainer_config_debug_string = trainer_config.debug_string()
-    logging.info("Trainer config:\n%s", trainer_config_debug_string)
+    logging.info("Trainer config:")
+    for line in trainer_config_debug_string.split("\n"):
+        logging.info("%s", line)
     if jax.process_index() == 0:
         trainer_config_file = os.path.join(trainer_config.dir, "trainer_config")
         with fs.open(trainer_config_file, "w") as f:
