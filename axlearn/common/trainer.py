@@ -1231,7 +1231,8 @@ class SpmdTrainer(Module):
             # pjit currently requires all parameters to be specified as positional args.
             lowered_train_step = jit_train_step.lower(trainer_state, input_batch)
             compiled = lowered_train_step.compile(compiler_options=compiler_options)
-            logging.log_first_n(logging.INFO, aot_model_analysis(compiled), 1)
+            for line in aot_model_analysis(compiled).split("\n"):
+                logging.info("%s", line)
             return compiled
 
     def _train_step(
