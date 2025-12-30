@@ -87,7 +87,9 @@ class ConvTest(TestCase):
         ([0, 0, 0, 1, 1, 1], [0, 0], 2, "VALID"),
         ([0, 0, 1, 1, 1, 1], [0, 1], 2, "VALID"),
     )
-    def test_conv_padding(self, input_paddings, expected_paddings, stride: int, padding_cfg: str):
+    def test_compute_conv_paddings(
+        self, input_paddings, expected_paddings, stride: int, padding_cfg: str
+    ):
         """Tests conv_output_shape() with SAME and VALID padding cfg."""
         # This test is from lingvo
         # https://github.com/tensorflow/lingvo/blob/master/lingvo/core/conv_layers_with_time_padding_test.py#L157.
@@ -99,6 +101,64 @@ class ConvTest(TestCase):
             conv_padding=padding_cfg,
         )
         assert_allclose(out_paddings[0], expected_paddings)
+
+    @parameterized.parameters(
+        # window=5, stride=2, dilation=1
+        # SAME padding=(2, 2)
+        #           pad  |           |pad
+        # segment_ids: 0 0|1 1 1 1 2 2|0 0
+        #              |___^___|
+        #                  |___^___|
+        #                      |___^___|
+        ("SAME", 1, [1, 1, 1, 1, 2, 2], [1, 1, 2]),
+        # VALID padding=(0, 0)
+        #            |           |
+        # segment_ids:|1 1 1 1 2 2|
+        #             |^_______|
+        ("VALID", 1, [1, 1, 1, 1, 2, 2], [1]),
+        # CAUSAL padding=(3, 1)
+        #             pad  |           |pad
+        # segment_ids: 0 0 0|1 1 1 1 2 2|0
+        #              |_____^_|
+        #                  |_____^_|
+        #                      |_____^_|
+        ("CAUSAL", 1, [1, 1, 1, 1, 2, 2], [1, 1, 2]),
+        # window=5, stride=2, dilation=2
+        # dilate_window = 9, pad_total = 8
+        # SAME padding=(4, 4)
+        #                 pad|                   |pad
+        # segment_ids: 0 0 0 0|1 2 3 4 5 6 7 8 9|0 0 0 0
+        #              |_______^_______|
+        #                  |_______^_______|
+        #                      |_______^_______|
+        #                          |_______^_______|
+        #                              |_______^_______|
+        ("SAME", 2, [1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 5, 7, 9]),
+        # VALID padding=(0, 0)
+        #             |                   |pad
+        # segment_ids:|1 2 3 4 5 6 7 8 9 0|
+        #             |^_______________|
+        ("VALID", 2, [1, 2, 3, 4, 5, 6, 7, 8, 9, 0], [1]),
+        # CAUSAL padding=(7, 1)
+        #                      pad  |                 |pad
+        # segment_ids: 0 0 0 0 0 0 0|1 2 3 4 5 6 7 8 9|0
+        #              |_____________^_|
+        #                  |_____________^_|
+        #                      |_____________^_|
+        #                          |_____________^_|
+        #                              |_____________^_|
+        ("CAUSAL", 2, [1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 3, 5, 7, 9]),
+    )
+    def test_compute_conv_segment_ids(self, padding, dilation, segment_ids, expected):
+        window, stride = 5, 2
+        out_segment_ids = compute_conv_paddings(
+            jnp.array([segment_ids], jnp.int32),
+            window=window,
+            stride=stride,
+            conv_padding=padding,
+            dilation=dilation,
+        )[0]
+        assert_allclose(out_segment_ids, expected)
 
     @parameterized.parameters(
         (5, 1, "SAME", 1, (2, 2)),
@@ -1089,6 +1149,129 @@ class ConvTransposeTest(TestCase):
         expected = jnp.array(expected).astype(out_paddings.dtype)
         self.assertNestedEqual(out_paddings[0], expected)
 
+    @parameterized.parameters(
+        # window=3, stride=1
+        # SAME padding=(1, 1)
+        #                 pad|       |pad
+        #     segment_ids:  0|1 1 2 2|0
+        #                     |_____|
+        #                   * 1 *  -> 1
+        #                     * 1 *  -> 1
+        #                       * 2 *  -> 2
+        #                         * 2 *  -> 2
+        ("SAME", 1, 1, [1, 1, 2, 2], [1, 1, 2, 2]),
+        # VALID padding=(2, 2)
+        #                 pad  |       |pad
+        #     segment_ids:  0 0|1 1 2 2|* *
+        #                       |_________|
+        #                   * * 1  -> 1
+        #                     * * 1  -> 1
+        #                       * * 2  -> 2
+        #                         * * 2  -> 2
+        #                           * * 2  -> 2
+        #                             * * 2  -> 2
+        ("VALID", 1, 1, [1, 1, 2, 2], [1, 1, 2, 2, 2, 2]),
+        # CAUSAL padding=(2, 0)
+        #                 pad  |       |pad
+        #     segment_ids:  0 0|1 1 2 2|
+        #                       |_____|
+        #                   * * 1  -> 1
+        #                     * * 1  -> 1
+        #                       * * 2  -> 2
+        #                         * * 2  -> 2
+        ("CAUSAL", 1, 1, [1, 1, 2, 2], [1, 1, 2, 2]),
+        # window=3, stride=2
+        # SAME padding=(2, 1)
+        #                 pad  |             |pad
+        #     segment_ids:  0 0|1 * 2 * 3 * 4|*
+        #                       |_____________|
+        #                   * * 1  -> 1
+        #                     * * 1  -> 1
+        #                       * * 2  -> 2
+        #                         * * 2  -> 2
+        #                           * * 3  -> 3
+        #                             * * 3  -> 3
+        #                               * * 4  -> 4
+        #                                 * * 4  -> 4
+        ("SAME", 2, 1, [1, 2, 3, 4], [1, 1, 2, 2, 3, 3, 4, 4]),
+        # VALID padding=(2, 2)
+        #                 pad  |             |pad
+        #     segment_ids:  0 0|1 * 2 * 3 * 4|* *
+        #                       |_______________|
+        #                   * * 1  -> 1
+        #                     * * 1  -> 1
+        #                       * * 2  -> 2
+        #                         * * 2  -> 2
+        #                           * * 3  -> 3
+        #                             * * 3  -> 3
+        #                               * * 4  -> 4
+        #                                 * * 4  -> 4
+        #                                   * * 0  -> 0
+        ("VALID", 2, 1, [1, 2, 3, 4], [1, 1, 2, 2, 3, 3, 4, 4, 4]),
+        # CAUSAL padding=(2, 1)
+        #                 pad  |             |pad
+        #     segment_ids:  0 0|1 * 2 * 3 * 4|*
+        #                       |_____________|
+        #                   * * 1  -> 1
+        #                     * * 1  -> 1
+        #                       * * 2  -> 2
+        #                         * * 2  -> 2
+        #                           * * 3  -> 3
+        #                             * * 3  -> 3
+        #                               * * 4  -> 4
+        #                                 * * 4  -> 4
+        ("CAUSAL", 2, 1, [1, 2, 3, 4], [1, 1, 2, 2, 3, 3, 4, 4]),
+        # window=3, stride=3
+        # SAME, VALID, CAUSAL padding=(2, 2)
+        #                 pad  |                   |pad
+        #     segment_ids:  0 0|1 * * 2 * * 3 * * 4|* *
+        #                       |_____________________|
+        #                   * * 1  -> 1
+        #                     * * 1  -> 1
+        #                       * * 1  -> 1
+        #                         * * 2  -> 2
+        #                           * * 2  -> 2
+        #                             * * 2  -> 2
+        #                               * * 3  -> 3
+        #                                 * * 3  -> 3
+        #                                   * * 3  -> 3
+        #                                     * * 4  -> 4
+        #                                       * * 4  -> 4
+        #                                         * * 4  -> 4
+        ("CAUSAL", 3, 1, [1, 2, 3, 4], [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4]),
+        # window=3, stride=2, dilation=2
+        # dilate_window = 5
+        # SAME padding=(3, 2)
+        #                 pad    |                   |pad
+        #     segment_ids:  0 0 0|1 * * 2 * * 3 * * 4|* *
+        #                         |_____________|
+        #                   * * * 1 *  -> 1
+        #                     * * * 1 *  -> 1
+        #                       * * * 1 *  -> 2
+        #                         * * * 2 *  -> 2
+        #                           * * * 2 *  -> 2
+        #                             * * * 2 *  -> 2
+        #                               * * * 3 *  -> 3
+        #                                 * * * 3 *  -> 3
+        #                                   * * * 3 *  -> 3
+        #                                      * * * 4 *  -> 4
+        #                                        * * * 4 *  -> 4
+        #                                          * * * 4 *  -> 4
+        ("SAME", 3, 2, [1, 2, 3, 4], [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4]),
+    )
+    def test_compute_conv_transpose_segment_ids(
+        self, padding, stride, dilation, segment_ids, expected
+    ):
+        window = 3
+        out_segment_ids = convolution.compute_conv_transpose_paddings(
+            jnp.array([segment_ids], jnp.int32),
+            window=window,
+            stride=stride,
+            conv_padding=padding,
+            dilation=dilation,
+        )[0]
+        assert_allclose(out_segment_ids, expected)
+
     @parameterized.product(
         window=[1, 3],
         strides=[1, 2, 3],
@@ -1131,7 +1314,7 @@ class ConvTransposeTest(TestCase):
             in_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
         )
 
-        recon_paddings = convolution.compute_conv_paddings(
+        recon_paddings = compute_conv_paddings(
             out_paddings, window=window, stride=strides, conv_padding=padding, dilation=dilation
         )
         self.assertNestedEqual(recon_paddings[0], in_paddings[0])
@@ -1161,7 +1344,7 @@ class ConvTransposeTest(TestCase):
             anchor = None
 
         in_paddings = jnp.array(in_paddings, dtype=jnp.bool)[None, :]
-        ref_paddings = convolution.compute_conv_paddings(
+        ref_paddings = compute_conv_paddings(
             in_paddings,
             window=window,
             stride=strides,

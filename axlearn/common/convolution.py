@@ -300,7 +300,6 @@ def compute_conv_paddings(
         ValueError: If anchor is not between left_time_padding and right_time_padding.
     """
     chex.assert_rank(in_paddings, 2)
-    chex.assert_type(in_paddings, jnp.bool)
     dilation = dilation or 1
     conv_padding = conv_explicit_padding(
         window=(window,), strides=(stride,), padding=conv_padding, dilation=(dilation,)
@@ -491,7 +490,16 @@ class Conv1DWithPadding(Conv1D):
         output = super().forward(x)
 
         # Compute paddings conv output.
-        output_paddings = compute_conv_paddings(
+        output_paddings = self.conv_paddings(paddings)
+        # Apply padding to the outputs.
+        output_paddings = maybe_shard(output_paddings, cfg.output_partition_spec)
+        output = output * safe_not(output_paddings)[..., None]
+        return output, output_paddings
+
+    @nowrap
+    def conv_paddings(self, paddings: Tensor) -> Tensor:
+        cfg = self.config
+        return compute_conv_paddings(
             paddings,
             window=cfg.window,
             stride=cfg.strides,
@@ -499,10 +507,6 @@ class Conv1DWithPadding(Conv1D):
             dilation=cfg.dilation,
             anchor=cfg.anchor,
         )
-        # Apply padding to the outputs.
-        output_paddings = maybe_shard(output_paddings, cfg.output_partition_spec)
-        output = output * (1 - output_paddings[..., None])
-        return output, output_paddings
 
 
 # The accuracy of the output of this layer currently doesn't match that of PyTorch
@@ -708,7 +712,6 @@ class Conv2DWith1DPadding(Conv2D):
             output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
             paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
         """
-        cfg = self.config
         # Apply padding to the input.
         assert len(x.shape) == len(paddings.shape) + 2
         x = x * safe_not(paddings)[..., None, None]
@@ -716,8 +719,16 @@ class Conv2DWith1DPadding(Conv2D):
         # Apply Conv2D.
         output = super().forward(x)
         # Compute paddings conv output.
+        output_paddings = self.conv_paddings(paddings)
+        # Apply padding to the outputs.
+        output = output * safe_not(output_paddings)[..., None, None]
+        return output, output_paddings
+
+    @nowrap
+    def conv_paddings(self, paddings: Tensor) -> Tensor:
+        cfg = self.config
         dilation = 1 if cfg.dilation is None else cfg.dilation[0]
-        output_paddings = compute_conv_paddings(
+        return compute_conv_paddings(
             paddings,
             window=cfg.window[0],
             stride=cfg.strides[0],
@@ -725,9 +736,6 @@ class Conv2DWith1DPadding(Conv2D):
             dilation=dilation,
             anchor=cfg.anchor,
         )
-        # Apply padding to the outputs.
-        output = output * (1 - output_paddings[..., None, None])
-        return output, output_paddings
 
 
 class Conv3D(BaseConv):
@@ -1305,7 +1313,6 @@ def compute_conv_transpose_paddings(
     """
 
     chex.assert_rank(in_paddings, 2)
-    chex.assert_type(in_paddings, jnp.bool)
     conv_padding = conv_transpose_explicit_padding(
         window=(window,), strides=(stride,), padding=conv_padding, dilation=(dilation,)
     )
@@ -1436,15 +1443,8 @@ class Conv1DTranspose(BaseConv):
             output_paddings = None
         else:
             # Compute paddings conv output.
-            output_paddings = compute_conv_transpose_paddings(
-                paddings,
-                window=cfg.window,
-                stride=cfg.strides,
-                conv_padding=cfg.padding,
-                dilation=cfg.dilation,
-                anchor=cfg.anchor,
-            )
-            output = output * (1 - output_paddings[..., None])
+            output_paddings = self.conv_paddings(paddings)
+            output = output * safe_not(output_paddings)[..., None]
         return output, output_paddings
 
     def _conv(
@@ -1469,6 +1469,18 @@ class Conv1DTranspose(BaseConv):
         if cfg.bias:
             output += self.parameters["bias"]
         return output
+
+    @nowrap
+    def conv_paddings(self, paddings: Tensor) -> Tensor:
+        cfg = self.config
+        return compute_conv_transpose_paddings(
+            paddings,
+            window=cfg.window,
+            stride=cfg.strides,
+            conv_padding=cfg.padding,
+            dilation=cfg.dilation,
+            anchor=cfg.anchor,
+        )
 
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         cfg = self.config
@@ -1645,7 +1657,6 @@ class Conv2DTransposeWith1DPadding(Conv2DTranspose):
             output: A Tensor of shape [batch_size, seq_len, frequency, output_dim].
             paddings: 0/1 boolean Tensor of shape [batch_size, seq_len].
         """
-        cfg = self.config
         # Apply padding to the input.
         assert len(x.shape) == len(paddings.shape) + 2
         x = x * safe_not(paddings)[..., None, None]
@@ -1653,7 +1664,15 @@ class Conv2DTransposeWith1DPadding(Conv2DTranspose):
         # Apply Conv2D.
         output = super().forward(x)
         # Compute paddings conv output.
-        output_paddings = compute_conv_transpose_paddings(
+        output_paddings = self.conv_paddings(paddings)
+        # Apply padding to the outputs.
+        output = output * safe_not(output_paddings)[..., None, None]
+        return output, output_paddings
+
+    @nowrap
+    def conv_paddings(self, paddings: Tensor) -> Tensor:
+        cfg = self.config
+        return compute_conv_transpose_paddings(
             paddings,
             window=cfg.window[0],
             stride=cfg.strides[0],
@@ -1661,9 +1680,6 @@ class Conv2DTransposeWith1DPadding(Conv2DTranspose):
             dilation=cfg.dilation[0],
             anchor=cfg.anchor,
         )
-        # Apply padding to the outputs.
-        output = output * (1 - output_paddings[..., None, None])
-        return output, output_paddings
 
 
 class Conv3DTranspose(BaseConv):
@@ -1823,11 +1839,17 @@ class StackOverTime(BaseLayer):
         # Stack inputs over the time dimension.
         stacked_inputs = jnp.reshape(inputs[:, : output_length * cfg.stride, :], new_shape)
         # An output frame is padding if at least one of the stacked input frames is padding.
-        stacked_paddings = compute_conv_paddings(
-            paddings, window=cfg.stride, stride=cfg.stride, conv_padding=(padding,)
-        )
-        stacked_inputs = stacked_inputs * (1 - stacked_paddings)[:, :, None]
+        stacked_paddings = self.conv_paddings(paddings)
+        stacked_inputs = stacked_inputs * safe_not(stacked_paddings)[:, :, None]
         return stacked_inputs, stacked_paddings
+
+    @nowrap
+    def conv_paddings(self, paddings: Tensor) -> Tensor:
+        cfg = self.config
+        conv_padding = cfg.padding if isinstance(cfg.padding, str) else (cfg.padding,)
+        return compute_conv_paddings(
+            paddings, window=cfg.stride, stride=cfg.stride, conv_padding=conv_padding
+        )
 
     @nowrap
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
