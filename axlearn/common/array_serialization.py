@@ -251,8 +251,7 @@ def _fix_metadata(tspec: dict[str, Any], shard_infos: list[_ShardInfo]):
 
 
 class TensorstoreSpecModifier:
-    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]):
-        ...
+    def __call__(self, spec: dict[str, Any], *, shard_infos: list[_ShardInfo]): ...
 
 
 async def _async_serialize(
@@ -307,6 +306,7 @@ async def _async_serialize(
     )
     # pylint: disable=protected-access
     spec_has_metadata = {
+        "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl._spec_has_metadata,
         "0.6.2": lambda: serialization.ts_impl._spec_has_metadata,
         "0.5.3": lambda: serialization._spec_has_metadata,
     }[jax.__version__]()
@@ -487,6 +487,7 @@ async def _async_deserialize(
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
         estimate_read_memory_footprint = {
+            "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl.estimate_read_memory_footprint,
             "0.6.2": lambda: serialization.ts_impl.estimate_read_memory_footprint,
             "0.5.3": lambda: serialization.estimate_read_memory_footprint,
         }[jax.__version__]()
@@ -568,6 +569,7 @@ async def _async_deserialize(
 
     # pylint: disable=protected-access
     create_async_array_from_callback = {
+        "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl._create_async_array_from_callback,
         "0.6.2": lambda: serialization.ts_impl._create_async_array_from_callback,
         "0.5.3": lambda: serialization.create_async_array_from_callback,
     }[jax.__version__]()
@@ -653,6 +655,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         commit_futures = [[] for _ in range(len(tensorstore_specs))]
 
         async_serialize = {
+            "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl.async_serialize,
             "0.6.2": lambda: serialization.ts_impl.async_serialize,
             "0.5.3": lambda: serialization.async_serialize,
         }[jax.__version__]()

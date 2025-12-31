@@ -164,8 +164,7 @@ def _vocab_config(
 
 
 class _InputFn(Protocol):
-    def __call__(self, *, is_training: bool, split: str) -> Input.Config:
-        ...
+    def __call__(self, *, is_training: bool, split: str) -> Input.Config: ...
 
 
 def evaler_config_dict(

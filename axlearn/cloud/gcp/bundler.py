@@ -58,7 +58,7 @@ from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
 from axlearn.cloud.common.utils import canonicalize_to_list, to_bool
-from axlearn.cloud.gcp.cloud_build import wait_for_cloud_build
+from axlearn.cloud.gcp.cloud_build import parse_tag_from_image_id, wait_for_cloud_build
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
@@ -129,14 +129,14 @@ class CloudBuildBundler(BaseDockerBundler):
                 from flags.
             is_async: Whether to build asynchronously. If True, callers should invoke
                 `wait_until_finished()` to wait for bundling to complete.
+            private_worker_pool: If provided, should be the identifier of a private worker pool.
+                See: https://cloud.google.com/build/docs/private-pools/private-pools-overview
         """
 
         # GCP project.
         project: Required[str] = REQUIRED
         # Build image asynchronously.
         is_async: bool = True
-        # If provided, should be the identifier of a private worker pool.
-        # See: https://cloud.google.com/build/docs/private-pools/private-pools-overview
         private_worker_pool: Optional[str] = None
 
     @classmethod
@@ -175,9 +175,14 @@ class CloudBuildBundler(BaseDockerBundler):
         )
         image_path, image_tag = image.rsplit(":", maxsplit=1)
         latest_tag = f"{image_path}:latest"
-        cloudbuild_yaml = f"""
-steps:
-- name: "gcr.io/cloud-builders/docker"
+
+        # Build steps - start with main image
+        build_steps = []
+        images_list = [f'"{image}"', f'"{latest_tag}"']
+
+        # Main image build step
+        build_steps.append(
+            f"""- name: "gcr.io/cloud-builders/docker"
   args: [
     "build",
     "-f", "{os.path.relpath(dockerfile, context)}",
@@ -193,11 +198,44 @@ steps:
     "."
   ]
   env:
-  - "DOCKER_BUILDKIT=1"
+  - "DOCKER_BUILDKIT=1\""""
+        )
+
+        # Add sidecar image build steps
+        for sidecar in cfg.sidecars:
+            sidecar_target = sidecar
+            sidecar_image_path = f"{cfg.repo}/{sidecar}"
+            sidecar_image = f"{sidecar_image_path}:{image_tag}"
+            sidecar_latest_image = f"{sidecar_image_path}:latest"
+
+            build_steps.append(
+                f"""- name: "gcr.io/cloud-builders/docker"
+  args: [
+    "build",
+    "-f", "{os.path.relpath(dockerfile, context)}",
+    "-t", "{sidecar_image}",
+    "-t", "{sidecar_latest_image}",
+    "--target", "{sidecar_target}",
+    "--cache-from", "{sidecar_image}",
+    "--cache-from", "{sidecar_latest_image}",
+    {cache_from}
+    {build_platform}
+    {build_args}
+    {labels}
+    "."
+  ]
+  env:
+  - "DOCKER_BUILDKIT=1\""""
+            )
+
+            images_list.extend([f'"{sidecar_image}"', f'"{sidecar_latest_image}"'])
+
+        cloudbuild_yaml = f"""
+steps:
+{chr(10).join(build_steps)}
 timeout: 3600s
 images:
-- "{image}"
-- "{latest_tag}"
+{chr(10).join([f"- {img}" for img in images_list])}
 tags: [{image_tag}]
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -239,12 +277,20 @@ options:
         """
         cfg: CloudBuildBundler.Config = self.config
         if cfg.is_async:
-            wait_for_cloud_build(
-                project_id=cfg.project,
-                image_id=self.id(name),
-                tags=[name],
-                wait_timeout=wait_timeout,
-            )
+            if tag := parse_tag_from_image_id(name):
+                wait_for_cloud_build(
+                    project_id=cfg.project,
+                    image_id=name,
+                    tags=[tag],
+                    wait_timeout=wait_timeout,
+                )
+            else:
+                wait_for_cloud_build(
+                    project_id=cfg.project,
+                    image_id=self.id(name),
+                    tags=[name],
+                    wait_timeout=wait_timeout,
+                )
 
 
 def with_tpu_extras(bundler: Bundler.Config) -> Bundler.Config:

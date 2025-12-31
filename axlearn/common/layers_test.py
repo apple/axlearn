@@ -383,9 +383,7 @@ class LayerTest(TestCase):
                     else paddings[:, :, None, None, None]
                 )
                 mask = 1 - expanded_paddings
-                square_sum = jnp.sum(
-                    outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True
-                )
+                square_sum = jnp.sum(outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True)
                 square_count = jnp.sum(
                     jnp.ones_like(outputs_by_group) * mask, axis=reduction_axis, keepdims=True
                 )

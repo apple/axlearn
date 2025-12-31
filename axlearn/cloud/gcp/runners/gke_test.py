@@ -14,6 +14,7 @@ from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
+from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import FlagConfigurable, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.job_flink import FlinkJobStatus
@@ -156,7 +157,7 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
     )
     def test_exit(self, status):
         cfg = self._job_config(command="", name="test-name", cluster="test-cluster")
-        job: GKERunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
         with mock.patch.multiple(
             job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
         ):
@@ -164,7 +165,9 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
 
     def test_delete(self):
         cfg = self._job_config(command="", name="test-name", cluster="test-cluster")
-        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
         with mock.patch.multiple(job, _inner=mock.DEFAULT, _pre_provisioner=mock.DEFAULT):
             job._delete()
             job._inner._delete.assert_called()  # pytype: disable=attribute-error
@@ -175,7 +178,9 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             name="test-name",
             cluster="test-cluster",
         )
-        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
 
         with mock.patch.multiple(
             job,
@@ -297,7 +302,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 self.assertEqual(builder_cfg.env_vars[k], v)
 
         # Should be instantiable.
-        runner: GKERunnerJob = cfg.instantiate(bundler=mock.Mock())
+        runner: GKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
 
         # Inner should have consistent configs.
         final_config = runner.config
@@ -329,7 +334,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        job: GKERunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
         with mock.patch.multiple(
             job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
         ):
@@ -692,7 +697,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             enable_pre_provisioner=enable_pre_provisioner,
             num_replicas=num_slices,
         )
-        job: GKERunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
 
         if isinstance(status, Exception):
             mock_get_status = mock.Mock(side_effect=status)
@@ -904,7 +909,9 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         # Node pool test cases assume "test-name".
         self.assertEqual("test-name", cfg.name)
 
-        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
 
         mock_job = mock.patch.multiple(
             job,
@@ -942,7 +949,9 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
 
         with mock.patch.multiple(
             job,
@@ -970,7 +979,9 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             enable_pre_provisioner=enable_pre_provisioner,
             image_id=image_id,
         )
-        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
 
         with contextlib.ExitStack() as stack:
             stack.enter_context(
@@ -987,9 +998,6 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     _pre_provisioner=mock.DEFAULT,
                 )
             )
-            mock_wait_for_cloud_build = stack.enter_context(
-                mock.patch("axlearn.cloud.gcp.runners.gke.wait_for_cloud_build")
-            )
             job._inner._builder.config.image_id = image_id
             job._execute()
 
@@ -998,10 +1006,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 job._pre_provisioner.create_for.assert_called()
 
             if image_id:
-                job._bundler.wait_until_finished.assert_not_called()
-                mock_wait_for_cloud_build.assert_called_with(
-                    project_id="settings-project", image_id="my-image-id:tag", tags=["tag"]
-                )
+                job._bundler.wait_until_finished.assert_called_with(image_id)
             else:
                 job._bundler.wait_until_finished.assert_called_with("test-name")
             job._inner.execute.assert_called()
@@ -1015,7 +1020,9 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+        job: GKERunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
 
         with mock.patch.multiple(
             job,
@@ -1114,8 +1121,8 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             instance_type="v5p-8",
         )
-        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.Mock())
-        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.Mock())
+        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
+        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.create_autospec(Bundler))
         job._inner.job_manager_ip = "127.0.0.1"
 
         mock_resp = mock.Mock()
@@ -1134,8 +1141,8 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             instance_type="v5p-8",
         )
-        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.Mock())
-        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.Mock())
+        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
+        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.create_autospec(Bundler))
         job._inner.job_manager_ip = "127.0.0.1"  # Assuming this is now a private runtime attribute
 
         mock_get.side_effect = requests.RequestException("network issue")
@@ -1225,8 +1232,8 @@ class FlinkGKERunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             instance_type="v5p-8",
         )
-        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.Mock())
-        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.Mock())
+        job: runner_gke.FlinkGKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
+        job._inner = runner_gke.FlinkTPUGKEJob(cfg.inner, bundler=mock.create_autospec(Bundler))
         job._inner.job_manager_ip = "127.0.0.1"
 
         if isinstance(status, Exception):
@@ -1319,7 +1326,7 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 self.assertEqual(builder_cfg.inner.env_vars[k], v)
 
         # Should be instantiable.
-        runner: LWSRunnerJob = cfg.instantiate(bundler=mock.Mock())
+        runner: LWSRunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
 
         # Inner should have consistent configs.
         final_config = runner.config
@@ -1349,7 +1356,7 @@ class LWSRunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        job: LWSRunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job: LWSRunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
         with mock.patch.multiple(
             job, _get_status=mock.Mock(return_value=status), _delete=mock.DEFAULT
         ):
@@ -1413,7 +1420,7 @@ class LWSRunnerJobTest(parameterized.TestCase):
             enable_pre_provisioner=enable_pre_provisioner,
             num_replicas=num_slices,
         )
-        job: LWSRunnerJob = cfg.instantiate(bundler=mock.Mock())
+        job: LWSRunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
 
         if isinstance(status, Exception):
             mock_get_status = mock.Mock(side_effect=status)
@@ -1439,7 +1446,9 @@ class LWSRunnerJobTest(parameterized.TestCase):
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
         )
-        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(bundler=mock.Mock())
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
 
         with mock.patch.multiple(
             job,

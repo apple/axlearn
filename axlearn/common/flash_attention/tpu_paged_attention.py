@@ -8,7 +8,7 @@
 """Implements PagedAttention for TPU.
 
 Compared to base implementation
-https://github.com/jax-ml/jax/blob/jax-v0.6.0/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py
+https://github.com/jax-ml/jax/blob/jax-v0.8.1/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py
 We added block-sparse kernel for long context with masking
 (particularly for sliding window attention),
 we also supports arbitrary logit bias and mask_fn.
@@ -29,6 +29,7 @@ from axlearn.common.attention_bias import (
     SlidingWindowAttentionBias,
     split,
 )
+from axlearn.common.config import config_class
 from axlearn.common.flash_attention.common import BasePagedAttention
 from axlearn.common.flash_attention.tpu_paged_attention_kernel import (
     _make_index_map,
@@ -69,6 +70,12 @@ def _get_tpu_cores_per_chip(interpret: bool = False) -> int:
 class TPUPagedAttention(BasePagedAttention):
     """Wraps TPU paged flash attention kernel."""
 
+    @config_class
+    class Config(BasePagedAttention.Config):
+        """Configures TPUPagedAttention."""
+
+        megacore_mode: Literal["kv_head", "batch", None] = None  # Auto if None
+
     def megacore_mode_heuristic(
         self,
         input_batch: Nested[Tensor | BaseAttentionBias],
@@ -79,7 +86,10 @@ class TPUPagedAttention(BasePagedAttention):
         is divisible by 2. If not, it attempts to parallelize the 'kv_head'
         dimension if the number of KV heads is divisible by 2.
         """
-        megacore_mode = None
+        megacore_mode = self.cfg.megacore_mode
+        if megacore_mode:
+            return megacore_mode
+
         cores_per_chip = _get_tpu_cores_per_chip(self.cfg.interpret)
         if cores_per_chip == 2:
             query: Tensor = input_batch["query"]
@@ -237,6 +247,7 @@ class TPUPagedAttention(BasePagedAttention):
         scratch_shapes = (
             pltpu.VMEM((num_groups, 1), jnp.float32),  # m_i
             pltpu.VMEM((num_groups, 1), jnp.float32),  # l_i
+            pltpu.VMEM((num_groups, head_dim), jnp.float32),  # o_scratch
             pltpu.VMEM(
                 (
                     2,
@@ -255,7 +266,8 @@ class TPUPagedAttention(BasePagedAttention):
                 ),
                 value.dtype,
             ),  # v_mem_buffer
-            pltpu.SemaphoreType.DMA,  # sem
+            pltpu.SemaphoreType.DMA((2,)),  # k_sems
+            pltpu.SemaphoreType.DMA((2,)),  # v_sems
         )
         args = (
             lengths,

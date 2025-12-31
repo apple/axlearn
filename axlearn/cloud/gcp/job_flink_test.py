@@ -96,8 +96,8 @@ expected_flink_deployment_json = """
     },
     "jobManager": {
       "resource": {
-        "memory": "2g",
-        "cpu": 1
+        "memory": "100g",
+        "cpu": 20
       },
       "podTemplate": {
         "metadata": {
@@ -230,7 +230,7 @@ expected_flink_deployment_json = """
                 },
                 {
                   "name": "XLA_FLAGS",
-                  "value": "--xla_dump_to=/output/fake-name/xla"
+                  "value": "--xla_dump_to=/opt/flink/log"
                 },
                 {
                   "name": "TF_CPP_MIN_LOG_LEVEL",
@@ -481,9 +481,9 @@ class FlinkTPUGKEJobTest(TestCase):
         expected_flink_deployment["spec"]["serviceAccount"] = (
             service_account if service_account else self._settings["k8s_service_account"]
         )
-        expected_flink_deployment["spec"]["flinkConfiguration"][
-            "taskmanager.numberOfTaskSlots"
-        ] = str(flink_threads_per_worker)
+        expected_flink_deployment["spec"]["flinkConfiguration"]["taskmanager.numberOfTaskSlots"] = (
+            str(flink_threads_per_worker)
+        )
         if image_id:
             expected_flink_deployment["spec"]["taskManager"]["podTemplate"]["spec"]["containers"][
                 0
@@ -536,9 +536,9 @@ class FlinkTPUGKEJobTest(TestCase):
             service_account if service_account else "settings-account"
         )
         expected_parallelism = flink_job._get_num_of_tpu_nodes(system) * flink_threads_per_worker
-        expected_job_submission["spec"]["template"]["spec"]["containers"][0]["args"][
-            0
-        ] = _get_expected_job_submission_command(expected_parallelism)
+        expected_job_submission["spec"]["template"]["spec"]["containers"][0]["args"][0] = (
+            _get_expected_job_submission_command(expected_parallelism)
+        )
         if image_id:
             expected_job_submission["spec"]["template"]["spec"]["containers"][0]["image"] = image_id
 

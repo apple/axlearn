@@ -247,9 +247,7 @@ class SerializerTest(parameterized.TestCase):
         arrays = [
             mock.Mock(
                 addressable_shards=[
-                    mock.Mock(
-                        replica_id=0, **{"data.nbytes": int(shard * 10**9), "data.shape": ()}
-                    )
+                    mock.Mock(replica_id=0, **{"data.nbytes": int(shard * 10**9), "data.shape": ()})
                     for shard in array
                 ],
                 nbytes=int(sum(array) * 10**9),

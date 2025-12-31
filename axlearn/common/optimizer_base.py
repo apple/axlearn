@@ -59,8 +59,7 @@ class TransformUpdateFn(typing_extensions.Protocol):
 
     def __call__(
         self, updates: optax.Updates, state: optax.OptState, params: Optional[NestedOptParam]
-    ) -> tuple[optax.Updates, optax.OptState]:
-        ...
+    ) -> tuple[optax.Updates, optax.OptState]: ...
 
 
 # Specification of an optimizer state array.

@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities to clean resources."""
-
+import logging
 from collections.abc import Sequence
 from enum import Enum
 
@@ -89,6 +89,12 @@ class UnschedulableCleaner(Cleaner):
             schedule_result = scheduler.schedule(
                 dict(my_job=job_spec.metadata),
             )
-            if schedule_result.job_verdicts["my_job"].over_limits:
+            job_verdict = schedule_result.job_verdicts.get("my_job")
+            # In certain corner cases, schedule_result may not contain the job being passed in
+            # TODO(yangwwei): revisit and fix it in a proper way
+            if job_verdict is None:
+                logging.warning("job %s does not exist in the verdicts, skipping", job_name)
+                continue
+            if job_verdict.over_limits:
                 result.append(job_name)
         return result

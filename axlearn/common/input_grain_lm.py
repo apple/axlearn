@@ -20,8 +20,7 @@ from axlearn.common.input_grain import Dataset, SequenceOr, Tensor
 class _SplitFn(Protocol):
     """Splits flat input IDs into shape [-1, max_len]."""
 
-    def __call__(self, ids: Tensor, *, max_len: int) -> Tensor:
-        ...
+    def __call__(self, ids: Tensor, *, max_len: int) -> Tensor: ...
 
 
 _PackingFn = Callable[[Dataset, int, Callable, int, str, grain.ReadOptions], Dataset]

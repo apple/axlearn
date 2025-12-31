@@ -7,7 +7,7 @@
 """Implements PagedAttention for TPU Pallas kernel with logit bias and mask_fn support.
 
 Base implementation is ported from
-https://github.com/jax-ml/jax/blob/jax-v0.6.0/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py
+https://github.com/jax-ml/jax/blob/jax-v0.8.1/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py
 
 Added Block Sparse kernel to avoid unnecessary loads,
 particularly for sliding window with long context, where we
@@ -83,7 +83,7 @@ class MultiPageAsyncCopyDescriptor:
         for async_copy in self._async_copies:
             async_copy.wait()
         head_dim = self._vmem_buffer.shape[-1]
-        tensor = self._vmem_buffer[...].astype(jnp.float32)
+        tensor = self._vmem_buffer[...]
         return tensor.reshape(-1, head_dim)
 
 
@@ -206,9 +206,11 @@ def _paged_flash_attention_sparse_kernel(
     # scratches
     m_i,  # (n_groups, 1)
     l_i,  # (n_groups, 1)
+    o_scratch,  # (n_groups, head_dim)
     k_vmem_buffer,  # (2, pages_per_compute_block, page_size, head_dim)
     v_vmem_buffer,  # (2, pages_per_compute_block, page_size, head_dim)
-    sem,  # (1, )
+    k_sems,  # (2, )
+    v_sems,  # (2, )
     # Compile time args
     *,
     batch_size: int,
@@ -270,8 +272,8 @@ def _paged_flash_attention_sparse_kernel(
                     jnp.logical_and(
                         next_b < batch_size,
                         jnp.logical_or(
-                            lengths_ref[next_b] == 0,
-                            kv_block_offset_size[next_b] == 0,
+                            lengths_ref[lax.clamp(0, next_b, batch_size - 1)] == 0,
+                            kv_block_offset_size[lax.clamp(0, next_b, batch_size - 1)] == 0,
                         ),
                     ),
                     advance_to_next_non_zero_length,
@@ -294,7 +296,7 @@ def _paged_flash_attention_sparse_kernel(
         async_copy_k = MultiPageAsyncCopyDescriptor(
             k_pages_hbm_ref,
             k_vmem_buffer.at[buffer_index],
-            sem,
+            k_sems.at[buffer_index],
             page_indices_ref,
             page_offset,
             pages_to_load,
@@ -303,7 +305,7 @@ def _paged_flash_attention_sparse_kernel(
         async_copy_v = MultiPageAsyncCopyDescriptor(
             v_pages_hbm_ref,
             v_vmem_buffer.at[buffer_index],
-            sem,
+            v_sems.at[buffer_index],
             page_indices_ref,
             page_offset,
             pages_to_load,
@@ -324,6 +326,7 @@ def _paged_flash_attention_sparse_kernel(
         def init():
             m_i[...] = jnp.full_like(m_i, NEG_INF)
             l_i[...] = jnp.zeros_like(l_i)
+            o_scratch[...] = jnp.zeros_like(o_scratch)
             o_ref[...] = jnp.zeros_like(o_ref)
 
         @pl.when(init_flag)
@@ -356,8 +359,10 @@ def _paged_flash_attention_sparse_kernel(
             valid_block_index,
             buffer_index,
         )
-        q = q_ref[...].astype(jnp.float32)
-        k = async_copy_k.wait_and_get_loaded()
+        q = q_ref[...]
+        k = async_copy_k.wait_and_get_loaded().astype(q.dtype)
+        # Note: Using HIGHEST here would cause numerical
+        # instability for query_step > 1
         precision = jax.lax.Precision.DEFAULT
         qk = pl.dot(q, k.T, precision=precision)
         if softmax_scale != 0:
@@ -373,22 +378,24 @@ def _paged_flash_attention_sparse_kernel(
 
         qk = jnp.where(mask, qk, NEG_INF)
         m_prev, l_prev = m_i[...], l_i[...]
+        o_prev = o_scratch[...]
         m_curr = qk.max(axis=-1, keepdims=True)
         m_next = jnp.maximum(m_prev, m_curr)
+        correction = jnp.exp(m_prev - m_next)
+        l_prev_corr = correction * l_prev
+        # Use m_next instead of m_curr to avoid a correction on l_curr.
         s_curr = jnp.exp(qk - m_next)
         l_curr = s_curr.sum(axis=-1, keepdims=True)
-
-        alpha = jnp.exp(m_prev - m_next)
-        l_prev_corr = alpha * l_prev
-        beta = jnp.exp(m_curr - m_next)
-        l_curr_corr = beta * l_curr
-        l_next = l_prev_corr + l_curr_corr
+        l_next = l_prev_corr + l_curr
+        o_prev_corr = correction * o_prev
 
         m_i[...], l_i[...] = m_next, l_next
-        v = async_copy_v.wait_and_get_loaded()
-        o_curr = pl.dot(s_curr, v, precision=precision)
+        v = async_copy_v.wait_and_get_loaded().astype(q.dtype)
+        o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
+        o_next = o_prev_corr + o_curr
 
-        o_ref[...] = ((l_prev_corr * o_ref[...] + beta * o_curr) / l_next).astype(o_ref.dtype)
+        o_scratch[...] = o_next
+        o_ref[...] = (o_next / l_next).astype(o_ref.dtype)
 
 
 # TODO: Try to reduce positional arguments
@@ -408,9 +415,11 @@ def _paged_flash_attention_kernel(
     # scratchs
     m_i,  # (n_groups, 1)
     l_i,  # (n_groups, 1)
+    o_scratch,  # (n_groups, head_dim)
     k_vmem_buffer,  # (2, pages_per_compute_block, page_size, head_dim)
     v_vmem_buffer,  # (2, pages_per_compute_block, page_size, head_dim)
-    sem,  # (1, )
+    k_sems,  # (2, )
+    v_sems,  # (2, )
     *,
     batch_size: int,
     pages_per_compute_block: int,
@@ -474,7 +483,10 @@ def _paged_flash_attention_kernel(
 
             return (
                 lax.cond(
-                    jnp.logical_and(next_b < batch_size, lengths_ref[next_b] == 0),
+                    jnp.logical_and(
+                        next_b < batch_size,
+                        lengths_ref[lax.clamp(0, next_b, batch_size - 1)] == 0,
+                    ),
                     advance_to_next_non_zero_length,
                     lambda: next_b,
                 ),
@@ -494,7 +506,7 @@ def _paged_flash_attention_kernel(
         async_copy_k = MultiPageAsyncCopyDescriptor(
             k_pages_hbm_ref,
             k_vmem_buffer.at[buffer_index],
-            sem,
+            k_sems.at[buffer_index],
             page_indices_ref,
             page_offset,
             pages_to_load,
@@ -503,7 +515,7 @@ def _paged_flash_attention_kernel(
         async_copy_v = MultiPageAsyncCopyDescriptor(
             v_pages_hbm_ref,
             v_vmem_buffer.at[buffer_index],
-            sem,
+            v_sems.at[buffer_index],
             page_indices_ref,
             page_offset,
             pages_to_load,
@@ -533,6 +545,7 @@ def _paged_flash_attention_kernel(
         def init():
             m_i[...] = jnp.full_like(m_i, NEG_INF)
             l_i[...] = jnp.zeros_like(l_i)
+            o_scratch[...] = jnp.zeros_like(o_scratch)
             o_ref[...] = jnp.zeros_like(o_ref)
 
         @pl.when(next_b < batch_size)
@@ -554,8 +567,8 @@ def _paged_flash_attention_kernel(
             i,
             buffer_index,
         )
-        q = q_ref[...].astype(jnp.float32)
-        k = async_copy_k.wait_and_get_loaded()
+        q = q_ref[...]
+        k = async_copy_k.wait_and_get_loaded().astype(q.dtype)
         # Note: Using HIGHEST here would cause numerical
         # instability for query_step > 1
         precision = jax.lax.Precision.DEFAULT
@@ -573,22 +586,21 @@ def _paged_flash_attention_kernel(
         # (n_groups, block_k)
         qk = jnp.where(mask, qk, NEG_INF)
         m_prev, l_prev = m_i[...], l_i[...]
-
+        o_prev = o_scratch[...]
         m_curr = qk.max(axis=-1, keepdims=True)
         m_next = jnp.maximum(m_prev, m_curr)
-
+        correction = jnp.exp(m_prev - m_next)
+        l_prev_corr = correction * l_prev
+        # Use m_next instead of m_curr to avoid a correction on l_curr.
         s_curr = jnp.exp(qk - m_next)
         l_curr = s_curr.sum(axis=-1, keepdims=True)
-
-        alpha = jnp.exp(m_prev - m_next)
-        l_prev_corr = alpha * l_prev
-        beta = jnp.exp(m_curr - m_next)
-        l_curr_corr = beta * l_curr
-        l_next = l_prev_corr + l_curr_corr
+        l_next = l_prev_corr + l_curr
+        o_prev_corr = correction * o_prev
 
         m_i[...], l_i[...] = m_next, l_next
+        v = async_copy_v.wait_and_get_loaded().astype(q.dtype)
+        o_curr = pl.dot(s_curr.astype(v.dtype), v, precision=precision)
+        o_next = o_prev_corr + o_curr
 
-        v = async_copy_v.wait_and_get_loaded()
-        o_curr = pl.dot(s_curr, v, precision=precision)
-
-        o_ref[...] = ((l_prev_corr * o_ref[...] + beta * o_curr) / l_next).astype(o_ref.dtype)
+        o_scratch[...] = o_next
+        o_ref[...] = (o_next / l_next).astype(o_ref.dtype)

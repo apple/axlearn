@@ -591,11 +591,13 @@ class Model(BaseModel):
         _update(ctx.output_collection.summaries, ctx.output_collection.summaries.pop("metrics"))
 
         def _to_scalar(x):
-            if isinstance(x, WeightedSummary):
+            if isinstance(x, MetricSummary):
                 return x.value()
             return x
 
-        return loss.value(), jax.tree.map(_to_scalar, metrics)
+        return loss.value(), jax.tree.map(
+            _to_scalar, metrics, is_leaf=lambda x: isinstance(x, MetricSummary | Tensor | None)
+        )
 
     def _constrain_input_batch(self, input_batch: NestedTensor):
         """Applies sharding constraints in-place for relevant named tensors in the input batch."""

@@ -17,6 +17,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     _METADATA_GOOGLE_INTERNAL_IP,
     BASTION_JOB_VERSION_LABEL,
     BaseReplicatedJob,
+    FlagConfigurable,
     TPUReplicatedJob,
     _LoadBalancer,
 )
@@ -45,6 +46,7 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 # The port used by pathways worker server.
 # The specific value is not important, as long as clients and servers use the same port.
 _PATHWAYS_WORKER_PORT = 29001
+_COLOCATED_CONTAINER_PORT = 50051
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
@@ -58,6 +60,20 @@ _PATHWAYS_PROXY_IMAGE = (
 _PATHWAYS_SERVER_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
 )
+
+# For now, we use different Pathways images if Colocated Python is enabled.
+_PATHWAYS_COLOCATED_IMAGE_TAG = "2025-10-29"
+# The docker image used by pathways proxy container.
+_PATHWAYS_COLOCATED_PROXY_IMAGE = (
+    "us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/proxy_server:"
+    f"{_PATHWAYS_COLOCATED_IMAGE_TAG}-increased-grpc-timeout"
+)
+# The docker image used by pathways resource manager container and worker container.
+_PATHWAYS_COLOCATED_SERVER_IMAGE = (
+    "us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/server:"
+    f"{_PATHWAYS_COLOCATED_IMAGE_TAG}"
+)
+
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.
@@ -67,6 +83,8 @@ _PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pwhd"
 # The k8s replicatedJob name for pathways-worker pods.
 _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pwwk"
 
+_COLOCATED_PYTHON_SIDECAR_NAME = "colocated-python"
+
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
@@ -74,6 +92,12 @@ _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 # Note that the head pod will back of exact this many times.
 # While workers will share #workers * _PATHWAYS_BACK_OFF_LIMIT total times.
 _PATHWAYS_BACK_OFF_LIMIT = 32
+
+
+def get_colocated_python_image(image_id: str) -> str:
+    path, tag = image_id.rsplit(":", maxsplit=1)
+    repo, _ = path.rsplit("/", maxsplit=1)
+    return f"{repo}/{_COLOCATED_PYTHON_SIDECAR_NAME}:{tag}"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
@@ -158,6 +182,81 @@ def round_up_to_power_of_2(n):
     return 1 << (n - 1).bit_length()
 
 
+class PathwaysColocatedPythonPlugin(FlagConfigurable):
+    """Functionality for Pathways jobs with Colocated Python support."""
+
+    @config_class
+    class Config(FlagConfigurable.Config):
+        """Configures PathwaysColocatedPythonPlugin.
+
+        Attributes:
+            pathways_proxy_image: The Pathways proxy image.
+            pathways_server_image: The Pathways server image.
+        """
+
+        pathways_proxy_image: Optional[str] = None
+        pathways_server_image: Optional[str] = None
+
+    @classmethod
+    def define_flags(cls, fv):
+        super().define_flags(fv)
+        common_kwargs = dict(flag_values=fv, allow_override=True)
+        flags.DEFINE_string(
+            "pathways_proxy_image",
+            None,
+            "Allows a custom Pathways proxy image to be provided.",
+            **common_kwargs,
+        )
+        flags.DEFINE_string(
+            "pathways_server_image",
+            None,
+            "Allows a custom Pathways server image to be provided.",
+            **common_kwargs,
+        )
+
+    def __init__(self, cfg: Config, *, bundler: Bundler):
+        super().__init__(cfg)
+        sidecars = getattr(bundler.config, "sidecars", [])
+        self._enable_colocated_python = _COLOCATED_PYTHON_SIDECAR_NAME in sidecars
+
+    # pylint: disable-next=no-self-use
+    def build_colocated_python_container(self, image: str):
+        """Builds the Colocated Python sidecar container."""
+        return dict(
+            name=_COLOCATED_PYTHON_SIDECAR_NAME,
+            image=get_colocated_python_image(image),
+            restartPolicy="Always",
+            env=[
+                {
+                    "name": "GRPC_SERVER_ADDRESS",
+                    "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
+                },
+            ],
+            imagePullPolicy="Always",
+            ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
+        )
+
+    @property
+    def pathways_proxy_image(self) -> str:
+        if (custom_proxy_image := self.config.pathways_proxy_image) is not None:
+            return custom_proxy_image
+        elif self.is_colocated_python_enabled:
+            return _PATHWAYS_COLOCATED_PROXY_IMAGE
+        return _PATHWAYS_PROXY_IMAGE
+
+    @property
+    def pathways_server_image(self) -> str:
+        if (custom_server_image := self.config.pathways_server_image) is not None:
+            return custom_server_image
+        elif self.is_colocated_python_enabled:
+            return _PATHWAYS_COLOCATED_SERVER_IMAGE
+        return _PATHWAYS_SERVER_IMAGE
+
+    @property
+    def is_colocated_python_enabled(self) -> bool:
+        return self._enable_colocated_python
+
+
 class PathwaysReplicatedJob(BaseReplicatedJob):
     """Builds a replicated jobspec for Pathways on TPU, to be used with JobSet API."""
 
@@ -169,12 +268,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             inner: The wrapped TPUReplicatedJob configuration.
             pathways_head_cpu: CPU request for pathways-head container.
             pathways_head_mem: Memory request for pathways-head container.
+            colocated_python: Configuration for Colocated Python.
         """
 
         inner: Required[TPUReplicatedJob.Config] = REQUIRED
         pathways_xla_flags: list[str] = []
         pathways_head_cpu: Optional[str] = None
         pathways_head_mem: Optional[str] = None
+
+        colocated_python: Required[PathwaysColocatedPythonPlugin.Config] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv):
@@ -213,13 +315,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        return cfg.set(inner=TPUReplicatedJob.default_config())
+        return cfg.set(
+            inner=TPUReplicatedJob.default_config(),
+            colocated_python=PathwaysColocatedPythonPlugin.default_config(),
+        )
 
-    def __init__(self, cfg: BaseReplicatedJob.Config, *, bundler: Bundler):
+    def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
         self._bundler = bundler
         self._inner: TPUReplicatedJob = cfg.inner.instantiate(bundler=self._bundler)
-        pathways_cfg: PathwaysReplicatedJob.Config = self.config
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
@@ -231,7 +335,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             num_slices=cfg.inner.accelerator.num_replicas,
             backend="tpu",
         )
-        pathways_xla_flags = parse_kv_flags(pathways_cfg.pathways_xla_flags, delimiter="=")
+        pathways_xla_flags = parse_kv_flags(cfg.pathways_xla_flags, delimiter="=")
         for k, v in pathways_xla_flags.items():
             k = k.lstrip("--")
             v = parse_xla_flag_value(v)
@@ -256,6 +360,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             num_replicas=cfg.inner.accelerator.num_replicas,
             job_name=_PATHWAYS_WORKER_REPLICATED_JOB_NAME,
         )
+
+        self._colocated_python = cfg.colocated_python.instantiate(bundler=bundler)
 
     def _update_env_list(self, env_list: list[dict], name: str, value: str):
         for env in env_list:
@@ -354,6 +460,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
         ]
+        if self._colocated_python.is_colocated_python_enabled:
+            cmd_args.append("--sidecar_name=external")
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 
         instance_type = f"{pathways_tpu_version}:{system.topology}"
@@ -362,7 +470,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         return [
             dict(
                 name=_PATHWAYS_PROXY_CONTAINER_NAME,
-                image=_PATHWAYS_PROXY_IMAGE,
+                image=self._colocated_python.pathways_proxy_image,
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
@@ -385,7 +493,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             ),
             dict(
                 name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
-                image=_PATHWAYS_SERVER_IMAGE,
+                image=self._colocated_python.pathways_server_image,
                 # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/#pod-sidecar-containers
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
@@ -453,7 +561,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "initContainers": init_containers,
             "volumes": volumes,
             "serviceAccountName": cfg.service_account,
-            "hostNetwork": True,
             "dnsPolicy": "ClusterFirstWithHostNet",
         }
 
@@ -561,7 +668,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
 
-        worker_container["image"] = _PATHWAYS_SERVER_IMAGE
+        worker_container["image"] = self._colocated_python.pathways_server_image
 
         ports = worker_container.get("ports", [])
         ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
@@ -586,14 +693,16 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pod_spec = worker_pod.get("spec", {})
         # Use default value - OnFailure.
         pod_spec.pop("restartPolicy")
-        # Need to enable host network to improve head <> worker communucation.
-        # It should not be required but current Pathways only support host network.
-        pod_spec["hostNetwork"] = True
         # Only set dnsPolicy if it's not already set
         pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
         pod_spec["containers"] = [
             self._build_pathways_worker_container(pathways_worker_replicated_job_index)
         ]
+        if self._colocated_python.is_colocated_python_enabled:
+            image = cfg.image_id or self._bundler.id(cfg.name)
+            pod_spec["initContainers"].append(
+                self._colocated_python.build_colocated_python_container(image)
+            )
         worker_pod["spec"] = pod_spec
 
         # Service account for nodes.
@@ -758,6 +867,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             inner: The wrapped TPUReplicatedJob configuration.
             pathways_head_cpu: CPU request for pathways-head container.
             pathways_head_mem: Memory request for pathways-head container.
+            colocated_python: Configuration for Colocated Python.
         """
 
         inner: Required[TPULeaderWorkerTemplate.Config] = REQUIRED
@@ -767,6 +877,8 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         target_port: Optional[int] = None
         enable_service: bool = None
+
+        colocated_python: Required[PathwaysColocatedPythonPlugin.Config] = REQUIRED
 
     @classmethod
     def define_flags(cls, fv):
@@ -819,9 +931,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        return cfg.set(inner=TPULeaderWorkerTemplate.default_config())
+        return cfg.set(
+            inner=TPULeaderWorkerTemplate.default_config(),
+            colocated_python=PathwaysColocatedPythonPlugin.default_config(),
+        )
 
-    def __init__(self, cfg: BaseLeaderWorkerTemplate.Config, *, bundler):
+    def __init__(self, cfg: Config, *, bundler):
         super().__init__(cfg, bundler=bundler)
         cfg: PathwaysLeaderWorkerTemplate.Config = self.config
 
@@ -830,6 +945,8 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
+
+        self._colocated_python = cfg.colocated_python.instantiate(bundler=bundler)
 
     def _build_pathways_worker_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self.config
@@ -847,7 +964,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         ports = worker_container.get("ports", [])
         ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
         worker_container["ports"] = ports
-        worker_container["image"] = _PATHWAYS_SERVER_IMAGE
+        worker_container["image"] = self._colocated_python.pathways_server_image
 
         worker_container.pop("command")
         return worker_container
@@ -861,9 +978,13 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         pod_spec = worker_pod.get("spec", {})
         pod_spec.pop("restartPolicy")
-        pod_spec["HostNetwork"] = True
         pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
         pod_spec["containers"] = [self._build_pathways_worker_container()]
+        if self._colocated_python.is_colocated_python_enabled:
+            image = cfg.image_id or self._bundler.id(cfg.name)
+            pod_spec["initContainers"].append(
+                self._colocated_python.build_colocated_python_container(image)
+            )
         worker_pod["spec"] = pod_spec
 
         # Service account for nodes.
@@ -883,15 +1004,18 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
     def _build_pathways_proxy_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self._inner.config
         staging_location = f"{cfg.output_dir}/pathways-staging"
+        cmd_args = [
+            f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+            f"--server_port={_PATHWAYS_PROXY_PORT}",
+            f"--gcs_scratch_location={staging_location}",
+        ]
+        if self._colocated_python.is_colocated_python_enabled:
+            cmd_args.append("--sidecar_name=external")
 
         return dict(
             name=_PATHWAYS_PROXY_CONTAINER_NAME,
-            image=_PATHWAYS_PROXY_IMAGE,
-            args=[
-                f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-                f"--server_port={_PATHWAYS_PROXY_PORT}",
-                f"--gcs_scratch_location={staging_location}",
-            ],
+            image=self._colocated_python.pathways_proxy_image,
+            args=cmd_args,
             env=[{"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"}],
             ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
         )
@@ -905,7 +1029,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         return dict(
             name=_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
-            image=_PATHWAYS_SERVER_IMAGE,
+            image=self._colocated_python.pathways_server_image,
             env=[
                 {
                     "name": "TPU_SKIP_MDS_QUERY",
@@ -1012,7 +1136,6 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "containers": containers,
             "volumes": volumes,
             "serviceAccountName": cfg.service_account,
-            "hostNetwork": True,
             "dnsPolicy": "ClusterFirstWithHostNet",
         }
 

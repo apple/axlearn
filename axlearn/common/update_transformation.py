@@ -90,9 +90,10 @@ class WrappedPartitionedGradientTransformation(UpdateTransformation):
                 f"Transformation must be a PartitionedGradientTransformation: {cfg.transformation}."
             )
 
-    def create_state_partition_specs(
-        self, model_param_specs: Nested[ParameterSpec]
-    ) -> Union[Nested[PartitionSpec], tuple[Nested[PartitionSpec]],]:
+    def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Union[
+        Nested[PartitionSpec],
+        tuple[Nested[PartitionSpec]],
+    ]:
         return self.transformation.partition(model_param_specs)
 
     def init(self, model_params: Nested[OptParam]) -> Nested[Tensor] | tuple[Nested[Tensor], ...]:
@@ -408,9 +409,10 @@ class OverrideInplaceUpdateTransformation(WrappedPartitionedGradientTransformati
         """Given a pytree of params, keeps only the passthrough params."""
         return mask_tree(params, keep=self._is_passthrough(params), mask_value=optax.MaskedNode())
 
-    def create_state_partition_specs(
-        self, model_param_specs: Nested[ParameterSpec]
-    ) -> Union[Nested[PartitionSpec], tuple[Nested[PartitionSpec]],]:
+    def create_state_partition_specs(self, model_param_specs: Nested[ParameterSpec]) -> Union[
+        Nested[PartitionSpec],
+        tuple[Nested[PartitionSpec]],
+    ]:
         return self.transformation.partition(self._keep_passthrough(model_param_specs))
 
     def init(self, model_params: Nested[OptParam]) -> Nested[Tensor] | tuple[Nested[Tensor], ...]:

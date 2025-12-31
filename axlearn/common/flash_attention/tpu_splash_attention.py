@@ -140,10 +140,13 @@ def flash_attention_kernel(
     mask_function: MaskFunctionType | None,
     dropout_rate: float,
 ):
-    del head_dim
     float32 = jnp.float32
     # pylint: disable=invalid-name
     HEAD_DIM_MINOR = QKVLayout.HEAD_DIM_MINOR
+
+    head_dim_repeats, rem = divmod(head_dim, NUM_LANES)
+    if rem != 0:
+        raise NotImplementedError(f"{head_dim=} should be a multiple of {NUM_LANES}")
 
     h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
 
@@ -170,8 +173,8 @@ def flash_attention_kernel(
     def body(kv_compute_index, _):
         slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
         m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
-        assert m_prev.shape == (bq, 1)
-        assert l_prev.shape == (bq, 1)
+        assert m_prev.shape == (bq, NUM_LANES)
+        assert l_prev.shape == (bq, NUM_LANES)
 
         q = q_ref[...] if q_layout == HEAD_DIM_MINOR else q_ref[...].T
         qk_dims = NT_DIM_NUMBERS if k_layout == HEAD_DIM_MINOR else NN_DIM_NUMBERS
@@ -216,13 +219,17 @@ def flash_attention_kernel(
         m_curr = qk.max(axis=-1)[:, None]
         assert m_curr.shape == (bq, 1)
         m_next = jnp.maximum(m_prev, m_curr)
-        assert m_next.shape == (bq, 1)
+        assert m_next.shape == (bq, NUM_LANES)
 
-        s_curr = jnp.exp(qk - m_next)
+        bkv_repeats, rem = divmod(bkv_compute, NUM_LANES)
+        if rem != 0:
+            raise NotImplementedError(f"{bkv_compute=} should be a multiple of {NUM_LANES}")
+
+        s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=1))
         assert s_curr.shape == (bq, bkv_compute)
 
         l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
-        assert l_curr.shape == (bq, 1)
+        assert l_curr.shape == (bq, NUM_LANES)
 
         alpha = jnp.exp(m_prev - m_next)
         l_next = l_curr + alpha * l_prev
@@ -249,7 +256,7 @@ def flash_attention_kernel(
             s_curr = jnp.where(dropout_mask, 0.0, s_curr) / (1.0 - dropout_rate)
         o_curr = lax.dot_general(s_curr, v, sv_dims)
 
-        alpha_o = alpha
+        alpha_o = pltpu.repeat(alpha, head_dim_repeats, axis=1)
         o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
 
     @pl.when(should_run)
@@ -264,10 +271,10 @@ def flash_attention_kernel(
         if logit_sink_ref is not None:
             sink_value = logit_sink_ref[h].astype(jnp.float32)
             l = l + jnp.exp(sink_value - m_scratch_ref[...])
-        l_inv = 1.0 / l  # TODO(dhwang2): dividing directly by `l` is a more stable operation.
+        l_inv = pltpu.repeat(1.0 / l, head_dim_repeats, axis=1)
         o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
         if logsumexp_ref is not None:
-            assert logsumexp_ref.shape == (bq, 1)
+            assert logsumexp_ref.shape == (bq, NUM_LANES)
             logsumexp_ref[...] = (jnp.log(l) + m_scratch_ref[...]).astype(logsumexp_ref.dtype)
 
         m_scratch_ref[...] = jnp.zeros_like(m_scratch_ref)
@@ -295,8 +302,7 @@ def _splash_attention_forward(
     attn_logits_soft_cap: float | None = None,
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
-) -> jax.Array:
-    ...
+) -> jax.Array: ...
 
 
 @overload
@@ -319,8 +325,7 @@ def _splash_attention_forward(
     attn_logits_soft_cap: float | None = None,
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
-) -> SplashCustomReturnType:
-    ...
+) -> SplashCustomReturnType: ...
 
 
 # TODO: Try to reduce positional arguments
@@ -547,28 +552,28 @@ def _splash_attention_forward(
     num_scalar_prefetch = 4
 
     out_shapes = [
-        jax.ShapeDtypeStruct((bq, 1), jnp.float32),  # m_scratch
-        jax.ShapeDtypeStruct((bq, 1), jnp.float32),  # l_scratch
+        jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # m_scratch
+        jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # l_scratch
         jax.ShapeDtypeStruct((bq, head_dim), jnp.float32),  # o_scratch
         jax.ShapeDtypeStruct((num_q_heads, q_seq_len, head_dim), q.dtype),
     ]
     out_specs = [
         # TODO(sharadmv): convert m/l to be scratch
-        pl.BlockSpec((bq, 1), lambda h, i, j, *_: (0, 0)),
-        pl.BlockSpec((bq, 1), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
         pl.BlockSpec((bq, head_dim), lambda h, i, j, *_: (0, 0)),
         pl.BlockSpec((None, bq, head_dim), out_index_map),
     ]
     if save_residuals:
         out_shapes += [
-            jax.ShapeDtypeStruct((num_q_heads, q_seq_len, 1), jnp.float32),  # logsumexp
+            jax.ShapeDtypeStruct((num_q_heads, q_seq_len, NUM_LANES), jnp.float32),  # logsumexp
         ]
 
         def logsumexp_index_map(h, i, *_):
             return h, i, 0
 
         out_specs += [
-            pl.BlockSpec((None, bq, 1), logsumexp_index_map),
+            pl.BlockSpec((None, bq, NUM_LANES), logsumexp_index_map),
         ]
     else:
         out_shapes += [None]
@@ -728,7 +733,10 @@ def _splash_attention_fwd(
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
     interpret: bool = False,
-) -> tuple[tuple[jax.Array], SplashResidualsType,]:
+) -> tuple[
+    tuple[jax.Array],
+    SplashResidualsType,
+]:
     if save_residuals:
         raise NotImplementedError("Higher-order AD not supported")
 
@@ -1881,9 +1889,16 @@ def _splash_attention(
     mask_function: MaskFunctionType | None,
     interpret: bool,
 ) -> SplashCustomReturnType:
-    batch_idx = lax.axis_index("batch")
-    new_prng_key = jax.random.fold_in(prng_key, batch_idx)
-    pallas_prng_key = plrandom.to_pallas_key(new_prng_key)
+    if dropout_rate > 0.0:
+        # prng key fold_in and converting to pallas surprisingly negatively
+        # impacts performance in the jobs that do not need dropout, so
+        # we do that only in case dropout_rate > 0.0
+        # TODO (dmytro-babych) fix performance with dropout enabled
+        batch_idx = lax.axis_index("batch")
+        new_prng_key = jax.random.fold_in(prng_key, batch_idx)
+        pallas_prng_key = plrandom.to_pallas_key(new_prng_key)
+    else:
+        pallas_prng_key = prng_key
     return _splash_attention_custom(
         fwd_mask_info,
         dq_mask_info,

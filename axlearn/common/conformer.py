@@ -316,6 +316,17 @@ class ConformerLayer(BaseLayer):
         return x
 
 
+def set_lconv_partition_spec(
+    cfg: LConvLayer.Config,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
+    tp_axis_names: Union[str, Sequence[str], None] = "model",
+):
+    """Sets `cfg` to shard LConv over fdsp, dp and model axes."""
+    cfg.conv.input_partition_spec = (batch_axis_names, None, tp_axis_names)
+    cfg.conv.output_partition_spec = (batch_axis_names, None, tp_axis_names)
+    cfg.conv.param_partition_spec = (None, None, tp_axis_names)
+
+
 def set_double_shard_weights_config(
     cfg: ConformerLayer.Config,
     *,
@@ -353,6 +364,11 @@ def set_double_shard_weights_config(
         fsdp_axis_names=fsdp_axis_names,
         tp_axis_names=tp_axis_names,
         seq_axis_names=seq_axis_names,
+    )
+    set_lconv_partition_spec(
+        cfg.lconv,
+        batch_axis_names=batch_axis_names,
+        tp_axis_names=tp_axis_names,
     )
 
 

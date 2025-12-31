@@ -131,7 +131,7 @@ class TestFlashAttention(TestCase):
         kv_len=[128],
         num_heads=[4],
         mask=[None, causal_mask],
-        per_head_dim=[64, 128],
+        per_head_dim=[128],
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
     )
@@ -216,15 +216,15 @@ class TestFlashAttention(TestCase):
             self.skipTest("Backward path is broken on CPU")
         if mask not in (None, causal_mask) and query_length_multiplier > 1:
             self.skipTest("Sliding window attention does not make sense when q_len != kv_len.")
-        if dropout_rate > 0.0 and attention_bias_type is not None:
+        if dropout_rate > 0.0 and (attention_bias_type is not None or per_head_dim % 128 != 0):
             self.skipTest(
-                "Dropout is only supported with SplashAttention (which requires no bias.)"
+                "Dropout is only supported with SplashAttention (which requires \
+                            no bias, and per_head_dim being a multiple of 128.)"
             )
         if q_dtype == jnp.bfloat16 and kv_dtype == jnp.float32:
             self.skipTest("Q must have higher precision than KV.")
-
         # pylint: disable=protected-access
-        fallback_to_legacy = attention_bias_type is not None
+        fallback_to_legacy = per_head_dim % 128 != 0 or (attention_bias_type is not None)
         num_kv_heads = num_heads // head_group_size
         q, k, v, bias = generate_attention_data(
             batch_size,

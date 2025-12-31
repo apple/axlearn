@@ -1376,6 +1376,84 @@ class TestFlashAttention(TestCase):
         # We expect splash_block_q to not appear in backend_overrides since its value = None
         self.assertDictEqual(cfg.layer.backend_overrides, dict(splash_block_kv_compute=2048))
 
+    @parameterized.parameters(
+        None,
+        0.5,
+        2.0,
+        0.125,
+    )
+    def test_softmax_scale(self, softmax_scale):
+        """Tests that softmax_scale is correctly applied in flash attention."""
+        batch = 2
+        seq_len = 128
+        num_heads = 4
+        per_head_dim = 32
+        hidden_dim = num_heads * per_head_dim
+        mesh = (1, 1)
+        mesh_axis_names = ("data", "model")
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            # Create layer with specified softmax_scale
+            cfg = FlashAttention.default_config().set(
+                query_dim=hidden_dim,
+                key_dim=hidden_dim,
+                value_dim=hidden_dim,
+                num_heads=num_heads,
+                dtype=jnp.bfloat16,
+                softmax_scale=softmax_scale,
+                mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
+                output_dim_to_partition_spec=default_output_dim_to_partition_spec(mesh_axis_names),
+                tpu_block_size=128,
+                name="test",
+            )
+
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+            # Verify config is set correctly
+            self.assertEqual(layer.config.softmax_scale, softmax_scale)
+
+            # Create test inputs
+            inputs = _fake_inputs(
+                batch=batch,
+                num_heads=num_heads,
+                kv_len=seq_len,
+                query_len=seq_len,
+                hidden_dim=hidden_dim,
+                use_bias=False,
+                use_segment_ids=False,
+            )
+
+            # Forward pass should work without errors
+            output, _ = F(
+                layer,
+                prng_key=jax.random.PRNGKey(5),
+                state=params,
+                inputs=inputs,
+                is_training=True,
+            )
+
+            # Output should be finite
+            self.assertTrue(jnp.all(jnp.isfinite(output.data)))
+            self.assertEqual(output.data.shape, (batch, seq_len, hidden_dim))
+
+            # Test that different scales produce different outputs
+            if softmax_scale is not None:
+                # Create reference layer with default scale
+                ref_cfg = cfg.set(softmax_scale=None, name="ref")
+                ref_layer = ref_cfg.instantiate(parent=None)
+
+                ref_output, _ = F(
+                    ref_layer,
+                    prng_key=jax.random.PRNGKey(5),
+                    state=params,
+                    inputs=inputs,
+                    is_training=True,
+                )
+
+                # Outputs should be different when scale differs
+                self.assertFalse(jnp.allclose(output.data, ref_output.data, atol=1e-3))
+
 
 if __name__ == "__main__":
     absltest.main()

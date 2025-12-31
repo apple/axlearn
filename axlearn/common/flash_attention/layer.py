@@ -66,6 +66,10 @@ class FlashAttention(GroupedQueryAttention):
         # TODO(hanzhi-zhou): Unify tpu_block_size and gpu_block_size with backend_overrides.
         backend_overrides: Optional[dict[str, Any]] = None
 
+        # The attention scores are scaled by `softmax_scale` before softmax.
+        # If None, defaults to 1.0.
+        softmax_scale: Optional[float] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -220,6 +224,8 @@ class FlashAttention(GroupedQueryAttention):
         # Get logit sink parameter if configured.
         logit_sink = self.parameters.get("sink", None)
 
+        softmax_scale = cfg.softmax_scale if cfg.softmax_scale is not None else 1.0
+
         flash_specs = flash_attention_implementation(
             backend=backend,
             query=q_proj,
@@ -227,7 +233,7 @@ class FlashAttention(GroupedQueryAttention):
             value=v_proj,
             bias=attention_logit_biases,
             logit_sink=logit_sink,
-            softmax_scale=1.0,
+            softmax_scale=softmax_scale,
             kv_cache_type=kv_cache_type,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,

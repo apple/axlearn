@@ -37,8 +37,7 @@ def range_dataset(*, start, stop, step=1, seed=None) -> Dataset:
 class _PerProcessFn(Protocol):
     """Processes per-host data."""
 
-    def __call__(self, ds: Dataset, *, dispatch_config: DispatchConfig) -> Dataset:
-        ...
+    def __call__(self, ds: Dataset, *, dispatch_config: DispatchConfig) -> Dataset: ...
 
 
 class InputTPUTest(parameterized.TestCase):

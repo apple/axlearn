@@ -11,6 +11,8 @@ from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import bundler, jobset_utils, lws_utils, pathways_utils
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
 from axlearn.cloud.gcp.pathways_utils import (
+    _COLOCATED_PYTHON_SIDECAR_NAME,
+    _PATHWAYS_COLOCATED_SERVER_IMAGE,
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY,
     _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
     _PATHWAYS_PROXY_CONTAINER_NAME,
@@ -77,8 +79,11 @@ class PathwaysReplicatedJobTest(TestCase):
             bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             yield cfg, bundler_cfg
 
-    @parameterized.parameters(dict(instance_type="tpu-v5p-16"), dict(instance_type="tpu-v5p-256"))
-    def test_build_pathways_head_pod(self, instance_type):
+    @parameterized.product(
+        instance_type=["tpu-v5p-16", "tpu-v5p-256"],
+        sidecars=[[], [_COLOCATED_PYTHON_SIDECAR_NAME]],
+    )
+    def test_build_pathways_head_pod(self, instance_type, sidecars):
         with (
             self._job_config(
                 CloudBuildBundler,
@@ -90,7 +95,7 @@ class PathwaysReplicatedJobTest(TestCase):
                 name="test",
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            ).instantiate(bundler=bundler_cfg.set(sidecars=sidecars).instantiate())
 
             builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
             # pylint: disable-next=protected-access
@@ -149,6 +154,8 @@ class PathwaysReplicatedJobTest(TestCase):
             for container in pod_spec["initContainers"]:
                 if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
                     proxy_container = container
+                    if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars:
+                        self.assertIn("--sidecar_name=external", container["args"])
                 if container["name"] == _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME:
                     rm_container = container
             self.assertIsNotNone(proxy_container, "Pathways proxy container not found.")
@@ -168,7 +175,10 @@ class PathwaysReplicatedJobTest(TestCase):
                 self.assertIn("--instance_count=1", rm_container["args"])
                 self.assertIn("--instance_type=tpuv5:4x4x8_untwisted", rm_container["args"])
 
-    def test_build_pathways_worker_pod(self):
+    @parameterized.product(
+        sidecars=[[], [_COLOCATED_PYTHON_SIDECAR_NAME]],
+    )
+    def test_build_pathways_worker_pod(self, sidecars):
         with (
             self._job_config(
                 CloudBuildBundler,
@@ -180,7 +190,7 @@ class PathwaysReplicatedJobTest(TestCase):
                 command="test_command",
                 output_dir="FAKE",
                 service_account="test-service-account",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            ).instantiate(bundler=bundler_cfg.set(sidecars=sidecars).instantiate())
 
             builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
             # pylint: disable-next=protected-access
@@ -189,10 +199,14 @@ class PathwaysReplicatedJobTest(TestCase):
 
             host_alias = pod_spec["hostAliases"]
             self.assertEqual(1, len(host_alias))
-            self.assertEqual(pod_spec.get("hostNetwork"), True)
             self.assertEqual(pod_spec.get("dnsPolicy"), "ClusterFirstWithHostNet")
             worker_container = pod_spec.get("containers")[0]
-            self.assertEqual(worker_container["image"], _PATHWAYS_SERVER_IMAGE)
+            server_image = (
+                _PATHWAYS_COLOCATED_SERVER_IMAGE
+                if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars
+                else _PATHWAYS_SERVER_IMAGE
+            )
+            self.assertEqual(worker_container["image"], server_image)
             annotations = pod["metadata"]["annotations"]
             self.assertEqual(
                 "test-service-account@test-project.iam.gserviceaccount.com",
@@ -201,6 +215,9 @@ class PathwaysReplicatedJobTest(TestCase):
             self.assertIn("--tpu_pinned_host_allocation_recycle=true", worker_container["args"])
             # 128GiB
             self.assertIn("--tpu_premapped_buffer_size=137438953472", worker_container["args"])
+
+            expected_num_init_containers = 2 if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars else 1
+            self.assertEqual(expected_num_init_containers, len(pod_spec.get("initContainers", [])))
 
             # Check worker container args for Megascale (MXLA) flags.
             # pylint: disable-next=protected-access
@@ -477,7 +494,10 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             print("debug: cfg: ", type(cfg))
             yield cfg, bundler_cfg
 
-    def test_build_leader_pod(self):
+    @parameterized.product(
+        sidecars=[[], [_COLOCATED_PYTHON_SIDECAR_NAME]],
+    )
+    def test_build_leader_pod(self, sidecars):
         with (
             self._job_config(
                 CloudBuildBundler,
@@ -488,7 +508,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 name="a" * 36,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            ).instantiate(bundler=bundler_cfg.set(sidecars=sidecars).instantiate())
 
             builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
             pod = builder.build_leader_pod()
@@ -496,7 +516,22 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
 
             self.assertEqual(len(pod_spec["containers"]), 3)
 
-    def test_build_worker_pod(self):
+            proxy_container = None
+            rm_container = None
+            for container in pod_spec["containers"]:
+                if container["name"] == _PATHWAYS_PROXY_CONTAINER_NAME:
+                    proxy_container = container
+                    if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars:
+                        self.assertIn("--sidecar_name=external", container["args"])
+                if container["name"] == _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME:
+                    rm_container = container
+            self.assertIsNotNone(proxy_container, "Pathways proxy container not found.")
+            self.assertIsNotNone(rm_container, "Pathways rm container not found.")
+
+    @parameterized.product(
+        sidecars=[[], [_COLOCATED_PYTHON_SIDECAR_NAME]],
+    )
+    def test_build_worker_pod(self, sidecars):
         with (
             self._job_config(
                 CloudBuildBundler,
@@ -507,14 +542,22 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 name="a" * 36,
                 command="test_command",
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            ).instantiate(bundler=bundler_cfg.set(sidecars=sidecars).instantiate())
 
             builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
             pod = builder.build_worker_pod()
             pod_spec = pod["spec"]
             container = pod_spec.get("containers")[0]
-            self.assertEqual(container["image"], _PATHWAYS_SERVER_IMAGE)
+            server_image = (
+                _PATHWAYS_COLOCATED_SERVER_IMAGE
+                if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars
+                else _PATHWAYS_SERVER_IMAGE
+            )
+            self.assertEqual(container["image"], server_image)
             self.assertEqual(len(container["args"]), 3)
+
+            expected_num_init_containers = 2 if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars else 1
+            self.assertEqual(expected_num_init_containers, len(pod_spec.get("initContainers", [])))
 
     def test_leader_worker_template(self):
         with (

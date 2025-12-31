@@ -287,8 +287,7 @@ class StateStorage(Configurable):
 
 
 class IndexFileWriter(Protocol):
-    def __call__(self, ckpt_dir: str, index: Any):
-        ...
+    def __call__(self, ckpt_dir: str, index: Any): ...
 
 
 def write_index_file(*, ckpt_dir: str, index: Any):

@@ -366,6 +366,14 @@ class FlinkTPUGKEJob(job.GKEJob):
             [dict(name="flink-logs", emptyDir={})],
             [dict(mountPath="/opt/flink/log", name="flink-logs")],
         )
+        default_tpu_envs = get_default_env(
+            tpu_type=infer_tpu_type(cfg.builder.accelerator.instance_type),
+            # Every pod is independent to each other, so they
+            # believe they run in single slice.
+            num_tpu_slices=1,
+            job_name=cfg.name,
+        )
+        default_tpu_envs["XLA_FLAGS"] = "--xla_dump_to=/opt/flink/log"
 
         return dict(
             apiVersion="flink.apache.org/v1beta1",
@@ -418,11 +426,8 @@ class FlinkTPUGKEJob(job.GKEJob):
                     # Delay 10m so that TPU node have enough time to recover.
                     "restart-strategy.fixed-delay.delay": "10m",
                 },
-                # job manager's responsibility is lightweight, it is only responsible to
-                # accept one request from one job submitter in this setup. So a minimum
-                # resource is good enough.
                 jobManager=dict(
-                    resource=dict(memory="2g", cpu=1),
+                    resource=dict(memory="100g", cpu=20),
                     podTemplate=dict(
                         metadata=dict(
                             annotations={"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"},
@@ -502,15 +507,7 @@ class FlinkTPUGKEJob(job.GKEJob):
                                     ]
                                     + [
                                         dict(name=k, value=str(v))
-                                        for k, v in get_default_env(
-                                            tpu_type=infer_tpu_type(
-                                                cfg.builder.accelerator.instance_type
-                                            ),
-                                            # Every pod is independent to each other, so they
-                                            # believe they run in single slice.
-                                            num_tpu_slices=1,
-                                            job_name=cfg.name,
-                                        ).items()
+                                        for k, v in default_tpu_envs.items()
                                     ],
                                     resources=self._build_resources(
                                         system=system,

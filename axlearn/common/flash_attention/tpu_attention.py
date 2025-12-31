@@ -902,9 +902,16 @@ class TPUSplashAttention(TPUFlashAttention):
             return False
         bias: BaseAttentionBias = input_batch["bias"]
         _, _, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        query: Tensor = input_batch["query"]
+        head_dim = query.shape[-1]
 
         if explicit_bias.has_value():
             return self._log_unsupported("explicit bias is not supported.")
+
+        if head_dim % splash_attention_kernel.NUM_LANES != 0:
+            return self._log_unsupported(
+                f"{head_dim=} is not divisible by {splash_attention_kernel.NUM_LANES=}"
+            )
 
         if (
             not self.get_backend_overrides("splash_use_fused_bwd_kernel", True)
