@@ -4,114 +4,69 @@
 
 | Section | Description |
 | - | - |
-| [Installing Dependencies](#installing-dependencies) | Setup instructions. |
+| [Installation](#installation) | Setup instructions. |
 | [A Short Tutorial](#a-short-tutorial) | Writing an experiment from scratch. |
 | [Launching Training](#launching-training) | Launching training with cloud TPUs. |
 | [Next Steps](#next-steps) | Where to go next. |
 
-<br>
+## Installation
 
-## Installing Dependencies
+AXLearn supports macOS and Linux. The following instructions work on both platforms.
 
-The installation steps depend on your machine's hardware, and whether you plan to develop AXLearn.
-
-### Pre-requisites
-
-If you use an Intel (x86) machine, we recommend installing in a virtual environment, e.g. with [conda](https://conda.io).
+We recommend installing in a virtual environment. The following commands create and activate one with Python 3.10+ using [uv](https://docs.astral.sh/uv/):
 
 ```shell
-conda create -n axlearn python=3.10
-conda activate axlearn
+uv venv --python=3.10
+source .venv/bin/activate
 ```
 
-If you use an Apple Silicon machine, please follow these instructions instead:
-
-<details>
-<summary>Expand for instructions</summary>
-
-For Apple Silicon machines, we will install native versions of Python and Python packages using Miniforge.
-
-We need Xcode to build packages like `tensorstore`. Please install Xcode from the App Store if you haven't already.
+If you don't intend to develop AXLearn, run the following command to install AXLearn from GitHub:
 
 ```shell
-# Install the arm64 version of Miniforge3 + Python 3.10.
-curl -L -o miniforge.sh https://github.com/conda-forge/miniforge/releases/download/24.7.1-0/Miniforge3-24.7.1-0-MacOSX-arm64.sh
-bash miniforge.sh -u
-
-# Create a conda environment.
-conda create -n axlearn python=3.10
-conda activate axlearn
-
-# Install tensorflow following https://developer.apple.com/metal/tensorflow-plugin.
-conda install -c apple tensorflow-deps
-```
-</details>
-
-<br>
-
-### Installation (User)
-
-This section is intended for users who **do not** intend to develop AXLearn, but rather use it as a package.
-
-To install on Intel (x86) machines, simply run:
-```shell
-pip install 'axlearn[core]@git+https://github.com/apple/axlearn.git'
+uv pip install axlearn[core,audio,orbax,gcp]@git+https://github.com/apple/axlearn.git
 ```
 
-To install on Apple Silicon machines, make sure you have followed the required [pre-requisites](#pre-requisites) above. Then, install using:
-```shell
-pip install 'axlearn[core,apple-silicon]@git+https://github.com/apple/axlearn.git'
-```
-
-By default, AXLearn comes with tooling to launch jobs to Google Cloud Platform (GCP). To install them, run:
-```shell
-pip install 'axlearn[gcp]@git+https://github.com/apple/axlearn.git'
-```
-
-<br>
-
-### Installation (Developer)
-
-This section is for users who **do** intend to develop AXLearn, e.g. by submitting PRs.
-
-<details>
-<summary>Expand for instructions</summary>
-
-Instead of installing from `pip`, please fork the repo first, and then clone the fork.
+If you are on Apple Silicon, please add the optional dependency group name `apple-silicon`:
 
 ```shell
-# Clone your fork of the repo.
-git clone https://github.com/<username>/axlearn
-cd axlearn
+uv pip install axlearn[core,audio,orbax,gcp,apple-silicon]@git+https://github.com/apple/axlearn.git
 ```
 
-In order to iterate locally and run tests, install the package in editable mode along with `dev` dependencies:
+You may not need all optional dependency groups. See `pyproject.toml` for available options.
+
+If you intend to develop AXLearn, clone the repo and install from the local directory:
+
 ```shell
-pip install -e '.[core,dev]'
+uv pip install -e .[core,audio,orbax,dev,gcp]
 ```
 
-If you intend to launch jobs to GCP, install `gcp` dependencies:
+Or, on Apple Silicon, add `apple-silicon`:
+
 ```shell
-pip install -e '.[gcp]'
+uv pip install -e .[core,audio,orbax,dev,gcp,apple-silicon]
 ```
 
-We also recommend setting up pre-commit hooks to run some CI checks locally:
+We recommend setting up pre-commit hooks, which run checks automatically on `git commit`:
+
 ```shell
-pre-commit install --hook-type pre-commit
+pre-commit install
 ```
 
-These checks will run automatically when you `git commit`, but you can also run pre-commit directly (please refer to the [pre-commit](https://pre-commit.com/) docs for more information):
+You can also run them manually:
+
 ```shell
 pre-commit run -a
 ```
 
-We use [pytype](https://github.com/google/pytype) for static type checking:
+CI also runs [pytype](https://github.com/google/pytype), which is not included in pre-commit checks. You can run it locally:
+
 ```shell
 # This can take a while, so we exclude it from pre-commit.
 pytype -j auto axlearn
 ```
 
 To run tests (please refer to the [pytest](https://docs.pytest.org) docs for more information):
+
 ```shell
 pytest axlearn/common/config_test.py
 
@@ -125,15 +80,12 @@ pytest axlearn/common/config_test.py -k "test_invalid"
 pytest -n 4 -v -m "not (gs_login or tpu)" axlearn/common/
 ```
 
-</details>
-
-<br>
-
 ## A Short Tutorial
 
 > This section walks through writing an AXLearn experiment from scratch. For the impatient, skip ahead to [launching training](#launching-training) to start training a model with an existing recipe.
 
 AXLearn experiments have a standard anatomy. At a high level, we will need to define:
+
 - The model architecture.
 - The training and evaluation data.
 - The evaluation metrics.
@@ -144,6 +96,7 @@ AXLearn comes with many reusable building blocks for building an experiment.
 Let's walk through training [ResNet](https://arxiv.org/abs/1512.03385) on [ImageNet](https://arxiv.org/abs/1409.0575) as an example. All of the code is available under `axlearn/experiments/vision/resnet`.
 
 If you plan to follow along with the code, create a new file `axlearn/experiments/tutorial.py` with the following skeleton:
+
 ```python
 # Imports to be added here...
 
@@ -151,8 +104,6 @@ def resnet_imagenet_trainer():
     # Code to be added here...
     ...
 ```
-
-<br>
 
 ### Model Architecture
 
@@ -167,12 +118,13 @@ def resnet_imagenet_trainer():
 ```
 
 To use this model, let's look at the definition of `ImageClassificationModel.Config`. You may notice that it has a couple required fields:
-https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/vision/image_classification.py#L16-L28
+<https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/vision/image_classification.py#L16-L28>
 
 - The first is the `backbone`, which is the underlying model architecture we want to use for computing the image embeddings.
 - The second is `num_classes`, which is the number of class labels in our dataset.
 
 Since we are interested in ResNet on ImageNet, we can modify the above code like so:
+
 ```diff
 from axlearn.vision import image_classification
 +from axlearn.vision import resnet
@@ -187,6 +139,7 @@ def resnet_imagenet_trainer():
 This will use a vanilla ResNet-50 backbone for classifying the `1000` classes in ImageNet. `ImageClassificationModel` will handle the rest, such as extract embeddings from the backbone, computing the logits, and computing the loss and other metrics.
 
 We can further customize the model by setting additional configs. For example, ResNet models commonly use He initialization:
+
 ```diff
 +import math
 +from axlearn.common import param_init
@@ -210,6 +163,7 @@ def resnet_imagenet_trainer():
 ```
 
 If you want, you can also customize the ResNet backbone:
+
 ```diff
 def resnet_imagenet_trainer():
     # Construct an image classifier config.
@@ -224,6 +178,7 @@ def resnet_imagenet_trainer():
 ```
 
 Or, you can just as easily switch to a different backbone:
+
 ```diff
 def resnet_imagenet_trainer():
     # Construct an image classifier config.
@@ -237,13 +192,12 @@ You can refer to the [`ResNet.Config`](https://github.com/apple/axlearn/blob/e7e
 
 For simplicity, we will use the default values of our ResNet-50 backbone.
 
-<br>
-
 ### Training and Evaluation Data
 
 Next, we will define an input pipeline for reading ImageNet. As of writing, the most well-supported[^1] option uses [Tensorflow Datasets](https://www.tensorflow.org/datasets) (TFDS), which may already be familiar to you (if not, that's completely fine).
 
 As before, we can leverage existing building blocks in AXLearn. This time we can reuse the `ImagenetInput` under the `vision.input_image` module:
+
 ```diff
 from axlearn.vision import image_classification
 from axlearn.vision import resnet
@@ -258,12 +212,13 @@ def resnet_imagenet_trainer():
 ```
 
 Taking a peek under the hood, we can see that `ImagenetInput.default_config()` constructs a `tfds_dataset`, and applies some standard processing like cropping and resizing:
-https://github.com/apple/axlearn/blob/70eb15ffe7285cb97287b8665b91559e4b23726e/axlearn/vision/input_image.py#L383-L395
+<https://github.com/apple/axlearn/blob/70eb15ffe7285cb97287b8665b91559e4b23726e/axlearn/vision/input_image.py#L383-L395>
 
 Like before, let's inspect the config API inherited from its parent class, the `Input.Config`:
-https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/input_tf_data.py#L847-L879
+<https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/input_tf_data.py#L847-L879>
 
 The main required fields are:
+
 - `is_training`: a bool indicating whether the dataset is used for training[^2].
 - The `source`: a function[^3] that returns a dataset (in this case, a `tf.data.Dataset`).
 - The `processor`: a function that takes a dataset, and outputs another dataset.
@@ -303,11 +258,12 @@ For efficiency reasons, we also set the [`decode_parallelism`](https://github.co
 You may be wondering what `config.config_for_function` is. We will cover more details in [concepts](02-concepts.md), but at a high level, it dynamically generates a config from a function signature (in this case `input_tf_data.tfds_read_config`). This allows any arbitrary function to interoperate with the config system.
 
 This also gives insight into the config API for `input_tf_data.tfds_read_config` -- it is simply the arguments of the function itself:
-https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/input_tf_data.py#L66-L73
+<https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/input_tf_data.py#L66-L73>
 
 As you can see from the above example, we've configured the `decode_parallelism` parameter to be `128`.
 
 As another example, we can switch to the newer [ImageNetV2](https://www.tensorflow.org/datasets/catalog/imagenet_v2) dataset with the following changes:
+
 ```diff
 from axlearn.vision import image_classification
 from axlearn.vision import resnet
@@ -342,23 +298,23 @@ For now, let's stick to the original `imagenet2012`.
 [^2]: This affects things like whether we should shuffle the dataset or not.
 [^3]: More accurately, it is a config that instantiates to such a function, but more on that in [concepts](02-concepts.md).
 
-<br>
-
 ### Evaluation Metrics
 
 A crucial part of any experiment is evaluating how well the model is learning.
 
 AXLearn provides an evaler implementation called `SpmdEvaler`, which has the following config API:
-https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/evaler.py#L468-L491
+<https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/evaler.py#L468-L491>
 
 As we can see, we only need to provide an `input` source to use it. Among other things, it already comes with a `summary_writer` to log evaluation metrics, and a basic `metric_calculator` to compute metrics for the summary writer.
 
 In fact, we already have most of the pieces ready:
+
 - We have an input config which can read `imagenet2012`. We just need to tweak it slightly to read the `"validation"` split, instead of the `"train"` split.
 - We have a classification model `ImageClassificationModel`, which already comes with basic [metrics](https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/layers.py#L1304-L1310) like `accuracy`, `perplexity` and `cross_entropy_loss`.
 - The `summary_writer` is already capable of logging these metrics to [tensorboard](https://www.tensorflow.org/tensorboard).
 
 By now, you may already have an idea of how to construct the evaler input:
+
 ```diff
 from axlearn.vision import image_classification
 from axlearn.vision import resnet
@@ -417,6 +373,7 @@ def resnet_imagenet_trainer():
 ```
 
 We can then construct the `SpmdEvaler` config, which takes the eval input as a child:
+
 ```diff
 from axlearn.vision import image_classification
 from axlearn.vision import resnet
@@ -451,6 +408,7 @@ def resnet_imagenet_trainer():
 ```
 
 A minor note is that the default evaler runs every step, which may be more frequent than we'd like. We can tweak the eval rate by customizing the eval policy:
+
 ```diff
 from axlearn.vision import image_classification
 from axlearn.vision import resnet
@@ -487,8 +445,6 @@ def resnet_imagenet_trainer():
 
 This will cause the evaler to run every 12.5k steps instead, roughly every 10 epochs.
 
-<br>
-
 ### Optimizer
 
 Next, we will need to define an optimizer. AXLearn comes with a variety of default implementations in `common.optimizers`. For this example, we'll use standard Stochastic Gradient Descent (SGD) with a weight decay of `1e-4` and momentum of `0.9`, mostly following the original paper.
@@ -508,7 +464,7 @@ def resnet_imagenet_trainer():
 ```
 
 As before, we use the `config.config_for_function` utility to dynamically generate a config from the `optimizers.sgd_optimizer` function signature:
-https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/optimizers.py#L507-L514
+<https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/optimizers.py#L507-L514>
 
 Among these parameters is the `learning_rate`, which we still haven't configured yet.
 Out of the box, AXLearn comes with a variety of learning rate schedules in `common.schedule`.
@@ -567,14 +523,12 @@ def resnet_imagenet_trainer():
 
 [^4]: [BatchNorm](https://arxiv.org/abs/1502.03167) is used throughout the ResNet architecture by default. We did not need to configure it explicitly.
 
-<br>
-
 ### Putting Everything Together
 
 We are now ready to put all the pieces together! The glue that makes everything work is the [`SpmdTrainer`](https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/trainer.py#L62). As the name implies, it runs the main training loop using the components that we've defined above.
 
 Once again, we can get an idea of how to use this component by inspecting its config API:
-https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/trainer.py#L62-L128
+<https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/trainer.py#L62-L128>
 
 This particular module is quite complex, but feel free to refer to the inline documentation and comments for more details.
 We can also construct it in a familiar fashion:
@@ -599,6 +553,7 @@ The code block plugs in the model, input, evalers, and other components that we 
 Note that we have wrapped the optimizer with a [`Learner.Config`](https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/common/learner.py#L121-L149). The Learner internally uses the optimizer to update model params, and acts as an intermediary to the trainer.
 
 For some basic book-keeping, we also configure the frequency of checkpoints and summaries:
+
 ```diff
 from axlearn.common import trainer, learner
 
@@ -651,8 +606,6 @@ def resnet_imagenet_trainer():
 +   return {"ResNet-50": resnet_imagenet_trainer}
 ```
 
-<br>
-
 ### Testing
 
 While building a trainer config with Python code allows us to reuse configuration logic, a downside is that the indirections make it hard to see the effects, especially when we want to update the logic.
@@ -661,22 +614,20 @@ For example, you can see the full trainer config of the ResNet50 experiment on I
 This is especially useful for catching unintended changes to experiment configurations during refactoring.
 
 To generate the golden configs for your own trainer(s), update the `golden_config_test` and run:
+
 ```bash
 pytest -n auto axlearn/experiments/golden_config_test.py --update
 ```
+
 For more details on golden configs, please see [concepts](02-concepts.md).
 
 Before launching experiments into the cloud, it's also recommended to write unit tests to catch failures early. For some examples, we refer the reader to unit tests under [`axlearn/experiments/vision/resnet`](https://github.com/apple/axlearn/tree/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/experiments/vision/resnet).
-
-<br>
 
 ### Summary
 
 Congratulations on getting this far! Hopefully, you now have a taste of how to build experiments with AXLearn. Granted, this was a fairly quick overview of what AXLearn has to offer, and some of the content may still feel abstract or foreign. For more details on the config system or other concepts, please refer to the [concepts page](02-concepts.md).
 
 The following section will cover how to launch your experiment in the cloud.
-
-<br>
 
 ## Launching Training
 
@@ -685,18 +636,18 @@ AXLearn comes with tooling for provisioning and launching training on public clo
 ### Pre-requisites
 
 We assume you have:
-1. `gcloud` setup, following e.g. https://cloud.google.com/sdk/docs/install.
+
+1. `gcloud` setup, following e.g. <https://cloud.google.com/sdk/docs/install>.
 2. A Google Cloud Platform (GCP) project. To set up a brand new GCP project with the basic resources needed, please run [this script](../axlearn/cloud/gcp/scripts/project_setup.sh).
 3. TPU quota in your project. To request TPU quota, please follow [these instructions](https://cloud.google.com/tpu/docs/setup-gcp-account#prepare-to-request).
 4. At least one Google Cloud Storage (GCS) bucket.
-
-<br>
 
 ### Preparing the CLI
 
 Please follow the instructions in the [CLI docs](03-cli.md#preparing-the-cli) to setup the CLI.
 
 We assume that you are launching from a working directory that contains a `pyproject.toml` or `setup.py` (for instance, if you cloned the repo, you should have one already). If not, you can create a minimal `pyproject.toml`:
+
 ```toml
 [project]
 name = "my_project"
@@ -707,19 +658,19 @@ dependencies = ["axlearn"]
 tpu = ["axlearn[tpu]"]
 ```
 
-<br>
-
 ### Launching a Command
 
 We can now leverage the AXLearn infrastructure to launch commands on arbitrary TPU configurations.
 
 First, make sure you have authenticated to GCP:
+
 ```bash
 # Authenticate to GCP.
 axlearn gcp auth
 ```
 
 We can then test a simple `v4-8` command:
+
 ```bash
 # Run a dummy command on v4-8.
 # Note: the "'...'" quotes are important.
@@ -730,17 +681,17 @@ axlearn gcp launch start --runner_name=gke_tpu_single --name=$USER-test --instan
 
 This provisions a v4-8 TPU, installs `axlearn` on it, and runs the `python3` command that comes after `--`. As the job is running, any logs from the command will be synced to GCS. Once the job is completed, the TPU resources will be torn down.
 
-<br>
-
 ### Launching an Experiment
 
 To launch an actual experiment, we must first define an experiment module that AXLearn understands how to parse.
 
 There are two aspects to this:
+
 1. By default, AXLearn looks under the `axlearn/experiments` directory for experiment modules, so we should define it there.
 2. Experiment modules must expose a function `named_trainer_configs` which returns a dictionary with experiment names as keys, and [`TrainerConfigFn`](https://github.com/apple/axlearn/blob/e7ef158e66e96928bda0ea0544dce172c5494d14/axlearn/experiments/trainer_config_utils.py#L11)s as values. As the name implies, a `TrainerConfigFn` is a function that simply returns a trainer config, similar to the one constructed [above](#putting-everything-together)[^5].
 
 We've already packaged the ResNet on ImageNet example for you, which can be launched via:
+
 ```bash
 OUTPUT_DIR=gs://path/to/$USER/experiments/resnet50-$(date +%F)
 DATA_DIR=gs://path/to/tensorflow_datasets
@@ -754,6 +705,7 @@ axlearn gcp launch start --runner_name=gke_tpu_single --name=$USER-test --instan
 ```
 
 If you have been following along with the code, assuming you have a file `axlearn/experiments/tutorial.py`, you can also launch your own experiment with:
+
 ```diff
 OUTPUT_DIR=gs://path/to/$USER/experiments/resnet50-$(date +%F)
 DATA_DIR=gs://path/to/tensorflow_datasets
@@ -772,26 +724,25 @@ Both commands are similar to the one from the previous section except we run the
 The `OUTPUT_DIR` defines where to emit training artifacts like checkpoints and summaries, and the `DATA_DIR` defines where to look for datasets.
 
 To view `tensorboard`, point to the `OUTPUT_DIR`:
-```
+
+```shell
 tensorboard --logdir=$OUTPUT_DIR
 ```
+
 Or, if VertexAI is [configured](#preparing-the-cli), you should also see a VertexAI Tensorboard link.
 
 [^5]: One common question is: why return a `TrainerConfigFn` instead of, say, the trainer config itself? The reason is that a `TrainerConfigFn` allows us to defer the construction of a trainer config until we need to use it. When your project has many experiments, the cost of building all trainer configs can be non-trivial (such as when running [golden config tests](#testing)).
 
-<br>
-
 ### Launching via Bastion
 
 In an organization setting, it's typical to launch jobs from a centralized system, which can:
+
 1. Constantly monitor and restart jobs as necessary.
 2. Queue and schedule jobs based on priority.
 
 AXLearn provides such an orchestrator called the "bastion", which can run in GCP with minimal dependencies.
 
 It is often recommended to launch from the bastion. Please see the [infrastructure docs](04-infrastructure.md) for instructions on how to set it up.
-
-<br>
 
 ## Next Steps
 
