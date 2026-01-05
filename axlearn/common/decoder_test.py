@@ -5,7 +5,7 @@
 # pylint: disable=no-self-use,too-many-branches
 import contextlib
 import unittest
-from typing import Callable, Literal, Optional
+from typing import Callable, Optional
 from unittest import mock
 
 import chex
@@ -473,25 +473,71 @@ class TestDecoder(TestCase):
             StackedTransformerLayer.default_config(),
             RepeatedTransformerLayer.default_config(),
         ],
+        cross_attention_mode=["none"],
+        prefix_length=[jnp.array([1, 1])],
+        method=["sample_decode"],
+        pad_token_id=[-1],
+    )
+    def test_decode_stack(
+        self, stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id
+    ):
+        self._test_decode(stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id)
+
+    @parameterized.product(
+        stack_cfg=[StackedTransformerLayer.default_config()],
         cross_attention_mode=["none", "full", "broadcast"],
-        num_decodes=[5],
+        prefix_length=[jnp.array([1, 1])],
+        method=["sample_decode"],
+        pad_token_id=[-1],
+    )
+    def test_decode_xatten(
+        self, stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id
+    ):
+        self._test_decode(stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id)
+
+    @parameterized.product(
+        stack_cfg=[StackedTransformerLayer.default_config()],
+        cross_attention_mode=["none"],
         # Each is of shape [batch], representing per-example prefix lengths.
         prefix_length=[jnp.array([1, 1]), jnp.array([1, 3, 6])],
+        method=["sample_decode"],
+        pad_token_id=[-1],
+    )
+    def test_decode_prefix_len(
+        self, stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id
+    ):
+        self._test_decode(stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id)
+
+    @parameterized.product(
+        stack_cfg=[StackedTransformerLayer.default_config()],
+        cross_attention_mode=["none"],
+        prefix_length=[jnp.array([1, 1])],
         method=["sample_decode", "beam_search_decode"],
+        pad_token_id=[-1],
+    )
+    def test_decode_method(
+        self, stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id
+    ):
+        self._test_decode(stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id)
+
+    @parameterized.product(
+        stack_cfg=[StackedTransformerLayer.default_config()],
+        cross_attention_mode=["none"],
+        prefix_length=[jnp.array([1, 1])],
+        method=["sample_decode"],
         pad_token_id=[0, -1],
     )
-    # pylint: disable-next=too-many-statements
-    def test_decode(
-        self,
-        stack_cfg: InstantiableConfig,
-        cross_attention_mode: Literal["none", "full", "broadcast"],
-        num_decodes: int,
-        prefix_length: utils.Tensor,
-        method: Literal["sample_decode", "beam_search_decode"],
-        pad_token_id: int,
+    def test_decode_pad_token_id(
+        self, stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id
     ):
+        self._test_decode(stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id)
+
+    # Running everything as product tests causes CI timeout.
+    # pylint: disable-next=too-many-statements
+    def _test_decode(self, stack_cfg, cross_attention_mode, prefix_length, method, pad_token_id):
         """Test beam search and sample decoding from a randomly initialized decoder."""
         batch_size, src_len, tgt_len, vocab_size = prefix_length.shape[0], 11, 10, 6
+        num_decodes = 5
         bos_id = eos_id = 1
         num_layers, num_heads = 3, 4
         hidden_dim, src_dim = 12, 10
@@ -714,7 +760,7 @@ class TestDecoder(TestCase):
         # No need to test multiple batches
         batch_size = 1
         # Long enough target length to get enough token scores to compare.
-        target_length = 32
+        target_length = 16
         # Prefix length long enough to check that we reconstruct the prefix for the second pass
         # from the output sequence of the first pass.
         prefix_1_length = 4
