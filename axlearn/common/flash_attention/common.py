@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any, Literal, NamedTuple, Optional
 
+import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -163,7 +164,7 @@ class BaseFlashAttention(Configurable):
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
-        self.cfg: BaseFlashAttention.Config = self.config
+        self.cfg = cfg
 
     def get_backend_overrides(self, name: str, default: Any) -> Any:
         return (self.cfg.backend_overrides or {}).get(name, default)
@@ -575,3 +576,64 @@ def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
     if dtype == jnp.bfloat16:
         return jax.lax.Precision.DEFAULT
     raise ValueError(f"Unsupported dtype {dtype}")
+
+
+def maybe_pad_inputs(
+    block_size: int, query: Tensor, key: Tensor, value: Tensor, segment_id: Optional[Tensor]
+) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
+    """Pads query, key, value, and segment_id tensors to align with block_size requirements.
+
+    This function ensures that the sequence length dimension of input tensors is divisible by
+    block_size, which is required for efficient block-based attention computation. Padding is
+    applied to the sequence length dimension (axis=1) as needed.
+
+    Args:
+        block_size: The block size that sequence lengths must be divisible by. Must be positive.
+        query: Query tensor of shape [batch_size, query_len, num_heads, per_head_dim].
+        key: Key tensor of shape [batch_size, key_len, num_kv_heads, per_head_dim].
+        value: Value tensor of shape [batch_size, value_len, num_kv_heads, per_head_dim].
+            Must have the same shape as key.
+        segment_id: Optional segment ID tensor of shape [batch_size, seq_len]. If provided,
+            it will be padded with -1 values to match query padding.
+
+    Returns:
+        A tuple containing:
+            - Padded query tensor
+            - Padded key tensor
+            - Padded value tensor
+            - Padded segment_id tensor (or None if input was None)
+
+    Raises:
+        AssertionError: If block_size is not positive, or if key and value shapes don't match.
+    """
+    # Input validation with chex assertions
+    chex.assert_scalar_positive(block_size)
+    chex.assert_equal_rank((query, key, value))
+    chex.assert_rank(query, 4)
+    chex.assert_equal_shape([key, value])
+    chex.assert_equal(query.shape[0], key.shape[0])
+
+    if segment_id is not None:
+        chex.assert_rank(segment_id, 2)
+        chex.assert_equal(segment_id.shape, query.shape[:2])
+
+    def pad_fn(x, pad):
+        return jnp.pad(x, ((0, 0), (0, pad), (0, 0), (0, 0)))
+
+    query_pad = -query.shape[1] % block_size
+    if query_pad > 0:
+        # This part will be cut after attention, so any value is fine.
+        query = pad_fn(query, query_pad)
+        if segment_id is not None:
+            # segment_ids == 0 means padding.
+            segment_id = jnp.pad(segment_id, ((0, 0), (0, query_pad)))
+
+    key_pad = -key.shape[1] % block_size
+    if key_pad > 0:
+        key = pad_fn(key, key_pad)
+        value = pad_fn(value, key_pad)
+
+    chex.assert_equal(query.shape[1] % block_size, 0)
+    chex.assert_equal(key.shape[1] % block_size, 0)
+    chex.assert_equal(value.shape[1] % block_size, 0)
+    return query, key, value, segment_id

@@ -2,12 +2,12 @@
 
 """Wrappers for FlashAttention on TPU in JAX with logit bias support."""
 import functools
-import logging
 from typing import Optional
 
 import jax
 import jax.ad_checkpoint
 import jax.numpy as jnp
+from absl import logging
 from jax import lax
 from jax._src.mesh import thread_resources
 from jax.experimental import pallas as pl
@@ -39,11 +39,14 @@ from axlearn.common.attention_bias import (
     SegmentIdAttentionBias,
     SlidingWindowAttentionBias,
     ZeroAttentionBias,
+    and_masks,
     split,
+    truncated_key_mask,
 )
 from axlearn.common.flash_attention.common import (
     BaseFlashAttention,
     get_segment_ids,
+    maybe_pad_inputs,
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
@@ -60,11 +63,29 @@ def _to_splash_mask(
     *,
     mask_shape: tuple[int, int],
     q_seq_shards: int = 1,
+    unpadded_k_len: Optional[int] = None,
 ) -> splash_attention_mask.Mask:
-    """Converts a mask to a splash mask."""
+    """Converts a mask to a splash mask.
+
+    Args:
+        mask: The attention mask to convert.
+        mask_shape: The shape of the mask (possibly padded).
+        q_seq_shards: Number of query sequence shards.
+        unpadded_k_len: Original key length before padding.
+    """
+    need_k_limit = unpadded_k_len is not None and unpadded_k_len < mask_shape[0]
+
     if not mask.has_value():
-        return splash_attention_mask.FullMask(mask_shape)
+        if need_k_limit:
+            return ComputableMask(
+                shape=mask_shape,
+                shard_count=q_seq_shards,
+                mask_fn=truncated_key_mask(unpadded_k_len),
+            )
+        else:
+            return splash_attention_mask.FullMask(mask_shape)
     assert isinstance(mask, MaskFnAttentionBias)
+    # A causal mask does not need k_limit, because k > q are already masked out.
     if isinstance(mask, CausalAttentionBias):
         return splash_attention_mask.CausalMask(shape=mask_shape, shard_count=q_seq_shards)
     elif isinstance(mask, SlidingWindowAttentionBias):
@@ -72,7 +93,12 @@ def _to_splash_mask(
         return splash_attention_mask.LocalMask(
             shape=mask_shape, window_size=(left_size, 0), offset=0, shard_count=q_seq_shards
         )
-    return ComputableMask(shape=mask_shape, shard_count=q_seq_shards, mask_fn=mask.mask)
+
+    if need_k_limit:
+        mask_fn = and_masks(mask.mask, truncated_key_mask(unpadded_k_len))
+    else:
+        mask_fn = mask.mask
+    return ComputableMask(shape=mask_shape, shard_count=q_seq_shards, mask_fn=mask_fn)
 
 
 # The following code is adapted from jax-ml/jax:
@@ -858,9 +884,8 @@ class TPUFlashAttention(BaseFlashAttention):
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
-        block_size = self.cfg.tpu_block_size
-        if not self._check_block_size(input_batch=input_batch, block_size=block_size):
-            return False
+        if kv_cache_type is not None:
+            return self._log_unsupported("TPU attention does not support decoding.")
         return True
 
 
@@ -949,9 +974,19 @@ class TPUSplashAttention(TPUFlashAttention):
 
         mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
-        seg_ids = None
+
+        block_size = self.cfg.tpu_block_size
+        unpadded_q_len, unpadded_k_len = query.shape[1], key.shape[1]
+        query, key, value, segment_id_tensor = maybe_pad_inputs(
+            block_size=block_size, query=query, key=key, value=value, segment_id=segment_id_tensor
+        )
+
         if segment_id_tensor is not None:
             seg_ids = SplashSegmentIds(q=segment_id_tensor, kv=segment_id_tensor)
+            # segment_ids already masks out keys >= unpadded_k_len.
+            unpadded_k_len = None
+        else:
+            seg_ids = None
 
         # Switch num_heads and seq_len axes.
         query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
@@ -960,7 +995,10 @@ class TPUSplashAttention(TPUFlashAttention):
 
         block_sizes = self.get_block_sizes()
         splash_mask = _to_splash_mask(
-            mask, mask_shape=(query.shape[2], key.shape[2]), q_seq_shards=1
+            mask,
+            mask_shape=(query.shape[2], key.shape[2]),
+            q_seq_shards=1,
+            unpadded_k_len=unpadded_k_len,
         )
 
         num_heads = query.shape[1]
@@ -980,7 +1018,7 @@ class TPUSplashAttention(TPUFlashAttention):
         p_kernel = functools.partial(kernel, prng_key=prng_key, logit_sink=logit_sink)
         vp_kernel = jax.vmap(p_kernel, axis_name="batch")
         context = vp_kernel(q=query, k=key, v=value, segment_ids=seg_ids)
-        return jnp.einsum("bnth->btnh", context)
+        return jnp.einsum("bnth->btnh", context[:, :, :unpadded_q_len])
 
     def get_block_sizes(self):
         block_size = self.cfg.tpu_block_size
@@ -1105,18 +1143,32 @@ class TPUSplashAttentionWithAllGather(TPUSplashAttention):
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
 
-        mask, _, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
-        if mask.has_value():
-            assert isinstance(mask, MaskFnAttentionBias)
+        mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
 
-        num_heads = query.shape[2]
-        mask_shape = (query.shape[1], key.shape[1])
-        splash_mask = _to_splash_mask(mask, mask_shape=mask_shape)
+        # Determine original lengths and whether padding is needed
+        block_size = self.cfg.tpu_block_size
+        unpadded_q_len = query.shape[1]
+        unpadded_k_len = key.shape[1]
+        need_padding = unpadded_q_len % block_size != 0 or unpadded_k_len % block_size != 0
+
+        # Determine mask length for splash mask creation
+        has_segment_ids = segment_ids.has_value()
+        if has_segment_ids:
+            # segment_ids will mask out keys >= unpadded_k_len, so no need for key limit mask
+            original_mask_len = None
+        else:
+            # Need key limit mask if padding is applied to keys
+            original_mask_len = unpadded_k_len if unpadded_k_len % block_size != 0 else None
+
+        mul_block_len = lambda seq_len: seq_len + (-seq_len % block_size)
+        mask_shape = (mul_block_len(query.shape[1]), mul_block_len(key.shape[1]))
+        splash_mask = _to_splash_mask(mask, mask_shape=mask_shape, unpadded_k_len=original_mask_len)
         mesh = thread_resources.env.physical_mesh
 
         sharding = NamedSharding(mesh, PartitionSpec(None, "seq"))
         q_seq_shards = sharding.mesh.shape["seq"]
 
+        num_heads = query.shape[2]
         mha_mask = splash_attention_mask.MultiHeadMask(masks=[splash_mask] * num_heads)
         kernel = splash_attention_kernel.make_splash_mha(
             mask=mha_mask,
@@ -1140,23 +1192,44 @@ class TPUSplashAttentionWithAllGather(TPUSplashAttention):
 
         def shard_fn(batch):
             batch["query"] *= cfg.softmax_scale
-            _, segment_ids, _ = split(batch["bias"], MaskFnAttentionBias, SegmentIdAttentionBias)
+
+            # Pad inputs if needed
+            q_batch = batch["query"]
+            k_batch = batch["key"]
+            v_batch = batch["value"]
+
+            # Extract segment_ids before padding
+            seg_ids = None
+            if has_segment_ids:
+                _, seg_ids_bias, _ = split(
+                    batch["bias"], MaskFnAttentionBias, SegmentIdAttentionBias
+                )
+                seg_ids = seg_ids_bias.segment_ids
+
+            if need_padding:
+                q_batch, k_batch, v_batch, seg_ids = maybe_pad_inputs(
+                    block_size=block_size,
+                    query=q_batch,
+                    key=k_batch,
+                    value=v_batch,
+                    segment_id=seg_ids,
+                )
+
             # Note: we cannot pass bias to vmap directly since it's possible that not all its
             # tensors have the same batch dimension, which is required by vmap. For example,
             # `target_positions` and `source_positions` from MaskFnAttentionBias may have
-            # batch dim == 1. Therefore, we extract the info we need from bias that pass that
+            # batch dim == 1. Therefore, we extract the info we need from bias and pass that
             # to vmap instead.
-            seg_ids = None
-            if hasattr(segment_ids, "segment_ids"):
-                seg_ids = segment_ids.segment_ids
-            return jax.vmap(vmap_fn, in_axes=(0, 0, 0, 0) + (None,) * 4, axis_name="batch")(
-                batch["query"],
-                batch["key"],
-                batch["value"],
+            out = jax.vmap(vmap_fn, in_axes=(0, 0, 0, 0) + (None,) * 4, axis_name="batch")(
+                q_batch,
+                k_batch,
+                v_batch,
                 seg_ids,
                 batch["prng_key"],
                 *[batch[k] for k in additional_args_keys],
             )
+            # Remove padding from output
+            return out[:, :unpadded_q_len]
 
         def vmap_fn(q_proj, k_proj, v_proj, kv_seg_ids, prng_key, *args):
             assert len(args) == 3
@@ -1209,6 +1282,9 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
+            return False
+        block_size = self.cfg.tpu_block_size
+        if not self._check_block_size(input_batch=input_batch, block_size=block_size):
             return False
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]

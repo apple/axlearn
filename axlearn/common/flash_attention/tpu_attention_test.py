@@ -204,35 +204,85 @@ class TestFlashAttention(TestCase):
         self.assertNestedAllClose(out_computable, out_ref)
 
     @parameterized.product(
-        batch_size=[2],
-        kv_len=[128],
-        num_heads=[4],
-        mask=[None, causal_mask],
+        kv_len=[64, 128],
+        mask=["sliding"],
+        with_segment_ids=[True],
         per_head_dim=[64, 128, 150],
+        q_dtype=[jnp.bfloat16],
+        kv_dtype=[jnp.bfloat16],
+    )
+    def test_forward_len_dim(self, kv_len, mask, with_segment_ids, per_head_dim, q_dtype, kv_dtype):
+        self._test_forward(kv_len, mask, with_segment_ids, per_head_dim, q_dtype, kv_dtype)
+
+    @parameterized.product(
+        kv_len=[128],
+        mask=["full", "causal", "sliding", "custom"],
+        with_segment_ids=[True, False],
+        per_head_dim=[128],
+        q_dtype=[jnp.bfloat16],
+        kv_dtype=[jnp.bfloat16],
+    )
+    def test_forward_mask(self, kv_len, mask, with_segment_ids, per_head_dim, q_dtype, kv_dtype):
+        self._test_forward(kv_len, mask, with_segment_ids, per_head_dim, q_dtype, kv_dtype)
+
+    @parameterized.product(
+        kv_len=[128],
+        mask=["sliding"],
+        with_segment_ids=[True],
+        per_head_dim=[128],
         q_dtype=[jnp.float32, jnp.bfloat16],
         kv_dtype=[jnp.float32, jnp.bfloat16],
     )
-    def test_forward(self, batch_size, kv_len, num_heads, mask, per_head_dim, q_dtype, kv_dtype):
+    def test_forward_dtype(self, kv_len, mask, with_segment_ids, per_head_dim, q_dtype, kv_dtype):
         if q_dtype == jnp.bfloat16 and kv_dtype == jnp.float32:
             self.skipTest("Q must have higher precision than KV.")
+        self._test_forward(kv_len, mask, with_segment_ids, per_head_dim, q_dtype, kv_dtype)
 
+    # Running everything as product tests causes timeout in CI.
+    def _test_forward(self, kv_len, mask, with_segment_ids, per_head_dim, q_dtype, kv_dtype):
+        batch_size, num_heads = 2, 4
         num_kv_heads = num_heads // 2
-        q, k, v, bias = generate_attention_data(
+        q, k, v, _ = generate_attention_data(
             batch_size,
             kv_len,
             kv_len,
             num_heads,
             per_head_dim,
             num_kv_heads,
-            mask_fn=mask,
+            mask_fn=None,
+            with_segment_ids=with_segment_ids,
             dtype=q_dtype,
             kv_dtype=kv_dtype,
         )
-        tpu_block_size = 128
+
+        match mask:
+            case "full":
+                bias = ZeroAttentionBias()
+            case "causal":
+                bias = CausalAttentionBias(
+                    target_positions=jnp.arange(kv_len)[None],
+                    source_positions=jnp.arange(kv_len)[None],
+                )
+            case "sliding":
+                bias = SlidingWindowAttentionBias(
+                    mask=sliding_window_causal_mask(8),
+                    sliding_window_size=8,
+                    target_positions=jnp.arange(kv_len)[None],
+                    source_positions=jnp.arange(kv_len)[None],
+                )
+            case "custom":
+                bias = MaskFnAttentionBias(
+                    mask=jax_fn_mask(8),
+                    target_positions=jnp.arange(kv_len)[None],
+                    source_positions=jnp.arange(kv_len)[None],
+                )
+            case _:
+                raise ValueError(f"{mask=} is not supported.")
+
         cfg = dict(
             interpret=jax.default_backend() == "cpu",
             softmax_scale=per_head_dim**-0.5,
-            tpu_block_size=tpu_block_size,
+            tpu_block_size=128,
         )
         ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
         fn = tpu_attention.TPUSplashAttention.default_config().set(**cfg).instantiate()
@@ -541,6 +591,116 @@ class TestFlashAttention(TestCase):
         jit_fn()
 
     @parameterized.product(
+        per_head_dim=[128, 150], mask=["causal", "sliding"], with_segment_ids=[False, True]
+    )
+    def test_all_gather_forward_mask(self, per_head_dim, mask, with_segment_ids):
+        mesh_shape, mesh_axis_names = (2, 1, 2), ("data", "model", "seq")
+        if not is_supported_mesh_shape(mesh_shape):
+            self.skipTest(f"Unsupported mesh shape: {mesh_shape}")
+
+        batch_size, seq_len, num_heads = 2, 256, 4
+        num_kv_heads = num_heads
+        q, k, v, _ = generate_attention_data(
+            batch_size,
+            seq_len,
+            seq_len,
+            num_heads,
+            per_head_dim,
+            num_kv_heads,
+            mask_fn=None,
+            with_segment_ids=with_segment_ids,
+            dtype=jnp.bfloat16,
+        )
+
+        match mask:
+            case "causal":
+                bias = CausalAttentionBias(
+                    target_positions=jnp.arange(seq_len)[None],
+                    source_positions=jnp.arange(seq_len)[None],
+                )
+            case "sliding":
+                bias = SlidingWindowAttentionBias(
+                    mask=sliding_window_causal_mask(8),
+                    sliding_window_size=8,
+                    target_positions=jnp.arange(seq_len)[None],
+                    source_positions=jnp.arange(seq_len)[None],
+                )
+            case _:
+                raise ValueError(f"{mask=} is not supported.")
+
+        with Mesh(mesh_utils.create_device_mesh(mesh_shape), mesh_axis_names):
+            tpu_block_size = 128
+            cfg = dict(
+                interpret=jax.default_backend() == "cpu",
+                softmax_scale=per_head_dim**-0.5,
+                tpu_block_size=tpu_block_size,
+                dropout_rate=0.0,
+                backend_overrides={"all_gather_attention": True},
+            )
+
+            attention = (
+                tpu_attention.TPUSplashAttentionWithAllGather.default_config()
+                .set(**cfg)
+                .instantiate()
+            )
+            ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+
+            prng_key = jax.random.PRNGKey(42)
+            input_batch = dict(
+                query=q,
+                key=k,
+                value=v,
+                bias=bias,
+                prng_key=prng_key,
+                logit_sink=None,
+            )
+
+            if not attention.is_supported(input_batch=input_batch, kv_cache_type=None):
+                self.skipTest("Configuration not supported by TPUSplashAttentionWithAllGather")
+
+            # Build the sharded attention function
+            specs = attention.build(input_batch=input_batch)
+
+            mesh = thread_resources.env.physical_mesh
+            batch_axis = tuple(x for x in mesh_axis_names if x in ("data", "fsdp")) or None
+
+            # Create sharded input batch
+            input_batch = {
+                "query": q,
+                "key": k,
+                "value": v,
+                "bias": bias,
+                "prng_key": prng_key,
+                **specs.additional_kwargs,
+            }
+
+            # Create in_specs for shard_map
+            in_specs = {
+                "query": PartitionSpec(batch_axis, "seq", "model", None),
+                "key": PartitionSpec(batch_axis, None, "model", None),
+                "value": PartitionSpec(batch_axis, None, "model", None),
+                "bias": bias.partition_spec(default_mha_dim_to_partition_spec(mesh_axis_names)),
+                "prng_key": PartitionSpec(),
+                **specs.additional_in_specs,
+            }
+
+            # Run attention with shard_map
+            partitioned_fn = shard_map(
+                specs.fn,
+                mesh=mesh,
+                in_specs=(in_specs,),
+                out_specs=PartitionSpec(batch_axis, "seq", "model", None),
+                check_rep=False,
+            )
+            out = partitioned_fn(input_batch)
+
+            # Compare with reference
+            ref_out = ref_fn(input_batch)
+            self.assertAllCloseWithOutliers(
+                out, ref_out, tolerance_map={1.0: Tolerance(atol=5e-2), 0.98: Tolerance(atol=1e-2)}
+            )
+
+    @parameterized.product(
         batch_size=[4],
         seq_len=[1024],
         num_heads=[4],
@@ -558,7 +718,7 @@ class TestFlashAttention(TestCase):
             True,
         ],
     )
-    def test_all_gather_attention(
+    def test_all_gather_attention_gradient(
         self,
         batch_size,
         seq_len,
@@ -568,10 +728,7 @@ class TestFlashAttention(TestCase):
         sliding_window_sz,
         with_segment_ids,
     ):
-        """
-        Test TPUSplashAttentionWithAllGather forward and gradient computation
-        with sequence parallelism
-        """
+        """Test TPUSplashAttentionWithAllGather gradient computation with sequence parallelism."""
         mesh_shape, mesh_axis_names = mesh
         if not is_supported_mesh_shape(mesh_shape):
             self.skipTest(f"Unsupported mesh shape: {mesh_shape}")
@@ -592,7 +749,7 @@ class TestFlashAttention(TestCase):
         with Mesh(mesh_utils.create_device_mesh(mesh_shape), mesh_axis_names):
             tpu_block_size = 128
             cfg = dict(
-                interpret=False,
+                interpret=jax.default_backend() == "cpu",
                 softmax_scale=per_head_dim**-0.5,
                 tpu_block_size=tpu_block_size,
                 dropout_rate=0.0,

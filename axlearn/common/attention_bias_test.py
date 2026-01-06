@@ -16,6 +16,7 @@ from axlearn.common.attention_bias import (
     SegmentIdAttentionBias,
     TensorAttentionBias,
     sliding_window_causal_mask,
+    truncated_key_mask,
 )
 from axlearn.common.utils import Tensor
 
@@ -46,6 +47,20 @@ class MaskTest(test_utils.TestCase):
         target_positions = jnp.arange(target_len)[:, None] + time_step
         source_positions = jnp.arange(source_len)[None, :]
         bool_mask = mask_fn(target_positions, source_positions)
+        out_mask = bool_mask.astype(jnp.int32)
+        self.assertEqual(out_mask.tolist(), expected)
+
+    @parameterized.parameters(
+        [3, [[1, 1, 1, 0, 0]]],
+        [5, [[1, 1, 1, 1, 1]]],
+    )
+    def test_key_limit_mask(self, valid_k_len, expected):
+        """Test make_key_limit_mask masks keys beyond valid_k_len."""
+        mask_fn = truncated_key_mask(valid_k_len)
+        seq_len = 5
+        query_positions = jnp.arange(seq_len)[:, None]
+        key_positions = jnp.arange(seq_len)[None, :]
+        bool_mask = mask_fn(query_positions, key_positions)
         out_mask = bool_mask.astype(jnp.int32)
         self.assertEqual(out_mask.tolist(), expected)
 

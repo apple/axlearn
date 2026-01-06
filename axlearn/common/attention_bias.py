@@ -732,7 +732,7 @@ def or_masks(*mask_fns: ConfigOr[MaskFn]) -> MaskFn:
 def and_masks(*mask_fns: ConfigOr[MaskFn]) -> MaskFn:
     """Returns a MaskFn that's the intersection of provided MaskFn's."""
 
-    def mask(query_position: Tensor, key_position: Tensor):
+    def mask(query_position: Tensor, key_position: Tensor) -> Tensor:
         fns = [maybe_instantiate(arg) for arg in mask_fns]
         result = fns[0](query_position, key_position)
         for mask in fns[1:]:
@@ -754,12 +754,29 @@ def sliding_window_causal_mask(sliding_window_size: int) -> MaskFn:
         sliding_window_size: Left context of sliding window mask.
     """
 
-    def mask(query_position: Tensor, key_position: Tensor):
+    def mask(query_position: Tensor, key_position: Tensor) -> Tensor:
         pos_mask = query_position - key_position <= sliding_window_size
         return pos_mask
 
     fun = and_masks(causal_mask, mask)
     return fun
+
+
+def truncated_key_mask(valid_k_len: int) -> MaskFn:
+    """Creates a mask function that cuts off attention beyond valid_k_len.
+
+    Args:
+        valid_k_len: The valid key length. Positions >= valid_k_len will be masked out.
+
+    Returns:
+        A mask function that returns True for key_position < valid_k_len, False otherwise.
+    """
+
+    def mask_fn(query_position: Tensor, key_position: Tensor) -> Tensor:
+        del query_position
+        return key_position < valid_k_len
+
+    return mask_fn
 
 
 def make_causal_biases(seq_len: int) -> Tensor:
