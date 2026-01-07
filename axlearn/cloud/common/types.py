@@ -11,7 +11,7 @@ Terminology:
 import dataclasses
 import datetime
 from collections.abc import Sequence
-from typing import Optional, TypeVar
+from typing import Any, Optional, TypeVar
 
 ResourceType = str
 TopologyType = str
@@ -70,7 +70,7 @@ _T = TypeVar("_T", int, float)
 ResourceMap = dict[ResourceType, _T]
 
 # Mapping from project ids to resource quota/limit/usage of the project.
-ProjectResourceMap = dict[str, ResourceMap]
+ProjectResourceMap = dict[str, ResourceMap[_T]]
 
 # A sequence of (job_id, job_metadata) pairs. The higher priority jobs are listed before the
 # lower priority ones.
@@ -78,3 +78,6 @@ JobQueue = Sequence[tuple[str, JobMetadata]]
 
 # A mapping from project ids to its job queue.
 ProjectJobs = dict[str, JobQueue]
+
+# JobStateMetadata
+JobStateMetadata = dict[str, Any]

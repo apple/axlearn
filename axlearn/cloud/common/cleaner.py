@@ -88,6 +88,7 @@ class UnschedulableCleaner(Cleaner):
         for job_name, job_spec in jobs.items():
             schedule_result = scheduler.schedule(
                 dict(my_job=job_spec.metadata),
+                {},
             )
             job_verdict = schedule_result.job_verdicts.get("my_job")
             # In certain corner cases, schedule_result may not contain the job being passed in

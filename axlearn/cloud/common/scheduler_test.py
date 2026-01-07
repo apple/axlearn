@@ -19,14 +19,14 @@ from axlearn.cloud.common.scheduler import (
     ProjectJobSorter,
     ReporterFn,
     ReportingScheduler,
+    ResourceVerdictProvider,
     TierScheduler,
     _compute_total_limits,
-    _job_verdict,
     _normalize_quotas,
     _recursively_to_dict,
     composite_reporter,
 )
-from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.types import JobStateMetadata, ResourceMap
 from axlearn.common.config import ConfigOr, InstantiableConfig, config_for_function
 from axlearn.common.test_utils import TestCase
 
@@ -190,7 +190,15 @@ class UtilsTest(TestCase):
         ),
     )
     def test_job_verdict(self, resources: dict, limits: dict, over_limits: set):
-        self.assertEqual(over_limits, _job_verdict(resources, limits).over_limits)
+        verdict_provider = ResourceVerdictProvider.default_config().instantiate()
+        job_metadata = _mock_job_metadata(resources)
+        verdict = verdict_provider.get_verdict(
+            job_id="test_job",
+            job_metadata=job_metadata,
+            job_state_metadata=JobStateMetadata(),
+            remaining_limits=limits,
+        )
+        self.assertEqual(over_limits, verdict.over_limits)
 
     @parameterized.parameters(
         dict(resource_limits=[], expected={}),
@@ -205,7 +213,7 @@ class UtilsTest(TestCase):
 class TierSchedulerTest(parameterized.TestCase):
     def test_validate_tiers(self):
         sched: TierScheduler = TierScheduler.default_config().instantiate()
-        common_kwargs = dict(project_quotas={}, project_jobs={})
+        common_kwargs = dict(project_quotas={}, project_jobs={}, job_state_metadata={})
         with self.assertRaisesRegex(ValueError, "at least one tier"):
             sched.schedule(resource_limits=[], **common_kwargs)
 
@@ -559,6 +567,7 @@ class TierSchedulerTest(parameterized.TestCase):
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs=project_jobs,
+            job_state_metadata={},
         )
         # project_limits should reflect limits across tiers.
         self.assertEqual(expected_project_limits, results.project_limits)
@@ -718,7 +727,7 @@ class TestJobScheduler(parameterized.TestCase):
         self.assertEqual(sched._quota(), _mock_get_resource_limits())
 
         # Test scheduling. Get schedule results.
-        results = sched.schedule(jobs, dry_run=dry_run, verbosity=1)
+        results = sched.schedule(jobs, {}, dry_run=dry_run, verbosity=1)
         # Get expected results.
         if dry_run:
             # All of the jobs should be scheduled, regardless.
@@ -768,7 +777,7 @@ class TestJobScheduler(parameterized.TestCase):
             )
             for index, proj in enumerate(["a", "b", "c"])
         }
-        results = sched.schedule(jobs)
+        results = sched.schedule(jobs, {})
         job_verdicts = results.job_verdicts
         # Two of the older jobs should run, even though every job's demand exceeds the project
         # limit.
@@ -814,7 +823,7 @@ class TestJobScheduler(parameterized.TestCase):
                     ),
                 }
             )
-        results = sched.schedule(jobs)
+        results = sched.schedule(jobs, {})
 
         # Get verdicts by job name.
         job_verdicts = results.job_verdicts
@@ -915,7 +924,7 @@ class TestJobScheduler(parameterized.TestCase):
             mock.patch(f"{__name__}._dummy_reporter_fn_impl") as mock_reporter_as_fn,
         ):
             scheduler_instance: JobScheduler = cfg.instantiate()
-            scheduler_instance.schedule(jobs, verbosity=1)
+            scheduler_instance.schedule(jobs, {}, verbosity=1)
 
             # Check that TierScheduler is triggered as inner scheduler.
             mock_tier_schedule.assert_called_once()

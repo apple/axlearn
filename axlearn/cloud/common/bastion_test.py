@@ -1639,9 +1639,10 @@ class BastionTest(parameterized.TestCase):
                 }
                 mock_bastion._runtime_options = runtime_options
                 mock_bastion._update_jobs()
-                args, kwargs = mock_scheduler.schedule.call_args
-                self.assertSameElements(expect_schedulable, args[0].keys())
-                self.assertEqual({"dry_run": expect_dry_run, "verbosity": expect_verbosity}, kwargs)
+                _, kwargs = mock_scheduler.schedule.call_args
+                self.assertSameElements(expect_schedulable, kwargs["job_metadata"].keys())
+                self.assertEqual(expect_dry_run, kwargs["dry_run"])
+                self.assertEqual(expect_verbosity, kwargs["verbosity"])
 
     def test_exception(self):
         patch_signal = mock.patch(f"{bastion.__name__}.send_signal")

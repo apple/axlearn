@@ -113,8 +113,8 @@ except ModuleNotFoundError:
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.event_queue import BaseQueueClient, Event
 from axlearn.cloud.common.quota import QuotaFn
-from axlearn.cloud.common.scheduler import BaseScheduler, JobMetadata, JobScheduler, ResourceMap
-from axlearn.cloud.common.types import JobSpec, Topology
+from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, ResourceMap
+from axlearn.cloud.common.types import JobMetadata, JobSpec, JobStateMetadata, Topology
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
 from axlearn.cloud.common.validator import JobValidator
@@ -461,7 +461,7 @@ class JobState:
     """
 
     status: JobStatus
-    metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
+    metadata: JobStateMetadata = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -1197,10 +1197,12 @@ class Bastion(Configurable):
         logging.info("==Begin update step.")
 
         # Identify jobs which are schedulable.
-        schedulable_jobs = {}
+        schedulable_job_metadata: dict[str, JobMetadata] = {}
+        schedulable_job_state_metadata: dict[str, JobStateMetadata] = {}
         for job_name, job in self._active_jobs.items():
             if job.state.status in {JobStatus.PENDING, JobStatus.ACTIVE}:
-                schedulable_jobs[job_name] = job.spec.metadata
+                schedulable_job_metadata[job_name] = job.spec.metadata
+                schedulable_job_state_metadata[job_name] = job.state.metadata
 
         # Decide which jobs to resume/pre-empt.
         schedule_options = self._get_runtime_options(
@@ -1208,11 +1210,12 @@ class Bastion(Configurable):
             defaults={"dry_run": False, "verbosity": 0},
         )
         schedule_results: BaseScheduler.ScheduleResults = self._scheduler.schedule(
-            schedulable_jobs,
+            job_metadata=schedulable_job_metadata,
+            job_state_metadata=schedulable_job_state_metadata,
             dry_run=schedule_options["dry_run"],
             verbosity=schedule_options["verbosity"],
         )
-        self._append_to_history(schedulable_jobs, schedule_results)
+        self._append_to_history(schedulable_job_metadata, schedule_results)
         for job_name, verdict in schedule_results.job_verdicts.items():
             job = self._active_jobs[job_name]
             assert job.state.status in {JobStatus.PENDING, JobStatus.ACTIVE}

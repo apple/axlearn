@@ -22,6 +22,7 @@ from axlearn.cloud.common.quota import QuotaFn
 from axlearn.cloud.common.types import (
     JobMetadata,
     JobQueue,
+    JobStateMetadata,
     ProjectJobs,
     ProjectResourceMap,
     ResourceMap,
@@ -176,6 +177,7 @@ class BaseScheduler(Configurable):
         resource_limits: Sequence[ResourceMap[int]],
         project_quotas: ProjectResourceMap[float],
         project_jobs: ProjectJobs,
+        job_state_metadata: dict[str, JobStateMetadata],
         verbosity: int = 0,
     ) -> ScheduleResults:
         """Makes per-job scheduling decisions based on available resources, quotas, and jobs.
@@ -185,6 +187,7 @@ class BaseScheduler(Configurable):
                 available resources.
             project_quotas: A mapping from project ids to quotas.
             project_jobs: A mapping from project ids to its job queue.
+            job_state_metadata: Mapping from jobs ids to jobs state metadata.
             verbosity: The logging verbosity.
 
         Returns:
@@ -212,18 +215,6 @@ def _normalize_quotas(
                 quota / max(quota_sums[resource_type], 1e-8)
             ) * resource_limits.get(resource_type, 0)
     return normalized_quotas
-
-
-def _job_verdict(demands: dict[ResourceType, int], limits: ResourceMap[int]) -> JobVerdict:
-    """Constructs a verdict for the job."""
-    over_limits = set()
-    for resource_type, demand in demands.items():
-        if demand > limits.get(resource_type, 0):
-            over_limits.add(resource_type)
-    verdict = JobVerdict()
-    if over_limits:
-        verdict.over_limits = over_limits
-    return verdict
 
 
 def _recursively_to_dict(x: Any) -> Any:
@@ -261,6 +252,91 @@ def _demote_unschedulable_jobs(jobs: JobQueue, *, limits: ResourceMap[int]) -> J
     return schedulable + unschedulable
 
 
+class BaseVerdictProvider(Configurable):
+    """Interface for determining whether a job should be scheduled."""
+
+    def prepare(
+        self,
+        *,
+        project_jobs: ProjectJobs,
+        project_quotas: ProjectResourceMap[float],
+        job_state_metadata: dict[str, JobStateMetadata],
+    ):
+        """Prepares the verdict provider for a new scheduling round.
+
+        This is called at the start of each schedule() call and can be used to
+        clear caches, refresh state, initialize data structures, etc.
+
+        Args:
+            project_jobs: Mapping from project_id to job queue.
+            project_quotas: A mapping from project ids to quotas.
+            job_state_metadata: Mapping from job_id to JobStateMetadata.
+        """
+        pass  # Default implementation does nothing
+
+    def get_verdict(
+        self,
+        *,
+        job_id: str,
+        job_metadata: JobMetadata,
+        job_state_metadata: JobStateMetadata,
+        remaining_limits: ResourceMap[int],
+    ) -> JobVerdict:
+        """Determines if a job should be scheduled.
+
+        Args:
+            job_id: Unique identifier for the job.
+            job_metadata: Metadata about the job (resources, priority, etc.).
+            job_state_metadata: Job state metadata for the current job.
+            remaining_limits: Available resources.
+
+        Returns:
+            JobVerdict indicating whether the job should run and any metadata.
+        """
+        raise NotImplementedError(type(self))
+
+
+class ResourceVerdictProvider(BaseVerdictProvider):
+    """Default verdict provider that checks resource availability."""
+
+    def get_verdict(
+        self,
+        *,
+        job_id: str,
+        job_metadata: JobMetadata,
+        job_state_metadata: JobStateMetadata,
+        remaining_limits: ResourceMap[int],
+    ) -> JobVerdict:
+        """Checks if job demands fit within resource limits.
+
+        Args:
+            job_id: Unique identifier for the job.
+            job_metadata: Metadata about the job.
+            job_state_metadata: Job state metadata for the current job
+            remaining_limits: Available resources.
+
+        Returns:
+            JobVerdict with over_limits set if resources unavailable.
+        """
+        demands = job_metadata.resources
+        over_limits = set()
+        for resource_type, demand in demands.items():
+            if demand > remaining_limits.get(resource_type, 0):
+                logging.debug(
+                    "Job %s over resource limit for %s: %d > %d",
+                    job_id,
+                    resource_type,
+                    demand,
+                    remaining_limits.get(resource_type, 0),
+                )
+                over_limits.add(resource_type)
+
+        verdict = JobVerdict()
+        if over_limits:
+            verdict.over_limits = over_limits
+        return verdict
+
+
 class TierScheduler(BaseScheduler):
     """A scheduler which greedily assigns jobs to tiers.
 
@@ -288,12 +364,28 @@ class TierScheduler(BaseScheduler):
         (lowest priority) tier which contributed quota.
     """
 
+    @config_class
+    class Config(BaseScheduler.Config):
+        """Configures TierScheduler.
+
+        Attributes:
+            verdict_provider: Provider for making scheduling verdicts (resource + topology).
+        """
+
+        verdict_provider: BaseVerdictProvider.Config = ResourceVerdictProvider.default_config()
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        cfg: TierScheduler.Config = self.config
+        self._verdict_provider: BaseVerdictProvider = cfg.verdict_provider.instantiate()
+
     def schedule(
         self,
         *,
         resource_limits: Sequence[ResourceMap[int]],
         project_quotas: ProjectResourceMap,
         project_jobs: ProjectJobs,
+        job_state_metadata: dict[str, JobStateMetadata],
         verbosity: int = 0,
     ) -> BaseScheduler.ScheduleResults:
         """See `BaseScheduler.schedule` for details."""
@@ -312,7 +404,7 @@ class TierScheduler(BaseScheduler):
         # Maps project_id -> resource_type -> usage.
         project_usages = collections.defaultdict(lambda: collections.defaultdict(int))
         # Maps project_id -> deque of (job_id, job_metadata).
-        project_jobs: dict[str, collections.deque[tuple[str, JobMetadata]]] = {
+        project_job_queues: dict[str, collections.deque[tuple[str, JobMetadata]]] = {
             project_id: collections.deque(
                 _demote_unschedulable_jobs(sorted_jobs, limits=remaining_limits)
             )
@@ -321,9 +413,9 @@ class TierScheduler(BaseScheduler):
 
         def project_queue_item(project_id: str) -> tuple[float, datetime.datetime, str]:
             """Constructs a queue entry for the given project."""
-            assert len(project_jobs[project_id]) > 0
+            assert len(project_job_queues[project_id]) > 0
             usages = project_usages[project_id]
-            _, next_job = project_jobs[project_id][0]
+            _, next_job = project_job_queues[project_id][0]
             usage_ratios = [
                 (usages[resource_type] + usage)
                 / max(project_quotas[project_id][resource_type], 1e-8)
@@ -333,9 +425,16 @@ class TierScheduler(BaseScheduler):
             return max((0, *usage_ratios)), next_job.creation_time, project_id
 
         # Initialize queue with projects.
-        for project_id, sorted_jobs in project_jobs.items():
+        for project_id, sorted_jobs in project_job_queues.items():
             if sorted_jobs:
                 project_queue.put(project_queue_item(project_id))
+
+        # Prepare the verdict provider
+        self._verdict_provider.prepare(
+            project_jobs=project_jobs,
+            project_quotas=project_quotas,
+            job_state_metadata=job_state_metadata,
+        )
 
         def traverse_tiers(
             tier_limits: dict[int, ResourceMap], demands: ResourceMap
@@ -357,10 +456,15 @@ class TierScheduler(BaseScheduler):
         job_verdicts = {}
         while not project_queue.empty():
             project_usage_ratio, _, project_id = project_queue.get()
-            job_id, job_metadata = project_jobs[project_id].popleft()
+            job_id, job_metadata = project_job_queues[project_id].popleft()
 
             # Admit the highest priority job within the project.
-            verdict = _job_verdict(job_metadata.resources, remaining_limits)
+            verdict = self._verdict_provider.get_verdict(
+                job_id=job_id,
+                job_metadata=job_metadata,
+                job_state_metadata=job_state_metadata.get(job_id, JobStateMetadata()),
+                remaining_limits=dict(remaining_limits),
+            )
             if verdict:
                 # In the forward pass, we greedily identify the minimum set of tiers that are
                 # required to satisfy the job's demands.
@@ -374,7 +478,8 @@ class TierScheduler(BaseScheduler):
                     dict(reversed(list(enumerate(resource_limits[: final_tier + 1])))),
                     job_metadata.resources,
                 )
-                verdict = JobVerdict(metadata={"tier": final_tier})
+                # Add tier to verdict metadata
+                verdict.metadata["tier"] = final_tier
 
                 # Update resource_limits, remaining_limits and project_usages.
                 for tier, usages in tier_usages.items():
@@ -391,7 +496,7 @@ class TierScheduler(BaseScheduler):
                 )
 
             job_verdicts[job_id] = verdict
-            if project_jobs[project_id]:
+            if project_job_queues[project_id]:
                 project_queue.put(project_queue_item(project_id))
 
         return BaseScheduler.ScheduleResults(
@@ -411,6 +516,7 @@ class ReporterFn(Protocol):
         resource_limits: Sequence[ResourceMap],
         project_quotas: ProjectResourceMap,
         project_jobs: ProjectJobs,
+        job_state_metadata: dict[str, JobStateMetadata],
         verbosity: int,
     ):
         """A callable that handles schedule inputs and results."""
@@ -422,6 +528,7 @@ def logging_reporter(
     resource_limits: Sequence[ResourceMap],
     project_quotas: ProjectResourceMap,
     project_jobs: ProjectJobs,
+    job_state_metadata: dict[str, JobStateMetadata],
     verbosity: int,
 ):
     """An implementation of ReporterFn which logs schedule verdicts by associating them
@@ -443,12 +550,14 @@ def logging_reporter(
         for job_name, job_metadata in project_job_queue:
             job_verdict = schedule_results.job_verdicts[job_name]
             logging.info(
-                "Job %s: Resources [%s] Over limits [%s] Should Run? [%s] Metadata [%s]",
+                "Job %s: Resources [%s] Over limits [%s] Should Run? [%s] "
+                "Metadata [%s] State Metadata [%s]",
                 job_name,
                 job_metadata.resources,
                 job_verdict.over_limits,
                 job_verdict.should_run(),
                 job_verdict.metadata,
+                job_state_metadata.get(job_name, JobStateMetadata()),
             )
     logging.info("==End of scheduling report")
     logging.info("")
@@ -533,7 +642,8 @@ class JobScheduler(Configurable):
 
     def schedule(
         self,
-        jobs: dict[str, JobMetadata],
+        job_metadata: dict[str, JobMetadata],
+        job_state_metadata: dict[str, JobStateMetadata],
         *,
         dry_run: bool = False,
         verbosity: int = 0,
@@ -543,7 +653,9 @@ class JobScheduler(Configurable):
         The scheduling behavior depends on the configured `cfg.scheduler`.
 
         Args:
-            jobs: A mapping from {job_name: job_metadata}.
+            job_metadata: A mapping from job_name to JobMetadata.
+            job_state_metadata: A mapping from job_name to JobStateMetadata containing the job's
+                current state metadata.
             dry_run: Whether to enable dry-run mode, i.e. everything gets scheduled.
                 Typically used with higher verbosity to debug scheduling.
             verbosity: Whether to log scheduling report.
@@ -553,8 +665,8 @@ class JobScheduler(Configurable):
         """
         # Group jobs by project.
         project_jobs = collections.defaultdict(dict)
-        for job_name, job_metadata in jobs.items():
-            project_jobs[job_metadata.project_id][job_name] = job_metadata
+        for job_name, metadata in job_metadata.items():
+            project_jobs[metadata.project_id][job_name] = metadata
 
         # Sort jobs according to priority.
         for project_id, jobs_to_sort in project_jobs.items():
@@ -569,15 +681,16 @@ class JobScheduler(Configurable):
             resource_limits=resource_limits,
             project_quotas=project_quotas,
             project_jobs=project_jobs,
+            job_state_metadata=job_state_metadata,
             verbosity=verbosity,
         )
 
         # Construct mock verdicts allowing everything to be scheduled.
         if dry_run:
             project_usages = collections.defaultdict(lambda: collections.defaultdict(int))
-            for job_metadata in jobs.values():
-                for resource_type, usage in job_metadata.resources.items():
-                    project_usages[job_metadata.project_id][resource_type] += usage
+            for metadata in job_metadata.values():
+                for resource_type, usage in metadata.resources.items():
+                    project_usages[metadata.project_id][resource_type] += usage
             schedule_results = BaseScheduler.ScheduleResults(
                 project_limits=schedule_results.project_limits,
                 project_usages=project_usages,
