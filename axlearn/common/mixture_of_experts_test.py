@@ -27,15 +27,20 @@ from axlearn.common.attention import (
     TransformerFeedForwardLayer,
     TransformerLayer,
 )
+from axlearn.common.config import config_for_function
 from axlearn.common.layers import RMSNorm, set_bias_recursively
 from axlearn.common.mixture_of_experts import (
     AdaptiveLoadBalanceLoss,
+    GateNoise,
     Top2Gating,
     TopKGating,
     TransformerFeedForwardMoE,
+    _compute_expert_capacity,
     _convert_feedforward_to_moe_parameters,
+    approx_max_k,
     convert_dense_to_moe_parameters,
     get_outer_batch_from_mesh,
+    sigmoid,
 )
 from axlearn.common.module import functional as F
 from axlearn.common.quantized_dot_general.activation_clipping import TanhActivationClippingLayer
@@ -56,6 +61,22 @@ from axlearn.common.utils import (
 
 # pylint: disable=no-self-use,protected-access
 class TransformerFeedForwardMoETest(TestCase):
+
+    @parameterized.parameters(
+        {"group_size": 50, "capacity_factor": 40, "num_experts": 40, "expected_capacity": 50},
+        {"group_size": 50, "capacity_factor": 2.5, "num_experts": 40, "expected_capacity": 3},
+        {"group_size": 8192, "capacity_factor": 2.5, "num_experts": 40, "expected_capacity": 512},
+        {"group_size": 8192, "capacity_factor": 40, "num_experts": 40, "expected_capacity": 8192},
+    )
+    def test_expert_capacity(self, group_size, capacity_factor, num_experts, expected_capacity):
+        capacity = _compute_expert_capacity(
+            group_size=group_size,
+            num_experts=num_experts,
+            capacity_factor=capacity_factor,
+            expert_capacity=None,
+        )
+        self.assertEqual(capacity, expected_capacity)
+
     @parameterized.product(is_training=(True, False), outer_batch=(1, 2))
     def test_moe_layer_forward(self, is_training, outer_batch):
         batch_size = 4
@@ -282,7 +303,7 @@ class TransformerFeedForwardMoETest(TestCase):
         cfg.eval_capacity_factor = (
             100.0  # set to a larger number to prevent token dropping for test.
         )
-        cfg.top_k = top_k
+        cfg.num_experts_per_token = top_k
 
         layer: TopKGating = cfg.instantiate(parent=None)
         state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
@@ -349,7 +370,7 @@ class TransformerFeedForwardMoETest(TestCase):
         cfg1.eval_capacity_factor = (
             100.0  # set to a larger number to prevent token dropping for test.
         )
-        cfg1.top_k = 2
+        cfg1.num_experts_per_token = 2
         layer1: TopKGating = cfg.instantiate(parent=None)
         state1 = layer1.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
         gating1, _ = F(
@@ -901,6 +922,174 @@ class GetOuterBatchFromMeshTest(absltest.TestCase):
             mesh_shape=inferred_shape,
         )
         self.assertEqual(result, 1 * 2)
+
+
+class TopKGatingTest(TestCase):
+    """Tests for TopKGating functionality."""
+
+    def test_sigmoid_score_fn(self):
+        """Test that sigmoid scoring function works correctly."""
+        cfg = TopKGating.default_config().set(
+            name="test",
+            score_fn=config_for_function(sigmoid),
+            num_experts=4,
+            num_experts_per_token=1,
+            expert_capacity=4,
+        )
+        layer: TopKGating = cfg.instantiate(parent=None)
+        inputs = np.array([-1, 1, 2, 3], dtype=np.float32)
+        value = layer._score(inputs)
+        assert_allclose(value, 1.0 / (1.0 + np.exp(-inputs)))
+
+    @parameterized.parameters(
+        {"num_experts_per_token": 2, "num_experts": 4, "outer_batch": 2},
+    )
+    def test_topk_noisy_gating(
+        self,
+        num_experts_per_token,
+        num_experts,
+        outer_batch,
+    ):
+        """Test that noisy gating with Gumbel noise produces different results."""
+        batch_size = 2
+        seq_len = 8
+        cfg = TopKGating.default_config().set(name="test", noisy_gating=GateNoise.GUMBEL)
+        cfg.num_experts = num_experts
+        cfg.num_experts_per_token = num_experts_per_token
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+
+        noisy_gating, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        cfg = TopKGating.default_config().set(name="test")
+        cfg.num_experts = num_experts
+        cfg.num_experts_per_token = num_experts_per_token
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+
+        gating, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        noisy_gating_combine_tensor = jnp.asarray(noisy_gating.combine_tensor).astype(jnp.float32)
+        gating_combine_tensor = jnp.asarray(gating.combine_tensor).astype(jnp.float32)
+        assert not jnp.array_equal(noisy_gating_combine_tensor, gating_combine_tensor)
+
+    @parameterized.parameters(
+        {"num_experts_per_token": 2, "num_experts": 4, "outer_batch": 2},
+    )
+    def test_approx_topk_noisy_gating(
+        self,
+        num_experts_per_token,
+        num_experts,
+        outer_batch,
+    ):
+        """Test that approximate top-k produces same results as exact top-k for small
+        num_experts.
+        """
+        batch_size = 2
+        seq_len = 8
+        cfg = TopKGating.default_config().set(
+            name="test", topk_fn=config_for_function(approx_max_k).set(recall_target=0.95)
+        )
+        cfg.num_experts = num_experts
+        cfg.num_experts_per_token = num_experts_per_token
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+
+        gate_0, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        cfg = TopKGating.default_config().set(name="test")
+        cfg.num_experts = num_experts
+        cfg.num_experts_per_token = num_experts_per_token
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+
+        gate_1, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        gate_0_combine_tensor = jnp.asarray(gate_0.combine_tensor).astype(jnp.float32)
+        gate_1_combine_tensor = jnp.asarray(gate_1.combine_tensor).astype(jnp.float32)
+        # Given there are 4 experts in total, we expect that the approximate topk with recall = 0.95
+        # should return the same results as topk.
+        assert jnp.array_equal(gate_0_combine_tensor, gate_1_combine_tensor)
+
+    @parameterized.parameters(
+        {"num_experts_per_token": 2, "num_experts": 4, "outer_batch": 2},
+    )
+    def test_capacity_factor_gating(
+        self,
+        num_experts_per_token,
+        num_experts,
+        outer_batch,
+    ):
+        """Test that default capacity factor equals num_experts_per_token."""
+        batch_size = 2
+        seq_len = 8
+        cfg = TopKGating.default_config().set(name="test")
+        cfg.num_experts = num_experts
+        cfg.num_experts_per_token = num_experts_per_token
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+
+        gate_0, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        cfg = TopKGating.default_config().set(name="test", train_capacity_factor=2.0)
+        cfg.num_experts = num_experts
+        cfg.num_experts_per_token = num_experts_per_token
+        layer: TopKGating = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        shape = (outer_batch, batch_size, seq_len, num_experts)
+        logits = jax.random.uniform(jax.random.PRNGKey(1), shape=shape)
+
+        gate_1, _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(logits=logits),
+        )
+
+        gate_0_combine_tensor = jnp.asarray(gate_0.combine_tensor).astype(jnp.float32)
+        gate_1_combine_tensor = jnp.asarray(gate_1.combine_tensor).astype(jnp.float32)
+        assert jnp.array_equal(gate_0_combine_tensor, gate_1_combine_tensor)
 
 
 if __name__ == "__main__":
