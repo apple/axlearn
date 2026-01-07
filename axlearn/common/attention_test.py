@@ -3886,6 +3886,62 @@ class TransformerAttentionLayerTest(TestCase):
         )
         self.assertNestedAllClose(outputs, ref_outputs)
 
+    @parameterized.parameters(
+        dict(residual_gate_init=None),
+        dict(residual_gate_init=0.0),
+        dict(residual_gate_init=-1.0),
+    )
+    def test_residual_gate(self, residual_gate_init: Optional[float]):
+        """Test the residual gating mechanism in TransformerAttentionLayer.
+
+        Tests that:
+        1. The layer runs successfully with and without residual_gate_init.
+        2. When residual_gate_init is not None, the residual_gate_theta parameter exists.
+        3. When residual_gate_init is None, the residual_gate_theta parameter does not exist.
+        4. The parameter is initialized to the expected value.
+        """
+        init_prng, target_prng = jax.random.split(jax.random.PRNGKey(0), 2)
+        batch, seq_len, model_dim = 2, 6, 8
+
+        # Use v2 structure since residual gating is applied in v2 structure
+        layer_kwargs = dict(
+            target_dim=model_dim,
+            source_dim=model_dim,
+            structure="v2",
+            norm={NormPosition.IN_NORM: RMSNorm.default_config()},
+            residual_gate_init=residual_gate_init,
+        )
+
+        cfg: TransformerAttentionLayer.Config = TransformerAttentionLayer.default_config().set(
+            **layer_kwargs
+        )
+        cfg.attention.set(num_heads=2, mask=CausalAttentionBias.default_config())
+        layer: TransformerAttentionLayer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=init_prng)
+
+        # Check parameter existence
+        if residual_gate_init is not None:
+            self.assertIn("residual_gate_theta", layer_params)
+            # Check parameter shape (should be scalar)
+            self.assertEqual(layer_params["residual_gate_theta"].shape, ())
+            # Check parameter initialization value
+            assert_allclose(layer_params["residual_gate_theta"], residual_gate_init)
+        else:
+            self.assertNotIn("residual_gate_theta", layer_params)
+
+        # Test that forward pass runs successfully
+        target = jax.random.uniform(target_prng, shape=[batch, seq_len, model_dim])
+        outputs, _ = F(
+            layer,
+            inputs=dict(target=jnp.asarray(target)),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+
+        # Verify output shape matches input shape
+        self.assertEqual(outputs.data.shape, target.shape)
+
 
 class TransformerFeedForwardLayerTest(TestCase):
     @parameterized.parameters(
@@ -4088,6 +4144,58 @@ class TransformerFeedForwardLayerTest(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         self.assertNestedAllClose(y, ref_y)
+
+    @parameterized.parameters(
+        dict(residual_gate_init=None),
+        dict(residual_gate_init=0.0),
+        dict(residual_gate_init=-1.0),
+    )
+    def test_residual_gate(self, residual_gate_init: Optional[float]):
+        """Test the residual gating mechanism in TransformerFeedForwardLayer.
+
+        Tests that:
+        1. The layer runs successfully with and without residual_gate_init.
+        2. When residual_gate_init is not None, the residual_gate_theta parameter exists.
+        3. When residual_gate_init is None, the residual_gate_theta parameter does not exist.
+        4. The parameter is initialized to the expected value.
+        """
+        batch, seq_len, dim = 2, 3, 4
+
+        # Use v2 structure since residual gating is applied in v2 structure.
+        # The norm configuration is arbitrary - residual gating doesn't depend on it.
+        cfg = TransformerFeedForwardLayer.default_config().set(
+            name="ffn",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            structure="v2",
+            norm={NormPosition.IN_NORM: RMSNorm.default_config()},
+            residual_gate_init=residual_gate_init,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        # Check parameter existence
+        if residual_gate_init is not None:
+            self.assertIn("residual_gate_theta", layer_params)
+            # Check parameter shape (should be scalar)
+            self.assertEqual(layer_params["residual_gate_theta"].shape, ())
+            # Check parameter initialization value
+            assert_allclose(layer_params["residual_gate_theta"], residual_gate_init)
+        else:
+            self.assertNotIn("residual_gate_theta", layer_params)
+
+        # Test that forward pass runs successfully
+        x = jax.random.normal(jax.random.PRNGKey(1), shape=[batch, seq_len, dim])
+        y, _ = F(
+            layer,
+            inputs=dict(inputs=x),
+            state=layer_params,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
+        )
+
+        # Verify output shape matches input shape
+        self.assertEqual(y.shape, x.shape)
 
 
 class BaseTransformerTest(TestCase):

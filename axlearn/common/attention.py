@@ -2855,6 +2855,8 @@ class TransformerAttentionLayer(BaseLayer):
         # TODO (bwzhang@) Adding a unittest for the hybridnorm.
         # v2: see comments on NormPosition for details.
         structure: str = "prenorm"
+        # Residual connection gating
+        residual_gate_init: Optional[float] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -2886,6 +2888,18 @@ class TransformerAttentionLayer(BaseLayer):
         )
         self._add_child("dropout", cfg.dropout)
         self._add_child("stochastic_depth", cfg.stochastic_depth)
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        params = {}
+        if cfg.residual_gate_init is not None:
+            params["residual_gate_theta"] = ParameterSpec(
+                shape=(),
+                initializer=constant_initializer(cfg.residual_gate_init),
+                weight_decay_scale=0.0,
+                dtype=jnp.float32,
+            )
+        return params
 
     class Output(NamedTuple):
         """Outputs of TransformerAttentionLayer.
@@ -3018,7 +3032,20 @@ class TransformerAttentionLayer(BaseLayer):
             atten_state, atten_output = attention_thunk(norm_target)
             data = atten_output.data
             data = self.res_norm(data) if NormPosition.RES_NORM in cfg.norm else data
-            data = target + self.stochastic_depth(self.dropout(data))
+            # Apply residual gating if configured
+            if cfg.residual_gate_init is not None:
+                theta = self.parameters["residual_gate_theta"]
+                self.add_summary("residual_gate/theta", theta)
+                theta_fp32 = theta.astype(jnp.float32)
+                p_fp32 = jax.nn.sigmoid(theta_fp32)
+                p_fp32 = jnp.clip(p_fp32, 1e-6, 1.0 - 1e-6)
+                target_fp32 = target.astype(jnp.float32)
+                residual_fp32 = self.stochastic_depth(self.dropout(data)).astype(jnp.float32)
+                sqrt_1_minus_p_sq = jnp.sqrt(1.0 - p_fp32 * p_fp32)
+                data_fp32 = sqrt_1_minus_p_sq * target_fp32 + p_fp32 * residual_fp32
+                data = data_fp32.astype(target.dtype)
+            else:
+                data = target + self.stochastic_depth(self.dropout(data))
             data = self.out_norm(data) if NormPosition.OUT_NORM in cfg.norm else data
         else:
             raise NotImplementedError(cfg.structure)
@@ -3243,6 +3270,9 @@ class TransformerFeedForwardLayer(BaseLayer):
         # TODO(tlei3): deprecate this feature since we use TensorStats.
         add_value_rms_norm_summary: Sequence[str] = []
 
+        # Residual connection gating
+        residual_gate_init: Optional[float] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg: TransformerFeedForwardLayer.Config = self.config
@@ -3302,6 +3332,18 @@ class TransformerFeedForwardLayer(BaseLayer):
         for value in cfg.add_value_rms_norm_summary:
             if value not in ["inputs", "linear1_outputs", "linear2_outputs"]:
                 raise NotImplementedError(f"add_value_rms_norm_summary: {value}")
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        params = {}
+        if cfg.residual_gate_init is not None:
+            params["residual_gate_theta"] = ParameterSpec(
+                shape=(),
+                initializer=constant_initializer(cfg.residual_gate_init),
+                weight_decay_scale=0.0,
+                dtype=jnp.float32,
+            )
+        return params
 
     def forward(self, inputs: Tensor) -> Tensor:
         cfg = self.config
@@ -3370,7 +3412,20 @@ class TransformerFeedForwardLayer(BaseLayer):
             x = self.stochastic_depth(x)
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
-            x += inputs
+            # Apply residual gating if configured
+            if cfg.residual_gate_init is not None:
+                theta = self.parameters["residual_gate_theta"]
+                self.add_summary("residual_gate/theta", theta)
+                theta_fp32 = theta.astype(jnp.float32)
+                p_fp32 = jax.nn.sigmoid(theta_fp32)
+                p_fp32 = jnp.clip(p_fp32, 1e-6, 1.0 - 1e-6)
+                inputs_fp32 = inputs.astype(jnp.float32)
+                x_fp32 = x.astype(jnp.float32)
+                sqrt_1_minus_p_sq = jnp.sqrt(1.0 - p_fp32 * p_fp32)
+                result_fp32 = sqrt_1_minus_p_sq * inputs_fp32 + p_fp32 * x_fp32
+                x = result_fp32.astype(inputs.dtype)
+            else:
+                x += inputs
             x = self.out_norm(x) if NormPosition.OUT_NORM in cfg.norm else x
         else:
             raise NotImplementedError(cfg.structure)

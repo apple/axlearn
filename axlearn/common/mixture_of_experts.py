@@ -1070,6 +1070,10 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         # S - sequence dim
         dim_to_mesh_axis_map: dict[str, Optional[PartitionSpec]] = {}
 
+        # Initial value for residual gate parameter. If None, residual gating is disabled.
+        # When enabled, applies learned gating between input and residual branch.
+        residual_gate_init: Optional[float] = None
+
     @classmethod
     def default_config(cls) -> Config:
         cfg = super().default_config()
@@ -1103,6 +1107,13 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
                 fan_axes=FanAxes(in_axis=-2, out_axis=-1, batch_axis=0),
             ),
         )
+        if cfg.residual_gate_init is not None:
+            params["residual_gate_theta"] = ParameterSpec(
+                shape=(),
+                initializer=constant_initializer(cfg.residual_gate_init),
+                weight_decay_scale=0.0,
+                dtype=jnp.float32,
+            )
         if isinstance(cfg.activation, tuple):
             assert len(cfg.activation) == 2, cfg.activation
             # Create a wi_weight projection for each activation.
@@ -1199,7 +1210,20 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
             x = self.stochastic_depth(x)
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
-            x += inputs
+            # Apply residual gating if configured
+            if cfg.residual_gate_init is not None:
+                theta = self.parameters["residual_gate_theta"]
+                self.add_summary("residual_gate/theta", theta)
+                theta_fp32 = theta.astype(jnp.float32)
+                p_fp32 = jax.nn.sigmoid(theta_fp32)
+                p_fp32 = jnp.clip(p_fp32, 1e-6, 1.0 - 1e-6)
+                inputs_fp32 = inputs.astype(jnp.float32)
+                x_fp32 = x.astype(jnp.float32)
+                sqrt_1_minus_p_sq = jnp.sqrt(1.0 - p_fp32 * p_fp32)
+                result_fp32 = sqrt_1_minus_p_sq * inputs_fp32 + p_fp32 * x_fp32
+                x = result_fp32.astype(inputs.dtype)
+            else:
+                x += inputs
             x = self.out_norm(x) if NormPosition.OUT_NORM in cfg.norm else x
         else:
             raise NotImplementedError(cfg.structure)

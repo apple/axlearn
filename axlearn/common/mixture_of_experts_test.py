@@ -727,6 +727,59 @@ class TransformerFeedForwardMoETest(TestCase):
         )
         self.assertNestedAllClose(outputs, ref_outputs)
 
+    @parameterized.parameters(None, 0.0, -1.0)
+    def test_residual_gate(self, residual_gate_init):
+        """Test residual gating mechanism in TransformerFeedForwardMoE.
+
+        Tests that:
+        1. When residual_gate_init is None, no residual_gate_theta parameter is created.
+        2. When residual_gate_init is not None, residual_gate_theta parameter is created
+           with the correct shape and initial value.
+        3. Forward pass runs successfully in both cases.
+        """
+        batch_size = 2
+        seq_len = 8
+        input_dim = 16
+        hidden_dim = 32
+        num_experts = 4
+        num_groups = 2
+
+        # Use v2 structure with in_norm for residual gating to be applied
+        cfg = TransformerFeedForwardMoE.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_experts=num_experts,
+            num_groups=num_groups,
+            structure="v2",
+            norm={NormPosition.IN_NORM: RMSNorm.default_config()},
+            residual_gate_init=residual_gate_init,
+        )
+        layer: TransformerFeedForwardMoE = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        # Check parameter existence
+        if residual_gate_init is None:
+            self.assertNotIn("residual_gate_theta", state)
+        else:
+            self.assertIn("residual_gate_theta", state)
+            # Check shape is scalar
+            self.assertEqual(state["residual_gate_theta"].shape, ())
+            # Check initial value
+            assert_allclose(state["residual_gate_theta"], residual_gate_init)
+
+        # Test forward pass runs successfully
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        outputs, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+        # Check output shape matches input shape
+        self.assertEqual(outputs.shape, inputs.shape)
+
 
 class ParamConversionTest(parameterized.TestCase):
     @parameterized.product(
