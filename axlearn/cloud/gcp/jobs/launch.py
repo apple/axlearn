@@ -118,7 +118,7 @@ from axlearn.cloud.common.bastion import new_jobspec, serialize_jobspec
 from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
 from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.common.types import JobSpec, ResourceMap
+from axlearn.cloud.common.types import JobSpec, ResourceMap, Topology
 from axlearn.cloud.common.utils import (
     FlagConfigurable,
     configure_logging,
@@ -128,6 +128,7 @@ from axlearn.cloud.common.utils import (
     generate_job_name,
     infer_cli_name,
     infer_resources,
+    infer_topologies,
     parse_action,
 )
 from axlearn.cloud.gcp import runners
@@ -232,6 +233,8 @@ class BaseBastionManagedJob(FlagConfigurable):
         ]
         # Resources used by the job.
         resources: Callable[[ConfigBase], ResourceMap[int]] = infer_resources
+        # Topologies
+        topologies: Callable[[ConfigBase], list[Topology]] = infer_topologies
         # If True, wait for a job to stop when cancelling.
         # Default to None for backwards compatibility.
         wait_for_stop: Optional[bool] = None
@@ -406,11 +409,20 @@ class BaseBastionManagedJob(FlagConfigurable):
         logging.info("Command: %s", cfg.command)
         with tempfile.NamedTemporaryFile("w") as f:
             job_id = generate_job_id()
+
+            # For backwards compatibility, only set topologies for
+            # 7x resource types
+            topologies = None
+            resources = cfg.resources(cfg)
+            if "7x" in resources:
+                topologies = cfg.topologies(cfg)
+
             metadata = JobMetadata(
                 user_id=cfg.user_id,
                 project_id=cfg.project_id or "none",
                 creation_time=datetime.now(timezone.utc),
-                resources=cfg.resources(cfg),
+                resources=resources,
+                topologies=topologies,
                 priority=cfg.priority,
                 job_id=job_id,
             )

@@ -20,8 +20,9 @@ import psutil
 from absl import app, flags, logging
 
 from axlearn.cloud import ROOT_MODULE_NAME
-from axlearn.cloud.common.types import ResourceMap
-from axlearn.cloud.gcp.tpu import infer_tpu_resources
+from axlearn.cloud.common.types import ResourceMap, Topology
+from axlearn.cloud.gcp.tpu import infer_tpu_cores, infer_tpu_resources
+from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 from axlearn.common.config import REQUIRED, ConfigBase, Configurable, Required, config_class
 
 
@@ -430,6 +431,51 @@ def infer_resources(cfg: ConfigBase) -> ResourceMap[int]:
 
     cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
     return dict(total_resources)
+
+
+def infer_topologies(cfg: ConfigBase) -> list[Topology]:
+    """Traverses a job config to identify topologies based on `AcceleratorConfig`.
+
+    Args:
+        cfg: An arbitrary config. Resources should be configured via `AcceleratorConfig`.
+
+    Returns:
+        A list of required topologies containing the type and number of replicas. For TPUs
+        equates to the keys in the USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS map in
+        system characteristics.
+
+    Raises:
+        NotImplementedError: If unable to infer resources for an `instance_type`.
+    """
+
+    topologies: list[Topology] = []
+
+    def visit_fn(_, value):
+        if isinstance(value, AcceleratorConfig):
+            if value.instance_type == "cpu":
+                # CPU quota is not enforced.
+                pass
+            elif value.instance_type.startswith("tpu-"):
+                # Get the tpu type (i.e. {version}-{cores}) from the
+                # instance type (i.e. tpu-<version>-<variant>)
+                tpu_type = infer_tpu_type(value.instance_type)
+                # Reconstruct for final type due to potential alias configurations and other cases
+                # handled in these functions.
+                topology_type = f"{infer_tpu_version(tpu_type)}-{infer_tpu_cores(tpu_type)}"
+                topologies.append(
+                    Topology(
+                        topology=topology_type,
+                        replicas=value.num_replicas,
+                    )
+                )
+            else:
+                raise NotImplementedError(value.instance_type)
+
+    def enter_fn(_, value, default_kv):
+        return None if isinstance(value, AcceleratorConfig) else default_kv
+
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+    return topologies
 
 
 _FLAG_NAMESPACE_ATTRIBUTE = "__axlearn_flag_namespace_mapping"

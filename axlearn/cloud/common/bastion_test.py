@@ -48,7 +48,7 @@ from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import JobScheduler
 from axlearn.cloud.common.scheduler_test import mock_quota_config
-from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap
+from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap, Topology
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.validator import JobValidator
 from axlearn.common.config import config_for_function
@@ -309,11 +309,15 @@ class TestJobSpec(parameterized.TestCase):
 
     @parameterized.parameters(
         [
-            {"env_vars": None},
-            {"env_vars": {"TEST_ENV": "TEST_VAL", "TEST_ENV2": 'VAL_WITH_SPECIAL_:,"-{}'}},
+            {"env_vars": None, "topologies": None},
+            {
+                "env_vars": {"TEST_ENV": "TEST_VAL", "TEST_ENV2": 'VAL_WITH_SPECIAL_:,"-{}'},
+                "topologies": None,
+            },
+            {"env_vars": None, "topologies": [Topology(topology="7x-128", replicas=1)]},
         ],
     )
-    def test_serialization_job_spec(self, env_vars):
+    def test_serialization_job_spec(self, env_vars, topologies: list[Topology]):
         test_spec = new_jobspec(
             name="test_job",
             command="test command",
@@ -325,10 +329,39 @@ class TestJobSpec(parameterized.TestCase):
                 creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
                 resources={"test": 8},
                 priority=1,
+                topologies=topologies,
             ),
         )
         with tempfile.NamedTemporaryFile("w+b") as f:
             serialize_jobspec(test_spec, f.name)
+            deserialized_jobspec = deserialize_jobspec(f=f.name)
+            for key in test_spec.__dataclass_fields__:
+                self.assertIn(key, deserialized_jobspec.__dict__)
+                self.assertEqual(deserialized_jobspec.__dict__[key], test_spec.__dict__[key])
+
+    def test_serialization_job_spec_without_topologies(self):
+        test_spec = new_jobspec(
+            name="test_job",
+            command="test command",
+            env_vars={},
+            metadata=JobMetadata(
+                user_id="test_id",
+                project_id="test_project",
+                # Make sure str timestamp isn't truncated even when some numbers are 0.
+                creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                resources={"test": 8},
+                priority=1,
+            ),
+        )
+        with tempfile.NamedTemporaryFile("w+b") as f:
+            serialize_jobspec(test_spec, f.name)
+
+            # Get contents, ensure for backwards compatibility no topology field is included
+            f.seek(0)
+            data = json.loads(f.read())
+            assert "topologies" not in data["metadata"]
+
+            # Ensure we can still deserialize it
             deserialized_jobspec = deserialize_jobspec(f=f.name)
             for key in test_spec.__dataclass_fields__:
                 self.assertIn(key, deserialized_jobspec.__dict__)

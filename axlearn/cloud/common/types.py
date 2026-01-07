@@ -14,6 +14,13 @@ from collections.abc import Sequence
 from typing import Optional, TypeVar
 
 ResourceType = str
+TopologyType = str
+
+
+@dataclasses.dataclass
+class Topology:
+    topology: TopologyType
+    replicas: int
 
 
 @dataclasses.dataclass
@@ -31,6 +38,8 @@ class JobMetadata:
     job_id: Optional[str] = None
     # Version of the job.
     version: Optional[int] = None
+    # Topologies required by the job
+    topologies: Optional[list[Topology]] = None
 
 
 @dataclasses.dataclass

@@ -21,6 +21,7 @@ from absl.testing import parameterized
 
 from axlearn.cloud import ROOT_MODULE
 from axlearn.cloud.common import utils
+from axlearn.cloud.common.types import Topology
 from axlearn.common.config import REQUIRED, ConfigBase, Configurable, Required, config_class
 from axlearn.common.test_utils import TestWithTemporaryCWD
 
@@ -265,6 +266,51 @@ class UtilsTest(TestWithTemporaryCWD):
             ],
         )
         self.assertEqual({"v4": 16, "v5litepod": 16}, utils.infer_resources(cfg))
+
+    @parameterized.parameters(
+        # Simple topology
+        dict(
+            accelerator_configs=[
+                utils.AcceleratorConfig(instance_type="tpu-v4-8", num_replicas=1),
+            ],
+            expected_topologies=[Topology(topology="v4-8", replicas=1)],
+        ),
+        # Multiple replicas
+        dict(
+            accelerator_configs=[
+                utils.AcceleratorConfig(instance_type="tpu-v4-8", num_replicas=2),
+            ],
+            expected_topologies=[Topology(topology="v4-8", replicas=2)],
+        ),
+        # Multiple configs
+        dict(
+            accelerator_configs=[
+                utils.AcceleratorConfig(instance_type="tpu-v4-8", num_replicas=2),
+                utils.AcceleratorConfig(instance_type="tpu-v6e-16", num_replicas=1),
+            ],
+            expected_topologies=[
+                Topology(topology="v4-8", replicas=2),
+                Topology(topology="v6e-16", replicas=1),
+            ],
+        ),
+        # No Accelerator configs
+        dict(
+            accelerator_configs=[],
+            expected_topologies=[],
+        ),
+    )
+    def test_infer_topologies(
+        self, accelerator_configs: utils.AcceleratorConfig, expected_topologies: list[Topology]
+    ):
+        @config_class
+        class DummyConfig(ConfigBase):
+            accelerator_configs: Optional[list[utils.AcceleratorConfig]] = None
+
+        cfg = DummyConfig(
+            accelerator_configs=accelerator_configs,
+        )
+
+        self.assertEqual(expected_topologies, utils.infer_topologies(cfg))
 
 
 class TestTable(parameterized.TestCase):

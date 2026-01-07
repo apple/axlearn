@@ -114,7 +114,7 @@ from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.event_queue import BaseQueueClient, Event
 from axlearn.cloud.common.quota import QuotaFn
 from axlearn.cloud.common.scheduler import BaseScheduler, JobMetadata, JobScheduler, ResourceMap
-from axlearn.cloud.common.types import JobSpec
+from axlearn.cloud.common.types import JobSpec, Topology
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
 from axlearn.cloud.common.validator import JobValidator
@@ -341,6 +341,11 @@ def serialize_jobspec(spec: JobSpec, f: Union[str, IO]):
     data["metadata"]["creation_time"] = data["metadata"]["creation_time"].strftime(
         "%Y-%m-%d %H:%M:%S.%f"
     )
+
+    # For backwards compatibility, only include topologies if they are set
+    if not data["metadata"]["topologies"]:
+        del data["metadata"]["topologies"]
+
     json.dump(data, f, default=str)
     f.flush()
 
@@ -356,6 +361,10 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
         data["metadata"]["creation_time"] = datetime.strptime(
             data["metadata"]["creation_time"], "%Y-%m-%d %H:%M:%S.%f"
         )
+        if data["metadata"].get("topologies"):
+            data["metadata"]["topologies"] = [
+                Topology(**topology) for topology in data["metadata"]["topologies"]
+            ]
         return new_jobspec(
             version=data["version"],
             name=data["name"],

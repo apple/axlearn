@@ -19,7 +19,7 @@ from axlearn.cloud.common.bastion import JobState as BastionJobState
 from axlearn.cloud.common.bastion import JobStatus, deserialize_jobspec, new_jobspec
 from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, Bundler
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.common.types import JobSpec
+from axlearn.cloud.common.types import JobSpec, Topology
 from axlearn.cloud.common.utils import FlagConfigurable, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.jobs import bastion_vm, launch
@@ -533,6 +533,14 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
         # Test infer tpu resources.
         # pylint: disable-next=too-many-function-args
         self.assertEqual({"v4": 16}, cfg.resources(cfg))
+
+        # Test infer tpu topologies
+        expected_topology = Topology(
+            topology="v4-8",
+            replicas=2,
+        )
+        # pylint: disable-next=too-many-function-args
+        self.assertEqual([expected_topology], cfg.topologies(cfg))
 
         if action in _RUNNER_ACTIONS:
             # Make sure command is expected.
