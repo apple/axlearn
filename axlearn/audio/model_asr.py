@@ -4,12 +4,14 @@
 
 from typing import Optional
 
+import jax.numpy as jnp
+
 from axlearn.audio.decoder_asr import BaseASRDecoderModel, DecodeOutputs
 from axlearn.audio.encoder_asr import ASREncoder
 from axlearn.common.base_encoder_decoder import BaseEncoderDecoderModel
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import Module
-from axlearn.common.utils import Nested, Tensor, validate_contains_paths
+from axlearn.common.utils import Nested, Tensor, safe_not, validate_contains_paths
 
 
 class ASRModel(BaseEncoderDecoderModel):
@@ -41,6 +43,7 @@ class ASRModel(BaseEncoderDecoderModel):
             input_batch: A dict with the following entries:
                 source: A dict containing keyword arguments for the encoder:
                     inputs: A Tensor of shape [batch_size, seq_len].
+                    segment_ids: An int Tensor of shape [batch_size, seq_len].
                     paddings: A 0/1 Tensor of shape [batch_size, seq_len]. 1's represent paddings.
                 target: A dict containing keyword arguments for the decoder:
                     input_ids: An int Tensor of shape [batch_size, num_labels].
@@ -53,9 +56,12 @@ class ASRModel(BaseEncoderDecoderModel):
         """
         validate_contains_paths(input_batch, ["source", "target", "target_labels"])
         # Encoder hidden states: [batch_size, source_len, dim].
-        encoder_output = self.encoder(**input_batch["source"])
+        segment_ids = _get_segment_ids(input_batch["source"])
+        encoder_output = self.encoder(input_batch["source"]["inputs"], segment_ids=segment_ids)
         logits = self.decoder.predict(
-            input_batch=dict(inputs=encoder_output["outputs"], paddings=encoder_output["paddings"])
+            input_batch=dict(
+                inputs=encoder_output["outputs"], paddings=encoder_output["segment_ids"] == 0
+            )
         )
         return dict(logits=logits)
 
@@ -69,6 +75,7 @@ class ASRModel(BaseEncoderDecoderModel):
                 source: A dict containing keyword arguments for the encoder:
                     inputs: A float Tensor of shape [batch_size, seq_len].
                         Values should not be normalized.
+                    segment_ids: An int Tensor of shape [batch_size, seq_len].
                     paddings: A 0/1 Tensor of shape [batch_size, seq_len].
                 target: A dict containing keyword arguments for the decoder.
                     See corresponding decoder `forward` for details.
@@ -84,11 +91,12 @@ class ASRModel(BaseEncoderDecoderModel):
         """
         validate_contains_paths(input_batch, ["source", "target", "target_labels"])
         # Encoder hidden states: [batch_size, source_len, dim].
-        encoder_output = self.encoder(**input_batch["source"])
+        segment_ids = _get_segment_ids(input_batch["source"])
+        encoder_output = self.encoder(input_batch["source"]["inputs"], segment_ids=segment_ids)
         loss, aux_outputs = self.decoder(
             input_batch=dict(
                 inputs=encoder_output["outputs"],
-                paddings=encoder_output["paddings"],
+                paddings=encoder_output["segment_ids"] == 0,
                 target_labels=input_batch["target_labels"],
                 target=input_batch["target"],
             )
@@ -116,13 +124,22 @@ class ASRModel(BaseEncoderDecoderModel):
             Beam search decode outputs.
         """
         validate_contains_paths(input_batch, ["source/inputs", "source/paddings"])
-        encoder_output = self.encoder(**input_batch["source"])
+        segment_ids = _get_segment_ids(input_batch["source"])
+        encoder_output = self.encoder(input_batch["source"]["inputs"], segment_ids=segment_ids)
         return self.decoder.beam_search_decode(
             input_batch=dict(
                 inputs=encoder_output["outputs"],
-                paddings=encoder_output["paddings"],
+                paddings=encoder_output["segment_ids"] == 0,
                 **input_batch,
             ),
             num_decodes=num_decodes,
             **kwargs,
         )
+
+
+def _get_segment_ids(inputs: Nested[Tensor]) -> Tensor:
+    segment_ids = inputs.get("segment_ids")
+    if segment_ids is None:
+        paddings = inputs["paddings"]
+        segment_ids = safe_not(paddings).astype(jnp.int32)
+    return segment_ids

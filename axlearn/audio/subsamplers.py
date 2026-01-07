@@ -94,30 +94,33 @@ class ConvSubSampler(BaseLayer):
         conv2_shape = self.conv2.output_shape(input_shape=conv1_shape)
         return conv2_shape
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, segment_ids: Tensor) -> dict[str, Tensor]:
         """Subsamples the speech.
 
         Args:
             inputs: A Tensor of shape [batch_size, num_frames, num_freq, input_dim].
-            paddings: 0/1 Tensor of shape [batch_size, num_frames].
+            segment_ids: An int Tensor of shape [batch_size, num_frames].
 
         Returns:
             A dict containing:
             - outputs: A Tensor of shape
                 [batch_size, subsampled_frames, subsampled_freq, output_dim].
-            - paddings: 0/1 Tensor of shape [batch, subsampled_frames].
+            - segment_ids: An int Tensor of shape [batch_size, subsampled_frames].
         """
         cfg: ConvSubSampler.Config = self.config
+        paddings = segment_ids == 0
         self._add_activation_summary(
             name="subsampler_inputs", activations=inputs, activation_paddings=paddings
         )
         x, paddings = self.conv1(inputs, paddings=paddings)
+        segment_ids = self.conv1.conv_paddings(segment_ids)
         if cfg.norm:
             x = self.norm1(x, paddings=paddings)
         if self._activation[0]:
             x = self._activation[0](x)
 
         x, paddings = self.conv2(x, paddings=paddings)
+        segment_ids = self.conv2.conv_paddings(segment_ids)
         if cfg.norm:
             x = self.norm2(x, paddings=paddings)
         if self._activation[1]:
@@ -126,4 +129,4 @@ class ConvSubSampler(BaseLayer):
         self._add_activation_summary(
             name="subsampler_outputs", activations=x, activation_paddings=paddings
         )
-        return dict(outputs=x, paddings=paddings)
+        return dict(outputs=x, segment_ids=segment_ids)

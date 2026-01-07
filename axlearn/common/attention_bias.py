@@ -696,6 +696,27 @@ class SlidingWindowAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-
 
 @flax_struct.dataclass
 @final
+class LeftRightWindowAttentionBias(MaskFnAttentionBias):  # pylint: disable=final-error
+    """A sliding window attention mask with left and right context."""
+
+    # Total window size = left_context + 1 + right_context
+    left_context: int = flax_struct.field(kw_only=True, pytree_node=False)
+    right_context: int = flax_struct.field(kw_only=True, pytree_node=False)
+
+    @classmethod
+    # pylint: disable-next=arguments-renamed
+    def default_config(
+        cls, left_context: int, right_context: int
+    ) -> ClassConfigBase["LeftRightWindowAttentionBias"]:
+        return config_for_class(LeftRightWindowAttentionBias).set(
+            mask=left_right_window_mask(left_context=left_context, right_context=right_context),
+            left_context=left_context,
+            right_context=right_context,
+        )
+
+
+@flax_struct.dataclass
+@final
 class ZeroAttentionBias(BoolAttentionBias):
     """ "Attention bias that adds zero.
 
@@ -753,6 +774,8 @@ def sliding_window_causal_mask(sliding_window_size: int) -> MaskFn:
     Args:
         sliding_window_size: Left context of sliding window mask.
     """
+    if sliding_window_size < 0:
+        raise ValueError(f"{sliding_window_size=} must be a natural number.")
 
     def mask(query_position: Tensor, key_position: Tensor) -> Tensor:
         pos_mask = query_position - key_position <= sliding_window_size
@@ -760,6 +783,26 @@ def sliding_window_causal_mask(sliding_window_size: int) -> MaskFn:
 
     fun = and_masks(causal_mask, mask)
     return fun
+
+
+def left_right_window_mask(left_context: int, right_context: int) -> MaskFn:
+    """Returns a MaskFn for sliding window attentions of a given left and right context.
+
+    Implements the `MaskFn` protocol.
+
+    Args:
+        left_context: Left context of sliding window mask.
+        right_context: Right context of sliding window mask.
+    """
+    if left_context < 0 or right_context < 0:
+        raise ValueError(f"{left_context=} and {right_context=} must be a natural number.")
+
+    def mask(query_position: Tensor, key_position: Tensor):
+        diff = key_position - query_position
+        pos_mask = (-left_context <= diff) & (diff <= right_context)
+        return pos_mask
+
+    return mask
 
 
 def truncated_key_mask(valid_k_len: int) -> MaskFn:

@@ -15,6 +15,7 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
     TensorAttentionBias,
+    left_right_window_mask,
     sliding_window_causal_mask,
     truncated_key_mask,
 )
@@ -46,6 +47,26 @@ class MaskTest(test_utils.TestCase):
         target_len, source_len = 3, 5
         target_positions = jnp.arange(target_len)[:, None] + time_step
         source_positions = jnp.arange(source_len)[None, :]
+        bool_mask = mask_fn(target_positions, source_positions)
+        out_mask = bool_mask.astype(jnp.int32)
+        self.assertEqual(out_mask.tolist(), expected)
+
+    # pylint: disable=line-too-long
+    # fmt: off
+    @parameterized.parameters(
+        [0, 0, [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0], [0, 0, 1, 0, 0], [0, 0, 0, 1, 0], [0, 0, 0, 0, 1]]],
+        [2, 0, [[1, 0, 0, 0, 0], [1, 1, 0, 0, 0], [1, 1, 1, 0, 0], [0, 1, 1, 1, 0], [0, 0, 1, 1, 1]]],
+        [4, 0, [[1, 0, 0, 0, 0], [1, 1, 0, 0, 0], [1, 1, 1, 0, 0], [1, 1, 1, 1, 0], [1, 1, 1, 1, 1]]],
+        [2, 1, [[1, 1, 0, 0, 0], [1, 1, 1, 0, 0], [1, 1, 1, 1, 0], [0, 1, 1, 1, 1], [0, 0, 1, 1, 1]]],
+        [2, 2, [[1, 1, 1, 0, 0], [1, 1, 1, 1, 0], [1, 1, 1, 1, 1], [0, 1, 1, 1, 1], [0, 0, 1, 1, 1]]],
+    )
+    # fmt: on
+    # pylint: enable=line-too-long
+    def test_left_right_window_mask(self, left_context, right_context, expected):
+        mask_fn = left_right_window_mask(left_context=left_context, right_context=right_context)
+        step_len = 5
+        target_positions = jnp.arange(step_len)[:, None]
+        source_positions = jnp.arange(step_len)[None, :]
         bool_mask = mask_fn(target_positions, source_positions)
         out_mask = bool_mask.astype(jnp.int32)
         self.assertEqual(out_mask.tolist(), expected)
@@ -84,7 +105,7 @@ class AttentionBiasTest(test_utils.TestCase):
         ],
         [
             attention_bias.SlidingWindowAttentionBias(
-                attention_bias.sliding_window_causal_mask(sliding_window_size=3),
+                sliding_window_causal_mask(sliding_window_size=3),
                 sliding_window_size=3,
                 target_positions=jnp.arange(5)[None],
                 source_positions=jnp.arange(5)[None],
@@ -114,7 +135,7 @@ class AttentionBiasTest(test_utils.TestCase):
         bias = attention_bias.SlidingWindowAttentionBias(
             target_positions=jnp.arange(5)[None],
             source_positions=jnp.arange(5)[None],
-            mask=attention_bias.sliding_window_causal_mask(sliding_window_size=3),
+            mask=sliding_window_causal_mask(sliding_window_size=3),
             sliding_window_size=3,
         )
         chex.assert_trees_all_close(
@@ -124,11 +145,24 @@ class AttentionBiasTest(test_utils.TestCase):
         self.assertIsInstance(bias, attention_bias.SlidingWindowAttentionBias)
 
         bias = attention_bias.MaskFnAttentionBias(
-            attention_bias.sliding_window_causal_mask(sliding_window_size=3),
+            sliding_window_causal_mask(sliding_window_size=3),
             target_positions=jnp.arange(5)[None],
             source_positions=jnp.arange(5)[None],
         )
         self.assertNotIsInstance(bias, attention_bias.SlidingWindowAttentionBias)
+
+    def test_left_right_window_attention_bias(self):
+        mask_fn = left_right_window_mask(left_context=2, right_context=2)
+        bias = attention_bias.LeftRightWindowAttentionBias(
+            target_positions=jnp.arange(5)[None],
+            source_positions=jnp.arange(5)[None],
+            mask=mask_fn,
+            left_context=2,
+            right_context=2,
+        )
+
+        ref = attention_bias.bool_to_bias(mask_fn(jnp.arange(5)[:, None], jnp.arange(5)[None, :]))
+        chex.assert_trees_all_close(bias.value(), ref[None, None])
 
     def test_zero_attention_bias(self):
         bias = attention_bias.ZeroAttentionBias()

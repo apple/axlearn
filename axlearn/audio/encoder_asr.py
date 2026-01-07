@@ -8,7 +8,7 @@
 
 from collections.abc import Sequence
 from math import prod
-from typing import Any, Optional
+from typing import Optional
 
 import chex
 import jax.numpy as jnp
@@ -23,7 +23,7 @@ from axlearn.common.conformer import RepeatedConformerLayer
 from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module
-from axlearn.common.utils import Tensor, safe_not
+from axlearn.common.utils import Nested, Tensor
 
 
 class SpeechFeatureLayer(BaseLayer):
@@ -56,7 +56,7 @@ class SpeechFeatureLayer(BaseLayer):
             ),
         )
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Any]:
+    def forward(self, inputs: Tensor, *, segment_ids: Tensor) -> Nested[Tensor]:
         """Computes speech features.
 
         The default transformations and corresponding shapes are:
@@ -74,30 +74,29 @@ class SpeechFeatureLayer(BaseLayer):
 
         Args:
             inputs: A float Tensor of shape [batch_size, seq_len]. Values need not be normalized.
-            paddings: A 0/1 Tensor of shape [batch_size, seq_len]. 1's represent padded positions.
+            segment_ids: An int Tensor of shape [batch_size, seq_len].
 
         Returns:
             A dict containing:
             - outputs: A Tensor of shape
                 [batch_size, subsampled_frames, subsampled_freq, output_dim].
-            - paddings: A 0/1 Tensor of shape [batch_size, subsampled_frames].
+            - segment_ids: An int Tensor of shape [batch_size, subsampled_frames].
         """
-        chex.assert_type(paddings, jnp.bool)
+        chex.assert_type(segment_ids, jnp.integer)
         # Compute frontend features.
-        features = self.frontend(inputs=inputs, paddings=paddings)
+        features = self.frontend(inputs=inputs, paddings=segment_ids == 0)
+        segment_ids = self.frontend.conv_paddings(segment_ids)
         self.add_module_output("spectrogram", features)
         x = features["outputs"]
 
         if "augmenter" in self.children:
             # Apply augmentation.
-            x = self.augmenter(inputs=x, paddings=features["paddings"])
+            x = self.augmenter(inputs=x, paddings=segment_ids == 0)
 
         # Apply subsampling.
         # [batch_size, subsampled_frames, subsampled_freq, output_dim].
-        subsampled_features = self.subsampler(inputs=x, paddings=features["paddings"])
-        x = subsampled_features["outputs"]
-
-        return dict(outputs=x, paddings=subsampled_features["paddings"])
+        subsampled = self.subsampler(inputs=x, segment_ids=segment_ids)
+        return dict(outputs=subsampled["outputs"], segment_ids=subsampled["segment_ids"])
 
     def output_shape(self, *, input_shape: Sequence[Optional[int]]) -> Sequence[Optional[int]]:
         """Computes the speech features output shape.
@@ -153,17 +152,17 @@ class SpeechContextNetwork(BaseLayer):
         self._add_child("pos_emb", cfg.pos_emb.set(dim=cfg.output_dim))
         self._add_child("context", cfg.context.set(input_dim=cfg.output_dim))
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, segment_ids: Tensor) -> dict[str, Tensor]:
         """Computes context features.
 
         Args:
             inputs: A Tensor of shape [batch_size, seq_len, input_dim].
-            paddings: A 0/1 Tensor of shape [batch_size, seq_len].
+            segment_ids: An int Tensor of shape [batch_size, seq_len].
 
         Returns:
             A dict containing:
             - outputs: A Tensor of shape [batch_size, seq_len, output_dim].
-            - output_paddings: A 0/1 Tensor of shape [batch_size, seq_len].
+            - segment_ids: An int Tensor of shape [batch_size, seq_len].
         """
         cfg = self.config
         # [batch, seq_len, input_dim].
@@ -172,10 +171,10 @@ class SpeechContextNetwork(BaseLayer):
 
         if isinstance(cfg.context, RepeatedConformerLayer.Config):
             x = x + self.pos_emb(jnp.arange(x.shape[1]))
-            x = self.context(inputs=x, paddings=paddings)
+            x = self.context(inputs=x, segment_ids=segment_ids)
         elif isinstance(cfg.context, RepeatedTransformerLayer.Config):
             # We don't need to do add pos_emb for transformer block
-            x = self.context(data=x)
+            x = self.context(data=x, target_segment_ids=segment_ids)
             x = x.data
         else:
             raise ValueError(
@@ -185,9 +184,9 @@ class SpeechContextNetwork(BaseLayer):
         self._add_activation_summary(
             name="speech_context",
             activations=x,
-            activation_paddings=paddings,
+            activation_paddings=segment_ids == 0,
         )
-        return dict(outputs=x * safe_not(paddings)[..., None], paddings=paddings)
+        return dict(outputs=x * (segment_ids != 0)[..., None], segment_ids=segment_ids)
 
 
 class ASREncoder(BaseLayer):
@@ -225,22 +224,22 @@ class ASREncoder(BaseLayer):
             "context", cfg.context.set(input_dim=prod(feature_shape[2:]), output_dim=cfg.dim)
         )
 
-    def forward(self, inputs: Tensor, *, paddings: Tensor) -> dict[str, Tensor]:
+    def forward(self, inputs: Tensor, *, segment_ids: Tensor) -> dict[str, Tensor]:
         """Computes speech encoder features from waveform.
 
         Args:
             inputs: A float Tensor of shape [batch_size, seq_len]. Values need not be normalized.
-            paddings: A 0/1 Tensor of shape [batch_size, seq_len].
+            segment_ids: An int Tensor of shape [batch_size, seq_len].
 
         Returns:
             A dict containing:
             - outputs: A Tensor of shape [batch_size, num_frames, dim].
-            - output_paddings: A 0/1 Tensor of shape [batch_size, num_frames].
+            - segment_ids: A 0/1 Tensor of shape [batch_size, num_frames].
         """
-        speech_features = self.feature(inputs=inputs, paddings=paddings)
+        speech_features = self.feature(inputs=inputs, segment_ids=segment_ids)
         context_features = self.context(
             # Flatten features to [batch_size, num_frames, cfg.context.input_dim].
             inputs=rearrange(speech_features["outputs"], "b t f c -> b t (f c)"),
-            paddings=speech_features["paddings"],
+            segment_ids=speech_features["segment_ids"],
         )
         return context_features

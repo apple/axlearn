@@ -15,7 +15,6 @@ from axlearn.common import utils
 from axlearn.common.layers import BatchNorm
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
-from axlearn.common.utils import safe_not
 
 
 class ConvSubSamplerTest(TestCase):
@@ -113,7 +112,7 @@ class ConvSubSamplerTest(TestCase):
         dict(window=5, stride=2, conv_padding=(2, 2), hidden_dim=5, output_dim=3),
         dict(window=5, stride=3, conv_padding=(2, 2), output_dim=6),
     )
-    def test_paddings(
+    def test_segment_ids(
         self,
         window: int,
         stride: int,
@@ -167,15 +166,17 @@ class ConvSubSamplerTest(TestCase):
             axis=0,
         )
         # [batch_size, num_frames].
-        paddings = jnp.arange(num_frames)[None, :] >= seq_len[:, None]
+        segment_ids = (jnp.arange(num_frames)[None, :] < seq_len[:, None]).astype(jnp.int32)
 
         padding_data = jax.random.normal(
             data_key2, [batch_size, num_frames, num_filters, input_dim]
         )
-        inputs_with_different_paddings = jnp.where(paddings[:, :, None, None], padding_data, inputs)
+        inputs_with_different_paddings = jnp.where(
+            segment_ids[:, :, None, None] == 0, padding_data, inputs
+        )
         outputs, _ = F(
             layer,
-            inputs=dict(inputs=inputs_with_different_paddings, paddings=paddings),
+            inputs=dict(inputs=inputs_with_different_paddings, segment_ids=segment_ids),
             is_training=True,
             prng_key=prng_key,
             state=layer_params,
@@ -183,10 +184,10 @@ class ConvSubSamplerTest(TestCase):
 
         # Check that the outputs are the same despite differences in padding positions.
         self.assertNestedAllClose(outputs["outputs"][0], outputs["outputs"][1])
-        self.assertNestedAllClose(outputs["paddings"][0], outputs["paddings"][1])
+        self.assertNestedAllClose(outputs["segment_ids"][0], outputs["segment_ids"][1])
         subsampled_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertEqual(tuple(subsampled_shape), outputs["outputs"].shape)
-        self.assertEqual(tuple(subsampled_shape)[:2], outputs["paddings"].shape)
+        self.assertEqual(tuple(subsampled_shape)[:2], outputs["segment_ids"].shape)
 
     @parameterized.parameters(jnp.float32, jnp.bfloat16)
     def test_activation_summaries(self, dtype):
@@ -209,11 +210,11 @@ class ConvSubSamplerTest(TestCase):
         inputs_shape = [batch_size, num_frames, num_filters, input_dim]
         inputs = jax.random.normal(key=data_key, shape=inputs_shape) * 10.0
         lengths = jnp.array([5, 10, 9, 0])
-        paddings = jnp.arange(num_frames)[None, :] >= lengths[:, None]
+        segment_ids = (jnp.arange(num_frames)[None, :] < lengths[:, None]).astype(jnp.int32)
         inputs = inputs.astype(dtype)
         outputs, output_collections = F(
             layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
             is_training=True,
             prng_key=prng_key,
             state=layer_params,
@@ -221,12 +222,12 @@ class ConvSubSamplerTest(TestCase):
 
         # Compute expected summaries.
         input_weights = jnp.sum(lengths)
-        inputs = inputs * safe_not(paddings)[:, :, None, None]
+        inputs = inputs * (segment_ids != 0)[:, :, None, None]
         norms = jnp.sqrt(jnp.sum(inputs**2, axis=(2, 3))) / jnp.sqrt(num_filters * input_dim)
         expected_inputs_mean = jnp.sum(inputs) / input_weights / (num_filters * input_dim)
         expected_inputs_norm = jnp.sum(norms) / input_weights
 
-        output_weights = jnp.sum(1 - outputs["paddings"])
+        output_weights = jnp.sum(outputs["segment_ids"] != 0)
         output_norms = jnp.sqrt(jnp.sum(outputs["outputs"] ** 2, axis=(2, 3))) / jnp.sqrt(
             num_filters // 4 * output_dim
         )

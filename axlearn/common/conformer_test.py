@@ -12,18 +12,21 @@ from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
-from axlearn.common import utils
 from axlearn.common.attention import build_remat_spec
+from axlearn.common.attention_bias import (
+    CausalAttentionBias,
+    LeftRightWindowAttentionBias,
+    SlidingWindowAttentionBias,
+)
 from axlearn.common.conformer import (
     ConformerLayer,
     LConvLayer,
     RepeatedConformerLayer,
-    compute_attention_logit_biases,
     set_double_shard_weights_config,
 )
 from axlearn.common.module import functional as F
-from axlearn.common.t5 import T5RelativePositionalEmbedding
 from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.utils import safe_not
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 
@@ -46,14 +49,14 @@ class LConvLayerTest(TestCase):
             shape=[batch_size],
         )
         # [batch_size, seq_len].
-        paddings = jnp.arange(seq_len)[None, :] >= num_tokens[:, None]
+        segment_ids = (jnp.arange(seq_len)[None, :] < num_tokens[:, None]).astype(jnp.int32)
 
         # Forward
         state = layer.initialize_parameters_recursively(jax.random.PRNGKey(100))
         with patch.object(layer.conv_norm, "forward", wraps=layer.conv_norm.forward) as mock:
             _ = F(
                 layer,
-                inputs=dict(inputs=inputs, paddings=paddings),
+                inputs=dict(inputs=inputs, segment_ids=segment_ids),
                 is_training=True,
                 prng_key=jax.random.PRNGKey(100),
                 state=state,
@@ -86,13 +89,14 @@ class ConformerLayerTest(TestCase):
             os.path.join(testdata_dir, __name__, "test_against_fairseq.npy"),
             allow_pickle=True,
         ).item()
+        segment_ids = safe_not(testcase["paddings"]).astype(jnp.int32)
 
         test_outputs, _ = F(
             layer,
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
             state=testcase["params"],
-            inputs=dict(inputs=testcase["inputs"], paddings=testcase["paddings"]),
+            inputs=dict(inputs=testcase["inputs"], segment_ids=segment_ids),
         )
         ref_outputs = testcase["outputs"]
 
@@ -104,8 +108,8 @@ class ConformerLayerTest(TestCase):
         assert_allclose(test_outputs, ref_outputs)
 
     @parameterized.parameters(False, True)
-    def test_respect_paddings(self, is_training):
-        """Tests that ConformerLayer respects paddings.
+    def test_respect_segment_ids(self, is_training):
+        """Tests that ConformerLayer respects segment_ids.
 
         Generates two input sequences with identical data at the non-pad positions but different
         data at the pad positions. Checks that the outputs at the non-pad positions are the same.
@@ -120,23 +124,27 @@ class ConformerLayerTest(TestCase):
             jax.random.normal(jax.random.PRNGKey(123), [1, seq_len, dim]), [batch_size, 1, 1]
         )
         # [batch_size, seq_len].
-        paddings = jnp.tile(jnp.arange(seq_len)[None, :] >= num_tokens, [batch_size, 1])
+        segment_ids = jnp.tile(
+            (jnp.arange(seq_len)[None, :] < num_tokens).astype(jnp.int32), [batch_size, 1]
+        )
         # Generate different padding data.
         padding_data = jax.random.normal(jax.random.PRNGKey(124), [batch_size, seq_len, dim])
         # Generate input sequences with the same data at non-pad positions.
-        inputs_with_different_paddings = jnp.where(paddings[:, :, None], padding_data, inputs)
+        inputs_with_different_segment_ids = jnp.where(
+            segment_ids[:, :, None] == 0, padding_data, inputs
+        )
         self.assertAlmostEqual(
-            inputs_with_different_paddings[0, :num_tokens].sum(),
-            inputs_with_different_paddings[1, :num_tokens].sum(),
+            inputs_with_different_segment_ids[0, :num_tokens].sum(),
+            inputs_with_different_segment_ids[1, :num_tokens].sum(),
         )
         self.assertNotAlmostEqual(
-            inputs_with_different_paddings[0, num_tokens:].sum(),
-            inputs_with_different_paddings[1, num_tokens:].sum(),
+            inputs_with_different_segment_ids[0, num_tokens:].sum(),
+            inputs_with_different_segment_ids[1, num_tokens:].sum(),
         )
         state = layer.initialize_parameters_recursively(jax.random.PRNGKey(100))
         outputs, _ = F(
             layer,
-            inputs=dict(inputs=inputs_with_different_paddings, paddings=paddings),
+            inputs=dict(inputs=inputs_with_different_segment_ids, segment_ids=segment_ids),
             is_training=is_training,
             prng_key=jax.random.PRNGKey(200),
             state=state,
@@ -201,7 +209,7 @@ class ConformerLayerTest(TestCase):
             shape=[batch_size],
         )
         # [batch_size, seq_len].
-        paddings = jnp.arange(seq_len)[None, :] >= num_tokens[:, None]
+        segment_ids = (jnp.arange(seq_len)[None, :] < num_tokens[:, None]).astype(jnp.int32)
 
         # disable dropout.
         is_training = False
@@ -211,66 +219,102 @@ class ConformerLayerTest(TestCase):
             state_i = jax.tree.map(lambda param, i=ll: param[i], repeat_state)["repeat"]["layer"]
             outputs, _ = F(
                 layer,
-                inputs=dict(inputs=outputs, paddings=paddings),
+                inputs=dict(inputs=outputs, segment_ids=segment_ids),
                 is_training=is_training,
                 prng_key=jax.random.PRNGKey(200),
                 state=state_i,
             )
-        with utils.numeric_checks(False):
-            repeat_outs, _ = F(
-                repeat_layer,
-                inputs=dict(inputs=inputs, paddings=paddings),
-                is_training=is_training,
-                prng_key=jax.random.PRNGKey(200),
-                state=repeat_state,
-            )
-
+        repeat_outs, _ = F(
+            repeat_layer,
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(200),
+            state=repeat_state,
+        )
         self.assertNestedAllClose(outputs, repeat_outs)
 
-    def test_rel_pos_emb(self):
-        dim, num_heads = 6, 2
-        # Create a conformer layer.
-        cfg = ConformerLayer.default_config().set(name="conformer", input_dim=dim)
-        cfg.self_attention.attention.num_heads = num_heads
-        cfg.rel_pos_emb = T5RelativePositionalEmbedding.default_config().set(
-            bidirectional=True, num_buckets=128, max_distance=256
-        )
-        with self.assertRaisesRegex(
-            ValueError, "rel_pos_emb should only be set in MultiheadAttention"
-        ):
-            _ = cfg.instantiate(parent=None)  # type: ConformerLayer
-
     @parameterized.parameters(
-        (4, 10, None, None), (2, 12, 1, None), (6, 20, None, 3), (7, 30, 4, 6), (2, 10, -1, -2)
+        (4, 10, None, None), (2, 12, 1, None), (6, 20, None, 3), (7, 30, 4, 6)
     )
     # pylint: disable-next=no-self-use
-    def test_attention_logit_biases(self, batch_size, seq_len, left_context, right_context):
+    def test_attention_sliding_window(self, batch_size, seq_len, left_context, right_context):
         lengths = jax.random.randint(
             jax.random.PRNGKey(3), shape=(batch_size,), minval=0, maxval=seq_len + 1
         )
-        paddings = jnp.arange(seq_len)[None, :] >= lengths[:, None]
-        if (left_context is not None and left_context < 0) or (
-            right_context is not None and right_context < 0
-        ):
-            with self.assertRaises(ValueError):
-                compute_attention_logit_biases(
-                    paddings=paddings, left_context=left_context, right_context=right_context
-                )
-        else:
-            logit_bias = compute_attention_logit_biases(
-                paddings=paddings, left_context=left_context, right_context=right_context
+        segment_ids = jnp.arange(seq_len)[None, :] < lengths[:, None]
+        segment_ids = segment_ids.astype(jnp.int32)
+
+        if right_context is not None:
+            left_context = left_context or 0
+            mask = LeftRightWindowAttentionBias.default_config(
+                left_context=left_context, right_context=right_context
             )
-            expected = np.zeros((batch_size, 1, seq_len, seq_len))
-            if left_context is None:
-                left_context = seq_len
-            if right_context is None:
-                right_context = seq_len
-            for i in range(batch_size):
-                for query in range(lengths[i]):
-                    for key in range(lengths[i]):
-                        if query - left_context <= key <= query + right_context:
-                            expected[i, 0, query, key] = 1
-            assert_allclose(jnp.exp(logit_bias), expected, atol=1e-6, rtol=1e-6)
+        elif left_context is not None:
+            mask = SlidingWindowAttentionBias.default_config(sliding_window_size=left_context)
+        else:
+            mask = CausalAttentionBias.default_config()
+
+        dim, num_heads = 6, 2
+        cfg = ConformerLayer.default_config().set(name="conformer", input_dim=dim)
+        cfg.self_attention.attention.num_heads = num_heads
+        cfg.self_attention.attention.mask = mask
+        layer: ConformerLayer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        inputs = jax.random.normal(jax.random.PRNGKey(1), shape=(batch_size, seq_len, dim))
+        outputs, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            state=state,
+        )
+
+        # Check outputs are zeroed for padding positions
+        self.assertTrue(jnp.allclose(outputs * (segment_ids[:, :, None] == 0), 0))
+
+        # Check attention bias pattern (independent of segment_ids/batch)
+        target_positions = jnp.arange(seq_len)[None, :]
+        attention_bias = mask.instantiate(
+            target_positions=target_positions, source_positions=target_positions
+        )
+        logit_bias = attention_bias.value()
+
+        # Expected pattern: single batch dimension since mask doesn't vary by batch
+        expected = np.zeros((1, 1, seq_len, seq_len))
+        if left_context is None:
+            left_context = seq_len
+        if right_context is None:
+            right_context = 0
+        for query in range(seq_len):
+            for key in range(seq_len):
+                if -left_context <= (key - query) <= right_context:
+                    expected[0, 0, query, key] = 1
+        assert_allclose(jnp.exp(logit_bias), expected, atol=1e-6, rtol=1e-6)
+
+    def test_segment_ids(self):
+        """Test that segment_ids properly mask different segments."""
+        batch_size, seq_len, dim = 2, 10, 6
+        num_heads = 2
+        segment_ids = jnp.array([[1, 1, 1, 0, 2, 2, 2, 0, 0, 0], [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]])
+
+        cfg = ConformerLayer.default_config().set(name="conformer", input_dim=dim)
+        cfg.self_attention.attention.num_heads = num_heads
+        layer: ConformerLayer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        inputs = jax.random.normal(jax.random.PRNGKey(1), shape=(batch_size, seq_len, dim))
+        outputs, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            state=state,
+        )
+
+        # Outputs should be zero for positions where segment_id == 0
+        mask = (segment_ids == 0)[:, :, None]
+        self.assertTrue(jnp.allclose(outputs * mask, 0))
 
     @parameterized.product(
         batch_axis_names=("data", ("replica", "data", "fsdp")),
@@ -328,5 +372,4 @@ class ConformerLayerTest(TestCase):
 
 
 if __name__ == "__main__":
-    with utils.numeric_checks(True):
-        absltest.main()
+    absltest.main()

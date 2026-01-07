@@ -14,7 +14,7 @@ from axlearn.common.attention import RepeatedTransformerLayer
 from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
-from axlearn.common.utils import Tensor, shapes
+from axlearn.common.utils import Tensor, safe_not, shapes
 
 
 def _fake_audio_pairs(*, prng_key: Tensor, batch_size: int, seq_len: int):
@@ -25,7 +25,7 @@ def _fake_audio_pairs(*, prng_key: Tensor, batch_size: int, seq_len: int):
     paddings = jnp.tile(paddings, [2, 1])
     padding_data = jax.random.normal(jax.random.PRNGKey(135), paddings.shape)
     inputs = jnp.where(paddings, padding_data, inputs)
-    return inputs, paddings
+    return inputs, safe_not(paddings).astype(jnp.int32)
 
 
 class SpeechFeatureLayerTest(TestCase):
@@ -72,22 +72,21 @@ class SpeechFeatureLayerTest(TestCase):
         )
         max_seconds, sampling_rate = 8, 16_000
         batch_size, seq_len = 4, max_seconds * sampling_rate
-        inputs, paddings = _fake_audio_pairs(
+        inputs, segment_ids = _fake_audio_pairs(
             prng_key=input_key, batch_size=batch_size, seq_len=seq_len
         )
-
         output_batch, output_collections = F(
             layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
             is_training=is_training,
             prng_key=prng_key,
             state=layer_params,
         )
-        outputs, output_paddings = output_batch["outputs"], output_batch["paddings"]
+        outputs, output_segment_ids = output_batch["outputs"], output_batch["segment_ids"]
         output_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertSequenceEqual(outputs.shape, output_shape)
-        self.assertSequenceEqual(output_paddings.shape, output_shape[:2])
-        self.assertTrue(jnp.all(output_paddings[:2] == output_paddings[2:]))
+        self.assertSequenceEqual(output_segment_ids.shape, output_shape[:2])
+        self.assertNestedAllClose(output_segment_ids[:2], output_segment_ids[2:])
 
         # If is_training, outputs should always be different due to augmentation.
         # Otherwise, outputs should be the same despite differences in padding.
@@ -134,28 +133,29 @@ class SpeechContextNetworkTest(TestCase):
             jax.random.randint(length_key, shape=[batch_size // 2, 1], minval=0, maxval=seq_len),
             [2, 1],
         )
-        paddings = jnp.arange(seq_len)[None, :] >= lengths
+        segment_ids = (jnp.arange(seq_len)[None, :] < lengths).astype(jnp.int32)
         padding_data = jax.random.normal(jax.random.PRNGKey(135), inputs.shape)
-        inputs = jnp.where(paddings[..., None], padding_data, inputs)
+        inputs = jnp.where(segment_ids[..., None] == 0, padding_data, inputs)
 
         # Compute outputs.
         output_batch, output_collections = F(
             layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
             is_training=is_training,
             prng_key=prng_key,
             state=layer_params,
         )
-        outputs, output_paddings = output_batch["outputs"], output_batch["paddings"]
+        outputs, output_segment_ids = output_batch["outputs"], output_batch["segment_ids"]
         self.assertSequenceEqual(outputs.shape, (batch_size, seq_len, output_dim))
-        self.assertTrue(jnp.all(output_paddings == paddings))
+        self.assertTrue(jnp.all(output_segment_ids == segment_ids))
 
         # If is_training, outputs should always be different due to augmentation.
         # Otherwise, outputs should be the same despite differences in padding.
         self.assertEqual(not is_training, bool(jnp.allclose(outputs[:2], outputs[2:])))
 
-        outputs = outputs * (1 - output_paddings[:, :, None])
-        weights = jnp.sum(1 - output_paddings)
+        mask = segment_ids[:, :, None] != 0
+        outputs = outputs * mask
+        weights = jnp.sum(mask)
         output_norms = jnp.sqrt(jnp.sum(outputs**2, axis=2)) / jnp.sqrt(output_dim)
         expected_outputs_mean = jnp.sum(outputs) / weights / output_dim
         expected_outputs_norm = jnp.sum(output_norms) / weights
@@ -216,28 +216,29 @@ class SpeechContextNetworkTest(TestCase):
             jax.random.randint(length_key, shape=[batch_size // 2, 1], minval=0, maxval=seq_len),
             [2, 1],
         )
-        paddings = jnp.arange(seq_len)[None, :] >= lengths
+        segment_ids = (jnp.arange(seq_len)[None, :] < lengths).astype(jnp.int32)
         padding_data = jax.random.normal(jax.random.PRNGKey(135), inputs.shape)
-        inputs = jnp.where(paddings[..., None], padding_data, inputs)
+        inputs = jnp.where(segment_ids[..., None] == 0, padding_data, inputs)
 
         # Compute outputs.
         output_batch, output_collections = F(
             layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
             is_training=is_training,
             prng_key=prng_key,
             state=layer_params,
         )
-        outputs, output_paddings = output_batch["outputs"], output_batch["paddings"]
+        outputs, output_segment_ids = output_batch["outputs"], output_batch["segment_ids"]
         self.assertSequenceEqual(outputs.shape, (batch_size, seq_len, output_dim))
-        self.assertTrue(jnp.all(output_paddings == paddings))
+        self.assertTrue(jnp.all(output_segment_ids == segment_ids))
 
         # If is_training, outputs should always be different due to augmentation.
         # Otherwise, outputs should be the same despite differences in padding.
         self.assertEqual(not is_training, bool(jnp.allclose(outputs[:2], outputs[2:])))
 
-        outputs = outputs * (1 - output_paddings[:, :, None])
-        weights = jnp.sum(1 - output_paddings)
+        mask = segment_ids[:, :, None] != 0
+        outputs = outputs * mask
+        weights = jnp.sum(mask)
         output_norms = jnp.sqrt(jnp.sum(outputs**2, axis=2)) / jnp.sqrt(output_dim)
         expected_outputs_mean = jnp.sum(outputs) / weights / output_dim
         expected_outputs_norm = jnp.sum(output_norms) / weights
@@ -306,19 +307,19 @@ class ASREncoderTest(TestCase):
 
         # Generate inputs.
         batch_size, seq_len = 4, sample_rate * 8
-        inputs, paddings = _fake_audio_pairs(
+        inputs, segment_ids = _fake_audio_pairs(
             prng_key=input_key, batch_size=batch_size, seq_len=seq_len
         )
 
         output_batch, output_collections = F(
             layer,
-            inputs=dict(inputs=inputs, paddings=paddings),
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
             is_training=is_training,
             prng_key=prng_key,
             state=layer_params,
             drop_output_collections=(),
         )
-        outputs, output_paddings = output_batch["outputs"], output_batch["paddings"]
+        outputs, output_segment_ids = output_batch["outputs"], output_batch["segment_ids"]
         output_shape, _ = F(
             layer.feature,
             inputs=dict(input_shape=[None, seq_len]),
@@ -328,8 +329,8 @@ class ASREncoderTest(TestCase):
             method="output_shape",
         )
         self.assertEqual(outputs.shape, (batch_size, output_shape[1], output_dim))
-        self.assertEqual(output_paddings.shape, (batch_size, output_shape[1]))
-        self.assertTrue(jnp.all(output_paddings[:2] == output_paddings[2:]))
+        self.assertEqual(output_segment_ids.shape, (batch_size, output_shape[1]))
+        self.assertTrue(jnp.all(output_segment_ids[:2] == output_segment_ids[2:]))
 
         spectrogram = output_collections.module_outputs["feature"]["spectrogram"]
         spec, spec_paddings = spectrogram["outputs"], spectrogram["paddings"]

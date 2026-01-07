@@ -224,12 +224,12 @@ class LogMelFrontend(BaseFrontend):
         # TODO(markblee): Make these configurable as needed.
         frames = frame(inputs, frame_size=self._frame_size, hop_size=self._hop_size)
         # TODO(dhwang2): Currently, a partial frame is padded. Explore it later.
-        out_paddings = frame_paddings(
-            paddings,
-            frame_size=self._frame_size,
-            hop_size=self._hop_size,
-        )
+        out_paddings = self.conv_paddings(paddings)
         return self._to_logmel(frames, frames_paddings=out_paddings)
+
+    @nowrap
+    def conv_paddings(self, paddings: Tensor) -> Tensor:
+        return frame_paddings(paddings, frame_size=self._frame_size, hop_size=self._hop_size)
 
     def _to_logmel(self, frames: Tensor, *, frames_paddings: Tensor) -> dict[str, Tensor]:
         """Computes log-mel spectrogram features.

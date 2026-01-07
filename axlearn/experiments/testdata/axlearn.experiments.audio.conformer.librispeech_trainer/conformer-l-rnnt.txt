@@ -453,7 +453,6 @@ model.encoder.context.context.layer.lconv.linear2.bias: True
 model.encoder.context.context.layer.lconv.linear2.klass: 'axlearn.common.layers.Linear'
 model.encoder.context.context.layer.lconv.linear2.param_partition_spec[0]: None
 model.encoder.context.context.layer.lconv.linear2.param_partition_spec[1]: None
-model.encoder.context.context.layer.neg_inf: -1000000000000000.0
 model.encoder.context.context.layer.norm.eps: 1e-08
 model.encoder.context.context.layer.norm.forward_dtype: 'jax.numpy.float32'
 model.encoder.context.context.layer.norm.klass: 'axlearn.common.layers.LayerNorm'

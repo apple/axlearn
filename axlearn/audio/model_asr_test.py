@@ -4,7 +4,7 @@
 
 import jax.numpy as jnp
 import jax.random
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.audio.decoder_asr import (
     BaseASRDecoderModel,
@@ -62,7 +62,8 @@ def _fake_input_batch(prng_key: Tensor, *, pad_id: int, eos_id: int):
         prng_key, minval=-(2**15), maxval=2**15, shape=[batch_size, max_src_len]
     )
     src_length = jnp.array([0, 3000, 4000, 4500])
-    src_paddings = jnp.arange(max_src_len)[None, :] >= src_length[:, None]
+    src_segment_ids = (jnp.arange(max_src_len)[None, :] < src_length[:, None]).astype(jnp.int32)
+    src_paddings = src_segment_ids == 0
     input_ids = jnp.array(
         [
             [1, eos_id, pad_id, pad_id, pad_id],
@@ -80,7 +81,7 @@ def _fake_input_batch(prng_key: Tensor, *, pad_id: int, eos_id: int):
         ]
     )
     return dict(
-        source=dict(inputs=src_inputs, paddings=src_paddings),
+        source=dict(inputs=src_inputs, segment_ids=src_segment_ids, paddings=src_paddings),
         target=dict(input_ids=input_ids),
         target_labels=target_labels,
     )
@@ -199,3 +200,7 @@ class ASRModelTest(TestCase):
             )
         else:
             raise NotImplementedError(method)
+
+
+if __name__ == "__main__":
+    absltest.main()
