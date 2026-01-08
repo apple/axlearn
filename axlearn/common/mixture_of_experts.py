@@ -841,6 +841,7 @@ class TopKGating(BaseGating):
         num_experts_per_token = cfg.num_experts_per_token
 
         # Process logits: upcast to float32, cap, and optionally add noise.
+        # [O, G, S, E]
         logits = self._process_logits(logits)
 
         # Get the router z-loss.
@@ -866,6 +867,7 @@ class TopKGating(BaseGating):
         )
 
         # Calculate the normalization factor for the selected experts.
+        # [O, G, S, 1]
         denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
 
         # Reshape gate_assignment from [O, G, S, K] to [O, G, K, S] then flatten to [O, G, K*S]
@@ -1059,6 +1061,9 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         load_balance_loss_weight: float = 0.01
         # Weight for the router z loss. https://arxiv.org/abs/2202.08906.
         router_z_loss_weight: float = 0.0
+        # Weight for the expert correlation loss. Encourages the router to learn
+        # uncorrelated representations for the experts. Default to 0 (disabled).
+        corr_loss_weight: float = 0
 
         # SPMD partition params used to represent the MoE layer dimensions.
         # O - outer batch dim
@@ -1167,6 +1172,25 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         else:
             raise NotImplementedError(cfg.structure)
 
+    def _expert_correlation_loss(self) -> Tensor:
+        """Computes the correlation among the experts based on gate_weight.
+
+        This loss encourages the router to learn uncorrelated representations for different
+        experts, which can improve expert diversity and model performance.
+
+        Returns:
+            A scalar tensor representing the correlation loss.
+        """
+        e_w = self.parameters["gate_weight"]
+        e_w_rms = jnp.sqrt(jnp.square(e_w).sum(axis=0, keepdims=True))
+        e_w_normalized = e_w / e_w_rms
+        e_w_cos = jnp.einsum("me,mf->ef", e_w_normalized, e_w_normalized)
+        e_w_cos_cov = e_w_cos - jnp.eye(e_w_cos.shape[0])
+        e_w_cos_cov_max = jnp.max(jnp.abs(e_w_cos_cov))
+        cov_loss = 0.5 * jnp.abs(e_w_cos_cov).mean()
+        self.add_summary("expert_cov_max", e_w_cos_cov_max)
+        return cov_loss
+
     def forward(self, inputs: Tensor) -> Tensor:
         cfg = self.config
         if cfg.structure == "prenorm":
@@ -1251,27 +1275,51 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
                 f" = {num_tokens} must be divisible by num_groups({num_groups})."
             )
         group_len = num_tokens // num_groups
+        logging.info("Setting the effective group_size=%r", group_len)
         x = x.reshape([outer_batch, num_groups, group_len, cfg.input_dim])
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogsm"])
         logits = jnp.einsum("ogsm,me->ogse", x, self.parameters["gate_weight"])
         # Perform gating based on logits. Casting to float32 precision is usually needed for
         # stable performance.
-        gating = self.gating(logits=logits)
+        gating = self.gating(logits=logits.astype(jnp.float32))
+        combine_tensor = gating.combine_tensor
+        dispatch_tensor = gating.dispatch_tensor
         # Collect aux_loss.
         aux_loss = (
             gating.load_balance_loss * cfg.load_balance_loss_weight
             + gating.router_z_loss * cfg.router_z_loss_weight
         )
+        # Add the expert correlation loss
+        if cfg.corr_loss_weight:
+            cov_loss = self._expert_correlation_loss()
+            self.add_summary("expert_cov_loss", cov_loss)
+            aux_loss += cov_loss * cfg.corr_loss_weight
+
         self.add_module_output("aux_loss", aux_loss)
+
+        # Support dynamic partition spec lookup for different gating implementations.
+        # If the gating class has dispatch_tensor_shape() method, use it to get the correct
+        # partition spec. Otherwise, fall back to "ogsec" for backward compatibility.
+        if hasattr(cfg.gating.klass, "dispatch_tensor_shape"):
+            dispatch_partition_spec = cfg.dim_to_mesh_axis_map[
+                cfg.gating.klass.dispatch_tensor_shape()
+            ]
+        else:
+            dispatch_partition_spec = cfg.dim_to_mesh_axis_map["ogsec"]
+
+        # For GatherBasedTopKGating, combine_tensor is [2, O, G, S, K] where combine_tensor[1]
+        # contains the expert spot indices. Pass it as needed for compatibility.
+        combine_tensor_for_dispatch = combine_tensor[1] if combine_tensor.ndim > 4 else None
+
         x = self.gating.dispatch(
             x,
-            dispatch_tensor=gating.dispatch_tensor,
+            dispatch_tensor=dispatch_tensor,
             dtype=input_dtype,
-            partition_spec=cfg.dim_to_mesh_axis_map["ogsec"],
-            combine_tensor=gating.combine_tensor,
+            partition_spec=dispatch_partition_spec,
+            combine_tensor=combine_tensor_for_dispatch,
         )
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
-        x = self._wi_activation(x)
+        x = self._wi_activation(x, dispatch_tensor)
         if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
             x = self.dropout1(x)
         with child_context("wo_einsum", module=self):
@@ -1279,19 +1327,44 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
                 "oegch,ehm->oegcm", activation=x, kernel=self.parameters["wo_weight"]
             )
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
-        x = jnp.einsum("oegcm->ogecm", x)
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecm"])
+
+        # Transpose from oegcm to ogecm format for combine operation.
+        # TopKGating and Top2Gating both expect inputs in ogecm format.
+        if cfg.gating.klass in [TopKGating, Top2Gating]:
+            x = jnp.einsum("oegcm->ogecm", x)
+            x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecm"])
+
+        # Support dynamic partition spec lookup for combine operation.
+        if hasattr(cfg.gating.klass, "combine_tensor_shape"):
+            combine_partition_spec = cfg.dim_to_mesh_axis_map[
+                cfg.gating.klass.combine_tensor_shape()
+            ]
+        else:
+            combine_partition_spec = cfg.dim_to_mesh_axis_map["ogsec"]
+
         x = self.gating.combine(
             x,
-            combine_tensor=gating.combine_tensor,
+            combine_tensor=combine_tensor,
             dtype=input_dtype,
-            partition_spec=cfg.dim_to_mesh_axis_map["ogsec"],
+            partition_spec=combine_partition_spec,
         )
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogsm"])
+
+        # Add RMS norm summary for linear2 outputs.
+        self.add_summary("rms_norm/linear2_outputs", (x**2.0).mean().astype(jnp.float32) ** 0.5)
         # (batch, seq_len, input_dim)
         return x.reshape(token_shape + (cfg.input_dim,))
 
-    def _wi_activation(self, x: Tensor) -> Tensor:
+    def _wi_activation(self, x: Tensor, dispatch_tensor: Tensor) -> Tensor:
+        """Applies activation functions to the input projection.
+
+        Args:
+            x: Input tensor with shape [O, E, G, C, M].
+            dispatch_tensor: Dispatch tensor used for dead neuron detection.
+
+        Returns:
+            Activated tensor with shape [O, E, G, C, H].
+        """
         cfg = self.config
         if isinstance(cfg.activation, tuple):
             activations = []
@@ -1299,6 +1372,32 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
                 with child_context(f"wi_{i}_einsum", module=self):
                     x_i = self.einsum_maybe_quantized(
                         "oegcm,emh->oegch", activation=x, kernel=self.parameters[f"wi_{i}_weight"]
+                    )
+                # Add dead neuron detection for TopKGating.
+                # This helps identify experts or neurons that are never activated, which can
+                # indicate issues with routing or initialization.
+                if cfg.gating.klass is TopKGating:
+                    # valid_position_indicator: [E, C] - indicates which expert capacity slots
+                    # actually contain valid tokens.
+                    valid_position_indicator = jnp.einsum("ogsec->ec", dispatch_tensor)
+                    # Broadcast to [O, E, G, C, H] to match x_i shape.
+                    valid_position_indicator = valid_position_indicator[
+                        jnp.newaxis, :, jnp.newaxis, :, jnp.newaxis
+                    ]
+                    invalid_position_indicator = 1 - valid_position_indicator
+                    # Mask out invalid positions by subtracting a large value, so they don't
+                    # contribute to the maximum.
+                    x_i_prime = x_i - 10.0 * invalid_position_indicator
+                    # Aggregate over the O, G, and C dimensions to get max activation per expert
+                    # per hidden unit: [E, H].
+                    max_hidden_units = jnp.max(x_i_prime, axis=[0, 2, 3])
+                    # Count neurons that never activate (remain below the masking threshold).
+                    num_dead_units = jnp.count_nonzero(
+                        jnp.less(max_hidden_units, -10.0).astype(jnp.int32)
+                    )
+                    self.add_summary(
+                        "expert_dead_neurons",
+                        num_dead_units,
                     )
                 x_i = with_sharding_constraint(x_i, cfg.dim_to_mesh_axis_map["oegch"])
                 x_i = get_activation_fn(activation)(x_i)

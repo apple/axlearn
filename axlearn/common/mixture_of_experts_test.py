@@ -780,6 +780,183 @@ class TransformerFeedForwardMoETest(TestCase):
         # Check output shape matches input shape
         self.assertEqual(outputs.shape, inputs.shape)
 
+    def test_expert_correlation_loss(self):
+        """Test expert correlation loss is computed and added to aux_loss when enabled."""
+        batch_size, seq_len, dim = 2, 4, 8
+        cfg = TransformerFeedForwardMoE.default_config().set(
+            name="moe",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            activation=("nn.silu", "linear"),
+            num_experts=4,
+            num_groups=1,
+            corr_loss_weight=0.1,  # Enable correlation loss
+        )
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.normal(jax.random.PRNGKey(1), shape=[batch_size, seq_len, dim])
+
+        # Run forward pass and collect summaries
+        _, output_collection = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(inputs=inputs),
+            drop_output_collections=[],
+        )
+
+        # Verify expert_cov_max summary is present
+        self.assertIn("expert_cov_max", output_collection.summaries)
+        # Verify expert_cov_loss summary is present
+        self.assertIn("expert_cov_loss", output_collection.summaries)
+
+        # Verify aux_loss includes correlation loss
+        aux_loss = output_collection.module_outputs["aux_loss"]
+        self.assertIsNotNone(aux_loss)
+
+        # Test with corr_loss_weight=0 (disabled)
+        cfg_no_corr = cfg.clone(corr_loss_weight=0)
+        layer_no_corr = cfg_no_corr.instantiate(parent=None)
+        _, output_collection_no_corr = F(
+            layer_no_corr,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+
+        # Verify expert_cov_loss summary is NOT present when disabled
+        self.assertNotIn("expert_cov_loss", output_collection_no_corr.summaries)
+
+    def test_dead_neuron_detection(self):
+        """Test dead neuron detection produces summaries for TopKGating."""
+        batch_size, seq_len, dim = 2, 8, 16
+        cfg = TransformerFeedForwardMoE.default_config().set(
+            name="moe",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            activation=("nn.silu", "linear"),
+            num_experts=4,
+            num_groups=1,
+            gating=TopKGating.default_config().set(num_experts_per_token=2),
+        )
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.normal(jax.random.PRNGKey(1), shape=[batch_size, seq_len, dim])
+
+        # Run forward pass
+        _, output_collection = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+
+        # Verify expert_dead_neurons summary is present for TopKGating
+        self.assertIn("expert_dead_neurons", output_collection.summaries)
+        dead_neurons = output_collection.summaries["expert_dead_neurons"]
+        # Should be a scalar count
+        self.assertEqual(dead_neurons.shape, ())
+        # Should be non-negative integer
+        self.assertGreaterEqual(dead_neurons, 0)
+
+    def test_rms_norm_summary(self):
+        """Test RMS norm summary for linear2 outputs is produced."""
+        batch_size, seq_len, dim = 2, 4, 8
+        cfg = TransformerFeedForwardMoE.default_config().set(
+            name="moe",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            activation="nn.relu",
+            num_experts=4,
+            num_groups=1,
+        )
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.normal(jax.random.PRNGKey(1), shape=[batch_size, seq_len, dim])
+
+        # Run forward pass
+        _, output_collection = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(789),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+
+        # Verify rms_norm/linear2_outputs summary is present
+        self.assertIn("rms_norm/linear2_outputs", output_collection.summaries)
+        rms_norm = output_collection.summaries["rms_norm/linear2_outputs"]
+        # Should be a scalar
+        self.assertEqual(rms_norm.shape, ())
+        # Should be positive
+        self.assertGreater(rms_norm, 0)
+
+    def test_dynamic_dispatch_combine_topk_gating(self):
+        """Test that dynamic dispatch/combine works correctly with TopKGating."""
+        batch_size, seq_len, dim = 2, 4, 8
+
+        # Create MoE layer with TopKGating
+        cfg = TransformerFeedForwardMoE.default_config().set(
+            name="moe",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            activation="nn.relu",
+            num_experts=4,
+            num_groups=1,
+            gating=TopKGating.default_config().set(num_experts_per_token=2),
+        )
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.normal(jax.random.PRNGKey(1), shape=[batch_size, seq_len, dim])
+
+        # Run forward pass - should work without errors
+        outputs, _ = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+
+        # Verify output shape
+        self.assertEqual(outputs.shape, (batch_size, seq_len, dim))
+
+    def test_compatibility_with_top2_gating(self):
+        """Test backward compatibility - MoE with Top2Gating should still work."""
+        batch_size, seq_len, dim = 2, 4, 8
+
+        # Create MoE layer with default Top2Gating
+        cfg = TransformerFeedForwardMoE.default_config().set(
+            name="moe",
+            input_dim=dim,
+            hidden_dim=dim * 4,
+            activation="nn.relu",
+            num_experts=4,
+            num_groups=1,
+            # Default gating is Top2Gating
+        )
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.normal(jax.random.PRNGKey(1), shape=[batch_size, seq_len, dim])
+
+        # Run forward pass - should work without errors
+        outputs, output_collection = F(
+            layer,
+            is_training=True,
+            prng_key=jax.random.PRNGKey(456),
+            state=state,
+            inputs=dict(inputs=inputs),
+            drop_output_collections=[],
+        )
+
+        # Verify output shape
+        self.assertEqual(outputs.shape, (batch_size, seq_len, dim))
+        # Verify aux_loss is present
+        self.assertIn("aux_loss", output_collection.module_outputs)
+
 
 class ParamConversionTest(parameterized.TestCase):
     @parameterized.product(

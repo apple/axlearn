@@ -307,6 +307,7 @@ model.decoder.transformer.layer.layer[0].self_attention.stochastic_depth.mode: '
 model.decoder.transformer.layer.layer[0].self_attention.structure: 'prenorm'
 model.decoder.transformer.layer.layer[1].feed_forward.activation[0]: 'nn.silu'
 model.decoder.transformer.layer.layer[1].feed_forward.activation[1]: 'linear'
+model.decoder.transformer.layer.layer[1].feed_forward.corr_loss_weight: 0
 model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['me']: PartitionSpec(None, None)
 model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['emh']: PartitionSpec('expert', 'fsdp', 'model')
 model.decoder.transformer.layer.layer[1].feed_forward.dim_to_mesh_axis_map['ehm']: PartitionSpec('expert', 'model', 'fsdp')
