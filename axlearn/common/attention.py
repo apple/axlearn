@@ -765,15 +765,22 @@ class QKVLinear(BaseQKVLinear):
         # The layer used to project.
         layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
 
+        # Optional partition spec for query, key, value projection parameters.
+        query_partition_spec: Optional[PartitionSpec] = None
+        key_partition_spec: Optional[PartitionSpec] = None
+        value_partition_spec: Optional[PartitionSpec] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        for name, dim, num_heads in (
-            ("q", cfg.query_dim, cfg.num_heads),
-            ("k", cfg.key_dim, self.num_kv_heads),
-            ("v", cfg.value_dim, self.num_kv_heads),
+        for name, dim, num_heads, param_partition_spec in (
+            ("q", cfg.query_dim, cfg.num_heads, cfg.query_partition_spec),
+            ("k", cfg.key_dim, self.num_kv_heads, cfg.key_partition_spec),
+            ("v", cfg.value_dim, self.num_kv_heads, cfg.value_partition_spec),
         ):
-            proj_cfg = cfg.layer
+            proj_cfg = cfg.layer.clone()
+            if param_partition_spec is not None:
+                proj_cfg.param_partition_spec = param_partition_spec
             proj_cfg.model_dim = dim
             proj_cfg.num_heads = num_heads
             proj_cfg.per_head_dim = cfg.per_head_dim
