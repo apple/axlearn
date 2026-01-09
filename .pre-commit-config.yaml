@@ -9,18 +9,16 @@ repos:
     # These files are generated.
     exclude: "axlearn/experiments/testdata/.*"
   - id: trailing-whitespace
-- repo: local
+- repo: https://github.com/psf/black
+  rev: 25.11.0
   hooks:
   - id: black
-    name: black
-    entry: black
-    language: system
-    types: [python]
+- repo: https://github.com/pycqa/isort
+  rev: 5.13.2
+  hooks:
   - id: isort
-    name: isort
-    entry: isort
-    language: system
-    types: [python]
+- repo: local
+  hooks:
   - id: pylint
     name: pylint
     entry: pylint

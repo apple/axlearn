@@ -56,10 +56,8 @@ apple-silicon = [
 ]
 # Requirements for testing and development.
 dev = [
-    "black==25.11.0",  # formatting
     "einops==0.8.0",  # for unittests only. Do not use it in core impl because it's not thread-safe.
     "evaluate",
-    "isort==5.13.2",  # formatting
     "pika==1.3.2",  # used by event queue
     "pre-commit",  # local pre commit hooks
     "pycocotools",  # COCO evaluation tools
