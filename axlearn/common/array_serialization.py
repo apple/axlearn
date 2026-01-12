@@ -36,6 +36,7 @@ from absl import logging
 from jax._src import array, typing
 from jax._src.layout import Layout
 from jax.experimental.array_serialization import serialization
+from packaging import version
 
 from axlearn.common.utils import Tensor
 
@@ -75,6 +76,7 @@ class _ShardInfo:
 
 # Tuple (and thus hashable) representation of a slice object (start, end, step).
 _SliceTuple = tuple[Optional[int], Optional[int], Optional[int]]
+JAX_VERSION = version.parse(jax.__version__)
 
 
 def _slices_to_tuple(slices: list[slice]) -> tuple[_SliceTuple, ...]:
@@ -305,11 +307,13 @@ async def _async_serialize(
         and arr_inp.is_fully_addressable
     )
     # pylint: disable=protected-access
-    spec_has_metadata = {
-        "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl._spec_has_metadata,
-        "0.6.2": lambda: serialization.ts_impl._spec_has_metadata,
-        "0.5.3": lambda: serialization._spec_has_metadata,
-    }[jax.__version__]()
+    if JAX_VERSION >= version.parse("0.6.2"):
+        spec_has_metadata = serialization.ts_impl._spec_has_metadata
+    elif JAX_VERSION >= version.parse("0.5.3"):
+        spec_has_metadata = serialization._spec_has_metadata
+    else:
+        raise ValueError(f"Unsupported JAX version for spec_has_metadata: {jax.__version__}")
+
     if not spec_has_metadata(tensorstore_spec):
         # pylint: disable-next=protected-access
         tensorstore_spec["metadata"] = serialization._get_metadata(arr_inp)
@@ -486,11 +490,14 @@ async def _async_deserialize(
     async def cb(index: array.Index, device: jax.Device):
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
-        estimate_read_memory_footprint = {
-            "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl.estimate_read_memory_footprint,
-            "0.6.2": lambda: serialization.ts_impl.estimate_read_memory_footprint,
-            "0.5.3": lambda: serialization.estimate_read_memory_footprint,
-        }[jax.__version__]()
+        if JAX_VERSION >= version.parse("0.6.2"):
+            estimate_read_memory_footprint = serialization.ts_impl.estimate_read_memory_footprint
+        elif JAX_VERSION >= version.parse("0.5.3"):
+            estimate_read_memory_footprint = serialization.estimate_read_memory_foot_print
+        else:
+            raise ValueError(
+                f"Unsupported JAX version: {JAX_VERSION}. Version must be 0.5.3 or newer"
+            )
         requested_bytes = estimate_read_memory_footprint(t, restricted_domain)
         # Limit the bytes read for every shard.
         await byte_limiter.wait_for_bytes(requested_bytes)
@@ -568,11 +575,13 @@ async def _async_deserialize(
         return result
 
     # pylint: disable=protected-access
-    create_async_array_from_callback = {
-        "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl._create_async_array_from_callback,
-        "0.6.2": lambda: serialization.ts_impl._create_async_array_from_callback,
-        "0.5.3": lambda: serialization.create_async_array_from_callback,
-    }[jax.__version__]()
+    if JAX_VERSION >= version.parse("0.6.2"):
+        create_async_array_from_callback = serialization.ts_impl._create_async_array_from_callback
+    elif JAX_VERSION >= version.parse("0.5.3"):
+        create_async_array_from_callback = serialization.create_async_array_from_callback
+    else:
+        raise ValueError("Unsupported JAX version: {JAX_VERSION}. Version must be 0.5.3 or newer.")
+
     return await create_async_array_from_callback(shape, in_sharding, cb)
 
 
@@ -654,11 +663,14 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
         commit_futures = [[] for _ in range(len(tensorstore_specs))]
 
-        async_serialize = {
-            "0.6.2.dev0+selfbuilt": lambda: serialization.ts_impl.async_serialize,
-            "0.6.2": lambda: serialization.ts_impl.async_serialize,
-            "0.5.3": lambda: serialization.async_serialize,
-        }[jax.__version__]()
+        if JAX_VERSION >= version.parse("0.6.2"):
+            async_serialize = serialization.ts_impl.async_serialize
+        elif JAX_VERSION >= version.parse("0.5.3"):
+            async_serialize = serialization.async_serialize
+        else:
+            raise ValueError(
+                f"Unsupported JAX version: {JAX_VERSION}. Version must be 0.5.3 or newer."
+            )
 
         # pylint: disable-next=redefined-outer-name
         async def _run_serializer():
