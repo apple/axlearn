@@ -518,6 +518,18 @@ class BastionManagedGKEJob(BaseBastionManagedJob):
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, *, action: str, **kwargs) -> Config:
+        # if the scheduler is configured to be "topology" scheduler
+        # enable TPU slice auto-provisioning
+        scheduler = gcp_settings("scheduler", fv=fv, required=False)
+        if (
+            hasattr(fv, "enable_tpu_slice_auto_provisioning")
+            and scheduler == "topology"
+            and action in _RUNNER_ACTIONS
+            and fv.enable_tpu_slice_auto_provisioning is None
+        ):
+            logging.info("Scheduler is set to 'topology', enabling TPU slice auto-provisioning")
+            fv.enable_tpu_slice_auto_provisioning = True
+
         cfg: BastionManagedGKEJob.Config = super().from_flags(fv, action=action, **kwargs)
         cfg.cluster = cfg.cluster or gcp_settings("gke_cluster", required=False, fv=fv)
         cfg.output_tables = [

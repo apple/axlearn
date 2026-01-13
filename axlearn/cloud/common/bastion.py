@@ -136,6 +136,7 @@ _LOG_DIR = "/var/tmp/logs"  # Use /var/tmp/ since /tmp/ is cleared every 10 days
 _JOB_DIR = "/var/tmp/jobs"
 _BASTION_SERIALIZED_JOBSPEC_ENV_VAR = "_BASTION_SERIALIZED_JOBSPEC"
 BASTION_JOB_VERSION_ENV_VAR = "BASTION_JOB_VERSION"
+BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR = "BASTION_JOB_TOPOLOGY_ASSIGNMENT"
 
 FLAGS = flags.FLAGS
 
@@ -1076,6 +1077,14 @@ class Bastion(Configurable):
             if job.spec.metadata.version:
                 # For backwards compatibility, only set the version in env when not None.
                 env_vars.update({BASTION_JOB_VERSION_ENV_VAR: job.spec.metadata.version})
+
+            # Serialize the topology assignments to env var
+            # this will be deserialized by the job runners to retrieve the topology assignment info
+            topology_assignment = job.state.metadata.get("topology_assignment")
+            if topology_assignment:
+                env_vars.update(
+                    {BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR: json.dumps(topology_assignment)}
+                )
 
             serialized_jobspec = io.StringIO()
             serialize_jobspec(job.spec, serialized_jobspec)

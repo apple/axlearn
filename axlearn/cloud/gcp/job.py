@@ -6,7 +6,9 @@ See also ``On configuration`` in `axlearn/cloud/gcp/job.py`.
 """
 
 import enum
+import json
 import logging
+import os
 import shlex
 import subprocess
 from collections.abc import Sequence
@@ -15,6 +17,7 @@ from typing import Any, Optional
 import kubernetes as k8s
 from absl import flags
 
+from axlearn.cloud.common.bastion import BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR
 from axlearn.cloud.common.bundler import BaseDockerBundler
 from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
@@ -111,6 +114,7 @@ class GKEJob(GCPJob):
         queue: Optional[str] = None
         annotations: Optional[ConfigOr[dict]] = None
         labels: Optional[ConfigOr[dict]] = None
+        enable_tpu_slice_auto_provisioning: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -121,6 +125,12 @@ class GKEJob(GCPJob):
             "queue",
             None,
             "The name of the Kueue LocalQueue to use. If not set, no queue is used.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "enable_tpu_slice_auto_provisioning",
+            None,
+            "Auto provision TPU slices based on the topology assignment.",
             **common_kwargs,
         )
 
@@ -138,13 +148,57 @@ class GKEJob(GCPJob):
         # together under the jobset represented by this class.
         # Note the distinction from bundlers, which are responsible for bundling any code assets
         # required to run the job.
-        self._builder: BaseReplicatedJob = cfg.builder.instantiate(bundler=bundler)
+
+        # Pass enable_tpu_slice_auto_provisioning from GKEJob to the builder
+        builder_cfg = cfg.builder
+        if (
+            hasattr(builder_cfg, "enable_tpu_slice_auto_provisioning")
+            and cfg.enable_tpu_slice_auto_provisioning is not None
+        ):
+            builder_cfg.enable_tpu_slice_auto_provisioning = cfg.enable_tpu_slice_auto_provisioning
+
+        self._builder: BaseReplicatedJob = builder_cfg.instantiate(bundler=bundler)
 
     def _delete(self):
         cfg: GKEJob.Config = self.config
         # Issues a delete request for the JobSet and proactively delete its descendants. This is not
         # fully blocking; after the call returns there can be a delay before everything is deleted.
         delete_k8s_jobset(cfg.name, namespace=cfg.namespace)
+
+    def _get_topology_assignment(self) -> Optional[list[list[str]]]:
+        """Retrieves TPU topology assignments from the environment variable.
+
+        When TPU slice auto-provisioning is enabled, Bastion passes topology assignments
+        through an environment variable. These assignments specify which TPU slices should be
+        used for the job, enabling precise control over TPU resource allocation.
+
+        Example topology assignment:
+            [["sub-block-id", "sub-block-id"]]
+
+        This is the assignment for a job asking for tpu-7x-256, that needs 128 chips, using
+        2 sub-blocks (64 chips per sub-block). This job will run on a TPU slice formed by
+        2 sub-blocks. Each inner array represents the TPU slice info for a job's replica.
+
+        Returns:
+            A list of lists of strings representing topology assignments, where each inner list
+            contains slice identifiers for a particular job replica. Returns None if the
+            environment variable is not set or if parsing fails.
+        """
+        topology_assignments_env = os.environ.get(BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR)
+        if not topology_assignments_env:
+            logging.info("No %s environment variable set.", BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR)
+            return None
+
+        try:
+            return json.loads(topology_assignments_env)
+        except json.JSONDecodeError as e:
+            logging.warning(
+                "Failed to parse topology assignments from env var %s, value: %s, error: %s",
+                BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR,
+                topology_assignments_env,
+                e,
+            )
+            return None
 
     def _build_jobset(self) -> Nested[Any]:
         """Builds a config for a JobSet, which is a set of Jobs.
@@ -159,6 +213,25 @@ class GKEJob(GCPJob):
         labels = maybe_instantiate(cfg.labels or {})
         if cfg.queue:
             annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
+
+        # Bastion passes the job metadata to the runner through env vars
+        # If the job has topology assigned, its also in the env var
+        # Try to parse the env var and get the topology assignments.
+        topology_assignment = self._get_topology_assignment()
+        if cfg.enable_tpu_slice_auto_provisioning and topology_assignment:
+            # TODO: Check how to handle multiple replicated jobs (where job names are different)
+            slice_selection = json.dumps({self._builder.config.job_name: topology_assignment})
+            logging.info("Adding slice selection: %s to job set", slice_selection)
+            labels.update({"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "async"})
+            annotations.update(
+                {"tpu-provisioner.cloud.google.com/slice-selection": slice_selection}
+            )
+
+        # If slice auto provisioning is not enabled, this is needed to add node selector to the pods
+        # and make sure pods can allocate to the correct node pools
+        if not cfg.enable_tpu_slice_auto_provisioning:
+            annotations.update(exclusive_topology_annotations())
+
         return dict(
             metadata=dict(name=cfg.name, annotations=annotations, labels=labels),
             spec=dict(
