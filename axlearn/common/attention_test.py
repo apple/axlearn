@@ -89,6 +89,7 @@ from axlearn.common.attention_bias import (
     bool_to_bias,
     causal_mask,
     make_causal_biases,
+    make_segment_mask,
     make_sliding_window_causal_biases,
 )
 from axlearn.common.base_layer import (
@@ -242,6 +243,81 @@ class MaskTest(absltest.TestCase):
                 self.assertEqual(masked_logit.dtype, logits.dtype)
                 np.testing.assert_array_equal(
                     masked_logit, logits + random_float_biases.astype(logits.dtype)
+                )
+
+    def test_segment_ids_vs_logit_biases_padding(self):
+        """Test segment_ids and self_attention_logit_biases equivalence for padding
+
+        This test verifies blocking attention between valid and padding sequence parts
+        can be equivalently achieved via two segment_ids, or self_attention_logit_biases
+        computed via make_segment_mask(segment_id, segment_id).
+        """
+        batch_size = 2
+        seq_len = 6
+        model_dim = 16
+        num_heads = 4
+        prng_key = 456
+
+        # Create segment_ids where 0 = valid tokens, 1 = padding
+        # Example: [[0, 0, 0, 1, 1, 1], [0, 0, 0, 0, 1, 1]]
+        segment_ids = jnp.array([[0, 0, 0, 1, 1, 1], [0, 0, 0, 0, 1, 1]])
+
+        # Create attention layer
+        cfg = attention.MultiheadAttention.default_config().set(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+        )
+        layer = cfg.instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        # Create random query input
+        query = jax.random.normal(
+            jax.random.PRNGKey(prng_key), [batch_size, seq_len, model_dim], dtype=jnp.float32
+        )
+
+        # Method 1: Use segment_ids directly
+        output_with_segment_ids = []
+        for seg_ids in (segment_ids, 1 - segment_ids):
+
+            output, _ = F(
+                layer,
+                state=layer_params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(prng_key),
+                inputs=dict(
+                    query=query,
+                    segment_ids=seg_ids,
+                ),
+            )
+            output_with_segment_ids.append(output)
+
+        # Method 2: Use self_attention_logit_biases computed from segment_ids
+        # This should produce the same result as above
+
+        output_with_logit_biases = []
+        for seg_ids in (segment_ids, 1 - segment_ids):
+            logit_biases = make_segment_mask(target_segments=seg_ids, source_segments=seg_ids)
+
+            output, _ = F(
+                layer,
+                state=layer_params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(prng_key),
+                inputs=dict(
+                    query=query,
+                    attention_logit_biases=logit_biases,
+                ),
+            )
+            output_with_logit_biases.append(output)
+
+        # The outputs should be identical
+        for i in range(2):
+            for j in range(2):
+                assert_allclose(
+                    output_with_segment_ids[i].data, output_with_logit_biases[j].data, atol=1e-6
                 )
 
 
