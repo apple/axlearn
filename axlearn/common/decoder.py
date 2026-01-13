@@ -128,12 +128,15 @@ class BaseDecoder(Protocol):
         """A PRNG key for sampling."""
 
     # TODO(markblee): Remove this in favor of prefill_states.
-    def init_states(self, *, batch_size: int, max_sequence_length: int) -> Nested[Tensor]:
+    def init_states(
+        self, *, batch_size: int, max_sequence_length: int, dtype: jnp.dtype
+    ) -> Nested[Tensor]:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
             batch_size: The batch size of the target to be decoded.
             max_sequence_length: The sequence length of the target to be decoded.
+            dtype: dtype for the decoding cache.
 
         Returns:
             The cache as a Nested Tensor with key and value initialized.
@@ -639,12 +642,14 @@ class Decoder(BaseLayer):
         )
         return output
 
-    def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
+    def init_states(
+        self, *, batch_size: int, max_sequence_length: int, dtype: jnp.dtype
+    ) -> NestedTensor:
         """See `BaseDecoder.init_states` for details."""
         cfg: Decoder.Config = self.config
         init_state, _ = self.transformer.init_states(
             time_step=None,
-            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=jnp.float32),
+            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=dtype),
         )
         return dict(
             transformer_state=init_state,

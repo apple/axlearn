@@ -468,6 +468,72 @@ class TestDecoder(TestCase):
         logits = jnp.moveaxis(logits, -1, -2)
         assert_allclose(logits, forward_outputs["logits"])
 
+    @parameterized.parameters(jnp.float32, jnp.bfloat16)
+    def test_prefill_states_vs_init_states_extend_step(self, dtype: jnp.dtype):
+        """Tests that prefill_states produces the same results as init_states + extend_step."""
+        batch_size, tgt_len, vocab_size = 2, 6, 24
+        num_layers, num_heads, hidden_dim = 2, 4, 12
+
+        cfg = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=tgt_len,
+        )
+        # TODO(dhwang2): break the tie between prefill cache dtype and model dtype
+        cfg.set(dtype=dtype)
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        input_ids = jax.random.randint(
+            jax.random.PRNGKey(1), shape=[batch_size, tgt_len], minval=1, maxval=vocab_size
+        )
+        # Use full sequence length for both methods.
+        time_step = jnp.full([batch_size], tgt_len, dtype=jnp.int32)
+
+        # Method 1: prefill_states (processes entire sequence at once)
+        (prefill_state, prefill_outputs), _ = functional(
+            layer,
+            inputs=dict(time_step=time_step, input_batch=dict(input_ids=input_ids)),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            method="prefill_states",
+        )
+
+        # Method 2: init_states + extend_step for each token (with configurable dtype)
+        init_state = layer.init_states(
+            batch_size=batch_size, max_sequence_length=tgt_len, dtype=dtype
+        )
+        cached_states = init_state
+        step_logits = []
+        for t in range(tgt_len):
+            (cached_states, outputs), _ = functional(
+                layer,
+                inputs=dict(cached_states=cached_states, input_ids=input_ids[:, t : t + 1]),
+                state=layer_params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(2),
+                method="extend_step",
+            )
+            step_logits.append(outputs["logits"])
+
+        step_logits = jnp.concatenate(step_logits, axis=1)
+
+        # Compare logits at the last position (should match regardless of cache dtype).
+        self.assertEqual(prefill_outputs["logits"].shape, step_logits.shape)
+        assert_allclose(prefill_outputs["logits"], step_logits)
+        # Compare KV cache states (cast to same dtype for comparison).
+        atol = 1e-6
+        chex.assert_trees_all_close(
+            jax.tree.map(lambda x: x.astype(jnp.float32), prefill_state["transformer_state"]),
+            jax.tree.map(lambda x: x.astype(jnp.float32), cached_states["transformer_state"]),
+            atol=atol,
+        )
+
     @parameterized.product(
         stack_cfg=[
             StackedTransformerLayer.default_config(),
