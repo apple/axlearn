@@ -598,7 +598,9 @@ def child_context(name: str, **kwargs):
         raise RuntimeError(
             "Each thread should call install_context_stack() to install its own stack."
         )
-    context = current_context().add_child(name, **kwargs)
+    current = current_context()
+    assert current is not None
+    context = current.add_child(name, **kwargs)
     with set_current_context(context) as c:
         yield c
 
