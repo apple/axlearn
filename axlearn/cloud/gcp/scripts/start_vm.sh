@@ -108,14 +108,30 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
 
   # Install bundle.
   install_bundle() {
-    # 'Until' seemingly necessary as of 08/06/23 to avoid background setup process damaging partial
-    # pip install state.
-    # TODO(markblee,tom_gunter): Revisit this and understand why and how to wait until ready.
+    # Retry up to 3 times to avoid background setup process damaging partial pip install state
     export UV_HTTP_TIMEOUT=300
-    until uv pip install .[gcp]; do
-      echo "Attempting to install bundle again..."
-      sleep 1
+    local max_attempts=3
+    local attempt=1
+
+    while [ $attempt -le $max_attempts ]; do
+      echo "Attempt $attempt of $max_attempts to install bundle..."
+      if uv pip install .[gcp]; then
+        echo "Bundle installed successfully on attempt $attempt"
+        return 0
+      fi
+
+      if [ $attempt -lt $max_attempts ]; then
+        # Fixed 2s delay with 0-2s jitter to avoid thundering herd
+        local jitter=$((RANDOM % 3))
+        local delay=$((2 + jitter))
+        echo "Install failed, retrying in ${delay} seconds..."
+        sleep $delay
+      fi
+      attempt=$((attempt + 1))
     done
+
+    echo "ERROR: Failed to install bundle after $max_attempts attempts"
+    return 1
   }
   install_bundle >> ${SETUP_LOG_PATH} 2>&1
   popd
