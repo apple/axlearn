@@ -159,10 +159,41 @@ class LWSService(Service):
         lws_name = self.name.split("-service")[0]
         custom_api = k8s.client.CustomObjectsApi()
 
-        # Fetch the CR object
-        lws = custom_api.get_namespaced_custom_object(
-            group=group, version=version, namespace=namespace, plural=plural, name=lws_name
-        )
+        from kubernetes.client.exceptions import ApiException
+        import time
+
+        max_tries = 5
+        retry_delay = 20  
+
+        for attempt in range(max_tries):
+            try:
+                lws = custom_api.get_namespaced_custom_object(
+                    group=group, 
+                    version=version, 
+                    namespace=namespace, 
+                    plural=plural, 
+                    name=lws_name
+                )
+                print(f"Successfully retrieved {lws_name}")
+                break 
+            except ApiException as e:
+                # Check if it's a 404 error
+                if e.status == 404:
+                    print(f"Attempt {attempt + 1}: Resource '{lws_name}' not found yet.")
+
+                    if attempt < max_tries - 1:
+                        print(f"Waiting {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                    else:
+                        print("Max retries reached. Resource was never found.")
+                        raise  
+                else:
+                    print(f"An unexpected Kubernetes API error occurred: {e}")
+                    raise
+
+            except Exception as e:
+                print(f"An unexpected error occurred: {e}")
+                raise
 
         ports_map_list = []
         for i in range(len(self.ports)):
