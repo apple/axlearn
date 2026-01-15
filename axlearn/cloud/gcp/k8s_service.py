@@ -12,6 +12,8 @@ from axlearn.cloud.gcp.config import default_project
 from axlearn.cloud.gcp.utils import custom_leaderworkerset_kwargs
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
+from kubernetes.client.exceptions import ApiException
+import time
 
 
 class Service(FlagConfigurable):
@@ -158,9 +160,6 @@ class LWSService(Service):
         plural = api_kwargs["plural"]
         lws_name = self.name.split("-service")[0]
         custom_api = k8s.client.CustomObjectsApi()
-
-        from kubernetes.client.exceptions import ApiException
-        import time
 
         max_tries = 5
         retry_delay = 20  
