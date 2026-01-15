@@ -173,25 +173,25 @@ class LWSService(Service):
                     plural=plural, 
                     name=lws_name
                 )
-                print(f"Successfully retrieved {lws_name}")
+                logging.info("Successfully retrieved %s", lws_name)
                 break 
             except ApiException as e:
                 # Check if it's a 404 error
                 if e.status == 404:
-                    print(f"Attempt {attempt + 1}: Resource '{lws_name}' not found yet.")
+                    logging.info("Attempt %s: Resource %s not found yet.",str(attempt + 1),lws_name)
 
                     if attempt < max_tries - 1:
-                        print(f"Waiting {retry_delay} seconds...")
+                        logging.info("Waiting %s seconds...",str(retry_delay))
                         time.sleep(retry_delay)
                     else:
-                        print("Max retries reached. Resource was never found.")
+                        logging.info("Max retries reached. Resource was never found.")
                         raise  
                 else:
-                    print(f"An unexpected Kubernetes API error occurred: {e}")
+                    logging.info("An unexpected Kubernetes API error occurred")
                     raise
 
             except Exception as e:
-                print(f"An unexpected error occurred: {e}")
+                logging.info("An unexpected error occurred: %s",str(e))
                 raise
 
         ports_map_list = []
