@@ -227,10 +227,9 @@ class GKEJob(GCPJob):
                 {"tpu-provisioner.cloud.google.com/slice-selection": slice_selection}
             )
 
-        # If slice auto provisioning is not enabled, this is needed to add node selector to the pods
-        # and make sure pods can allocate to the correct node pools
-        if not cfg.enable_tpu_slice_auto_provisioning:
-            annotations.update(exclusive_topology_annotations())
+            # Finally, make sure to remove the exclusive topology annotation, that is not required
+            # When using slice auto provisioning
+            annotations.pop("alpha.jobset.sigs.k8s.io/exclusive-topology", None)
 
         return dict(
             metadata=dict(name=cfg.name, annotations=annotations, labels=labels),
