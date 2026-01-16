@@ -722,6 +722,9 @@ class TPUJobBuilder(SingleReplicatedJob):
         if cfg.enable_pre_provisioner:
             # Used by pre-provisioner.
             selector.update({PRE_PROVISIONER_LABEL: cfg.name})
+        elif cfg.enable_tpu_slice_auto_provisioning:
+            # Slice provisioning does not require additional selectors
+            pass
         elif tier != "disabled":
             # Used by GCP auto-provisioner.
             selector.update(
@@ -800,14 +803,9 @@ class TPUJobBuilder(SingleReplicatedJob):
 
         node_selector_dict = {
             "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
+            "cloud.google.com/gke-tpu-topology": cfg.accelerator.topology or system.topology,
             **selector,
         }
-        # If tpu_slice_auto_provisioning is enabled, this node selector will be updated by
-        # the TPU provisioner's webhook
-        if not cfg.enable_tpu_slice_auto_provisioning:
-            node_selector_dict["cloud.google.com/gke-tpu-topology"] = (
-                cfg.accelerator.topology or system.topology
-            )
 
         spec = dict(
             # NOTE: Don't set hostNetwork or dnsPolicy for compat with Workload Identity.
