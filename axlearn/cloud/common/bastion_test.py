@@ -46,7 +46,7 @@ from axlearn.cloud.common.bastion import (
 )
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.quota import QuotaInfo
-from axlearn.cloud.common.scheduler import JobScheduler
+from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, JobVerdict
 from axlearn.cloud.common.scheduler_test import mock_quota_config
 from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap, Topology
 from axlearn.cloud.common.uploader import Uploader
@@ -1481,6 +1481,286 @@ class BastionTest(parameterized.TestCase):
                 all_history_files.extend(project_history_files)
             # "project1" and "project2".
             self.assertLen(all_history_files, 2)
+
+    @parameterized.parameters(
+        # Test case 1: Simple PENDING -> ACTIVE transition
+        dict(
+            initial_jobs={
+                "job1": Job(
+                    spec=new_jobspec(
+                        name="job1",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user1",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(status=JobStatus.PENDING),
+                    command_proc=None,
+                    cleanup_proc=None,
+                ),
+            },
+            verdicts={
+                "job1": JobVerdict(over_limits=None, metadata={"tier": 0}),
+            },
+            expected_states={
+                "job1": JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+            },
+        ),
+        # Test case 2: ACTIVE job that should be pre-empted (verdict fails)
+        dict(
+            initial_jobs={
+                "job1": Job(
+                    spec=new_jobspec(
+                        name="job1",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user1",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+                    command_proc=mock.Mock(),
+                    cleanup_proc=None,
+                ),
+            },
+            verdicts={
+                "job1": JobVerdict(over_limits={"v4"}, metadata={}),
+            },
+            expected_states={
+                "job1": JobState(status=JobStatus.PENDING, metadata={}),
+            },
+        ),
+        # Test case 3: Multiple jobs with different verdicts
+        dict(
+            initial_jobs={
+                "job1": Job(
+                    spec=new_jobspec(
+                        name="job1",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user1",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(status=JobStatus.PENDING, metadata={"tier": 0}),
+                    command_proc=None,
+                    cleanup_proc=None,
+                ),
+                "job2": Job(
+                    spec=new_jobspec(
+                        name="job2",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user2",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+                    command_proc=mock.Mock(),
+                    cleanup_proc=None,
+                ),
+            },
+            verdicts={
+                "job1": JobVerdict(over_limits=None, metadata={"tier": 0}),
+                "job2": JobVerdict(over_limits={"v4"}, metadata={}),
+            },
+            expected_states={
+                "job1": JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+                "job2": JobState(status=JobStatus.PENDING, metadata={}),
+            },
+        ),
+        # Test case 4: ACTIVE job with tier change should go to PENDING
+        dict(
+            initial_jobs={
+                "job1": Job(
+                    spec=new_jobspec(
+                        name="job1",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user1",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0}),
+                    command_proc=mock.Mock(),
+                    cleanup_proc=None,
+                ),
+            },
+            verdicts={
+                "job1": JobVerdict(over_limits=None, metadata={"tier": 1}),
+            },
+            expected_states={
+                "job1": JobState(status=JobStatus.PENDING, metadata={"tier": 1}),
+            },
+        ),
+        # Test case 5: Job with updated metadata should go to PENDING
+        dict(
+            initial_jobs={
+                "job1": Job(
+                    spec=new_jobspec(
+                        name="job1",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user1",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(status=JobStatus.ACTIVE, metadata={"tier": 0, "updated": True}),
+                    command_proc=mock.Mock(),
+                    cleanup_proc=None,
+                ),
+            },
+            verdicts={
+                "job1": JobVerdict(over_limits=None, metadata={"tier": 0}),
+            },
+            expected_states={
+                "job1": JobState(status=JobStatus.PENDING, metadata={"tier": 0}),
+            },
+        ),
+        # Test case 6: Job with static topology should stay ACTIVE
+        dict(
+            initial_jobs={
+                "job1": Job(
+                    spec=new_jobspec(
+                        name="job1",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user1",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(
+                        status=JobStatus.ACTIVE,
+                        metadata={"tier": 0, "topology_assignment": [["subblock-a"]]},
+                    ),
+                    command_proc=mock.Mock(),
+                    cleanup_proc=None,
+                ),
+            },
+            verdicts={
+                "job1": JobVerdict(
+                    over_limits=None, metadata={"tier": 0, "topology_assignment": [["subblock-a"]]}
+                ),
+            },
+            expected_states={
+                "job1": JobState(
+                    status=JobStatus.ACTIVE,
+                    metadata={"tier": 0, "topology_assignment": [["subblock-a"]]},
+                ),
+            },
+        ),
+        # Test case 7: Job with changing topology should go to PENDING
+        dict(
+            initial_jobs={
+                "job1": Job(
+                    spec=new_jobspec(
+                        name="job1",
+                        command="command",
+                        metadata=JobMetadata(
+                            user_id="user1",
+                            project_id="project1",
+                            creation_time=datetime.now(),
+                            resources={"v4": 1},
+                        ),
+                    ),
+                    state=JobState(
+                        status=JobStatus.ACTIVE,
+                        metadata={"tier": 0, "topology_assignment": [["subblock-a"]]},
+                    ),
+                    command_proc=mock.Mock(),
+                    cleanup_proc=None,
+                ),
+            },
+            verdicts={
+                "job1": JobVerdict(
+                    over_limits=None, metadata={"tier": 0, "topology_assignment": [["subblock-b"]]}
+                ),
+            },
+            expected_states={
+                "job1": JobState(
+                    status=JobStatus.PENDING,
+                    metadata={"tier": 0, "topology_assignment": [["subblock-b"]]},
+                ),
+            },
+        ),
+    )
+    def test_update_jobs_with_mock_scheduler(
+        self,
+        initial_jobs: dict[str, Job],
+        verdicts: dict[str, JobVerdict],
+        expected_states: dict[str, JobState],
+    ):
+        """Test _update_jobs with mocked scheduler returning specific verdicts."""
+        with self._patch_bastion() as mock_bastion:
+            # Mock the scheduler to return the specified verdicts
+            mock_scheduler = mock.Mock()
+            mock_scheduler.schedule.return_value = BaseScheduler.ScheduleResults(
+                project_limits={},
+                project_usages={},
+                job_verdicts=verdicts,
+            )
+            mock_bastion._scheduler = mock_scheduler
+
+            # Set up the active jobs
+            mock_bastion._active_jobs = initial_jobs
+
+            # Mock _update_single_job to capture calls
+            mock_update_single_job = mock.Mock(side_effect=lambda job: job)
+
+            # Mock _append_to_history to avoid side effects
+            mock_append_to_history = mock.Mock()
+
+            # Mock _append_to_job_history to avoid side effects
+            mock_append_to_job_history = mock.Mock()
+
+            # Mock _is_proc_complete to always return False
+            patch_is_proc_complete = mock.patch(
+                f"{bastion.__name__}._is_proc_complete", return_value=False
+            )
+
+            with (
+                mock.patch.object(mock_bastion, "_update_single_job", mock_update_single_job),
+                mock.patch.object(mock_bastion, "_append_to_history", mock_append_to_history),
+                mock.patch.object(
+                    mock_bastion, "_append_to_job_history", mock_append_to_job_history
+                ),
+                patch_is_proc_complete,
+            ):
+                mock_bastion._update_jobs()
+
+                # Verify _update_single_job was called for each job
+                self.assertEqual(mock_update_single_job.call_count, len(initial_jobs))
+
+                # Verify each job was called with the expected state
+                for call_args in mock_update_single_job.call_args_list:
+                    job = call_args[0][0]  # First positional argument
+                    job_name = job.spec.name
+                    expected_state = expected_states[job_name]
+                    self.assertEqual(
+                        job.state.status,
+                        expected_state.status,
+                        msg=f"Job {job_name} status mismatch",
+                    )
+                    self.assertEqual(
+                        job.state.metadata,
+                        expected_state.metadata,
+                        msg=f"Job {job_name} metadata mismatch",
+                    )
 
     def test_gc_jobs(self):
         """Tests GC mechanism.

@@ -2,6 +2,7 @@
 
 """Tests GKERunnerJob."""
 import contextlib
+import dataclasses
 
 # pylint: disable=no-self-use,protected-access
 from collections.abc import Sequence
@@ -30,9 +31,36 @@ from axlearn.cloud.gcp.runners.gke import (
     _infer_job_version,
     _infer_processor_type,
     _infer_reservation,
+    _topology_assignment_from_env,
+    _topology_assignment_from_jobset,
 )
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
+
+
+@dataclasses.dataclass
+class GetStatusTestConfig:
+    """Configuration for test_get_status test cases.
+
+    Attributes:
+        tier: The bastion tier (e.g., "0", "1", None).
+        status: The job status dict or Exception.
+        spec: The job spec dict.
+        expected: The expected GKERunnerJob.Status.
+        num_slices: Number of slices (default: 1).
+        metadata: Job metadata dict (default: {}).
+        topology_assignment: Topology assignment string (default: None).
+        job_version: Job version (default: None).
+    """
+
+    tier: Optional[str]
+    status: dict
+    spec: dict
+    expected: runner_gke.GKERunnerJob.Status
+    num_slices: int = 1
+    metadata: dict = dataclasses.field(default_factory=dict)
+    topology_assignment: Optional[str] = None
+    job_version: Optional[int] = None
 
 
 def _mock_replicated_jobs(
@@ -422,10 +450,126 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
     def test_infer_job_version(self, status: dict, expected: Optional[str] = None):
         self.assertEqual(expected, _infer_job_version(status))
 
+    @parameterized.parameters(
+        # Test case 1: Valid topology assignment with "job" field
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"job": [["slice1", "slice2"], ["slice3", "slice4"]]}'
+                        ),
+                    }
+                }
+            },
+            expected=[["slice1", "slice2"], ["slice3", "slice4"]],
+        ),
+        # Test case 2: Missing annotation
+        dict(
+            jobset={"metadata": {"annotations": {}}},
+            expected=None,
+        ),
+        # Test case 4: Annotation without "job" field
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": '{"other": "value"}'
+                    }
+                }
+            },
+            expected=None,
+        ),
+        # Test case 5: Invalid JSON in annotation
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": "invalid-json"
+                    }
+                }
+            },
+            expected=None,
+        ),
+        # Test case 6: Empty string annotation
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {"tpu-provisioner.cloud.google.com/slice-selection": ""}
+                }
+            },
+            expected=None,
+        ),
+        # Test case 7: Single topology assignment
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": '{"job": [["slice1"]]}'
+                    }
+                }
+            },
+            expected=[["slice1"]],
+        ),
+    )
+    def test_topology_assignment_from_jobset(
+        self, jobset: dict, expected: Optional[list[list[str]]]
+    ):
+        """Test _topology_assignment_from_jobset extracts topology assignments correctly."""
+        self.assertEqual(expected, _topology_assignment_from_jobset(jobset))
+
+    @parameterized.parameters(
+        # Test case 1: Valid topology assignment from env
+        dict(
+            env_var='[["slice1", "slice2"], ["slice3", "slice4"]]',
+            expected=[["slice1", "slice2"], ["slice3", "slice4"]],
+        ),
+        # Test case 2: Missing environment variable
+        dict(
+            env_var=None,
+            expected=None,
+        ),
+        # Test case 3: Invalid JSON in env var
+        dict(
+            env_var="invalid-json",
+            expected=None,
+        ),
+        # Test case 4: Empty string env var
+        dict(
+            env_var="",
+            expected=None,
+        ),
+        # Test case 5: Single topology assignment
+        dict(
+            env_var='[["slice1"]]',
+            expected=[["slice1"]],
+        ),
+        # Test case 6: Empty list
+        dict(
+            env_var="[]",
+            expected=[],
+        ),
+        # Test case 7: Nested empty lists
+        dict(
+            env_var="[[]]",
+            expected=[[]],
+        ),
+    )
+    def test_topology_assignment_from_env(
+        self, env_var: Optional[str], expected: Optional[list[list[str]]]
+    ):
+        """Test _topology_assignment_from_env extracts topology assignments from env correctly."""
+        env_dict = {}
+        if env_var is not None:
+            env_dict["BASTION_JOB_TOPOLOGY_ASSIGNMENT"] = env_var
+
+        with mock.patch.dict("os.environ", env_dict, clear=False):
+            self.assertEqual(expected, _topology_assignment_from_env())
+
     @parameterized.product(
-        (
+        config=(
             # Conditions is set, so we use it.
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -434,11 +578,10 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ]
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.COMPLETED,
             ),
             # Ignore conditions with status.lower() != "true".
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -448,11 +591,10 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ]
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.FAILED,
             ),
             # Missing conditions entirely, fallback to child job statuses.
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -461,12 +603,11 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ],
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
             # Missing conditions entirely, fallback to child job statuses.
             # Ignore conditions with status.lower() != "true".
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -476,12 +617,11 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ],
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
             # At least one job failed. We go to PENDING until conditions is set,
             # or until replicated job statuses change.
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -494,7 +634,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.PENDING,
             ),
             # At least one job failed without conditions, and tier does not match.
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=None,
                 status=dict(
@@ -507,7 +647,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
             # Number of replicated job statuses do not match slices.
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -520,7 +660,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.UNKNOWN,
             ),
             # All replicated jobs succeeded. No need to wait for jobset conditions.
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -533,7 +673,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.SUCCEEDED,
             ),
             # Ignore active and missing statuses.
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -542,20 +682,18 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ],
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=1)),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
             # Missing jobset is reported as "not started".
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=k8s.client.exceptions.ApiException(status=404),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.NOT_STARTED,
             ),
             # All statuses are 0.
-            dict(
+            GetStatusTestConfig(
                 tier=None,
                 job_version=None,
                 status=dict(
@@ -568,7 +706,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.PENDING,
             ),
             # All statuses are 0 and tiers do not match (thus will be recreated).
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=None,
                 status=dict(
@@ -581,7 +719,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
             # Jobset reservation and bastion tier do not match.
-            dict(
+            GetStatusTestConfig(
                 tier="1",
                 job_version=None,
                 status={},
@@ -590,7 +728,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
             # Jobset reservation and bastion tier do not match.
-            dict(
+            GetStatusTestConfig(
                 tier="1",
                 job_version=None,
                 status={},
@@ -600,7 +738,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             ),
             # Jobset reservation and bastion tier do not match.
             # In this case, we allow the job to keep running.
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=None,
                 status=dict(
@@ -613,7 +751,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
             # Missing reservation / invalid spec will be treated as spot.
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=None,
                 status=dict(
@@ -626,7 +764,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
             # Job version has increased from None.
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=1,
                 status=dict(
@@ -635,11 +773,10 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ],
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.UPDATING,
             ),
             # Job version has increased from a non-None number.
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=4,
                 status=dict(
@@ -648,11 +785,10 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ],
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 3, 1)),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.UPDATING,
             ),
             # Job version has decreased, in which case, no update.
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=1,
                 status=dict(
@@ -661,11 +797,10 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ],
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2, 1)),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
             ),
             # Job version is set to None, in which case, no update.
-            dict(
+            GetStatusTestConfig(
                 tier="0",
                 job_version=None,
                 status=dict(
@@ -674,20 +809,54 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     ],
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], 2, 1)),
-                num_slices=1,
                 expected=runner_gke.GKERunnerJob.Status.READY,
+            ),
+            # Topology assignments match between env and jobset annotation.
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"job": [["slice1", "slice2"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["slice1", "slice2"]]',
+                expected=runner_gke.GKERunnerJob.Status.READY,
+            ),
+            # Topology assignments do not match between env and jobset annotation.
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"job": [["slice1", "slice2"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["slice3", "slice4"]]',
+                expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
         ),
         enable_pre_provisioner=(None, False, True),
     )
     def test_get_status(
         self,
-        status: dict,
-        num_slices: int,
-        expected: runner_gke.GKERunnerJob.Status,
-        tier: str,
-        job_version: Optional[int],
-        spec: dict,
+        config: GetStatusTestConfig,
         enable_pre_provisioner: Optional[bool] = None,
     ):
         cfg = self._job_config(
@@ -695,25 +864,29 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             name="test-name",
             cluster="test-cluster",
             enable_pre_provisioner=enable_pre_provisioner,
-            num_replicas=num_slices,
+            num_replicas=config.num_slices,
         )
         job: GKERunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
 
-        if isinstance(status, Exception):
-            mock_get_status = mock.Mock(side_effect=status)
+        if isinstance(config.status, Exception):
+            mock_get_status = mock.Mock(side_effect=config.status)
         else:
-            mock_get_status = mock.Mock(return_value=dict(status=status, spec=spec))
+            mock_get_status = mock.Mock(
+                return_value=dict(metadata=config.metadata, status=config.status, spec=config.spec)
+            )
+
+        env_dict = {"BASTION_TIER": config.tier, BASTION_JOB_VERSION_ENV_VAR: config.job_version}
+        if config.topology_assignment is not None:
+            env_dict["BASTION_JOB_TOPOLOGY_ASSIGNMENT"] = config.topology_assignment
 
         with (
-            mock.patch.dict(
-                "os.environ", {"BASTION_TIER": tier, BASTION_JOB_VERSION_ENV_VAR: job_version}
-            ),
+            mock.patch.dict("os.environ", env_dict),
             mock.patch(
                 "kubernetes.client.CustomObjectsApi",
                 return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
             ),
         ):
-            self.assertEqual(expected, job._get_status())
+            self.assertEqual(config.expected, job._get_status())
 
     @parameterized.parameters(
         # Don't need to reschedule if no node-pool exists.

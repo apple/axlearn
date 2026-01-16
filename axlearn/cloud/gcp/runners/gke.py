@@ -62,6 +62,7 @@ Example:
 """
 
 import enum
+import json
 import os
 import time
 from typing import Optional, cast
@@ -114,6 +115,45 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
     except (TypeError, KeyError):
         logging.warning("Failed to infer reservation.")
     return None
+
+
+def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
+    """Infers reservation given a jobset spec."""
+    topology_assignments_str = (
+        jobset["metadata"]
+        .get("annotations", {})
+        .get("tpu-provisioner.cloud.google.com/slice-selection")
+    )
+    if not topology_assignments_str:
+        return None
+
+    try:
+        return json.loads(topology_assignments_str).get("job")
+    except json.JSONDecodeError as e:
+        logging.warning(
+            "Failed to parse topology assignments from annotations %s. error: %s",
+            topology_assignments_str,
+            e,
+        )
+        return None
+
+
+def _topology_assignment_from_env() -> Optional[list[list[str]]]:
+    topology_assignments_env = os.environ.get("BASTION_JOB_TOPOLOGY_ASSIGNMENT")
+    if not topology_assignments_env:
+        logging.info("No %s environment variable set.", "BASTION_JOB_TOPOLOGY_ASSIGNMENT")
+        return None
+
+    try:
+        return json.loads(topology_assignments_env)
+    except json.JSONDecodeError as e:
+        logging.warning(
+            "Failed to parse topology assignments from env var "
+            "BASTION_JOB_TOPOLOGY_ASSIGNMENT %s. error: %s",
+            topology_assignments_env,
+            e,
+        )
+        return None
 
 
 def _infer_processor_type(jobset_spec: dict) -> Optional[str]:
@@ -322,6 +362,11 @@ class GKERunnerJob(BaseRunnerJob):
             reservation = _infer_reservation(resp["spec"])
             processor_type = _infer_processor_type(resp["spec"])
             if runner_utils.should_recreate_job(tier, reservation, processor_type=processor_type):
+                return GKERunnerJob.Status.RESCHEDULED
+
+            topology_assignment_env = _topology_assignment_from_env()
+            topology_assignment_jobset = _topology_assignment_from_jobset(jobset=resp)
+            if topology_assignment_env != topology_assignment_jobset:
                 return GKERunnerJob.Status.RESCHEDULED
 
             expected_job_version = os.environ.get(BASTION_JOB_VERSION_ENV_VAR, None)
