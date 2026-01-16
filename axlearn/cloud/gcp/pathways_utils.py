@@ -741,9 +741,18 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             jobset_name=cfg.name, replicated_job_name=replicated_job_name
         ).metadata
 
-        annotations.update(
-            {"alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
-        )
+        labels = {}
+        # If we are using slice auto provisioning, we don't want exclusive topology
+        if not cfg.enable_tpu_slice_auto_provisioning:
+            annotations.update(
+                {"alpha.jobset.sigs.k8s.io/exclusive-topology": "cloud.google.com/gke-nodepool"}
+            )
+        else:
+            # If we are using tpu slice provisioning, we do want to have the slice
+            # selectors injected
+            labels = {
+                "tpu-provisioner.cloud.google.com/inject-slice-selector": "true",
+            }
 
         spec = dict(
             parallelism=system.vms_per_slice,
@@ -755,7 +764,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             template=self._build_pathways_worker_pod(pathways_worker_replicated_job_index),
         )
         worker_job = dict(
-            metadata=dict(annotations=annotations),
+            metadata=dict(annotations=annotations, labels=labels),
             spec=spec,
         )
         return worker_job

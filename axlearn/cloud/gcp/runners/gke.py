@@ -128,7 +128,10 @@ def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
         return None
 
     try:
-        return json.loads(topology_assignments_str).get("job")
+        topology_dict = json.loads(topology_assignments_str)
+        # Get the first entry in the dict (regardless of the key name), since currently
+        # we only support a single tpu container per jobset.
+        return next(iter(topology_dict.values())) if topology_dict else None
     except json.JSONDecodeError as e:
         logging.warning(
             "Failed to parse topology assignments from annotations %s. error: %s",

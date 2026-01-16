@@ -149,6 +149,126 @@ class TPUGKEJobTest(TestCase):
                 self.assertIn(key, jobset_labels)
                 self.assertEqual(jobset_labels[key], value)
 
+    @parameterized.parameters(
+        # Test case 1: Single TPU job with both node selectors
+        dict(
+            replicated_jobs=[
+                {
+                    "name": "tpu-worker",
+                    "template": {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "nodeSelector": {
+                                        "cloud.google.com/gke-tpu-accelerator": "tpu-v5p-slice",
+                                        "cloud.google.com/gke-tpu-topology": "4x4x8",
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            ],
+            expected="tpu-worker",
+        ),
+        # Test case 2: Multiple jobs, only one has TPU selectors
+        dict(
+            replicated_jobs=[
+                {
+                    "name": "cpu-worker",
+                    "template": {
+                        "spec": {
+                            "template": {
+                                "spec": {"nodeSelector": {"axlearn/nodepool_type": "workload"}}
+                            }
+                        }
+                    },
+                },
+                {
+                    "name": "tpu-job",
+                    "template": {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "nodeSelector": {
+                                        "cloud.google.com/gke-tpu-accelerator": "tpu-v4-8",
+                                        "cloud.google.com/gke-tpu-topology": "2x2x1",
+                                    }
+                                }
+                            }
+                        }
+                    },
+                },
+            ],
+            expected="tpu-job",
+        ),
+        # Test case 3: No TPU jobs (missing topology selector)
+        dict(
+            replicated_jobs=[
+                {
+                    "name": "job1",
+                    "template": {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "nodeSelector": {
+                                        "cloud.google.com/gke-tpu-accelerator": "tpu-v4-8",
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            ],
+            expected=None,
+        ),
+        # Test case 4: No TPU jobs (missing accelerator selector)
+        dict(
+            replicated_jobs=[
+                {
+                    "name": "job1",
+                    "template": {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "nodeSelector": {
+                                        "cloud.google.com/gke-tpu-topology": "2x2x1",
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            ],
+            expected=None,
+        ),
+        # Test case 5: Empty replicated jobs list
+        dict(
+            replicated_jobs=[],
+            expected=None,
+        ),
+        # Test case 6: Job with incomplete structure
+        dict(
+            replicated_jobs=[
+                {
+                    "name": "incomplete-job",
+                    "template": {},
+                }
+            ],
+            expected=None,
+        ),
+    )
+    def test_get_tpu_job_name_from_replicated_jobs(self, replicated_jobs, expected):
+        """Test _get_tpu_job_name_from_replicated_jobs extracts TPU job name correctly."""
+        cfg, bundler_cfg = self._job_config(
+            command="test-command",
+            bundler_cls=CloudBuildBundler,
+        )
+        gke_job: job.GKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        # pylint: disable-next=protected-access
+        result = gke_job._get_tpu_job_name_from_replicated_jobs(replicated_jobs)
+        self.assertEqual(expected, result)
+
 
 class GPUGKEJobTest(TestCase):
     """Tests GKEJob with GPUs."""

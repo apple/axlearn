@@ -469,7 +469,20 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             jobset={"metadata": {"annotations": {}}},
             expected=None,
         ),
-        # Test case 4: Annotation without "job" field
+        # Test case 3: Annotation with different key name (tests generic behavior)
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"tpu-job-worker": [["slice1", "slice2"]]}'
+                        )
+                    }
+                }
+            },
+            expected=[["slice1", "slice2"]],
+        ),
+        # Test case 4: Annotation with non-list value
         dict(
             jobset={
                 "metadata": {
@@ -478,7 +491,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     }
                 }
             },
-            expected=None,
+            expected="value",
         ),
         # Test case 5: Invalid JSON in annotation
         dict(
@@ -510,6 +523,15 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 }
             },
             expected=[["slice1"]],
+        ),
+        # Test case 8: Empty dict in annotation
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {"tpu-provisioner.cloud.google.com/slice-selection": "{}"}
+                }
+            },
+            expected=None,
         ),
     )
     def test_topology_assignment_from_jobset(
@@ -825,6 +847,26 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     "annotations": {
                         "tpu-provisioner.cloud.google.com/slice-selection": (
                             '{"job": [["slice1", "slice2"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["slice1", "slice2"]]',
+                expected=runner_gke.GKERunnerJob.Status.READY,
+            ),
+            # Topology assignments match with different key name (tests generic behavior).
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"tpu-worker": [["slice1", "slice2"]]}'
                         ),
                     }
                 },

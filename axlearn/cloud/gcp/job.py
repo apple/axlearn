@@ -200,6 +200,42 @@ class GKEJob(GCPJob):
             )
             return None
 
+    def _get_tpu_job_name_from_replicated_jobs(
+        self, replicated_jobs: Sequence[Nested[Any]]
+    ) -> Optional[str]:
+        """Extracts the name of the replicated job that has TPU node selectors.
+
+        Iterates through the replicated jobs and finds the one that contains
+        cloud.google.com/gke-tpu-accelerator and cloud.google.com/gke-tpu-topology
+        node selectors, which indicate it's a TPU job. Returns that jobs name.
+
+        Args:
+            replicated_jobs: List of replicated job specs from the JobSet.
+
+        Returns:
+            The name of the replicated job that contains TPU node selectors,
+            or None if no such job is found.
+        """
+        for job in replicated_jobs:
+            # Navigate to the node selector in the job spec
+            # Structure: job -> template -> spec -> template -> spec -> nodeSelector
+            node_selector = (
+                job.get("template", {})
+                .get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("nodeSelector", {})
+            )
+
+            # Check if TPU node selectors are present
+            has_tpu_accelerator = "cloud.google.com/gke-tpu-accelerator" in node_selector
+            has_tpu_topology = "cloud.google.com/gke-tpu-topology" in node_selector
+
+            if has_tpu_accelerator and has_tpu_topology:
+                return str(job.get("name"))
+
+        return None
+
     def _build_jobset(self) -> Nested[Any]:
         """Builds a config for a JobSet, which is a set of Jobs.
 
@@ -214,13 +250,21 @@ class GKEJob(GCPJob):
         if cfg.queue:
             annotations["kueue.x-k8s.io/queue-name"] = cfg.queue
 
+        replicated_jobs = self._builder()
+
         # Bastion passes the job metadata to the runner through env vars
         # If the job has topology assigned, its also in the env var
         # Try to parse the env var and get the topology assignments.
         topology_assignment = self._get_topology_assignment()
         if cfg.enable_tpu_slice_auto_provisioning and topology_assignment:
-            # TODO: Check how to handle multiple replicated jobs (where job names are different)
-            slice_selection = json.dumps({self._builder.config.job_name: topology_assignment})
+            # Get the TPU job name from the replicated jobs
+            tpu_job_name = self._get_tpu_job_name_from_replicated_jobs(replicated_jobs)
+            if tpu_job_name is None:
+                logging.warning(
+                    "TPU slice auto-provisioning enabled but no TPU job found in replicated jobs"
+                )
+                tpu_job_name = self._builder.config.job_name  # Fallback to builder job name
+            slice_selection = json.dumps({tpu_job_name: topology_assignment})
             logging.info("Adding slice selection: %s to job set", slice_selection)
             labels.update({"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "async"})
             annotations.update(
@@ -235,7 +279,7 @@ class GKEJob(GCPJob):
             metadata=dict(name=cfg.name, annotations=annotations, labels=labels),
             spec=dict(
                 failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
-                replicatedJobs=self._builder(),
+                replicatedJobs=replicated_jobs,
             ),
         )
 
