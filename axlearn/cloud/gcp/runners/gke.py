@@ -120,7 +120,7 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
 def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
     """Infers reservation given a jobset spec."""
     topology_assignments_str = (
-        jobset["metadata"]
+        jobset.get("metadata", {})
         .get("annotations", {})
         .get("tpu-provisioner.cloud.google.com/slice-selection")
     )
