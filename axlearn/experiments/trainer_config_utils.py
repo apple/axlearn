@@ -25,7 +25,7 @@ class V6eFlashConfigModifier(FlashBlockSizeModifier):
 
 
 class V7xFlashConfigModifier(FlashBlockSizeModifier):
-    """Modifies the tpu_block_size config for better performance on TPU v7x."""
+    """Modifies the tpu_block_size config for better performance on TPU 7x."""
 
     @config_class
     class Config(FlashBlockSizeModifier.Config):
