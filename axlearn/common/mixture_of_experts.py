@@ -14,21 +14,28 @@
 Reference: https://arxiv.org/abs/2405.15052.
 """
 
+import contextlib
 import enum
 import re
-from functools import reduce
-from typing import Callable, NamedTuple, Optional, Sequence, Tuple, Union
+from functools import partial, reduce
+from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
+from jax import lax
 from jax.experimental.pjit import pjit
+from jax.experimental.shard_map import shard_map
+from jax.interpreters.pxla import thread_resources
 
+import axlearn.common.megablock.ops as mblx
 from axlearn.common.attention import NormPosition
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
+    ConfigBase,
+    ConfigModifier,
     ConfigOr,
     FunctionConfigBase,
     InstantiableConfig,
@@ -36,6 +43,7 @@ from axlearn.common.config import (
     config_class,
     maybe_instantiate,
 )
+from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import (
     BaseNormalizationLayer,
     Dropout,
@@ -47,6 +55,7 @@ from axlearn.common.layers import (
 from axlearn.common.module import Module, child_context, nowrap
 from axlearn.common.param_init import FanAxes, constant_initializer
 from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
+from axlearn.common.ragged_all_to_all_batching import ragged_all_to_all_batched
 from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
@@ -290,7 +299,7 @@ class AdaptiveLoadBalanceLoss(BaseLayer):
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
-        cfg: AdaptiveLoadBalanceLoss.Config = self.config
+        cfg = self.config
         self._add_child("value_average", cfg.moving_average)
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
@@ -458,7 +467,7 @@ class Top2Gating(BaseGating):
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
-        cfg: Top2Gating.Config = self.config
+        cfg = self.config
         if cfg.adaptive_load_balance_loss is not None:
             self._add_child("adaptive_load_balance_loss", cfg.adaptive_load_balance_loss)
 
@@ -713,7 +722,7 @@ class TopKGating(BaseGating):
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
-        cfg: TopKGating.Config = self.config
+        cfg = self.config
         if cfg.adaptive_load_balance_loss is not None:
             self._add_child("adaptive_load_balance_loss", cfg.adaptive_load_balance_loss)
 
@@ -1011,6 +1020,342 @@ class TopKGating(BaseGating):
         return jnp.einsum("ogecm,ogsec->ogsm", inputs, combine_tensor)
 
 
+class TopKDropFreeGating(TopKGating):
+    """Computes Token-drop free Top-K gating for Mixture-of-Experts."""
+
+    class Output(NamedTuple):
+        """Output of TopKDropFreeGating."""
+
+        # A [B, S, K] tensor for expert assignments.
+        gate_assignment: Tensor
+        # A [B, S, K] tensor for the weight of each selected expert.
+        expert_weights: Tensor
+        # Load balance loss, for equalizing the expert assignment ratios.
+        load_balance_loss: Optional[Tensor] = None
+        # Router z loss, for encouraging router logits to remain small.
+        router_z_loss: Optional[Tensor] = None
+        # Seq Load balance loss, for equalizing the expert assignment ratios per sequence.
+        seq_load_balance_loss: Optional[Tensor] = None
+
+    # pylint: disable-next=no-self-use
+    def _load_balance_loss(
+        self,
+        *,
+        raw_gates: Tensor,
+        gate_assignment: Tensor,
+        num_experts_per_token: int,
+    ) -> Tensor:
+        """Calculates the load balance loss.
+
+        Note this may include the padding tokens. Given the batch is packed,
+        the impacts of the padded tokens should be much smaller than that of the
+        majority of the valid tokens.
+
+        Arguments:
+            raw_gates: A tensor with shape [B, S, E].
+            gate_assignment: A tensor with shape [B, S, K].
+            num_experts_per_token: the number of experts selected per token.
+
+        Returns:
+            A scalar tensor representing the load balance loss.
+        """
+        del num_experts_per_token
+        normalized_gates = self._get_normalized_gates(raw_gates)
+        num_experts = normalized_gates.shape[-1]
+        density = jnp.bincount(gate_assignment.reshape((-1)), length=num_experts) / np.prod(
+            gate_assignment.shape
+        )
+        density_proxy = jnp.mean(normalized_gates.reshape([-1, num_experts]), axis=-2)
+        return jnp.mean(density * density_proxy) * num_experts**2
+
+    # pylint: disable-next=no-self-use
+    def _seq_load_balance_loss(
+        self,
+        *,
+        raw_gates: Tensor,
+        gate_assignment: Tensor,
+    ) -> Tensor:
+        """Calculates the sequence wise load balance loss.
+
+        Note this may include the padding tokens. Given the batch is packed,
+        the impacts of the padded tokens should be much smaller than that of the
+        majority of the valid tokens.
+
+        Ref: https://arxiv.org/pdf/2412.19437 (eq 17-20)
+        Code:
+        https://huggingface.co/deepseek-ai/DeepSeek-V2/blob/main/modeling_deepseek.py#L475-L486
+
+        Arguments:
+            raw_gates: A float tensor with shape [B, S, E], where raw_gates[b, s, e] represents
+              the score of token[b, s] for expert e.
+            gate_assignment: An integer tensor with shape [B, S, K] of value [0, top_k), where
+              gate_assignment[b, s, k] represents the expert id for the k'th expert for token[b, s].
+
+        Returns:
+            A scalar tensor representing the sequence wise load balance loss.
+        """
+        batch_size, seq_len, num_experts = raw_gates.shape
+        topk = gate_assignment.shape[-1]
+        # [B, E], each value representing the number of tokens per expert per sequence.
+        num_tokens_per_expert = jax.vmap(lambda x: jnp.bincount(x, length=num_experts))(
+            gate_assignment.reshape(batch_size, -1)
+        )
+        density = num_tokens_per_expert * num_experts / (seq_len * topk)  # eq 18
+        normalized_gates = self._get_normalized_gates(raw_gates)  # eq 19
+        # [B, E]. density_proxy[b, e] represents the total amount of normalized gating weights
+        # for expert 'e'.
+        density_proxy = jnp.mean(normalized_gates, axis=1)  # eq 20
+        return (density * density_proxy).sum(axis=1).mean()  # eq 17 without the alpha factor
+
+    # pylint: disable-next=too-many-statements
+    def forward(
+        self, logits: Tensor, seq_load_balance_loss_weight: Optional[float] = None
+    ) -> Output:
+        cfg = self.config
+        if logits.dtype != jnp.float32:
+            self.vlog(3, "Upcasting gating logits")
+            logits = logits.astype(jnp.float32)
+        logits = _cap_logits(logits, cfg.gating_logit_cap)
+        # Noised Top-K selection.
+        if cfg.noisy_gating is not None:
+            if cfg.noisy_gating == GateNoise.GUMBEL:
+                logits = self._add_gumbel_noise(logits)
+            else:
+                raise NotImplementedError(cfg.noisy_gating)
+
+        # Get the router z-loss.
+        router_z_loss = _router_z_loss(logits)
+        self.add_summary("router_z_loss", router_z_loss)
+
+        # [B, S, E]
+        raw_gates = self._score(logits, axis=-1)  # along E dim if needed.
+
+        # [B, S, K], [B, S, K]
+        gate_weights, gate_assignment = self._top_k(raw_gates, k=cfg.num_experts_per_token)
+        # Get the expert load balance loss.
+        # This considers the load balance of all the top-k selected experts.
+        load_balance_loss = self._load_balance_loss(
+            raw_gates=raw_gates,
+            gate_assignment=gate_assignment,
+            num_experts_per_token=cfg.num_experts_per_token,
+        )
+        self.add_summary("load_balance_loss", load_balance_loss)
+        if seq_load_balance_loss_weight:
+            # Get the expert sequence load balance loss.
+            seq_load_balance_loss = self._seq_load_balance_loss(
+                raw_gates=raw_gates,
+                gate_assignment=gate_assignment,
+            )
+            self.add_summary("seq_load_balance_loss", seq_load_balance_loss)
+        else:
+            seq_load_balance_loss = 0
+        # Caculate the normalization factor.
+        denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
+        # Renormalize the gates of the selected expert.
+        # [B, S, K]
+        expert_weights = gate_weights / denom
+        # [B, S, K], [B, S, K]
+        return self.Output(
+            gate_assignment=gate_assignment,
+            expert_weights=expert_weights,
+            router_z_loss=router_z_loss,
+            load_balance_loss=load_balance_loss,
+            seq_load_balance_loss=seq_load_balance_loss,
+        )
+
+
+class TopKBiasGating(TopKDropFreeGating):
+    """An implementation of gate with Auxiliary-Loss-Free Load Balancing strategy.
+
+    Ref: DeepSeek V3 - https://arxiv.org/abs/2412.19437
+    """
+
+    @config_class
+    class Config(TopKDropFreeGating.Config):
+        """Config for TopKBiasGating."""
+
+        # Gating bias update rate from Table 3 of https://openreview.net/pdf?id=y1iU5czYpE
+        gating_update_rate: float = 1e-3
+        # https://huggingface.co/deepseek-ai/DeepSeek-V3-Base/blob/config.json
+        routed_scaling_factor: float = 2.5
+        # The parameters num_group_of_experts and topk_group are used for Node-Limited Routing,
+        # which isn't required for TPU operations. We set these values to 1 to disable this
+        # functionality while maintaining them for backward compatibility.
+        # ref: https://arxiv.org/pdf/2412.19437 section 2.1.2
+        num_group_of_experts: int = 1
+        topk_group: int = 1
+
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        return {
+            # Used for calculate the actual target sparsity during annealing.
+            "gate_bias": ParameterSpec(
+                shape=[cfg.num_experts],
+                dtype=jnp.float32,
+                initializer=constant_initializer(0.0),
+            ),
+        }
+
+    def _adjust_gating_scores(self, *, raw_gates: Tensor) -> Tensor:
+        """Adjusts the gating scores after the score_fn called with the loading bias."""
+        return raw_gates + self.parameters["gate_bias"]
+
+    def _update_gating_bias(self, *, gate_assignment: Tensor):
+        cfg = self.config
+        tokens_per_expert = jnp.bincount(gate_assignment.reshape((-1)), length=cfg.num_experts)
+        tokens_per_expert = tokens_per_expert.mean() - tokens_per_expert
+        updated_gating_bias = self.parameters["gate_bias"] + cfg.gating_update_rate * jnp.sign(
+            tokens_per_expert
+        )
+        # There will be NO gradients from the main loss to update the gating bias.
+        self.add_state_update("gate_bias", updated_gating_bias)
+
+    def _top_k(self, raw_gates: Tensor, k: int) -> Tuple[Tensor, Tensor]:
+        cfg = self.config
+        adjusted_raw_gates = self._adjust_gating_scores(raw_gates=raw_gates)
+        if cfg.topk_fn:
+            topk_fn = maybe_instantiate(cfg.topk_fn)
+            _, indices = topk_fn(adjusted_raw_gates, k=k)
+            values = jnp.take_along_axis(raw_gates, indices, axis=-1)
+            return values, indices
+        _, indices = jax.lax.top_k(adjusted_raw_gates, k=k)
+        values = jnp.take_along_axis(raw_gates, indices, axis=-1)
+        if self.is_training:
+            self._update_gating_bias(gate_assignment=indices)
+        return values, indices
+
+    def _top_k_with_two_gates(
+        self, raw_gates: Tensor, adjusted_raw_gates: Tensor, k: int
+    ) -> Tuple[Tensor, Tensor]:
+        cfg = self.config
+        if cfg.topk_fn:
+            topk_fn = maybe_instantiate(cfg.topk_fn)
+            _, indices = topk_fn(adjusted_raw_gates, k=k)
+            values = jnp.take_along_axis(raw_gates, indices, axis=-1)
+            return values, indices
+        _, indices = jax.lax.top_k(adjusted_raw_gates, k=k)
+        values = jnp.take_along_axis(raw_gates, indices, axis=-1)
+        return values, indices
+
+    def forward(
+        self, logits: Tensor, seq_load_balance_loss_weight: Optional[float] = None
+    ) -> TopKDropFreeGating.Output:
+        cfg = self.config
+        if logits.dtype != jnp.float32:
+            self.vlog(3, "Upcasting gating logits")
+            logits = logits.astype(jnp.float32)
+        logits = _cap_logits(logits, cfg.gating_logit_cap)
+        B, S, E = logits.shape  # pylint: disable=invalid-name
+
+        if cfg.num_group_of_experts == 1 and cfg.topk_group == 1:
+            # Simple routing without group logic.
+            router_z_loss = _router_z_loss(logits)
+            self.add_summary("router_z_loss", router_z_loss)
+
+            raw_gates = self._score(logits, axis=-1)
+            gate_weights, gate_assignment = self._top_k(raw_gates, k=cfg.num_experts_per_token)
+            load_balance_loss = self._load_balance_loss(
+                raw_gates=raw_gates,
+                gate_assignment=gate_assignment,
+                num_experts_per_token=cfg.num_experts_per_token,
+            )
+            self.add_summary("load_balance_loss", load_balance_loss)
+            if seq_load_balance_loss_weight:
+                seq_load_balance_loss = self._seq_load_balance_loss(
+                    raw_gates=raw_gates,
+                    gate_assignment=gate_assignment,
+                )
+                self.add_summary("seq_load_balance_loss", seq_load_balance_loss)
+            else:
+                seq_load_balance_loss = 0
+            denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
+            expert_weights = gate_weights / denom
+            if cfg.routed_scaling_factor != 1:
+                expert_weights *= cfg.routed_scaling_factor
+            return self.Output(
+                gate_assignment=gate_assignment,
+                expert_weights=expert_weights,
+                router_z_loss=router_z_loss,
+                load_balance_loss=load_balance_loss,
+                seq_load_balance_loss=seq_load_balance_loss,
+            )
+        else:
+            # Group-based routing (Node-Limited Routing).
+            logits = logits.reshape(B * S, E)
+            router_z_loss = _router_z_loss(logits)
+            self.add_summary("router_z_loss", router_z_loss)
+
+            raw_gates = self._score(logits, axis=-1)
+            adjusted_raw_gates = self._adjust_gating_scores(raw_gates=raw_gates)
+            shape0 = raw_gates.shape[0]
+            # [B x S, num_group_of_experts]
+            group_scores = (
+                super()
+                ._top_k(
+                    adjusted_raw_gates.reshape(shape0, cfg.num_group_of_experts, -1),
+                    k=2,
+                )[0]
+                .sum(axis=-1)
+            )
+            # [B X S, topk_group]
+            group_idx = super()._top_k(group_scores, k=cfg.topk_group)[1]
+            # [B x S, num_group_of_experts]
+            group_mask = jnp.zeros_like(group_scores)
+            # [B x S, num_group_of_experts]
+            group_mask = group_mask.at[jnp.arange(shape0)[:, None], group_idx].set(1)
+            # [B x S, num_experts]
+            score_mask = jnp.reshape(
+                jnp.broadcast_to(
+                    jnp.expand_dims(group_mask, -1),
+                    (
+                        shape0,
+                        cfg.num_group_of_experts,
+                        cfg.num_experts // cfg.num_group_of_experts,
+                    ),
+                ),
+                (shape0, -1),
+            ).astype(jnp.bool_)
+            adjusted_raw_gates = jnp.where(score_mask, adjusted_raw_gates, -jnp.inf)
+            gate_weights, gate_assignment = self._top_k_with_two_gates(
+                raw_gates, adjusted_raw_gates, k=cfg.num_experts_per_token
+            )
+            if self.is_training:
+                self._update_gating_bias(gate_assignment=gate_assignment)
+
+            # add load balance loss metric.
+            load_balance_loss = self._load_balance_loss(
+                raw_gates=raw_gates,
+                gate_assignment=gate_assignment,
+                num_experts_per_token=cfg.num_experts_per_token,
+            )
+            self.add_summary("load_balance_loss", load_balance_loss)
+
+            if seq_load_balance_loss_weight:
+                # Reshape to [B, S, E] for sequence load balance loss.
+                raw_gates = raw_gates.reshape(B, S, -1)
+                seq_load_balance_loss = self._seq_load_balance_loss(
+                    raw_gates=raw_gates,
+                    gate_assignment=gate_assignment.reshape(B, S, -1),
+                )
+                self.add_summary("seq_load_balance_loss", seq_load_balance_loss)
+            else:
+                seq_load_balance_loss = 0
+            # Caculate the normalization factor.
+            denom = jnp.sum(gate_weights, axis=-1, keepdims=True)
+            # Renormalize the gates of the selected expert.
+            # [B x S, K]
+            expert_weights = gate_weights / denom
+            if cfg.routed_scaling_factor != 1:
+                expert_weights *= cfg.routed_scaling_factor
+            return self.Output(
+                gate_assignment=gate_assignment.reshape(B, S, -1),
+                expert_weights=expert_weights.reshape(B, S, -1),
+                router_z_loss=router_z_loss,
+                load_balance_loss=load_balance_loss,
+                seq_load_balance_loss=seq_load_balance_loss,
+            )
+
+
 class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
     """A Transformer feed-forward layer with mixture of experts.
 
@@ -1031,9 +1376,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         # https://github.com/tensorflow/mesh/blob/fbf7b1e547e8b8cb134e81e1cd350c312c0b5a16/mesh_tensorflow/transformer/moe.py#L294-L336
         outer_batch: int = 1
         # The normalization layer config.
-        norm: Union[
-            BaseNormalizationLayer.Config, dict[NormPosition, BaseNormalizationLayer.Config]
-        ] = LayerNorm.default_config()
+        norm: BaseNormalizationLayer.Config = LayerNorm.default_config()
         activation: Union[str, tuple[str, str]] = "nn.relu"
         dropout: InstantiableConfig = Dropout.default_config()
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
@@ -1080,7 +1423,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         residual_gate_init: Optional[float] = None
 
     @classmethod
-    def default_config(cls) -> Config:
+    def default_config(cls):
         cfg = super().default_config()
         # Table 1 of https://arxiv.org/abs/2405.15052.
         cfg.dim_to_mesh_axis_map = {
@@ -1139,7 +1482,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
-        cfg: TransformerFeedForwardMoE.Config = self.config
+        cfg = self.config
         self._add_child("gating", cfg.gating.set(num_experts=cfg.num_experts))
         self._add_child("stochastic_depth", cfg.stochastic_depth)
         # Add norm layers for different structures.
@@ -1573,3 +1916,704 @@ def convert_dense_to_moe_parameters(
         target_parameters,
     )
     return target_parameters
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(3,))
+def _custom_gather(
+    x: Tensor, idx: Tensor, argsort_idx: Tensor, unique_indices: bool = True
+) -> Tensor:
+    """Equivalent to `x.at[idx].get(unique_indices=unique_indices)`, but with a gather-based
+    backward pass.
+
+    The reason to use this function is that generally, the backward pass of a gather operation --
+    scatter -- is notoriously slow on TPU. However, with the following assumptions, the backward
+    pass can be implemented as a gather, optionally followed by a reduce sum:
+
+    idx satisfies 0 <= idx < x.shape[0] and one of the following
+    1. idx is unique and len(idx) == x.shape[0], i.e. idx is a permutation. In this case, the
+       backward is a gather
+    2. len(unique(idx)) == x.shape[0] and each value in idx has the same number of duplicates.
+       In this case, the backward is a gather followed by a reduction on the duplicates.
+
+    If `idx` doesn't follow above cases, the behavior of this function is undefined.
+
+    See `_custom_gather_bwd` for the backward implementation detail.
+
+    Args:
+        x: A tensor of shape [S, ...].
+        idx: A tensor of shape [S x K], where K is the number of duplicates of each index.
+        argsort_idx: A tensor of shape [S x K] that's equal to jnp.argsort(idx).
+        unique_indices: True if K == 1, False otherwise.
+
+    Returns:
+        A tensor of shape [S x K, ...]
+    """
+    return _custom_gather_fwd(x, idx, argsort_idx, unique_indices)[0]
+
+
+def _custom_gather_fwd(
+    x: Tensor, idx: Tensor, argsort_idx: Tensor, unique_indices: bool
+) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+    return x.at[idx].get(unique_indices=unique_indices), (argsort_idx, x)
+
+
+def _custom_gather_bwd(
+    unique_indices: bool, res: tuple[Tensor, Tensor], g: Tensor
+) -> tuple[Tensor, None, None]:
+    del unique_indices
+    argsort_idx, x = res
+    reduction_dim, rem = divmod(argsort_idx.shape[0], x.shape[0])
+    assert rem == 0
+    # Indices must be unique here since it's argsorted idx.
+    out = g.at[argsort_idx].get(unique_indices=True)
+    if reduction_dim == 1:
+        return out, None, None
+    out = out.reshape(-1, reduction_dim, *out.shape[1:]).sum(1)
+    assert out.shape == x.shape
+    return out, None, None
+
+
+_custom_gather.defvjp(_custom_gather_fwd, _custom_gather_bwd)
+
+
+def _get_all_to_all_params(
+    all_sizes: Tensor,
+    ep_shard: Tensor,
+    input_all_sizes_nodrop: Optional[Tensor] = None,
+    output_all_sizes_nodrop: Optional[Tensor] = None,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Computes sizes and offsets required by `lax.ragged_all_to_all.`
+
+    If `input_all_sizes_nodrop` or `output_all_sizes_nodrop` is not None, use them to
+    compute the input/output offsets, respectively.
+    """
+    input_sizes = all_sizes[ep_shard]
+    input_offsets = jnp.cumulative_sum(
+        (all_sizes if input_all_sizes_nodrop is None else input_all_sizes_nodrop)[ep_shard],
+        include_initial=True,
+    )[:-1]
+    output_sizes = all_sizes[:, ep_shard]
+    output_offsets = jnp.cumulative_sum(
+        all_sizes if output_all_sizes_nodrop is None else output_all_sizes_nodrop,
+        include_initial=True,
+        axis=0,
+    )[ep_shard]
+    return input_offsets, input_sizes, output_offsets, output_sizes
+
+
+def _drop_tokens(all_tokens_per_expert: Tensor, max_size: int) -> tuple[Tensor, Tensor]:
+    """Reduce the number of tokens in some experts in some ranks so that after all to all, no rank
+    will receive number of tokens >= max_size.
+
+    Args:
+        all_tokens_per_expert: Tensor of shape [ep, ep, num_local_experts], where
+            ep = expert parallelism degree.
+        max_size: An integer specifying the maximum tokens allowed for each rank.
+
+    Returns:
+        A tuple of
+        - A tensor of shape [ep, ep, num_local_experts].
+        - A tensor of shape [ep], indicating the number of tokens dropped for expert parallel
+            ranks.
+    """
+    ep_size = all_tokens_per_expert.shape[0]
+    # l = number of local experts. ep1 = ep2 = expert parallel size.
+    all_tokens_per_expert = rearrange(all_tokens_per_expert, "ep1 ep2 l -> (ep1 l) ep2")
+    # axis0 is the axis corresponding to number of tokens received for all experts in each rank.
+
+    # Modifies `all_tokens_per_expert` such that
+    # jnp.all(jnp.cumsum(all_tokens_per_expert) <= max_size).
+    orig_cumsum = jnp.cumulative_sum(all_tokens_per_expert, include_initial=True, axis=0)
+    cumsum = jnp.minimum(orig_cumsum, max_size)
+    all_tokens_per_expert = jnp.diff(cumsum, n=1, axis=0)
+    dropped_tokens = orig_cumsum[-1] - cumsum[-1]
+
+    all_tokens_per_expert = rearrange(
+        all_tokens_per_expert, "(ep1 l) ep2 -> ep1 ep2 l", ep1=ep_size
+    )
+    return all_tokens_per_expert, dropped_tokens
+
+
+# Positional args 3 to 6 for lax.ragged_all_to_all, namely
+# (input_offsets, send_sizes, output_offsets, recv_sizes)
+_RaggedA2AParams = tuple[Tensor, Tensor, Tensor, Tensor]
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(4,))
+def _ragged_all_to_all(
+    inputs: Tensor,
+    outputs: Tensor,
+    fwd_params: _RaggedA2AParams,
+    bwd_params: _RaggedA2AParams,
+    axis_name: str,
+) -> Tensor:
+    """Equivalent to `lax.ragged_all_to_all(inputs, outputs, *fwd_params, axis_name=axis_name)`
+
+    The reason to use this function is that it accepts a pre-computed `bwd_params` to avoid
+    all-to-alls of fwd_params during the backward pass of `lax.ragged_all_to_all`.
+    """
+    return _ragged_all_to_all_fwd(inputs, outputs, fwd_params, bwd_params, axis_name)[0]
+
+
+def _ragged_all_to_all_fwd(
+    inputs: Tensor,
+    outputs: Tensor,
+    fwd_params: _RaggedA2AParams,
+    bwd_params: _RaggedA2AParams,
+    axis_name: str,
+) -> tuple[Tensor, tuple[_RaggedA2AParams, Tensor]]:
+    return lax.ragged_all_to_all(inputs, outputs, *fwd_params, axis_name=axis_name), (
+        bwd_params,
+        inputs,
+    )
+
+
+def _ragged_all_to_all_bwd(axis_name: str, res: tuple[_RaggedA2AParams, Tensor], g: Tensor):
+    bwd_params, inputs = res
+    return (
+        lax.ragged_all_to_all(g, jnp.zeros_like(inputs), *bwd_params, axis_name=axis_name),
+        None,
+        (None,) * len(bwd_params),
+        (None,) * len(bwd_params),
+    )
+
+
+_ragged_all_to_all.defvjp(_ragged_all_to_all_fwd, _ragged_all_to_all_bwd)
+
+
+def _all_to_all_dispatch(
+    sorted_inputs: Tensor,
+    tokens_per_expert: Tensor,
+    expert_parallel_capacity: float,
+    has_track_axis: bool = False,
+) -> tuple[Tensor, Tensor, Sequence[Tensor], Sequence[Tensor]]:
+    """Perform all-to-all dispatch for expert parallelism.
+
+    Args:
+        sorted_inputs: Tensor of shape [batch_tokens * num_experts_per_token, hidden_dim]
+        tokens_per_expert: Tensor of shape [num_experts], indicating the number of tokens selected
+            for each expert.
+        expert_parallel_capacity: Capacity factor for each rank after all-to-all.
+        has_track_axis: Whether there is a track axis for vmap context.
+
+    Returns:
+        A tuple of
+        - sorted_inputs: Tensor of shape
+            [batch_tokens * num_experts_per_token * expert_parallel_capacity, hidden_dim]. All
+            tokens in this tensor correspond to the local experts on this rank.
+        - tokens_per_expert: A tensor of shape [num_local_experts] indicating the number of tokens
+            for each local expert.
+        - stats: A tuple of tensors for summary purposes. Currently, it contains a single tensor
+            of shape [ep_size], indicating the number of tokens dropped for expert parallel ranks.
+        - residuals: A tuple of values used for all-to-all combine.
+    """
+    ep_shard = lax.axis_index("expert")
+    all_tokens_per_expert = lax.all_gather(tokens_per_expert, axis_name="expert")
+    ep_size = all_tokens_per_expert.shape[0]
+    all_tokens_per_expert = all_tokens_per_expert.reshape(ep_size, ep_size, -1)
+
+    temp_shape = list(sorted_inputs.shape)
+    temp_shape[0] = int(temp_shape[0] * expert_parallel_capacity)
+    all_tokens_per_expert_dropped, dropped_tokens = _drop_tokens(
+        all_tokens_per_expert, temp_shape[0]
+    )
+    all_sizes_nodrop = all_tokens_per_expert.sum(-1)
+    all_sizes = all_tokens_per_expert_dropped.sum(-1)  # [ep_size, ep_size]
+
+    sorted_inputs_before_a2a = sorted_inputs
+    fwd_params = _get_all_to_all_params(
+        all_sizes, ep_shard, input_all_sizes_nodrop=all_sizes_nodrop
+    )
+    bwd_params = _get_all_to_all_params(
+        all_sizes.T, ep_shard, output_all_sizes_nodrop=all_sizes_nodrop.T
+    )
+
+    if has_track_axis:
+        # Use custom batching function for vmap support
+        sorted_inputs = ragged_all_to_all_batched(
+            sorted_inputs,
+            jnp.zeros_like(sorted_inputs, shape=temp_shape),
+            *fwd_params,
+            axis_name="expert",
+        )
+    else:
+        sorted_inputs = _ragged_all_to_all(
+            sorted_inputs,
+            jnp.zeros_like(sorted_inputs, shape=temp_shape),
+            fwd_params,
+            bwd_params,
+            axis_name="expert",
+        )
+
+    # After all_to_all, the inputs will have following format where tokens from the same rank are
+    # contiguous:
+    # [local_ep0_rank0, local_ep1_rank0, ..., local_ep0_rank1, local_ep1_rank1, ...]
+    # Reorder so that each local expert's tokens are contiguous, e.g.
+    # [local_ep0_rank0, local_ep0_rank1, ..., , local_ep1_rank0, local_ep1_rank1, ...]
+    output_sizes_per_expert = all_tokens_per_expert_dropped[:, ep_shard]
+    output_expert_indices = lax.broadcasted_iota(jnp.int32, output_sizes_per_expert.shape, 1)
+
+    permute_indices = jnp.argsort(
+        jnp.repeat(
+            output_expert_indices.reshape(-1),
+            output_sizes_per_expert.reshape(-1),
+            total_repeat_length=sorted_inputs.shape[0],
+        )
+    )
+    argsort_permute_indices = jnp.argsort(permute_indices)
+    sorted_inputs = _custom_gather(sorted_inputs, permute_indices, argsort_permute_indices)
+
+    tokens_per_expert = output_sizes_per_expert.sum(0)
+    return (
+        sorted_inputs,
+        tokens_per_expert,
+        (dropped_tokens,),
+        (
+            permute_indices,
+            sorted_inputs_before_a2a,
+            fwd_params,
+            bwd_params,
+            argsort_permute_indices,
+        ),
+    )
+
+
+def _all_to_all_combine(
+    sorted_output: Tensor, residuals: Sequence[Tensor], has_track_axis: bool = False
+) -> Tensor:
+    """Perform all-to-all combine for expert parallelism.
+
+    Tokens dropped during _all_to_all_dispatch will have zeros after _all_to_all_combine.
+
+    Args:
+        sorted_output: Tensor of shape [batch_tokens * num_experts_per_token, hidden_dim].
+        residuals: Sequence of tensors from `_all_to_all_dispatch`.
+        has_track_axis: Whether there is a track axis for vmap context.
+
+    Returns:
+        A tensor of shape [batch_tokens * num_experts_per_token, hidden_dim].
+    """
+    (
+        permute_indices,
+        sorted_inputs_before_a2a,
+        fwd_params,
+        bwd_params,
+        argsort_permute_indices,
+    ) = residuals
+    sorted_output = _custom_gather(sorted_output, argsort_permute_indices, permute_indices)
+
+    if has_track_axis:
+        # Use custom batching function for vmap support
+        sorted_output = ragged_all_to_all_batched(
+            sorted_output,
+            jnp.zeros_like(sorted_output, shape=sorted_inputs_before_a2a.shape),
+            *bwd_params,
+            axis_name="expert",
+        )
+    else:
+        sorted_output = _ragged_all_to_all(
+            sorted_output,
+            jnp.zeros_like(sorted_output, shape=sorted_inputs_before_a2a.shape),
+            bwd_params,
+            fwd_params,
+            axis_name="expert",
+        )
+    return sorted_output
+
+
+class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
+    """A Transformer feed-forward layer with mixture of experts with NO token drop."""
+
+    @config_class
+    class Config(TransformerFeedForwardMoE.Config):
+        """Config for TransformerFeedForwardDropFreeMoE."""
+
+        # Adjustable 3-tuple of ints to use the gmm kernel for the best performance.
+        # tiling[0] is the block size for the number of tokens dimension.
+        # tiling[1] is the block size for the model_dim.
+        # tiling[2] is the block size for the hidden_dim.
+        # The tiling blocks have to be multiples of 128.
+        tiling: Required[tuple[int, int, int]] = REQUIRED
+        # How to partition the input batch with the expected keys below.
+        input_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {
+            "bsm": PartitionSpec(("data", "fsdp"), "seq", None),
+        }
+        # How to partition the output batch with the expected keys below.
+        # bsm - partition the b, s and m dim.
+        # emh - partition the e, m, and h dim.
+        # ehm - parittion the e, h, and m dim.
+        output_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {
+            "bsm": PartitionSpec(("data", "fsdp"), "seq", "model"),
+            "emh": PartitionSpec(None, None, "model"),
+            "ehm": PartitionSpec(None, "model", None),
+        }
+        # Debug mode for the testing purpose.
+        interpret: bool = False
+        # preferred element type for gmm, mostly for testing purpose.
+        preferred_element_type: Optional[jnp.dtype] = None
+        # Weight for the sequence load balancing loss.
+        # Ref: https://arxiv.org/html/2412.19437v2#S2 Section 2.1.2:
+        # Complementary Sequence-Wise Auxiliary Loss.
+        # NOTE: This is an auxiliary loss used with bias-based gating
+        # (so called Auxiliary-Loss-Free Load Balancing strategy) in DeepSeek V3.
+        # It's an experimental feature, so use it with caution.
+        seq_load_balance_loss_weight: Optional[float] = None
+
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config()
+        cfg.dim_to_mesh_axis_map = {
+            "me": PartitionSpec(None, None),
+            "emh": PartitionSpec(None, ("fsdp", "seq"), "model"),
+            # In general, we should not put FSDP in the last dim as it will require a
+            # data-formatting (a copy) after the all-gather. This will increase step time by 2%
+            # during training. However, not all models have big enough second dim to be sharded by
+            # a large FSDP axis. Therefore, for the default config, we still put fsdp/seq in the
+            # last dim.
+            "ehm": PartitionSpec(None, "model", ("fsdp", "seq")),
+        }
+        return cfg
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        cfg = self.config
+        if cfg.interpret:
+            assert (
+                cfg.preferred_element_type is not None
+            ), "When interpret == True, please set preferred_element_type explicitly"
+
+    def _padded_gmm(self, lhs, rhs, tokens_per_expert):
+        cfg = self.config
+        pad_length = cfg.tiling[0]
+
+        # TODO: Revisit once Mosaic supports highest precision.
+        matmul_precision = (
+            jax.default_matmul_precision("default")
+            if lhs.dtype == jnp.bfloat16
+            else contextlib.nullcontext()
+        )
+        with matmul_precision:
+            if lhs.shape[0] % pad_length:
+                padded_lhs = lhs
+                pad_length -= lhs.shape[0] % pad_length
+                padded_lhs = jax.lax.pad(
+                    lhs, jnp.array(0.0).astype(lhs.dtype), [(0, pad_length, 0), (0, 0, 0)]
+                )
+                results = mblx.gmm(
+                    padded_lhs,
+                    rhs,
+                    tokens_per_expert,
+                    tiling=cfg.tiling,
+                    preferred_element_type=cfg.preferred_element_type or jnp.bfloat16,
+                    interpret=cfg.interpret,
+                )
+                results = results[: lhs.shape[0]]
+            else:
+                results = mblx.gmm(
+                    lhs,
+                    rhs,
+                    tokens_per_expert,
+                    tiling=cfg.tiling,
+                    preferred_element_type=cfg.preferred_element_type or jnp.bfloat16,
+                    interpret=cfg.interpret,
+                )
+        return results
+
+    def _dispatch_hook(
+        self, *, sorted_inputs: Tensor, tokens_per_expert: Tensor
+    ) -> tuple[Tensor, Tensor, Sequence[Tensor], Sequence[Any]]:
+        """Hook for subclasses to perform additional processing during dispatch.
+
+        Args:
+            sorted_inputs: A tensor of shape [batch_tokens * num_experts_per_token, hidden_dim].
+            tokens_per_expert: A tensor of shape [num_experts].
+
+        Returns:
+            A tuple of
+            - A tensor with the same shape as `sorted_inputs`.
+            - A tensor with the same shape as `tokens_per_expert`.
+            - Additional outputs for the shard_map function.
+            - Residuals for `_combine_hook`.
+        """
+        return sorted_inputs, tokens_per_expert, (), ()
+
+    def _combine_hook(self, *, sorted_output: Tensor, residuals: Sequence[Any]) -> Tensor:
+        """Hook for subclasses to perform additional processing during combine."""
+        del residuals
+        return sorted_output
+
+    def _additional_shmap_output_sharding(self, mesh: jax.sharding.Mesh) -> Sequence[PartitionSpec]:
+        """Specifies the sharding for _dispatch_hook(...)[2]."""
+        del mesh
+        return ()
+
+    def _additional_shmap_output_hook(self, out: Sequence[Tensor]):
+        """Hook for processing additional shmap output."""
+        del out
+
+    # pylint: disable-next=too-many-statements
+    def _dispatch_and_combine(self, x: Tensor) -> Tensor:
+        """Runs forward pass on the linear layers and dispatching and combining."""
+        cfg = self.config
+        x = with_sharding_constraint(x, cfg.input_dim_to_partition_spec["bsm"])
+        logits = jnp.einsum("bsm,me->bse", x, self.parameters["gate_weight"])
+
+        # Perform gating based on logits. Casting to float32 precision is usually needed for
+        # stable performance.
+        gating = self.gating(logits.astype(jnp.float32), cfg.seq_load_balance_loss_weight)
+        # gate_assignment: [B, S, K] where each value is in [0, E-1], representing which
+        # expert to use for a token.
+        gate_assignment = with_sharding_constraint(
+            gating.gate_assignment,
+            cfg.input_dim_to_partition_spec["bsm"],
+        )
+        # expert_weights: [B, S, K]
+        expert_weights = with_sharding_constraint(
+            gating.expert_weights,
+            cfg.input_dim_to_partition_spec["bsm"],
+        )
+        # Collect aux_loss.
+        aux_loss = (
+            gating.load_balance_loss * cfg.load_balance_loss_weight
+            + gating.router_z_loss * cfg.router_z_loss_weight
+            + gating.seq_load_balance_loss * (cfg.seq_load_balance_loss_weight or 0)
+        )
+        self.add_module_output("aux_loss", aux_loss)
+        num_experts_per_token = cfg.gating.num_experts_per_token
+
+        # Sharding along the contracting dim M requires an additional psum
+        # in the implementation, which is inefficient.
+        assert cfg.input_dim_to_partition_spec["bsm"][-1] is None
+        assert cfg.output_dim_to_partition_spec["emh"][-2] is None
+
+        mesh = thread_resources.env.physical_mesh
+
+        @partial(
+            shard_map,
+            mesh=mesh,
+            in_specs=(
+                cfg.input_dim_to_partition_spec["bsm"],
+                cfg.input_dim_to_partition_spec["bsm"],
+                cfg.input_dim_to_partition_spec["bsm"],
+                cfg.output_dim_to_partition_spec["emh"],
+                cfg.output_dim_to_partition_spec["emh"],
+                cfg.output_dim_to_partition_spec["ehm"],
+            ),
+            out_specs=(
+                cfg.output_dim_to_partition_spec["bsm"],
+                *self._additional_shmap_output_sharding(mesh),
+            ),
+            # Disables a checking pass which jax can't apply when there's a triton | pallas
+            # call in the body.
+            check_rep=False,
+        )
+        def wrapper(
+            x: Tensor,
+            gate_assignment: Tensor,
+            expert_weights: Tensor,
+            wi_0: Tensor,
+            wi_1: Tensor,
+            wo: Tensor,
+        ) -> tuple[Tensor, ...]:
+            """Computes unsorted outputs for one sharded block.
+
+            B', S', M' and H' represents potentially sharded batch_dim, sequence length, model dim
+            and hidden dim, respectively, where sharding is controlled by the shard_map's
+            `in_specs`.
+
+            Args:
+                x: the sharded input batch of the shape [G=B', S', M].
+                gate_assignment: [G=B', S', K].
+                expert_weights: [G=B', S', K].
+                wi_0: the input projection of [E, M, H'].
+                wi_1: the input projection of [E, M, H'].
+                wo: the output projection of [E, H', M'].
+
+            Returns:
+                A tuple of
+                - A tensor of shape [G=B', S', M'].
+                - ... optional series of tensors from `_dispatch_hook()[2]`.
+            """
+            logging.info("Setting the effective group_size=%r", x.shape[0])
+            B, S, M = x.shape  # pylint: disable=invalid-name
+            # [B' x S' x K]
+            gate_assignment = gate_assignment.reshape((-1))
+            # x[sorted_indices[:, i]] for i in range(S * K) represents tokens sorted
+            # by which experts they are assigned to.
+            # [B' x S' x K]
+            sorted_indices = jnp.argsort(gate_assignment)
+            token_indices = sorted_indices // num_experts_per_token
+            # Dispatch the tokens.
+            combine_indices = jnp.argsort(sorted_indices)
+            # [B' x S' x K, M]
+            sorted_inputs = _custom_gather(
+                x.reshape(-1, M), token_indices, combine_indices, unique_indices=False
+            )
+            tokens_per_expert = jnp.bincount(gate_assignment, length=cfg.num_experts)
+
+            sorted_inputs, tokens_per_expert, additional_outputs, residuals = self._dispatch_hook(
+                sorted_inputs=sorted_inputs,
+                tokens_per_expert=tokens_per_expert,
+            )
+
+            # [B' x S' x K, H']
+            activation_0 = self._padded_gmm(sorted_inputs, wi_0, tokens_per_expert)
+            activation_0 = get_activation_fn(cfg.activation[0])(activation_0)
+
+            activation_1 = self._padded_gmm(sorted_inputs, wi_1, tokens_per_expert)
+            activation_1 = get_activation_fn(cfg.activation[1])(activation_1)
+
+            intermediate = activation_0 * activation_1
+
+            if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
+                intermediate = self.dropout1(intermediate)
+
+            # [B' x S x K, M]
+            sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
+            if thread_resources.env.physical_mesh.shape["model"] > 1:
+                # If output is partitioned across "model", we need to reduce-scatter. Otherwise,
+                # we do an allreduce.
+                spec = cfg.output_dim_to_partition_spec["bsm"][2]
+                if spec and "model" in spec:
+                    sorted_output = jax.lax.psum_scatter(
+                        sorted_output, "model", scatter_dimension=1, tiled=True
+                    )
+                else:
+                    sorted_output = jax.lax.psum(sorted_output, "model")
+            # [B' x S' x K, M']
+            sorted_output = self._combine_hook(sorted_output=sorted_output, residuals=residuals)
+            # Gather the tokens to their original positions.
+            unsorted_output = _custom_gather(sorted_output, combine_indices, sorted_indices)
+            output = unsorted_output.reshape(B, S, num_experts_per_token, unsorted_output.shape[-1])
+            # Apply the expert weights.
+            output *= expert_weights.astype(output.dtype)[..., None]
+            # [B', S', M']
+            output = jnp.sum(output, axis=-2)
+            return output, *additional_outputs
+
+        out, *additional_outputs = wrapper(
+            x,
+            gate_assignment,
+            expert_weights,
+            self.parameters["wi_0_weight"],
+            self.parameters["wi_1_weight"],
+            self.parameters["wo_weight"],
+        )
+        self._additional_shmap_output_hook(additional_outputs)
+        return out
+
+
+class ApproximateTokenDropFreeMoE(TransformerFeedForwardDropFreeMoE):
+    """Mostly the same as `TransformerFeedForwardDropFreeMoE`, but allows expert parallel training.
+
+    To avoid maintaining excessive buffer after all-to-all, a config `expert_parallel_capacity` is
+    added (see below for more details). If this factor is less than number of expert parallel
+    ranks, we may drop tokens after all-to-all. However, with a load balancing loss, generally we
+    should not see any token drop (at least for trillion parameter MoE) after training for a few
+    hundred steps using the default value of 1.25.
+    """
+
+    @config_class
+    class Config(TransformerFeedForwardDropFreeMoE.Config):
+        # After all-to-all dispatch, each rank's receiving buffer will have size
+        # tokens_per_device * num_experts_per_token * expert_parallel_capacity. Excess tokens
+        # exceeding this buffer size will be dropped.
+        expert_parallel_capacity: float = 1.25
+
+    @classmethod
+    def default_config(cls):
+        cfg = super().default_config()
+        cfg.dim_to_mesh_axis_map = {
+            "me": PartitionSpec(None, None),
+            "emh": PartitionSpec("expert", ("fsdp", "seq"), "model"),
+            "ehm": PartitionSpec("expert", "model", ("fsdp", "seq")),
+        }
+        cfg.input_dim_to_partition_spec = {
+            "bsm": PartitionSpec(("expert", "data", "fsdp"), "seq", None),
+        }
+
+        cfg.output_dim_to_partition_spec = {
+            "bsm": PartitionSpec(("expert", "data", "fsdp"), "seq", "model"),
+            "emh": PartitionSpec("expert", None, "model"),
+            "ehm": PartitionSpec("expert", "model", None),
+        }
+        return cfg
+
+    def _has_track_axis(self) -> bool:
+        """Check if we're in a vmap context with track axis (VectorizedTrackTransformerLayer)."""
+        mesh = thread_resources.env.physical_mesh
+        return "track" in mesh.axis_names if mesh.axis_names else False
+
+    def _dispatch_hook(
+        self, *, sorted_inputs: Tensor, tokens_per_expert: Tensor
+    ) -> tuple[Tensor, Tensor, Sequence[Tensor], Sequence[Tensor]]:
+        return _all_to_all_dispatch(
+            sorted_inputs=sorted_inputs,
+            tokens_per_expert=tokens_per_expert,
+            expert_parallel_capacity=self.config.expert_parallel_capacity,
+            has_track_axis=self._has_track_axis(),
+        )
+
+    def _combine_hook(self, *, sorted_output: Tensor, residuals: Sequence[Tensor]) -> Tensor:
+        return _all_to_all_combine(
+            sorted_output, residuals=residuals, has_track_axis=self._has_track_axis()
+        )
+
+    def _additional_shmap_output_sharding(self, mesh: jax.sharding.Mesh) -> Sequence[PartitionSpec]:
+        # Note: dropped tokens is duplicated along expert and model parallel axes, and sharded
+        # as partial sum across data and sequence parallel axes.
+        return (
+            PartitionSpec(
+                tuple(name for name in mesh.axis_names if name not in ("model", "expert", "track"))
+            ),
+        )
+
+    def _additional_shmap_output_hook(self, out: Sequence[Tensor]):
+        if out:
+            assert len(out) == 1
+            # TODO: This should probably be a bar graph where each bar is the number
+            # of tokens dropped for a rank. However, tf_summary doesn't directly support this.
+            self.add_summary("ep_dropped_tokens", jnp.sum(out[0]))
+
+
+def set_interpret_in_moe_config_recursively(
+    cfg: ConfigBase, preferred_element_type: jnp.dtype = jnp.bfloat16
+) -> ConfigBase:
+    """Recursively enables `interpret=True` for all `TransformerFeedForwardDropFreeMoE.Config`.
+
+    Args:
+        cfg: A `ConfigBase` tree containing nested module configurations.
+        preferred_element_type: preferred_element_type for gmm.
+
+    Returns:
+        The same config object with `interpret=True` set for all MoE layers.
+    """
+
+    def visit_fn(_, value):
+        if isinstance(value, TransformerFeedForwardDropFreeMoE.Config):
+            value.interpret = True
+            value.preferred_element_type = preferred_element_type
+
+    def enter_fn(_, value, default_kv):
+        return None if isinstance(value, TransformerFeedForwardDropFreeMoE.Config) else default_kv
+
+    cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+    return cfg
+
+
+class V6eGMMTilingModifier(ConfigModifier):
+    """Modifies the tiling config of TransformerFeedForwardDropFreeMoE for V6e TPU."""
+
+    def __call__(self, cfg):
+        def is_nodrop_config(cfg):
+            return isinstance(cfg, TransformerFeedForwardDropFreeMoE.Config)
+
+        def visit_fn(_, value):
+            if is_nodrop_config(value):
+                value.tiling = (1024, 1024, 1024)
+
+        def enter_fn(_, value, default_kv):
+            return None if is_nodrop_config(value) else default_kv
+
+        cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+        return cfg

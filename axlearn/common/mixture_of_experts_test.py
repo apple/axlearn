@@ -19,6 +19,9 @@ import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
+from jax.experimental.shard_map import shard_map
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
 
 from axlearn.common.attention import (
     NormPosition,
@@ -31,12 +34,19 @@ from axlearn.common.config import config_for_function
 from axlearn.common.layers import RMSNorm, set_bias_recursively
 from axlearn.common.mixture_of_experts import (
     AdaptiveLoadBalanceLoss,
+    ApproximateTokenDropFreeMoE,
     GateNoise,
     Top2Gating,
+    TopKBiasGating,
+    TopKDropFreeGating,
     TopKGating,
+    TransformerFeedForwardDropFreeMoE,
     TransformerFeedForwardMoE,
+    _all_to_all_combine,
+    _all_to_all_dispatch,
     _compute_expert_capacity,
     _convert_feedforward_to_moe_parameters,
+    _custom_gather,
     approx_max_k,
     convert_dense_to_moe_parameters,
     get_outer_batch_from_mesh,
@@ -48,14 +58,16 @@ from axlearn.common.quantized_dot_general.layers import (
     DotGeneralQuantizationType,
     QuantizedDotGeneral,
 )
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, is_supported_mesh_shape
 from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
+    PartitionSpec,
     get_recursively,
     infer_mesh_shape,
     set_recursively,
     shapes,
+    with_sharding_constraint,
 )
 
 
@@ -1320,6 +1332,338 @@ class TopKGatingTest(TestCase):
         gate_0_combine_tensor = jnp.asarray(gate_0.combine_tensor).astype(jnp.float32)
         gate_1_combine_tensor = jnp.asarray(gate_1.combine_tensor).astype(jnp.float32)
         assert jnp.array_equal(gate_0_combine_tensor, gate_1_combine_tensor)
+
+
+class TransformerFeedForwardDropFreeMoETest(TestCase):
+    """Tests for TransformerFeedForwardDropFreeMoE layer."""
+
+    def _random_dense(self, shape, key, dtype, limit) -> jnp.ndarray:
+        if limit is None:
+            limit = 1 / np.prod(shape)
+        x = jax.random.uniform(key, shape, dtype, minval=-limit, maxval=limit)
+        return x.astype(dtype)
+
+    def _loss(self, params, inputs, layer, prng_key):
+        x, _ = F(
+            layer,
+            inputs=dict(inputs=inputs),
+            state=params,
+            is_training=True,
+            prng_key=prng_key,
+        )
+        return jnp.mean(x)
+
+    @parameterized.product(
+        structure=["prenorm", "postnorm", "hybridnorm", "nonorm"],
+    )
+    def test_layer_structure(self, structure):
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            cfg_ref = TransformerFeedForwardMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure=structure,
+                num_experts=num_experts,
+                num_groups=1,
+                outer_batch=4,
+                gating=TopKGating.default_config().set(
+                    train_capacity_factor=num_experts, gating_logit_cap=0
+                ),
+            )
+            ref_layer = cfg_ref.instantiate(parent=None)
+            params = ref_layer.initialize_parameters_recursively(prng_key=k2)
+            ref_value, ref_grads = jax.value_and_grad(self._loss)(
+                params, input_batch, ref_layer, k3
+            )
+
+            test_cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure=structure,
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+            )
+            test_layer = test_cfg.instantiate(parent=None)
+            test_value, test_grads = jax.value_and_grad(self._loss)(
+                params, input_batch, test_layer, k3
+            )
+
+            assert_allclose(test_value, ref_value)
+            self.assertNestedAllClose(test_grads, ref_grads)
+
+    @parameterized.product(seq_load_balance_loss_weight=[None, 0, 1e-4])
+    def test_seq_load_balance_loss(self, seq_load_balance_loss_weight):
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh((1, 1, 1, 1, 1, 1)), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+            cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                seq_load_balance_loss_weight=seq_load_balance_loss_weight,
+            )
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=k2)
+            _, collections = F(
+                layer,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=False,
+                prng_key=k3,
+            )
+
+        if seq_load_balance_loss_weight:
+            assert "seq_load_balance_loss" in collections.summaries["gating"]
+        else:
+            assert "seq_load_balance_loss" not in collections.summaries["gating"]
+
+    def test_bias_based_routing(self):
+        batch, seq_len = 4, 128
+        num_experts, num_experts_per_token = 4, 2
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        logits = self._random_dense((batch, seq_len, num_experts), k1, jnp.float32, limit=1)
+        test_cfg = TopKBiasGating.default_config().set(name="test")
+        test_cfg.num_experts = num_experts
+        test_cfg.num_experts_per_token = num_experts_per_token
+        test_layer = test_cfg.instantiate(parent=None)
+        test_layer_params = test_layer.initialize_parameters_recursively(prng_key=k2)
+        _, test_output_collection = F(
+            test_layer,
+            inputs=dict(logits=logits, seq_load_balance_loss_weight=None),
+            state=test_layer_params,
+            is_training=True,
+            prng_key=k3,
+        )
+
+        assert jnp.array_equal(
+            test_output_collection.state_updates["gate_bias"],
+            jnp.array([-0.001, 0.001, -0.001, 0.001]),
+        )
+
+    def test_expert_parallel(self):
+        mesh = [1, 4, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+        if jax.default_backend() == "cpu":
+            # Jax CPU doesn't yet support ragged all-to-all.
+            # UNIMPLEMENTED: HLO opcode `ragged-all-to-all` is not supported by XLA:CPU
+            # ThunkEmitter.
+            self.skipTest("Not supported on CPU.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        @partial(jax.jit, static_argnames=("layer",))
+        def value_and_grad(params, input_batch, layer, k3):
+            return jax.value_and_grad(self._loss)(params, input_batch, layer, k3)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(
+                input_batch, PartitionSpec(("data", "fsdp", "expert"))
+            )
+
+            ref_cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+            )
+            ref_layer = ref_cfg.instantiate(parent=None)
+            params = ref_layer.initialize_parameters_recursively(prng_key=k2)
+            ref_value, ref_grads = value_and_grad(params, input_batch, ref_layer, k3)
+
+        mesh = [1, 1, 4, 1, 1, 1]
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(
+                input_batch, PartitionSpec(("data", "fsdp", "expert"))
+            )
+
+            test_cfg = ApproximateTokenDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+            )
+            test_layer = test_cfg.instantiate(parent=None)
+            test_value, test_grads = value_and_grad(params, input_batch, test_layer, k3)
+
+        assert_allclose(test_value, ref_value)
+        self.assertNestedAllClose(test_grads, ref_grads)
+
+    def test_all2all(self):
+        mesh_shape = (4,)
+        if not is_supported_mesh_shape(mesh_shape):
+            self.skipTest(f"Unsupported mesh {mesh_shape}.")
+
+        all_tokens_per_expert = jnp.array(
+            [
+                [1, 4, 3, 2, 2, 2, 1, 1],
+                [4, 4, 1, 1, 1, 2, 2, 1],
+                [4, 3, 2, 1, 1, 2, 2, 1],
+                [5, 2, 2, 1, 2, 1, 1, 2],
+            ]
+        )
+        tokens = jnp.repeat(
+            jax.lax.broadcasted_iota(jnp.int32, all_tokens_per_expert.shape, 1) + 1,
+            repeats=all_tokens_per_expert,
+        )
+        tokens = tokens.reshape(4, -1)
+        mesh = jax.make_mesh(mesh_shape, ("expert",), devices=jax.devices())
+        expert_parallel_capacity = 1.25
+
+        @jax.jit
+        @partial(
+            shard_map,
+            in_specs=(P("expert", None), P("expert")),
+            out_specs=(P("expert"), P("expert"), P("expert"), P(None)),
+            mesh=mesh,
+            check_rep=False,
+        )
+        def shard_map_fn(tokens_per_expert, sorted_inputs):
+            sorted_inputs, tokens_per_expert, (dropped_tokens,), residuals = _all_to_all_dispatch(
+                sorted_inputs=sorted_inputs.squeeze(),
+                tokens_per_expert=tokens_per_expert.squeeze(),
+                expert_parallel_capacity=expert_parallel_capacity,
+            )
+
+            local_sorted_inputs = sorted_inputs
+
+            sorted_output = _all_to_all_combine(sorted_output=sorted_inputs, residuals=residuals)
+            return (
+                sorted_output[None],
+                local_sorted_inputs[None],
+                tokens_per_expert[None],
+                dropped_tokens,
+            )
+
+        output, local_output, local_tokens_per_expert, dropped_tokens = jax.jit(shard_map_fn)(
+            all_tokens_per_expert, tokens
+        )
+
+        # Assert original tokens for readability.
+        self.assertEqual(
+            tokens.tolist(),
+            [
+                [1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8],
+                [1, 1, 1, 1, 2, 2, 2, 2, 3, 4, 5, 6, 6, 7, 7, 8],
+                [1, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5, 6, 6, 7, 7, 8],
+                [1, 1, 1, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 7, 8, 8],
+            ],
+        )
+
+        self.assertEqual(
+            local_output.tolist(),
+            # Here, extra tokens will be dropped.
+            [
+                [1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+                [3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0],
+                [5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 0, 0, 0, 0, 0, 0, 0],
+                [7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ],
+        )
+
+        # Capacity per rank = 16 tokens * 1.25
+        self.assertEqual(
+            local_tokens_per_expert.tolist(),
+            [[9, 11], [8, 5], [6, 7], [6, 5]],
+        )
+        self.assertEqual(dropped_tokens.tolist(), [7, 0, 0, 0])
+
+        self.assertEqual(
+            output.tolist(),
+            [
+                [1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8],
+                [1, 1, 1, 1, 2, 2, 2, 2, 3, 4, 5, 6, 6, 7, 7, 8],
+                [1, 1, 1, 1, 2, 2, 2, 3, 3, 4, 5, 6, 6, 7, 7, 8],
+                [0, 0, 0, 0, 0, 0, 0, 3, 3, 4, 5, 5, 6, 7, 8, 8],
+            ],
+        )
+
+
+class CustomGatherTest(TestCase):
+    @parameterized.parameters(1, 8)
+    def test_custom_gather(self, repetitions: int):
+        k = jax.random.key(42)
+        a = jax.random.normal(k, shape=(8192, 2), dtype=jnp.float32)
+        idx = jax.random.randint(k, shape=(8192 * repetitions,), minval=0, maxval=8192)
+        # Mimic MoE dispatch.
+        idx = jnp.argsort(idx) // repetitions
+
+        @partial(jax.jit, static_argnums=(2,))
+        def gather_grad(a, idx, use_custom):
+            def gather_test(a: jax.Array, idx):
+                if use_custom:
+                    a = _custom_gather(a, idx, jnp.argsort(idx))
+                else:
+                    a = a[idx]
+                return (a * a).sum()
+
+            return jax.value_and_grad(gather_test)(a, idx)
+
+        ref = gather_grad(a, idx, False)
+        test = gather_grad(a, idx, True)
+        self.assertNestedAllClose(ref, test)
 
 
 if __name__ == "__main__":
