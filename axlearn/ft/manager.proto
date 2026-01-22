@@ -14,6 +14,7 @@ message WorkerIdentity {
 // Worker status
 message WorkerStatus {
   int64 training_step = 1;                      // Current training step in the worker, -1 if not training
+  float tensorcore_util = 2;                    // Tensor core utilization (0.0-100.0), -1.0 if unavailable
 }
 
 // Status update from worker to replica head

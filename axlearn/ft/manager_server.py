@@ -201,16 +201,32 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 training_step=request.worker_status.training_step,
                 last_update=time.time(),
                 timestamp=request.timestamp,
+                tensorcore_util=request.worker_status.tensorcore_util,
             )
 
-        logging.debug(
-            "Worker status received: hostname=%s, replica=%d, worker=%d, step=%d, registry_size=%d",
+        tc_util = request.worker_status.tensorcore_util
+
+        base_args = [
             request.worker_identity.hostname,
             request.worker_identity.replica_id,
             request.worker_identity.worker_id,
             request.worker_status.training_step,
-            len(self._status_registry),
-        )
+        ]
+
+        if tc_util >= 0:
+            message = (
+                "Worker status received: hostname=%s, replica=%d, worker=%d, step=%d, "
+                "TC util=%.1f%%, registry_size=%d"
+            )
+            args = base_args + [tc_util, len(self._status_registry)]
+        else:
+            message = (
+                "Worker status received: hostname=%s, replica=%d, worker=%d, "
+                "step=%d, registry_size=%d"
+            )
+            args = base_args + [len(self._status_registry)]
+
+        logging.debug(message, *args)
 
         return self._create_success_response(manager_pb2.StatusUpdateResponse)
 
@@ -231,6 +247,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                         "hostname": worker_entry.worker_identity.hostname,
                     },
                     "training_step": worker_entry.worker_status.training_step,
+                    "tensorcore_util": worker_entry.worker_status.tensorcore_util,
                     "last_update": worker_entry.last_update.seconds
                     + worker_entry.last_update.nanos / 1e9,
                 }

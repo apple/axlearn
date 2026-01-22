@@ -70,6 +70,7 @@ class WorkerStatusRecord:
     training_step: int
     last_update: float
     timestamp: Any  # protobuf timestamp object
+    tensorcore_util: float = -1.0  # Tensor core utilization (0.0-1.0), -1.0 if unavailable
 
 
 class TrainerProcessController:
@@ -444,6 +445,7 @@ def worker_status_record_to_proto(record: WorkerStatusRecord) -> manager_pb2.Wor
 
     # Set worker status
     proto_entry.worker_status.training_step = record.training_step
+    proto_entry.worker_status.tensorcore_util = record.tensorcore_util
 
     # Set timestamp from float
     proto_entry.last_update.FromSeconds(int(record.last_update))

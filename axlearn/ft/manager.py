@@ -71,10 +71,15 @@ class Manager:
             self.cleanup()
             raise
 
-    def report_status(self, step: int = 0):
-        """Report training step to replica manager."""
+    def report_status(self, step: int = 0, tensorcore_util: float = -1.0):
+        """Report training step and tensor core utilization to replica manager.
 
-        status = manager_pb2.WorkerStatus(training_step=step)
+        Args:
+            step: Current training step
+            tensorcore_util: Tensor core utilization (0.0-1.0), -1.0 if unavailable
+        """
+
+        status = manager_pb2.WorkerStatus(training_step=step, tensorcore_util=tensorcore_util)
         replica_manager_host = get_replica_manager_hostname()
 
         success = self._client.report_status(replica_manager_host, status)

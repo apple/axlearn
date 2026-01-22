@@ -13,6 +13,12 @@ from typing import Optional
 
 from axlearn.ft.manager import Manager
 
+# libtpu module is only useable on TPU machines
+try:
+    from libtpu import sdk  # type: ignore[import]
+except ImportError:
+    sdk = None
+
 
 class StatusMonitor:
     """Monitor training status and report to FT manager.
@@ -40,6 +46,9 @@ class StatusMonitor:
         self.hang_detection_enabled = True
         self.hang_threshold_seconds = hang_threshold_in_seconds
         self.last_hang_check = time.time()
+
+        # Tensor core utilization tracking
+        self.current_tensorcore_util = -1.0
 
     @property
     def is_global_manager(self) -> bool:
@@ -69,6 +78,26 @@ class StatusMonitor:
         if step > self.current_step:
             self.current_step = step
             self.last_step_time = time.time()
+
+    def get_tensorcore_utilization(self) -> float:
+        """Get current tensor core utilization.
+
+        Returns:
+            Utilization as float 0.0-1.0, or -1.0 if unavailable
+        """
+        if sdk is None:
+            return -1.0
+        try:
+            metric = sdk.monitoring.get_metric("tensorcore_util")
+            float_data = [float(x) for x in metric.data()]
+            if not float_data:
+                return -1.0
+            worker_average = sum(float_data) / len(float_data)
+            return worker_average
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logging.warning("Failed to get tensor core utilization: %s", e)
+            return -1.0
 
     def detect_global_training_hang(self) -> bool:
         """Detect if training is hanging across the training job (global manager only)."""
@@ -173,8 +202,22 @@ class StatusMonitor:
 
     def _report_worker_status(self):
         """Report worker status to replica manager."""
-        self.manager.report_status(self.current_step)
-        logging.info("FT Monitor: Reported step %d", self.current_step)
+        # Get tensor core utilization
+        self.current_tensorcore_util = self.get_tensorcore_utilization()
+
+        # Report status with utilization
+        self.manager.report_status(
+            step=self.current_step, tensorcore_util=self.current_tensorcore_util
+        )
+
+        if self.current_tensorcore_util >= 0:
+            logging.info(
+                "FT Monitor: Reported step %d, TC util %.1f%%",
+                self.current_step,
+                self.current_tensorcore_util,
+            )
+        else:
+            logging.info("FT Monitor: Reported step %d", self.current_step)
 
     def _report_replica_status(self):
         """Report replica status to global manager."""
@@ -196,6 +239,41 @@ class StatusMonitor:
         except Exception as e:  # pylint: disable=broad-exception-caught
             logging.warning("FT Monitor: Failed to handle global manager tasks: %s", e)
 
+    def _log_replica_details(self, replica_id, replica_info):
+        workers = replica_info.get("workers", [])
+        if workers:
+            worker_details = []
+            tc_utils = []
+
+            for worker in workers:
+                hostname = worker.get("worker_identity", {}).get("hostname", "unknown")
+                worker_id = worker.get("worker_identity", {}).get("worker_id", -1)
+                step = worker.get("training_step", 0)
+                tc_util = worker.get("tensorcore_util", -1.0)
+
+                # Build worker detail string
+                detail = f"{hostname}:w{worker_id}:s{step}"
+                if tc_util >= 0:
+                    detail += f":tc{tc_util:.0f}%"
+                    tc_utils.append(tc_util)
+                worker_details.append(detail)
+
+            # Calculate average TC utilization for replica
+            if tc_utils:
+                avg_tc_util = sum(tc_utils) / len(tc_utils)
+                logging.info(
+                    "FT Monitor: Replica %d workers - %s (avg TC util: %.1f%%)",
+                    replica_id,
+                    ", ".join(worker_details),
+                    avg_tc_util,
+                )
+            else:
+                logging.info(
+                    "FT Monitor: Replica %d workers - %s", replica_id, ", ".join(worker_details)
+                )
+        else:
+            logging.info("FT Monitor: Replica %d - no workers reported", replica_id)
+
     def _log_global_status(self):
         """Log global status information."""
         status = self.manager.get_global_status()
@@ -209,21 +287,9 @@ class StatusMonitor:
             self.current_step,
         )
 
-        # Log detailed worker steps for each replica
+        # Log detailed worker steps and tensor core utilization for each replica
         for replica_id, replica_info in detailed_status.get("replicas", {}).items():
-            workers = replica_info.get("workers", [])
-            if workers:
-                worker_details = [
-                    f"{worker.get('worker_identity', {}).get('hostname', 'unknown')}:"
-                    f"w{worker.get('worker_identity', {}).get('worker_id', -1)}:"
-                    f"s{worker.get('training_step', 0)}"
-                    for worker in workers
-                ]
-                logging.info(
-                    "FT Monitor: Replica %d workers - %s", replica_id, ", ".join(worker_details)
-                )
-            else:
-                logging.info("FT Monitor: Replica %d - no workers reported", replica_id)
+            self._log_replica_details(replica_id, replica_info)
 
     def _check_and_handle_hangs(self):
         """Check for training hangs and trigger restart if needed."""

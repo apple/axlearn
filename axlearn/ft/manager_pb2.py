@@ -18,7 +18,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\x18\x61xlearn/ft/manager.proto\x12\x12\x61xlearn.ft.manager\x1a\x1fgoogle/protobuf/timestamp.proto"I\n\x0eWorkerIdentity\x12\x12\n\nreplica_id\x18\x01 \x01(\x05\x12\x11\n\tworker_id\x18\x02 \x01(\x05\x12\x10\n\x08hostname\x18\x03 \x01(\t"%\n\x0cWorkerStatus\x12\x15\n\rtraining_step\x18\x01 \x01(\x03"\xb3\x01\n\x0cStatusUpdate\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x37\n\rworker_status\x18\x02 \x01(\x0b\x32 .axlearn.ft.manager.WorkerStatus\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"[\n\x14StatusUpdateResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12-\n\ttimestamp\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\xba\x01\n\x11WorkerStatusEntry\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x37\n\rworker_status\x18\x02 \x01(\x0b\x32 .axlearn.ft.manager.WorkerStatus\x12/\n\x0blast_update\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\x80\x01\n\rReplicaStatus\x12\x15\n\rtotal_workers\x18\x01 \x01(\x05\x12\x18\n\x10reported_workers\x18\x02 \x01(\x05\x12>\n\x0fworker_statuses\x18\x03 \x03(\x0b\x32%.axlearn.ft.manager.WorkerStatusEntry"\x93\x01\n\x13ReplicaStatusUpdate\x12\x12\n\nreplica_id\x18\x01 \x01(\x05\x12\x39\n\x0ereplica_status\x18\x02 \x01(\x0b\x32!.axlearn.ft.manager.ReplicaStatus\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\\\n\x15ReplicaStatusResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12-\n\ttimestamp\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"j\n\x15RestartReplicaRequest\x12\x12\n\nreplica_id\x18\x01 \x01(\x05\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"n\n\x16RestartReplicaResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\x8c\x01\n\x0eRestartRequest\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"g\n\x0fRestartResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\x90\x01\n\x12PodShutdownRequest\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"k\n\x13PodShutdownResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp2\x8a\x04\n\x0eManagerService\x12Z\n\x0cReportStatus\x12 .axlearn.ft.manager.StatusUpdate\x1a(.axlearn.ft.manager.StatusUpdateResponse\x12i\n\x13ReportReplicaStatus\x12\'.axlearn.ft.manager.ReplicaStatusUpdate\x1a).axlearn.ft.manager.ReplicaStatusResponse\x12o\n\x16RestartReplicaTraining\x12).axlearn.ft.manager.RestartReplicaRequest\x1a*.axlearn.ft.manager.RestartReplicaResponse\x12Z\n\x0fRestartTraining\x12".axlearn.ft.manager.RestartRequest\x1a#.axlearn.ft.manager.RestartResponse\x12\x64\n\x11ReportPodShutdown\x12&.axlearn.ft.manager.PodShutdownRequest\x1a\'.axlearn.ft.manager.PodShutdownResponseb\x06proto3'
+    b'\n\x18\x61xlearn/ft/manager.proto\x12\x12\x61xlearn.ft.manager\x1a\x1fgoogle/protobuf/timestamp.proto"I\n\x0eWorkerIdentity\x12\x12\n\nreplica_id\x18\x01 \x01(\x05\x12\x11\n\tworker_id\x18\x02 \x01(\x05\x12\x10\n\x08hostname\x18\x03 \x01(\t">\n\x0cWorkerStatus\x12\x15\n\rtraining_step\x18\x01 \x01(\x03\x12\x17\n\x0ftensorcore_util\x18\x02 \x01(\x02"\xb3\x01\n\x0cStatusUpdate\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x37\n\rworker_status\x18\x02 \x01(\x0b\x32 .axlearn.ft.manager.WorkerStatus\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"[\n\x14StatusUpdateResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12-\n\ttimestamp\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\xba\x01\n\x11WorkerStatusEntry\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x37\n\rworker_status\x18\x02 \x01(\x0b\x32 .axlearn.ft.manager.WorkerStatus\x12/\n\x0blast_update\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\x80\x01\n\rReplicaStatus\x12\x15\n\rtotal_workers\x18\x01 \x01(\x05\x12\x18\n\x10reported_workers\x18\x02 \x01(\x05\x12>\n\x0fworker_statuses\x18\x03 \x03(\x0b\x32%.axlearn.ft.manager.WorkerStatusEntry"\x93\x01\n\x13ReplicaStatusUpdate\x12\x12\n\nreplica_id\x18\x01 \x01(\x05\x12\x39\n\x0ereplica_status\x18\x02 \x01(\x0b\x32!.axlearn.ft.manager.ReplicaStatus\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\\\n\x15ReplicaStatusResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12-\n\ttimestamp\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"j\n\x15RestartReplicaRequest\x12\x12\n\nreplica_id\x18\x01 \x01(\x05\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"n\n\x16RestartReplicaResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\x8c\x01\n\x0eRestartRequest\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"g\n\x0fRestartResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"\x90\x01\n\x12PodShutdownRequest\x12;\n\x0fworker_identity\x18\x01 \x01(\x0b\x32".axlearn.ft.manager.WorkerIdentity\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp"k\n\x13PodShutdownResponse\x12\x14\n\x0c\x61\x63knowledged\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12-\n\ttimestamp\x18\x03 \x01(\x0b\x32\x1a.google.protobuf.Timestamp2\x8a\x04\n\x0eManagerService\x12Z\n\x0cReportStatus\x12 .axlearn.ft.manager.StatusUpdate\x1a(.axlearn.ft.manager.StatusUpdateResponse\x12i\n\x13ReportReplicaStatus\x12\'.axlearn.ft.manager.ReplicaStatusUpdate\x1a).axlearn.ft.manager.ReplicaStatusResponse\x12o\n\x16RestartReplicaTraining\x12).axlearn.ft.manager.RestartReplicaRequest\x1a*.axlearn.ft.manager.RestartReplicaResponse\x12Z\n\x0fRestartTraining\x12".axlearn.ft.manager.RestartRequest\x1a#.axlearn.ft.manager.RestartResponse\x12\x64\n\x11ReportPodShutdown\x12&.axlearn.ft.manager.PodShutdownRequest\x1a\'.axlearn.ft.manager.PodShutdownResponseb\x06proto3'
 )
 
 _globals = globals()
@@ -29,31 +29,31 @@ if _descriptor._USE_C_DESCRIPTORS == False:
     _globals["_WORKERIDENTITY"]._serialized_start = 81
     _globals["_WORKERIDENTITY"]._serialized_end = 154
     _globals["_WORKERSTATUS"]._serialized_start = 156
-    _globals["_WORKERSTATUS"]._serialized_end = 193
-    _globals["_STATUSUPDATE"]._serialized_start = 196
-    _globals["_STATUSUPDATE"]._serialized_end = 375
-    _globals["_STATUSUPDATERESPONSE"]._serialized_start = 377
-    _globals["_STATUSUPDATERESPONSE"]._serialized_end = 468
-    _globals["_WORKERSTATUSENTRY"]._serialized_start = 471
-    _globals["_WORKERSTATUSENTRY"]._serialized_end = 657
-    _globals["_REPLICASTATUS"]._serialized_start = 660
-    _globals["_REPLICASTATUS"]._serialized_end = 788
-    _globals["_REPLICASTATUSUPDATE"]._serialized_start = 791
-    _globals["_REPLICASTATUSUPDATE"]._serialized_end = 938
-    _globals["_REPLICASTATUSRESPONSE"]._serialized_start = 940
-    _globals["_REPLICASTATUSRESPONSE"]._serialized_end = 1032
-    _globals["_RESTARTREPLICAREQUEST"]._serialized_start = 1034
-    _globals["_RESTARTREPLICAREQUEST"]._serialized_end = 1140
-    _globals["_RESTARTREPLICARESPONSE"]._serialized_start = 1142
-    _globals["_RESTARTREPLICARESPONSE"]._serialized_end = 1252
-    _globals["_RESTARTREQUEST"]._serialized_start = 1255
-    _globals["_RESTARTREQUEST"]._serialized_end = 1395
-    _globals["_RESTARTRESPONSE"]._serialized_start = 1397
-    _globals["_RESTARTRESPONSE"]._serialized_end = 1500
-    _globals["_PODSHUTDOWNREQUEST"]._serialized_start = 1503
-    _globals["_PODSHUTDOWNREQUEST"]._serialized_end = 1647
-    _globals["_PODSHUTDOWNRESPONSE"]._serialized_start = 1649
-    _globals["_PODSHUTDOWNRESPONSE"]._serialized_end = 1756
-    _globals["_MANAGERSERVICE"]._serialized_start = 1759
-    _globals["_MANAGERSERVICE"]._serialized_end = 2281
+    _globals["_WORKERSTATUS"]._serialized_end = 218
+    _globals["_STATUSUPDATE"]._serialized_start = 221
+    _globals["_STATUSUPDATE"]._serialized_end = 400
+    _globals["_STATUSUPDATERESPONSE"]._serialized_start = 402
+    _globals["_STATUSUPDATERESPONSE"]._serialized_end = 493
+    _globals["_WORKERSTATUSENTRY"]._serialized_start = 496
+    _globals["_WORKERSTATUSENTRY"]._serialized_end = 682
+    _globals["_REPLICASTATUS"]._serialized_start = 685
+    _globals["_REPLICASTATUS"]._serialized_end = 813
+    _globals["_REPLICASTATUSUPDATE"]._serialized_start = 816
+    _globals["_REPLICASTATUSUPDATE"]._serialized_end = 963
+    _globals["_REPLICASTATUSRESPONSE"]._serialized_start = 965
+    _globals["_REPLICASTATUSRESPONSE"]._serialized_end = 1057
+    _globals["_RESTARTREPLICAREQUEST"]._serialized_start = 1059
+    _globals["_RESTARTREPLICAREQUEST"]._serialized_end = 1165
+    _globals["_RESTARTREPLICARESPONSE"]._serialized_start = 1167
+    _globals["_RESTARTREPLICARESPONSE"]._serialized_end = 1277
+    _globals["_RESTARTREQUEST"]._serialized_start = 1280
+    _globals["_RESTARTREQUEST"]._serialized_end = 1420
+    _globals["_RESTARTRESPONSE"]._serialized_start = 1422
+    _globals["_RESTARTRESPONSE"]._serialized_end = 1525
+    _globals["_PODSHUTDOWNREQUEST"]._serialized_start = 1528
+    _globals["_PODSHUTDOWNREQUEST"]._serialized_end = 1672
+    _globals["_PODSHUTDOWNRESPONSE"]._serialized_start = 1674
+    _globals["_PODSHUTDOWNRESPONSE"]._serialized_end = 1781
+    _globals["_MANAGERSERVICE"]._serialized_start = 1784
+    _globals["_MANAGERSERVICE"]._serialized_end = 2306
 # @@protoc_insertion_point(module_scope)
