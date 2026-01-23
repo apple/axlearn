@@ -2233,7 +2233,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         # tiling[1] is the block size for the model_dim.
         # tiling[2] is the block size for the hidden_dim.
         # The tiling blocks have to be multiples of 128.
-        tiling: Required[tuple[int, int, int]] = REQUIRED
+        tiling: Required[Union[InstantiableConfig, tuple[int, int, int]]] = REQUIRED
         # How to partition the input batch with the expected keys below.
         input_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {
             "bsm": PartitionSpec(("data", "fsdp"), "seq", None),
@@ -2284,7 +2284,13 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
 
     def _padded_gmm(self, lhs, rhs, tokens_per_expert):
         cfg = self.config
-        pad_length = cfg.tiling[0]
+        if isinstance(cfg.tiling, tuple):
+            tiling = cfg.tiling
+            pad_length = cfg.tiling[0]
+        else:
+            tiling = cfg.tiling.instantiate()
+            # no padding when tiling is a function
+            pad_length = 1
 
         # TODO: Revisit once Mosaic supports highest precision.
         matmul_precision = (
@@ -2303,7 +2309,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
                     padded_lhs,
                     rhs,
                     tokens_per_expert,
-                    tiling=cfg.tiling,
+                    tiling=tiling,
                     preferred_element_type=cfg.preferred_element_type or jnp.bfloat16,
                     interpret=cfg.interpret,
                 )
@@ -2313,7 +2319,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
                     lhs,
                     rhs,
                     tokens_per_expert,
-                    tiling=cfg.tiling,
+                    tiling=tiling,
                     preferred_element_type=cfg.preferred_element_type or jnp.bfloat16,
                     interpret=cfg.interpret,
                 )

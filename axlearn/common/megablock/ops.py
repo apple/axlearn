@@ -121,6 +121,41 @@ def _select_and_cache_gmm_backend():
     return _gmm_impl_cache
 
 
+def select_tiling_fn(
+    tiling_larger_k: tuple[int, int, int],
+    tiling_larger_n: tuple[int, int, int],
+):
+    """Select tiling for GMM dynamically depending on the k and n values.
+
+    LHS for WI is of shape [G=B x S * K, M]. In the tiling notation it's [m, k]
+    RHS for WI is of shape [E, M, H]. In the tiling notation it's [_, k, n]
+    We ignore "m" dimension and focus on the "k" and "n" dimensions.
+
+    Example:
+        B = 4, S = 8192, K = 8, E = 512, M = 2048, H = 256
+        For WI forward we'll get:
+            LHS [262144,2048], RHS [512,2048,256], so it's better to use tiling
+            such as (512, 1024, 256), where second dim is higher than 3rd.
+        For WI backward though we'll get:
+            LHS [262144,256], RHS [512,2048,256], and because there's index
+            transposition for RHS in backward, it's better to use different
+            tiling such as (512, 256, 1024), where third dim is higher than 2nd.
+
+    Args:
+        tiling_larger_k:    tiling to select if k > n
+        tiling_larger_n:    tiling to select if n > k
+    """
+
+    def tiling_fn(m: int, k: int, n: int):
+        del m  # m is not used in decision
+        if k > n:
+            return tiling_larger_k
+        else:
+            return tiling_larger_n
+
+    return tiling_fn
+
+
 def gmm(*args, **kwargs):
     """
     Universal GMM interface. Selects and caches the backend-specific
