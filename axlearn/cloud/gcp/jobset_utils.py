@@ -32,10 +32,11 @@ from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
+    get_host_bounds,
 )
 from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
-from axlearn.common.compiler_options import infer_tpu_type
+from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
 
@@ -494,6 +495,22 @@ class TPUJobBuilder(SingleReplicatedJob):
         env_vars = {**cfg.env_vars}
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
+
+        if cfg.enable_tpu_slice_auto_provisioning:
+            system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
+            topology = cfg.accelerator.topology or system.topology
+            env_vars["TPU_TOPOLOGY"] = topology
+
+            tpu_version = infer_tpu_version(self._tpu_type)
+            bounds = get_host_bounds(topology, tpu_version)
+            if bounds:
+                chips_per_host_bounds, host_bounds = bounds
+                env_vars["TPU_CHIPS_PER_HOST_BOUNDS"] = ",".join(
+                    str(c) for c in chips_per_host_bounds
+                )
+                env_vars["TPU_HOST_BOUNDS"] = ",".join(str(h) for h in host_bounds)
+            else:
+                raise RuntimeError(f"Unsupported tpu type {self._tpu_type}")
 
         # This label will be used by TPU provisioner to select machine type.
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}

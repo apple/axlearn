@@ -9,6 +9,7 @@
 """GCP system characteristics."""
 
 from dataclasses import dataclass
+from typing import Optional
 
 AcceleratorType = {"TPU": 1, "GPU": 2, "CPU": 3}
 
@@ -553,8 +554,13 @@ _SUBBLOCK_MAPPING = {
     "7x": "7x-128",  # 4x4x4 topology, 64 chips (128 cores) per subblock
 }
 
+# Map TPU version to chips per host bounds
+_TPU_VERSION_TO_CHIPS_PER_HOST_BOUNDS = {
+    "7x": (2, 2, 1),
+}
 
-def get_subblock_characteristics(tpu_version: str) -> _SystemCharacteristics | None:
+
+def get_subblock_characteristics(tpu_version: str) -> Optional[_SystemCharacteristics]:
     """Returns the characteristics for one subblock for the given TPU version.
 
     For super slicing support, returns the subblock size that can be
@@ -572,3 +578,38 @@ def get_subblock_characteristics(tpu_version: str) -> _SystemCharacteristics | N
         return None
 
     return USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.get(subblock_name)
+
+
+def get_host_bounds(
+    topology: str, tpu_version: str
+) -> Optional[tuple[tuple[int, ...], tuple[int, ...]]]:
+    """Calculate host bounds from topology and TPU version.
+
+    Args:
+        topology: Topology string like "4x4x4"
+        tpu_version: TPU version like "7x"
+
+    Returns:
+        Tuple of (chips_per_host_bounds, host_bounds) where:
+            - chips_per_host_bounds: The configured chips per host for each dimension
+            - host_bounds: The number of hosts in each dimension
+        Returns None if the TPU version is not configured or if the topology
+        dimensions don't match the configured bounds.
+    """
+    # Look up chips per host bounds
+    chips_per_host_bounds = _TPU_VERSION_TO_CHIPS_PER_HOST_BOUNDS.get(tpu_version)
+    if chips_per_host_bounds is None:
+        return None
+
+    # Split topology by 'x' and convert to integers
+    topology_parts = topology.split("x")
+    topology_dims = tuple(int(x) for x in topology_parts)
+
+    # Check if dimensions match
+    if len(topology_dims) != len(chips_per_host_bounds):
+        return None
+
+    # Divide topology by chips per host bounds element-wise
+    host_bounds = tuple(t // c for t, c in zip(topology_dims, chips_per_host_bounds))
+
+    return (chips_per_host_bounds, host_bounds)
