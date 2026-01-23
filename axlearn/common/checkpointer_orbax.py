@@ -27,6 +27,7 @@ from absl import logging
 from orbax.checkpoint._src.metadata import array_metadata_store as array_metadata_store_lib
 from orbax.checkpoint._src.serialization.type_handlers import ArrayHandler
 from orbax.checkpoint.checkpoint_manager import _ShouldSaveFnPolicy
+from tensorflow.python.checkpoint import async_checkpoint_helper
 
 from axlearn.common import utils
 from axlearn.common.checkpointer import (
@@ -91,6 +92,20 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
             self._tf_ckpt_cache[value] = tf.train.Checkpoint(value)
         return self._tf_ckpt_cache[value]
 
+    def _sync_tf_ckpt_and_check_error(self, ckpt: tf.train.Checkpoint):
+        # When `enable_async=True`, `ckpt.sync` will always return silently even
+        # if it failed to save the checkpoint correctly. What makes it worse is
+        # that Orbax Checkpoint Manager relies on the successful execution to
+        # write the `commit_success.txt` file. Here we check and rethrow the
+        # error if there's any.
+        ckpt.sync()
+        # pylint: disable=protected-access
+        # pytype: disable=attribute-error
+        assert isinstance(ckpt._async_checkpointer(), async_checkpoint_helper.AsyncCheckpointHelper)
+        ckpt._async_checkpointer()._check_async_thread_error()
+        # pytype: enable=attribute-error
+        # pylint: enable=protected-access
+
     async def serialize(
         self,
         values: Sequence[tf.data.Iterator],
@@ -103,7 +118,11 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
         for value, info in zip(values, infos, strict=False):
             tf_ckpt = self._get_or_create_tf_ckpt(value)
             tf_ckpt.write(self._ckpt_dir(info), tf.train.CheckpointOptions(enable_async=True))
-            futs.append(self._executor.submit(tf_ckpt.sync))
+            futs.append(
+                self._executor.submit(
+                    functools.partial(self._sync_tf_ckpt_and_check_error, tf_ckpt)
+                )
+            )
         return futs
 
     async def deserialize(
@@ -122,7 +141,9 @@ class _TfIteratorHandler(ocp.type_handlers.TypeHandler):
 
         await asyncio.gather(
             *(
-                asyncio.get_event_loop().run_in_executor(self._executor, ckpt.sync)
+                asyncio.get_event_loop().run_in_executor(
+                    self._executor, functools.partial(self._sync_tf_ckpt_and_check_error, ckpt)
+                )
                 for ckpt in tf_ckpts
             )
         )
