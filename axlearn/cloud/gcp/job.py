@@ -266,7 +266,7 @@ class GKEJob(GCPJob):
                 tpu_job_name = self._builder.config.job_name  # Fallback to builder job name
             slice_selection = json.dumps({tpu_job_name: topology_assignment})
             logging.info("Adding slice selection: %s to job set", slice_selection)
-            labels.update({"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "async"})
+            labels.update({"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "sync"})
             annotations.update(
                 {"tpu-provisioner.cloud.google.com/slice-selection": slice_selection}
             )
