@@ -144,7 +144,7 @@ def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
 def _topology_assignment_from_env() -> Optional[list[list[str]]]:
     topology_assignments_env = os.environ.get("BASTION_JOB_TOPOLOGY_ASSIGNMENT")
     if not topology_assignments_env:
-        logging.info("No %s environment variable set.", "BASTION_JOB_TOPOLOGY_ASSIGNMENT")
+        logging.debug("No %s environment variable set.", "BASTION_JOB_TOPOLOGY_ASSIGNMENT")
         return None
 
     try:
