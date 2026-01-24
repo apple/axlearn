@@ -68,7 +68,6 @@ partial = functools.partial
 DEFAULT_MASK_VALUE = -0.7 * float(np.finfo(np.dtype("float32")).max)
 NUM_LANES = 128
 NUM_SUBLANES = 8
-lane_multiple = lambda x: NUM_LANES * pl.cdiv(x, NUM_LANES)
 # We predefine some useful dimension numbers for dot_general
 NN_DIM_NUMBERS = (((1,), (0,)), ((), ()))  # standard matmul
 NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))  # RHS transposed
@@ -145,9 +144,7 @@ def flash_attention_kernel(
     # pylint: disable=invalid-name
     HEAD_DIM_MINOR = QKVLayout.HEAD_DIM_MINOR
 
-    head_dim_repeats, rem = divmod(head_dim, NUM_LANES)
-    if rem != 0:
-        raise NotImplementedError(f"{head_dim=} should be a multiple of {NUM_LANES}")
+    head_dim_repeats = pl.cdiv(head_dim, NUM_LANES)
 
     h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
 
@@ -257,7 +254,7 @@ def flash_attention_kernel(
             s_curr = jnp.where(dropout_mask, 0.0, s_curr) / (1.0 - dropout_rate)
         o_curr = lax.dot_general(s_curr, v, sv_dims)
 
-        alpha_o = pltpu.repeat(alpha, head_dim_repeats, axis=1)
+        alpha_o = pltpu.repeat(alpha, head_dim_repeats, axis=1)[..., : o_scratch_ref.shape[-1]]
         o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
 
     @pl.when(should_run)
@@ -272,7 +269,7 @@ def flash_attention_kernel(
         if logit_sink_ref is not None:
             sink_value = logit_sink_ref[h].astype(jnp.float32)
             l = l + jnp.exp(sink_value - m_scratch_ref[...])
-        l_inv = pltpu.repeat(1.0 / l, head_dim_repeats, axis=1)
+        l_inv = pltpu.repeat(1.0 / l, head_dim_repeats, axis=1)[..., : o_scratch_ref.shape[-1]]
         o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
         if logsumexp_ref is not None:
             assert logsumexp_ref.shape == (bq, NUM_LANES)
@@ -514,7 +511,7 @@ def _splash_attention_forward(
         ),
         pl.BlockSpec(
             from_head_minor(
-                (bkv, lane_multiple(head_dim)) if is_mqa else (None, bkv, lane_multiple(head_dim)),
+                (bkv, head_dim) if is_mqa else (None, bkv, head_dim),
                 v_layout,
             ),
             v_index_map,
@@ -565,8 +562,8 @@ def _splash_attention_forward(
         # TODO(sharadmv): convert m/l to be scratch
         pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
         pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
-        pl.BlockSpec((bq, lane_multiple(head_dim)), lambda h, i, j, *_: (0, 0)),
-        pl.BlockSpec((None, bq, lane_multiple(head_dim)), out_index_map),
+        pl.BlockSpec((bq, head_dim), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((None, bq, head_dim), out_index_map),
     ]
     if save_residuals:
         out_shapes += [
@@ -606,7 +603,7 @@ def _splash_attention_forward(
                 bq=bq,
                 bkv=bkv,
                 bkv_compute=bkv_compute,
-                head_dim=lane_multiple(head_dim),
+                head_dim=head_dim,
                 q_layout=q_layout,
                 k_layout=k_layout,
                 v_layout=v_layout,
@@ -962,7 +959,7 @@ def _splash_attention_bwd_dq(
     def o_index_map(h, i, *_):
         return h, i, 0
 
-    o_spec = pl.BlockSpec((None, bq, lane_multiple(head_dim)), o_index_map)
+    o_spec = pl.BlockSpec((None, bq, head_dim), o_index_map)
 
     def q_index_map(h, i, *_):
         return from_head_minor((h, i, 0), q_layout)
@@ -986,7 +983,7 @@ def _splash_attention_bwd_dq(
 
     v_spec = pl.BlockSpec(
         from_head_minor(
-            (bkv, lane_multiple(head_dim)) if is_mqa else (None, bkv, lane_multiple(head_dim)),
+            (bkv, head_dim) if is_mqa else (None, bkv, head_dim),
             v_layout,
         ),
         v_index_map,
@@ -1438,7 +1435,7 @@ def _splash_attention_bwd_dkv(
         )
         return head_index, next_i, 0
 
-    o_spec = pl.BlockSpec((None, bq, lane_multiple(head_dim)), o_index_map)
+    o_spec = pl.BlockSpec((None, bq, head_dim), o_index_map)
 
     def q_index_map(
         kv_index,
@@ -1481,7 +1478,7 @@ def _splash_attention_bwd_dkv(
 
     v_spec = pl.BlockSpec(
         from_head_minor(
-            (bkv, lane_multiple(head_dim)) if is_mqa else (None, bkv, lane_multiple(head_dim)),
+            (bkv, head_dim) if is_mqa else (None, bkv, head_dim),
             v_layout,
         ),
         v_index_map,
@@ -1512,7 +1509,7 @@ def _splash_attention_bwd_dkv(
     )
 
     dv_spec = pl.BlockSpec(
-        (bkv, lane_multiple(head_dim)) if is_mqa else (None, bkv, lane_multiple(head_dim)),
+        (bkv, head_dim) if is_mqa else (None, bkv, head_dim),
         dkv_index_map,
     )
 
@@ -1641,7 +1638,7 @@ def _splash_attention_bwd_dkv(
     out_specs = [
         dq_scratch_spec,
         pl.BlockSpec((bkv, head_dim), lambda *_: (0, 0)),
-        pl.BlockSpec((bkv, lane_multiple(head_dim)), lambda *_: (0, 0)),
+        pl.BlockSpec((bkv, head_dim), lambda *_: (0, 0)),
         dq_spec,
         dk_spec,
         dv_spec,
