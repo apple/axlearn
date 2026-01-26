@@ -4,11 +4,16 @@
 
 import jax.random
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.audio import frontend_utils
-from axlearn.audio.encoder_asr import ASREncoder, SpeechContextNetwork, SpeechFeatureLayer
+from axlearn.audio.encoder_asr import (
+    ASREncoder,
+    SpeechContextNetwork,
+    SpeechFeatureLayer,
+    _segment_relative_positions,
+)
 from axlearn.audio.test_utils import fake_audio
 from axlearn.common.attention import RepeatedTransformerLayer
 from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
@@ -347,3 +352,25 @@ class ASREncoderTest(TestCase):
         self.assertEqual(
             not (is_training and use_augmenter), jnp.allclose(outputs[:2], outputs[2:])
         )
+
+
+class SegmentRelativePositionsTest(TestCase):
+    def test_segment_relative_positions(self):
+        segment_ids = jnp.array([[1, 1, 1, 0, 0, 2, 2, 2]])
+        expected = jnp.array([[0, 1, 2, 0, 0, 0, 1, 2]])
+        result = _segment_relative_positions(segment_ids)
+        self.assertNestedEqual(result, expected)
+
+        segment_ids = jnp.array([[1, 1, 2, 2, 2, 3, 3, 3, 3]])
+        expected = jnp.array([[0, 1, 0, 1, 2, 0, 1, 2, 3]])
+        result = _segment_relative_positions(segment_ids)
+        self.assertNestedEqual(result, expected)
+
+        segment_ids = jnp.array([[1, 1, 0, 2, 2], [3, 3, 3, 0, 0]])
+        expected = jnp.array([[0, 1, 0, 0, 1], [0, 1, 2, 0, 0]])
+        result = _segment_relative_positions(segment_ids)
+        self.assertNestedEqual(result, expected)
+
+
+if __name__ == "__main__":
+    absltest.main()

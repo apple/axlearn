@@ -11,6 +11,7 @@ from math import prod
 from typing import Optional
 
 import chex
+import jax.lax
 import jax.numpy as jnp
 
 from axlearn.audio.frontend import LogMelFrontend
@@ -170,7 +171,8 @@ class SpeechContextNetwork(BaseLayer):
         x = self.dropout(x)
 
         if isinstance(cfg.context, RepeatedConformerLayer.Config):
-            x = x + self.pos_emb(jnp.arange(x.shape[1]))
+            positions = _segment_relative_positions(segment_ids)
+            x = x + self.pos_emb(positions)
             x = self.context(inputs=x, segment_ids=segment_ids)
         elif isinstance(cfg.context, RepeatedTransformerLayer.Config):
             # We don't need to do add pos_emb for transformer block
@@ -243,3 +245,30 @@ class ASREncoder(BaseLayer):
             segment_ids=speech_features["segment_ids"],
         )
         return context_features
+
+
+def _segment_relative_positions(segment_ids: Tensor) -> Tensor:
+    """Computes segment-relative positions from segment_ids.
+
+    For each segment, positions start from 0. Padding positions (segment_ids == 0) get position 0.
+
+    Example:
+        segment_ids = [1, 1, 1, 0, 0, 2, 2, 2]
+        returns     = [0, 1, 2, 0, 0, 0, 1, 2]
+
+    Args:
+        segment_ids: Integer tensor of shape [batch, seq_len] where 0 indicates padding.
+
+    Returns:
+        Tensor of shape [batch, seq_len] with segment-relative positions.
+    """
+    # Detect reset positions: segment boundaries or padding
+    shifted = jnp.pad(segment_ids[:, :-1], ((0, 0), (1, 0)))
+    is_new_segment = (segment_ids != shifted) & (segment_ids != 0)
+    is_reset = is_new_segment | (segment_ids == 0)
+
+    # Use cummax to compute positions: position[i] = i - max_reset_index_up_to_i
+    indices = jnp.arange(1, segment_ids.shape[1] + 1)
+    reset_indices = jnp.where(is_reset, indices, 0)
+    cummax_reset = jax.lax.cummax(reset_indices, axis=1)
+    return indices - cummax_reset
