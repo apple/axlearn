@@ -21,7 +21,8 @@ evalers['openwebtext_2'].input.batcher.fn: 'axlearn.common.input_tf_data.per_fee
 evalers['openwebtext_2'].input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 evalers['openwebtext_2'].input.batcher.prefetch_buffer_size: -1
 evalers['openwebtext_2'].input.input_dispatcher.global_logical_batch_size: 256
-evalers['openwebtext_2'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
+evalers['openwebtext_2'].input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
+evalers['openwebtext_2'].input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
 evalers['openwebtext_2'].input.is_training: False
 evalers['openwebtext_2'].input.klass: 'axlearn.common.input_tf_data.Input'
 evalers['openwebtext_2'].input.processor.fn: 'axlearn.common.input_tf_data.identity'
@@ -44,7 +45,8 @@ input.batcher.fn: 'axlearn.common.input_tf_data.per_feed_batch'
 input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'
 input.batcher.prefetch_buffer_size: -1
 input.input_dispatcher.global_logical_batch_size: 256
-input.input_dispatcher.klass: 'axlearn.common.input_dispatch.InputDispatcher'
+input.input_dispatcher.klass: 'axlearn.common.input_dispatch.SpmdInputDispatcher'
+input.input_dispatcher.partition_spec: PartitionSpec(('data', 'expert', 'fsdp'),)
 input.input_partitioner.fn: 'axlearn.common.input_base.partition_by_path_rank'
 input.input_partitioner.path_rank_to_partition[(None, 1)]: PartitionSpec(('data', 'expert', 'fsdp'),)
 input.input_partitioner.path_rank_to_partition[(None, 2)]: PartitionSpec(('data', 'expert', 'fsdp'), 'seq')

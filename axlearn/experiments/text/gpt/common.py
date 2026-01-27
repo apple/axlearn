@@ -56,7 +56,7 @@ from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.flash_attention.layer import FlashAttention
-from axlearn.common.input_dispatch import InputDispatcher
+from axlearn.common.input_dispatch import InputDispatcher, SpmdInputDispatcher
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
 from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE
 from axlearn.common.optimizer_base import PartitionedGradientTransformation
@@ -232,6 +232,7 @@ def model_config(
     eos_token_id: Optional[int] = None,
     ffn_layer_types: Optional[Sequence[Literal["dense", "sparse"]]] = None,
     expert_cfg: TransformerFeedForwardMoE.Config = TransformerFeedForwardMoE.default_config(),
+    moe_ffn_dim: Optional[Union[int, FunctionConfigBase]] = None,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
 
@@ -269,6 +270,7 @@ def model_config(
             Otherwise, `ffn_layer_types` should be one of [dense, sparse].
         expert_cfg: The expert config for the MoE FFN. This is only used if at least one layer
             type is sparse.
+        moe_ffn_dim: The feed-forward dimension for the MoE layers. If None, uses `ffn_dim`.
 
     Returns:
         A causal LM config.
@@ -277,6 +279,8 @@ def model_config(
     # Attention.
     if attention_cfg is not None:
         layer_cfg.self_attention.attention = attention_cfg
+    if moe_ffn_dim is None:
+        moe_ffn_dim = ffn_dim
     layer_cfg.self_attention.attention.causal = True
     layer_cfg.self_attention.attention.num_heads = num_heads
     if attention_qkv_linear is not None:
@@ -309,7 +313,7 @@ def model_config(
         cfg = layer_cfg.clone()
         cfg.feed_forward = expert_cfg
         cfg.feed_forward.activation = activation_fn
-        cfg.feed_forward.hidden_dim = ffn_dim
+        cfg.feed_forward.hidden_dim = moe_ffn_dim
         cfg.feed_forward.structure = ffn_structure
         return cfg
 
@@ -724,12 +728,17 @@ def get_trainer_config_fn(
         cfg.learner = learner_cfg
         cfg.max_step = max_step
         cfg.train_dtype = STEP_DTYPE
+
+        # Configure input dispatcher using SpmdInputDispatcher.
+        train_dispatcher_cfg = SpmdInputDispatcher.default_config().set(
+            global_logical_batch_size=train_batch_size,
+            partition_spec=PartitionSpec(("data", "expert", "fsdp")),
+        )
+
         cfg.input = input_tf_data.Input.default_config().set(
             is_training=True,
             source=train_input_source,
-            input_dispatcher=InputDispatcher.default_config().set(
-                global_logical_batch_size=train_batch_size,
-            ),
+            input_dispatcher=train_dispatcher_cfg,
             processor=config_for_function(input_tf_data.identity),
             batcher=config_for_function(input_tf_data.per_feed_batch).set(
                 prefetch_buffer_size=tf.data.AUTOTUNE,
@@ -747,9 +756,12 @@ def get_trainer_config_fn(
 
         cfg.evalers = {}
         for name, evaler_cfg in evalers.items():
-            evaler_cfg.input.input_dispatcher = InputDispatcher.default_config().set(
-                global_logical_batch_size=eval_batch_size or train_batch_size
+            # Configure eval input dispatcher using SpmdInputDispatcher.
+            eval_dispatcher_cfg = SpmdInputDispatcher.default_config().set(
+                global_logical_batch_size=eval_batch_size or train_batch_size,
+                partition_spec=PartitionSpec(("data", "expert", "fsdp")),
             )
+            evaler_cfg.input.input_dispatcher = eval_dispatcher_cfg
             evaler_cfg.set(
                 eval_policy=config_for_function(eval_every_n_steps_policy).set(
                     n=eval_every_n_steps,

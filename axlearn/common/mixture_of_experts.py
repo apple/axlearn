@@ -1397,7 +1397,7 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         num_experts: Required[int] = REQUIRED
         # Number of groups for dispatching. Typically should be the same as num devices.
         num_groups: Required[int] = REQUIRED
-        # Gating function. Currently only "top2" is supported.
+        # Gating function.
         gating: BaseGating.Config = Top2Gating.default_config()
         # Weight for the load balancing loss. Default to 0.01 as in
         # https://arxiv.org/pdf/2112.06905.

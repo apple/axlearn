@@ -49,7 +49,7 @@ from axlearn.common.config import (
 from axlearn.common.input_lm import lm_text_preprocessor
 from axlearn.common.utils import get_data_dir
 from axlearn.experiments.text.common import DataMixtureComponent, vocab
-from axlearn.experiments.text.gpt import envy, fuji, gspmd  # pytype: disable=pyi-error
+from axlearn.experiments.text.gpt import envy, fuji, gspmd, qwen  # pytype: disable=pyi-error
 from axlearn.experiments.text.gpt.common import (  # pytype: disable=pyi-error
     mixture_train_input_source,
     tfds_input,
@@ -67,6 +67,8 @@ def _vocab_cfg(vocab_size: int):
     if vocab_size == 128256:
         # TikToken.
         return config_for_class(FujiV3Vocabulary).set(filename="Llama-3-tokenizer.json")
+    if vocab_size == qwen.QWEN3_VOCAB_SIZE:
+        return config_for_function(vocab).set(sentencepiece_model_name="spm_qwen3_150k.model")
     raise ValueError(f"Tokenizer with vocab size {vocab_size} does not exist.")
 
 
@@ -113,4 +115,5 @@ def named_trainer_configs() -> dict[str, TrainerConfigFn]:
     config_map.update(fuji.trainer_configs(_train_input_source, _eval_input_sources))
     config_map.update(gspmd.trainer_configs(_train_input_source, _eval_input_sources))
     config_map.update(envy.trainer_configs(_train_input_source, _eval_input_sources))
+    config_map.update(qwen.trainer_configs(_train_input_source, _eval_input_sources))
     return config_map
