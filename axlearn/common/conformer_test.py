@@ -61,7 +61,7 @@ class LConvLayerTest(TestCase):
                 prng_key=jax.random.PRNGKey(100),
                 state=state,
             )
-            self.assertIn("paddings", mock.call_args.kwargs)
+            self.assertIn("segment_ids", mock.call_args.kwargs)
 
 
 class ConformerLayerTest(TestCase):

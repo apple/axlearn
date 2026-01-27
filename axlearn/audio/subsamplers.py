@@ -115,14 +115,14 @@ class ConvSubSampler(BaseLayer):
         x, paddings = self.conv1(inputs, paddings=paddings)
         segment_ids = self.conv1.conv_paddings(segment_ids)
         if cfg.norm:
-            x = self.norm1(x, paddings=paddings)
+            x = self.norm1(x, segment_ids=segment_ids)
         if self._activation[0]:
             x = self._activation[0](x)
 
         x, paddings = self.conv2(x, paddings=paddings)
         segment_ids = self.conv2.conv_paddings(segment_ids)
         if cfg.norm:
-            x = self.norm2(x, paddings=paddings)
+            x = self.norm2(x, segment_ids=segment_ids)
         if self._activation[1]:
             x = self._activation[1](x)
 

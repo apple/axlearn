@@ -7,7 +7,7 @@ from jax import numpy as jnp
 
 from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import REQUIRED, Required, config_class
-from axlearn.common.layers import BaseNormalizationLayer, _compute_mean_square_with_paddings
+from axlearn.common.layers import BaseNormalizationLayer, compute_mean_square_with_segment_ids
 from axlearn.common.utils import Tensor
 
 
@@ -43,12 +43,12 @@ class GroupRMSNorm(BaseNormalizationLayer):
             "scale": ParameterSpec(shape=[cfg.num_groups, cfg.input_dim], mesh_axes=(None, None)),
         }
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
         """Applies group normalization.
 
         Args:
             x: inputs tensor of shape [batch_size, seq_length, num_groups, input_dim]
-            paddings: optional 0/1 tensor of shape [batch_size, seq_length].
+            segment_ids: An int Tensor of shape [batch_size, seq_len].
 
         Returns:
             Tensor of the same shape as x.
@@ -58,15 +58,11 @@ class GroupRMSNorm(BaseNormalizationLayer):
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
         reduction_axis = [x.ndim - 1]
-
-        if paddings is None:
-            msquare = (x * x).mean(axis=reduction_axis, keepdims=True)
-        else:
-            msquare = _compute_mean_square_with_paddings(
-                x=x,
-                paddings=paddings,
-                reduction_axis=reduction_axis,
-            )
+        msquare = compute_mean_square_with_segment_ids(
+            x=x,
+            segment_ids=segment_ids,
+            reduction_axis=reduction_axis,
+        )
         x = x * jax.lax.rsqrt(msquare + cfg.eps)
         x = x * self.parameters["scale"]
         return x.astype(orig_dtype)

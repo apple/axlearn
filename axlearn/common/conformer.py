@@ -138,7 +138,7 @@ class LConvLayer(BaseLayer):
         # doesn't affect results.
         mask = rearrange(segment_ids != 0, "b t -> b t 1")
         x = self.conv(x * mask)
-        x = self.conv_norm(x, paddings=segment_ids == 0)
+        x = self.conv_norm(x, segment_ids=segment_ids)
         x = get_activation_fn(cfg.conv_activation)(x)
         x = self.linear2(x)
         x = self.dropout(x)

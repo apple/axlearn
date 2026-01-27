@@ -56,7 +56,8 @@ from axlearn.common.layers import (
     StochasticDepth,
     UnitNormLinear,
     VariationalNoise,
-    _compute_moments_with_paddings,
+    _compute_moments_with_segment_ids,
+    compute_mean_square_with_segment_ids,
     get_activation_fn,
     get_stochastic_depth_linear_rate,
     set_bias_recursively,
@@ -70,7 +71,7 @@ from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import ConstantInitializer, FanAxes
 from axlearn.common.test_utils import TestCase, assert_allclose, assert_not_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.utils import as_tensor, flatten_items, safe_not, shapes
+from axlearn.common.utils import as_tensor, flatten_items, shapes
 
 
 def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
@@ -179,21 +180,21 @@ class LayerTest(TestCase):
     @parameterized.parameters(
         [
             dict(inputs_shape=[2, 3, 6]),
-            dict(inputs_shape=[2, 3, 9], paddings=jnp.array([[0, 1, 1], [0, 0, 0]], jnp.bool)),
+            dict(inputs_shape=[2, 3, 9], segment_ids=jnp.array([[1, 0, 0], [1, 1, 1]], jnp.int32)),
             dict(
                 inputs_shape=[3, 3, 4, 12],
-                paddings=jnp.array([[1, 1, 1], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                segment_ids=jnp.array([[0, 0, 0], [1, 1, 0], [1, 0, 0]], jnp.int32),
             ),
             dict(inputs_shape=[2, 3, 6], scale_params=jnp.array([0, 0, 1, 1, 2, 2])),
             dict(
                 inputs_shape=[2, 3, 4],
-                paddings=jnp.array([[0, 1, 1], [0, 0, 0]], jnp.bool),
+                segment_ids=jnp.array([[1, 0, 0], [1, 1, 1]], jnp.int32),
                 num_groups=2,
                 scale_params=jnp.array([1, 1, 5, 5]),
             ),
             dict(
                 inputs_shape=[3, 3, 7, 4],
-                paddings=jnp.array([[1, 1, 1], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                segment_ids=jnp.array([[0, 0, 0], [1, 1, 0], [1, 0, 0]], jnp.int32),
                 num_groups=2,
                 scale_params=jnp.array([2, 2, 3, 3]),
             ),
@@ -230,28 +231,28 @@ class LayerTest(TestCase):
             ),
             dict(
                 inputs_shape=[3, 3, 16],
-                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                segment_ids=jnp.array([[1, 1, 1], [1, 1, 0], [1, 0, 0]], jnp.int32),
                 num_groups=2,
                 norm_type=NormType.RMSNORM,
                 norm_axes=[1, -1],
             ),
             dict(
                 inputs_shape=[3, 3, 4, 16],
-                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                segment_ids=jnp.array([[1, 1, 1], [1, 1, 0], [1, 0, 0]], jnp.int32),
                 num_groups=2,
                 norm_type=NormType.RMSNORM,
                 norm_axes=[1, 2, -1],
             ),
             dict(
                 inputs_shape=[3, 3, 16],
-                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                segment_ids=jnp.array([[1, 1, 1], [1, 1, 0], [1, 0, 0]], jnp.int32),
                 num_groups=2,
                 norm_type=NormType.RMSNORM,
                 norm_axes=[-1],
             ),
             dict(
                 inputs_shape=[3, 3, 4, 16],
-                paddings=jnp.array([[0, 0, 0], [0, 0, 1], [0, 1, 1]], jnp.bool),
+                segment_ids=jnp.array([[1, 1, 1], [1, 1, 0], [1, 0, 0]], jnp.int32),
                 num_groups=2,
                 norm_type=NormType.RMSNORM,
                 norm_axes=[-1],
@@ -263,7 +264,7 @@ class LayerTest(TestCase):
         self,
         inputs_shape,
         *,
-        paddings=None,
+        segment_ids=None,
         num_groups=3,
         scale_params=None,
         norm_type=NormType.LAYERNORM,
@@ -295,7 +296,7 @@ class LayerTest(TestCase):
 
         outputs, _ = F(
             layer,
-            inputs=dict(x=inputs, paddings=paddings),
+            inputs=dict(x=inputs, segment_ids=segment_ids),
             is_training=True,
             state=layer_params,
             prng_key=prng_key,
@@ -313,28 +314,28 @@ class LayerTest(TestCase):
         if norm_type == NormType.LAYERNORM:
             self.assertEqual(dict(scale=(dim,), bias=(dim,)), shapes(layer_params))
 
-            if paddings is None:
+            if segment_ids is None:
                 output_mean = outputs_by_group.mean(axis=reduction_axis, keepdims=True)
                 output_var = ((outputs_by_group - output_mean) ** 2).mean(
                     axis=reduction_axis, keepdims=True
                 )
             else:
-                expanded_paddings = (
-                    paddings[:, :, None, None]
+                expanded_mask = (
+                    (segment_ids != 0)[:, :, None, None]
                     if len(outputs_by_group.shape) == 4
-                    else paddings[:, :, None, None, None]
+                    else (segment_ids != 0)[:, :, None, None, None]
                 )
                 output_sum = jnp.sum(
-                    outputs_by_group * (1 - expanded_paddings), axis=reduction_axis, keepdims=True
+                    outputs_by_group * expanded_mask, axis=reduction_axis, keepdims=True
                 )
                 output_count = jnp.sum(
-                    jnp.ones_like(outputs_by_group) * (1 - expanded_paddings),
+                    jnp.ones_like(outputs_by_group) * expanded_mask,
                     axis=reduction_axis,
                     keepdims=True,
                 )
                 output_mean = output_sum / jnp.maximum(output_count, 1.0)
                 output_var = jnp.sum(
-                    (outputs_by_group * (1 - expanded_paddings) - output_mean) ** 2,
+                    (outputs_by_group * expanded_mask - output_mean) ** 2,
                     axis=reduction_axis,
                     keepdims=True,
                 ) / jnp.maximum(output_count, 1.0)
@@ -358,10 +359,8 @@ class LayerTest(TestCase):
                 else:
                     expected_var = jnp.expand_dims(expected_var, axis=(1, 2, 4))
 
-            if paddings is not None:
-                expected_var = expected_var * (
-                    jnp.sum(1 - expanded_paddings, axis=1, keepdims=True) > 0
-                )
+            if segment_ids is not None:
+                expected_var = expected_var * (jnp.sum(expanded_mask, axis=1, keepdims=True) > 0)
                 assert_allclose(output_var - expected_var, 0, atol=1e-5, rtol=1e-5)
         else:
             self.assertEqual(
@@ -370,22 +369,25 @@ class LayerTest(TestCase):
                 ),
                 shapes(layer_params),
             )
-            if paddings is None:
+            if segment_ids is None:
                 output_msquare = jnp.mean(outputs_by_group**2, axis=reduction_axis, keepdims=True)
                 output_norm = jnp.sqrt(
                     (outputs_by_group**2).sum(axis=reduction_axis, keepdims=True)
                 )
 
             else:
-                expanded_paddings = (
-                    paddings[:, :, None, None]
+                expanded_mask = (
+                    (segment_ids != 0)[:, :, None, None]
                     if len(outputs_by_group.shape) == 4
-                    else paddings[:, :, None, None, None]
+                    else (segment_ids != 0)[:, :, None, None, None]
                 )
-                mask = 1 - expanded_paddings
-                square_sum = jnp.sum(outputs_by_group**2 * mask, axis=reduction_axis, keepdims=True)
+                square_sum = jnp.sum(
+                    outputs_by_group**2 * expanded_mask, axis=reduction_axis, keepdims=True
+                )
                 square_count = jnp.sum(
-                    jnp.ones_like(outputs_by_group) * mask, axis=reduction_axis, keepdims=True
+                    jnp.ones_like(outputs_by_group) * expanded_mask,
+                    axis=reduction_axis,
+                    keepdims=True,
                 )
                 output_msquare = square_sum / jnp.maximum(square_count, 1.0)
 
@@ -411,10 +413,10 @@ class LayerTest(TestCase):
         x = jax.random.normal(key=k1, shape=input_shape) * 10 + 2
         lengths = jax.random.randint(key=k2, shape=(batch_size - 1,), minval=0, maxval=seq_len)
         lengths = jnp.append(lengths, 0)
-        paddings = jnp.arange(seq_len)[None, :] >= lengths[:, None]
-        mean, variance = _compute_moments_with_paddings(
+        segment_ids = (jnp.arange(seq_len)[None, :] < lengths[:, None]).astype(jnp.int32)
+        mean, variance = _compute_moments_with_segment_ids(
             x=x,
-            paddings=paddings,
+            segment_ids=segment_ids,
             reduction_axis=reduction_axis,
             keepdims=True,
         )
@@ -449,6 +451,29 @@ class LayerTest(TestCase):
 
         assert_allclose(jnp.squeeze(mean, axis=reduction_axis), expected_mean)
         assert_allclose(jnp.squeeze(variance, axis=reduction_axis), expected_var)
+
+    def test_compute_moments_and_mean_square_with_segment_ids_none(self):
+        """Tests _compute_moments_with_segment_ids and compute_mean_square_with_segment_ids
+        when segment_ids is None."""
+        input_shape = (2, 10, 4, 3, 2)
+        reduction_axis = (1, 2, -1)
+        x = jax.random.normal(key=jax.random.PRNGKey(721), shape=input_shape) * 10 + 2
+
+        # Test _compute_moments_with_segment_ids with segment_ids=None.
+        mean, variance = _compute_moments_with_segment_ids(
+            x=x, segment_ids=None, reduction_axis=list(reduction_axis), keepdims=True
+        )
+        expected_mean = jnp.mean(x, axis=reduction_axis, keepdims=True)
+        expected_var = jnp.mean((x - expected_mean) ** 2, axis=reduction_axis, keepdims=True)
+        assert_allclose(mean, expected_mean)
+        assert_allclose(variance, expected_var)
+
+        # Test compute_mean_square_with_segment_ids with segment_ids=None.
+        msquare = compute_mean_square_with_segment_ids(
+            x=x, segment_ids=None, reduction_axis=list(reduction_axis)
+        )
+        expected_msquare = (x * x).mean(axis=reduction_axis, keepdims=True)
+        assert_allclose(msquare, expected_msquare)
 
     def test_layer_norm_against_torch(self):
         dim = 6
@@ -615,15 +640,15 @@ class LayerTest(TestCase):
 
     @parameterized.parameters(
         [
-            dict(inputs_shape=[2, 3, 6], paddings=None),
+            dict(inputs_shape=[2, 3, 6], segment_ids=None),
             dict(
                 inputs_shape=[2, 5, 6],
-                paddings=jnp.array([[0, 0, 0, 0, 1], [0, 0, 1, 1, 1]], jnp.bool),
+                segment_ids=jnp.array([[1, 1, 1, 1, 0], [1, 1, 0, 0, 0]], jnp.int32),
             ),
-            dict(inputs_shape=[2, 3, 6], paddings=jnp.array([[1, 1, 1], [1, 1, 1]], jnp.bool)),
+            dict(inputs_shape=[2, 3, 6], segment_ids=jnp.array([[0, 0, 0], [0, 0, 0]], jnp.int32)),
         ]
     )
-    def test_batch_norm(self, inputs_shape, paddings):
+    def test_batch_norm(self, inputs_shape, segment_ids):
         dim = inputs_shape[-1]
         cfg = BatchNorm.default_config().set(name="norm", input_dim=dim)
         layer: BatchNorm = cfg.instantiate(parent=None)
@@ -645,34 +670,28 @@ class LayerTest(TestCase):
         for is_training in (True, False):
             outputs, output_collection = F(
                 layer,
-                inputs=dict(x=inputs, paddings=paddings),
+                inputs=dict(x=inputs, segment_ids=segment_ids),
                 is_training=is_training,
                 state=layer_params,
                 prng_key=prng_key,
             )
             param_updates = output_collection.state_updates
             if is_training:
-                if paddings is None:
-                    # The output mean should be close to 0.
-                    output_mean = jnp.mean(outputs, axis=(0, 1), keepdims=True)
-                    # The output variance should be close to 1.
-                    output_var = jnp.mean((outputs - output_mean) ** 2, axis=(0, 1))
-                else:
-                    output_mean, output_var = _compute_moments_with_paddings(
-                        x=outputs, paddings=paddings, reduction_axis=[0, 1]
-                    )
+                output_mean, output_var = _compute_moments_with_segment_ids(
+                    x=outputs, segment_ids=segment_ids, reduction_axis=[0, 1]
+                )
 
                 assert_allclose(output_mean, np.zeros_like(output_mean))
                 expected_var = np.ones_like(output_var)
-                if paddings is not None:
+                if segment_ids is not None:
                     # var is 0 if there is no valid frame in the batch.
-                    expected_var *= jnp.sum(safe_not(paddings)) > 0
+                    expected_var *= jnp.sum(segment_ids != 0) > 0
                 assert_allclose(output_var, expected_var)
                 # Check parameter updates.
                 self.assertCountEqual(["moving_mean", "moving_variance"], param_updates.keys())
                 self.assertEqual((dim,), param_updates["moving_mean"].shape)
                 self.assertEqual((dim,), param_updates["moving_variance"].shape)
-                if paddings is None or jnp.sum(safe_not(paddings)) > 0:
+                if segment_ids is None or jnp.sum(segment_ids != 0) > 0:
                     self.assertNotAlmostEqual(
                         jnp.abs(param_updates["moving_mean"] - layer_params["moving_mean"]).max(),
                         0,

@@ -293,12 +293,12 @@ class BaseNormalizationLayer(BaseLayer):
         # Input feature dim.
         input_dim: Required[int] = REQUIRED
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
         """Applies the normalization to inputs.
 
         Args:
             x: tensor of shape [batch_size, ...].
-            paddings: optional 0/1 tensor of shape [batch_size, seq_len] for sequence paddings.
+            segment_ids: An int Tensor of shape [batch_size, seq_len].
 
         Returns:
             Normalized tensor of the same shape as x.
@@ -321,8 +321,8 @@ class LayerNormStateless(BaseNormalizationLayer):
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
-        del paddings  # paddings do not affect LayerNorm results
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
+        del segment_ids  # segment_ids do not affect LayerNorm results
         cfg = self.config
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
@@ -345,8 +345,8 @@ class LayerNorm(LayerNormStateless):
             "bias": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
         }
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
-        x = super().forward(x, paddings=paddings)
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
+        x = super().forward(x, segment_ids=segment_ids)
         x = x * self.parameters["scale"] + self.parameters["bias"]
         return x
 
@@ -394,8 +394,8 @@ class RMSNormStateless(BaseNormalizationLayer):
         x = x.astype(x_dtype)
         return x
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
-        del paddings  # paddings do not affect LayerNorm results
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
+        del segment_ids  # segment_ids do not affect LayerNorm results
         cfg = self.config
         x = self._forward(x)
         x = maybe_shard(x, cfg.output_partition_spec)
@@ -411,8 +411,8 @@ class RMSNorm(RMSNormStateless):
             "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
         }
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
-        del paddings  # paddings do not affect LayerNorm results
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
+        del segment_ids  # segment_ids do not affect LayerNorm results
         cfg = self.config
         x = self._forward(x) * self.parameters["scale"]
         x = maybe_shard(x, cfg.output_partition_spec)
@@ -446,10 +446,10 @@ class L2Norm(BaseLayer):
         return x
 
 
-def _compute_moments_with_paddings(
+def _compute_moments_with_segment_ids(
     x: Tensor,
     *,
-    paddings: Tensor,
+    segment_ids: Optional[Tensor],
     reduction_axis: Sequence[int],
     keepdims: bool = False,
 ) -> tuple[Tensor, Tensor]:
@@ -457,7 +457,8 @@ def _compute_moments_with_paddings(
 
     Args:
         x: inputs tensor of shape [batch_size, seq_len, ...].
-        paddings: 0/1 tensor of shape [batch_size, seq_len].
+        segment_ids: An int Tensor of shape [batch_size, seq_len]. Positions with segment_ids == 0
+            are treated as padding and excluded from the computation.
         reduction_axis: a list of axes to compute moments over.
         keepdims: If this is set to True, the reduced axes are left
             in the result as singleton dimensions.
@@ -466,39 +467,48 @@ def _compute_moments_with_paddings(
         (mean, variance), with the same shape as `x` except for axes specified in `reduction_axis`,
             which will have dim of 1.
     """
-    expanded_paddings = jnp.expand_dims(paddings, axis=tuple(range(2, x.ndim)))
-    mask = 1 - expanded_paddings
-    sum_x = jnp.sum(x * mask, axis=reduction_axis, keepdims=keepdims)
-    count_x = jnp.sum(jnp.ones_like(x) * mask, axis=reduction_axis, keepdims=keepdims)
+    if segment_ids is None:
+        mean = jnp.mean(x, axis=reduction_axis, keepdims=keepdims)
+        variance = jnp.mean(
+            (x - jnp.mean(x, axis=reduction_axis, keepdims=True)) ** 2,
+            axis=reduction_axis,
+            keepdims=keepdims,
+        )
+        return mean, variance
+    expanded_mask = jnp.expand_dims(segment_ids != 0, axis=tuple(range(2, x.ndim)))
+    sum_x = jnp.sum(x * expanded_mask, axis=reduction_axis, keepdims=keepdims)
+    count_x = jnp.sum(jnp.ones_like(x) * expanded_mask, axis=reduction_axis, keepdims=keepdims)
     denom_x = jnp.maximum(count_x, 1.0)
     mean = sum_x / denom_x
-    sum_x2 = jnp.sum((x - mean) ** 2 * mask, axis=reduction_axis, keepdims=keepdims)
+    sum_x2 = jnp.sum((x - mean) ** 2 * expanded_mask, axis=reduction_axis, keepdims=keepdims)
     variance = sum_x2 / denom_x
     return mean, variance
 
 
-def _compute_mean_square_with_paddings(
+def compute_mean_square_with_segment_ids(
     x: Tensor,
     *,
-    paddings: Tensor,
+    segment_ids: Optional[Tensor],
     reduction_axis: Sequence[int],
 ) -> Tensor:
     """Computes root mean square moments over sequence data.
 
     Args:
         x: inputs tensor of shape [batch_size, seq_len, ...].
-        paddings: 0/1 tensor of shape [batch_size, seq_len].
+        segment_ids: An int Tensor of shape [batch_size, seq_len]. Positions with segment_ids == 0
+            are treated as padding and excluded from the computation.
         reduction_axis: a list of axes to compute moments over.
 
     Returns:
         mean_square: with the same shape as `x` except for axes specified in `reduction_axis`,
             which will have dim of 1.
     """
-    expanded_paddings = jnp.expand_dims(paddings, axis=tuple(range(2, x.ndim)))
-    mask = 1 - expanded_paddings
-    sum_x2 = jnp.sum((x * x) * mask, axis=reduction_axis, keepdims=True)
-    count_x2 = jnp.sum(jnp.ones_like(x) * mask, axis=reduction_axis, keepdims=True)
-    # If all elements of `padding` are 1 (i.e., jnp.all(padding == 1)), mean_square will be 0.
+    if segment_ids is None:
+        return (x * x).mean(axis=reduction_axis, keepdims=True)
+    expanded_mask = jnp.expand_dims(segment_ids != 0, axis=tuple(range(2, x.ndim)))
+    sum_x2 = jnp.sum((x * x) * expanded_mask, axis=reduction_axis, keepdims=True)
+    count_x2 = jnp.sum(jnp.ones_like(x) * expanded_mask, axis=reduction_axis, keepdims=True)
+    # If all elements have segment_ids == 0 (i.e., all padding), mean_square will be 0.
     # However, the computation remains stable due to max(1, count).
     mean_square = sum_x2 / jnp.maximum(count_x2, 1.0)
     return mean_square
@@ -569,14 +579,13 @@ class GroupNorm(BaseNormalizationLayer):
                 "scale": ParameterSpec(shape=[cfg.input_dim], mesh_axes=(None,)),
             }
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
         """Applies group normalization.
 
         Args:
             x: inputs tensor of shape [batch_size, height, width, channel] if x.ndim = 4,
                 else [batch_size, height, channel].
-            paddings: optional 0/1 tensor of shape [batch_size, height]. Useful for sequence
-                data where `height` is `time`.
+            segment_ids: An optional int Tensor of shape [batch_size, seq_len].
 
         Returns:
             Tensor of the same shape as x.
@@ -617,30 +626,22 @@ class GroupNorm(BaseNormalizationLayer):
             reduction_axis.append(y.ndim - 1)
 
         if cfg.norm_type == NormType.LAYERNORM:
-            if paddings is None:
-                mean = jnp.mean(y, axis=reduction_axis, keepdims=True)
-                variance = jnp.mean((y - mean) ** 2, axis=reduction_axis, keepdims=True)
-            else:
-                mean, variance = _compute_moments_with_paddings(
-                    x=y,
-                    paddings=paddings,
-                    reduction_axis=reduction_axis,
-                    keepdims=True,
-                )
-
+            mean, variance = _compute_moments_with_segment_ids(
+                x=y,
+                segment_ids=segment_ids,
+                reduction_axis=reduction_axis,
+                keepdims=True,
+            )
             y = (y - mean) * jax.lax.rsqrt(variance + cfg.eps)
             x = jnp.reshape(y, x.shape)
             x = x.astype(x_dtype)
             x = x * self.parameters["scale"] + self.parameters["bias"]
         else:
-            if paddings is None:
-                msquare = (y * y).mean(axis=reduction_axis, keepdims=True)
-            else:
-                msquare = _compute_mean_square_with_paddings(
-                    x=y,
-                    paddings=paddings,
-                    reduction_axis=reduction_axis,
-                )
+            msquare = compute_mean_square_with_segment_ids(
+                x=y,
+                segment_ids=segment_ids,
+                reduction_axis=reduction_axis,
+            )
             y = y * jax.lax.rsqrt(msquare + cfg.eps)
             x = jnp.reshape(y, x.shape)
             x = x.astype(x_dtype)
@@ -683,20 +684,19 @@ class BatchNorm(BaseNormalizationLayer):
             ),
         }
 
-    def forward(self, x: Tensor, *, paddings: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, *, segment_ids: Optional[Tensor] = None) -> Tensor:
         cfg = self.config
         x_dtype = x.dtype
         if cfg.forward_dtype is not None:
             x = x.astype(cfg.forward_dtype)
         reduction_axis = tuple(range(x.ndim - 1))
         if self.is_training:
-            if paddings is None:
-                mean = jnp.mean(x, axis=reduction_axis, keepdims=False)
-                variance = jnp.mean((x - mean) ** 2, axis=reduction_axis, keepdims=False)
-            else:
-                mean, variance = _compute_moments_with_paddings(
-                    x=x, paddings=paddings, reduction_axis=list(reduction_axis), keepdims=False
-                )
+            mean, variance = _compute_moments_with_segment_ids(
+                x=x,
+                segment_ids=segment_ids,
+                reduction_axis=list(reduction_axis),
+                keepdims=False,
+            )
             self.add_state_update(
                 "moving_mean",
                 cfg.decay * self.parameters["moving_mean"] + (1 - cfg.decay) * mean,
