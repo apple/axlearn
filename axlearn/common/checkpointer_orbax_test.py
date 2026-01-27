@@ -18,7 +18,7 @@ from jax.experimental import mesh_utils
 
 from axlearn.common import test_utils
 from axlearn.common.checkpointer import read_index_file
-from axlearn.common.checkpointer_orbax import OrbaxCheckpointer
+from axlearn.common.checkpointer_orbax import OrbaxCheckpointer, _CheckpointManagerWithTrackerFile
 
 
 def _mesh(mesh_shape: Sequence[int]):
@@ -52,3 +52,29 @@ class OrbaxCheckpointerTest(test_utils.TestCase):
                 ),
             )
             self.assertEqual(ref_index, test_index["index"])
+
+    def test_checkpoint_manager_with_tracker_file(self):
+        """Test CheckpointManagerWithTrackerFile"""
+        n = 5
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = _CheckpointManagerWithTrackerFile(
+                directory=temp_dir,
+                options=ocp.CheckpointManagerOptions(
+                    enable_async_checkpointing=True,
+                ),
+            )
+            for step in range(1, n + 1):
+                manager.save(
+                    step,
+                    args=ocp.args.Composite(
+                        state=ocp.args.PyTreeSave(item={"x": jnp.ones([3, 2]) * step}),
+                    ),
+                )
+                manager.wait_until_finished()
+
+            # a new one is created, assuming the job is restarted
+            manager = _CheckpointManagerWithTrackerFile(directory=temp_dir)
+
+            assert manager.latest_step() == n
+            assert manager.all_steps() == [n]
