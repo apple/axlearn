@@ -374,7 +374,7 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
             env_vars=data.get("env_vars", None),
             metadata=JobMetadata(**data["metadata"]),
         )
-    raise ValidationError(f"Unsupported version: {data['version']}")
+    raise ValidationError(f"Unsupported version: {data["version"]}")
 
 
 # TODO(clopeznataren): Refactor into JobValidator
@@ -1271,7 +1271,7 @@ class Bastion(Configurable):
                         reason.append(f"topology from {old_topology} to {new_topology}")
                     self._append_to_job_history(
                         job,
-                        msg=f"Rescheduling due to changed {' and '.join(reason)}",
+                        msg=f"Rescheduling due to changed {" and ".join(reason)}",
                         state=JobLifecycleState.RESCHEDULING,
                     )
                     logging.info("Rescheduling %s due to %s", job.spec.name, reason)

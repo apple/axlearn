@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests dataflow launch."""
+# pytype: disable=name-error
 
 import contextlib
 from typing import Optional, Type, cast
@@ -83,15 +84,15 @@ class DataflowJobTest(TestWithTemporaryCWD):
                 dataflow_spec["service_account_email"],
             )
             self.assertEqual(
-                f"{settings['docker_repo']}/test_image:test_name",
+                f"{settings["docker_repo"]}/test_image:test_name",
                 dataflow_spec["sdk_container_image"],
             )
             self.assertEqual(
-                f"gs://{settings['ttl_bucket']}/tmp/test_name/",
+                f"gs://{settings["ttl_bucket"]}/tmp/test_name/",
                 dataflow_spec["temp_location"],
             )
             self.assertEqual(
-                f"https://www.googleapis.com/compute/v1/{settings['subnetwork']}",
+                f"https://www.googleapis.com/compute/v1/{settings["subnetwork"]}",
                 dataflow_spec["subnetwork"],
             )
 

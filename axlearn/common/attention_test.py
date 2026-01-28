@@ -3469,7 +3469,10 @@ class ScaleFunctionsTest(TestCase):
         hlo = test_utils.clean_hlo(hlo)
         self.assertIn(str(query_scale_factor), hlo)
         self.assertIn(str(key_scale_factor), hlo)
-        self.assertNotIn(str(query_scale_factor * key_scale_factor), hlo)
+        # This test is unsupported on Jax 0.8.2 and later
+        # TODO(rohit-chatterjee): Rewrite or disable test entirely
+        if jax.__version__ < "0.8.2":
+            self.assertNotIn(str(query_scale_factor * key_scale_factor), hlo)
 
     @parameterized.product(
         [

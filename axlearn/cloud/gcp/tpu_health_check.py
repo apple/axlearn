@@ -120,7 +120,7 @@ def _run_health_check_program(
         error_type = "unknown"
     timestamp = datetime.now().strftime("%m%d%H%M%S")
     fname = (
-        f"{timestamp}-slice-{slice_id_str}-{os.environ['HOSTNAME']}-{os.environ['NODE_NAME']}.txt"
+        f"{timestamp}-slice-{slice_id_str}-{os.environ["HOSTNAME"]}-{os.environ["NODE_NAME"]}.txt"
     )
     with fs_open(os.path.join(output_dir, fname), "w") as f:
         f.write(error_type)
@@ -228,7 +228,7 @@ def global_health_check(check_spec: str, *, output_dir: str):
     th.start()
     th.join(timeout=timeout)
     timestamp = datetime.now().strftime("%m%d%H%M%S")
-    fname = f"{timestamp}-global-{os.environ['HOSTNAME']}-{os.environ['NODE_NAME']}.txt"
+    fname = f"{timestamp}-global-{os.environ["HOSTNAME"]}-{os.environ["NODE_NAME"]}.txt"
     if th.is_alive():
         # Join timed out.
         logging.error("Multi-slice (global) health check failed due to timeout!")

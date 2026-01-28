@@ -10,6 +10,7 @@
 # https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/blob/main/tpu_info/tpu_info/metrics_test.py
 
 """Test for tpu_client."""
+# pytype: disable=pyi-error
 import contextlib
 import functools
 import http.server

@@ -31,13 +31,14 @@ from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     FusedGroupedQKVLinear,
     GroupedQueryAttention,
+    RematRegexSavePatterns,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
     TransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
-from axlearn.common.config import TrainerConfigFn
+from axlearn.common.config import TrainerConfigFn, config_for_function
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import RMSNorm
 from axlearn.common.mixture_of_experts import TransformerFeedForwardMoE, get_outer_batch_from_mesh
@@ -48,7 +49,12 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
+from axlearn.common.utils import (
+    HybridMeshShape,
+    MeshShape,
+    PartitionSpec,
+    save_and_offload_only_these_names_regex,
+)
 from axlearn.experiments.text.gpt.common import (
     MESH_AXIS_NAMES,
     SourceBuilder,
@@ -65,6 +71,7 @@ from axlearn.experiments.text.gpt.common import (
     scaled_hidden_dim,
 )
 from axlearn.experiments.text.gpt.fuji import offload_attention_proj_policy
+from axlearn.experiments.trainer_config_utils import V7xFlashConfigModifier
 
 MODEL_SIZES = ("test", "Switch-Base", "Switch-Large", "Switch-XXL")
 
@@ -209,6 +216,37 @@ def get_trainer_kwargs(
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
                                         policy=offload_attention_proj_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-7x-256",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, expert=16, fsdp=16)
+                            ),
+                            # Ensure we set the default tpu_block_size=2048 on TPU 7x
+                            V7xFlashConfigModifier.default_config(),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded="|".join(
+                                                [
+                                                    RematRegexSavePatterns.INPUT.value,
+                                                ]
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),

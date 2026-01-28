@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Test class for tpu_device_mon.py."""
+# pytype: disable=pyi-error
 import time
 
 from absl.testing import parameterized

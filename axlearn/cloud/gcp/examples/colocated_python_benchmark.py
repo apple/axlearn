@@ -343,7 +343,7 @@ def main():
     print("--- Running colocated benchmark ---")
     # Extract profile dir from ckpt_path. The profile dir should be gs://bucket/profiles/
     hostname = os.uname().nodename
-    profile_dir = f"{args.ckpt_path.split('/checkpoints')[0]}/profiles/{hostname}/colocated-test/"
+    profile_dir = f"{args.ckpt_path.split("/checkpoints")[0]}/profiles/{hostname}/colocated-test/"
     jax.profiler.start_trace(log_dir=profile_dir)
     start_colocated_time = time.perf_counter()
     loaded_values_colocated = load_model_colocated(ckpt_path=args.ckpt_path)

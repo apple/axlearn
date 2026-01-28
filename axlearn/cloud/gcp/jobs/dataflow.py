@@ -220,7 +220,7 @@ class DataflowJob(GCPJob):
             "region": cfg.zone.rsplit("-", 1)[0],
             "worker_machine_type": cfg.vm_type,
             "sdk_container_image": f"{cfg.bundler.repo}/{cfg.bundler.image}:{cfg.name}",
-            "temp_location": f"gs://{gcp_settings('ttl_bucket', fv=fv)}/tmp/{cfg.name}/",
+            "temp_location": f"gs://{gcp_settings("ttl_bucket", fv=fv)}/tmp/{cfg.name}/",
             "service_account_email": cfg.service_account,
             "dataflow_service_options": ["enable_secure_boot", "enable_google_cloud_heap_sampling"],
             "experiments": ["use_network_tags=allow-internet-egress", "use_runner_v2"],

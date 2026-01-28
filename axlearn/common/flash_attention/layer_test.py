@@ -697,9 +697,29 @@ class TestFlashAttention(TestCase):
             elif attn_type == "custom":
                 kwargs["mask"] = MaskFnAttentionBias.default_config(mask=jax_fn_mask(5))
 
+            # Function to determine whether we want to use a smaller gpu_block_size.
+            # Using a non-default gpu_block_size may be required when any of the following are true:
+            # 1. We are using NVIDIA B200, which require gpu_block_size=64.
+            # 2. q_seq_len or k_seq_len cannot be evenly divided by gpu_block_size.
+            # Falling back to non-CuDNN or non-Pallas kernels fails on Jax > 0.6.2.
+            def use_smaller_gpu_block(k_seq_len: int, q_seq_len: int) -> bool:
+                if (
+                    jax.default_backend() == "gpu"
+                    and "NVIDIA B200" in jax.devices("gpu")[0].device_kind
+                ):
+                    return True
+                # Ensure k_seq_len and q_seq_len are divisble by gpu_block_size
+                elif k_seq_len % 128 != 0 or q_seq_len % 128 != 0:
+                    return True
+                # Otherwise return false and use the default value (128)
+                return False
+
             ref_layer_cfg = GroupedQueryAttention.default_config().set(**kwargs)
             test_layer_cfg = FlashAttention.default_config().set(
                 tpu_block_size=128,
+                gpu_block_size=(
+                    64 if use_smaller_gpu_block(seq_len, seq_len * query_len_multiplier) else 128
+                ),
                 mha_dim_to_partition_spec=default_mha_dim_to_partition_spec(mesh_axis_names),
                 output_dim_to_partition_spec=default_output_dim_to_partition_spec(mesh_axis_names),
                 **kwargs,

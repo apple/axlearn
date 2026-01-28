@@ -153,7 +153,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             except FileNotFoundError as e:
                 limits = get_resource_limits(quota_file(flag_values))
                 raise FileNotFoundError(
-                    f"Available projects are {list(limits.project_resources.keys()) + ['none']}"
+                    f"Available projects are {list(limits.project_resources.keys()) + ["none"]}"
                 ) from e
         print(history)
     else:

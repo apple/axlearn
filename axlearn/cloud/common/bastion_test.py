@@ -3,7 +3,7 @@
 """Tests bastion orchestrator."""
 
 # pylint: disable=no-self-use,protected-access
-# pytype: disable=wrong-arg-types
+# pytype: disable=wrong-arg-types,pyi-error
 import contextlib
 import copy
 import io

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
-ARG BASE_IMAGE=ubuntu:22.04
-ARG BASE_IMAGE_COLOCATED=us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/sidecar:2025_10_29-python_3.10-jax_0.6.2
+ARG BASE_IMAGE=ubuntu:24.04
+ARG BASE_IMAGE_COLOCATED=us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/sidecar:2026_01_27-python3.12-jax_0.8.2
 
 FROM ${BASE_IMAGE} AS base
 
@@ -19,7 +19,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y -qq && \
     apt-get install -y -qq apt-transport-https ca-certificates gcc g++ \
-    git screen ca-certificates google-perftools google-cloud-cli python3.10-venv python3.10-dev && \
+    git screen ca-certificates google-perftools google-cloud-cli python3.12-venv && \
     apt clean -y -qq
 
 # Setup.
@@ -29,7 +29,7 @@ WORKDIR /root
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv $VIRTUAL_ENV
+RUN python3.12 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install -qq --upgrade pip && \
@@ -82,7 +82,7 @@ COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
 # See: https://cloud.google.com/dataflow/docs/guides/build-container-image#use_a_custom_base_image
-COPY --from=apache/beam_python3.10_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
+COPY --from=apache/beam_python3.12_sdk:2.69.0 /opt/apache/beam /opt/apache/beam
 ENTRYPOINT ["/opt/apache/beam/boot"]
 
 ################################################################################
@@ -92,20 +92,12 @@ ENTRYPOINT ["/opt/apache/beam/boot"]
 FROM base AS tpu
 
 ARG EXTRAS=
-# Install a custom jaxlib that includes backport of Pathways shared memory feature.
-# PR: https://github.com/openxla/xla/pull/31417
-# Needed until Jax is upgraded to 0.8.0 or newer.
-ARG INSTALL_PATHWAYS_JAXLIB=false
 
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 COPY pyproject.toml README.md /root/
 RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
-RUN if [ "$INSTALL_PATHWAYS_JAXLIB" = "true" ]; then \
-      uv pip install --prerelease=allow "jaxlib==0.6.2.dev20251021" \
-        --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html; \
-    fi
 COPY . .
 
 ################################################################################
@@ -142,9 +134,23 @@ RUN \
 
 FROM base AS gpu
 
-# TODO(markblee): Support extras.
 # Enable the CUDA repository and install the required libraries (libnvrtc.so)
-RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
+RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && \
+    apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
+    apt clean -y
+COPY pyproject.toml README.md /root/
+RUN uv pip install -qq .[core,gpu] && uv cache clean
+COPY . .
+
+################################################################################
+# GPU (ARM) container spec.                                                    #
+################################################################################
+
+FROM base AS gpu-arm
+
+# Enable the CUDA repository and install the required libraries (libnvrtc.so)
+RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y

@@ -11,7 +11,7 @@ Tested on H100 with Jax == 0.5.1:
 
 """
 
-
+# pytype: disable=pyi-error
 import functools
 
 import jax
@@ -333,8 +333,8 @@ def bench_bwd(benchmark_perfect_tiling, baseline_fn=gmm_lax_scan):
 def print_report(results):
     print("\nSummary Report:")
     print(
-        f"{'(m, k, n, tm, tk, tn, num_groups)':<45} {'test_dtype':<15} {'time_taken(ms)':<15} "
-        f"{'baseline(ms)':<15} {'X times faster (baseline/time_taken)':<15}"
+        f"{"(m, k, n, tm, tk, tn, num_groups)":<45} {"test_dtype":<15} {"time_taken(ms)":<15} "
+        f"{"baseline(ms)":<15} {"X times faster (baseline/time_taken)":<15}"
     )
     print("=" * 120)
     for result in results:
@@ -343,14 +343,14 @@ def print_report(results):
         if "OOM" not in [result["time_taken"], result["baseline_t"]]:
             scale = round(result["baseline_t"] / result["time_taken"], 1)
             print(
-                f"{param_comb_str:<45} {dtype_str:<15} {result['time_taken']:<15.6f} "
-                f"{result['baseline_t']:<15.6f} {scale:<15.1f}"
+                f"{param_comb_str:<45} {dtype_str:<15} {result["time_taken"]:<15.6f} "
+                f"{result["baseline_t"]:<15.6f} {scale:<15.1f}"
             )
         else:
             scale = "N/A"
             print(
-                f"{param_comb_str:<45} {dtype_str:<15} {result['time_taken']:<15.6} "
-                f"{result['baseline_t']:<15.6} {scale:<15}"
+                f"{param_comb_str:<45} {dtype_str:<15} {result["time_taken"]:<15.6} "
+                f"{result["baseline_t"]:<15.6} {scale:<15}"
             )
 
 

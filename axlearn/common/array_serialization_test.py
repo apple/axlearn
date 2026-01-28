@@ -36,10 +36,6 @@ from axlearn.common.array_serialization import (
     serialization,
 )
 
-# TODO(wyi): This dictionary is introduced for the temporary peroiod of upgrading JAX from 0.5.3 to
-# 0.6.2. Once the upgrading is complete, we should remove it ASAP.
-_ts_open = {"0.6.2": "ts.open", "0.5.3": "serialization.ts.open"}[jax.__version__]
-
 
 @contextmanager
 def get_tensorstore_spec(arr: jax.Array):
@@ -101,10 +97,7 @@ class SerializerTest(parameterized.TestCase):
         arr = self._create_partially_replicated_array(sharded)
 
         ts_open_handle: Any = None
-        old_open = {
-            "0.6.2": lambda: array_serialization.ts.open,
-            "0.5.3": lambda: array_serialization.serialization.ts.open,
-        }[jax.__version__]()
+        old_open = array_serialization.ts.open
 
         async def ts_open_patch(*args, **kwargs):
             nonlocal ts_open_handle
@@ -127,7 +120,7 @@ class SerializerTest(parameterized.TestCase):
         d2h_future = array_serialization.futures.Future()
         with (
             mock.patch(
-                f"{array_serialization.__name__}.{_ts_open}",
+                f"{array_serialization.__name__}.ts.open",
                 ts_open_patch,
             ),
             get_tensorstore_spec(arr) as spec,
@@ -155,7 +148,7 @@ class SerializerTest(parameterized.TestCase):
         d2h_future = array_serialization.futures.Future()
         with (
             mock.patch(
-                f"{array_serialization.__name__}.{_ts_open}",
+                f"{array_serialization.__name__}.ts.open",
                 ts_open_patch,
             ),
             get_tensorstore_spec(arr) as spec,
@@ -191,7 +184,7 @@ class SerializerTest(parameterized.TestCase):
         d2h_future = array_serialization.futures.Future()
         with (
             mock.patch(
-                f"{array_serialization.__name__}.{_ts_open}",
+                f"{array_serialization.__name__}.ts.open",
                 ts_open_patch,
             ),
             get_tensorstore_spec(arr) as spec,
@@ -292,7 +285,7 @@ class SerializerTest(parameterized.TestCase):
             mock.patch(
                 f"{array_serialization.__name__}.serialization._get_metadata", lambda *_: {}
             ),
-            mock.patch(f"{array_serialization.__name__}.{_ts_open}", open_patch),
+            mock.patch(f"{array_serialization.__name__}.ts.open", open_patch),
             mock.patch(f"{array_serialization.__name__}.ts.Spec", mock.MagicMock()),
         ):
             manager.serialize(arrays, tensorstore_specs, on_commit_callback=lambda: None)
@@ -333,7 +326,6 @@ class SerializerTest(parameterized.TestCase):
                 "bucket": "fake-bucket",
                 "path": f"fake-path/{time.time()}",
             }
-
             create_spec = lambda arr: {
                 "driver": "zarr",
                 "kvstore": kvstore_spec,
@@ -375,7 +367,7 @@ class SerializerTest(parameterized.TestCase):
                 tensorstore_spec,
                 temp_path,
             ),
-            mock.patch(f"{array_serialization.__name__}.{_ts_open}", new=mock_ts_open),
+            mock.patch(f"{array_serialization.__name__}.ts.open", new=mock_ts_open),
             mock.patch.dict(
                 "os.environ", {"JAX_PLATFORMS": jax_platforms, "ENABLE_GCS_GRPC": enable_gcs_grpc}
             ),
@@ -407,6 +399,7 @@ class SerializerTest(parameterized.TestCase):
             should_use_grpc = enable_gcs_grpc == "true"
             expected_driver = "gcs_grpc" if should_use_grpc else "gcs"
             self.assertEqual(spec["kvstore"]["driver"], expected_driver)
+
         # Verify the deserialized data matches the original data
         self.assertEqual(len(data), len(deserialized_data))
         for arr, d_arr in zip(data, deserialized_data):

@@ -268,7 +268,7 @@ def _prompt_project(project_configs: dict[str, Any]) -> Optional[str]:
     for project, config in project_configs.items():
         choice = project
         if labels := config.get("labels", None):
-            choice += f" [{labels if isinstance(labels, str) else ', '.join(labels)}]"
+            choice += f" [{labels if isinstance(labels, str) else ", ".join(labels)}]"
         choices.append(choice)
     choice = _prompt_choice(choices)
     if choice is None:
@@ -320,7 +320,7 @@ def main(argv: Sequence[str], *, namespace: str, fv: flags.FlagValues):
             prefix = "[*]" if project == active_project else "[ ]"
             project_str = f"{prefix} {project}"
             if labels := project_config.get("labels", None):
-                project_str += f" [{labels if isinstance(labels, str) else ', '.join(labels)}]"
+                project_str += f" [{labels if isinstance(labels, str) else ", ".join(labels)}]"
             print(project_str)
 
         if active_project is not None:

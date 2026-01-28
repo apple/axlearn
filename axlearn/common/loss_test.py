@@ -1024,13 +1024,13 @@ def test_kl_divergence():
 
     # Test probability targets against optax.
     _, aux = kl_divergence(log_predictions, targets)
-    ref_loss = optax._src.loss.kl_divergence(log_predictions, targets)
+    ref_loss = optax.losses.kl_divergence(log_predictions, targets)
     assert jnp.allclose(aux["per_example_loss"], ref_loss)
 
     # Test log-space targets against optax.
     log_targets = jnp.log(targets)
     loss, aux = kl_divergence(log_predictions, log_targets, is_log_targets=True)
-    ref_loss = optax._src.loss.kl_divergence_with_log_targets(log_predictions, log_targets)
+    ref_loss = optax.losses.kl_divergence_with_log_targets(log_predictions, log_targets)
     assert jnp.allclose(aux["per_example_loss"], ref_loss)
 
     # Test against TF.

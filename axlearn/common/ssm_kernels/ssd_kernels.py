@@ -30,8 +30,8 @@ from typing import Optional, Tuple, Union
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jax._src.lax.control_flow import for_loop
 from jax.experimental import pallas as pl
+from jax.lax import fori_loop
 
 from axlearn.common.ein_ops import rearrange, repeat
 from axlearn.common.utils import Tensor
@@ -146,7 +146,8 @@ def _ssd_forward_kernel(
     # Obtain final state from previous chunk.
     h_carry = mutable_final_state_ref[:, :]
     mutable_ch_ref[:, :] = mutable_final_state_ref[:, :]
-    final_state = for_loop.for_loop(
+    final_state = fori_loop(
+        0,
         subchunk_dim,
         _ssd_forward_chunk_loop_body,
         h_carry,
@@ -399,11 +400,14 @@ def _ssd_backward_kernel(
         dh_carry_ref[:, :] = prev_dh_block
 
     h_carry = ch_ref[:, :]
-    _ = for_loop.for_loop(subchunk_dim, _ssd_backward_dq_chunk_loop_body, h_carry)
+    _ = fori_loop(0, subchunk_dim, _ssd_backward_dq_chunk_loop_body, h_carry)
 
     dh_carry = mutable_dh_carry_ref[:, :]
-    dinitial_state = for_loop.for_loop(
-        subchunk_dim, _ssd_backward_dkv_chunk_loop_body, dh_carry, reverse=True
+    dinitial_state = fori_loop(
+        0,
+        subchunk_dim,
+        lambda t, carry: _ssd_backward_dkv_chunk_loop_body(subchunk_dim - 1 - t, carry),
+        dh_carry,
     )
     mutable_dh_carry_ref[:, :] = dinitial_state
 

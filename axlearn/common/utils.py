@@ -1987,8 +1987,8 @@ def raise_for_cycles(tree: Any):
         raise ValueError(
             "Circular reference in args, kwargs, or context.\n"
             "Descendant refers to ancestor.\n"
-            f"Descendant KeyPath: {cycles['descendant']}.\n"
-            f"Ancestor KeyPath: {cycles['ancestor']}."
+            f"Descendant KeyPath: {cycles["descendant"]}.\n"
+            f"Ancestor KeyPath: {cycles["ancestor"]}."
         )
 
 

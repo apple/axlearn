@@ -70,7 +70,7 @@ def get_resource_limits(path: str) -> QuotaInfo:
             project_resources=cfg["project_resources"],
             project_membership=cfg["project_membership"],
         )
-    raise ValueError(f"Unsupported schema version {cfg['toml-schema']['version']}")
+    raise ValueError(f"Unsupported schema version {cfg["toml-schema"]["version"]}")
 
 
 def get_user_projects(path: str, user_id: str) -> list[str]:

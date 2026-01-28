@@ -589,7 +589,7 @@ class BaseTarBundler(Bundler):
                         f.write(f"{extra}\n")
                     else:
                         pyproject_extras.append(extra)
-                deps = f".[{','.join(pyproject_extras)}]" if pyproject_extras else "."
+                deps = f".[{", ".join(pyproject_extras)}]" if pyproject_extras else "."
                 f.write(f"-e {deps}" if cfg.editable else deps)
 
             # Tar it up.

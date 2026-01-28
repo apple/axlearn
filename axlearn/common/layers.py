@@ -130,7 +130,7 @@ class RedirectToSharedModule(BaseLayer):
             return super().__getattr__(name)
         except AttributeError as e:
             raise AttributeError(
-                f"{', '.join(e.args)}. Should \"{name}\" be specified in cfg.method_map?"
+                f'{", ".join(e.args)}. Should "{name}" be specified in cfg.method_map?'
             ) from e
 
     def _redirect(self, *args, redirection_target_method: str, **kwargs) -> Any:

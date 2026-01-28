@@ -6,6 +6,7 @@ GPU device kind been tested:
 H100
 """
 
+# pytype: disable=pyi-error
 from functools import partial
 from typing import Tuple
 

@@ -49,9 +49,8 @@ _PATHWAYS_WORKER_PORT = 29001
 _COLOCATED_CONTAINER_PORT = 50051
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
-# This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
-# This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "shm_proxy_settings"
+# Note: This image has been tested with both Jax 0.8.2 and Jax 0.9.0
+_PATHWAYS_IMAGE_TAG = "20260128-jax_0.9.0"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -61,18 +60,13 @@ _PATHWAYS_SERVER_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
 )
 
-# For now, we use different Pathways images if Colocated Python is enabled.
-_PATHWAYS_COLOCATED_IMAGE_TAG = "2025-10-29"
+# With Jax >= 0.8.2, colocated images are the same as the standard
+# TODO(samuel-andersen): Rewrite pathways_utils.py to remove references to
+# separate colocated image tags
 # The docker image used by pathways proxy container.
-_PATHWAYS_COLOCATED_PROXY_IMAGE = (
-    "us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/proxy_server:"
-    f"{_PATHWAYS_COLOCATED_IMAGE_TAG}-increased-grpc-timeout"
-)
+_PATHWAYS_COLOCATED_PROXY_IMAGE = _PATHWAYS_PROXY_IMAGE
 # The docker image used by pathways resource manager container and worker container.
-_PATHWAYS_COLOCATED_SERVER_IMAGE = (
-    "us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/server:"
-    f"{_PATHWAYS_COLOCATED_IMAGE_TAG}"
-)
+_PATHWAYS_COLOCATED_SERVER_IMAGE = _PATHWAYS_SERVER_IMAGE
 
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"

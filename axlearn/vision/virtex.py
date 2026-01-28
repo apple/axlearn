@@ -151,7 +151,7 @@ class ImageBackboneModelMixin(Module):
         raise ValueError(
             f"Cannot find visual features at {cfg.visual_feature_layer_name}. "
             f"visual_outputs={_paths(visual_outputs)}, "
-            f"module_outputs={_paths(self.get_module_outputs().get('visual'))}"
+            f"module_outputs={_paths(self.get_module_outputs().get("visual"))}"
         )
 
 

@@ -8,6 +8,7 @@ from typing import Optional
 import jax
 import portpicker
 
+# pylint: disable-next=invalid-name
 _jax_distributed_initialized = False
 
 

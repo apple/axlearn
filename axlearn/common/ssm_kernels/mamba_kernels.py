@@ -12,8 +12,8 @@ from typing import NamedTuple
 
 import jax
 from jax import numpy as jnp
-from jax._src.lax.control_flow import for_loop
 from jax.experimental import pallas as pl
+from jax.lax import fori_loop
 
 from axlearn.common.utils import Tensor
 
@@ -149,7 +149,8 @@ def _forward_kernel_boundary_hs(
         mutable_carry_ref[:] = jnp.zeros_like(mutable_carry_ref)
 
     h_carry = mutable_carry_ref[:]
-    h_T = for_loop.for_loop(  # fills h_ref
+    h_T = fori_loop(  # fills h_ref
+        0,
         seq_len,
         functools.partial(
             _update_carry,
@@ -236,7 +237,8 @@ def _backward_kernel(
     # currently we run into scoped vmem errors.
     h_carry = boundary_hs_ref[:]
 
-    _ = for_loop.for_loop(
+    _ = fori_loop(
+        0,
         seq_len,
         _forward_kernel_save_hs_body,
         h_carry,
@@ -310,7 +312,8 @@ def _backward_kernel(
     )
 
     # Compute param grads for steps T thru 2 and d/dh_t for steps T-1 thru 1.
-    dh_1 = for_loop.for_loop(
+    dh_1 = fori_loop(
+        0,
         seq_len - 1,
         _backward_kernel_body,
         dcarry,
@@ -605,7 +608,8 @@ def _forward_kernel(
     # Loop variables need to be "concrete," not references.
     h_carry = mutable_carry_ref[:]
     # Fill y_ref inside the loop.
-    h_T = for_loop.for_loop(
+    h_T = fori_loop(
+        0,
         seq_len,
         _forward_kernel_body,
         h_carry,

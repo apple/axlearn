@@ -280,7 +280,7 @@ def _vm_config(
                 "initializeParams": {
                     "diskSizeGb": str(disk_size),
                     "diskType": (
-                        f"projects/{gcp_settings('project')}/zones/{gcp_settings('zone')}/"
+                        f"projects/{gcp_settings("project")}/zones/{gcp_settings("zone")}/"
                         "diskTypes/pd-standard"
                     ),
                     "labels": {},
@@ -294,7 +294,7 @@ def _vm_config(
         "guestAccelerators": [],
         "labels": {},
         "machineType": (
-            f"projects/{gcp_settings('project')}/zones/{gcp_settings('zone')}/"
+            f"projects/{gcp_settings("project")}/zones/{gcp_settings("zone")}/"
             f"machineTypes/{vm_type}"
         ),
         "metadata": metadata,
@@ -322,7 +322,7 @@ def _vm_config(
             "enableVtpm": True,
         },
         "tags": {"items": ["allow-internet-egress"]},
-        "zone": f"projects/{gcp_settings('project')}/zones/{gcp_settings('zone')}",
+        "zone": f"projects/{gcp_settings("project")}/zones/{gcp_settings("zone")}",
     }
     return config
 

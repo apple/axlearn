@@ -132,7 +132,38 @@ def default_xla_options(
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
         )
+    if version == "7x":
+        options.update(
+            # Many of the 7x flags are similar to v6e
+            xla_tpu_scoped_vmem_limit_kib=65536,
+            xla_tpu_enable_all_gather_offload_tracing="true",
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
+            xla_enable_async_all_gather="true",
+            xla_tpu_prefer_async_allgather_to_allreduce="true",
+            # Disable BF16 emission mode for testing
+            # xla_tpu_bf16_emission_mode="NATIVE_EMISSION",
+        )
 
+        # Ensure pipelining is properly configured
+        options.update(
+            xla_should_allow_loop_variant_parameter_in_chain="true",
+            xla_should_add_loop_invariant_op_in_chain="true",
+            xla_tpu_enable_ici_ag_pipelining="true",
+        )
+
+        # v7x flags from MaxText, inclusing SparseCore configs
+        # TODO(samuel-andersen): Move v7x SparseCore config below with v6e
+        options.update(
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+            xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
+            xla_tpu_enable_sparse_core_reduce_scatter_v2="true",
+            xla_tpu_enable_sparse_core_collective_offload_3d_all_gather="true",
+            xla_tpu_use_single_sparse_core_for_all_gather_offload="true",
+            xla_sc_disable_megacore_partitioning="true",
+            xla_tpu_use_tc_device_shape_on_sc="true",
+        )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         # pytype: disable=wrong-arg-types
@@ -178,7 +209,11 @@ def default_xla_options(
             continue
         elif isinstance(v, str):
             # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str.
-            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+            if (
+                v.isdigit()
+                or re.match(r"^\d+[ms]$", v.strip())
+                or v.strip() in ["true", "false", "NATIVE_EMISSION"]
+            ):
                 continue
             # Allow paths.
             if v.startswith("/"):

@@ -155,6 +155,7 @@ class _RematLayer(BaseLayer):
         # static_arg is not really used, but added to test that the remat logic can handle
         # static kwargs.
         del static_arg
+        # pylint: disable-next=missing-kwoa
         h = self._callback(self.op(x))
         y = self._remat_name(h, self.config.output_name)
         return y

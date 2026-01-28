@@ -8,7 +8,7 @@ export TF_DISABLE_TRT=1  # Suppress TF-TRT Warning: Could not find TensorRT
 
 # Install the package (necessary for CLI tests).
 # Requirements should already be cached in the docker image.
-pip install -qq -e .
+uv pip install -qq -e .
 
 # output state of python packages
 pip freeze

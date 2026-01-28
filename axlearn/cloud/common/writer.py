@@ -23,6 +23,7 @@ from axlearn.common.file_system import makedirs
 from axlearn.common.file_system import open as fs_open
 
 FLAGS = flags.FLAGS
+# pylint: disable-next=invalid-name
 _Done = object()
 
 

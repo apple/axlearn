@@ -518,7 +518,7 @@ class TestBastionManagedGKEJob(TestWithTemporaryCWD):
             self.assertEqual(bastion, cfg.bastion_name)
         elif env_id is None:
             self.assertEqual(
-                f"{self._settings['env_id']}-gke-bastion",
+                f"{self._settings["env_id"]}-gke-bastion",
                 cfg.bastion_name,
             )
         else:

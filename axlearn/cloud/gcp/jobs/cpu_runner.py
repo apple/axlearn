@@ -132,7 +132,7 @@ class CPURunnerJob(CPUJob):
         cfg.max_tries = cfg.max_tries or 1
         cfg.retry_interval = cfg.retry_interval or 60
         cfg.output_dir = (
-            cfg.output_dir or f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{cfg.name}"
+            cfg.output_dir or f"gs://{gcp_settings("ttl_bucket", fv=fv)}/axlearn/jobs/{cfg.name}"
         )
         cfg.bundler = get_bundler_config(
             bundler_type=fv.bundler_type or GCSTarBundler.TYPE,

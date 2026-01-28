@@ -208,18 +208,18 @@ def _print_summary(all_results: dict):
             print(f"  seq_len={seq_len}:")
             if config_results["ref_fwd"] and config_results["ref_fwd"][i] > 0:
                 print(
-                    f"    ref_fwd:{config_results['ref_fwd'][i]:.4f}s, "
-                    f"flash_fwd:{config_results['flash_fwd'][i]:.4f}s"
+                    f"    ref_fwd:{config_results["ref_fwd"][i]:.4f}s, "
+                    f"flash_fwd:{config_results["flash_fwd"][i]:.4f}s"
                 )
             else:
-                print(f"    flash_fwd:{config_results['flash_fwd'][i]:.4f}s")
+                print(f"    flash_fwd:{config_results["flash_fwd"][i]:.4f}s")
             if config_results["ref_bwd"] and config_results["ref_bwd"][i] > 0:
                 print(
-                    f"    ref_bwd:{config_results['ref_bwd'][i]:.4f}s, "
-                    f"flash_bwd:{config_results['flash_bwd'][i]:.4f}s"
+                    f"    ref_bwd:{config_results["ref_bwd"][i]:.4f}s, "
+                    f"flash_bwd:{config_results["flash_bwd"][i]:.4f}s"
                 )
             elif config_results["flash_bwd"] and config_results["flash_bwd"][i] > 0:
-                print(f"    flash_bwd:{config_results['flash_bwd'][i]:.4f}s")
+                print(f"    flash_bwd:{config_results["flash_bwd'"][i]:.4f}s")
 
     print("\n" + "=" * 80)
     print("Benchmarking complete!")

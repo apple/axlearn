@@ -364,7 +364,7 @@ def fake_classification_source(
         examples=[
             {
                 source_key: ("train" if is_training else "eval")
-                + f" classification question {ix}, Choose {'. '.join(classes)}\n Answer:",
+                + f" classification question {ix}, Choose {". ".join(classes)}\n Answer:",
                 target_key: f"{classes[ix % num_classes]}",
             }
             for ix in range(2 * 2 if is_training else 2)
@@ -406,7 +406,7 @@ def fake_classification_source_instruct_lm(
         examples=[
             {
                 text_key: ("train" if is_training else "eval")
-                + f" classification question {ix}, Choose {'. '.join(classes)}\n Answer:"
+                + f" classification question {ix}, Choose {". ".join(classes)}\n Answer:"
                 + eoa_text
                 + f" {classes[ix % num_classes]}"
                 + eob_text,

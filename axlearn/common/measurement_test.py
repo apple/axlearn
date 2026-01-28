@@ -50,7 +50,7 @@ class UtilsTest(parameterized.TestCase):
         # Try initializing from another module.
         dict(
             recorder_type=(
-                f"axlearn.experiments.testdata.{__name__.replace('.', '_')}.dummy_recorder:"
+                f"axlearn.experiments.testdata.{__name__.replace(".", "_")}.dummy_recorder:"
                 "dummy_recorder"
             ),
             expected="DummyRecorder",

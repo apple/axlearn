@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import axlearn.common.megablock.gmm_gpu as backend
 from axlearn.common.utils import Tensor
 
+# pylint: disable-next=invalid-name
 _gmm_impl_cache = None
 GmmResidual = tuple[Tensor, Tensor, Tensor, Tensor | None, int]
 

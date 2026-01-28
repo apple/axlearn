@@ -2,6 +2,7 @@
 
 """Tests job scheduler."""
 # pylint: disable=unused-argument
+# pytype: disable=name-error
 
 import collections
 from datetime import datetime, timedelta

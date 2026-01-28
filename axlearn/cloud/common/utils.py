@@ -239,7 +239,7 @@ def parse_action(
     if action not in options:
         action = default
     if action is None or action not in options:  # No action nor default provided.
-        raise app.UsageError(f"Invalid action: {action}. Expected one of [{','.join(options)}].")
+        raise app.UsageError(f"Invalid action: {action}. Expected one of [{", ".join(options)}].")
     return action
 
 

@@ -57,6 +57,7 @@ def jax_fn_mask(sliding_window_size: int) -> Tensor:
     return fun
 
 
+# pylint: disable-next=invalid-name
 _singleton_mask_fn = jax_fn_mask(5)
 
 

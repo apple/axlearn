@@ -315,7 +315,7 @@ class BaseBastionManagedJob(FlagConfigurable):
         cfg.bastion_dir.root_dir = bastion_root_dir(cfg.bastion_name, fv=fv)
         # Default output_dir depends on the final value of --name.
         if not cfg.output_dir:
-            cfg.output_dir = f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
+            cfg.output_dir = f"gs://{gcp_settings("ttl_bucket", fv=fv)}/axlearn/jobs/{fv.name}"
         # Construct runner only for start and update.
         if action in _RUNNER_ACTIONS:
             # We construct a bundler and propagate to runner during instantiate, ensuring the
@@ -440,7 +440,7 @@ class BaseBastionManagedJob(FlagConfigurable):
             f"--name={cfg.bastion_name} --env_id={cfg.env_id} --job_name={cfg.name}\n"
             "\nCheck project history with:\n"
             f"{infer_cli_name()} gcp bastion history "
-            f"--name={cfg.bastion_name} --env_id={cfg.env_id} {cfg.project_id or ''}"
+            f"--name={cfg.bastion_name} --env_id={cfg.env_id} {cfg.project_id or ""}"
         )
         return jobspec
 

@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from axlearn.cloud.gcp.utils import get_credentials
 
+# pylint: disable-next=invalid-name
 _GS_CLIENT: storage.Client = None
 
 

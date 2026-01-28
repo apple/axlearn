@@ -22,6 +22,7 @@ is tested. For your particular mapping usecase, you may need to add features
 and/or layers.
 """
 # pylint: disable=no-self-use,duplicate-code,too-many-lines
+# pytype: disable=name-error,pyi-error
 import copy
 import itertools
 import math

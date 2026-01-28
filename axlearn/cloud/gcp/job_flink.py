@@ -284,7 +284,7 @@ class FlinkTPUGKEJob(job.GKEJob):
         core_api = k8s.client.CoreV1Api()
         jobmanager_pods = core_api.list_namespaced_pod(
             namespace=cfg.namespace,
-            label_selector=f"app={flink_deployment['metadata']['name']},component=jobmanager",
+            label_selector=f"app={flink_deployment["metadata"]["name"]},component=jobmanager",
         )
         # TODO(muyang_yu): consider using pod name instead of id.
         self.job_manager_ip = jobmanager_pods.items[0].status.pod_ip
@@ -381,7 +381,7 @@ class FlinkTPUGKEJob(job.GKEJob):
             metadata=dict(namespace=cfg.namespace, name=self._get_flink_cluster_name()),
             spec=dict(
                 image=f"flink:{_FLINK_VERSION}",
-                flinkVersion=f"v{_FLINK_VERSION.replace('.', '_')}",
+                flinkVersion=f"v{_FLINK_VERSION.replace(".", "_")}",
                 serviceAccount=cfg.builder.service_account,
                 # Standalone mode supports initing Task Manager before beam
                 # pipeline is submitted. This can avoid Task Manager initialization
@@ -556,7 +556,7 @@ class FlinkTPUGKEJob(job.GKEJob):
             # This directory is used by FlinkRunner to store artifacts like
             # JARs, Python wheels, custom files from the main session and
             # intermediate outputs. All workers will share it.
-            f" --artifacts_dir={os.path.join(cfg.builder.output_dir, 'artifacts_dir')}"
+            f" --artifacts_dir={os.path.join(cfg.builder.output_dir, "artifacts_dir")}"
             f" --flink_version={_FLINK_VERSION}"
             f" --runner=FlinkRunner"
             # The following two flags makes sure the Flink Job manager routes the

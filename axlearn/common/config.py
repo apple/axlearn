@@ -671,7 +671,7 @@ class ConfigBase:
     def _key_error_string(self, name: str) -> str:
         similar = similar_names(name, list(self.keys()))
         if similar:
-            return f"{name} (did you mean: [{', '.join(similar)}])"
+            return f"{name} (did you mean: [{", ".join(similar)}])"
         return f"{name} (keys are {self.keys()})"
 
 
@@ -1104,7 +1104,7 @@ def get_named_trainer_config(config_name: str, *, config_module: str) -> Trainer
     except KeyError as e:
         similar = similar_names(config_name, set(config_map.keys()))
         if similar:
-            message = f"Unrecognized config {config_name}; did you mean [{', '.join(similar)}]"
+            message = f"Unrecognized config {config_name}; did you mean [{", ".join(similar)}]"
         else:
             message = (
                 f"Unrecognized config {config_name} under {config_module}; "

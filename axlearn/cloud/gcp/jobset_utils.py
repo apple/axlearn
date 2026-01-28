@@ -669,7 +669,7 @@ class TPUJobBuilder(SingleReplicatedJob):
                     volumeAttributes=dict(
                         bucketName=parsed.netloc,
                         # pylint: disable=line-too-long
-                        mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
+                        mountOptions=f"only-dir={parsed.path.lstrip("/")},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
                         gcsfuseMetadataPrefetchOnMount="false",  # Improves first-time read.
                         disableMetrics="false",  # Enables GCSFuse metrics by default.
                     ),
@@ -705,6 +705,9 @@ class TPUJobBuilder(SingleReplicatedJob):
         # Tier "0" corresponds to reserved; otherwise we use preemptible.
         tier = os.environ.get("BASTION_TIER", None)
 
+        # TODO(samos123) support using reservation when using local launch
+        # the local launch command automatically sets tier=disabled.
+        logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
         if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})

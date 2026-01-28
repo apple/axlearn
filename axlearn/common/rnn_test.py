@@ -2,6 +2,7 @@
 
 """Tests RNN layers."""
 # pylint: disable=no-self-use
+# pytype: disable=name-error
 import jax.random
 import pytest
 from absl import logging

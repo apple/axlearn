@@ -11,6 +11,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
+# pylint: disable-next=invalid-name
 AcceleratorType = {"TPU": 1, "GPU": 2, "CPU": 3}
 
 

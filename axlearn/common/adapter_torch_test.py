@@ -3,6 +3,7 @@
 """Tests PyTorch adapter layers."""
 
 # pylint: disable=too-many-lines
+# pytype: disable=pyi-error
 import itertools
 from collections import OrderedDict
 from typing import Optional, Union, cast
