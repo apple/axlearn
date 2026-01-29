@@ -37,7 +37,7 @@ from axlearn.common.decoding import (
     infer_initial_time_step,
     sample_decode,
 )
-from axlearn.common.embedding import BaseEmbedding, TransformerTextEmbeddings
+from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import Dropout, LayerNorm, set_dropout_rate_recursively
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
 from axlearn.common.module import (
@@ -446,7 +446,7 @@ class Decoder(BaseLayer):
         # explicitly.
         dropout_rate: float = 0.0
         # Vector from input ids table.
-        emb: BaseEmbedding.Config = TransformerTextEmbeddings.default_config()
+        emb: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config()
         # Transformer model trunk.
         transformer: BaseStackedTransformerLayer.Config = StackedTransformerLayer.default_config()
         # Layer norm applied to transformer output.
@@ -519,25 +519,25 @@ class Decoder(BaseLayer):
         emb_batch = {**input_batch}
         emb_batch["inputs"] = emb_batch["input_ids"]
 
+        x = self.emb(input_batch=emb_batch)
+
         if mode == ForwardMode.FORWARD:
-            x = self.emb(input_batch=emb_batch)
-            x = self.transformer(
-                x,
-                self_attention_logit_biases=self_attention_logit_biases,
-                target_segment_ids=input_segment_ids,
-                target_positions=positions,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
+            transformer_state, x = (
+                None,
+                self.transformer(
+                    x,
+                    self_attention_logit_biases=self_attention_logit_biases,
+                    target_segment_ids=input_segment_ids,
+                    target_positions=positions,
+                    cross_attention_data=cross_attention_data,
+                    cross_attention_logit_biases=cross_attention_logit_biases,
+                ),
             )
-            cached_states = None
         elif mode == ForwardMode.INIT_STATES:
             assert cached_states is not None
             if input_segment_ids is not None:
                 raise ValueError("input_segment_ids is not supported in INIT_STATES.")
-            cached_states["emb"], x = self.emb.extend_step(
-                cached_states=cached_states["emb"], input_batch=emb_batch
-            )
-            cached_states["transformer_state"], x = self.transformer.init_states(
+            transformer_state, x = self.transformer.init_states(
                 time_step=cached_states["transformer_state"],
                 data=x,
                 self_attention_logit_biases=self_attention_logit_biases,
@@ -548,10 +548,7 @@ class Decoder(BaseLayer):
             assert cached_states is not None
             if input_segment_ids is not None:
                 raise ValueError("input_segment_ids is not supported in EXTEND_STEP.")
-            cached_states["emb"], x = self.emb.extend_step(
-                cached_states=cached_states["emb"], input_batch=emb_batch
-            )
-            cached_states["transformer_state"], x = self.transformer.extend_step(
+            transformer_state, x = self.transformer.extend_step(
                 cached_states=cached_states["transformer_state"],
                 data=x,
                 self_attention_logit_biases=self_attention_logit_biases,
@@ -591,7 +588,7 @@ class Decoder(BaseLayer):
             logits = self._output_logits_modifier(logits)
         logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
         # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
-        return cached_states, dict(logits=logits, hidden_states=x)
+        return dict(transformer_state=transformer_state), dict(logits=logits, hidden_states=x)
 
     def forward(
         self,
@@ -650,14 +647,12 @@ class Decoder(BaseLayer):
     ) -> NestedTensor:
         """See `BaseDecoder.init_states` for details."""
         cfg: Decoder.Config = self.config
-        emb = self.emb.init_states(batch_size=batch_size, dtype=dtype)
-        transformer_state, _ = self.transformer.init_states(
+        init_state, _ = self.transformer.init_states(
             time_step=None,
             data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=dtype),
         )
         return dict(
-            emb=emb,
-            transformer_state=transformer_state,
+            transformer_state=init_state,
             input_ids=jnp.full(
                 (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
             ),
@@ -682,14 +677,13 @@ class Decoder(BaseLayer):
             See `BaseDecoder.prefill_states` for details.
         """
         validate_contains_paths(input_batch, paths=["input_ids"])
-        input_ids: Tensor = input_batch["input_ids"]
+        input_ids = input_batch["input_ids"]
         input_segment_ids = input_batch.get("input_segment_ids", None)
         positions = input_batch.get("positions", None)
 
-        emb = self.emb.init_states(batch_size=input_ids.shape[0], dtype=self.dtype())
         states, outputs = self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
-            cached_states=dict(emb=emb, transformer_state=time_step),
+            cached_states=dict(transformer_state=time_step),
             input_batch=input_batch,
             # TODO(markblee): Consider supporting packed inputs for more efficient prefilling.
             self_attention_logit_biases=self.compute_attention_logit_biases(
@@ -754,13 +748,14 @@ class Decoder(BaseLayer):
             cached_states=cached_states,
             **kwargs,
         )
-        updated_states.update(
+        updated_states = dict(
             input_ids=updated_inputs,
             # There are some non-greedy DFS/BFS and sliding attention algorithms that
             # recursively search through potentials.
             # They backtrace to some anchor time step after exploring for t steps.
             # This requires tracking time_step separately from the attention time_step.
             time_step=cached_states["time_step"] + 1,
+            **updated_states,
         )
         return updated_states, outputs
 
