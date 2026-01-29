@@ -11,7 +11,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Dropout, Embedding
-from axlearn.common.module import Module, Tensor, child_context
+from axlearn.common.module import Module, Tensor, child_context, nowrap
 from axlearn.common.utils import Nested, validate_contains_paths
 
 
@@ -49,6 +49,37 @@ class BaseEmbedding(BaseLayer):
             Output logits of shape [batch_size, seq_len, vocab_size].
         """
         raise NotImplementedError(type(self))
+
+    @nowrap
+    def init_states(self, *, batch_size: int, dtype: jnp.dtype) -> Nested[Tensor]:
+        """Initializes state for streaming decode.
+
+        Args:
+            batch_size: Batch size.
+            dtype: dtype for the decoding cache.
+
+        Returns:
+            A nested dict of initial states. Returns empty dict by default.
+        """
+        del batch_size, dtype
+        return dict()
+
+    def extend_step(
+        self, *, cached_states: Nested[Tensor], input_batch: Nested[Tensor]
+    ) -> tuple[Nested[Tensor], Tensor]:
+        """Extends one step for streaming decode.
+
+        TODO(dhwang2): prefill uses `extend_step`, which has a performance issue. This will be
+        resolved after #2057.
+
+        Args:
+            cached_states: Cached states from previous step or init_state.
+            input_batch: Input batch for current step.
+
+        Returns:
+            A tuple of (updated_states, embeddings).
+        """
+        return cached_states, self.forward(input_batch)
 
 
 class TransformerTextEmbeddings(BaseEmbedding):
