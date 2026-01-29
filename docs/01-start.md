@@ -16,7 +16,7 @@ AXLearn supports macOS and Linux. The following instructions work on both platfo
 We recommend installing in a virtual environment. The following commands create and activate one with Python 3.10+ using [uv](https://docs.astral.sh/uv/):
 
 ```shell
-uv venv --python=3.10
+uv venv --python=3.12
 source .venv/bin/activate
 ```
 
