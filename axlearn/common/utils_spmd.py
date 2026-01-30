@@ -95,28 +95,5 @@ def setup(
                 # local_device_ids arg allows us to maintain expected behavior
                 init_kwargs["local_device_ids"] = list(range(8))
 
-        # pylint: disable-next=import-outside-toplevel
-        from jax._src.lib import _jax
-
-        if jax.__version__ == "0.8.2":
-            # Jax-0.8.2 introduced a bug in  https://github.com/openxla/xla/pull/35298
-            # Client only sends one heartbeat within heartbeat_timeout,
-            # so server might not receive a heartbeat
-            # in time, and would consider the client dead.
-            # The bug is fixed in https://github.com/openxla/xla/pull/35589 but not in jax-0.8.2
-            # We patch the fix here, so client sends heartbeats twice within heartbeat_timeout.
-            # TODO(ethanli): remove this hack.
-            old = _jax.get_distributed_runtime_client
-
-            def f(*args, **kwargs):
-                logging.info(
-                    "Reducing client heartbeat_timeout %s by half for a bug fix in jax-0.8.2",
-                    kwargs["heartbeat_timeout"],
-                )
-                kwargs["heartbeat_timeout"] = kwargs["heartbeat_timeout"] // 2
-                return old(*args, **kwargs)
-
-            _jax.get_distributed_runtime_client = f
-
         jax.distributed.initialize(**init_kwargs)
         _jax_distributed_initialized = True
