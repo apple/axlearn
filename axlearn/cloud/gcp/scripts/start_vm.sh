@@ -90,20 +90,20 @@ if [[ " ${tar_bundlers[*]} " =~ " ${BUNDLER_TYPE} " ]]; then
   (gsutil cp ${GS_BUNDLE_PATH} "${LOCAL_BUNDLE_PATH}/axlearn.tar.gz" && tar -xzf "axlearn.tar.gz") \
   >> ${SETUP_LOG_PATH} 2>&1
 
-  # Install + activate Python 3.10.
-  install_py310() {
-    # Install Python 3.10 with the required venv module
+  # Install + activate Python 3.12.
+  install_py312() {
+    # Install Python 3.12 with the required venv module
     apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y python3.10-venv python3.10-dev && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12-venv python3.12-dev && \
       apt clean -y
     mkdir -p /opt/venv
     # Create a new virtual environment
-    python3.10 -m venv /opt/venv
-    /opt/venv/bin/python3.10 -m pip install -U pip swig flit uv
+    python3.12 -m venv /opt/venv
+    /opt/venv/bin/python3.12 -m pip install -U pip swig flit uv
     echo 'source /opt/venv/bin/activate' >> ~/.profile
     source /opt/venv/bin/activate
   }
-  install_py310 >> ${SETUP_LOG_PATH} 2>&1
+  install_py312 >> ${SETUP_LOG_PATH} 2>&1
   log "Using python3: $(which python3)"
 
   # Install bundle.
