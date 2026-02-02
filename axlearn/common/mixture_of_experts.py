@@ -738,8 +738,15 @@ class TopKGating(BaseGating):
         cfg = self.config
         if cfg.topk_fn:
             topk_fn = maybe_instantiate(cfg.topk_fn)
-            return topk_fn(raw_gates, k=k)
-        return jax.lax.top_k(raw_gates, k=k)
+            gate_weights, gate_assignment = topk_fn(raw_gates, k=k)
+        else:
+            gate_weights, gate_assignment = jax.lax.top_k(raw_gates, k=k)
+
+        # Checkpoint top_k outputs for numerical stability.
+        gate_weights = self._remat_name(gate_weights, "gate_weights")
+        gate_assignment = self._remat_name(gate_assignment, "gate_assignment")
+
+        return gate_weights, gate_assignment
 
     def _score(self, logits: Tensor, axis: int = -1) -> Tensor:
         """Computes scores from logits using configured score_fn or default softmax."""
@@ -1112,16 +1119,9 @@ class TopKDropFreeGating(TopKGating):
         self, logits: Tensor, seq_load_balance_loss_weight: Optional[float] = None
     ) -> Output:
         cfg = self.config
-        if logits.dtype != jnp.float32:
-            self.vlog(3, "Upcasting gating logits")
-            logits = logits.astype(jnp.float32)
-        logits = _cap_logits(logits, cfg.gating_logit_cap)
-        # Noised Top-K selection.
-        if cfg.noisy_gating is not None:
-            if cfg.noisy_gating == GateNoise.GUMBEL:
-                logits = self._add_gumbel_noise(logits)
-            else:
-                raise NotImplementedError(cfg.noisy_gating)
+
+        # Process logits: upcast to float32, cap, and optionally add noise.
+        logits = self._process_logits(logits)
 
         # Get the router z-loss.
         router_z_loss = _router_z_loss(logits)
@@ -1132,6 +1132,7 @@ class TopKDropFreeGating(TopKGating):
 
         # [B, S, K], [B, S, K]
         gate_weights, gate_assignment = self._top_k(raw_gates, k=cfg.num_experts_per_token)
+
         # Get the expert load balance loss.
         # This considers the load balance of all the top-k selected experts.
         load_balance_loss = self._load_balance_loss(
@@ -2464,9 +2465,11 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
 
             # [B' x S' x K, H']
             activation_0 = self._padded_gmm(sorted_inputs, wi_0, tokens_per_expert)
+            activation_0 = self._remat_name(activation_0, "linear1_0")
             activation_0 = get_activation_fn(cfg.activation[0])(activation_0)
 
             activation_1 = self._padded_gmm(sorted_inputs, wi_1, tokens_per_expert)
+            activation_1 = self._remat_name(activation_1, "linear1_1")
             activation_1 = get_activation_fn(cfg.activation[1])(activation_1)
 
             intermediate = activation_0 * activation_1
@@ -2476,6 +2479,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
 
             # [B' x S x K, M]
             sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
+            sorted_output = self._remat_name(sorted_output, "linear2")
             if thread_resources.env.physical_mesh.shape["model"] > 1:
                 # If output is partitioned across "model", we need to reduce-scatter. Otherwise,
                 # we do an allreduce.

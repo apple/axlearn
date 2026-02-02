@@ -59,6 +59,7 @@ from axlearn.common import serialization
 from axlearn.common.config import (
     ConfigBase,
     ConfigOr,
+    Configurable,
     FunctionConfigBase,
     config_for_function,
     is_named_tuple,
@@ -2086,3 +2087,66 @@ def own_fields(cfg: ConfigBase) -> Sequence[str]:
 
     base_keys = get_base_keys(bases[0])
     return [k for k in cfg.keys() if k not in base_keys]
+
+
+def replace_layer_config_recursively(
+    cfg: ConfigBase,
+    *,
+    target_cls: Configurable,
+    source_config: ConfigBase,
+    exclude_keys: Optional[Sequence[str]] = None,
+) -> ConfigBase:
+    """Replaces the target_cls's config with the source_config.
+
+    This function is useful when one wants to replace a specific layer in the model, e.g.,
+    replacing MultiheadAttention layer with GroupedQueryAttention. Note that the target layer
+    should not be the root layer in the given model config.
+
+    Example usage -- Replacing MultiheadAttention by GroupedQueryAttention:
+        model_cfg = ... # The original model config.
+        replace_layer_config_recursively(
+            model_cfg,
+            target_cls=MultiheadAttention,
+            source_config=GroupedQueryAttention.default_config().set(num_kv_heads=8),
+            exclude_keys=["num_kv_heads"],
+        )
+
+    Args:
+        cfg: A ConfigBase, usually a top-level model config or a trainer config.
+        target_cls: A Configurable, the target layer class to be replaced.
+        source_config: A new ConfigBase to be put into the model.
+        exclude_keys: A sequence of strings specifying which fields in the source config should
+           not be copied from the target config. By default, only klass is excluded.
+
+    Return:
+        A ConfigBase with the modified configs. This function also revises the input config in
+        place. So it is okay to not return anything.
+
+    Raises:
+        ValueError: If the target layer is the root of the input cfg.
+    """
+    if isinstance(cfg, target_cls.Config):
+        raise ValueError("The target cls cannot be the root of the input model config.")
+
+    exclude_kwargs = set(["klass"])
+    if exclude_keys is not None:
+        exclude_kwargs.update(exclude_keys)
+
+    def exit_fn(_, child):
+        if isinstance(child, ConfigBase):
+            for key, value in child.items():
+                if isinstance(value, target_cls.Config):
+                    new_cfg = source_config.set(
+                        **{k: v for k, v in value.items() if k not in exclude_kwargs},
+                    )
+                    setattr(child, key, new_cfg)
+        elif isinstance(child, (list, tuple, range)):
+            for idx, value in enumerate(child):
+                if isinstance(value, target_cls.Config):
+                    new_cfg = source_config.clone(
+                        **{k: v for k, v in value.items() if k not in exclude_kwargs},
+                    )
+                    child[idx] = new_cfg
+
+    cfg.visit(visit_fn=lambda k, v: None, exit_fn=exit_fn)
+    return cfg

@@ -68,6 +68,9 @@ def default_xla_options(
             xla_tpu_use_tc_device_shape_on_sc="true",
             xla_sc_enable_instruction_fusion="false",
             xla_sc_disable_megacore_partitioning="true",
+            xla_tpu_scoped_vmem_limit_kib=65472,  # Enable larger block sizes.
+            xla_enable_async_all_gather="true",  # Allow async all-gather.
+            xla_enable_async_collective_permute="true",  # Allow async collective permute.
         )
 
     if version == "v6e":
@@ -410,43 +413,29 @@ def infer_xla_performance_flags(
 ) -> dict[str, str]:
     """Performs automatic XLA flag tuning based on mesh shape and device kind."""
 
-    logging.info(
-        "Inferring XLA flags for mesh %s (%s) and device %s",
-        mesh_shape,
-        mesh_axis_names,
-        device_kind,
-    )
-
-    if device_kind == "TPU v6 lite":
-        device_kind = "TPU v6e"
-
-    if device_kind not in ["TPU v6e", "TPU v5p"]:
-        return {}
-
-    # Sparse core offloading all collectives can improve performance of model parallelism on
-    # v6e. However, it negative impacts the performance of some pure FSDP runs by about 6%.
-    # Therefore, we enable them selectively on mesh shapes that have model parallelism and are
-    # verified to have improved performance with sparse core offloading.
+    # Sparse core offloading all collectives can improve performance of model parallelism / FSDP.
+    # However, it negative impacts the performance of some pure FSDP runs by about 6%.
+    # Therefore, we enable them selectively on mesh shapes are verified to have improved
+    # performance with sparse core offloading.
     # TODO(hanzhi-zhou): Check if these flags also improve performance on fsdp=16, model=16.
     sparse_core_offloading_configs = [
-        dict(mesh=(32, 8), kind="TPU v6e", native=False),  # 16x16 (non-native)
-        dict(mesh=(64, 4), kind="TPU v6e", native=False),  # 16x16 (non-native)
-        dict(mesh=(16, 8), kind="TPU v6e", native=True),  # 8x16 (native)
-        dict(mesh=(128, 16), kind="TPU v5p", native=True),  # 8x16x16 (native)
-        dict(mesh=(256, 8), kind="TPU v5p", native=True),  # 8x16x16 (native)
+        dict(mesh=dict(fsdp=32, model=8), kind="TPU v6 lite", native=False),  # 16x16 (non-native)
+        dict(mesh=dict(fsdp=64, model=4), kind="TPU v6 lite", native=False),  # 16x16 (non-native)
+        dict(mesh=dict(fsdp=32, track=8), kind="TPU v6 lite", native=False),  # 16x16 (non-native)
+        dict(mesh=dict(fsdp=64, track=4), kind="TPU v6 lite", native=False),  # 16x16 (non-native)
+        dict(mesh=dict(fsdp=16, model=8), kind="TPU v6 lite", native=True),  # 8x16 (native)
+        dict(mesh=dict(fsdp=16, track=8), kind="TPU v6 lite", native=True),  # 8x16 (native)
+        dict(mesh=dict(data=64, fsdp=8), kind="TPU v5", native=True),  # 8x8x8 (native)
+        dict(mesh=dict(fsdp=128, track=16), kind="TPU v5", native=True),  # 8x16x16 (native)
+        dict(mesh=dict(fsdp=256, track=8), kind="TPU v5", native=True),  # 8x16x16 (native)
     ]
 
     current_mesh = {}
     for name, size in zip(mesh_axis_names, mesh_shape):
-        if name in ("fsdp", "track", "model") and size != 1:
+        if size != 1:
             current_mesh[name] = size
 
-    if "fsdp" in current_mesh and "model" in current_mesh:
-        current_mesh = (current_mesh["fsdp"], current_mesh["model"])
-    elif "fsdp" in current_mesh and "track" in current_mesh:
-        current_mesh = (current_mesh["fsdp"], current_mesh["track"])
-    else:
-        current_mesh = None
+    logging.info("Inferring XLA flags for mesh %s and device %s", current_mesh, device_kind)
 
     for config in sparse_core_offloading_configs:
         if current_mesh == config["mesh"] and device_kind == config["kind"]:
@@ -456,19 +445,25 @@ def infer_xla_performance_flags(
                 xla_tpu_enable_async_collective_fusion_fuse_all_reduce="false",
                 xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
                 xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+                xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
                 xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
-                # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
-                # TODO(changlan): Review and enable it later.
-                # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
                 xla_tpu_enable_all_gather_offload_tracing="true",
                 xla_tpu_enable_reduce_scatter_offload_tracing="true",
                 xla_tpu_enable_all_reduce_offload_tracing="true",
             )
+            # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
+            # TODO(changlan): Review and enable it later.
+            if device_kind != "TPU v6 lite":
+                flags.update(
+                    xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+                )
+
             # The available bandwidth of non-native mesh shapes is half of that compared to
             # the native mesh shape. Specify the latency modifier so that the latency hiding
             # scheduler can model the actual latency better.
             if not config["native"]:
                 flags.update(xla_tpu_sparse_core_all_gather_latency_multiplier="2")
+
             logging.log_first_n(
                 logging.INFO,
                 "Adding new XLA flags for %s:\n%s",

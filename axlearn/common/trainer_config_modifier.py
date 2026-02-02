@@ -17,6 +17,7 @@ from axlearn.common.config import (
 )
 from axlearn.common.gradient_accumulation import with_minibatch_steps
 from axlearn.common.metrics import MetricAccumulator
+from axlearn.common.module import Module
 from axlearn.common.quantized_dot_general.layers import (
     DenseGeneralBaseLayer,
     DotGeneralQuantizationType,
@@ -27,7 +28,12 @@ from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     OverrideInplaceUpdateTransformation,
 )
-from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
+from axlearn.common.utils import (
+    HybridMeshShape,
+    MeshShape,
+    PartitionSpec,
+    replace_layer_config_recursively,
+)
 
 
 class GradientAccumulationModifier(ConfigModifier):
@@ -143,6 +149,49 @@ class MeshShapeModifier(ConfigModifier):
             The modified trainer config.
         """
         cfg.mesh_shape = self._mesh_shape
+        return cfg
+
+
+class ReplaceLayerConfigModifier(ConfigModifier):
+    """Recursively replace a sub-config in the trainer config."""
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configure ReplaceLayerConfigModifier.
+
+        Attributes:
+            target_cls: The target layer class to be replaced.
+            source_config: The new config to replace the target layer's config.
+            exclude_keys: A sequence of strings specifying which fields in the source config should
+                not be copied from the target config. By default, only klass is excluded.
+        """
+
+        target_cls: Required[Module] = REQUIRED
+        source_config: Required[Configurable.Config] = REQUIRED
+        exclude_keys: Sequence[str] | None = None
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        cfg = self.config
+        self._target_cls = cfg.target_cls
+        self._source_config = cfg.source_config
+        self._exclude_keys = cfg.exclude_keys
+
+    def __call__(self, cfg: SpmdTrainer.Config) -> SpmdTrainer.Config:
+        """Recursively replace the target layer config with the new layer config.
+
+        Args:
+            cfg: The trainer config to be modified.
+
+        Returns:
+            The modified trainer config.
+        """
+        replace_layer_config_recursively(
+            cfg,
+            target_cls=self._target_cls,
+            source_config=self._source_config,
+            exclude_keys=self._exclude_keys,
+        )
         return cfg
 
 

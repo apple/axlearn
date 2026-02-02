@@ -142,7 +142,7 @@ class CompilerOptionsTest(test_utils.TestCase):
         self.assertFalse(
             sc_offload_enabled(
                 compiler_options.infer_xla_performance_flags(
-                    mesh_shape=[64, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v5p"
+                    mesh_shape=[64, 4], mesh_axis_names=("data", "fsdp"), device_kind="TPU v5"
                 )
             ),
         )
@@ -167,18 +167,27 @@ class CompilerOptionsTest(test_utils.TestCase):
         self.assertTrue(
             sc_offload_enabled(
                 compiler_options.infer_xla_performance_flags(
-                    mesh_shape=[16, 128, 16, 1],
+                    mesh_shape=[64, 8, 1, 1],
                     mesh_axis_names=("data", "fsdp", "track", "model"),
-                    device_kind="TPU v5p",
+                    device_kind="TPU v5",
                 )
             ),
         )
         self.assertTrue(
             sc_offload_enabled(
                 compiler_options.infer_xla_performance_flags(
-                    mesh_shape=[16, 256, 8, 1],
+                    mesh_shape=[1, 128, 16, 1],
                     mesh_axis_names=("data", "fsdp", "track", "model"),
-                    device_kind="TPU v5p",
+                    device_kind="TPU v5",
+                )
+            ),
+        )
+        self.assertTrue(
+            sc_offload_enabled(
+                compiler_options.infer_xla_performance_flags(
+                    mesh_shape=[1, 256, 8, 1],
+                    mesh_axis_names=("data", "fsdp", "track", "model"),
+                    device_kind="TPU v5",
                 )
             ),
         )

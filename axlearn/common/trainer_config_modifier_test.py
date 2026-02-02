@@ -9,6 +9,7 @@ from axlearn.common import causal_lm, test_utils
 from axlearn.common.attention import RepeatedTransformerLayer, StackedTransformerLayer
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
+from axlearn.common.layers import Linear
 from axlearn.common.optimizers import sgd_optimizer
 from axlearn.common.quantized_dot_general.layers import get_all_fp8_param_names
 from axlearn.common.trainer import SpmdTrainer
@@ -21,6 +22,7 @@ from axlearn.common.trainer_config_modifier import (
     OverrideInplaceUpdateTransformation,
     PartitionSpecModifier,
     RematSpecModifier,
+    ReplaceLayerConfigModifier,
 )
 from axlearn.common.trainer_test import DummyModel
 
@@ -207,6 +209,88 @@ class FP8ConfigModifierTest(test_utils.TestCase):
             [f".*/{x}" for x in get_all_fp8_param_names()],
         )
         self.assertEqual(cfg.model.linear.quantized_dot_general.fp8_amax_history_length, 1)
+
+
+class TestLinear(Linear):
+    """A test Linear layer used to verify layer replacement."""
+
+    pass
+
+
+class ReplaceLayerConfigModifierTest(test_utils.TestCase):
+    def test_replace_layer_config(self):
+        """Test that ReplaceLayerConfigModifier correctly replaces layer configs."""
+        cfg = SpmdTrainer.default_config().set(model=DummyModel.default_config())
+
+        # Verify the original config uses Linear
+        self.assertEqual(cfg.model.linear.klass, Linear)
+
+        # Create modifier to replace Linear with TestLinear
+        cfg_modifier = (
+            ReplaceLayerConfigModifier.default_config()
+            .set(
+                target_cls=Linear,
+                source_config=TestLinear.default_config(),
+            )
+            .instantiate()
+        )
+
+        # Apply the modifier
+        cfg = cfg_modifier(cfg)
+
+        # Verify the config now uses TestLinear
+        self.assertEqual(cfg.model.linear.klass, TestLinear)
+
+    def test_replace_layer_preserves_config_values(self):
+        """Test that replacing a layer preserves existing config values."""
+        cfg = SpmdTrainer.default_config().set(model=DummyModel.default_config())
+
+        # Set some config values on the Linear layer
+        cfg.model.linear.bias = True
+        cfg.model.linear.input_dim = 128
+        cfg.model.linear.output_dim = 256
+
+        # Create modifier to replace Linear with TestLinear
+        cfg_modifier = (
+            ReplaceLayerConfigModifier.default_config()
+            .set(
+                target_cls=Linear,
+                source_config=TestLinear.default_config(),
+            )
+            .instantiate()
+        )
+
+        # Apply the modifier
+        cfg = cfg_modifier(cfg)
+
+        # Verify the config now uses TestLinear
+        self.assertEqual(cfg.model.linear.klass, TestLinear)
+
+        # Verify config values are preserved
+        self.assertEqual(cfg.model.linear.bias, True)
+        self.assertEqual(cfg.model.linear.input_dim, 128)
+        self.assertEqual(cfg.model.linear.output_dim, 256)
+
+    def test_replace_layer_in_nested_config(self):
+        """Test that ReplaceLayerConfigModifier works with nested configs."""
+        cfg = SpmdTrainer.default_config().set(model=causal_lm.Model.default_config())
+
+        # Create modifier to replace StackedTransformerLayer with RepeatedTransformerLayer
+        cfg_modifier = (
+            ReplaceLayerConfigModifier.default_config()
+            .set(
+                target_cls=StackedTransformerLayer,
+                source_config=RepeatedTransformerLayer.default_config(),
+                exclude_keys=["data_merger"],
+            )
+            .instantiate()
+        )
+
+        # Apply the modifier
+        cfg = cfg_modifier(cfg)
+
+        # Verify the transformer config was replaced
+        self.assertEqual(cfg.model.decoder.transformer.klass, RepeatedTransformerLayer)
 
 
 if __name__ == "__main__":

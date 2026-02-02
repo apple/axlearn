@@ -26,6 +26,12 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import flax_struct, learner, optimizers, serialization, utils
 from axlearn.common.aot_compilation import get_devices_for_topology, reshape_devices
+from axlearn.common.attention import (
+    RepeatedTransformerLayer,
+    StackedTransformerLayer,
+    TransformerFeedForwardLayer,
+    TransformerLayer,
+)
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
 from axlearn.common.config import (
     REQUIRED,
@@ -92,6 +98,7 @@ from axlearn.common.utils import (
     prune_empty,
     prune_tree,
     pytree_children,
+    replace_layer_config_recursively,
     replicate_to_local_data,
     runtime_checks,
     save_and_offload_only_these_names_regex,
@@ -114,6 +121,82 @@ class Combo(NamedTuple):
 # pylint: disable-next=abstract-method
 class StructContainer(flax_struct.PyTreeNode):
     contents: Any
+
+
+class TestLinear(Linear):
+    pass
+
+
+class ReplaceLayerConfigRecursivelyTest(TestCase):
+    def test_setattr_copy(
+        self,
+    ):
+        input_dim = 128
+        hidden_dim = 256
+        cfg = TransformerFeedForwardLayer.default_config()
+        cfg.linear1.input_dim = input_dim
+        cfg.linear1.output_dim = hidden_dim
+        cfg.linear2.input_dim = hidden_dim
+        cfg.linear2.output_dim = input_dim
+
+        replace_layer_config_recursively(
+            cfg, target_cls=Linear, source_config=TestLinear.default_config()
+        )
+
+        # Check that both Linear retain their input_dim and hidden_dim.
+        # If setattr did not perform a copy, the same substitute cfg
+        # object would be used for both linear1 and linear2, and they
+        # would share the same input_dim and output_dim.
+        self.assertEqual(cfg.linear1.input_dim, input_dim)
+        self.assertEqual(cfg.linear1.output_dim, hidden_dim)
+        self.assertEqual(cfg.linear2.input_dim, hidden_dim)
+        self.assertEqual(cfg.linear2.output_dim, input_dim)
+
+    def test_update_nested_stacked_transformer(
+        self,
+    ):
+        updated_num_layers = 5
+        cfg = RepeatedTransformerLayer.default_config()
+        cfg.set(num_layers=2, layer=StackedTransformerLayer.default_config())
+        cfg.layer.set(num_layers=3, layer=StackedTransformerLayer.default_config())
+        cfg.layer.layer.set(num_layers=4, layer=TransformerLayer.default_config())
+        replace_layer_config_recursively(
+            cfg,
+            target_cls=StackedTransformerLayer,
+            source_config=StackedTransformerLayer.default_config().set(
+                num_layers=updated_num_layers
+            ),
+            exclude_keys=("num_layers",),
+        )
+
+        # Check that StackedTransformerLayers at both levels have been replaced by
+        # a StackedTransformerLayer with a pre-defined num_layer.
+        self.assertEqual(cfg.layer.num_layers, updated_num_layers)
+        self.assertEqual(cfg.layer.layer.num_layers, updated_num_layers)
+
+    def test_update_layer_list(
+        self,
+    ):
+        updated_input_dim = 300
+        cfg = StackedTransformerLayer.default_config()
+        cfg.set(
+            num_layers=2,
+            layer=[
+                TransformerLayer.default_config().set(input_dim=2),
+                TransformerLayer.default_config().set(input_dim=4),
+            ],
+        )
+        replace_layer_config_recursively(
+            cfg,
+            target_cls=TransformerLayer,
+            source_config=TransformerLayer.default_config().set(input_dim=updated_input_dim),
+            exclude_keys=("input_dim",),
+        )
+
+        # Check that every element in the layer list has  been replaced by
+        # a new TransformerLayer with a pre-defined input_dim.
+        self.assertEqual(cfg.layer[0].input_dim, updated_input_dim)
+        self.assertEqual(cfg.layer[1].input_dim, updated_input_dim)
 
 
 class TreeUtilsTest(TestCase):

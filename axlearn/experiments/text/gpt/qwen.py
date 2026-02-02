@@ -12,23 +12,38 @@ from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from axlearn.common import causal_lm, config, decoder
 from axlearn.common.attention import (
     FusedGroupedQKVLinear,
-    GroupedQueryAttention,
+    RematRegexSavePatterns,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
     TransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
-from axlearn.common.config import TrainerConfigFn
+from axlearn.common.config import TrainerConfigFn, config_for_function
 from axlearn.common.embedding import TransformerTextEmbeddings
+from axlearn.common.flash_attention.layer import FlashAttention
+from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
-from axlearn.common.mixture_of_experts import TopKDropFreeGating, TransformerFeedForwardDropFreeMoE
-from axlearn.common.utils import PartitionSpec
+from axlearn.common.mixture_of_experts import (
+    ApproximateTokenDropFreeMoE,
+    TopKDropFreeGating,
+    TransformerFeedForwardDropFreeMoE,
+)
+from axlearn.common.trainer_config_modifier import (
+    ChainConfigModifier,
+    MeshShapeModifier,
+    RematSpecModifier,
+    ReplaceLayerConfigModifier,
+)
+from axlearn.common.utils import (
+    HybridMeshShape,
+    PartitionSpec,
+    save_and_offload_only_these_names_regex,
+)
 from axlearn.experiments.text.gpt.common import (
     SourceBuilder,
     adamw_decoupled_learner_config,
     evaler_config_dict,
-    flash_attention_config,
     get_trainer_config_fn,
     make_config_name,
     mesh_shape_from_axes,
@@ -39,19 +54,15 @@ from axlearn.experiments.text.gpt.common import (
     scaled_hidden_dim,
 )
 
-MODEL_SIZES = ("30B-A3B",)
-
-MAX_SEQUENCE_LENGTH = {
-    "30B-A3B": 8192,
+CONFIGS = {
+    "30B-A3B": [
+        (16 * 1024 * 1024, 32 * 1024),  # 16M tokens, 32k seq len
+        (8 * 1024 * 1024, 8 * 1024),  # 8M tokens, 8k seq len
+    ],
 }
 
 _BASE_MODEL_HIDDEN_DIM = 768
 
-MOE_DIM_TO_MESH_AXIS_MAP = {
-    "me": PartitionSpec(None, None),
-    "emh": PartitionSpec("expert", "fsdp", "model"),
-    "ehm": PartitionSpec("expert", "model", "fsdp"),
-}
 
 QWEN3_VOCAB_SIZE = 151936
 QWEN3_BOS_TOKEN_ID = 151643
@@ -84,12 +95,10 @@ def get_trainer_kwargs(
     model_size: str,
     *,
     vocab_size: int,
+    batch_size: int,
     max_sequence_length: int,
-    flash_attention: bool,
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
-    tokens_per_batch = 8 * (1024**2)  # 8M tokens.
-
     # pylint: disable=use-dict-literal
     if model_size == "30B-A3B":
         # https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507/blob/main/config.json
@@ -114,15 +123,70 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=0.01, weight_decay=1e-4, lr_warmup_steps=5_000),
             max_sequence_length=max_sequence_length,
-            train_batch_size=tokens_per_batch // max_sequence_length,  # 8M tokens.
+            train_batch_size=batch_size // max_sequence_length,
             max_step=250_000,
-            mesh_shape=mesh_shape_from_axes(data=-1),
+            mesh_shape=mesh_shape_from_axes(fsdp=8, data=-1),
             mesh_rules=(
-                ("tpu-v5p-(1024|2048)", mesh_shape_from_axes(fsdp=8, data=-1)),
-                # H100/A100 80G
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-64",
-                    mesh_shape_from_axes(fsdp=8, data=-1),
+                    "tpu-v5p-(1024|2048)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=8, data=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.FLASH_CONTEXT.value,
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.LINEAR1_X.value,
+                                                    RematRegexSavePatterns.MOE_GATING.value,
+                                                ]
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                # B200/H100/A100 80G
+                (
+                    "gpu-(p6-b200.48xlarge|p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-512",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=HybridMeshShape(
+                                    ici_mesh_shape=mesh_shape_from_axes(fsdp=8),
+                                    dcn_mesh_shape=mesh_shape_from_axes(data=-1),
+                                ),
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=jax_remat_policies.dots_with_no_batch_dims_saveable,
+                                    ),
+                                }
+                            ),
+                            ReplaceLayerConfigModifier.default_config().set(
+                                target_cls=TransformerFeedForwardDropFreeMoE,
+                                source_config=ApproximateTokenDropFreeMoE.default_config(),
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )
@@ -147,9 +211,7 @@ def get_trainer_kwargs(
     )  # pytype: disable=annotation-type-mismatch
     learner_kwargs.update(trainer_kwargs.get("learner_kwargs", {}))
 
-    merged_trainer_kwargs["model_cfg"] = model_config(
-        flash_attention=flash_attention, **model_kwargs
-    )
+    merged_trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     # If a model is smaller than the base model, do not scale.
     linear_layer_lr_multiplier = min(_BASE_MODEL_HIDDEN_DIM / model_kwargs["hidden_dim"], 1.0)
     merged_trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(
@@ -181,7 +243,6 @@ def model_config(
     num_experts_per_token: int = 2,
     dropout_rate: float = 0.0,
     tie_word_embeddings: bool = False,
-    flash_attention: bool = False,
     **kwargs,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
@@ -203,7 +264,6 @@ def model_config(
         atten_hidden_dim: The attention hidden dimension. If None, defaults to hidden_dim.
         num_experts_per_token: Number of experts to route each token to.
         tie_word_embeddings: If True, tie the input and output word embeddings.
-        flash_attention: If True, use flash attention implementation.
         kwargs: Default kwargs forwarded to `common_model_config`.
 
     Returns:
@@ -224,11 +284,18 @@ def model_config(
     norm_cfg = RMSNorm.default_config().set(eps=1e-6, forward_dtype=jnp.float32)
 
     transformer_layer_cfg = TransformerLayer.default_config()
-    if flash_attention:
-        transformer_layer_cfg.self_attention.attention = flash_attention_config()
-    else:
-        transformer_layer_cfg.self_attention.attention = GroupedQueryAttention.default_config()
-
+    transformer_layer_cfg.self_attention.attention = FlashAttention.default_config().set(
+        causal=True,
+        mha_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bsnh": PartitionSpec(("data", "expert", "fsdp"), None, ("seq", "model"), None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), None, None, None),
+        },
+        output_dim_to_partition_spec={
+            "btnh": PartitionSpec(("data", "expert", "fsdp"), "seq", "model", None),
+            "bnts": PartitionSpec(("data", "expert", "fsdp"), "model", "seq", None),
+        },
+    )
     transformer_layer_cfg.self_attention.attention.set(
         # Use q/k-norm in keeping with:
         # <https://arxiv.org/abs/2309.14322>
@@ -236,12 +303,20 @@ def model_config(
         key_scale=ScaleKey.default_config().set(norm=norm_cfg.clone()),
         hidden_dim=atten_hidden_dim,
         o_partition_spec=(("data", "expert", "fsdp"), "seq", "model"),
+        tpu_block_size=2048,
+        backend_overrides=dict(
+            splash_use_fused_bwd_kernel=True,
+        ),
     )
     expert_config = TransformerFeedForwardDropFreeMoE.default_config().set(
         num_experts=num_experts,
         input_dim=hidden_dim,
         num_groups=num_groups,
-        dim_to_mesh_axis_map=MOE_DIM_TO_MESH_AXIS_MAP,
+        dim_to_mesh_axis_map={
+            "me": PartitionSpec(None, None),
+            "emh": PartitionSpec("expert", ("fsdp", "seq"), "model"),
+            "ehm": PartitionSpec("expert", "model", ("fsdp", "seq")),
+        },
         input_dim_to_partition_spec={
             "bsm": PartitionSpec(("data", "expert", "fsdp"), "seq", None),
         },
@@ -255,7 +330,7 @@ def model_config(
             train_capacity_factor=train_capacity_factor,
         ),
         load_balance_loss_weight=1e-3,
-        tiling=(512, 512, 512),
+        tiling=(128, 512, 512),
     )
 
     emb_cfg: TransformerTextEmbeddings.Config = TransformerTextEmbeddings.default_config().set(
@@ -296,7 +371,8 @@ def model_config(
     cfg.decoder.pad_token_id = QWEN3_PAD_TOKEN_ID
     cfg.batch_axis_names = ("data", "expert", "fsdp")
     cfg.decoder.transformer.layer.remat_spec = RematSpec(
-        prevent_cse=False, policy=jax_remat_policies.dots_saveable
+        prevent_cse=False,
+        policy=save_or_offload_flash_attention_policy(),
     )
     return cfg
 
@@ -314,28 +390,26 @@ def trainer_configs(
     arch = "qwen3"
     config_map = {}
     vocab_size = QWEN3_VOCAB_SIZE
-    for model_size in MODEL_SIZES:
-        seq_len = MAX_SEQUENCE_LENGTH[model_size]
-        config_name = make_config_name(arch=arch, model_size=model_size)
-        kwargs = get_trainer_kwargs(
-            model_size,
-            vocab_size=vocab_size,
-            flash_attention=True,
-            max_sequence_length=seq_len,
-        )
-
-        # Test models sometimes override it to a very small length.
-        seq_len = kwargs.pop("max_sequence_length", seq_len)
-
-        # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
-        config_map[config_name] = get_trainer_config_fn(
-            train_input_source=train_input_source(
-                vocab_size=vocab_size, max_sequence_length=seq_len
-            ),
-            evalers=evaler_config_dict(
-                eval_input_sources(vocab_size=vocab_size, max_sequence_length=seq_len),
-            ),
-            **kwargs,
-        )
+    for model_size, configs in CONFIGS.items():
+        base_name = make_config_name(arch=arch, model_size=model_size)
+        for batch_size, seq_len in configs:
+            kwargs = get_trainer_kwargs(
+                model_size,
+                vocab_size=vocab_size,
+                batch_size=batch_size,
+                max_sequence_length=seq_len,
+            )
+            seq_len = kwargs.pop("max_sequence_length", seq_len)
+            config_name = f"{base_name}-bs{batch_size // 1024 // 1024}m-seq{seq_len // 1024}k"
+            # pylint: disable-next=unexpected-keyword-arg,missing-kwoa
+            config_map[config_name] = get_trainer_config_fn(
+                train_input_source=train_input_source(
+                    vocab_size=vocab_size, max_sequence_length=seq_len
+                ),
+                evalers=evaler_config_dict(
+                    eval_input_sources(vocab_size=vocab_size, max_sequence_length=seq_len),
+                ),
+                **kwargs,
+            )
 
     return config_map

@@ -4630,13 +4630,16 @@ class RematRegexSavePatterns(enum.Enum):
     O_PROJ = r".*o_proj"
     CONTEXT = r".*context"
     LINEAR1_X = r".*linear1_[01]"
-    LINEAR2_X = r".*linear2_[01]"
+    LINEAR2_X = r".*linear2(_[01])?"
+    GATE_WEIGHTS = r".*gate_weights"
+    GATE_ASSIGNMENT = r".*gate_assignment"
     # This is called native attention because the "context" remat point only exists when using
     # native attention, e.g. `MultiheadAttention` or `GroupedQueryAttention`.
     NATIVE_ATTENTION = ".*([qkvo]_proj|context)"
     FLASH_CONTEXT = f".*{FLASH_ATTN_RESIDUAL_NAME}"
     FLASH_ATTENTION = "|".join([FLASH_CONTEXT, QKV_PROJ, O_PROJ])
     FEED_FORWARD = "|".join([LINEAR1_X, LINEAR2_X])
+    MOE_GATING = "|".join([GATE_WEIGHTS, GATE_ASSIGNMENT])
     INPUT = r".*input"
 
 
