@@ -47,6 +47,9 @@ _PATHWAYS_RESOURCE_MANAGER_PORT = 29001
 # The specific value is not important, as long as clients and servers use the same port.
 _PATHWAYS_WORKER_PORT = 29001
 _COLOCATED_CONTAINER_PORT = 50051
+# The HTTP port used by the application server for health checks.
+# This is where the /v1/health endpoint is served (e.g., by softserve).
+_HTTP_HEALTH_CHECK_PORT = 8080
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
 # Note: This image has been tested with both Jax 0.8.2 and Jax 0.9.0
@@ -881,6 +884,11 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         target_port: Optional[int] = None
         enable_service: bool = None
 
+        # Health probe configuration for inference pods.
+        # Max startup time = startup_probe_failure_threshold * 10 seconds (probe period).
+        # Default 360 allows up to 1 hour for model loading.
+        startup_probe_failure_threshold: Optional[int] = None
+
         colocated_python: Required[PathwaysColocatedPythonPlugin.Config] = REQUIRED
 
     @classmethod
@@ -920,6 +928,14 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "target_port",
             None,
             "port where a service can access application, set at head container",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "startup_probe_failure_threshold",
+            360,
+            "Number of consecutive failures before the startup probe considers the container "
+            "failed. Max startup time = threshold * 10 seconds. Default 360 allows 1 hour. "
+            "Increase for larger models that need more loading time.",
             **common_kwargs,
         )
 
@@ -1061,7 +1077,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "requests": {"cpu": cpu_req, "memory": mem_req},
             "limits": {"cpu": cpu_req, "memory": mem_req},
         }
-        return dict(
+        container = dict(
             name=cfg.name,
             image=cfg.image_id or self._bundler.id(cfg.name),
             command=["bash", "-c", cfg.command],
@@ -1093,6 +1109,36 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 [dict(containerPort=self.config.target_port)] if self.config.enable_service else []
             ),
         )
+
+        # Add health probes for inference pods when service is enabled.
+        # This ensures K8s services only route traffic to healthy pods that have
+        # finished loading models and are ready to serve requests.
+        if self.config.enable_service:
+            # startupProbe: Allows long startup time for model loading.
+            # Max startup time = failureThreshold * periodSeconds.
+            container["startupProbe"] = {
+                "httpGet": {
+                    "path": "/v1/health",
+                    "port": _HTTP_HEALTH_CHECK_PORT,
+                },
+                "initialDelaySeconds": 30,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": self.config.startup_probe_failure_threshold,
+            }
+            # readinessProbe: Checks if the pod is ready to receive traffic.
+            # Once startup completes, this probe runs to determine traffic routing.
+            container["readinessProbe"] = {
+                "httpGet": {
+                    "path": "/v1/health",
+                    "port": _HTTP_HEALTH_CHECK_PORT,
+                },
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            }
+
+        return container
 
     def build_leader_pod(self) -> Nested[Any]:
         # pylint: disable-next=protected-access
