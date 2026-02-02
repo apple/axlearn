@@ -15,13 +15,11 @@ from typing import Callable, Union
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax._src.mesh import thread_resources
-from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 from numpy.typing import ArrayLike
 
 from axlearn.common import ein_ops
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, get_current_abstract_or_physical_mesh
 
 
 class WindowType(enum.Enum):
@@ -402,9 +400,9 @@ def sharded_fft(n: int, partition_spec: PartitionSpec) -> Callable[[Tensor], Ten
     Returns:
         A callable that computes FFT.
     """
-    return shard_map(
+    return jax.shard_map(
         lambda x: jnp.fft.rfft(cast_for_rfft(x), n=n),
-        mesh=thread_resources.env.physical_mesh,
+        mesh=get_current_abstract_or_physical_mesh(),
         in_specs=partition_spec,
         out_specs=partition_spec,
     )

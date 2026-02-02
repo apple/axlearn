@@ -6,7 +6,6 @@ from typing import Callable, Optional, Union
 import jax
 from jax import numpy as jnp
 from jax._src.mesh import thread_resources
-from jax.experimental.shard_map import shard_map
 
 from axlearn.common.attention import (
     BaseQKVLinear,
@@ -40,7 +39,14 @@ from axlearn.common.rattention.kernels.linear_attention_kernels import (
 )
 from axlearn.common.rattention.kernels.utils import FeatureMap, get_feature_map
 from axlearn.common.rattention.utils import GroupRMSNorm
-from axlearn.common.utils import Nested, NestedTensor, PartitionSpec, Tensor, TensorSpec
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    PartitionSpec,
+    Tensor,
+    TensorSpec,
+    get_current_abstract_or_physical_mesh,
+)
 
 
 def apply_rotary_position_embeddings(
@@ -214,12 +220,12 @@ class ResidualLinearAttention(BaseLayer):
             chunk_size=cfg.chunk_size,
         )
 
-        sharded_la = shard_map(
+        sharded_la = jax.shard_map(
             rla_impl,
-            mesh=thread_resources.env.physical_mesh,
+            mesh=get_current_abstract_or_physical_mesh(),
             in_specs=tuple(in_specs),
             out_specs=cfg.output_partition_spec,
-            check_rep=False,
+            check_vma=False,
         )
         return sharded_la
 
@@ -309,9 +315,11 @@ class ResidualLinearAttention(BaseLayer):
         h0 = self._compute_init_state(batch_size=q_proj.shape[0]).astype(v_proj.dtype)
         if time_step is None:
             sharded_la = self._get_linear_attention_impl(decoding_mode=False)
+            # pylint: disable-next=too-many-function-args
             rla_output = sharded_la(q_proj, k_proj, v_proj, h0)
         else:
             sharded_la = self._get_linear_attention_impl(decoding_mode=True)
+            # pylint: disable-next=too-many-function-args
             rla_output = sharded_la(q_proj, k_proj, v_proj, h0, time_step)
 
         if isinstance(rla_output, tuple):

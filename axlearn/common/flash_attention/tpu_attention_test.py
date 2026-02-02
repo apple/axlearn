@@ -14,7 +14,6 @@ from absl.testing import absltest, parameterized
 from jax._src.mesh import thread_resources
 from jax.experimental import mesh_utils
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
-from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec
 
 from axlearn.common.attention_bias import (
@@ -686,12 +685,12 @@ class TestFlashAttention(TestCase):
             }
 
             # Run attention with shard_map
-            partitioned_fn = shard_map(
+            partitioned_fn = jax.shard_map(
                 specs.fn,
                 mesh=mesh,
                 in_specs=(in_specs,),
                 out_specs=PartitionSpec(batch_axis, "seq", "model", None),
-                check_rep=False,
+                check_vma=False,
             )
             out = partitioned_fn(input_batch)
 
@@ -804,12 +803,12 @@ class TestFlashAttention(TestCase):
             }
 
             # Run attention with shard_map
-            partitioned_fn = shard_map(
+            partitioned_fn = jax.shard_map(
                 specs.fn,
                 mesh=mesh,
                 in_specs=(in_specs,),
                 out_specs=PartitionSpec(batch_axis, "seq", "model", None),
-                check_rep=False,
+                check_vma=False,
             )
             out = partitioned_fn(input_batch)
 

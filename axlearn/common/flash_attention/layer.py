@@ -9,7 +9,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging
-from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 from jax.sharding import PartitionSpec
 
@@ -19,7 +18,12 @@ from axlearn.common.base_layer import ParameterSpec
 from axlearn.common.config import ConfigBase, ConfigModifier, config_class
 from axlearn.common.flash_attention.utils import flash_attention_implementation
 from axlearn.common.module import Module
-from axlearn.common.utils import Tensor, maybe_shard, with_sharding_constraint
+from axlearn.common.utils import (
+    Tensor,
+    get_current_abstract_or_physical_mesh,
+    maybe_shard,
+    with_sharding_constraint,
+)
 
 
 class FlashAttention(GroupedQueryAttention):
@@ -292,15 +296,15 @@ class FlashAttention(GroupedQueryAttention):
             "page_tables": cfg.mha_dim_to_partition_spec.get("bs", PartitionSpec(None)),
             **flash_specs.additional_in_specs,
         }
-        partitioned_mha = shard_map(
+        partitioned_mha = jax.shard_map(
             flash_specs.fn,
-            mesh=thread_resources.env.physical_mesh,
+            mesh=get_current_abstract_or_physical_mesh(),
             in_specs=(input_batch_specs,),
             # O [batch_size, seq_len, num_heads, per_head_dim].
             out_specs=cfg.mha_dim_to_partition_spec["btnh"],
             # Disables a checking pass which jax can't apply when there's a triton | pallas
             # call in the body.
-            check_rep=False,
+            check_vma=False,
         )
 
         # Note: we use dropout layer's prng_key so the dropout result is identical to

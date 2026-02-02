@@ -158,6 +158,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from absl import logging
 from typing_extensions import Protocol
@@ -417,7 +418,20 @@ class InvocationContext:  # pytype: disable=invalid-annotation
                 if self.prng_key is None:
                     kwargs[k] = None
                 else:
-                    kwargs[k] = jax.random.fold_in(self.prng_key, _generate_seed_from_name(name))
+                    prng_key = self.prng_key
+                    seed = _generate_seed_from_name(name)
+                    mesh = jax.sharding.get_abstract_mesh()
+                    if not mesh.empty:
+                        # In JAX >= 0.8, the prng key and seed must have the same mesh.
+                        prng_key = jax.lax.with_sharding_constraint(
+                            prng_key,
+                            jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec()),
+                        )
+                        seed = jax.lax.with_sharding_constraint(
+                            jnp.asarray(seed, dtype="uint32"),
+                            jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec()),
+                        )
+                    kwargs[k] = jax.random.fold_in(prng_key, seed)
             elif k == "output_collection":
                 kwargs[k] = self.output_collection.add_child(name)
             else:

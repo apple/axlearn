@@ -19,7 +19,6 @@ import jax.numpy as jnp
 import numpy as np
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
-from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
@@ -1574,11 +1573,11 @@ class TransformerFeedForwardDropFreeMoETest(TestCase):
 
         @jax.jit
         @partial(
-            shard_map,
+            jax.shard_map,
             in_specs=(P("expert", None), P("expert")),
             out_specs=(P("expert"), P("expert"), P("expert"), P(None)),
             mesh=mesh,
-            check_rep=False,
+            check_vma=False,
         )
         def shard_map_fn(tokens_per_expert, sorted_inputs):
             sorted_inputs, tokens_per_expert, (dropped_tokens,), residuals = _all_to_all_dispatch(

@@ -30,8 +30,6 @@ from typing import NamedTuple, Optional, Union
 import jax
 import jax.ad_checkpoint
 from jax import numpy as jnp
-from jax._src.mesh import thread_resources
-from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 
 from axlearn.common.attention import (
@@ -53,7 +51,13 @@ from axlearn.common.ssm_kernels.ssd_kernels import (
     ssd_linear_scan_w_hidden_states,
     ssd_linear_scan_w_timestep,
 )
-from axlearn.common.utils import Nested, Tensor, TensorSpec, with_sharding_constraint
+from axlearn.common.utils import (
+    Nested,
+    Tensor,
+    TensorSpec,
+    get_current_abstract_or_physical_mesh,
+    with_sharding_constraint,
+)
 
 
 class MambaDtProjInitializer(Initializer):
@@ -423,9 +427,9 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
             return y
 
         partition_specs = cfg.mamba_dim_to_partition_spec
-        partitioned_mamba_scan = shard_map(
+        partitioned_mamba_scan = jax.shard_map(
             jit_mamba_scan,
-            mesh=thread_resources.env.physical_mesh,
+            mesh=get_current_abstract_or_physical_mesh(),
             in_specs=(
                 partition_specs["btd"],
                 partition_specs["sd"],
@@ -435,7 +439,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
                 partition_specs["1d"],
             ),
             out_specs=cfg.output_partition_spec,
-            check_rep=False,
+            check_vma=False,
         )
         # Enforce sharding constraints on input and output.
         x = with_sharding_constraint(x, partition_specs["btd"])
@@ -445,6 +449,7 @@ class PallasLinearScanMambaRecurrence(BaseMambaRecurrence):
         delta = with_sharding_constraint(delta, partition_specs["btd"])
         d = with_sharding_constraint(d, partition_specs["1d"])
         y = with_sharding_constraint(
+            # pylint: disable-next=too-many-function-args
             partitioned_mamba_scan(x, a, b, c, delta, d),
             cfg.output_partition_spec,
         )
@@ -1632,9 +1637,9 @@ class PallasSSDRecurrence(BaseSSDRecurrence):
         """
         cfg = self.config
 
-        sharded_ssd = shard_map(
+        sharded_ssd = jax.shard_map(
             ssd,
-            mesh=thread_resources.env.physical_mesh,
+            mesh=get_current_abstract_or_physical_mesh(),
             in_specs=(
                 cfg.mamba2_dim_to_partition_spec["bhtd"],
                 cfg.mamba2_dim_to_partition_spec["bhtd"],
@@ -1642,11 +1647,12 @@ class PallasSSDRecurrence(BaseSSDRecurrence):
                 cfg.mamba2_dim_to_partition_spec["bht"],
             ),
             out_specs=cfg.output_partition_spec,
-            check_rep=False,
+            check_vma=False,
         )
         # The kernel code `ssd_kernels.py` uses q/k/v notations, which corresponds to b/c/x.
         x_bar = x * jnp.expand_dims(delta, axis=-1)
         loga_bar = log_a * delta
+        # pylint: disable-next=too-many-function-args
         o = sharded_ssd(c, b, x_bar, loga_bar)
 
         o = o + d * x

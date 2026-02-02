@@ -11,7 +11,6 @@ import pytest
 import torch
 from absl.testing import parameterized
 from jax.experimental import mesh_utils
-from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh, PartitionSpec
 from torch.nn import functional as F
 
@@ -363,7 +362,7 @@ class ShardSSDPallasKernelTest(TestCase):
             Note: current version assumes that h0 is None, for which you don't
             need to provide partition spec.
             """
-            sharded_ssd = shard_map(
+            sharded_ssd = jax.shard_map(
                 ssd,
                 mesh=mesh,
                 in_specs=(
@@ -378,11 +377,12 @@ class ShardSSDPallasKernelTest(TestCase):
                     PartitionSpec(("data", "expert", "fsdp"), ("seq", "model"), None),
                 ),
                 out_specs=PartitionSpec(("data", "expert", "fsdp"), "model", "seq", None),
-                check_rep=False,
+                check_vma=False,
             )
             return sharded_ssd
 
         sharded_ssd = get_sharded_ssd(mesh)
+        # pylint: disable-next=too-many-function-args
         o_pallas = sharded_ssd(q, k, v, log_alpha)
 
         assert_allclose(o_pallas, o_ref, atol=1e-3, rtol=1e-3)

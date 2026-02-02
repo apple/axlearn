@@ -8,14 +8,13 @@ from typing import Callable, Optional
 import jax
 import jax.numpy as jnp
 from jax._src.mesh import thread_resources
-from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec
 
 from axlearn.common.kv_cache.base_kv_cache import KVState
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.kv_cache.paged_kv_cache_gpu_kernel import gpu_scatter_update_pages_shmap_fn
 from axlearn.common.kv_cache.paged_kv_cache_tpu_kernel import tpu_scatter_update_pages_shmap_fn
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, get_current_abstract_or_physical_mesh
 
 
 def reconstruct_kv(page_tables: Tensor, pages: Tensor) -> Tensor:
@@ -85,9 +84,10 @@ def scatter_update_pages_kernel(
     model_axis = "model"
     if model_axis not in mesh.axis_names:
         model_axis = None
-    return shard_map(
+    # pylint: disable-next=too-many-function-args
+    return jax.shard_map(
         shmap_fn,
-        mesh=mesh,
+        mesh=get_current_abstract_or_physical_mesh(),
         in_specs=(
             PartitionSpec(model_axis, None, None, None),
             PartitionSpec(model_axis, None, None, None),
@@ -95,7 +95,7 @@ def scatter_update_pages_kernel(
             PartitionSpec(None),
         ),
         out_specs=PartitionSpec(model_axis, None, None, None),
-        check_rep=False,
+        check_vma=False,
     )(kv_pages, kv_proj, page_indices, key_positions)
 
 

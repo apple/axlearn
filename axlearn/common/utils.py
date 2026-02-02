@@ -645,6 +645,14 @@ def maybe_shard(x: NestedTensor, partition_spec: Optional[PartitionSpec]) -> Nes
     return with_sharding_constraint(x, PartitionSpec(*partition_spec))
 
 
+def get_current_abstract_or_physical_mesh() -> jax.sharding.AbstractMesh | jax.sharding.Mesh:
+    """Returns the current abstract mesh if it's set, or the physical mesh otherwise."""
+    mesh = jax.sharding.get_abstract_mesh()
+    if mesh.empty:
+        return thread_resources.env.physical_mesh
+    return mesh
+
+
 def replicate_to_local_data(x: NestedTensor) -> NestedTensor:
     """Replicates and converts Tensors in `x` to local DeviceArrays.
 
@@ -1987,8 +1995,8 @@ def raise_for_cycles(tree: Any):
         raise ValueError(
             "Circular reference in args, kwargs, or context.\n"
             "Descendant refers to ancestor.\n"
-            f"Descendant KeyPath: {cycles["descendant"]}.\n"
-            f"Ancestor KeyPath: {cycles["ancestor"]}."
+            f'Descendant KeyPath: {cycles["descendant"]}.\n'
+            f'Ancestor KeyPath: {cycles["ancestor"]}.'
         )
 
 

@@ -26,7 +26,6 @@ import numpy as np
 from absl import logging
 from jax import lax
 from jax.experimental.pjit import pjit
-from jax.experimental.shard_map import shard_map
 from jax.interpreters.pxla import thread_resources
 
 import axlearn.common.megablock.ops as mblx
@@ -65,6 +64,7 @@ from axlearn.common.utils import (
     Tensor,
     VDict,
     flatten_items,
+    get_current_abstract_or_physical_mesh,
     get_recursively,
     infer_mesh_shape,
     set_recursively,
@@ -2395,8 +2395,8 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         mesh = thread_resources.env.physical_mesh
 
         @partial(
-            shard_map,
-            mesh=mesh,
+            jax.shard_map,
+            mesh=get_current_abstract_or_physical_mesh(),
             in_specs=(
                 cfg.input_dim_to_partition_spec["bsm"],
                 cfg.input_dim_to_partition_spec["bsm"],
@@ -2411,7 +2411,7 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             ),
             # Disables a checking pass which jax can't apply when there's a triton | pallas
             # call in the body.
-            check_rep=False,
+            check_vma=False,
         )
         def wrapper(
             x: Tensor,
