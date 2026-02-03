@@ -580,3 +580,91 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             self.assertEqual(lws["size"], 5)
             self.assertEqual(len(leader_template["spec"]["containers"]), 3)
             self.assertEqual(len(worker_template["spec"]["containers"]), 1)
+
+    @parameterized.parameters(
+        # Default values
+        dict(
+            health_check_path=None,
+            health_check_port=None,
+            startup_probe_failure_threshold=None,
+            expected_path="/v1/health",
+            expected_port=8080,
+            expected_threshold=360,
+        ),
+        # Custom values
+        dict(
+            health_check_path="/custom/health",
+            health_check_port=9090,
+            startup_probe_failure_threshold=120,
+            expected_path="/custom/health",
+            expected_port=9090,
+            expected_threshold=120,
+        ),
+    )
+    def test_health_probes_configuration(
+        self,
+        health_check_path,
+        health_check_port,
+        startup_probe_failure_threshold,
+        expected_path,
+        expected_port,
+        expected_threshold,
+    ):
+        """Tests health probe configuration with default and custom values."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                enable_service=True,
+                health_check_path=health_check_path,
+                health_check_port=health_check_port,
+                startup_probe_failure_threshold=startup_probe_failure_threshold,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            # pylint: disable-next=protected-access
+            container = builder._build_head_container()
+
+            # Verify startupProbe
+            self.assertIn("startupProbe", container)
+            startup_probe = container["startupProbe"]
+            self.assertEqual(startup_probe["httpGet"]["path"], expected_path)
+            self.assertEqual(startup_probe["httpGet"]["port"], expected_port)
+            self.assertEqual(startup_probe["failureThreshold"], expected_threshold)
+
+            # Verify readinessProbe
+            self.assertIn("readinessProbe", container)
+            readiness_probe = container["readinessProbe"]
+            self.assertEqual(readiness_probe["httpGet"]["path"], expected_path)
+            self.assertEqual(readiness_probe["httpGet"]["port"], expected_port)
+            # readinessProbe failureThreshold is always 3
+            self.assertEqual(readiness_probe["failureThreshold"], 3)
+
+    def test_no_health_probes_when_service_disabled(self):
+        """Tests that health probes are not added when enable_service is False."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                enable_service=False,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            # pylint: disable-next=protected-access
+            container = builder._build_head_container()
+
+            # Verify no health probes are present
+            self.assertNotIn("startupProbe", container)
+            self.assertNotIn("readinessProbe", container)
