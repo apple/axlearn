@@ -123,7 +123,7 @@ class StructContainer(flax_struct.PyTreeNode):
     contents: Any
 
 
-class TestLinear(Linear):
+class DummyLinear(Linear):
     pass
 
 
@@ -140,7 +140,7 @@ class ReplaceLayerConfigRecursivelyTest(TestCase):
         cfg.linear2.output_dim = input_dim
 
         replace_layer_config_recursively(
-            cfg, target_cls=Linear, source_config=TestLinear.default_config()
+            cfg, target_cls=Linear, source_config=DummyLinear.default_config()
         )
 
         # Check that both Linear retain their input_dim and hidden_dim.

@@ -211,7 +211,7 @@ class FP8ConfigModifierTest(test_utils.TestCase):
         self.assertEqual(cfg.model.linear.quantized_dot_general.fp8_amax_history_length, 1)
 
 
-class TestLinear(Linear):
+class DummyLinear(Linear):
     """A test Linear layer used to verify layer replacement."""
 
     pass
@@ -225,12 +225,12 @@ class ReplaceLayerConfigModifierTest(test_utils.TestCase):
         # Verify the original config uses Linear
         self.assertEqual(cfg.model.linear.klass, Linear)
 
-        # Create modifier to replace Linear with TestLinear
+        # Create modifier to replace Linear with DummyLinear
         cfg_modifier = (
             ReplaceLayerConfigModifier.default_config()
             .set(
                 target_cls=Linear,
-                source_config=TestLinear.default_config(),
+                source_config=DummyLinear.default_config(),
             )
             .instantiate()
         )
@@ -238,8 +238,8 @@ class ReplaceLayerConfigModifierTest(test_utils.TestCase):
         # Apply the modifier
         cfg = cfg_modifier(cfg)
 
-        # Verify the config now uses TestLinear
-        self.assertEqual(cfg.model.linear.klass, TestLinear)
+        # Verify the config now uses DummyLinear
+        self.assertEqual(cfg.model.linear.klass, DummyLinear)
 
     def test_replace_layer_preserves_config_values(self):
         """Test that replacing a layer preserves existing config values."""
@@ -250,12 +250,12 @@ class ReplaceLayerConfigModifierTest(test_utils.TestCase):
         cfg.model.linear.input_dim = 128
         cfg.model.linear.output_dim = 256
 
-        # Create modifier to replace Linear with TestLinear
+        # Create modifier to replace Linear with DummyLinear
         cfg_modifier = (
             ReplaceLayerConfigModifier.default_config()
             .set(
                 target_cls=Linear,
-                source_config=TestLinear.default_config(),
+                source_config=DummyLinear.default_config(),
             )
             .instantiate()
         )
@@ -263,8 +263,8 @@ class ReplaceLayerConfigModifierTest(test_utils.TestCase):
         # Apply the modifier
         cfg = cfg_modifier(cfg)
 
-        # Verify the config now uses TestLinear
-        self.assertEqual(cfg.model.linear.klass, TestLinear)
+        # Verify the config now uses DummyLinear
+        self.assertEqual(cfg.model.linear.klass, DummyLinear)
 
         # Verify config values are preserved
         self.assertEqual(cfg.model.linear.bias, True)
