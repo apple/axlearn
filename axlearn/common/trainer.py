@@ -1057,8 +1057,17 @@ class SpmdTrainer(Module):
         if len(device_kinds) != 1:
             raise RuntimeError(f"Heterogenous device kinds ({device_kinds}) are not supported.")
         device_kind = device_kinds.pop()
+
+        mesh_shape = cfg.mesh_shape
+        if isinstance(mesh_shape, HybridMeshShape):
+            # Combine dcn_mesh_shape and ici_mesh_shape.
+            dcn_mesh_shape = mesh_shape.dcn_mesh_shape
+            ici_mesh_shape = mesh_shape.ici_mesh_shape
+            assert len(dcn_mesh_shape) == len(ici_mesh_shape)
+            mesh_shape = tuple(x * y for x, y in zip(dcn_mesh_shape, ici_mesh_shape))
+
         options = infer_xla_performance_flags(
-            mesh_shape=cfg.mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
+            mesh_shape=mesh_shape, mesh_axis_names=cfg.mesh_axis_names, device_kind=device_kind
         )
         logging.log_first_n(logging.INFO, "Compiler options: %s", 1, options)
         if not with_xsc:
