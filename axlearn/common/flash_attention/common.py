@@ -6,6 +6,7 @@
 
 """Common utilities across backends."""
 
+import math
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any, Literal, NamedTuple, Optional
@@ -16,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 from absl import logging
 from jax.experimental import pallas as pl
+from jax.sharding import Mesh, PartitionSpec
 
 from axlearn.common.attention import compute_gqa_context, compute_gqa_logits, softmax_with_biases
 from axlearn.common.attention_bias import BaseAttentionBias, MaskFn, SegmentIdAttentionBias
@@ -637,3 +639,38 @@ def maybe_pad_inputs(
     chex.assert_equal(key.shape[1] % block_size, 0)
     chex.assert_equal(value.shape[1] % block_size, 0)
     return query, key, value, segment_id
+
+
+def split_prng_keys_for_shard_map(
+    prng_key: Tensor, sharding_spec: PartitionSpec, mesh: Mesh
+) -> Tensor:
+    """Pre-split PRNG keys for shard_map to ensure unique randomness per device.
+
+    shard_map does not automatically split PRNG keys across devices. This function
+    creates separate keys for each device based on the sharding specification.
+
+    Args:
+        prng_key: The original PRNG key.
+        sharding_spec: PartitionSpec for the key distribution.
+        mesh: The JAX mesh.
+
+    Returns:
+        PRNG keys shaped for shard_map distribution. Each device receives a unique key.
+    """
+
+    def _axis_size(axis):
+        if axis is None:
+            return 1
+        if isinstance(axis, tuple):
+            return math.prod(mesh.shape[a] for a in axis)
+        return mesh.shape[axis]
+
+    axis_sizes = tuple(_axis_size(axis) for axis in sharding_spec)
+    num_devices = math.prod(axis_sizes)
+    if num_devices == 1:
+        return prng_key
+
+    chex.assert_rank(prng_key, 1)
+    keys = jax.random.split(prng_key, num_devices)
+    out_shape = axis_sizes[:-1] + (axis_sizes[-1] * prng_key.size,)
+    return keys.reshape(out_shape)
