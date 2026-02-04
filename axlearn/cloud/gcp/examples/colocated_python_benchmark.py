@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""
-Standalone script to preload a model from GCS using Colocated Python.
+"""Standalone script to preload a model from GCS using Colocated Python.
 
 This script reads the checkpoint index to determine the model structure and creates
 appropriate TensorSpec objects for preloading.
 
 Usage:
-    python colocated_python_benchmark.py --ckpt_path gs://your-bucket/path/to/checkpoint
+    # Run colocated benchmark (default, no profiling)
+    python colocated_python_benchmark.py \
+        --ckpt_path gs://your-bucket/path/to/checkpoint --method colocated
+
+    # Run colocated benchmark with profiling
+    python colocated_python_benchmark.py \
+        --ckpt_path gs://your-bucket/path/to/checkpoint --method colocated --profile
+
+    # Run default (direct to TPU) benchmark
+    python colocated_python_benchmark.py \
+        --ckpt_path gs://your-bucket/path/to/checkpoint --method default
 """
 
 import argparse
@@ -17,7 +26,9 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Sequence
+from contextlib import nullcontext
+from datetime import datetime
+from typing import Any, Dict, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -33,14 +44,31 @@ from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
 
+def maybe_profile(enabled: bool, profile_dir: Optional[str]):
+    """Return JAX profiler context if enabled, otherwise a no-op context manager.
+
+    Args:
+        enabled: Whether profiling is enabled.
+        profile_dir: Directory to save profiling results.
+
+    Returns:
+        Context manager for profiling or no-op.
+    """
+    if enabled:
+        assert profile_dir is not None, "profile_dir must be set when profiling is enabled"
+        return jax.profiler.trace(profile_dir)
+    else:
+        # Return a no-op context manager
+        return nullcontext()
+
+
 def _colocated_deserialize(
     shardings: Sequence[jax.sharding.NamedSharding],
     tensorstore_specs: Sequence[Dict[str, Any]],
     global_shapes: Sequence[tuple],
     dtypes: Sequence[jnp.dtype],
 ):
-    # concurrent_bytes = 1099511627776
-    concurrent_bytes = 34359738368 * 6  # multiple of 32GB
+    concurrent_bytes = 34359738368 * 6  # 32GB * 6
     cpu_devices = colocated_python.colocated_cpu_devices(jax.devices())
     print(f"{cpu_devices=}")
 
@@ -106,7 +134,7 @@ def _colocated_deserialize(
     return result
 
 
-def create_mesh(mesh_shape=(1, 1, 1, 1, 1, 1, -1)):
+def create_mesh(mesh_shape=(1, 1, 1, 1, 1, 16, -1)):
     """Create a JAX mesh for distributed computation."""
     inferred_mesh_shape = infer_mesh_shape(mesh_shape)
     print(f"Using mesh shape {inferred_mesh_shape} for {len(jax.devices())} devices")
@@ -204,6 +232,38 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
             shardings.append(sharding)
 
     return tensorstore_specs, shardings, shapes, dtypes
+
+
+def cleanup_loaded_arrays(loaded_arrays: list) -> None:
+    """Clean up loaded arrays and free device memory.
+
+    This function ensures a fair comparison between benchmarks by:
+    1. Blocking until all async operations complete
+    2. Deleting Python references to free device memory
+    3. Clearing JAX caches
+    4. Forcing device synchronization to ensure HBM cleanup completes
+
+    Args:
+        loaded_arrays: List of JAX arrays to clean up.
+    """
+    print("\nCleaning up arrays...")
+
+    # Block until all arrays are ready (ensures async ops complete)
+    for arr in loaded_arrays:
+        arr.block_until_ready()
+
+    loaded_arrays.clear()
+    del loaded_arrays
+
+    # Clear JAX in-memory compilation cache
+    # (Persistent cache is disabled via JAX_ENABLE_COMPILATION_CACHE=0)
+    jax.clear_caches()
+
+    # Force device synchronization to ensure all HBM deallocations complete
+    # This is critical - without it, deallocation may be async and incomplete
+    jax.block_until_ready(jax.numpy.array(0))
+
+    print("Cleanup complete.")
 
 
 def _default_deserialize(
@@ -331,7 +391,22 @@ def main():
         required=True,
         help="GCS path to checkpoint directory (e.g., gs://bucket/path/to/checkpoint)",
     )
+    parser.add_argument(
+        "--method",
+        choices=["colocated", "default"],
+        default="colocated",
+        help="Loading method to benchmark: 'colocated' (CPU preload) or 'default' (direct to TPU)",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable JAX profiler (adds overhead, disable for accurate benchmarking)",
+    )
     args = parser.parse_args()
+
+    # Disable persistent compilation cache for fair benchmarking
+    # This ensures benchmarks compile fresh and don't benefit from cached kernels
+    os.environ["JAX_ENABLE_COMPILATION_CACHE"] = "0"
 
     if os.getenv("JAX_PLATFORMS") == "proxy":
         pathwaysutils.initialize()
@@ -340,28 +415,34 @@ def main():
 
     print(f"JAX devices: {jax.devices()}")
 
-    print("--- Running colocated benchmark ---")
-    # Extract profile dir from ckpt_path. The profile dir should be gs://bucket/profiles/
-    hostname = os.uname().nodename
-    profile_dir = f"{args.ckpt_path.split("/checkpoints")[0]}/profiles/{hostname}/colocated-test/"
-    jax.profiler.start_trace(log_dir=profile_dir)
-    start_colocated_time = time.perf_counter()
-    loaded_values_colocated = load_model_colocated(ckpt_path=args.ckpt_path)
-    print(f"✅ Successfully loaded model from {args.ckpt_path}")
-    print(f"Deserialize took {time.perf_counter() - start_colocated_time:.2f} seconds")
-    print(f"   Total parameters: {sum(x.size for x in loaded_values_colocated):,}")
-    jax.profiler.stop_trace()
+    # Select loading function and profile prefix based on method
+    if args.method == "colocated":
+        loader_fn = load_model_colocated
+    else:  # args.method == "default"
+        loader_fn = load_model_default
+    print(f"--- Running {args.method} benchmark ---")
 
-    # Exit early if on pathways
-    if os.getenv("JAX_PLATFORMS") == "proxy":
-        sys.exit(0)
+    profile_dir = None
+    if args.profile:
+        # Create timestamped profile directory (minute-level granularity)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M")
+        profile_dir = (
+            f"{args.ckpt_path.split("/checkpoints")[0]}/profiles/{args.method}_{timestamp}/"
+        )
+        print(f"Profiling enabled - results will be saved to {profile_dir}")
 
-    print("\n--- Running default benchmark ---")
-    start_default_time = time.perf_counter()
-    loaded_values_default = load_model_default(ckpt_path=args.ckpt_path)
-    print(f"✅ Successfully loaded model from {args.ckpt_path}")
-    print(f"Deserialize took {time.perf_counter() - start_default_time:.2f} seconds")
-    print(f"   Total parameters: {sum(x.size for x in loaded_values_default):,}")
+    loaded_values = None
+    try:
+        with maybe_profile(args.profile, profile_dir):
+            start_time = time.perf_counter()
+            loaded_values = loader_fn(ckpt_path=args.ckpt_path)
+            print(f"✅ Successfully loaded model from {args.ckpt_path}")
+            print(f"Deserialize took {time.perf_counter() - start_time:.2f} seconds")
+            print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
+    finally:
+        # Always clean up, even if benchmark fails
+        if loaded_values is not None:
+            cleanup_loaded_arrays(loaded_values)
 
 
 if __name__ == "__main__":
