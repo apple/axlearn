@@ -110,6 +110,7 @@ try:
 except ModuleNotFoundError:
     logging.warning("tensorflow_io is not installed -- tf_io may not work with s3://")
 
+from axlearn.cloud.common import metrics
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.event_queue import BaseQueueClient, Event
 from axlearn.cloud.common.quota import QuotaFn
@@ -904,10 +905,13 @@ class Bastion(Configurable):
 
     def _wait_and_close_proc(self, proc: _PipedProcess, kill: bool = False):
         """Cleans up the process/fds and upload logs to gs."""
+        pid = proc.popen.pid
         if kill:
             send_signal(proc.popen, sig=signal.SIGKILL)
         # Note: proc should already be polled and completed, so wait is nonblocking.
         proc.popen.wait()
+        # Cleanup the local prometheus DB files when the process is terminated
+        _catch_with_error_log(metrics.cleanup, pid)
         proc.fd.close()
         # Upload outputs to log dir.
         _catch_with_error_log(
@@ -958,15 +962,16 @@ class Bastion(Configurable):
 
         We use these jobspecs to update the local self._active_jobs.
         """
-        active_jobs, jobs_with_user_states, jobs_with_failed_validation = download_job_batch(
-            spec_dir=self._active_dir,
-            state_dir=self._state_dir,
-            user_state_dir=self._user_state_dir,
-            verbose=True,
-            remove_invalid_user_states=True,
-            quota=self._quota,
-            validator=self._validator,
-        )
+        with metrics.BASTION_DOWNLOAD_JOB_ALL_SECONDS.time():
+            active_jobs, jobs_with_user_states, jobs_with_failed_validation = download_job_batch(
+                spec_dir=self._active_dir,
+                state_dir=self._state_dir,
+                user_state_dir=self._user_state_dir,
+                verbose=True,
+                remove_invalid_user_states=True,
+                quota=self._quota,
+                validator=self._validator,
+            )
         self._jobs_with_user_states = jobs_with_user_states
         # Iterate over unique job names.
         # pylint: disable-next=use-sequence-for-iteration

@@ -71,6 +71,7 @@ import kubernetes as k8s
 import requests
 from absl import flags, logging
 
+from axlearn.cloud.common import metrics
 from axlearn.cloud.common.bastion import (
     BASTION_JOB_VERSION_ENV_VAR,
     JobLifecycleEvent,
@@ -537,8 +538,14 @@ class GKERunnerJob(BaseRunnerJob):
     def _execute(self):
         cfg: GKERunnerJob.Config = self.config
 
+        # Record start time for JOB_TIME_TO_RUNNING_SECONDS metric.
+        start_time = time.perf_counter()
+
         # Keep track of last status to prevent duplicate events.
         last_job_status = None
+
+        # Track when the job enters SUSPENDED state.
+        suspended_since = None
 
         while True:
             status = self._get_status()
@@ -571,7 +578,11 @@ class GKERunnerJob(BaseRunnerJob):
                 try:
                     # Note: while the wait is blocking, the bastion will kill the runner process
                     # when it needs to reschedule.
+                    wait_build_start = time.perf_counter()
                     self._bundler.wait_until_finished(image_id or cfg.name)
+                    metrics.record_job_wait_for_build(
+                        cfg.name, time.perf_counter() - wait_build_start
+                    )
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return
@@ -581,13 +592,29 @@ class GKERunnerJob(BaseRunnerJob):
                     self._pre_provisioner.create_for(self._inner)
 
                 self._inner.execute()
+            elif status == GKERunnerJob.Status.SUSPENDED:
+                # Job is in SUSPENDED state.
+                if suspended_since is None:
+                    suspended_since = time.perf_counter()
+                    logging.info("Job %s entered SUSPENDED state", cfg.name)
             else:
+                # For all other statuses, check if we were tracking a suspend period.
+                if suspended_since is not None:
+                    # Job exited SUSPENDED state, record the duration.
+                    suspended_duration = time.perf_counter() - suspended_since
+                    metrics.record_job_suspended_duration(cfg.name, suspended_duration)
+                    suspended_since = None
+
                 # Ensure VertexAI Tensorboard Uploader is running.
                 if self._tb_uploader:
                     self._tb_uploader.upload()
                 logging.info("Task %s has status: %s", cfg.name, status)
                 # Only emit events when status changes.
                 if status == GKERunnerJob.Status.READY and status != last_job_status:
+                    # Record the time to reach RUNNING state.
+                    elapsed_time = time.perf_counter() - start_time
+                    metrics.record_job_time_to_running(cfg.name, elapsed_time)
+                    metrics.record_job_run_latency(cfg.name, elapsed_time)
                     self._maybe_publish(
                         cfg.name, msg="Job is running", state=JobLifecycleState.RUNNING
                     )
