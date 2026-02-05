@@ -972,10 +972,16 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=-1)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
                             ),
                             # Use the updated block size for Splash Attention
                             V7xFlashConfigModifier.default_config(),
+                            # Override Splash Attention block sizes per MaxText guidance
+                            SplashAttentionConfigModifier.default_config().set(
+                                splash_block_kv_compute=256,
+                                splash_block_q_dkv=1024,
+                                splash_block_kv_dkv_compute=256,
+                            ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
