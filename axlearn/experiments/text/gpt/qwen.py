@@ -7,7 +7,6 @@ Utilities to set up the Qwen-3 style model trainer configs: https://arxiv.org/ab
 from typing import Any, Literal, Optional, Sequence, Union
 
 import jax.numpy as jnp
-from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config, decoder
 from axlearn.common.attention import (
@@ -24,16 +23,11 @@ from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
-from axlearn.common.mixture_of_experts import (
-    ApproximateTokenDropFreeMoE,
-    TopKDropFreeGating,
-    TransformerFeedForwardDropFreeMoE,
-)
+from axlearn.common.mixture_of_experts import TopKDropFreeGating, TransformerFeedForwardDropFreeMoE
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     MeshShapeModifier,
     RematSpecModifier,
-    ReplaceLayerConfigModifier,
 )
 from axlearn.common.utils import (
     HybridMeshShape,
@@ -177,14 +171,31 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=False,
-                                        policy=jax_remat_policies.dots_with_no_batch_dims_saveable,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.FLASH_CONTEXT.value,
+                                                    RematRegexSavePatterns.QKV_PROJ.value,
+                                                    RematRegexSavePatterns.O_PROJ.value,
+                                                    RematRegexSavePatterns.LINEAR1_X.value,
+                                                    RematRegexSavePatterns.LINEAR2_X.value,
+                                                    RematRegexSavePatterns.MOE_GATING.value,
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded="|".join([]),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
-                            ReplaceLayerConfigModifier.default_config().set(
-                                target_cls=TransformerFeedForwardDropFreeMoE,
-                                source_config=ApproximateTokenDropFreeMoE.default_config(),
-                            ),
+                            # TODO: Fix the ApproximateTokenDropFreeMoE performance issue on GPUs.
+                            # ReplaceLayerConfigModifier.default_config().set(
+                            #     target_cls=TransformerFeedForwardDropFreeMoE,
+                            #     source_config=ApproximateTokenDropFreeMoE.default_config(),
+                            # ),
                         ],
                     ),
                 ),
