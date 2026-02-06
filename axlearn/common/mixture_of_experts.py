@@ -23,6 +23,7 @@ from typing import Any, Callable, NamedTuple, Optional, Sequence, Tuple, Union
 import jax
 import jax.numpy as jnp
 import numpy as np
+import tokamax
 from absl import logging
 from jax import lax
 from jax.experimental.pjit import pjit
@@ -78,6 +79,26 @@ class GateNoise(enum.Enum):
 
     # Standard Gumbel noise.
     GUMBEL = "GUMBEL"
+
+
+class GMMBackend(enum.Enum):
+    """Backend implementations for Grouped Matrix Multiplication (GMM).
+
+    Used in TransformerFeedForwardDropFreeMoE to select between different
+    GMM implementations for experimentation and performance comparison.
+    """
+
+    # Use Pallas/Triton-based GMM kernel.
+    # Requires tiling configuration. Default backend.
+    PALLAS = "PALLAS"
+
+    # Use JAX native jax.lax.ragged_dot.
+    # Ignores tiling configuration. Useful for experimentation.
+    RAGGED_DOT = "RAGGED_DOT"
+
+    # Use tokamax.ragged_dot (third-party implementation).
+    # Has the same API as jax.lax.ragged_dot. Ignores tiling configuration.
+    TOKAMAX = "TOKAMAX"
 
 
 # Type definitions for configurable functions.
@@ -2229,11 +2250,19 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
     class Config(TransformerFeedForwardMoE.Config):
         """Config for TransformerFeedForwardDropFreeMoE."""
 
+        # GMM backend selection for experimentation and performance comparison.
+        # PALLAS: Uses Pallas/Triton-based GMM kernel - requires tiling config.
+        # RAGGED_DOT: Uses JAX native jax.lax.ragged_dot - ignores tiling config.
+        # TOKAMAX: Uses Tokamax GMM kernel - ignores tiling config.
+        # None: Defaults to PALLAS for backward compatibility.
+        gmm_backend: Optional[GMMBackend] = None
+
         # Adjustable 3-tuple of ints to use the gmm kernel for the best performance.
         # tiling[0] is the block size for the number of tokens dimension.
         # tiling[1] is the block size for the model_dim.
         # tiling[2] is the block size for the hidden_dim.
         # The tiling blocks have to be multiples of 128.
+        # Note: This config is only used when gmm_backend is PALLAS (or None).
         tiling: Required[Union[InstantiableConfig, tuple[int, int, int]]] = REQUIRED
         # How to partition the input batch with the expected keys below.
         input_dim_to_partition_spec: dict[str, Optional[PartitionSpec]] = {
@@ -2259,6 +2288,12 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         # (so called Auxiliary-Loss-Free Load Balancing strategy) in DeepSeek V3.
         # It's an experimental feature, so use it with caution.
         seq_load_balance_loss_weight: Optional[float] = None
+        # Implementation backends for tokamax.ragged_dot.
+        # When gmm_backend is TOKAMAX, this specifies which implementation(s) to use.
+        # If None, tokamax will use its default implementation selection.
+        # Example: ["triton", "xla"] to use triton first, falling back to xla.
+        # See tokamax documentation for available implementations.
+        tokamax_implementation: Optional[Sequence[str]] = None
 
     @classmethod
     def default_config(cls):
@@ -2284,6 +2319,96 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             ), "When interpret == True, please set preferred_element_type explicitly"
 
     def _padded_gmm(self, lhs, rhs, tokens_per_expert):
+        cfg = self.config
+        # Determine which backend to use (default to PALLAS for backward compatibility)
+        backend = cfg.gmm_backend if cfg.gmm_backend is not None else GMMBackend.PALLAS
+
+        if backend == GMMBackend.RAGGED_DOT:
+            return self._ragged_dot_gmm(lhs, rhs, tokens_per_expert)
+        elif backend == GMMBackend.TOKAMAX:
+            return self._tokamax_gmm(lhs, rhs, tokens_per_expert)
+        else:
+            return self._pallas_gmm(lhs, rhs, tokens_per_expert)
+
+    def _ragged_dot_gmm(self, lhs, rhs, tokens_per_expert):
+        """Performs grouped matrix multiplication using jax.lax.ragged_dot.
+
+        This is an alternative to the Pallas/Triton-based GMM kernel that uses
+        JAX's native ragged_dot operation. It ignores tiling configuration and
+        is useful for experimentation and performance comparison.
+
+        Args:
+            lhs: Left-hand side tensor of shape [num_tokens, input_dim].
+            rhs: Right-hand side tensor of shape [num_experts, input_dim, output_dim].
+            tokens_per_expert: Tensor of shape [num_experts] indicating the number
+                of tokens assigned to each expert.
+
+        Returns:
+            Output tensor of shape [num_tokens, output_dim].
+        """
+        cfg = self.config
+        preferred_element_type = cfg.preferred_element_type or jnp.bfloat16
+
+        # jax.lax.ragged_dot expects:
+        # - lhs: [num_tokens, input_dim]
+        # - rhs: [num_experts, input_dim, output_dim]
+        # - group_sizes: [num_experts] - number of tokens per expert
+        # Returns: [num_tokens, output_dim]
+        results = jax.lax.ragged_dot(
+            lhs,
+            rhs,
+            tokens_per_expert,
+            preferred_element_type=preferred_element_type,
+        )
+        return results
+
+    def _tokamax_gmm(self, lhs, rhs, tokens_per_expert):
+        """Performs grouped matrix multiplication using tokamax.ragged_dot.
+
+        This is an alternative to the Pallas/Triton-based GMM kernel that uses
+        the tokamax library's ragged_dot operation. It has the same API as
+        jax.lax.ragged_dot and ignores tiling configuration.
+
+        Args:
+            lhs: Left-hand side tensor of shape [num_tokens, input_dim].
+            rhs: Right-hand side tensor of shape [num_experts, input_dim, output_dim].
+            tokens_per_expert: Tensor of shape [num_experts] indicating the number
+                of tokens assigned to each expert.
+
+        Returns:
+            Output tensor of shape [num_tokens, output_dim].
+        """
+
+        cfg = self.config
+        preferred_element_type = cfg.preferred_element_type or jnp.bfloat16
+
+        # tokamax.ragged_dot has the same API as jax.lax.ragged_dot.
+        # The implementation parameter controls which backend(s) to use.
+        # If None, tokamax uses its default selection.
+        # Example: ["triton", "xla"] uses triton first, falling back to xla
+        # if triton raises NotImplementedError (e.g., for non-default dimension
+        # numbers in the backward pass on B200/SM100 GPUs).
+        results = tokamax.ragged_dot(
+            lhs,
+            rhs,
+            tokens_per_expert,
+            preferred_element_type=preferred_element_type,
+            implementation=cfg.tokamax_implementation,
+        )
+        return results
+
+    def _pallas_gmm(self, lhs, rhs, tokens_per_expert):
+        """Performs grouped matrix multiplication using Pallas/Triton-based GMM kernel.
+
+        Args:
+            lhs: Left-hand side tensor of shape [num_tokens, input_dim].
+            rhs: Right-hand side tensor of shape [num_experts, input_dim, output_dim].
+            tokens_per_expert: Tensor of shape [num_experts] indicating the number
+                of tokens assigned to each expert.
+
+        Returns:
+            Output tensor of shape [num_tokens, output_dim].
+        """
         cfg = self.config
         if isinstance(cfg.tiling, tuple):
             tiling = cfg.tiling

@@ -35,6 +35,7 @@ from axlearn.common.mixture_of_experts import (
     AdaptiveLoadBalanceLoss,
     ApproximateTokenDropFreeMoE,
     GateNoise,
+    GMMBackend,
     Top2Gating,
     TopKBiasGating,
     TopKDropFreeGating,
@@ -1638,6 +1639,427 @@ class TransformerFeedForwardDropFreeMoETest(TestCase):
                 [0, 0, 0, 0, 0, 0, 0, 3, 3, 4, 5, 5, 6, 7, 8, 8],
             ],
         )
+
+    @parameterized.product(
+        gmm_backend=[None, GMMBackend.PALLAS, GMMBackend.RAGGED_DOT],
+    )
+    def test_gmm_backend_forward(self, gmm_backend):
+        """Test that different GMM backends produce correct forward pass outputs."""
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=gmm_backend,
+            )
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=k2)
+            output, _ = F(
+                layer,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Verify output shape matches input shape
+            self.assertEqual(output.shape, input_batch.shape)
+            # Verify output is not all zeros (layer is doing something)
+            self.assertGreater(jnp.abs(output).sum(), 0)
+
+    def test_gmm_backend_pallas_ragged_dot_parity(self):
+        """Test that PALLAS and RAGGED_DOT backends produce similar outputs."""
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            # Create PALLAS backend layer
+            cfg_pallas = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe_pallas",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=GMMBackend.PALLAS,
+            )
+            layer_pallas = cfg_pallas.instantiate(parent=None)
+            params = layer_pallas.initialize_parameters_recursively(prng_key=k2)
+            output_pallas, _ = F(
+                layer_pallas,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Create RAGGED_DOT backend layer
+            cfg_ragged = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe_ragged",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),  # Will be ignored for RAGGED_DOT
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=GMMBackend.RAGGED_DOT,
+            )
+            layer_ragged = cfg_ragged.instantiate(parent=None)
+            output_ragged, _ = F(
+                layer_ragged,
+                inputs=dict(inputs=input_batch),
+                state=params,  # Use same params for fair comparison
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Both backends should produce similar outputs
+            # Allow some tolerance for numerical differences
+            assert_allclose(output_pallas, output_ragged, atol=1e-4, rtol=1e-4)
+
+    @parameterized.product(
+        gmm_backend=[GMMBackend.PALLAS, GMMBackend.RAGGED_DOT],
+    )
+    def test_gmm_backend_backward(self, gmm_backend):
+        """Test that GMM backends produce correct gradients."""
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=gmm_backend,
+            )
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=k2)
+
+            # Compute value and gradients
+            _, grads = jax.value_and_grad(self._loss)(params, input_batch, layer, k3)
+
+            # Verify gradients are computed (not None or all zeros)
+            self.assertIsNotNone(grads)
+            # Check that at least some gradients are non-zero
+            grad_sum = sum(jnp.abs(g).sum() for g in jax.tree_util.tree_leaves(grads))
+            self.assertGreater(grad_sum, 0)
+
+    def test_gmm_backend_default_is_pallas(self):
+        """Test that None gmm_backend defaults to PALLAS behavior."""
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            # Create layer with gmm_backend=None (default)
+            cfg_default = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe_default",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,
+                preferred_element_type=jnp.float32,
+                gmm_backend=None,  # Default
+            )
+            layer_default = cfg_default.instantiate(parent=None)
+            params = layer_default.initialize_parameters_recursively(prng_key=k2)
+            output_default, _ = F(
+                layer_default,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Create layer with explicit PALLAS backend
+            cfg_pallas = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe_pallas",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,
+                preferred_element_type=jnp.float32,
+                gmm_backend=GMMBackend.PALLAS,
+            )
+            layer_pallas = cfg_pallas.instantiate(parent=None)
+            output_pallas, _ = F(
+                layer_pallas,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Default (None) should behave exactly like PALLAS
+            assert_allclose(output_default, output_pallas)
+
+    def test_gmm_backend_tokamax_forward(self):
+        """Test that TOKAMAX backend produces correct forward pass outputs."""
+        try:
+            import tokamax  # pylint: disable=import-outside-toplevel,unused-import
+        except ImportError:
+            self.skipTest("tokamax library not installed.")
+
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=GMMBackend.TOKAMAX,
+            )
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=k2)
+            output, _ = F(
+                layer,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Verify output shape matches input shape
+            self.assertEqual(output.shape, input_batch.shape)
+            # Verify output is not all zeros (layer is doing something)
+            self.assertGreater(jnp.abs(output).sum(), 0)
+
+    def test_gmm_backend_tokamax_ragged_dot_parity(self):
+        """Test that TOKAMAX and RAGGED_DOT backends produce similar outputs."""
+
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            # Create RAGGED_DOT backend layer
+            cfg_ragged = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe_ragged",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=GMMBackend.RAGGED_DOT,
+            )
+            layer_ragged = cfg_ragged.instantiate(parent=None)
+            params = layer_ragged.initialize_parameters_recursively(prng_key=k2)
+            output_ragged, _ = F(
+                layer_ragged,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Create TOKAMAX backend layer
+            cfg_tokamax = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe_tokamax",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),  # Will be ignored for TOKAMAX
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=GMMBackend.TOKAMAX,
+            )
+            layer_tokamax = cfg_tokamax.instantiate(parent=None)
+            output_tokamax, _ = F(
+                layer_tokamax,
+                inputs=dict(inputs=input_batch),
+                state=params,  # Use same params for fair comparison
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Both backends should produce similar outputs
+            # Allow some tolerance for numerical differences
+            assert_allclose(output_ragged, output_tokamax, atol=1e-4, rtol=1e-4)
+
+    def test_gmm_backend_tokamax_backward(self):
+        """Test that TOKAMAX backend produces correct gradients."""
+
+        mesh = [1, 1, 1, 1, 1, 1]
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        batch_size = 4
+        seq_len = 128
+        model_dim = 512
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=(128, 128, 128),
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+                gmm_backend=GMMBackend.TOKAMAX,
+            )
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=k2)
+
+            # Compute value and gradients
+            _, grads = jax.value_and_grad(self._loss)(params, input_batch, layer, k3)
+
+            # Verify gradients are computed (not None or all zeros)
+            self.assertIsNotNone(grads)
+            # Check that at least some gradients are non-zero
+            grad_sum = sum(jnp.abs(g).sum() for g in jax.tree_util.tree_leaves(grads))
+            self.assertGreater(grad_sum, 0)
 
 
 class CustomGatherTest(TestCase):

@@ -180,6 +180,40 @@ mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.l
 mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].names_which_can_be_saved: '.*flash_residuals|.*[kqv]_proj|.*o_proj|.*linear1_[01]|.*linear2(_[01])?|.*gate_weights|.*gate_assignment'
 mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_dst: 'pinned_host'
 mesh_rules[1][1].config_modifiers[1].remat_policies['model.decoder.transformer.layer']['policy'].offload_src: 'device'
+mesh_rules[1][1].config_modifiers[2].exclude_keys[0]: 'gmm_backend'
+mesh_rules[1][1].config_modifiers[2].exclude_keys[1]: 'tokamax_implementation'
+mesh_rules[1][1].config_modifiers[2].klass: 'axlearn.common.trainer_config_modifier.ReplaceLayerConfigModifier'
+mesh_rules[1][1].config_modifiers[2].source_config.activation: 'nn.relu'
+mesh_rules[1][1].config_modifiers[2].source_config.corr_loss_weight: 0
+mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['me']: PartitionSpec(None, None)
+mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['emh']: PartitionSpec(None, ('fsdp', 'seq'), 'model')
+mesh_rules[1][1].config_modifiers[2].source_config.dim_to_mesh_axis_map['ehm']: PartitionSpec(None, 'model', ('fsdp', 'seq'))
+mesh_rules[1][1].config_modifiers[2].source_config.dropout.klass: 'axlearn.common.layers.Dropout'
+mesh_rules[1][1].config_modifiers[2].source_config.gating.eval_capacity_factor: 2.0
+mesh_rules[1][1].config_modifiers[2].source_config.gating.gating_logit_cap: 0.0
+mesh_rules[1][1].config_modifiers[2].source_config.gating.klass: 'axlearn.common.mixture_of_experts.Top2Gating'
+mesh_rules[1][1].config_modifiers[2].source_config.gating.mask_dtype: 'jax.numpy.int32'
+mesh_rules[1][1].config_modifiers[2].source_config.gating.train_capacity_factor: 2.0
+mesh_rules[1][1].config_modifiers[2].source_config.gmm_backend: <GMMBackend.TOKAMAX: 'TOKAMAX'>
+mesh_rules[1][1].config_modifiers[2].source_config.input_dim_to_partition_spec['bsm']: PartitionSpec(('data', 'fsdp'), 'seq', None)
+mesh_rules[1][1].config_modifiers[2].source_config.interpret: False
+mesh_rules[1][1].config_modifiers[2].source_config.klass: 'axlearn.common.mixture_of_experts.TransformerFeedForwardDropFreeMoE'
+mesh_rules[1][1].config_modifiers[2].source_config.load_balance_loss_weight: 0.01
+mesh_rules[1][1].config_modifiers[2].source_config.norm.eps: 1e-08
+mesh_rules[1][1].config_modifiers[2].source_config.norm.forward_dtype: 'jax.numpy.float32'
+mesh_rules[1][1].config_modifiers[2].source_config.norm.klass: 'axlearn.common.layers.LayerNorm'
+mesh_rules[1][1].config_modifiers[2].source_config.outer_batch: 1
+mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['bsm']: PartitionSpec(('data', 'fsdp'), 'seq', 'model')
+mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['emh']: PartitionSpec(None, None, 'model')
+mesh_rules[1][1].config_modifiers[2].source_config.output_dim_to_partition_spec['ehm']: PartitionSpec(None, 'model', None)
+mesh_rules[1][1].config_modifiers[2].source_config.residual_weight: 1.0
+mesh_rules[1][1].config_modifiers[2].source_config.router_z_loss_weight: 0.0
+mesh_rules[1][1].config_modifiers[2].source_config.stochastic_depth.klass: 'axlearn.common.layers.StochasticDepth'
+mesh_rules[1][1].config_modifiers[2].source_config.stochastic_depth.mode: 'row'
+mesh_rules[1][1].config_modifiers[2].source_config.structure: 'prenorm'
+mesh_rules[1][1].config_modifiers[2].source_config.tokamax_implementation[0]: 'triton'
+mesh_rules[1][1].config_modifiers[2].source_config.tokamax_implementation[1]: 'xla'
+mesh_rules[1][1].config_modifiers[2].target_cls: 'axlearn.common.mixture_of_experts.TransformerFeedForwardDropFreeMoE'
 mesh_rules[1][1].klass: 'axlearn.common.trainer_config_modifier.ChainConfigModifier'
 mesh_shape[0]: 1
 mesh_shape[1]: -1

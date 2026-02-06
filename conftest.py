@@ -14,10 +14,19 @@ Example usage on 8-GPU machines:
     AXLEARN_CI_GPU_TESTS=1 pytest -n 32 axlearn/common/flash_attention/gpu_attention_test.py
 """
 import os
+import sys
+
+from absl import flags
 
 
 # pylint: disable-next=unused-argument
 def pytest_configure(config):
+    # This triggers absl to parse flags using only the program name,
+    # effectively ignoring all pytest arguments.
+    # checking if flags are already parsed avoids errors if this is called twice.
+    if not flags.FLAGS.is_parsed():
+        flags.FLAGS(sys.argv[:1])
+
     if "AXLEARN_CI_GPU_TESTS" not in os.environ:
         return
     worker_idx = int(os.getenv("PYTEST_XDIST_WORKER", "gw0").lstrip("gw"))

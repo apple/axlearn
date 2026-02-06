@@ -23,11 +23,13 @@ from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.flash_attention.layer import FlashAttention
 from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
-from axlearn.common.mixture_of_experts import TopKDropFreeGating, TransformerFeedForwardDropFreeMoE
+from axlearn.common.mixture_of_experts import GMMBackend, TopKDropFreeGating
+from axlearn.common.mixture_of_experts import TransformerFeedForwardDropFreeMoE as MoE
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
     MeshShapeModifier,
     RematSpecModifier,
+    ReplaceLayerConfigModifier,
 )
 from axlearn.common.utils import (
     HybridMeshShape,
@@ -191,11 +193,14 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            # TODO: Fix the ApproximateTokenDropFreeMoE performance issue on GPUs.
-                            # ReplaceLayerConfigModifier.default_config().set(
-                            #     target_cls=TransformerFeedForwardDropFreeMoE,
-                            #     source_config=ApproximateTokenDropFreeMoE.default_config(),
-                            # ),
+                            ReplaceLayerConfigModifier.default_config().set(
+                                target_cls=MoE,
+                                source_config=MoE.default_config().set(
+                                    gmm_backend=GMMBackend.TOKAMAX,
+                                    tokamax_implementation=["triton", "xla"],
+                                ),
+                                exclude_keys=["gmm_backend", "tokamax_implementation"],
+                            ),
                         ],
                     ),
                 ),
@@ -319,7 +324,7 @@ def model_config(
             splash_use_fused_bwd_kernel=True,
         ),
     )
-    expert_config = TransformerFeedForwardDropFreeMoE.default_config().set(
+    expert_config = MoE.default_config().set(
         num_experts=num_experts,
         input_dim=hidden_dim,
         num_groups=num_groups,
