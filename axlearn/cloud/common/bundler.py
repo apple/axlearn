@@ -71,6 +71,7 @@ BUNDLE_EXCLUDE = [
     # Each entry below specifies a subdir/file name or a relative path from the src dir whose
     # contents should be excluded.
     "venv",
+    ".venv",
     ".git",
     ".idea",
     ".cache",
