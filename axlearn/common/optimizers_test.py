@@ -60,6 +60,7 @@ from axlearn.common.optimizers import (
 from axlearn.common.schedule import Schedule, adafactor_decay_rate, decay_bias_correction
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import (
+    _JAX_MEMORY_SPACE_SUPPORT,
     NestedPartitionSpec,
     PartitionSpec,
     Tensor,
@@ -428,9 +429,15 @@ class OptimizerTest(TestCase):
 
         backend = jax.default_backend()
         if offload:
-            if backend and backend in ["gpu", "tpu"]:
+            jaxpr_str = str(jax.make_jaxpr(jit_fn)(params, state))
+            if _JAX_MEMORY_SPACE_SUPPORT:
                 self.assertIn(
-                    "MemoryKind='pinned_host'",
+                    "memory_kind=host",
+                    jaxpr_str,
+                )
+            else:
+                self.assertIn(
+                    "TransferToMemoryKind(memory_kind='pinned_host')",
                     str(jax.make_jaxpr(jit_fn)(params, state)),
                 )
         loss, new_loss = jit_fn(params, state)

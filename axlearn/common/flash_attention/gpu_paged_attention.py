@@ -19,7 +19,6 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax.experimental import pallas as pl
-from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -31,7 +30,16 @@ from axlearn.common.attention_bias import (
 from axlearn.common.flash_attention.common import BasePagedAttention, get_gpu_dot_precision
 from axlearn.common.flash_attention.gpu_decoding import _get_sm_count as get_sm_count
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import _JAX_MEMORY_SPACE_SUPPORT, Nested, Tensor
+
+# pylint: disable=ungrouped-imports
+if _JAX_MEMORY_SPACE_SUPPORT:
+    from jax.experimental.pallas.triton import CompilerParams as TritonCompilerParams
+else:
+    from jax.experimental.pallas.triton import (  # isort: skip
+        TritonCompilerParams,
+    )
+# pylint: enable=ungrouped-imports
 
 
 def _paged_attention_kernel(
