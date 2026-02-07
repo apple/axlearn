@@ -614,7 +614,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
         with (
             self._job_config(
                 CloudBuildBundler,
-                enable_service=True,
+                enable_health_probes=True,
                 health_check_path=health_check_path,
                 health_check_port=health_check_port,
                 startup_probe_failure_threshold=startup_probe_failure_threshold,
@@ -646,12 +646,12 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             # readinessProbe failureThreshold is always 3
             self.assertEqual(readiness_probe["failureThreshold"], 3)
 
-    def test_no_health_probes_when_service_disabled(self):
-        """Tests that health probes are not added when enable_service is False."""
+    def test_no_health_probes_when_readiness_probe_disabled(self):
+        """Tests that health probes are not added when enable_health_probes is False."""
         with (
             self._job_config(
                 CloudBuildBundler,
-                enable_service=False,
+                enable_health_probes=False,
             ) as (cfg, bundler_cfg),
         ):
             cfg.inner.set(

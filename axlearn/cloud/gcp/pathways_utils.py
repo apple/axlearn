@@ -883,6 +883,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         target_port: Optional[int] = None
         enable_service: bool = None
+        enable_health_probes: Optional[bool] = None
 
         # Health probe configuration for inference pods.
         # - startup_probe_failure_threshold: Max consecutive failures before probe fails.
@@ -928,6 +929,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "Whether to enable creation of service for LWS",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "enable_health_probes",
+            False,
+            "Whether to enable health probes for LWS service",
+            **common_kwargs,
+        )
         flags.DEFINE_integer(
             "target_port",
             None,
@@ -962,6 +969,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         fv.set_default("pathways_head_mem", fv.pathways_head_mem or "16")
         fv.set_default("target_port", fv.target_port or 9000)
         fv.set_default("enable_service", fv.enable_service or False)
+        fv.set_default("enable_health_probes", fv.enable_health_probes or False)
 
     @classmethod
     def default_config(cls):
@@ -1128,7 +1136,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         # Add health probes for inference pods when service is enabled.
         # This ensures K8s services only route traffic to healthy pods that have
         # finished loading models and are ready to serve requests.
-        if cfg.enable_service:
+        if cfg.enable_health_probes:
             # startupProbe: Allows long startup time for model loading.
             # Max startup time = failureThreshold * periodSeconds.
             container["startupProbe"] = {
