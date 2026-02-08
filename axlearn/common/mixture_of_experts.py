@@ -2412,11 +2412,14 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         cfg = self.config
         if isinstance(cfg.tiling, tuple):
             tiling = cfg.tiling
-            pad_length = cfg.tiling[0]
         else:
-            tiling = cfg.tiling.instantiate()
-            # no padding when tiling is a function
-            pad_length = 1
+            tiling_fn = cfg.tiling.instantiate()
+            m, k = lhs.shape
+            _, _, n = rhs.shape
+            tiling = tiling_fn(m, k, n)
+
+        num_tokens = lhs.shape[0]
+        token_tile_size = tiling[0]
 
         # TODO: Revisit once Mosaic supports highest precision.
         matmul_precision = (
@@ -2425,30 +2428,24 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             else contextlib.nullcontext()
         )
         with matmul_precision:
-            if lhs.shape[0] % pad_length:
-                padded_lhs = lhs
-                pad_length -= lhs.shape[0] % pad_length
-                padded_lhs = jax.lax.pad(
-                    lhs, jnp.array(0.0).astype(lhs.dtype), [(0, pad_length, 0), (0, 0, 0)]
+            # Padding is wasteful for decoding (e.g., num_tokens=1, token_tile_size=512).
+            # Dynamically adjusting tiling (e.g., tiling[0]=num_tokens) triggers JIT recompilation,
+            # which is even slower.
+            # TODO: Find a better solution for decoding.
+            if num_tokens % token_tile_size:
+                pad_amount = token_tile_size - (num_tokens % token_tile_size)
+                lhs = jax.lax.pad(
+                    lhs, jnp.array(0.0).astype(lhs.dtype), [(0, pad_amount, 0), (0, 0, 0)]
                 )
-                results = mblx.gmm(
-                    padded_lhs,
-                    rhs,
-                    tokens_per_expert,
-                    tiling=tiling,
-                    preferred_element_type=cfg.preferred_element_type or jnp.bfloat16,
-                    interpret=cfg.interpret,
-                )
-                results = results[: lhs.shape[0]]
-            else:
-                results = mblx.gmm(
-                    lhs,
-                    rhs,
-                    tokens_per_expert,
-                    tiling=tiling,
-                    preferred_element_type=cfg.preferred_element_type or jnp.bfloat16,
-                    interpret=cfg.interpret,
-                )
+            results = mblx.gmm(
+                lhs,
+                rhs,
+                tokens_per_expert,
+                tiling=tiling,
+                preferred_element_type=cfg.preferred_element_type or jnp.bfloat16,
+                interpret=cfg.interpret,
+            )
+            results = results[:num_tokens]
         return results
 
     def _dispatch_hook(

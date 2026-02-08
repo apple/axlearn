@@ -31,6 +31,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.config import config_for_function
 from axlearn.common.layers import RMSNorm, set_bias_recursively
+from axlearn.common.megablock.ops import select_tiling_fn
 from axlearn.common.mixture_of_experts import (
     AdaptiveLoadBalanceLoss,
     ApproximateTokenDropFreeMoE,
@@ -1639,6 +1640,148 @@ class TransformerFeedForwardDropFreeMoETest(TestCase):
                 [0, 0, 0, 0, 0, 0, 0, 3, 3, 4, 5, 5, 6, 7, 8, 8],
             ],
         )
+
+    @parameterized.parameters(
+        (GMMBackend.RAGGED_DOT, 3e-5), (GMMBackend.TOKAMAX, 3e-5), (GMMBackend.PALLAS, 1e-6)
+    )
+    def test_padded_gmm_parity_with_einsum(self, backend, atol):
+        """Test that padded_gmm produces identical results to einsum reference.
+
+        This unit test verifies the correctness of padded_gmm by comparing it against a simple
+        einsum-based reference implementation.
+        """
+
+        def _gmm_einsum_reference(lhs, rhs, tokens_per_expert):
+            """Reference implementation using einsum for grouped matrix multiplication.
+
+            Args:
+                lhs: Tensor of shape [total_tokens, model_dim], sorted by expert.
+                rhs: Tensor of shape [num_experts, model_dim, hidden_dim].
+                tokens_per_expert: Tensor of shape [num_experts] with token counts per expert.
+
+            Returns:
+                Result tensor of shape [total_tokens, hidden_dim].
+            """
+            # Compute expert boundaries from tokens_per_expert.
+            expert_ends = jnp.cumsum(tokens_per_expert)
+            expert_starts = jnp.concatenate([jnp.array([0]), expert_ends[:-1]])
+
+            # Create a mask for each expert's tokens and compute matmul.
+            total_tokens = lhs.shape[0]
+            token_indices = jnp.arange(total_tokens)[:, None]  # [total_tokens, 1]
+            expert_mask = (token_indices >= expert_starts[None, :]) & (
+                token_indices < expert_ends[None, :]
+            )  # [total_tokens, num_experts]
+
+            # Expand lhs for all experts.
+            # [total_tokens, model_dim] -> [total_tokens, num_experts, model_dim]
+            lhs_expanded = lhs[:, None, :] * expert_mask[:, :, None].astype(lhs.dtype)
+
+            # Compute all expert matmuls at once: [total_tokens, num_experts, hidden_dim]
+            # lhs_expanded: [total_tokens, num_experts, model_dim]
+            # rhs: [num_experts, model_dim, hidden_dim]
+            all_results = jnp.einsum("teh,ehd->ted", lhs_expanded, rhs)
+
+            # Sum across experts (each token only has one non-zero expert due to masking).
+            results = jnp.sum(all_results, axis=1)  # [total_tokens, hidden_dim]
+            return results
+
+        total_tokens = 128
+        model_dim = 128
+        hidden_dim = 256
+        num_experts = 8
+        cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+            name="moe",
+            gmm_backend=backend,
+            input_dim=model_dim,
+            hidden_dim=hidden_dim,
+            num_experts=num_experts,
+            num_groups=1,
+            gating=TopKDropFreeGating.default_config(),
+            tiling=(128, 128, 128),
+            preferred_element_type=jnp.float32,
+            interpret=True,
+        )
+        layer = cfg.instantiate(parent=None)
+
+        k1, k2 = jax.random.split(jax.random.PRNGKey(42), 2)
+
+        # Create random inputs in bfloat16 (default dtype for _ragged_dot_gmm).
+        lhs = jax.random.normal(k1, (total_tokens, model_dim), dtype=jnp.float32)
+        rhs = jax.random.normal(k2, (num_experts, model_dim, hidden_dim), dtype=jnp.float32)
+
+        # Distribute tokens evenly across experts.
+        tokens_per_expert = jnp.array([8, 8, 8, 8, 8, 8, 8, 8], dtype=jnp.int32)
+        ref_result = _gmm_einsum_reference(lhs, rhs, tokens_per_expert)
+        test_result = layer._padded_gmm(lhs, rhs, tokens_per_expert)
+        # Pallas returns NaN for padded positions; replace with 0 to match reference.
+        if backend == GMMBackend.PALLAS:
+            test_result = jnp.where(jnp.isnan(test_result), 0, test_result)
+        assert_allclose(test_result, ref_result, atol=atol)
+
+        # Also test with non-uniform token distribution.
+        tokens_per_expert_nonuniform = jnp.array([16, 4, 12, 8, 2, 10, 6, 6], dtype=jnp.int32)
+        ref_result2 = _gmm_einsum_reference(lhs, rhs, tokens_per_expert_nonuniform)
+        test_result2 = layer._padded_gmm(lhs, rhs, tokens_per_expert_nonuniform)
+        if backend == GMMBackend.PALLAS:
+            test_result2 = jnp.where(jnp.isnan(test_result2), 0, test_result2)
+        assert_allclose(test_result2, ref_result2, atol=atol)
+
+    @parameterized.product(
+        backend=(GMMBackend.RAGGED_DOT, GMMBackend.TOKAMAX, GMMBackend.PALLAS),
+        tiling=(
+            (512, 512, 512),
+            config_for_function(select_tiling_fn).set(
+                tiling_larger_k=(512, 512, 512), tiling_larger_n=(512, 512, 512)
+            ),
+        ),
+    )
+    def test_gmm_dynamic_tiling_for_small_batch_decoding(self, backend, tiling):
+        """Test that small batch sizes are handled via padding (i.e., extend_step)."""
+        mesh = [1, 1, 1, 1, 1, 1]
+        batch_size = 1
+        seq_len = 32
+        model_dim = 128
+        num_experts = 8
+
+        k1, k2, k3 = jax.random.split(jax.random.PRNGKey(123456), 3)
+
+        input_batch = self._random_dense((batch_size, seq_len, model_dim), k1, jnp.float32, limit=1)
+
+        mesh_axis_names = ["pipeline", "data", "expert", "fsdp", "seq", "model"]
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            input_batch = with_sharding_constraint(input_batch, PartitionSpec("data", "fsdp"))
+
+            # Use large tile size - padding logic handles small batches
+            cfg = TransformerFeedForwardDropFreeMoE.default_config().set(
+                name="moe",
+                gmm_backend=backend,
+                input_dim=model_dim,
+                hidden_dim=model_dim * 4,
+                activation=("nn.silu", "linear"),
+                structure="prenorm",
+                num_experts=num_experts,
+                num_groups=1,
+                gating=TopKDropFreeGating.default_config().set(gating_logit_cap=0),
+                tiling=tiling,
+                interpret=True,  # for cpu testing.
+                preferred_element_type=jnp.float32,
+            )
+            layer = cfg.instantiate(parent=None)
+            params = layer.initialize_parameters_recursively(prng_key=k2)
+
+            # This should not crash - padding handles num_tokens < tile_size
+            output, _ = F(
+                layer,
+                inputs=dict(inputs=input_batch),
+                state=params,
+                is_training=True,
+                prng_key=k3,
+            )
+
+            # Verify output shape is correct.
+            self.assertEqual(output.shape, input_batch.shape)
 
     @parameterized.product(
         gmm_backend=[None, GMMBackend.PALLAS, GMMBackend.RAGGED_DOT],
