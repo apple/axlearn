@@ -1693,7 +1693,13 @@ def build_standard_mesh(mesh_shape: MeshShape, *, devices: np.ndarray) -> np.nda
             mesh = mesh.reshape(mesh_shape)
             logging.log_first_n(logging.INFO, "Using custom mesh: %s", 1, str(mesh))
             return mesh
-        return mesh_utils.create_device_mesh(mesh_shape, devices=devices)
+        return mesh_utils.create_device_mesh(
+            mesh_shape,
+            devices=devices,
+            # Set allow_split_physical_axes to True to split physical axes.
+            # Reference: jax.experimental.mesh_utils.create_device_mesh docs.
+            allow_split_physical_axes=True,
+        )
     except NotImplementedError as e:
         logging.warning(
             "mesh_utils.create_device_mesh cannot handle shape %s: %s. "

@@ -157,8 +157,11 @@ def default_xla_options(
         # v7x flags from MaxText, inclusing SparseCore configs
         # TODO(samuel-andersen): Move v7x SparseCore config below with v6e
         options.update(
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
-            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+            # TODO(lianghe): Re-enable after JAX 0.8.3 issues are resolved.
+            # - all_reduce: causes abnormal loss in pretraining.
+            # - reduce_scatter: causes abnormal loss in post-training (SFT).
+            # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            # xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
             xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
             xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
             xla_tpu_enable_sparse_core_reduce_scatter_v2="true",
