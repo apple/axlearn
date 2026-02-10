@@ -3,13 +3,19 @@
 """Utilities for building Pathways Jobset specs."""
 
 import copy
+import io
 import logging
 import os
 from typing import Any, Optional, Sequence, Union
 
 from absl import flags
 
-from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
+from axlearn.cloud.common.bastion import (
+    _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
+    BASTION_JOB_VERSION_ENV_VAR,
+    ValidationError,
+    deserialize_jobspec,
+)
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import parse_kv_flags
 from axlearn.cloud.gcp.jobset_utils import (
@@ -985,6 +991,8 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
         self._bundler = bundler
         self._inner: TPULeaderWorkerTemplate = cfg.inner.instantiate(bundler=self._bundler)
+        self._inner._user_command_patcher = self._user_command_patcher
+
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
@@ -1102,10 +1110,23 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "requests": {"cpu": cpu_req, "memory": mem_req},
             "limits": {"cpu": cpu_req, "memory": mem_req},
         }
+        command = inner_cfg.command
+
+        if self._user_command_patcher is not None:
+            user_id = None
+            job_spec = os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR)
+            if job_spec:
+                try:
+                    spec = deserialize_jobspec(io.StringIO(job_spec))
+                    user_id = spec.metadata.user_id
+                except ValidationError:
+                    logging.debug("Failed to deserialize job spec for user command patching.")
+            command = self._user_command_patcher.patch(command, user_id=user_id)
+
         container = dict(
             name=inner_cfg.name,
             image=inner_cfg.image_id or self._bundler.id(inner_cfg.name),
-            command=["bash", "-c", inner_cfg.command],
+            command=["bash", "-c", command],
             env=[
                 {
                     "name": "XCLOUD_ENVIRONMENT",

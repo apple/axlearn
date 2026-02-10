@@ -57,6 +57,11 @@ class SplitXLAMXLAFlagsTest(TestCase):
         self.assertEqual(len(megascale_options) + len(xla_options), len(default_options))
 
 
+class MockUserCommandPatcher(jobset_utils.UserCommandPatcher):
+    def patch(self, command: str, **kwargs: dict) -> str:
+        return f"./prefix_command.sh; {command}"
+
+
 class PathwaysReplicatedJobTest(TestCase):
     """Tests PathwaysReplicatedJob."""
 
@@ -408,18 +413,23 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
             bundler_cfg = bundler_cls.from_spec([], fv=fv).set(image="test-image")
             yield cfg, bundler_cfg
 
-    @parameterized.parameters([1, 2])
-    def test_replicated_job(self, num_replicas):
+    @parameterized.product(
+        num_replicas=[1, 2], user_command_patcher=[None, MockUserCommandPatcher.default_config()]
+    )
+    def test_replicated_job(self, num_replicas, user_command_patcher):
         with (self._job_config(CloudBuildBundler, num_replicas) as (cfg, bundler_cfg),):
+            command = "test_command"
             cfg.inner.set(
                 project="test-project",
                 name="test",
-                command="test_command",
+                command=command,
                 output_dir="FAKE",
-            ).instantiate(bundler=bundler_cfg.instantiate())
+            )
+            if user_command_patcher:
+                cfg.inner.set(user_command_patcher=user_command_patcher)
+            cfg.instantiate(bundler=bundler_cfg.instantiate())
 
             builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
-
             replicated_jobs = builder()
 
             self.assertEqual(len(replicated_jobs), num_replicas + 1)
@@ -448,6 +458,29 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
                     self.assertEqual(replicated_job["replicas"], num_replicas)
                 elif replicated_job_name.startswith("pwwk"):
                     self.assertEqual(replicated_job["replicas"], 1)
+
+                command_was_patched = False
+
+                if replicated_job_name.startswith("pwhd"):
+                    containers = (
+                        job_spec.get("spec", {})
+                        .get("template", {})
+                        .get("spec", {})
+                        .get("containers", [])
+                    )
+                    if containers and len(containers) > 0:
+                        command_parts = containers[0].get("command", [])
+                        if command_parts and len(command_parts) > 0:
+                            the_command = command_parts[-1]
+                            if user_command_patcher:
+                                self.assertEqual(f"./prefix_command.sh; {command}", the_command)
+                                command_was_patched = True
+                            else:
+                                self.assertEqual(command, the_command)
+                self.assertEqual(
+                    user_command_patcher is not None and replicated_job_name.startswith("pwhd"),
+                    command_was_patched,
+                )
 
     def test_validate_head_name(self):
         with self._job_config(CloudBuildBundler, 2) as (cfg, bundler_cfg):

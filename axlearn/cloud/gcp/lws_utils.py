@@ -7,6 +7,7 @@ from typing import Any, Optional, Sequence
 from absl import flags
 
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.user_command_patcher import UserCommandPatcher
 from axlearn.cloud.common.utils import FlagConfigurable
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.jobset_utils import TPUJobBuilder
@@ -40,6 +41,7 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         service_account: Optional[str] = None
         output_dir: Optional[str] = None
         image_id: Optional[str] = None
+        user_command_patcher: Optional[UserCommandPatcher.Config] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -79,6 +81,9 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg)
         self._bundler = bundler
+        self._user_command_patcher = (
+            cfg.user_command_patcher.instantiate() if cfg.user_command_patcher else None
+        )
 
     def __call__(self) -> Sequence[Nested[Any]]:
         """Builds LeaderWorkerTemplate for the LWS API.

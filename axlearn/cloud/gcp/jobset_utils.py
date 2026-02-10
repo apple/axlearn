@@ -190,6 +190,9 @@ class BaseReplicatedJob(FlagConfigurable):
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg)
+        self._user_command_patcher = (
+            cfg.user_command_patcher.instantiate() if cfg.user_command_patcher else None
+        )
         self._bundler = bundler
 
     def __call__(self) -> Sequence[Nested[Any]]:
@@ -446,9 +449,6 @@ class TPUJobBuilder(SingleReplicatedJob):
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
-        self._user_command_patcher = (
-            cfg.user_command_patcher.instantiate() if cfg.user_command_patcher else None
-        )
         cfg: TPUJobBuilder.Config = self.config
         if cfg.output_dir is None:
             raise ValueError("cfg.output_dir is required.")
