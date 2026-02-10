@@ -11,13 +11,15 @@ jobs:
     # resource_class: large
     steps:
       - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
-      - run: pip install --upgrade pip
       # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
-      - run: pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
+      - run: uv pip install '.[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api]'
       # pylint uses approx 12GB of memory during this run, look into split to decrease?
       - run: |
           # Start memory monitor as a background process.
