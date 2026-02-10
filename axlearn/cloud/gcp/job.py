@@ -23,6 +23,8 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
 from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
+from axlearn.cloud.gcp.k8s_health_check_policy import LWSHealthCheckPolicy
+from axlearn.cloud.gcp.k8s_http_route import LWSHTTPRoute
 from axlearn.cloud.gcp.k8s_service import LWSService
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
 from axlearn.cloud.gcp.utils import (
@@ -437,6 +439,9 @@ class GKELeaderWorkerSet(GCPJob):
         protocol_list: list[str] = None
         port_names: list[str] = None
         service: Optional[LWSService.Config] = None
+        gke_gateway_route: bool = False
+        http_route: Optional[LWSHTTPRoute.Config] = None
+        health_check_policy: Optional[LWSHealthCheckPolicy.Config] = None
 
     @classmethod
     def set_defaults(cls, fv):
@@ -444,7 +449,12 @@ class GKELeaderWorkerSet(GCPJob):
         fv.set_default("max_tries", fv.max_tries or 10)
         fv.set_default("retry_interval", fv.retry_interval or 60)
 
-        fv.set_default("enable_service", fv.enable_service or False)
+        fv.set_default("gke_gateway_route", fv.gke_gateway_route or False)
+        # When gke_gateway_route is set, enable_service is implicitly True
+        if fv.gke_gateway_route:
+            fv.set_default("enable_service", True)
+        else:
+            fv.set_default("enable_service", fv.enable_service or False)
         fv.set_default("targetports", fv.targetports or ["9090"])
         fv.set_default("ports", fv.ports or ["9090"])
         fv.set_default("protocol_list", fv.protocol_list or [_ServiceProtocol.TCP.value])
@@ -498,6 +508,12 @@ class GKELeaderWorkerSet(GCPJob):
             "Protocol list needed for different port and targetport combinations",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "gke_gateway_route",
+            False,
+            "Enable gke_gateway_route with notary-proxy sidecars for direct gateway routing",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -509,6 +525,7 @@ class GKELeaderWorkerSet(GCPJob):
         cfg.protocol_list = fv.protocol_list
         cfg.port_names = fv.port_names
         cfg.service_type = fv.service_type
+        cfg.gke_gateway_route = fv.gke_gateway_route
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
@@ -520,6 +537,14 @@ class GKELeaderWorkerSet(GCPJob):
         # Note the distinction from bundlers, which are responsible for bundling any code assets
         # required to run the job.
         self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)
+
+        # Wire gke_gateway_route flag to service and http_route configs
+        if cfg.service is not None:
+            cfg.service.set(name=cfg.name, gke_gateway_route=cfg.gke_gateway_route)
+        if cfg.http_route is not None:
+            cfg.http_route.set(name=cfg.name, namespace=cfg.namespace)
+        if cfg.health_check_policy is not None:
+            cfg.health_check_policy.set(name=cfg.name, namespace=cfg.namespace)
 
     def _delete(self):
         cfg: GKELeaderWorkerSet.Config = self.config
@@ -569,6 +594,16 @@ class GKELeaderWorkerSet(GCPJob):
             logging.info("Service created %s", str(service_resp))
         else:
             cfg.service = None
+
+        #### Creating HTTPRoute for gke_gateway_route #######
+        if cfg.gke_gateway_route and cfg.http_route:
+            http_route_resp = cfg.http_route.instantiate().execute()
+            logging.info("HTTPRoute created %s", str(http_route_resp))
+
+        #### Creating HealthCheckPolicy for gke_gateway_route #######
+        if cfg.gke_gateway_route and cfg.health_check_policy:
+            health_check_resp = cfg.health_check_policy.instantiate().execute()
+            logging.info("HealthCheckPolicy created %s", str(health_check_resp))
 
         return lws_resp
 

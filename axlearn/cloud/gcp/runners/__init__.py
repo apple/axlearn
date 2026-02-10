@@ -19,6 +19,8 @@ from axlearn.cloud.gcp.jobset_utils import (
     A4HighReplicatedJob,
     TPUReplicatedJob,
 )
+from axlearn.cloud.gcp.k8s_health_check_policy import LWSHealthCheckPolicy
+from axlearn.cloud.gcp.k8s_http_route import LWSHTTPRoute
 from axlearn.cloud.gcp.k8s_service import LWSService
 from axlearn.cloud.gcp.node_pool_provisioner import TPUNodePoolProvisioner
 from axlearn.cloud.gcp.pathways_utils import (
@@ -65,6 +67,8 @@ def named_runner_configs(
                 builder=PathwaysLeaderWorkerTemplate.default_config(),
                 annotations=config_for_function(exclusive_topology_annotations_leaderworkerset),
                 service=LWSService.default_config(),
+                http_route=LWSHTTPRoute.default_config(),
+                health_check_policy=LWSHealthCheckPolicy.default_config(),
             ),
             pre_provisioner=TPUNodePoolProvisioner.default_config(),
         ),

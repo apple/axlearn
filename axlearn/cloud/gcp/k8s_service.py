@@ -9,6 +9,7 @@ from absl import flags
 
 from axlearn.cloud.common.utils import FlagConfigurable, generate_job_name
 from axlearn.cloud.gcp.config import default_project
+from axlearn.cloud.gcp.pathways_utils import NOTARY_PROXY_GRPC_PORT, NOTARY_PROXY_HTTP_PORT
 from axlearn.cloud.gcp.utils import custom_leaderworkerset_kwargs
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
@@ -72,6 +73,7 @@ class LWSService(Service):
         target_ports: Optional[list[str]] = None
         service_type: Optional[str] = None
         port_names: Optional[list[str]] = None
+        gke_gateway_route: bool = False
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -137,10 +139,18 @@ class LWSService(Service):
         self.name = cfg.name + "-service"
         self.protocol_list = cfg.protocol_list
         self.ports = cfg.ports
-        self.target_ports = cfg.target_ports
         self.service_type = cfg.service_type
-        self.port_names = cfg.port_names
         self.label_name = cfg.name
+        self.gke_gateway_route = cfg.gke_gateway_route
+
+        # When gke_gateway_route is enabled, auto-set target_ports to notary-proxy ports
+        # and port_names to match the expected format
+        if cfg.gke_gateway_route:
+            self.target_ports = [str(NOTARY_PROXY_HTTP_PORT), str(NOTARY_PROXY_GRPC_PORT)]
+            self.port_names = ["http", "grpc"]
+        else:
+            self.target_ports = cfg.target_ports
+            self.port_names = cfg.port_names
 
     def _build_service(self) -> Nested[Any]:
         """
@@ -168,14 +178,17 @@ class LWSService(Service):
         ports_map_list = []
         for i in range(len(self.ports)):
             print(self.protocol_list)
-            ports_map_list.append(
-                k8s.client.V1ServicePort(
-                    protocol=self.protocol_list[i],
-                    port=int(self.ports[i]),
-                    target_port=int(self.target_ports[i]),
-                    name=self.port_names[i],
-                )
+            # Build base port specification
+            port_kwargs = dict(
+                protocol=self.protocol_list[i],
+                port=int(self.ports[i]),
+                target_port=int(self.target_ports[i]),
+                name=self.port_names[i],
             )
+            # Add appProtocol for GRPC when gke_gateway_route is enabled
+            if self.gke_gateway_route and self.port_names[i] == "grpc":
+                port_kwargs["app_protocol"] = "kubernetes.io/h2c"
+            ports_map_list.append(k8s.client.V1ServicePort(**port_kwargs))
 
         return dict(
             metadata=k8s.client.V1ObjectMeta(

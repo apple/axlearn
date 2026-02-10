@@ -18,6 +18,8 @@ from axlearn.cloud.gcp.pathways_utils import (
     _PATHWAYS_PROXY_CONTAINER_NAME,
     _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME,
     _PATHWAYS_SERVER_IMAGE,
+    NOTARY_PROXY_GRPC_PORT,
+    NOTARY_PROXY_HTTP_PORT,
     get_megascale_options,
     get_xla_options,
 )
@@ -661,6 +663,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             ).instantiate(bundler=bundler_cfg.instantiate())
 
             builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
             # pylint: disable-next=protected-access
             container = builder._build_head_container()
 
@@ -701,3 +704,53 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             # Verify no health probes are present
             self.assertNotIn("startupProbe", container)
             self.assertNotIn("readinessProbe", container)
+
+    @parameterized.parameters([True, False])
+    def test_gke_gateway_route_notary_containers(self, gke_gateway_route):
+        """Tests that notary-proxy containers are added when gke_gateway_route=True."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                gke_gateway_route=gke_gateway_route,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test-express-route",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = builder.build_leader_pod()
+            pod_spec = pod["spec"]
+
+            container_names = [c["name"] for c in pod_spec["containers"]]
+
+            # pathways-proxy and pathways-rm should always be present
+            self.assertIn(_PATHWAYS_PROXY_CONTAINER_NAME, container_names)
+            self.assertIn(_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME, container_names)
+
+            if gke_gateway_route:
+                # When gke_gateway_route=True, notary-proxy containers should be present
+                self.assertEqual(len(pod_spec["containers"]), 5)
+                self.assertIn("notary-proxy", container_names)
+                self.assertIn("notary-proxy-grpc", container_names)
+
+                # Check notary-proxy container ports
+                notary_http = next(c for c in pod_spec["containers"] if c["name"] == "notary-proxy")
+                notary_grpc = next(
+                    c for c in pod_spec["containers"] if c["name"] == "notary-proxy-grpc"
+                )
+                self.assertEqual(notary_http["ports"][0]["containerPort"], NOTARY_PROXY_HTTP_PORT)
+                self.assertEqual(notary_grpc["ports"][0]["containerPort"], NOTARY_PROXY_GRPC_PORT)
+
+                # Check ConfigMap volumes are present
+                volume_names = [v["name"] for v in pod_spec["volumes"]]
+                self.assertIn("notary-proxy-config-sidecar", volume_names)
+                self.assertIn("notary-proxy-config-sidecar-grpc", volume_names)
+            else:
+                # When gke_gateway_route=False, notary-proxy containers should NOT be present
+                self.assertEqual(len(pod_spec["containers"]), 3)
+                self.assertNotIn("notary-proxy", container_names)
+                self.assertNotIn("notary-proxy-grpc", container_names)
