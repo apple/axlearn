@@ -93,6 +93,9 @@ _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 # While workers will share #workers * _PATHWAYS_BACK_OFF_LIMIT total times.
 _PATHWAYS_BACK_OFF_LIMIT = 32
 
+_PATHWAYS_SHM_DIR = "/tmp/ifrt_proxy"
+_PATHWAYS_SHM_VOLUME_NAME = "shared-memory"
+
 # Notary proxy configuration for gke_gateway_route
 NOTARY_PROXY_IMAGE = "docker.apple.com/polymer/notary-proxy:44d03e27b8c9"
 NOTARY_PROXY_HTTP_PORT = 38081
@@ -233,12 +236,17 @@ class PathwaysColocatedPythonPlugin(FlagConfigurable):
             restartPolicy="Always",
             env=[
                 {
+                    "name": "CLOUD_PATHWAYS_SIDECAR_SHM_DIRECTORY",
+                    "value": _PATHWAYS_SHM_DIR,
+                },
+                {
                     "name": "GRPC_SERVER_ADDRESS",
                     "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
                 },
             ],
             imagePullPolicy="Always",
             ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
+            volumeMounts=[{"mountPath": _PATHWAYS_SHM_DIR, "name": _PATHWAYS_SHM_VOLUME_NAME}],
         )
 
     @property
@@ -415,7 +423,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # Setting it to 1 byte so effectively all Jax device_put use shared memory.
         self._update_env_list(env_list, "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD", "1")
         self._update_env_list(
-            env_list, "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY", "/tmp/ifrt_proxy"
+            env_list,
+            "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY",
+            _PATHWAYS_SHM_DIR,
         )
         env_list.append(
             {
@@ -439,7 +449,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         head_container["securityContext"] = {"capabilities": {"add": ["SYS_PTRACE"]}}
 
         volume_mounts = head_container.get("volumeMounts", [])
-        volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"))
+        volume_mounts.append(dict(name=_PATHWAYS_SHM_VOLUME_NAME, mountPath=_PATHWAYS_SHM_DIR))
         head_container["volumeMounts"] = volume_mounts
 
         return head_container
@@ -490,13 +500,13 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     {"name": "XLA_FLAGS", "value": f"--xla_dump_to=/output/{cfg.name}/xla"},
                     {
                         "name": "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY",
-                        "value": "/tmp/ifrt_proxy",
+                        "value": _PATHWAYS_SHM_DIR,
                     },
                 ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
                 volumeMounts=[
                     dict(name="shared-output", mountPath="/output"),
-                    dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"),
+                    dict(name=_PATHWAYS_SHM_VOLUME_NAME, mountPath=_PATHWAYS_SHM_DIR),
                 ],
             ),
             dict(
@@ -540,7 +550,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         else:
             # gcsfuse mounts shared-memory. To avoid double mounting, we only mount
             # shared-memory explicitly when gcsfuse_mount is not enabled.
-            volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
+            volumes.append(dict(name=_PATHWAYS_SHM_VOLUME_NAME, emptyDir=dict(medium="Memory")))
 
         node_selector = {
             _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,
@@ -668,11 +678,25 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
             # Recycling host memory gives a slight increase in performance.
             "--tpu_pinned_host_allocation_recycle=true",
-            # The flag below is needed for better H2D performance.
-            # We use 1/4 of the host memory, rounding up to power of 2 as premapped buffer.
-            # Note that pathways worker requires this flag to be a power of 2.
-            f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory//4)*(1<<30)}",
         ]
+        if not self._colocated_python.is_colocated_python_enabled:
+            worker_container["args"].append(
+                # The flag below is needed for better H2D performance.
+                # We use 1/4 of the host memory, rounding up to power of 2 as premapped buffer.
+                # Note that pathways worker requires this flag to be a power of 2.
+                f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory//4)*(1<<30)}",
+            )
+        else:
+            # Colocated python uses more host memory.
+            # Thus we need to reduce the premapped buffer size.
+            premapped_buffer_size_gb = min(round_up_to_power_of_2(host_memory // 16), 32)
+            worker_container["args"].extend(
+                [
+                    f"--tpu_premapped_buffer_size={premapped_buffer_size_gb * (1<<30)}",
+                    f"--cloud_pathways_sidecar_shm_directory={_PATHWAYS_SHM_DIR}",
+                ]
+            )
+
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
 
@@ -681,6 +705,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         ports = worker_container.get("ports", [])
         ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
         worker_container["ports"] = ports
+        if self._colocated_python.is_colocated_python_enabled:
+            worker_container["volumeMounts"] = [
+                dict(name=_PATHWAYS_SHM_VOLUME_NAME, mountPath=_PATHWAYS_SHM_DIR)
+            ]
 
         # Command will be executed by the head node, and it will compile the model and
         # distribute works to workers.
@@ -706,11 +734,18 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pod_spec["containers"] = [
             self._build_pathways_worker_container(pathways_worker_replicated_job_index)
         ]
+
         if self._colocated_python.is_colocated_python_enabled:
             image = cfg.image_id or self._bundler.id(cfg.name)
             pod_spec["initContainers"].append(
                 self._colocated_python.build_colocated_python_container(image)
             )
+
+            shared_memory_volume = {
+                "name": _PATHWAYS_SHM_VOLUME_NAME,
+                "emptyDir": {"medium": "Memory"},
+            }
+            pod_spec["volumes"].append(shared_memory_volume)
         worker_pod["spec"] = pod_spec
 
         # Service account for nodes.
@@ -1027,11 +1062,17 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
         ]
+        if self._colocated_python.is_colocated_python_enabled:
+            args.append(f"--cloud_pathways_sidecar_shm_directory={_PATHWAYS_SHM_DIR}")
         worker_container["args"] = args
         ports = worker_container.get("ports", [])
         ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
         worker_container["ports"] = ports
         worker_container["image"] = self._colocated_python.pathways_server_image
+        if self._colocated_python.is_colocated_python_enabled:
+            worker_container["volumeMounts"] = [
+                dict(name=_PATHWAYS_SHM_VOLUME_NAME, mountPath=_PATHWAYS_SHM_DIR)
+            ]
 
         worker_container.pop("command")
         return worker_container
@@ -1047,11 +1088,17 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         pod_spec.pop("restartPolicy")
         pod_spec["dnsPolicy"] = "ClusterFirstWithHostNet"
         pod_spec["containers"] = [self._build_pathways_worker_container()]
+
         if self._colocated_python.is_colocated_python_enabled:
             image = cfg.image_id or self._bundler.id(cfg.name)
             pod_spec["initContainers"].append(
                 self._colocated_python.build_colocated_python_container(image)
             )
+            shared_memory_volume = {
+                "name": _PATHWAYS_SHM_VOLUME_NAME,
+                "emptyDir": {"medium": "Memory"},
+            }
+            pod_spec["volumes"].append(shared_memory_volume)
         worker_pod["spec"] = pod_spec
 
         # Service account for nodes.
