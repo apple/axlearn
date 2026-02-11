@@ -155,6 +155,13 @@ class PathwaysReplicatedJobTest(TestCase):
                 }.issubset(env_vars)
             )
 
+            # Check security context for SYS_PTRACE capability
+            self.assertIn("securityContext", head_container)
+            security_context = head_container["securityContext"]
+            self.assertIn("capabilities", security_context)
+            self.assertIn("add", security_context["capabilities"])
+            self.assertIn("SYS_PTRACE", security_context["capabilities"]["add"])
+
             # Check pathways-proxy container args for XLA flags.
             proxy_container = None
             rm_container = None

@@ -435,6 +435,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         }
         head_container["resources"] = resources
 
+        # This enables tracing tools like pyspy
+        head_container["securityContext"] = {"capabilities": {"add": ["SYS_PTRACE"]}}
+
         volume_mounts = head_container.get("volumeMounts", [])
         volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"))
         head_container["volumeMounts"] = volume_mounts
@@ -1238,6 +1241,8 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         container = dict(
             name=inner_cfg.name,
             image=inner_cfg.image_id or self._bundler.id(inner_cfg.name),
+            # This enables tracing tools like pyspy
+            securityContext={"capabilities": {"add": ["SYS_PTRACE"]}},
             command=["bash", "-c", command],
             env=[
                 {
