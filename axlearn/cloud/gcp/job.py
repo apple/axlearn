@@ -60,6 +60,42 @@ class _ServiceType(enum.Enum):
     EXTERNAL_NAME = "ExternalName"
 
 
+def get_topology_assignment() -> Optional[list[list[str]]]:
+    """Retrieves TPU topology assignments from the environment variable.
+
+    When TPU slice auto-provisioning is enabled, Bastion passes topology assignments
+    through an environment variable. These assignments specify which TPU slices should be
+    used for the job, enabling precise control over TPU resource allocation.
+
+    Example topology assignment:
+        [["sub-block-id", "sub-block-id"]]
+
+    This is the assignment for a job asking for tpu-7x-256, that needs 128 chips, using
+    2 sub-blocks (64 chips per sub-block). This job will run on a TPU slice formed by
+    2 sub-blocks. Each inner array represents the TPU slice info for a job's replica.
+
+    Returns:
+        A list of lists of strings representing topology assignments, where each inner list
+        contains slice identifiers for a particular job replica. Returns None if the
+        environment variable is not set or if parsing fails.
+    """
+    topology_assignments_env = os.environ.get(BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR)
+    if not topology_assignments_env:
+        logging.info("No %s environment variable set.", BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR)
+        return None
+
+    try:
+        return json.loads(topology_assignments_env)
+    except json.JSONDecodeError as e:
+        logging.warning(
+            "Failed to parse topology assignments from env var %s, value: %s, error: %s",
+            BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR,
+            topology_assignments_env,
+            e,
+        )
+        return None
+
+
 class GCPJob(Job):
     """Base GCP Job definition."""
 
@@ -172,41 +208,6 @@ class GKEJob(GCPJob):
         # Issues a delete request for the JobSet and proactively delete its descendants. This is not
         # fully blocking; after the call returns there can be a delay before everything is deleted.
         delete_k8s_jobset(cfg.name, namespace=cfg.namespace)
-
-    def _get_topology_assignment(self) -> Optional[list[list[str]]]:
-        """Retrieves TPU topology assignments from the environment variable.
-
-        When TPU slice auto-provisioning is enabled, Bastion passes topology assignments
-        through an environment variable. These assignments specify which TPU slices should be
-        used for the job, enabling precise control over TPU resource allocation.
-
-        Example topology assignment:
-            [["sub-block-id", "sub-block-id"]]
-
-        This is the assignment for a job asking for tpu-7x-256, that needs 128 chips, using
-        2 sub-blocks (64 chips per sub-block). This job will run on a TPU slice formed by
-        2 sub-blocks. Each inner array represents the TPU slice info for a job's replica.
-
-        Returns:
-            A list of lists of strings representing topology assignments, where each inner list
-            contains slice identifiers for a particular job replica. Returns None if the
-            environment variable is not set or if parsing fails.
-        """
-        topology_assignments_env = os.environ.get(BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR)
-        if not topology_assignments_env:
-            logging.info("No %s environment variable set.", BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR)
-            return None
-
-        try:
-            return json.loads(topology_assignments_env)
-        except json.JSONDecodeError as e:
-            logging.warning(
-                "Failed to parse topology assignments from env var %s, value: %s, error: %s",
-                BASTION_JOB_TOPOLOGY_ASSIGNMENT_ENV_VAR,
-                topology_assignments_env,
-                e,
-            )
-            return None
 
     def _lookup_system_by_node_selectors(
         self, node_selector: dict[str, str]
@@ -382,7 +383,7 @@ class GKEJob(GCPJob):
         # Bastion passes the job metadata to the runner through env vars
         # If the job has topology assigned, its also in the env var
         # Try to parse the env var and get the topology assignments.
-        topology_assignment = self._get_topology_assignment()
+        topology_assignment = get_topology_assignment()
         if cfg.enable_tpu_slice_auto_provisioning and topology_assignment:
             slice_selection_dict = self._get_tpu_replicated_job_topology_selection(
                 replicated_jobs, topology_assignment
@@ -563,6 +564,7 @@ class GKELeaderWorkerSet(GCPJob):
         gke_gateway_route: bool = False
         http_route: Optional[LWSHTTPRoute.Config] = None
         health_check_policy: Optional[LWSHealthCheckPolicy.Config] = None
+        enable_tpu_slice_auto_provisioning: Optional[bool] = None
 
     @classmethod
     def set_defaults(cls, fv):
@@ -635,6 +637,12 @@ class GKELeaderWorkerSet(GCPJob):
             "Enable gke_gateway_route with notary-proxy sidecars for direct gateway routing",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "enable_tpu_slice_auto_provisioning",
+            None,
+            "Auto provision TPU slices based on the topology assignment.",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
@@ -653,6 +661,15 @@ class GKELeaderWorkerSet(GCPJob):
         super().__init__(cfg)
         cfg: GKELeaderWorkerSet.Config = self.config
         self._bundler = bundler
+
+        # Pass enable_tpu_slice_auto_provisioning from GKEJob to the builder
+        builder_cfg = cfg.builder
+        if (
+            hasattr(builder_cfg, "enable_tpu_slice_auto_provisioning")
+            and cfg.enable_tpu_slice_auto_provisioning is not None
+        ):
+            builder_cfg.enable_tpu_slice_auto_provisioning = cfg.enable_tpu_slice_auto_provisioning
+
         # This instantiatees a builder for constructing replicated job specs, which will be managed
         # together under the leaderworkerset represented by this class.
         # Note the distinction from bundlers, which are responsible for bundling any code assets
@@ -683,9 +700,42 @@ class GKELeaderWorkerSet(GCPJob):
         """
         cfg: GKELeaderWorkerSet.Config = self.config
         annotations = maybe_instantiate(cfg.annotations or {})
+        labels = {}
+
+        # If the topology is set and slice auto provisioning is configured
+        # set the necessary annotations
+        topology_assignment = get_topology_assignment()
+        if cfg.enable_tpu_slice_auto_provisioning and topology_assignment:
+            # Add TPU slice selection
+            logging.info("Adding slice selection: %s to leader worker set", topology_assignment)
+
+            # Note, we use async here rather than the jobset sync. Async will immediatly create
+            # the pods before the slice has been created. Once sync is supported for leader worker
+            # set we should consider switching.
+            labels["tpu-provisioner.cloud.google.com/slice-autoprovisioning"] = "async"
+
+            # For Leader worker sets, we only support topology assignments to workers.
+            # The format of the topology assignments (list of subblock groups) is what
+            # is expected by the TPU provisioner.
+            annotations.update(
+                {
+                    "tpu-provisioner.cloud.google.com/slice-selection": json.dumps(
+                        {
+                            "workers": topology_assignment,
+                        }
+                    )
+                }
+            )
+
+            # Remove exclusive topology annotation, the tpu provisioner will ensure replica
+            # affinity by injecting slice based node selectors, so we don't need to use
+            # the exclusive topology annotations
+            exclusive_topology_annotation = exclusive_topology_annotations_leaderworkerset()
+            for key in exclusive_topology_annotation:
+                annotations.pop(key, None)
 
         return dict(
-            metadata=dict(name=cfg.name, annotations=annotations),
+            metadata=dict(name=cfg.name, annotations=annotations, labels=labels),
             spec=dict(
                 replicas=cfg.num_replicas,
                 leaderWorkerTemplate=self._builder(),

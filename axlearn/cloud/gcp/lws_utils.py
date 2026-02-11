@@ -99,6 +99,20 @@ class TPULeaderWorkerTemplate(TPUJobBuilder):
 
     Config = TPUJobBuilder.Config
 
+    def _build_pod(self) -> Nested[Any]:
+        cfg: TPUJobBuilder.Config = self.config
+
+        # Add inject slice selector for slice auto provisioned jobs
+        pod = super()._build_pod()
+        if cfg.enable_tpu_slice_auto_provisioning:
+            pod["metadata"]["labels"].update(
+                {
+                    "tpu-provisioner.cloud.google.com/inject-slice-selector": "true",
+                }
+            )
+
+        return pod
+
     def __call__(self) -> Sequence[Nested[Any]]:
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         return dict(  # pytype: disable=bad-return-type

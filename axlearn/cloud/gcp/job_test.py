@@ -3,6 +3,7 @@
 """Tests jobs by launching commands on TPUs/VMs."""
 # pylint: disable=protected-access
 
+import json
 from typing import Optional, cast
 from unittest import mock
 
@@ -543,3 +544,113 @@ class TPUGKELeaderWorkerSetTest(TestCase):
             gke_job = cfg.instantiate(bundler=mock.create_autospec(Bundler))
             gke_job._delete()  # pylint: disable=protected-access
             mock_delete.assert_called()
+
+    @parameterized.parameters(
+        # Test when auto provisioning is enabled with topology assignment
+        dict(
+            enable_tpu_slice_auto_provisioning=True,
+            topology_assignment=[["subblock-1", "subblock-2"]],
+            expect_label=True,
+            expect_annotation=True,
+        ),
+        # Test when auto provisioning is disabled
+        dict(
+            enable_tpu_slice_auto_provisioning=False,
+            topology_assignment=[["subblock-1", "subblock-2"]],
+            expect_label=False,
+            expect_annotation=False,
+        ),
+        # Test when auto provisioning is None (not set)
+        dict(
+            enable_tpu_slice_auto_provisioning=None,
+            topology_assignment=[["subblock-1", "subblock-2"]],
+            expect_label=False,
+            expect_annotation=False,
+        ),
+        # Test when auto provisioning is enabled but no topology assignment
+        dict(
+            enable_tpu_slice_auto_provisioning=True,
+            topology_assignment=None,
+            expect_label=False,
+            expect_annotation=False,
+        ),
+    )
+    def test_build_leaderworkerset(
+        self,
+        enable_tpu_slice_auto_provisioning,
+        topology_assignment,
+        expect_label,
+        expect_annotation,
+    ):
+        """Test _build_leaderworkerset with enable_tpu_slice_auto_provisioning."""
+        cfg, bundler_cfg = self._job_config(
+            command="test-command",
+            bundler_cls=CloudBuildBundler,
+            enable_tpu_slice_auto_provisioning=enable_tpu_slice_auto_provisioning,
+        )
+
+        # Mock the builder to return a simple leader worker template
+        mock_leader_worker_template = {
+            "size": 8,
+            "workerTemplate": {
+                "metadata": {"labels": {"test-label": "test-value"}},
+                "spec": {"containers": []},
+            },
+        }
+
+        # Create a mock builder that returns our mock template
+        mock_builder = mock.Mock()
+        mock_builder.return_value = mock_leader_worker_template
+
+        # Create the GKE job instance first
+        gke_job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+        # Replace the builder with our mock (this is what we're testing)
+        gke_job._builder = mock_builder
+
+        # Mock get_topology_assignment
+        with mock.patch(
+            f"{job.__name__}.get_topology_assignment",
+            return_value=topology_assignment,
+        ):
+            # Build the leaderworkerset
+            lws_spec = gke_job._build_leaderworkerset()
+
+            # Check metadata
+            self.assertIn("metadata", lws_spec)
+            self.assertIn("name", lws_spec["metadata"])
+            self.assertEqual(cfg.name, lws_spec["metadata"]["name"])
+
+            # Check labels
+            labels = lws_spec["metadata"].get("labels", {})
+            slice_auto_provisioning_label = (
+                "tpu-provisioner.cloud.google.com/slice-autoprovisioning"
+            )
+            if expect_label:
+                self.assertIn(slice_auto_provisioning_label, labels)
+                self.assertEqual("async", labels[slice_auto_provisioning_label])
+            else:
+                self.assertNotIn(slice_auto_provisioning_label, labels)
+
+            # Check annotations
+            annotations = lws_spec["metadata"].get("annotations", {})
+            slice_selection_annotation = "tpu-provisioner.cloud.google.com/slice-selection"
+            if expect_annotation:
+                self.assertIn(slice_selection_annotation, annotations)
+                slice_selection = json.loads(annotations[slice_selection_annotation])
+                self.assertIn("workers", slice_selection)
+                self.assertEqual(topology_assignment, slice_selection["workers"])
+            else:
+                self.assertNotIn(slice_selection_annotation, annotations)
+
+            # Verify exclusive topology annotations are removed when auto provisioning
+            if expect_annotation:
+                self.assertNotIn(
+                    "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology",
+                    annotations,
+                )
+
+            # Check spec
+            self.assertIn("spec", lws_spec)
+            self.assertIn("replicas", lws_spec["spec"])
+            self.assertIn("leaderWorkerTemplate", lws_spec["spec"])
