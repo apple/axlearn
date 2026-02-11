@@ -501,6 +501,13 @@ class TPUJobBuilder(SingleReplicatedJob):
             topology = cfg.accelerator.topology or system.topology
             env_vars["TPU_TOPOLOGY"] = topology
 
+            # From 7x user guide, this value needs to be the tpu type
+            # prefixed by tpu, where our tpu type will have the tpu prefix stripped:
+            # For some examples:
+            #  - tpu7x-128
+            #  - tpu7x-1024
+            env_vars["TPU_ACCELERATOR_TYPE"] = f"tpu{self._tpu_type}"
+
             tpu_version = infer_tpu_version(self._tpu_type)
             bounds = get_host_bounds(topology, tpu_version)
             if bounds:
@@ -802,7 +809,13 @@ class TPUJobBuilder(SingleReplicatedJob):
         if cfg.enable_tpu_slice_auto_provisioning:
             annotations.update(
                 {
+                    # This is used by the TPU provisioner to determine the slice size
+                    # of a particular pod
                     "cloud.google.com/gke-tpu-topology": cfg.accelerator.topology
+                    or system.topology,
+                    # This annotation is required for GKE to populate the `TPU_TOPOLOGY_WRAP` envvar
+                    # and other system properties
+                    "cloud.google.com/gke-tpu-slice-topology": cfg.accelerator.topology
                     or system.topology,
                 }
             )
