@@ -12,7 +12,7 @@ import os
 import shlex
 import subprocess
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import kubernetes as k8s
 from absl import flags
@@ -27,12 +27,18 @@ from axlearn.cloud.gcp.k8s_health_check_policy import LWSHealthCheckPolicy
 from axlearn.cloud.gcp.k8s_http_route import LWSHTTPRoute
 from axlearn.cloud.gcp.k8s_service import LWSService
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate
+from axlearn.cloud.gcp.system_characteristics import (
+    _SystemCharacteristics,
+    get_subblock_characteristics,
+    get_system_characteristics,
+)
 from axlearn.cloud.gcp.utils import (
     custom_jobset_kwargs,
     custom_leaderworkerset_kwargs,
     delete_k8s_jobset,
     delete_k8s_leaderworkerset,
 )
+from axlearn.common.compiler_options import infer_tpu_version
 from axlearn.common.config import REQUIRED, ConfigOr, Required, config_class, maybe_instantiate
 from axlearn.common.utils import Nested
 
@@ -202,41 +208,160 @@ class GKEJob(GCPJob):
             )
             return None
 
-    def _get_tpu_job_name_from_replicated_jobs(
-        self, replicated_jobs: Sequence[Nested[Any]]
-    ) -> Optional[str]:
-        """Extracts the name of the replicated job that has TPU node selectors.
+    def _lookup_system_by_node_selectors(
+        self, node_selector: dict[str, str]
+    ) -> Optional[tuple[str, _SystemCharacteristics]]:
+        """Looks up system characteristics from node selectors.
 
-        Iterates through the replicated jobs and finds the one that contains
-        cloud.google.com/gke-tpu-accelerator and cloud.google.com/gke-tpu-topology
-        node selectors, which indicate it's a TPU job. Returns that jobs name.
+        Args:
+            node_selector: Kubernetes node selector dict
+
+        Returns:
+            Tuple of tpu type and _SystemCharacteristics object if TPU selectors found
+            None otherwise.
+        """
+        gke_accelerator = node_selector.get("cloud.google.com/gke-tpu-accelerator")
+        topology = node_selector.get("cloud.google.com/gke-tpu-topology")
+
+        if not (gke_accelerator and topology):
+            return None
+
+        return get_system_characteristics(gke_accelerator, topology)
+
+    def _get_tpu_replicated_job_topology_selection(
+        self,
+        replicated_jobs: Sequence[Nested[Any]],
+        topology_assignments: list[list[str]],
+    ) -> dict[str, list[list[str]]]:
+        """Builds topology selection mapping from replicated jobs to subblock assignments.
+
+        This method analyzes TPU replicated jobs to determine their subblock requirements
+        and distributes topology assignments accordingly. It's used for TPU slice
+        auto-provisioning with super slicing support.
 
         Args:
             replicated_jobs: List of replicated job specs from the JobSet.
+            topology_assignments: List of subblock ID lists, where each inner list
+                represents subblocks for one replica. Format: [["sb-1", "sb-2"], ["sb-3"]].
 
         Returns:
-            The name of the replicated job that contains TPU node selectors,
-            or None if no such job is found.
+            A dict mapping replicated job name to its topology assignment. The topology
+            assignment is a list of lists, where each inner list contains subblock IDs
+            for a specific replica of that job.
+
+            Example return value:
+            {
+                "tpu-worker": [["sb-1", "sb-2"], ["sb-3", "sb-4"]]
+            }
+
+        Raises:
+            ValueError: If TPU version doesn't support subblock super slicing.
+            ValueError: If requested resources don't match topology assignments.
+            ValueError: If insufficient topology assignments are provided.
+            ValueError: If system lookup fails for job's node selectors.
         """
+        result = {}
+        used_indices = set()  # Track which assignments have been used
+
         for job in replicated_jobs:
-            # Navigate to the node selector in the job spec
-            # Structure: job -> template -> spec -> template -> spec -> nodeSelector
-            node_selector = (
+            # Extract node selector
+            node_selector: dict[str, str] = cast(
+                dict[str, str],
                 job.get("template", {})
                 .get("spec", {})
                 .get("template", {})
                 .get("spec", {})
-                .get("nodeSelector", {})
+                .get("nodeSelector", {}),
             )
 
-            # Check if TPU node selectors are present
-            has_tpu_accelerator = "cloud.google.com/gke-tpu-accelerator" in node_selector
-            has_tpu_topology = "cloud.google.com/gke-tpu-topology" in node_selector
+            # Look up system characteristics
+            gke_accelerator = node_selector.get("cloud.google.com/gke-tpu-accelerator")
+            topology = node_selector.get("cloud.google.com/gke-tpu-topology")
 
-            if has_tpu_accelerator and has_tpu_topology:
-                return str(job.get("name"))
+            if not (gke_accelerator and topology):
+                # Not a TPU job, skip
+                continue
 
-        return None
+            maybe_system_chars = self._lookup_system_by_node_selectors(node_selector)
+
+            if maybe_system_chars is None:
+                job_name = str(job.get("name"))
+                raise ValueError(
+                    f"Could not find system characteristics for job '{job_name}' with "
+                    f"accelerator='{gke_accelerator}' and topology='{topology}'. "
+                    f"This combination is not defined in "
+                    "USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS."
+                )
+
+            tpu_type, system_chars = maybe_system_chars
+            job_name = str(job.get("name"))
+            num_replicas = int(job.get("replicas", 1))
+
+            # Get TPU version and check for subblock support
+            tpu_version = infer_tpu_version(tpu_type)
+            subblock_chars = get_subblock_characteristics(tpu_version)
+
+            if subblock_chars is None:
+                raise ValueError(
+                    f"TPU version '{tpu_version}' (from device type '{system_chars.device_type}') "
+                    f"does not support subblock super slicing. Only TPU versions with configured "
+                    f"subblock mappings are supported for slice auto-provisioning."
+                )
+
+            # Calculate Subblocks
+            job_vms = system_chars.vms_per_slice
+            subblock_vms = subblock_chars.vms_per_slice
+
+            if job_vms % subblock_vms != 0:
+                raise ValueError(
+                    f"Job '{job_name}' requires {job_vms} VMs, which is not "
+                    f"evenly divisible by subblock size {subblock_vms} VMs. "
+                    f"Job topology: {topology}, Subblock topology: {subblock_chars.topology}"
+                )
+
+            # Calculate subblocks needed per replica
+            subblocks_per_replica = job_vms // subblock_vms
+
+            # Find matching assignments for each replica
+            job_assignments = []
+            for replica_idx in range(num_replicas):
+                # Find first unused assignment with correct number of subblocks
+                found_assignment = None
+                for idx, assignment in enumerate(topology_assignments):
+                    if idx not in used_indices and len(assignment) == subblocks_per_replica:
+                        found_assignment = assignment
+                        used_indices.add(idx)
+                        break
+
+                if found_assignment is None:
+                    raise ValueError(
+                        f"Could not find unused topology assignment with {subblocks_per_replica} "
+                        f"subblock(s) for job '{job_name}' replica {replica_idx}. "
+                        f"Total assignments: {len(topology_assignments)}, "
+                        f"already used: {len(used_indices)}."
+                    )
+
+                job_assignments.append(found_assignment)
+
+            result[job_name] = job_assignments
+            logging.info(
+                "Job '%s' (%s, topology=%s): %d replica(s) × %d subblock(s)",
+                job_name,
+                system_chars.device_type,
+                topology,
+                num_replicas,
+                subblocks_per_replica,
+            )
+
+        # Check if there are unused topology assignments
+        if len(used_indices) < len(topology_assignments):
+            logging.warning(
+                "Not all topology assignments were consumed. Used %d out of %d assignment(s).",
+                len(used_indices),
+                len(topology_assignments),
+            )
+
+        return result
 
     def _build_jobset(self) -> Nested[Any]:
         """Builds a config for a JobSet, which is a set of Jobs.
@@ -259,14 +384,10 @@ class GKEJob(GCPJob):
         # Try to parse the env var and get the topology assignments.
         topology_assignment = self._get_topology_assignment()
         if cfg.enable_tpu_slice_auto_provisioning and topology_assignment:
-            # Get the TPU job name from the replicated jobs
-            tpu_job_name = self._get_tpu_job_name_from_replicated_jobs(replicated_jobs)
-            if tpu_job_name is None:
-                logging.warning(
-                    "TPU slice auto-provisioning enabled but no TPU job found in replicated jobs"
-                )
-                tpu_job_name = self._builder.config.job_name  # Fallback to builder job name
-            slice_selection = json.dumps({tpu_job_name: topology_assignment})
+            slice_selection_dict = self._get_tpu_replicated_job_topology_selection(
+                replicated_jobs, topology_assignment
+            )
+            slice_selection = json.dumps(slice_selection_dict)
             logging.info("Adding slice selection: %s to job set", slice_selection)
             labels.update({"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "sync"})
             annotations.update(

@@ -65,6 +65,7 @@ import enum
 import json
 import os
 import time
+from itertools import chain
 from typing import Optional, cast
 
 import kubernetes as k8s
@@ -119,7 +120,19 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
 
 
 def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
-    """Infers reservation given a jobset spec."""
+    """Extracts all topology assignments from jobset, flattened across all jobs.
+
+    This function extracts and flattens all assignments across all replicated jobs.
+
+    Args:
+        jobset: The JobSet dict.
+
+    Returns:
+        A flattened list of all topology assignments across all jobs, or None if not found.
+        For example, if the annotation contains:
+        {"job1": [["sb-1", "sb-2"], ["sb-3"]], "job2": [["sb-4"]]}
+        This returns: [["sb-1", "sb-2"], ["sb-3"], ["sb-4"]]
+    """
     topology_assignments_str = (
         jobset.get("metadata", {})
         .get("annotations", {})
@@ -129,10 +142,7 @@ def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
         return None
 
     try:
-        topology_dict = json.loads(topology_assignments_str)
-        # Get the first entry in the dict (regardless of the key name), since currently
-        # we only support a single tpu container per jobset.
-        return next(iter(topology_dict.values())) if topology_dict else None
+        topology_dict: dict[str, list[list[str]]] = json.loads(topology_assignments_str)
     except json.JSONDecodeError as e:
         logging.warning(
             "Failed to parse topology assignments from annotations %s. error: %s",
@@ -140,6 +150,13 @@ def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
             e,
         )
         return None
+
+    # Flatten all assignments across all jobs
+    all_assignments: list[list[str]] = []
+    for job_assignments in topology_dict.values():
+        all_assignments.extend(job_assignments)
+
+    return all_assignments
 
 
 def _topology_assignment_from_env() -> Optional[list[list[str]]]:
@@ -158,6 +175,38 @@ def _topology_assignment_from_env() -> Optional[list[list[str]]]:
             e,
         )
         return None
+
+
+def _compare_topology_assignments(
+    env_assignments: Optional[list[list[str]]], jobset_assignments: Optional[list[list[str]]]
+) -> bool:
+    """Compares topology assignments from env and jobset.
+
+    Ensures they contain the same subblocks.
+
+    Args:
+        env_assignments: Topology assignments from environment variable.
+        jobset_assignments: Topology assignments from jobset annotation (flattened across jobs).
+
+    Returns:
+        True if both assignments contain the same set of subblocks, False otherwise.
+    """
+    # If both are None, consider them equal
+    if env_assignments is None and jobset_assignments is None:
+        return True
+
+    # If one is None and the other isn't, they don't match
+    if env_assignments is None or jobset_assignments is None:
+        return False
+
+    # Flatten and extract all subblock IDs from env assignments
+    env_subblocks = set(chain(*env_assignments))
+
+    # Flatten and extract all subblock IDs from jobset assignments
+    jobset_subblocks = set(chain(*jobset_assignments))
+
+    # Compare as sets (order and grouping don't matter)
+    return env_subblocks == jobset_subblocks
 
 
 def _infer_processor_type(jobset_spec: dict) -> Optional[str]:
@@ -368,9 +417,17 @@ class GKERunnerJob(BaseRunnerJob):
             if runner_utils.should_recreate_job(tier, reservation, processor_type=processor_type):
                 return GKERunnerJob.Status.RESCHEDULED
 
+            # Validate topology assignments match between env and jobset
             topology_assignment_env = _topology_assignment_from_env()
             topology_assignment_jobset = _topology_assignment_from_jobset(jobset=resp)
-            if topology_assignment_env != topology_assignment_jobset:
+            if not _compare_topology_assignments(
+                topology_assignment_env, topology_assignment_jobset
+            ):
+                logging.info(
+                    "Topology assignment changed. Env subblocks: %s, Jobset subblocks: %s",
+                    topology_assignment_env,
+                    topology_assignment_jobset,
+                )
                 return GKERunnerJob.Status.RESCHEDULED
 
             expected_job_version = os.environ.get(BASTION_JOB_VERSION_ENV_VAR, None)
@@ -566,7 +623,7 @@ class GKERunnerJob(BaseRunnerJob):
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
             elif status == GKERunnerJob.Status.RESCHEDULED:
-                logging.info("Jobset does not match scheduling tier. Rescheduling the jobset...")
+                logging.info("Jobset configuration changed. Rescheduling the jobset...")
                 self._reschedule()
             elif status == GKERunnerJob.Status.UPDATING:
                 logging.info("Newer job version is available. Relaunching the jobset...")

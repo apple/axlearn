@@ -614,3 +614,24 @@ def get_host_bounds(
     host_bounds = tuple(t // c for t, c in zip(topology_dims, chips_per_host_bounds))
 
     return (chips_per_host_bounds, host_bounds)
+
+
+def get_system_characteristics(
+    gke_accelerator: str, topology: str
+) -> Optional[tuple[str, _SystemCharacteristics]]:
+    """Gets system characteristics by GKE accelerator and topology.
+
+    Looks up system characteristics from USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS
+    using the GKE accelerator and topology fields.
+
+    Args:
+        gke_accelerator: GKE accelerator identifier (e.g., "tpu7x", "tpu-v5p-slice")
+        topology: Topology string (e.g., "4x4x8", "2x2x1")
+
+    Returns:
+        A tuple of Accelerator type and _SystemCharacteristics object if found, None otherwise.
+    """
+    for accelerator_type, system_chars in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS.items():
+        if system_chars.gke_accelerator == gke_accelerator and system_chars.topology == topology:
+            return accelerator_type, system_chars
+    return None

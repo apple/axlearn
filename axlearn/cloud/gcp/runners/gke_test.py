@@ -451,7 +451,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
         self.assertEqual(expected, _infer_job_version(status))
 
     @parameterized.parameters(
-        # Test case 1: Valid topology assignment with "job" field
+        # Test case 1: Valid topology assignment with single job
         dict(
             jobset={
                 "metadata": {
@@ -482,16 +482,18 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             },
             expected=[["slice1", "slice2"]],
         ),
-        # Test case 4: Annotation with non-list value
+        # Test case 4: Multi-job topology assignments (flattened across jobs)
         dict(
             jobset={
                 "metadata": {
                     "annotations": {
-                        "tpu-provisioner.cloud.google.com/slice-selection": '{"other": "value"}'
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"trainer": [["slice1", "slice2"]], "evaluator": [["slice3"]]}'
+                        )
                     }
                 }
             },
-            expected="value",
+            expected=[["slice1", "slice2"], ["slice3"]],
         ),
         # Test case 5: Invalid JSON in annotation
         dict(
@@ -531,7 +533,21 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     "annotations": {"tpu-provisioner.cloud.google.com/slice-selection": "{}"}
                 }
             },
-            expected=None,
+            expected=[],
+        ),
+        # Test case 9: Multiple jobs with multiple replicas each
+        dict(
+            jobset={
+                "metadata": {
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"job1": [["sb-1", "sb-2"], ["sb-3", "sb-4"]], '
+                            '"job2": [["sb-5", "sb-6"]]}'
+                        )
+                    }
+                }
+            },
+            expected=[["sb-1", "sb-2"], ["sb-3", "sb-4"], ["sb-5", "sb-6"]],
         ),
     )
     def test_topology_assignment_from_jobset(
@@ -891,6 +907,66 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     }
                 },
                 topology_assignment='[["slice3", "slice4"]]',
+                expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
+            ),
+            # Multi-job topology assignments match.
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"trainer": [["sb-1", "sb-2"]], "evaluator": [["sb-3"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["sb-1", "sb-2"], ["sb-3"]]',
+                expected=runner_gke.GKERunnerJob.Status.READY,
+            ),
+            # Multi-job topology assignments do not match (different subblocks).
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"trainer": [["slice1", "slice2"]], "evaluator": [["slice3"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["slice1", "slice2"], ["slice4"]]',
+                expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
+            ),
+            # Multi-job topology assignments do not match (missing subblock in jobset).
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(
+                    replicatedJobsStatus=[
+                        dict(active=1, ready=1),
+                    ],
+                ),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"trainer": [["slice1"]], "evaluator": [["slice2"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["slice1"], ["slice2"], ["slice3"]]',
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
         ),
