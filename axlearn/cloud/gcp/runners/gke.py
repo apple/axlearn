@@ -659,7 +659,7 @@ class GKERunnerJob(BaseRunnerJob):
                 if suspended_since is not None:
                     # Job exited SUSPENDED state, record the duration.
                     suspended_duration = time.perf_counter() - suspended_since
-                    metrics.record_job_suspended_duration(cfg.name, suspended_duration)
+                    metrics.record_job_suspended_duration(suspended_duration)
                     suspended_since = None
 
                 # Ensure VertexAI Tensorboard Uploader is running.
@@ -670,7 +670,7 @@ class GKERunnerJob(BaseRunnerJob):
                 if status == GKERunnerJob.Status.READY and status != last_job_status:
                     # Record the time to reach RUNNING state.
                     elapsed_time = time.perf_counter() - start_time
-                    metrics.record_job_time_to_running(cfg.name, elapsed_time)
+                    metrics.record_job_time_to_running(elapsed_time)
                     metrics.record_job_run_latency(cfg.name, elapsed_time)
                     self._maybe_publish(
                         cfg.name, msg="Job is running", state=JobLifecycleState.RUNNING

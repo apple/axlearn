@@ -9,14 +9,12 @@ from prometheus_client import CollectorRegistry, Gauge, Histogram, generate_late
 BASTION_DOWNLOAD_JOB_ALL_SECONDS = Histogram(
     "bastion_download_job_all_seconds",
     "Time in seconds consumed in each scheduling loop to download all the job specs",
-    [],
     buckets=(1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),  # 1s to 1hr
 )
 
 JOB_TIME_TO_RUNNING_SECONDS = Histogram(
     "bastion_job_time_to_running_seconds",
     "Time in seconds from runner starts a job until until it reaches Running state",
-    ["job_name"],
     buckets=(1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),  # 1s to 1hr
 )
 
@@ -35,7 +33,6 @@ JOB_WAIT_FOR_BUILD_SECONDS = Gauge(
 JOB_SUSPENDED_DURATION_SECONDS = Histogram(
     "bastion_job_suspended_duration_seconds",
     "Time in seconds the jobset stayed in SUSPENDED state",
-    ["job_name"],
     buckets=(1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),  # 1s to 1hr
 )
 
@@ -115,15 +112,14 @@ class MetricsServer:
         return cls._multiprocess_dir
 
 
-def record_job_time_to_running(job_name: str, time_seconds: float):
+def record_job_time_to_running(time_seconds: float):
     """Record the time it took for a job to reach RUNNING state.
 
     Args:
         job_name: Name of the job
         time_seconds: Time in seconds from first seen until RUNNING state
     """
-    JOB_TIME_TO_RUNNING_SECONDS.labels(job_name=job_name).observe(time_seconds)
-    logging.info("Metrics: job %s took %.2f seconds to reach RUNNING state", job_name, time_seconds)
+    JOB_TIME_TO_RUNNING_SECONDS.observe(time_seconds)
 
 
 def record_job_run_latency(job_name: str, time_seconds: float):
@@ -141,15 +137,14 @@ def record_job_wait_for_build(job_name: str, time_seconds: float):
     JOB_WAIT_FOR_BUILD_SECONDS.labels(job_name).set(time_seconds)
 
 
-def record_job_suspended_duration(job_name: str, time_seconds: float):
+def record_job_suspended_duration(time_seconds: float):
     """Record the time a job spent in SUSPENDED state.
 
     Args:
         job_name: Name of the job
         time_seconds: Time in seconds the job was in SUSPENDED state
     """
-    JOB_SUSPENDED_DURATION_SECONDS.labels(job_name=job_name).observe(time_seconds)
-    logging.info("Metrics: job %s was in SUSPENDED state for %.2f seconds", job_name, time_seconds)
+    JOB_SUSPENDED_DURATION_SECONDS.observe(time_seconds)
 
 
 def cleanup(pid=None):
