@@ -39,7 +39,7 @@ from jax.experimental.array_serialization import serialization as array_serializ
 from jax.experimental.array_serialization import tensorstore_impl
 
 from axlearn.common import utils
-from axlearn.common.array_serialization import _async_deserialize
+from axlearn.common.array_serialization import GlobalAsyncCheckpointManager, _async_deserialize
 from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
@@ -201,7 +201,7 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     """Create checkpoint spec following the pattern from TensorStoreStateStorage._get_spec."""
 
     tensorstore_specs = []
-    shapes = []
+    global_shapes = []
     dtypes = []
     shardings = []
 
@@ -227,11 +227,11 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
             sharding = jax.sharding.NamedSharding(mesh, partition_spec)
 
             tensorstore_specs.append(tensorstore_spec)
-            shapes.append(value.shape)
+            global_shapes.append(value.shape)
             dtypes.append(dtype)
             shardings.append(sharding)
 
-    return tensorstore_specs, shardings, shapes, dtypes
+    return tensorstore_specs, shardings, global_shapes, dtypes
 
 
 def cleanup_loaded_arrays(loaded_arrays: list) -> None:
@@ -266,122 +266,66 @@ def cleanup_loaded_arrays(loaded_arrays: list) -> None:
     print("Cleanup complete.")
 
 
-def _default_deserialize(
-    shardings: Sequence[jax.sharding.NamedSharding],
+def load_model_default(
     tensorstore_specs: Sequence[Dict[str, Any]],
+    shardings: Sequence[jax.sharding.NamedSharding],
     global_shapes: Sequence[tuple],
     dtypes: Sequence[jnp.dtype],
 ):
-    # concurrent_bytes = 1099511627776
-    concurrent_bytes = 34359738368 * 6  # multiple of 32GB
-    # Object should be created once per process.
-    # pylint: disable=protected-access
-    byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-    h2d_limiter = tensorstore_impl._LimitInFlightBytes(34359738368)
-    thread_pool = ThreadPoolExecutor(1)
-    multi_thread_pool = ThreadPoolExecutor(2)
+    """Load model using default method (direct to TPU)."""
+    print("Preloading checkpoint to TPU HBM...")
+    start_time = time.perf_counter()
 
-    future_arrays = jax.tree.map(
-        functools.partial(
-            _async_deserialize,
-            byte_limiter=byte_limiter,
-            h2d_limiter=h2d_limiter,
-            single_thread_pool=thread_pool,
-            multi_thread_pool=multi_thread_pool,
-        ),
-        shardings,
-        tensorstore_specs,
-        global_shapes,
-        dtypes,
+    manager = GlobalAsyncCheckpointManager()
+    restored_values = manager.deserialize(
+        shardings=shardings,
+        tensorstore_specs=tensorstore_specs,
+        global_shapes=global_shapes,
+        dtypes=dtypes,
+        concurrent_gb=192,
     )
 
-    async def gather_func():
-        return await asyncio.gather(*future_arrays)
+    preload_time = time.perf_counter() - start_time
+    print(f"Preload completed in {preload_time:.2f} seconds")
+    print(f"Preloaded {len(restored_values)} arrays")
 
-    result = asyncio.run(gather_func())
-    return result
-
-
-def load_model_default(ckpt_path: str):
-    """Main function to preload a model from GCS checkpoint."""
-    step = parse_step_from_dir(ckpt_path)
-    print(f"Starting model preload from: {ckpt_path} (step {step})")
-
-    if not ckpt_path.startswith("gs://"):
-        raise ValueError(f"Only GCS paths (gs://) are supported, got: {ckpt_path}")
-
-    with create_mesh():
-        print("Reading checkpoint structure...")
-        state_spec = create_state_spec_from_checkpoint(ckpt_path)
-
-        print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
-
-        tensorstore_specs, shardings, shapes, dtypes = create_checkpoint_spec_from_state(
-            ckpt_path, state_spec
-        )
-
-        print("Preloading checkpoint to TPU memory...")
-        start_time = time.perf_counter()
-
-        restored_values = _default_deserialize(
-            shardings=shardings,
-            tensorstore_specs=tensorstore_specs,
-            global_shapes=shapes,
-            dtypes=dtypes,
-        )
-
-        preload_time = time.perf_counter() - start_time
-        print(f"Preload completed in {preload_time:.2f} seconds")
-        print(f"Preloaded {len(restored_values)} arrays")
-
-        return restored_values
+    return restored_values
 
 
-def load_model_colocated(ckpt_path: str):
-    """Main function to preload a model from GCS checkpoint."""
-    step = parse_step_from_dir(ckpt_path)
-    print(f"Starting model preload from: {ckpt_path} (step {step})")
+def load_model_colocated(
+    tensorstore_specs: Sequence[Dict[str, Any]],
+    shardings: Sequence[jax.sharding.NamedSharding],
+    global_shapes: Sequence[tuple],
+    dtypes: Sequence[jnp.dtype],
+):
+    """Load model using colocated Python (CPU preload then transfer to TPU)."""
+    print("Preloading checkpoint to CPU memory...")
+    start_time = time.perf_counter()
 
-    if not ckpt_path.startswith("gs://"):
-        raise ValueError(f"Only GCS paths (gs://) are supported, got: {ckpt_path}")
+    preloaded_values = _colocated_deserialize(
+        shardings=shardings,
+        tensorstore_specs=tensorstore_specs,
+        global_shapes=global_shapes,
+        dtypes=dtypes,
+    )
+    # for x in preloaded_values:
+    #     x.block_until_ready()
 
-    with create_mesh():
-        print("Reading checkpoint structure...")
-        state_spec = create_state_spec_from_checkpoint(ckpt_path)
+    preload_time = time.perf_counter() - start_time
+    print(f"Preload completed in {preload_time:.2f} seconds")
+    print(f"Preloaded {len(preloaded_values)} arrays")
 
-        print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
+    print("Transferring arrays to TPU...")
+    start_time = time.perf_counter()
 
-        tensorstore_specs, shardings, shapes, dtypes = create_checkpoint_spec_from_state(
-            ckpt_path, state_spec
-        )
+    restored_values = [jax.device_put(x, s) for x, s in zip(preloaded_values, shardings)]
+    for x in restored_values:
+        x.block_until_ready()
 
-        print("Preloading checkpoint to CPU memory...")
-        start_time = time.perf_counter()
+    transfer_time = time.perf_counter() - start_time
+    print(f"Transfer completed in {transfer_time:.2f} seconds")
 
-        preloaded_values = _colocated_deserialize(
-            shardings=shardings,
-            tensorstore_specs=tensorstore_specs,
-            global_shapes=shapes,
-            dtypes=dtypes,
-        )
-        # for x in preloaded_values:
-        #     x.block_until_ready()
-
-        preload_time = time.perf_counter() - start_time
-        print(f"Preload completed in {preload_time:.2f} seconds")
-        print(f"Preloaded {len(preloaded_values)} arrays")
-
-        print("Transferring arrays to TPU...")
-        start_time = time.perf_counter()
-
-        restored_values = [jax.device_put(x, s) for x, s in zip(preloaded_values, shardings)]
-        for x in restored_values:
-            x.block_until_ready()
-
-        transfer_time = time.perf_counter() - start_time
-        print(f"Transfer completed in {transfer_time:.2f} seconds")
-
-        return restored_values
+    return restored_values
 
 
 def main():
@@ -422,23 +366,44 @@ def main():
         loader_fn = load_model_default
     print(f"--- Running {args.method} benchmark ---")
 
+    # Validate checkpoint path
+    if not args.ckpt_path.startswith("gs://"):
+        raise ValueError(f"Only GCS paths (gs://) are supported, got: {args.ckpt_path}")
     profile_dir = None
     if args.profile:
         # Create timestamped profile directory (minute-level granularity)
         timestamp = datetime.now().strftime("%Y%m%d%H%M")
-        profile_dir = (
-            f"{args.ckpt_path.split("/checkpoints")[0]}/profiles/{args.method}_{timestamp}/"
-        )
+        base_path = args.ckpt_path.split("/checkpoints")[0]
+        profile_dir = f"{base_path}/profiles/{args.method}_{timestamp}/"
         print(f"Profiling enabled - results will be saved to {profile_dir}")
+
+    step = parse_step_from_dir(args.ckpt_path)
+    print(f"Starting model preload from: {args.ckpt_path} (step {step})")
+
+    # Read checkpoint structure (doesn't need mesh)
+    print("Reading checkpoint structure...")
+    state_spec = create_state_spec_from_checkpoint(args.ckpt_path)
+    print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
 
     loaded_values = None
     try:
-        with maybe_profile(args.profile, profile_dir):
-            start_time = time.perf_counter()
-            loaded_values = loader_fn(ckpt_path=args.ckpt_path)
-            print(f"✅ Successfully loaded model from {args.ckpt_path}")
-            print(f"Deserialize took {time.perf_counter() - start_time:.2f} seconds")
-            print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
+        with create_mesh():
+            # Create checkpoint specs (needs mesh)
+            tensorstore_specs, shardings, global_shapes, dtypes = create_checkpoint_spec_from_state(
+                args.ckpt_path, state_spec
+            )
+
+            with maybe_profile(args.profile, profile_dir):
+                start_time = time.perf_counter()
+                loaded_values = loader_fn(
+                    tensorstore_specs=tensorstore_specs,
+                    shardings=shardings,
+                    global_shapes=global_shapes,
+                    dtypes=dtypes,
+                )
+                print(f"✅ Successfully loaded model from {args.ckpt_path}")
+                print(f"Deserialize took {time.perf_counter() - start_time:.2f} seconds")
+                print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
     finally:
         # Always clean up, even if benchmark fails
         if loaded_values is not None:
