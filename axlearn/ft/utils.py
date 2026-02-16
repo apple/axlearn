@@ -4,10 +4,10 @@ This module provides utility functions and helpers for the fault tolerance (FT) 
 
 Environment Variables Used:
     HOSTNAME: Current worker's hostname
-    REPLICA_ID: Current worker's replica ID (0-based)
+    MEGASCALE_SLICE_ID: Current worker's slice/replica ID (0-based)
     TPU_WORKER_ID: Current worker's ID within the replica (0-based)
     TPU_WORKER_HOSTNAMES: Comma-separated list of all worker hostnames in current replica
-    NUM_REPLICAS: Total number of replicas in the training job
+    NUM_TPU_SLICES: Total number of slices/replicas in the training job
 
 Hostname Format:
     TPU worker hostnames follow the pattern: {job_name}-"job"-{replica_id}-{worker_id}.{job_name}
@@ -18,6 +18,7 @@ import logging
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -34,9 +35,6 @@ DEFAULT_MANAGER_PORT = 8901
 
 # Client timeout in seconds
 DEFAULT_CLIENT_TIMEOUT = 10.0
-
-# Timeout for graceful training process termination in seconds
-GRACEFUL_TRAINING_TERMINATION_TIMEOUT = 1
 
 # Compiled regex patterns for hostname parsing
 _WORKER_ID_PATTERN = re.compile(r"^.+?-job-\d+-(\d+)\..+")
@@ -110,26 +108,43 @@ class TrainerProcessController:
     def _do_terminate(self) -> bool:
         """Execute the actual process termination sequence.
 
+        Uses process group killing to ensure all threads are terminated.
+        The trainer subprocess should be started with start_new_session=True.
+
         Returns:
             bool: True if termination succeeded, False otherwise
         """
-        self.current_process.terminate()
-        try:
-            self.current_process.wait(timeout=GRACEFUL_TRAINING_TERMINATION_TIMEOUT)
-            logging.info("Process terminated gracefully")
-            return True
-        except subprocess.TimeoutExpired:
-            pass
+        pid = self.current_process.pid
 
-        logging.warning("Process did not terminate gracefully, forcing kill")
-        self.current_process.kill()
+        # Try to get process group ID
         try:
-            self.current_process.wait(timeout=5)
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            logging.info("Process %d already dead", pid)
+            self._cleanup_tpu_lock_files()
+            return True
+
+        # If trainer has its own process group, kill the entire group
+        if pgid == pid:
+            logging.warning("Sending SIGKILL to process group %d", pgid)
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                logging.info("Process group %d already dead", pgid)
+            except PermissionError as e:
+                logging.warning("Cannot kill process group %d: %s, killing process only", pgid, e)
+                self.current_process.kill()
+        else:
+            logging.warning("Sending SIGKILL to process %d", pid)
+            self.current_process.kill()
+
+        try:
+            self.current_process.wait(timeout=10)
             logging.info(
                 "Process killed successfully, exit code: %s", self.current_process.returncode
             )
         except subprocess.TimeoutExpired:
-            logging.error("Process still alive after SIGKILL, pid=%d", self.current_process.pid)
+            logging.error("Process still alive after SIGKILL, pid=%d", pid)
             return False
 
         self._cleanup_tpu_lock_files()
@@ -220,19 +235,20 @@ def get_replica_id() -> int:
     """Get replica ID from environment variable with validation.
 
     Returns:
-        The replica ID as an integer.
+        The replica ID as an integer. Defaults to 0 for single-slice jobs.
 
     Raises:
-        ValueError: If REPLICA_ID is not set or not a valid integer.
+        ValueError: If MEGASCALE_SLICE_ID is not a valid integer.
     """
-    replica_id_str = os.environ.get("REPLICA_ID")
-    if replica_id_str is None:
-        raise ValueError("REPLICA_ID environment variable is not set")
+    # Default to "0" for single-slice jobs where MEGASCALE_SLICE_ID is not set
+    replica_id_str = os.environ.get("MEGASCALE_SLICE_ID", "0")
 
     try:
         return int(replica_id_str)
     except ValueError as e:
-        raise ValueError(f"REPLICA_ID must be a valid integer, got: '{replica_id_str}'") from e
+        raise ValueError(
+            f"MEGASCALE_SLICE_ID must be a valid integer, got: '{replica_id_str}'"
+        ) from e
 
 
 def get_worker_id() -> int:
@@ -258,23 +274,22 @@ def get_num_replicas() -> int:
     """Get total number of replicas from environment variable with validation.
 
     Returns:
-        The total number of replicas as an integer.
+        The total number of replicas as an integer. Defaults to 1 for single-slice jobs.
 
     Raises:
-        ValueError: If NUM_REPLICAS is not set or not a valid integer.
+        ValueError: If NUM_TPU_SLICES is not a valid positive integer.
     """
-    num_replicas_str = os.environ.get("NUM_REPLICAS")
-    if num_replicas_str is None:
-        raise ValueError("NUM_REPLICAS environment variable is not set")
+    # Default to "1" for single-slice jobs where NUM_TPU_SLICES is not set
+    num_replicas_str = os.environ.get("NUM_TPU_SLICES", "1")
 
     try:
         num_replicas = int(num_replicas_str)
         if num_replicas < 1:
-            raise ValueError(f"NUM_REPLICAS must be at least 1, got: {num_replicas}")
+            raise ValueError(f"NUM_TPU_SLICES must be at least 1, got: {num_replicas}")
         return num_replicas
     except ValueError as e:
         raise ValueError(
-            f"NUM_REPLICAS must be a valid positive integer, got: '{num_replicas_str}'"
+            f"NUM_TPU_SLICES must be a valid positive integer, got: '{num_replicas_str}'"
         ) from e
 
 

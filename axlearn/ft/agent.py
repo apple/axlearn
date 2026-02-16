@@ -14,6 +14,7 @@ python3 -m axlearn.ft.agent \
   --max_restarts=5
 """
 
+import enum
 import signal
 import subprocess
 import sys
@@ -25,9 +26,56 @@ from axlearn.common import launch, launch_trainer, measurement  # pylint: disabl
 from axlearn.ft.monitor import StatusMonitor
 from axlearn.ft.utils import TrainerProcessController
 
+
+class TerminationAction(enum.Enum):
+    """Action to take after a termination request."""
+
+    EXIT = "exit"  # Pod shutdown - exit gracefully
+    RESTART = "restart"  # Coordinated restart - restart without counting against max_restarts
+
+
+# Constant for pod shutdown signal reason prefix
+_POD_SHUTDOWN_REASON_PREFIX = "Pod shutdown signal"
+
 flags.DEFINE_integer(
     "max_restarts", 3, "Maximum number of times to restart the trainer subprocess on failure"
 )
+
+
+def _handle_termination_request(
+    process_controller: TrainerProcessController,
+) -> TerminationAction | None:
+    """Check if termination was requested and determine the appropriate action.
+
+    Args:
+        process_controller: The trainer process controller to check for termination requests.
+
+    Returns:
+        TerminationAction.EXIT if pod shutdown was requested (caller should return/exit
+            gracefully),
+        TerminationAction.RESTART if coordinated restart was requested (caller should continue
+            without incrementing restart count),
+        None if no termination was requested (caller should handle returncode normally).
+    """
+    termination_requested, reason = process_controller.check_termination_requested()
+    if not termination_requested:
+        return None
+
+    # Distinguish between pod shutdown (exit) and coordinated restart (restart)
+    if reason.startswith(_POD_SHUTDOWN_REASON_PREFIX):
+        # SIGTERM received - pod is being killed, exit gracefully
+        logging.info(
+            "FT Agent: Pod shutdown signal received (%s), exiting gracefully",
+            reason,
+        )
+        return TerminationAction.EXIT
+
+    # Coordinated restart (JAX re-init) - restart trainer without counting against max_restarts
+    logging.info(
+        "FT Agent: Coordinated restart requested (%s), restarting trainer",
+        reason,
+    )
+    return TerminationAction.RESTART
 
 
 def run_ft_agent():
@@ -52,14 +100,14 @@ def run_ft_agent():
 
         # Report pod shutdown to global manager for coordination
         try:
-            monitor.manager.report_pod_shutdown(f"Pod shutdown signal {signum}")
+            monitor.manager.report_pod_shutdown(f"{_POD_SHUTDOWN_REASON_PREFIX} {signum}")
             logging.info("FT Agent: Pod shutdown reported to global manager")
         except Exception as e:  # pylint: disable=broad-exception-caught
             logging.error("FT Agent: Failed to report pod shutdown: %s", e)
 
         # Terminate the trainer process
         logging.info("FT Agent: Terminating trainer due to signal %d", signum)
-        process_controller.terminate_training(f"Pod shutdown signal {signum}")
+        process_controller.terminate_training(f"{_POD_SHUTDOWN_REASON_PREFIX} {signum}")
 
         logging.warning("FT Agent: exit with non-zero code due to signal %d recieved.", signum)
         sys.exit(1)
@@ -77,12 +125,25 @@ def run_ft_agent():
             logging.info("FT Agent: Starting trainer: %s", " ".join(entrypoint_cmd))
 
             try:
+                # Start trainer in its own process group (start_new_session=True)
+                # This allows os.killpg() to terminate all threads cleanly
                 with subprocess.Popen(
-                    entrypoint_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                    entrypoint_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
                 ) as process:
                     process_controller.set_process(process)
                     returncode = monitor.monitor_training_process(process)
                     process_controller.clear_process()
+
+                    # Handle termination requests (SIGTERM or coordinated restart)
+                    action = _handle_termination_request(process_controller)
+                    if action == TerminationAction.EXIT:
+                        return
+                    if action == TerminationAction.RESTART:
+                        continue  # Restart without incrementing restart_count
 
                     if returncode == 0:
                         logging.info("FT Agent: Training completed successfully")
