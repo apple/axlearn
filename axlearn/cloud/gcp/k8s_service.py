@@ -13,6 +13,8 @@ from axlearn.cloud.gcp.pathways_utils import NOTARY_PROXY_GRPC_PORT, NOTARY_PROX
 from axlearn.cloud.gcp.utils import custom_leaderworkerset_kwargs
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.utils import Nested
+from kubernetes.client.exceptions import ApiException
+import time
 
 
 class Service(FlagConfigurable):
@@ -170,10 +172,38 @@ class LWSService(Service):
         lws_name = self.name.split("-service")[0]
         custom_api = k8s.client.CustomObjectsApi()
 
-        # Fetch the CR object
-        lws = custom_api.get_namespaced_custom_object(
-            group=group, version=version, namespace=namespace, plural=plural, name=lws_name
-        )
+        max_tries = 5
+        retry_delay = 20  
+
+        for attempt in range(max_tries):
+            try:
+                lws = custom_api.get_namespaced_custom_object(
+                    group=group, 
+                    version=version, 
+                    namespace=namespace, 
+                    plural=plural, 
+                    name=lws_name
+                )
+                logging.info("Successfully retrieved %s", lws_name)
+                break 
+            except ApiException as e:
+                # Check if it's a 404 error
+                if e.status == 404:
+                    logging.info("Attempt %s: Resource %s not found yet.",str(attempt + 1),lws_name)
+
+                    if attempt < max_tries - 1:
+                        logging.info("Waiting %s seconds...",str(retry_delay))
+                        time.sleep(retry_delay)
+                    else:
+                        logging.info("Max retries reached. Resource was never found.")
+                        raise  
+                else:
+                    logging.info("An unexpected Kubernetes API error occurred")
+                    raise
+
+            except Exception as e:
+                logging.info("An unexpected error occurred: %s",str(e))
+                raise
 
         ports_map_list = []
         for i in range(len(self.ports)):
