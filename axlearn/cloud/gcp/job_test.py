@@ -654,3 +654,38 @@ class TPUGKELeaderWorkerSetTest(TestCase):
             self.assertIn("spec", lws_spec)
             self.assertIn("replicas", lws_spec["spec"])
             self.assertIn("leaderWorkerTemplate", lws_spec["spec"])
+
+    @parameterized.product(
+        bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],
+        labels=[None, {"env": "tpu-test"}, {"team": "research", "experiment": "training"}],
+    )
+    def test_build_leaderworkerset_labels(
+        self,
+        bundler_cls,
+        labels: Optional[dict] = None,
+    ):
+        """Test that labels are properly set in LeaderWorkerSet metadata."""
+        cfg, bundler_cfg = self._job_config(
+            command="test-command",
+            bundler_cls=bundler_cls,
+        )
+        # Set labels on the config
+        cfg = cfg.set(labels=labels)
+        gke_job: job.GKELeaderWorkerSet = cfg.instantiate(bundler=bundler_cfg.instantiate())
+        # pylint: disable-next=protected-access
+        lws_spec = gke_job._build_leaderworkerset()
+        lws_metadata = lws_spec["metadata"]
+        lws_labels = lws_metadata.get("labels", {})
+
+        # Test basic metadata
+        self.assertEqual(lws_metadata["name"], cfg.name)
+
+        # Test labels
+        if labels is None:
+            # When labels is None, labels dict should be empty
+            self.assertEqual(lws_labels, {})
+        else:
+            # When labels is provided, they should be present in metadata
+            for key, value in labels.items():
+                self.assertIn(key, lws_labels)
+                self.assertEqual(lws_labels[key], value)

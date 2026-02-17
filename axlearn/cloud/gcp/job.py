@@ -547,12 +547,14 @@ class GKELeaderWorkerSet(GCPJob):
             builder: A builder that returns one or more statefulset specs.
             namespace: The namespace to use within the k8s cluster.
             annotations: LeaderWorkerSet annotations.
+            labels: LeaderWorkerSet labels.
             num_replicas: number of LWS replicas.
         """
 
         builder: Required[BaseLeaderWorkerTemplate.Config] = REQUIRED
         namespace: str = "default"
         annotations: Optional[ConfigOr[dict]] = None
+        labels: Optional[ConfigOr[dict]] = None
         num_replicas: int = 1
         enable_service: bool = False
         ports: list[str] = None
@@ -700,7 +702,7 @@ class GKELeaderWorkerSet(GCPJob):
         """
         cfg: GKELeaderWorkerSet.Config = self.config
         annotations = maybe_instantiate(cfg.annotations or {})
-        labels = {}
+        labels = maybe_instantiate(cfg.labels or {})
 
         # If the topology is set and slice auto provisioning is configured
         # set the necessary annotations
