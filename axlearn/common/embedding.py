@@ -11,7 +11,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.layers import Dropout, Embedding
-from axlearn.common.module import Module, Tensor, child_context, nowrap
+from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.utils import Nested, validate_contains_paths
 
 
@@ -50,7 +50,6 @@ class BaseEmbedding(BaseLayer):
         """
         raise NotImplementedError(type(self))
 
-    @nowrap
     def init_states(self, *, batch_size: int, dtype: jnp.dtype) -> Nested[Tensor]:
         """Initializes state for streaming decode.
 

@@ -686,7 +686,8 @@ class Decoder(BaseLayer):
         input_segment_ids = input_batch.get("input_segment_ids", None)
         positions = input_batch.get("positions", None)
 
-        emb = self.emb.init_states(batch_size=input_ids.shape[0], dtype=self.dtype())
+        with child_context("emb_init_states", module=self.emb):
+            emb = self.emb.init_states(batch_size=input_ids.shape[0], dtype=self.dtype())
         states, outputs = self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(emb=emb, transformer_state=time_step),
