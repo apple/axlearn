@@ -105,11 +105,13 @@ import os
 import shlex
 import sys
 import tempfile
+import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from importlib import import_module
 from typing import Callable, NamedTuple, Optional, TextIO
 
+import psutil
 from absl import app, flags, logging
 
 from axlearn.cloud.common.bastion import BastionDirectory
@@ -409,7 +411,6 @@ class BaseBastionManagedJob(FlagConfigurable):
         logging.info("Command: %s", cfg.command)
         with tempfile.NamedTemporaryFile("w") as f:
             job_id = generate_job_id()
-
             # For backwards compatibility, only set topologies for
             # 7x resource types
             topologies = None
@@ -426,10 +427,26 @@ class BaseBastionManagedJob(FlagConfigurable):
                 priority=cfg.priority,
                 job_id=job_id,
             )
-            jobspec = new_jobspec(name=cfg.name, command=cfg.command, metadata=metadata)
+
+            process_start_time = psutil.Process().create_time()
+            current_time = time.time()
+            # the --env=key:value flag (runtime) is different from jobSpec.env_vars(runner env vars)
+            runner_env_vars = {
+                "BASTION_SUBMISSION_DURATION_S": str(int(current_time - process_start_time)),
+                "BASTION_SUBMISSION_TS": str(int(process_start_time)),
+            }
+            jobspec = new_jobspec(
+                name=cfg.name,
+                command=cfg.command,
+                metadata=metadata,
+                env_vars=runner_env_vars,
+            )
             serialize_jobspec(jobspec, f)
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
+
+        submission_duration_s = time.time() - process_start_time
         print(
+            f"\nJob submitted successfully in {submission_duration_s:.3f} seconds.\n"
             "\nView bastion outputs with: (if not found, check job and project history)\n"
             f"gsutil cat {os.path.join(self._bastion_dir.logs_dir, cfg.name)}\n"
             f"\nStop/cancel the job with:\n"

@@ -97,7 +97,7 @@ _PATHWAYS_SHM_DIR = "/tmp/ifrt_proxy"
 _PATHWAYS_SHM_VOLUME_NAME = "shared-memory"
 
 # Notary proxy configuration for gke_gateway_route
-NOTARY_PROXY_IMAGE = "docker.apple.com/polymer/notary-proxy:44d03e27b8c9"
+NOTARY_PROXY_IMAGE = "REDACTED_INTERNAL_REGISTRY/polymer/notary-proxy:44d03e27b8c9"
 NOTARY_PROXY_HTTP_PORT = 38081
 NOTARY_PROXY_GRPC_PORT = 39001
 

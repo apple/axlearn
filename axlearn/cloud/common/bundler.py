@@ -45,6 +45,7 @@ import pathlib
 import shutil
 import tarfile
 import tempfile
+import time
 from collections.abc import Iterable, Sequence
 from typing import Optional, TypeVar, Union
 from urllib.parse import urlparse
@@ -406,7 +407,10 @@ class BaseDockerBundler(Bundler):
             dockerfile = (os.getcwd() / dockerfile).resolve()
         assert dockerfile.is_absolute(), dockerfile
 
+        start_time = time.time()
+
         with self._local_dir_context() as temp_dir:
+            logging.info("Local packaging duration: %.3f seconds", time.time() - start_time)
             temp_dir = pathlib.Path(temp_dir)
             temp_root = temp_dir / "axlearn"
 
@@ -429,6 +433,8 @@ class BaseDockerBundler(Bundler):
                 build_args["extras"] = cfg.extras
             # Ensure that build args are specified strings.
             build_args = {k: canonicalize_to_string(v) for k, v in build_args.items()}
+            start_time_build_and_push = time.time()
+
             bundle_path = self._build_and_push(
                 dockerfile=str(temp_dockerfile_path),
                 image=self.id(tag),
@@ -436,6 +442,10 @@ class BaseDockerBundler(Bundler):
                 context=str(temp_root),
                 labels=labels,
             )
+            logging.info(
+                "Build and push duration %.3f seconds", time.time() - start_time_build_and_push
+            )
+        logging.info("Overall bundling duration %.3f seconds", time.time() - start_time)
         return bundle_path
 
     def install_command(self, bundle_id: str) -> str:
