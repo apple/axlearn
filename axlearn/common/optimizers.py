@@ -37,8 +37,6 @@ import optax
 import typing_extensions
 from absl import logging
 from jax import numpy as jnp
-
-# from jax._src.sharding_impls import TransferToMemoryKind
 from optax._src import numerics
 
 from axlearn.common import flax_struct, schedule
@@ -54,6 +52,8 @@ from axlearn.common.optimizer_base import (
     TransformPartitionSpecFn,
 )
 from axlearn.common.utils import (
+    DEVICE_MEMORY,
+    HOST_MEMORY,
     MemoryKind,
     Nested,
     NestedTensor,
@@ -63,6 +63,7 @@ from axlearn.common.utils import (
     expand_vdicts,
     flatten_items,
     register_per_param_settings,
+    transfer_to_memory_kind,
     tree_paths,
     vectorized_tree_map,
 )
@@ -2073,8 +2074,8 @@ def offload_optimizer(
     optimizer: ConfigOr[PartitionedGradientTransformation],
     *,
     pattern: Union[str, re.Pattern] = ".*",
-    offload_src: MemoryKind = "device",
-    offload_dst: MemoryKind = "pinned_host",
+    offload_src: MemoryKind = DEVICE_MEMORY,
+    offload_dst: MemoryKind = HOST_MEMORY,
 ) -> PartitionedGradientTransformation:
     """Offload the state of the wrapped optimizer that matches `pattern` to `offload_dst`.
 
@@ -2146,14 +2147,8 @@ def offload_optimizer(
         # released, so we have less memory pressure at that point in time.
         # memory_kind = sharding.memory_kind(dst)
         return jax.tree.map(
-            lambda path, tensor: (
-                jax.device_put(tensor, tensor.sharding.with_memory_kind(dst))
-                if re.fullmatch(pattern, path) and hasattr(tensor, "sharding")
-                else tensor
-            ),
-            tree_paths(state),
-            state,
-        )
+            transfer_to_memory_kind(tensor, dst) if re.fullmatch(pattern, path) else tensor
+            )
 
     def update_fn(updates: optax.Updates, state: optax.OptState, params: NestedOptParam):
         state = _move_fn(state, offload_src)
