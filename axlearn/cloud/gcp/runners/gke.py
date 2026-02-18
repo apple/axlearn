@@ -640,6 +640,9 @@ class GKERunnerJob(BaseRunnerJob):
                     metrics.record_job_wait_for_build(
                         cfg.name, time.perf_counter() - wait_build_start
                     )
+                    self._maybe_publish(
+                        cfg.name, msg="Cloud build finished", state=JobLifecycleState.STARTING
+                    )
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return
@@ -649,6 +652,9 @@ class GKERunnerJob(BaseRunnerJob):
                     self._pre_provisioner.create_for(self._inner)
 
                 self._inner.execute()
+                self._maybe_publish(
+                    cfg.name, msg="Provisioning resources", state=JobLifecycleState.STARTING
+                )
             elif status == GKERunnerJob.Status.SUSPENDED:
                 # Job is in SUSPENDED state.
                 if suspended_since is None:
