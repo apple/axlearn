@@ -19,13 +19,8 @@ Usage:
 """
 
 import argparse
-import asyncio
-import functools
-import logging
 import os
-import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence
@@ -34,12 +29,11 @@ import jax
 import jax.numpy as jnp
 import pathwaysutils  # pytype: disable=import-error
 from jax._src.mesh import thread_resources
-from jax.experimental import colocated_python, mesh_utils
+from jax.experimental import mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
-from jax.experimental.array_serialization import tensorstore_impl
 
 from axlearn.common import utils
-from axlearn.common.array_serialization import GlobalAsyncCheckpointManager, _async_deserialize
+from axlearn.common.array_serialization import GlobalAsyncCheckpointManager
 from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
@@ -60,78 +54,6 @@ def maybe_profile(enabled: bool, profile_dir: Optional[str]):
     else:
         # Return a no-op context manager
         return nullcontext()
-
-
-def _colocated_deserialize(
-    shardings: Sequence[jax.sharding.NamedSharding],
-    tensorstore_specs: Sequence[Dict[str, Any]],
-    global_shapes: Sequence[tuple],
-    dtypes: Sequence[jnp.dtype],
-):
-    concurrent_bytes = 34359738368 * 6  # 32GB * 6
-    cpu_devices = colocated_python.colocated_cpu_devices(jax.devices())
-    print(f"{cpu_devices=}")
-
-    if len(cpu_devices) > 1:
-        print(f"TPU Mesh: {thread_resources.env.physical_mesh}")
-        cpu_mesh = colocated_python.colocated_cpu_devices(thread_resources.env.physical_mesh)
-        print(f"CPU Mesh: {cpu_mesh}")
-        cpu_shardings = [
-            jax.sharding.NamedSharding(cpu_mesh, sharding.spec) for sharding in shardings
-        ]
-    else:
-        cpu_shardings = [
-            jax.sharding.SingleDeviceSharding(cpu_devices[0]) for sharding in shardings
-        ]
-
-    def output_spec_fn():
-        return [
-            jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
-            for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
-        ]
-
-    @colocated_python.colocated_python
-    def run_deserializer():
-        # Object should be created once per process.
-        # pylint: disable=protected-access
-        # print("Print statement inside colocated")
-        logging.info("Logging statement inside colocated")
-        sys.stderr.write("Stdder statement in colocated")
-        start_colocated_time = time.perf_counter()
-        byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-        h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-        thread_pool = ThreadPoolExecutor(1)
-        multi_thread_pool = ThreadPoolExecutor(2)
-
-        future_arrays = jax.tree.map(
-            functools.partial(
-                _async_deserialize,
-                byte_limiter=byte_limiter,
-                h2d_limiter=h2d_limiter,
-                single_thread_pool=thread_pool,
-                multi_thread_pool=multi_thread_pool,
-            ),
-            cpu_shardings,
-            tensorstore_specs,
-            global_shapes,
-            dtypes,
-        )
-
-        async def gather_func():
-            return await asyncio.gather(*future_arrays)
-
-        result = asyncio.run(gather_func())
-        logging.info("Deserialize took %.2f seconds", time.perf_counter() - start_colocated_time)
-        return result
-
-    run_deserializer = run_deserializer.specialize(
-        devices=cpu_devices,
-        out_specs_fn=output_spec_fn,
-    )
-
-    # Try running in the current event loop if one exists, otherwise create new one
-    result = run_deserializer()
-    return result
 
 
 def create_mesh(mesh_shape=(1, 1, 1, 1, 1, 16, -1)):
@@ -266,16 +188,26 @@ def cleanup_loaded_arrays(loaded_arrays: list) -> None:
     print("Cleanup complete.")
 
 
-def load_model_default(
+def load_model(
     tensorstore_specs: Sequence[Dict[str, Any]],
     shardings: Sequence[jax.sharding.NamedSharding],
     global_shapes: Sequence[tuple],
     dtypes: Sequence[jnp.dtype],
+    use_colocated_python: bool = False,
 ):
-    """Load model using default method (direct to TPU)."""
-    print("Preloading checkpoint to TPU HBM...")
-    start_time = time.perf_counter()
+    """Load model from checkpoint.
 
+    Args:
+        tensorstore_specs: TensorStore specifications for each array.
+        shardings: Target shardings for the restored arrays.
+        global_shapes: Global shapes for each array.
+        dtypes: Data types for each array.
+        use_colocated_python: If True, load to CPU first then transfer to TPU.
+            If False, load directly to TPU.
+
+    Returns:
+        List of restored JAX arrays.
+    """
     manager = GlobalAsyncCheckpointManager()
     restored_values = manager.deserialize(
         shardings=shardings,
@@ -283,47 +215,9 @@ def load_model_default(
         global_shapes=global_shapes,
         dtypes=dtypes,
         concurrent_gb=192,
+        use_colocated_python=use_colocated_python,
     )
-
-    preload_time = time.perf_counter() - start_time
-    print(f"Preload completed in {preload_time:.2f} seconds")
-    print(f"Preloaded {len(restored_values)} arrays")
-
-    return restored_values
-
-
-def load_model_colocated(
-    tensorstore_specs: Sequence[Dict[str, Any]],
-    shardings: Sequence[jax.sharding.NamedSharding],
-    global_shapes: Sequence[tuple],
-    dtypes: Sequence[jnp.dtype],
-):
-    """Load model using colocated Python (CPU preload then transfer to TPU)."""
-    print("Preloading checkpoint to CPU memory...")
-    start_time = time.perf_counter()
-
-    preloaded_values = _colocated_deserialize(
-        shardings=shardings,
-        tensorstore_specs=tensorstore_specs,
-        global_shapes=global_shapes,
-        dtypes=dtypes,
-    )
-    # for x in preloaded_values:
-    #     x.block_until_ready()
-
-    preload_time = time.perf_counter() - start_time
-    print(f"Preload completed in {preload_time:.2f} seconds")
-    print(f"Preloaded {len(preloaded_values)} arrays")
-
-    print("Transferring arrays to TPU...")
-    start_time = time.perf_counter()
-
-    restored_values = [jax.device_put(x, s) for x, s in zip(preloaded_values, shardings)]
-    for x in restored_values:
-        x.block_until_ready()
-
-    transfer_time = time.perf_counter() - start_time
-    print(f"Transfer completed in {transfer_time:.2f} seconds")
+    print(f"Loaded {len(restored_values)} arrays")
 
     return restored_values
 
@@ -359,13 +253,6 @@ def main():
 
     print(f"JAX devices: {jax.devices()}")
 
-    # Select loading function and profile prefix based on method
-    if args.method == "colocated":
-        loader_fn = load_model_colocated
-    else:  # args.method == "default"
-        loader_fn = load_model_default
-    print(f"--- Running {args.method} benchmark ---")
-
     # Validate checkpoint path
     if not args.ckpt_path.startswith("gs://"):
         raise ValueError(f"Only GCS paths (gs://) are supported, got: {args.ckpt_path}")
@@ -385,6 +272,7 @@ def main():
     state_spec = create_state_spec_from_checkpoint(args.ckpt_path)
     print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
 
+    print(f"--- Running {args.method} benchmark ---")
     loaded_values = None
     try:
         with create_mesh():
@@ -395,14 +283,15 @@ def main():
 
             with maybe_profile(args.profile, profile_dir):
                 start_time = time.perf_counter()
-                loaded_values = loader_fn(
+                loaded_values = load_model(
                     tensorstore_specs=tensorstore_specs,
                     shardings=shardings,
                     global_shapes=global_shapes,
                     dtypes=dtypes,
+                    use_colocated_python=(args.method == "colocated"),
                 )
                 print(f"✅ Successfully loaded model from {args.ckpt_path}")
-                print(f"Deserialize took {time.perf_counter() - start_time:.2f} seconds")
+                print(f"Total time took {time.perf_counter() - start_time:.2f} seconds")
                 print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
     finally:
         # Always clean up, even if benchmark fails

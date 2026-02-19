@@ -35,6 +35,8 @@ import tensorstore as ts
 from absl import logging
 from jax._src import array, typing
 from jax._src.layout import Format
+from jax._src.mesh import thread_resources
+from jax.experimental import colocated_python
 from jax.experimental.array_serialization import serialization
 
 from axlearn.common.utils import Tensor
@@ -569,6 +571,154 @@ async def _async_deserialize(
     )
 
 
+def _create_cpu_shardings(
+    cpu_devices: list,
+    tpu_shardings: Sequence[Union[jax.sharding.Sharding, Format]],
+    tpu_mesh: jax.sharding.Mesh,
+) -> list[jax.sharding.Sharding]:
+    """Create CPU shardings that mirror the structure of TPU shardings.
+
+    Args:
+        cpu_devices: List of CPU devices.
+        tpu_shardings: Target TPU shardings to mirror.
+        tpu_mesh: TPU mesh for creating multi-device CPU mesh.
+
+    Returns:
+        List of CPU shardings matching the TPU sharding structure.
+    """
+    if len(cpu_devices) > 1:
+        logging.info("Creating CPU mesh from TPU mesh: %s", tpu_mesh)
+        cpu_mesh = colocated_python.colocated_cpu_devices(tpu_mesh)
+        logging.info("CPU Mesh: %s", cpu_mesh)
+
+        return [
+            (
+                jax.sharding.NamedSharding(cpu_mesh, sharding.spec)
+                if isinstance(sharding, jax.sharding.NamedSharding)
+                else jax.sharding.NamedSharding(cpu_mesh, jax.sharding.PartitionSpec())
+            )
+            for sharding in tpu_shardings
+        ]
+    else:
+        # Single device - use simple single device sharding
+        return [jax.sharding.SingleDeviceSharding(cpu_devices[0]) for _ in tpu_shardings]
+
+
+async def _run_colocated_deserialize(
+    shardings: Sequence[Union[jax.sharding.Sharding, Format]],
+    tensorstore_specs: Sequence[dict[str, Any]],
+    global_shapes: Sequence[tuple],
+    dtypes: Sequence[typing.DTypeLike],
+    *,
+    concurrent_bytes: int,
+    tpu_mesh: jax.sharding.Mesh,
+):
+    """Deserialize checkpoint to CPU using colocated python, then transfer to TPU.
+
+    This approach offloads checkpoint loading from TPU to CPU, which can improve
+    performance for large checkpoints.
+
+    Args:
+        shardings: Target TPU shardings for the restored arrays.
+        tensorstore_specs: TensorStore specifications for each array.
+        global_shapes: Global shapes for each array.
+        dtypes: Data types for each array.
+        concurrent_bytes: Maximum concurrent bytes for reading from storage.
+        tpu_mesh: TPU mesh for creating CPU mesh. Should be captured from the main thread
+            where the mesh context is active.
+
+    Returns:
+        List of JAX arrays on TPU devices.
+    """
+    cpu_devices = colocated_python.colocated_cpu_devices(jax.devices())
+    logging.info("Colocated CPU devices: %s", cpu_devices)
+
+    # Create CPU shardings matching the TPU sharding structure
+    cpu_shardings = _create_cpu_shardings(cpu_devices, shardings, tpu_mesh)
+
+    def output_spec_fn():
+        return [
+            jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=cpu_sharding)
+            for shape, dtype, cpu_sharding in zip(global_shapes, dtypes, cpu_shardings)
+        ]
+
+    @colocated_python.colocated_python
+    def colocated_deserializer():
+        logging.info("Starting colocated deserialization")
+        start_time = time.perf_counter()
+
+        # Create limiters and thread pools in the CPU worker context.
+        # Note: Use concurrent_bytes for h2d_limiter since H2D happens from CPU worker to TPU,
+        # not within the same host process, so premapped buffer size doesn't apply.
+        # pylint: disable=protected-access
+        byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
+        h2d_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
+
+        # Use context managers to ensure thread pools are properly shut down
+        with (
+            ThreadPoolExecutor(1) as single_thread_pool,
+            ThreadPoolExecutor(max_workers=int(os.cpu_count() * 0.8)) as multi_thread_pool,
+        ):
+            future_arrays = jax.tree.map(
+                functools.partial(
+                    _async_deserialize,
+                    byte_limiter=byte_limiter,
+                    h2d_limiter=h2d_limiter,
+                    single_thread_pool=single_thread_pool,
+                    multi_thread_pool=multi_thread_pool,
+                ),
+                cpu_shardings,
+                tensorstore_specs,
+                global_shapes,
+                dtypes,
+            )
+
+            # Wrap in async function so gather() is called after event loop is created
+            async def gather_func():
+                return await asyncio.gather(*future_arrays)
+
+            result = asyncio.run(gather_func())
+            logging.info(
+                "Colocated deserialization to CPU took %.2f seconds",
+                time.perf_counter() - start_time,
+            )
+            return result
+
+    # Specialize the colocated function with CPU devices and output specs
+    colocated_deserializer = colocated_deserializer.specialize(
+        devices=cpu_devices,
+        out_specs_fn=output_spec_fn,
+    )
+
+    # Run deserializer to load checkpoint to CPU
+    logging.info("Loading checkpoint to CPU memory...")
+    start_time = time.perf_counter()
+    cpu_arrays = colocated_deserializer()
+    # Block until all transfers complete
+    for arr in cpu_arrays:
+        arr.block_until_ready()
+    cpu_load_time = time.perf_counter() - start_time
+    logging.info("CPU load completed in %.2f seconds", cpu_load_time)
+    logging.info("Preloaded %d arrays.", len(cpu_arrays))
+
+    # Transfer from CPU to TPU
+    logging.info("Transferring arrays from CPU to TPU...")
+    start_time = time.perf_counter()
+    tpu_arrays = [jax.device_put(arr, sharding) for arr, sharding in zip(cpu_arrays, shardings)]
+
+    # Block until all transfers complete
+    for arr in tpu_arrays:
+        arr.block_until_ready()
+
+    transfer_time = time.perf_counter() - start_time
+    logging.info("CPU to TPU transfer completed in %.2f seconds", transfer_time)
+    logging.info(
+        "Total colocated deserialization time: %.2f seconds", cpu_load_time + transfer_time
+    )
+
+    return tpu_arrays
+
+
 # Reference:
 # https://github.com/google/orbax/blob/ebb3e6d75f9ccb52bf862f1740943a45b18f4dac/checkpoint/orbax/checkpoint/future.py#L49
 class _ThreadRaisingException(threading.Thread):
@@ -677,35 +827,76 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         global_shapes: Optional[Sequence[array.Shape]] = None,
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
         concurrent_gb: int = 32,
+        use_colocated_python: bool = False,
     ):
+        """Deserialize arrays from TensorStore.
+
+        Args:
+            shardings: Sharding specifications for each array.
+            tensorstore_specs: TensorStore specifications for each array.
+            global_shapes: Global shapes for each array. If None, uses shape from TensorStore.
+            dtypes: Data types for each array. If None, uses dtype from TensorStore.
+            concurrent_gb: Maximum concurrent GB for reading from storage.
+            use_colocated_python: If True, use colocated Python to load checkpoint to CPU first,
+                then transfer to TPU.
+                Only works on systems with Colocated Python support (e.g., Pathways).
+
+        Returns:
+            List of deserialized JAX arrays.
+        """
         self.wait_until_finished()
         start_time = time.perf_counter()
 
         concurrent_bytes = concurrent_gb * 10**9
 
-        async def _run_deserializer():
-            # Object should be created once per process.
-            # pylint: disable=protected-access
-            byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
-            h2d_limiter = serialization._LimitInFlightBytes(_get_premapped_buffer_size())
+        # Prepare global shapes and dtypes
+        global_shapes_list = (
+            [None] * len(tensorstore_specs) if global_shapes is None else list(global_shapes)
+        )
+        dtypes_list = [None] * len(tensorstore_specs) if dtypes is None else list(dtypes)
 
-            future_arrays = jax.tree.map(
-                functools.partial(
-                    _async_deserialize,
-                    byte_limiter=byte_limiter,
-                    h2d_limiter=h2d_limiter,
-                    single_thread_pool=self._single_thread_pool,
-                    multi_thread_pool=self._multi_thread_pool,
-                ),
-                shardings,
-                tensorstore_specs,
-                [None] * len(tensorstore_specs) if global_shapes is None else global_shapes,
-                [None] * len(tensorstore_specs) if dtypes is None else dtypes,
+        # Create the appropriate coroutine based on mode
+        if use_colocated_python:
+            # Capture mesh from main thread where context is active
+            # (mesh is thread-local and won't be available in background event loop)
+            tpu_mesh = thread_resources.env.physical_mesh
+
+            # Use colocated Python path
+            coro = _run_colocated_deserialize(
+                shardings=shardings,
+                tensorstore_specs=tensorstore_specs,
+                global_shapes=global_shapes_list,
+                dtypes=dtypes_list,
+                concurrent_bytes=concurrent_bytes,
+                tpu_mesh=tpu_mesh,
             )
-            return await asyncio.gather(*future_arrays)
+        else:
+            # Use default deserialization path (direct to TPU)
+            async def _run_deserializer():
+                # Object should be created once per process.
+                # pylint: disable=protected-access
+                byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
+                h2d_limiter = serialization._LimitInFlightBytes(_get_premapped_buffer_size())
 
-        fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
-        result = fut.result()
+                future_arrays = jax.tree.map(
+                    functools.partial(
+                        _async_deserialize,
+                        byte_limiter=byte_limiter,
+                        h2d_limiter=h2d_limiter,
+                        single_thread_pool=self._single_thread_pool,
+                        multi_thread_pool=self._multi_thread_pool,
+                    ),
+                    shardings,
+                    tensorstore_specs,
+                    global_shapes_list,
+                    dtypes_list,
+                )
+                return await asyncio.gather(*future_arrays)
+
+            coro = _run_deserializer()
+
+        # Run the coroutine and get result
+        result = asyncio.run_coroutine_threadsafe(coro, self._loop).result()
         logging.info("deserialize took %.4f seconds.", time.perf_counter() - start_time)
         return result
 
