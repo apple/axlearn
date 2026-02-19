@@ -23,6 +23,7 @@ from axlearn.cloud.common.job import Job
 from axlearn.cloud.common.utils import generate_job_name, subprocess_run
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone
 from axlearn.cloud.gcp.jobset_utils import BaseReplicatedJob
+from axlearn.cloud.gcp.k8s_backend_policy import LWSGCPBackendPolicy
 from axlearn.cloud.gcp.k8s_health_check_policy import LWSHealthCheckPolicy
 from axlearn.cloud.gcp.k8s_http_route import LWSHTTPRoute
 from axlearn.cloud.gcp.k8s_service import LWSService
@@ -566,6 +567,7 @@ class GKELeaderWorkerSet(GCPJob):
         gke_gateway_route: bool = False
         http_route: Optional[LWSHTTPRoute.Config] = None
         health_check_policy: Optional[LWSHealthCheckPolicy.Config] = None
+        backend_policy: Optional[LWSGCPBackendPolicy.Config] = None
         enable_tpu_slice_auto_provisioning: Optional[bool] = None
 
     @classmethod
@@ -685,6 +687,8 @@ class GKELeaderWorkerSet(GCPJob):
             cfg.http_route.set(name=cfg.name, namespace=cfg.namespace)
         if cfg.health_check_policy is not None:
             cfg.health_check_policy.set(name=cfg.name, namespace=cfg.namespace)
+        if cfg.backend_policy is not None:
+            cfg.backend_policy.set(name=cfg.name, namespace=cfg.namespace)
 
     def _delete(self):
         cfg: GKELeaderWorkerSet.Config = self.config
@@ -777,6 +781,11 @@ class GKELeaderWorkerSet(GCPJob):
         if cfg.gke_gateway_route and cfg.health_check_policy:
             health_check_resp = cfg.health_check_policy.instantiate().execute()
             logging.info("HealthCheckPolicy created %s", str(health_check_resp))
+
+        #### Creating GCPBackendPolicy for gke_gateway_route #######
+        if cfg.gke_gateway_route and cfg.backend_policy:
+            backend_policy_resp = cfg.backend_policy.instantiate().execute()
+            logging.info("GCPBackendPolicy created %s", str(backend_policy_resp))
 
         return lws_resp
 

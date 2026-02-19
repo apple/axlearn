@@ -19,6 +19,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     A4HighReplicatedJob,
     TPUReplicatedJob,
 )
+from axlearn.cloud.gcp.k8s_backend_policy import LWSGCPBackendPolicy
 from axlearn.cloud.gcp.k8s_health_check_policy import LWSHealthCheckPolicy
 from axlearn.cloud.gcp.k8s_http_route import LWSHTTPRoute
 from axlearn.cloud.gcp.k8s_service import LWSService
@@ -69,6 +70,7 @@ def named_runner_configs(
                 service=LWSService.default_config(),
                 http_route=LWSHTTPRoute.default_config(),
                 health_check_policy=LWSHealthCheckPolicy.default_config(),
+                backend_policy=LWSGCPBackendPolicy.default_config(),
             ),
             pre_provisioner=TPUNodePoolProvisioner.default_config(),
         ),
