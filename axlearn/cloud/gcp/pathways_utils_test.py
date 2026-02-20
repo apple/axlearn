@@ -162,6 +162,12 @@ class PathwaysReplicatedJobTest(TestCase):
             self.assertIn("add", security_context["capabilities"])
             self.assertIn("SYS_PTRACE", security_context["capabilities"]["add"])
 
+            # Check safe-to-evict annotation
+            annotations = pod["metadata"]["annotations"]
+            self.assertEqual(
+                annotations.get("cluster-autoscaler.kubernetes.io/safe-to-evict"), "false"
+            )
+
             # Check pathways-proxy container args for XLA flags.
             proxy_container = None
             rm_container = None
@@ -387,6 +393,10 @@ class PathwaysReplicatedJobTest(TestCase):
             pod_spec = pod["spec"]
             annotations = pod["metadata"]["annotations"]
 
+            # Verify safe-to-evict annotation
+            self.assertEqual(
+                annotations.get("cluster-autoscaler.kubernetes.io/safe-to-evict"), "false"
+            )
             # Verify gcsfuse annotations are set correctly
             self.assertEqual(annotations.get("gke-gcsfuse/volumes"), "true")
             self.assertIn("gke-gcsfuse/cpu-request", annotations)
@@ -560,6 +570,12 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             pod_spec = pod["spec"]
 
             self.assertEqual(len(pod_spec["containers"]), 3)
+
+            # Check safe-to-evict annotation
+            annotations = pod["metadata"]["annotations"]
+            self.assertEqual(
+                annotations.get("cluster-autoscaler.kubernetes.io/safe-to-evict"), "false"
+            )
 
             proxy_container = None
             rm_container = None

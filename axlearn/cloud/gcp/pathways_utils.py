@@ -545,6 +545,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
+        annotations.update({"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"})
         if cfg.gcsfuse_mount:
             self._inner.set_up_gcsfuse(cfg, volumes, annotations)
         else:
@@ -1360,6 +1361,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         volumes.append(dict(name="shared-output", emptyDir={}))
         labels = {"app": cfg.name}
 
+        annotations.update({"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"})
         if cfg.gcsfuse_mount:
             annotations.update(
                 {
