@@ -21,6 +21,8 @@ from google.auth.credentials import Credentials
 from axlearn.cloud.common.utils import Table, infer_cli_name, subprocess_run
 from axlearn.cloud.gcp.scopes import DEFAULT_APPLICATION
 
+_LIST_LWS_TIMEOUT_S = 60
+
 BEAM_SUBMITTER_LABEL = "beam_pipline_submitter"
 
 
@@ -419,6 +421,7 @@ def list_k8s_leaderworkerset(*, namespace: str) -> list[str]:
 
     lws_groups = k8s.client.CustomObjectsApi().list_namespaced_custom_object(
         namespace=namespace,
+        timeout_seconds=_LIST_LWS_TIMEOUT_S,
         **custom_leaderworkerset_kwargs(),
     )
     names = []
