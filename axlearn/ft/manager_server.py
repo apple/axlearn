@@ -266,7 +266,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 "timestamp": request.timestamp,
             }
 
-        logging.info(
+        logging.debug(
             "Replica status received: replica=%d, workers=%d/%d, "
             "individual_workers=%d, registry_size=%d",
             replica_id,

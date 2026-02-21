@@ -73,7 +73,7 @@ class ManagerClient:
             stub = self._create_stub(target_host, port)
             response = stub.ReportStatus(request, timeout=self.timeout)
 
-            logging.info(
+            logging.debug(
                 "Status report successful: target=%s:%d, step=%d, acknowledged=%s",
                 target_host,
                 port,
@@ -133,7 +133,7 @@ class ManagerClient:
             stub = self._create_stub(target_host, port)
             response = stub.ReportReplicaStatus(request, timeout=self.timeout)
 
-            logging.info(
+            logging.debug(
                 "Replica status sent: replica_id=%d, target=%s:%d, acknowledged=%s",
                 replica_id,
                 target_host,

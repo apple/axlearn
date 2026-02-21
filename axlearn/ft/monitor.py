@@ -96,7 +96,7 @@ class StatusMonitor:
             return worker_average
 
         except Exception as e:  # pylint: disable=broad-exception-caught
-            logging.warning("Failed to get tensor core utilization: %s", e)
+            logging.debug("Failed to get tensor core utilization: %s", e)
             return -1.0
 
     def detect_global_training_hang(self) -> bool:
@@ -211,19 +211,19 @@ class StatusMonitor:
         )
 
         if self.current_tensorcore_util >= 0:
-            logging.info(
+            logging.debug(
                 "FT Monitor: Reported step %d, TC util %.1f%%",
                 self.current_step,
                 self.current_tensorcore_util,
             )
         else:
-            logging.info("FT Monitor: Reported step %d", self.current_step)
+            logging.debug("FT Monitor: Reported step %d", self.current_step)
 
     def _report_replica_status(self):
         """Report replica status to global manager."""
         try:
             self.manager.report_replica_status()
-            logging.info("FT Monitor: Reported replica status")
+            logging.debug("FT Monitor: Reported replica status")
         except Exception as e:  # pylint: disable=broad-exception-caught
             logging.warning("FT Monitor: Failed to report replica status: %s", e)
 
@@ -261,25 +261,25 @@ class StatusMonitor:
             # Calculate average TC utilization for replica
             if tc_utils:
                 avg_tc_util = sum(tc_utils) / len(tc_utils)
-                logging.info(
+                logging.debug(
                     "FT Monitor: Replica %d workers - %s (avg TC util: %.1f%%)",
                     replica_id,
                     ", ".join(worker_details),
                     avg_tc_util,
                 )
             else:
-                logging.info(
+                logging.debug(
                     "FT Monitor: Replica %d workers - %s", replica_id, ", ".join(worker_details)
                 )
         else:
-            logging.info("FT Monitor: Replica %d - no workers reported", replica_id)
+            logging.debug("FT Monitor: Replica %d - no workers reported", replica_id)
 
     def _log_global_status(self):
         """Log global status information."""
         status = self.manager.get_global_status()
         detailed_status = self.manager.get_detailed_global_status()
 
-        logging.info(
+        logging.debug(
             "FT Monitor: Global status - total replicas: %d, total workers: %d/%d, step: %d",
             status.get("total_replicas", 0),
             status.get("total_reported_workers", 0),

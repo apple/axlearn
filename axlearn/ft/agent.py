@@ -3,26 +3,28 @@
 """Entrypoint function for launching the fault tolerant agent.
 
 The agent spawns the trainer in a subprocess for fault tolerance and process isolation.
+Agent flags and trainer flags are separated by ``--``. Everything after ``--`` is forwarded
+verbatim to the trainer subprocess.
 
 Example usage:
 python3 -m axlearn.ft.agent \
+  --max_restarts=5 \
+  -- \
   --module=text.gpt.c4_trainer \
   --config=fuji-70B-v2-flash \
   --trainer_dir=gs://bucket/experiments/test \
   --data_dir=gs://bucket/tensorflow_datasets \
-  --jax_backend=tpu \
-  --max_restarts=5
+  --jax_backend=tpu
 """
 
 import enum
+import shlex
 import signal
 import subprocess
 import sys
 
 from absl import app, flags, logging
 
-# Import launch and launch_trainer to get the FLAGS definitions.
-from axlearn.common import launch, launch_trainer, measurement  # pylint: disable=unused-import
 from axlearn.ft.monitor import StatusMonitor
 from axlearn.ft.utils import TrainerProcessController
 
@@ -39,6 +41,12 @@ _POD_SHUTDOWN_REASON_PREFIX = "Pod shutdown signal"
 
 flags.DEFINE_integer(
     "max_restarts", 3, "Maximum number of times to restart the trainer subprocess on failure"
+)
+flags.DEFINE_string(
+    "trainer_cmd",
+    None,
+    "The trainer command to run as a subprocess. "
+    "If not set, defaults to 'python3 -m axlearn.common.launch_trainer_main'.",
 )
 
 
@@ -78,8 +86,12 @@ def _handle_termination_request(
     return TerminationAction.RESTART
 
 
-def run_ft_agent():
-    """The agent launches trainer as a subprocess with fault tolerance."""
+def run_ft_agent(trainer_argv: list[str]):
+    """The agent launches trainer as a subprocess with fault tolerance.
+
+    Args:
+        trainer_argv: Arguments to forward to the trainer subprocess.
+    """
     logging.info("Starting fault tolerant trainer agent...")
 
     # Initialize FT system
@@ -88,8 +100,11 @@ def run_ft_agent():
     monitor.start()
 
     # Build trainer command
-    entrypoint_cmd = [sys.executable, "-m", "axlearn.common.launch_trainer_main"]
-    entrypoint_cmd.extend(arg for arg in sys.argv[1:] if not arg.startswith("--max_restarts"))
+    if flags.FLAGS.trainer_cmd:
+        entrypoint_cmd = shlex.split(flags.FLAGS.trainer_cmd)
+    else:
+        entrypoint_cmd = [sys.executable, "-m", "axlearn.common.launch_trainer_main"]
+    entrypoint_cmd.extend(trainer_argv)
 
     # Set up signal handling
     def signal_handler(signum, *_):
@@ -169,10 +184,10 @@ def run_ft_agent():
         monitor.stop()
 
 
-def main(_):
-    run_ft_agent()
+def main(argv):
+    # argv[0] is the program name; argv[1:] is everything after "--".
+    run_ft_agent(argv[1:])
 
 
 if __name__ == "__main__":
-    measurement.define_flags()
     app.run(main)
