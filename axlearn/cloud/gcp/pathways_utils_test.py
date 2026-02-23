@@ -441,14 +441,14 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
     def test_replicated_job(self, num_replicas, user_command_patcher):
         with (self._job_config(CloudBuildBundler, num_replicas) as (cfg, bundler_cfg),):
             command = "test_command"
+            if user_command_patcher:
+                cfg.set(user_command_patcher=user_command_patcher)
             cfg.inner.set(
                 project="test-project",
                 name="test",
                 command=command,
                 output_dir="FAKE",
             )
-            if user_command_patcher:
-                cfg.inner.set(user_command_patcher=user_command_patcher)
             cfg.instantiate(bundler=bundler_cfg.instantiate())
 
             builder = cfg.instantiate(bundler=bundler_cfg.instantiate())

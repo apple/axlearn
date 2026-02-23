@@ -337,6 +337,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         super().__init__(cfg, bundler=bundler)
         self._bundler = bundler
         self._inner: TPUReplicatedJob = cfg.inner.instantiate(bundler=self._bundler)
+        self._inner._user_command_patcher = self._user_command_patcher
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
