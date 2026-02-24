@@ -317,6 +317,7 @@ def new_jobspec(
     cleanup_command: Optional[str] = None,
     env_vars: Optional[dict[str, str]] = None,
     version: int = _LATEST_BASTION_VERSION,
+    code_asset_path: Optional[str] = None,
 ) -> JobSpec:
     """Constructs a JobSpec with basic schema validation."""
     jobspec = JobSpec(
@@ -326,6 +327,7 @@ def new_jobspec(
         cleanup_command=cleanup_command,
         env_vars=env_vars,
         metadata=metadata,
+        code_asset_path=code_asset_path,
     )
     _validate_jobspec(jobspec)
     return jobspec
@@ -344,9 +346,12 @@ def serialize_jobspec(spec: JobSpec, f: Union[str, IO]):
         "%Y-%m-%d %H:%M:%S.%f"
     )
 
-    # For backwards compatibility, only include topologies if they are set
+    # For backwards compatibility, only include optional fields if they are set
     if not data["metadata"]["topologies"]:
         del data["metadata"]["topologies"]
+
+    if not data["code_asset_path"]:
+        del data["code_asset_path"]
 
     json.dump(data, f, default=str)
     f.flush()
@@ -374,6 +379,7 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
             cleanup_command=data.get("cleanup_command", None),
             env_vars=data.get("env_vars", None),
             metadata=JobMetadata(**data["metadata"]),
+            code_asset_path=data.get("code_asset_path", None),
         )
     raise ValidationError(f"Unsupported version: {data["version"]}")
 

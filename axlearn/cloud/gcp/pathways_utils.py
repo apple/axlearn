@@ -1276,16 +1276,21 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         }
         command = inner_cfg.command
 
+        spec = None
+        if job_spec := os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
+            try:
+                spec = deserialize_jobspec(io.StringIO(job_spec))
+            except ValidationError:
+                logging.debug("Failed to deserialize job spec.")
+
         if self._user_command_patcher is not None:
             user_id = None
-            job_spec = os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR)
-            if job_spec:
-                try:
-                    spec = deserialize_jobspec(io.StringIO(job_spec))
-                    user_id = spec.metadata.user_id
-                except ValidationError:
-                    logging.debug("Failed to deserialize job spec for user command patching.")
+            if spec:
+                user_id = spec.metadata.user_id
             command = self._user_command_patcher.patch(command, user_id=user_id)
+
+        if spec and spec.code_asset_path:
+            command = f"{self._bundler.install_command(spec.code_asset_path)} && {command}"
 
         container = dict(
             name=inner_cfg.name,

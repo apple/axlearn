@@ -330,6 +330,7 @@ class BaseBastionManagedJob(FlagConfigurable):
             # For backwards compatibility with legacy behavior where command is specified with argv
             # after `--`, we take any command supplied via `kwargs` and use argv.
             # TODO(markblee): Handle quoting for flag commands that contain spaces.
+
             own_flags = " ".join(fv.flags_into_string().split("\n"))
             cfg.command = f"python3 -m {infer_module_qualname(cls)} run {own_flags}"
             if command is not None:
@@ -435,11 +436,15 @@ class BaseBastionManagedJob(FlagConfigurable):
                 "BASTION_SUBMISSION_DURATION_S": str(int(current_time - process_start_time)),
                 "BASTION_SUBMISSION_TS": str(int(process_start_time)),
             }
+            if code_assets_path := self._bundler.code_assets_path():
+                logging.info("Code asset path for job: %s", code_assets_path)
+
             jobspec = new_jobspec(
                 name=cfg.name,
                 command=cfg.command,
                 metadata=metadata,
                 env_vars=runner_env_vars,
+                code_asset_path=code_assets_path,
             )
             serialize_jobspec(jobspec, f)
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)

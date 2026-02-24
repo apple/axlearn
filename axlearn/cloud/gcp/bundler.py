@@ -47,8 +47,11 @@ Examples (cloudbuild):
 """
 
 import os
+import pathlib
 import subprocess
-from typing import Optional
+import tarfile
+import tempfile
+from typing import List, Optional
 
 from absl import app, flags, logging
 
@@ -57,11 +60,12 @@ from axlearn.cloud.common.bundler import main as bundler_main
 from axlearn.cloud.common.bundler import main_flags as bundler_main_flags
 from axlearn.cloud.common.bundler import register_bundler
 from axlearn.cloud.common.docker import registry_from_repo
-from axlearn.cloud.common.utils import canonicalize_to_list, to_bool
+from axlearn.cloud.common.utils import canonicalize_to_list, parse_kv_flags, to_bool
 from axlearn.cloud.gcp.cloud_build import parse_tag_from_image_id, wait_for_cloud_build
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import common_flags
 from axlearn.common.config import REQUIRED, Required, config_class, maybe_set_config
+from axlearn.common.file_system import copy
 
 FLAGS = flags.FLAGS
 
@@ -291,6 +295,93 @@ options:
                     tags=[name],
                     wait_timeout=wait_timeout,
                 )
+
+
+@register_bundler
+class LocalCodeBundler(Bundler):
+    """A bundler that creates a tar bundle from local code and uploads to remote storage."""
+
+    TYPE = "localcode"
+
+    @config_class
+    class Config(Bundler.Config):
+        """Configures LocalCodeBundler."""
+
+        # Remote directory to upload the bundle to
+        remote_dir: Required[str] = REQUIRED
+        # The docker image id
+        image_id: Required[str] = REQUIRED
+        # Local files to be bundled
+        bundle_files: Optional[List[str]] = None
+
+    @classmethod
+    def from_spec(cls, spec: list[str], *, fv: Optional[flags.FlagValues]) -> Config:
+        """Converts a spec to a bundler."""
+        cfg: LocalCodeBundler.Config = super().from_spec(spec, fv=fv)
+        kv_flags = parse_kv_flags(spec, delimiter="=")
+        cfg.bundle_files = [
+            s[len("bundle_files=") :] for s in spec if s.startswith("bundle_files=")
+        ]
+        valid_config_keys = set(cfg.keys()) - {"bundle_files"}
+        cfg.set(**{k: v for k, v in kv_flags.items() if k in valid_config_keys})
+        # infer from the launcher kv flags if no spec passed
+        if fv is not None:
+            cfg.image_id = cfg.image_id or fv.image_id
+            if not cfg.remote_dir:
+                ttl_bucket = gcp_settings("ttl_bucket", required=False, fv=fv)
+                if ttl_bucket:
+                    cfg.remote_dir = f"gs://{ttl_bucket}/axlearn/jobs/assets/{fv.name}"
+
+        return cfg
+
+    def id(self, name: str) -> str:
+        """Return the pre-built docker image id associated with the bundler."""
+        return self.config.image_id
+
+    def code_asset_path(self) -> str:
+        """Returns the full gcs path of the code assets."""
+        return f"{self.config.remote_dir}/bastion_code_asset.tar.gz"
+
+    def bundle(self, name: str) -> str:
+        """Creates a tar bundle from local files and uploads to remote storage.
+
+        Args:
+            name: The bundle name/tag
+
+        Returns:
+            The remote bundle path.
+        """
+        cfg: LocalCodeBundler.Config = self.config
+        bundle_path = self.code_asset_path()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir_path = pathlib.Path(temp_dir)
+            tar_path = temp_dir_path / "bastion_code_asset.tar.gz"
+
+            with tarfile.open(tar_path, "w:gz") as tar:
+                for file in cfg.bundle_files or []:
+                    tar.add(file)
+
+            tar_size = f"{tar_path.stat().st_size / (1024 * 1024):.2f}MB"
+            logging.info("Created tar bundle: %s (%s)", tar_path, tar_size)
+            copy(str(tar_path), bundle_path, overwrite=True)
+
+        return bundle_path
+
+    def install_command(self, bundle_id: str) -> str:
+        """Emits a command to download and extract the bundle.
+
+        Args:
+            bundle_id: the remote bundle file path. can be a gs:// path or s3://
+
+        Returns:
+            The command to download and extract the bundle.
+        """
+        copy_cmd = f"gsutil -q cp {bundle_id} bastion_code_asset.tar.gz"
+        extract_cmd = "tar -xzf bastion_code_asset.tar.gz"
+        clean_cmd = "rm -r bastion_code_asset.tar.gz"
+
+        return f"{copy_cmd} && {extract_cmd} && {clean_cmd}"
 
 
 def with_tpu_extras(bundler: Bundler.Config) -> Bundler.Config:

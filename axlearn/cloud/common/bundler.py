@@ -224,6 +224,10 @@ class Bundler(Configurable):
         """Returns a unique identifier for the bundle."""
         raise NotImplementedError(type(self))
 
+    def code_assets_path(self) -> Optional[str]:
+        """Returns the path of the remote code asset path. None if it doesn't exist."""
+        return None
+
     # pylint: disable-next=arguments-differ
     def bundle(self, name: str) -> str:
         """Produces a code bundle for the local directory.

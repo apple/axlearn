@@ -563,15 +563,18 @@ class TPUJobBuilder(SingleReplicatedJob):
 
         # Apply command transformation if configured
         command = cfg.command
+        spec = None
+        if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
+            spec = deserialize_jobspec(
+                io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
+            )
         if self._user_command_patcher:
             # Get user_id from Bastion environment if available
-            user_id = None
-            if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
-                spec = deserialize_jobspec(
-                    io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
-                )
-                user_id = spec.metadata.user_id
+            user_id = spec.metadata.user_id if spec is not None else None
             command = self._user_command_patcher.patch(command, user_id=user_id)
+
+        if spec is not None and spec.code_asset_path:
+            command = f"{self._bundler.install_command(spec.code_asset_path)} && {command}"
 
         return dict(
             name=cfg.name,

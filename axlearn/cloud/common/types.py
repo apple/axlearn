@@ -59,6 +59,9 @@ class JobSpec:
     env_vars: Optional[dict[str, str]]
     # Metadata related to a bastion job.
     metadata: JobMetadata
+    # Path to the code asset bundle (e.g. a GCS path). When set, runners will install the bundle
+    # before executing the job command.
+    code_asset_path: Optional[str] = None
 
 
 # Mapping from resource types to the amount of resources.
