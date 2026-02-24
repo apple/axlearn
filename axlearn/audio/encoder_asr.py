@@ -24,7 +24,7 @@ from axlearn.common.conformer import RepeatedConformerLayer
 from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import Dropout, Linear
 from axlearn.common.module import Module
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, safe_not
 
 
 class SpeechFeatureLayer(BaseLayer):
@@ -245,6 +245,35 @@ class ASREncoder(BaseLayer):
             segment_ids=speech_features["segment_ids"],
         )
         return context_features
+
+    def init_states(self, *, batch_size: int, dtype: jnp.dtype) -> Nested[Tensor]:
+        """Initializes empty cached states for decoding.
+
+        ASREncoder is bidirectional, so it does not maintain incremental state.
+        This method exists so that ASREncoder can be used in decoding pipelines for prefill only.
+        """
+        del batch_size, dtype
+        return dict()
+
+    def extend_step(
+        self, *, cached_states: Nested[Tensor], input_data: Nested[Tensor]
+    ) -> tuple[Nested[Tensor], Nested[Tensor]]:
+        """Computes encoder outputs for the given input batch.
+
+        Since ASREncoder is bidirectional, this simply calls forward.
+
+        Args:
+            cached_states: Unused cached states (always empty dict).
+            input_data: A dict with `x` [BT] and `paddings` [BT] field. `T` must be multiple of
+                time stride.
+
+        Returns:
+            A tuple of (cached_states, outputs).
+        """
+        segment_ids = safe_not(input_data["paddings"]).astype(jnp.int32)
+        fwd_outputs = self.forward(inputs=input_data["x"], segment_ids=segment_ids)
+        outputs = dict(x=fwd_outputs["outputs"], paddings=fwd_outputs["segment_ids"] == 0)
+        return cached_states, outputs
 
 
 def _segment_relative_positions(segment_ids: Tensor) -> Tensor:

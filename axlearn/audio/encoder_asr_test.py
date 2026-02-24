@@ -353,6 +353,77 @@ class ASREncoderTest(TestCase):
             not (is_training and use_augmenter), jnp.allclose(outputs[:2], outputs[2:])
         )
 
+    def test_init_states_and_extend_step(self):
+        """Tests that ASREncoder supports init_states/extend_step for decoding pipelines."""
+        conv_dim, output_dim = 12, 36
+        num_filters, sample_rate, frame_size_ms, hop_size_ms = 80, 16000, 25, 10
+        num_layers, num_heads = 2, 4
+
+        cfg = ASREncoder.default_config().set(
+            dim=output_dim,
+            feature=SpeechFeatureLayer.default_config(),
+            context=SpeechContextNetwork.default_config(),
+        )
+        cfg.feature.frontend.set(
+            num_filters=num_filters,
+            sample_rate=sample_rate,
+            frame_size_ms=frame_size_ms,
+            hop_size_ms=hop_size_ms,
+            mel_floor=1e-6,
+        )
+        cfg.feature.augmenter = None
+        cfg.feature.subsampler.hidden_dim = conv_dim
+        cfg.feature.output_dim = conv_dim
+        cfg.context.dropout.rate = 0.0
+        cfg.context.context.num_layers = num_layers
+        cfg.context.context.layer.self_attention.attention.num_heads = num_heads
+        cfg.context.context.layer.lconv.dropout.rate = 0.0
+
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key = jax.random.split(prng_key, num=3)
+        layer: ASREncoder = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        batch_size, seq_len = 2, sample_rate * 2
+        inputs, paddings = fake_audio(prng_key=input_key, batch_size=batch_size, seq_len=seq_len)
+        segment_ids = safe_not(paddings).astype(jnp.int32)
+
+        # init_states should return empty dict.
+        init_state, _ = F(
+            layer,
+            inputs=dict(batch_size=batch_size, dtype=jnp.float32),
+            is_training=False,
+            prng_key=prng_key,
+            state=layer_params,
+            method="init_states",
+        )
+        self.assertEqual(init_state, {})
+
+        # forward as reference.
+        forward_out, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
+            is_training=False,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+
+        # extend_step uses x/paddings convention and should match forward outputs.
+        (updated_states, extend_out), _ = F(
+            layer,
+            inputs=dict(
+                cached_states=init_state,
+                input_data=dict(x=inputs, paddings=paddings),
+            ),
+            is_training=False,
+            prng_key=prng_key,
+            state=layer_params,
+            method="extend_step",
+        )
+        self.assertEqual(updated_states, {})
+        self.assertNestedAllClose(extend_out["x"], forward_out["outputs"])
+        self.assertNestedEqual(extend_out["paddings"], forward_out["segment_ids"] == 0)
+
 
 class SegmentRelativePositionsTest(TestCase):
     def test_segment_relative_positions(self):
