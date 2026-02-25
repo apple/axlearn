@@ -200,11 +200,11 @@ class CoCaTextStreamEncoder(StreamEncoder):
         self,
         *,
         cached_states: NestedTensor,
-        input_ids: Tensor,
+        input_batch: Nested[Tensor],
     ) -> tuple[NestedTensor, NestedTensor]:
         updated_state, encoder_output = self.text_encoder.extend_step(
             cached_states=cached_states,
-            input_ids=input_ids,
+            input_batch=input_batch,
         )
 
         output_dict = {
@@ -941,11 +941,12 @@ class CoCaModel(MultiStreamModel):
         self,
         *,
         cached_states: NestedTensor,
-        input_ids: Tensor,
+        input_batch: Nested[Tensor],
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
     ) -> tuple[NestedTensor, NestedTensor]:
         """See `BaseDecoder.extend_step` for details."""
+        validate_contains_paths(input_batch, paths=["input_ids"])
         # This structure is shared with Decoder, but is necessary to repeat in extend_step.
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
@@ -961,7 +962,7 @@ class CoCaModel(MultiStreamModel):
             textual_encoder_output,
         ) = self._stream_encoder["textual_encoder"].extend_step(
             cached_states=encoder_cached_state,
-            input_ids=input_ids,
+            input_batch=input_batch,
         )
 
         captioning_cached_states = {

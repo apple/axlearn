@@ -21,7 +21,7 @@ from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import BaseClassificationHead, set_dropout_rate_recursively
 from axlearn.common.module import Module, Tensor, child_context
-from axlearn.common.utils import NestedTensor, TensorSpec
+from axlearn.common.utils import Nested, NestedTensor, TensorSpec
 
 
 class Encoder(BaseLayer):
@@ -303,12 +303,13 @@ class CausalEncoder(Encoder):
         self,
         *,
         cached_states: NestedTensor,
-        input_ids: Tensor,
-        token_type_ids: Optional[Tensor] = None,
+        input_batch: Nested[Tensor],
     ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
         # Note: this follows `Decoder.extend_step` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
+        input_ids: Tensor = input_batch["input_ids"]
+        token_type_ids = input_batch.get("token_type_ids", None)
         time_step = cached_states["time_step"]
         assert time_step.ndim == 1
 

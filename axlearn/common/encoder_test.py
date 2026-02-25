@@ -304,8 +304,8 @@ class TestCausalEncoder(TestCase):
         inputs = dict(cached_states=initial_state)
         while jnp.any(time_step < source_length):
             # [batch, source_length=1].
-            inputs["input_ids"] = jnp.take_along_axis(
-                input_ids, time_step[:, None], axis=1, mode="clip"
+            inputs["input_batch"] = dict(
+                input_ids=jnp.take_along_axis(input_ids, time_step[:, None], axis=1, mode="clip")
             )
             (updated_state, outputs), _ = F(
                 layer,

@@ -583,8 +583,10 @@ class TestCoCaModel(parameterized.TestCase):
         inputs = dict(cached_states=initial_state)
         while jnp.any(time_step < tgt_len):
             # [batch, tgt_len=1].
-            inputs["input_ids"] = jnp.take_along_axis(
-                tokenized_text, time_step[:, None], axis=1, mode="clip"
+            inputs["input_batch"] = dict(
+                input_ids=jnp.take_along_axis(
+                    tokenized_text, time_step[:, None], axis=1, mode="clip"
+                )
             )
             if use_cross_attention:
                 inputs["cross_attention_data"] = cross_attention_data

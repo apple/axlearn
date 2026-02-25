@@ -37,6 +37,7 @@ from axlearn.common.decoding import (
     infer_initial_time_step,
     sample_decode,
 )
+from axlearn.common.ein_ops import repeat
 from axlearn.common.embedding import BaseEmbedding, TransformerTextEmbeddings
 from axlearn.common.layers import Dropout, LayerNorm, set_dropout_rate_recursively
 from axlearn.common.logit_modifiers import LogitsToLogitsFn
@@ -165,15 +166,17 @@ class BaseDecoder(Protocol):
         """
 
     def extend_step(
-        self, *, cached_states: Nested[Tensor], input_ids: Tensor, **kwargs
+        self, *, cached_states: Nested[Tensor], input_batch: Nested[Tensor], **kwargs
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """Computes incremental outputs during autoregressive decoding.
 
         Args:
             cached_states: A Nested Tensor returned by `prefill_states()` or a previous invocation
                 of `extend_step()`.
-            input_ids: An int Tensor of shape [batch, target_step_length], where
-                `target_step_length` is 1.
+            input_batch: A nested Tensor containing at minimum:
+                input_ids: An int Tensor of shape [batch, target_step_length], where
+                    `target_step_length` is 1.
+                Additional modality data (e.g., audio) can be included for multimodal decoding.
             kwargs: Additional kwargs for incremental decoding.
 
         Returns:
@@ -352,7 +355,17 @@ class DecodingLayer(Configurable):
         cross_attention_logit_biases: Optional[Tensor] = None,
         logits_modifier: Optional[LogitsToLogitsFn] = None,
     ) -> Callable[[Tensor, NestedTensor], tuple[Tensor, NestedTensor]]:
-        """Build a fn mapping current token IDs and model state to next logits and updated state."""
+        """Build a fn mapping current token IDs and model state to next logits and updated state.
+
+        Args:
+            num_decodes: The number of decoded sequences to return per batch example.
+            cross_attention_data: Optional cross-attention data.
+            cross_attention_logit_biases: Optional cross-attention logit biases.
+            logits_modifier: Optional function to modify logits.
+
+        Returns:
+            A function mapping token IDs and cache to log probabilities and updated cache.
+        """
 
         # TODO(markblee): Move cross attention data handling to Decoder.
         if cross_attention_data is not None:
@@ -399,7 +412,7 @@ class DecodingLayer(Configurable):
             with _temporary_output_collection():
                 updated_state, outputs = self._decoder.extend_step(
                     cached_states=cache,
-                    input_ids=token_ids,
+                    input_batch={"input_ids": token_ids},
                     cross_attention_data=cross_attention_data,
                     cross_attention_logit_biases=cross_attention_biases,
                 )
@@ -655,14 +668,16 @@ class Decoder(BaseLayer):
             time_step=None,
             data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=dtype),
         )
-        return dict(
+        init_state = dict(
             emb=emb,
             transformer_state=transformer_state,
-            input_ids=jnp.full(
-                (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
-            ),
             time_step=jnp.zeros(batch_size, dtype=jnp.int32),
         )
+        if cfg.attention_mask is not None:
+            init_state["input_ids"] = jnp.full(
+                (batch_size, max_sequence_length), cfg.pad_token_id, dtype=jnp.int32
+            )
+        return init_state
 
     def prefill_states(
         self,
@@ -681,6 +696,7 @@ class Decoder(BaseLayer):
         Returns:
             See `BaseDecoder.prefill_states` for details.
         """
+        cfg = self.config
         validate_contains_paths(input_batch, paths=["input_ids"])
         input_ids: Tensor = input_batch["input_ids"]
         input_segment_ids = input_batch.get("input_segment_ids", None)
@@ -699,70 +715,77 @@ class Decoder(BaseLayer):
             **kwargs,
         )
         self.add_module_output("prefill_hidden_states", outputs["hidden_states"])
-        states = dict(time_step=time_step, input_ids=input_ids, **states)
+        states["time_step"] = time_step
+        if cfg.attention_mask is not None:
+            states["input_ids"] = input_ids
         return states, outputs
 
     def extend_step(
         self,
         *,
         cached_states: Nested[Tensor],
-        input_ids: Tensor,
+        input_batch: Nested[Tensor],
         **kwargs,
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
-        """See `BaseDecoder.extend_step` for details."""
+        """See `BaseDecoder.forward_step` for details."""
+        cfg = self.config
         time_step: Tensor = cached_states["time_step"]
         assert time_step.ndim == 1
 
-        # Update cached input_ids via "scatter via one-hot broadcast" trick.
-        # Note: in the cases where `time_step` exceeds `target_len`, the update becomes a no-op.
-        # --> [B, T].
-        cached_inputs: Tensor = cached_states["input_ids"]
-        target_len = cached_inputs.shape[-1]
-        oh_indices = jax.nn.one_hot(time_step, target_len, dtype=input_ids.dtype)
-        updated_inputs = cached_inputs * (1 - oh_indices) + input_ids * oh_indices
+        input_ids: Tensor = input_batch["input_ids"]
+        batch, step = input_ids.shape
+        # This position is for embedding, not attention.
+        positions = repeat(jnp.arange(step), "t -> b t", b=batch) + time_step[:, None]  # [B, T]
 
-        # Compute self-attention-mask logit biases. [B, N, T, T].
-        self_attention_biases = self.compute_attention_logit_biases(
-            updated_inputs,
-            segment_ids=jnp.ones_like(updated_inputs),
-            positions=jnp.arange(target_len)[None, :],
-        )
-        # Select logit biases corresponding to time step. [B, N, 1, T].
-        # Note: if `time_step` exceeds `target_len`, e.g. in the case where one decode starts at a
-        # later index than another, clip the indices instead of producing NaNs.
-        # TODO(markblee): Update attention masks to support explicit positions, so we can skip this.
-        if self_attention_biases is not None:
-            self_attention_biases = jnp.take_along_axis(
-                self_attention_biases,
-                time_step[:, None, None, None],
-                axis=2,
-                mode="clip",
+        # TODO(dhwang2): self_attention_logit_biases is used by only T5. Delete all this
+        # self_attention_logit_biases mess.
+        if cfg.attention_mask is not None:
+            cached_inputs: Tensor = cached_states["input_ids"]
+            target_len = cached_inputs.shape[-1]
+            # [B, step, T]
+            oh_indices = jax.nn.one_hot(positions, target_len, dtype=input_ids.dtype)
+            keep_mask = ~oh_indices.any(axis=1)  # [B, T]
+            input_ids_scattered = jnp.einsum("bs,bst->bt", input_ids, oh_indices)
+            updated_inputs = cached_inputs * keep_mask + input_ids_scattered
+
+            # Compute self-attention-mask logit biases. [B, N, T, T].
+            self_attention_biases = self.compute_attention_logit_biases(
+                updated_inputs,
+                segment_ids=jnp.ones_like(updated_inputs),
+                positions=jnp.arange(target_len)[None, :],
             )
+            # Select logit biases corresponding to time step. [B, N, step, T].
+            if self_attention_biases is not None:
+                self_attention_biases = jnp.take_along_axis(
+                    self_attention_biases,
+                    positions[:, None, :, None],
+                    axis=2,
+                    mode="clip",
+                )
+        else:
+            self_attention_biases = None
 
-        input_segment_ids = kwargs.pop("input_segment_ids", None)
-        token_type_ids = kwargs.pop("token_type_ids", None)
-        positions = kwargs.pop("positions", jnp.expand_dims(time_step, 1))
+        if "input_segment_ids" in kwargs:
+            raise ValueError("input_segment_ids is supported only in FORWARD.")
+        if "positions" in kwargs:
+            raise ValueError("positions is supported only in FORWARD.")
 
         updated_states, outputs = self._forward_for_mode(
             mode=ForwardMode.EXTEND_STEP,
-            input_batch=dict(
-                input_ids=input_ids,
-                input_segment_ids=input_segment_ids,
-                token_type_ids=token_type_ids,
-                positions=positions,
-            ),
+            input_batch={**input_batch, "positions": positions},  # emb may use positional encoding
             self_attention_logit_biases=self_attention_biases,
             cached_states=cached_states,
             **kwargs,
         )
         updated_states.update(
-            input_ids=updated_inputs,
             # There are some non-greedy DFS/BFS and sliding attention algorithms that
             # recursively search through potentials.
             # They backtrace to some anchor time step after exploring for t steps.
             # This requires tracking time_step separately from the attention time_step.
-            time_step=cached_states["time_step"] + 1,
+            time_step=(cached_states["time_step"] + step),
         )
+        if cfg.attention_mask is not None:
+            updated_states["input_ids"] = updated_inputs
         return updated_states, outputs
 
     def beam_search_decode(
@@ -822,9 +845,9 @@ class Decoder(BaseLayer):
             or None if cfg.attention_mask is None.
 
         """
-        if "attention_mask" not in self.children:
-            return None
         cfg = self.config
+        if cfg.attention_mask is None:
+            return None
         if segment_ids is None:
             segment_ids = _segment_ids_from_causal_input_ids(
                 input_ids, pad_token_id=cfg.pad_token_id

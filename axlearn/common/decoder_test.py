@@ -319,19 +319,50 @@ class TestDecoder(TestCase):
         for k in expected_stats:
             assert k in output_stats
 
-    @parameterized.product(
-        use_cross_attention=[False, True],
-        stack_cfg=[
-            StackedTransformerLayer.default_config(),
-            RepeatedTransformerLayer.default_config(),
-        ],
-        custom_attention_mask_cfg=[None, ALiBiAttentionLogitBiasLayer.default_config()],
+    @parameterized.parameters(
+        dict(  # Baseline
+            use_cross_attention=False,
+            stack_cfg=StackedTransformerLayer.default_config(),
+            custom_attention_mask_cfg=None,
+            step=1,
+        ),
+        dict(
+            use_cross_attention=True,  # Change
+            stack_cfg=StackedTransformerLayer.default_config(),
+            custom_attention_mask_cfg=None,
+            step=1,
+        ),
+        dict(
+            use_cross_attention=False,
+            stack_cfg=RepeatedTransformerLayer.default_config(),  # Change
+            custom_attention_mask_cfg=None,
+            step=1,
+        ),
+        dict(
+            use_cross_attention=False,
+            stack_cfg=RepeatedTransformerLayer.default_config(),
+            custom_attention_mask_cfg=ALiBiAttentionLogitBiasLayer.default_config(),  # Change
+            step=1,
+        ),
+        dict(
+            use_cross_attention=False,
+            stack_cfg=StackedTransformerLayer.default_config(),
+            custom_attention_mask_cfg=None,
+            step=2,  # Change
+        ),
+        dict(  # All together
+            use_cross_attention=True,
+            stack_cfg=RepeatedTransformerLayer.default_config(),
+            custom_attention_mask_cfg=ALiBiAttentionLogitBiasLayer.default_config(),
+            step=2,
+        ),
     )
     def test_extend_step(
         self,
         use_cross_attention: bool,
         stack_cfg: InstantiableConfig,
         custom_attention_mask_cfg: Optional[InstantiableConfig],
+        step: int,
     ):
         batch_size, src_len, tgt_len, vocab_size = 2, 11, 6, 24
         num_layers, num_heads = 2, 4
@@ -350,11 +381,9 @@ class TestDecoder(TestCase):
         )
         if custom_attention_mask_cfg:
             if isinstance(custom_attention_mask_cfg, ALiBiAttentionLogitBiasLayer.Config):
-                # Set value for num_heads.
                 custom_attention_mask_cfg.set(num_heads=num_heads)
             cfg.set(attention_mask=custom_attention_mask_cfg)
         if use_cross_attention:
-            # Add cross attention
             cfg.transformer.layer.cross_attention = TransformerAttentionLayer.default_config().set(
                 target_dim=hidden_dim,
                 source_dim=src_dim,
@@ -364,23 +393,9 @@ class TestDecoder(TestCase):
         layer = cfg.set(name="test_extend_step").instantiate(parent=None)
         layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
 
-        # Prefix can contain padding and eos.
         input_ids = jax.random.randint(
-            jax.random.PRNGKey(124),
-            shape=[batch_size, tgt_len],
-            minval=0,
-            maxval=2,
+            jax.random.PRNGKey(124), shape=[batch_size, tgt_len], minval=1, maxval=vocab_size
         )
-        # Prefix lengths.
-        time_step = jnp.arange(batch_size)
-        prefix_mask = jnp.arange(tgt_len) < time_step[:, None]
-        # Explicitly fill positions >= prefix_length with pad_token_id.
-        # Note that each batch example may have a different prefix length.
-        # [batch_size, tgt_len].
-        input_ids = input_ids * prefix_mask + cfg.pad_token_id * (1 - prefix_mask)
-        # Set last token to a non-pad token, to fix the prefix length.
-        oh_indices = jax.nn.one_hot(time_step, tgt_len, dtype=input_ids.dtype)
-        input_ids = input_ids * (1 - oh_indices) + (cfg.pad_token_id + 1) * oh_indices
 
         cross_attention_data = None
         cross_attention_logit_biases = None
@@ -395,13 +410,15 @@ class TestDecoder(TestCase):
                 )
                 * NEG_INF
             )
+
+        # Forward pass.
         forward_outputs, _ = functional(
             layer,
             inputs=dict(
                 input_batch=dict(
                     input_ids=input_ids,
                     input_segment_ids=jnp.ones_like(input_ids),
-                    positions=jnp.arange(input_ids.shape[-1])[None, :],
+                    positions=jnp.arange(tgt_len)[None, :],
                 ),
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
@@ -411,62 +428,38 @@ class TestDecoder(TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
 
-        (initial_state, initial_outputs), _ = functional(
-            layer,
-            inputs=dict(
-                time_step=time_step,
-                input_batch=dict(input_ids=input_ids),
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
-            ),
-            state=layer_params,
-            is_training=False,
-            prng_key=jax.random.PRNGKey(0),
-            method="prefill_states",
+        # Streaming pass: init_states + extend_step.
+        cached_states = layer.init_states(
+            batch_size=batch_size, max_sequence_length=tgt_len, dtype=jnp.float32
         )
-        # Zero-out outputs starting from initial time_step, and test that we can recover the
-        # full outputs by calling extend_step starting from time_step.
-        # [batch, tgt_len, num_classes].
-        logits = initial_outputs["logits"] * prefix_mask[:, :, None]
-
-        # [batch, tgt_len, num_classes] --> [batch, num_classes, tgt_len].
-        logits = jnp.moveaxis(logits, -2, -1)
-
-        inputs = dict(cached_states=initial_state)
-        while jnp.any(time_step < tgt_len):
-            # [batch, tgt_len=1].
-            inputs["input_ids"] = jnp.take_along_axis(
-                input_ids, time_step[:, None], axis=1, mode="clip"
-            )
+        step_logits = []
+        for t in range(0, tgt_len, step):
+            extend_kwargs = {}
             if use_cross_attention:
-                inputs["cross_attention_data"] = cross_attention_data
-                # [batch, tgt_len=1, src_len].
-                inputs["cross_attention_logit_biases"] = jnp.take_along_axis(
+                extend_kwargs["cross_attention_data"] = cross_attention_data
+                extend_kwargs["cross_attention_logit_biases"] = jnp.take_along_axis(
                     cross_attention_logit_biases,
-                    time_step[:, None, None],
+                    jnp.arange(t, t + step)[None, :, None],
                     axis=1,
                     mode="clip",
                 )
-            (updated_state, outputs), _ = functional(
+            (cached_states, outputs), _ = functional(
                 layer,
+                inputs=dict(
+                    cached_states=cached_states,
+                    input_batch=dict(input_ids=input_ids[:, t : t + step]),
+                    **extend_kwargs,
+                ),
                 state=layer_params,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(456),
-                inputs=inputs,
                 method="extend_step",
             )
-            inputs["cached_states"] = updated_state
+            step_logits.append(outputs["logits"])
 
-            # [batch, num_classes, tgt_len=1].
-            curr_logits = jnp.moveaxis(outputs["logits"], -2, -1)
-            # [batch, 1, tgt_len].
-            oh_indices = jax.nn.one_hot(time_step, tgt_len)[:, None, :]
-            logits = logits + curr_logits * oh_indices
-            time_step = time_step + 1
-
-        # [batch, num_classes, tgt_len] --> [batch, tgt_len, num_classes].
-        logits = jnp.moveaxis(logits, -1, -2)
-        assert_allclose(logits, forward_outputs["logits"])
+        step_logits = jnp.concatenate(step_logits, axis=1)
+        self.assertEqual(forward_outputs["logits"].shape, step_logits.shape)
+        assert_allclose(forward_outputs["logits"], step_logits)
 
     @parameterized.parameters(jnp.float32, jnp.bfloat16)
     def test_prefill_states_vs_init_states_extend_step(self, dtype: jnp.dtype):
@@ -513,7 +506,10 @@ class TestDecoder(TestCase):
         for t in range(tgt_len):
             (cached_states, outputs), _ = functional(
                 layer,
-                inputs=dict(cached_states=cached_states, input_ids=input_ids[:, t : t + 1]),
+                inputs=dict(
+                    cached_states=cached_states,
+                    input_batch=dict(input_ids=input_ids[:, t : t + 1]),
+                ),
                 state=layer_params,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(2),
@@ -702,7 +698,6 @@ class TestDecoder(TestCase):
                 # Ensure that cache is not initially empty.
                 def tokens_to_scores(token_ids, cache):
                     chex.assert_trees_all_equal(jnp.any(cache["time_step"] != 0), True)
-                    chex.assert_trees_all_equal(jnp.any(cache["input_ids"] != pad_token_id), True)
                     return fn(token_ids, cache)
 
                 return tokens_to_scores
@@ -807,7 +802,10 @@ class TestDecoder(TestCase):
             # Test extend_step.
             (_, step_outputs), _ = functional(
                 decoder,
-                inputs=dict(cached_states=cached_states, input_ids=dummy_input_ids),
+                inputs=dict(
+                    cached_states=cached_states,
+                    input_batch=dict(input_ids=dummy_input_ids),
+                ),
                 state=layer_params,
                 is_training=False,
                 prng_key=prng_key,
