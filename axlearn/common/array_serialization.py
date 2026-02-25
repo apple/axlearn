@@ -404,8 +404,17 @@ async def _run_serializer(
         raise e
 
 
-def _blocking_device_put(out: Tensor, layout: Format) -> Tensor:
-    return jax.block_until_ready(jax.device_put(out, layout))
+def _blocking_device_put(tensor: Tensor, target: Union[Format, jax.sharding.Sharding]) -> Tensor:
+    """Device put and block until ready.
+
+    Args:
+        tensor: Array to transfer.
+        target: Either a Format (with layout + sharding) or Sharding.
+
+    Returns:
+        Transferred array.
+    """
+    return jax.block_until_ready(jax.device_put(tensor, target))
 
 
 async def _async_deserialize(
@@ -473,7 +482,10 @@ async def _async_deserialize(
     #     which only runs on GCP for now.
     context = serialization.TS_CONTEXT
     if os.getenv("ENABLE_GCS_GRPC", "false") == "true":
+        logging.debug("gcs_grpc enabled")
         tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
+    else:
+        logging.debug("gcs_grpc not enabled")
 
     t = await ts.open(
         tensorstore_spec,
@@ -571,6 +583,112 @@ async def _async_deserialize(
     )
 
 
+async def _async_transfer_cpu_to_tpu(
+    tensor,
+    sharding: jax.sharding.NamedSharding,
+    global_limiter: serialization._LimitInFlightBytes,
+    single_thread_pool: ThreadPoolExecutor,
+    multi_thread_pool: ThreadPoolExecutor,
+):
+    """Async worker to transfer a single array from CPU to TPU with rate limiting.
+
+    Uses a global limiter to control concurrent transfer load.
+    Specifically designed for colocated Python CPU→TPU transfers.
+
+    Args:
+        tensor: The CPU array to transfer to TPU.
+        sharding: The target TPU sharding for the array.
+        global_limiter: Global byte limiter for all transfers.
+        single_thread_pool: Thread pool with single worker for oversized transfers.
+        multi_thread_pool: Thread pool with multiple workers for normal transfers.
+
+    Returns:
+        The transferred array on TPU.
+    """
+    # Calculate bytes per device shard from the sharding spec.
+    shard_shape = sharding.shard_shape(tensor.shape)
+    bytes_per_device = math.prod(shard_shape) * tensor.dtype.itemsize
+
+    # Check if we should skip limiting (similar to h2d_limiter pattern)
+    # pylint: disable-next=protected-access
+    max_capacity = global_limiter._max_bytes
+
+    # Skip limiting if per-device bytes exceed capacity
+    if bytes_per_device > max_capacity:
+        logging.log_first_n(
+            logging.WARNING,
+            "Array shard size per device (%d bytes, %.2f GB) exceeded "
+            "limiter capacity (%d bytes, %.2f GB). Skipping rate limiting for this transfer.",
+            5,
+            bytes_per_device,
+            bytes_per_device / (1024**3),
+            max_capacity,
+            max_capacity / (1024**3),
+        )
+        # Perform transfer without limiting using single thread pool
+        # (serialize large transfers to avoid overwhelming memory)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            single_thread_pool, _blocking_device_put, tensor, sharding
+        )
+        return result
+
+    # Acquire limiter once for the array (reserves bytes_per_device)
+    await global_limiter.wait_for_bytes(bytes_per_device)
+
+    try:
+        # Perform the device_put using multi thread pool for parallelism
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            multi_thread_pool, _blocking_device_put, tensor, sharding
+        )
+        return result
+    finally:
+        # Release bytes
+        await global_limiter.release_bytes(bytes_per_device)
+
+
+async def _transfer_arrays_cpu_to_tpu(
+    arrays: Sequence,
+    shardings: Sequence[jax.sharding.NamedSharding],
+    concurrent_bytes: int,
+    single_thread_pool: ThreadPoolExecutor,
+    multi_thread_pool: ThreadPoolExecutor,
+):
+    """Transfer multiple arrays from CPU to TPU with global rate limiting.
+
+    Uses a single global limiter to control total concurrent transfer load.
+    Designed for colocated Python checkpoint loading workflow.
+
+    Args:
+        arrays: List of CPU arrays to transfer.
+        shardings: List of target TPU shardings for each array.
+        concurrent_bytes: Maximum concurrent bytes in flight globally.
+        single_thread_pool: Thread pool with single worker for oversized transfers.
+        multi_thread_pool: Thread pool with multiple workers for normal transfers.
+
+    Returns:
+        List of transferred arrays on TPU.
+    """
+    # Create a single global limiter
+    # pylint: disable=protected-access
+    global_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
+
+    logging.info(
+        "Created global transfer limiter with %.1fGB capacity",
+        concurrent_bytes / (1024**3),
+    )
+
+    # Create async tasks for all transfers
+    tasks = [
+        _async_transfer_cpu_to_tpu(
+            array, sharding, global_limiter, single_thread_pool, multi_thread_pool
+        )
+        for array, sharding in zip(arrays, shardings)
+    ]
+    return await asyncio.gather(*tasks)
+
+
 def _create_cpu_shardings(
     cpu_devices: list,
     tpu_shardings: Sequence[Union[jax.sharding.Sharding, Format]],
@@ -612,6 +730,9 @@ async def _run_colocated_deserialize(
     *,
     concurrent_bytes: int,
     tpu_mesh: jax.sharding.Mesh,
+    transfer_concurrent_bytes: int,
+    single_thread_pool: ThreadPoolExecutor,
+    multi_thread_pool: ThreadPoolExecutor,
 ):
     """Deserialize checkpoint to CPU using colocated python, then transfer to TPU.
 
@@ -626,6 +747,10 @@ async def _run_colocated_deserialize(
         concurrent_bytes: Maximum concurrent bytes for reading from storage.
         tpu_mesh: TPU mesh for creating CPU mesh. Should be captured from the main thread
             where the mesh context is active.
+        transfer_concurrent_bytes: Maximum concurrent bytes in flight during
+            CPU to TPU transfer.
+        single_thread_pool: Thread pool with single worker for oversized transfers.
+        multi_thread_pool: Thread pool with multiple workers for normal transfers.
 
     Returns:
         List of JAX arrays on TPU devices.
@@ -655,9 +780,18 @@ async def _run_colocated_deserialize(
         h2d_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
 
         # Use context managers to ensure thread pools are properly shut down
+        num_workers = int(os.cpu_count() * 0.8)
+        logging.info(
+            "Colocated Python: os.cpu_count()=%s, multi_thread_pool workers=%d, "
+            "byte_limiter=%d GB, h2d_limiter=%d GB",
+            os.cpu_count(),
+            num_workers,
+            concurrent_bytes // 10**9,
+            concurrent_bytes // 10**9,
+        )
         with (
             ThreadPoolExecutor(1) as single_thread_pool,
-            ThreadPoolExecutor(max_workers=int(os.cpu_count() * 0.8)) as multi_thread_pool,
+            ThreadPoolExecutor(max_workers=num_workers) as multi_thread_pool,
         ):
             future_arrays = jax.tree.map(
                 functools.partial(
@@ -701,14 +835,12 @@ async def _run_colocated_deserialize(
     logging.info("CPU load completed in %.2f seconds", cpu_load_time)
     logging.info("Preloaded %d arrays.", len(cpu_arrays))
 
-    # Transfer from CPU to TPU
+    # Transfer from CPU to TPU with global rate limiting
     logging.info("Transferring arrays from CPU to TPU...")
     start_time = time.perf_counter()
-    tpu_arrays = [jax.device_put(arr, sharding) for arr, sharding in zip(cpu_arrays, shardings)]
-
-    # Block until all transfers complete
-    for arr in tpu_arrays:
-        arr.block_until_ready()
+    tpu_arrays = await _transfer_arrays_cpu_to_tpu(
+        cpu_arrays, shardings, transfer_concurrent_bytes, single_thread_pool, multi_thread_pool
+    )
 
     transfer_time = time.perf_counter() - start_time
     logging.info("CPU to TPU transfer completed in %.2f seconds", transfer_time)
@@ -828,6 +960,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
         concurrent_gb: int = 32,
         use_colocated_python: bool = False,
+        transfer_concurrent_gb: int = 16,
     ):
         """Deserialize arrays from TensorStore.
 
@@ -840,6 +973,8 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             use_colocated_python: If True, use colocated Python to load checkpoint to CPU first,
                 then transfer to TPU.
                 Only works on systems with Colocated Python support (e.g., Pathways).
+            transfer_concurrent_gb: Maximum concurrent GB in flight during
+                CPU to TPU transfer when using colocated Python. Defaults to 16GB.
 
         Returns:
             List of deserialized JAX arrays.
@@ -869,6 +1004,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
                 dtypes=dtypes_list,
                 concurrent_bytes=concurrent_bytes,
                 tpu_mesh=tpu_mesh,
+                transfer_concurrent_bytes=transfer_concurrent_gb * 10**9,
+                single_thread_pool=self._single_thread_pool,
+                multi_thread_pool=self._multi_thread_pool,
             )
         else:
             # Use default deserialization path (direct to TPU)

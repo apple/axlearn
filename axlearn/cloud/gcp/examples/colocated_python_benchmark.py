@@ -21,7 +21,7 @@ Usage:
 import argparse
 import os
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, Sequence
 
@@ -38,22 +38,22 @@ from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
 
+@contextmanager
 def maybe_profile(enabled: bool, profile_dir: Optional[str]):
-    """Return JAX profiler context if enabled, otherwise a no-op context manager.
+    """JAX profiler context if enabled, otherwise a no-op.
 
     Args:
         enabled: Whether profiling is enabled.
         profile_dir: Directory to save profiling results.
-
-    Returns:
-        Context manager for profiling or no-op.
     """
     if enabled:
         assert profile_dir is not None, "profile_dir must be set when profiling is enabled"
-        return jax.profiler.trace(profile_dir)
-    else:
-        # Return a no-op context manager
-        return nullcontext()
+        jax.profiler.start_trace(profile_dir)
+    try:
+        yield
+    finally:
+        if enabled:
+            jax.profiler.stop_trace()
 
 
 def create_mesh(mesh_shape=(1, 1, 1, 1, 1, 16, -1)):
@@ -132,6 +132,13 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     if not mesh.shape:
         raise RuntimeError("Checkpoint restoration must take place within the context of a Mesh")
 
+    # Track sharding statistics
+    sharded_bytes = 0
+    replicated_bytes = 0
+    per_shard_bytes = 0
+    num_sharded = 0
+    num_replicated = 0
+
     # Process each tensor in the state spec
     for path, value in utils.flatten_items(state_spec, separator="/"):
         if isinstance(value, TensorSpec):
@@ -152,6 +159,40 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
             global_shapes.append(value.shape)
             dtypes.append(dtype)
             shardings.append(sharding)
+
+            # Compute tensor size in bytes downloaded from GCS.
+            # Checkpoints are stored as fp32 (4 bytes per element).
+            element_size = 4
+            tensor_bytes = 1
+            for d in value.shape:
+                tensor_bytes *= d
+            tensor_bytes *= element_size
+
+            if partition_spec == jax.sharding.PartitionSpec():
+                replicated_bytes += tensor_bytes
+                num_replicated += 1
+            else:
+                sharded_bytes += tensor_bytes
+                num_sharded += 1
+                # Compute per-shard size by dividing by the number of shards
+                num_shards = 1
+                for axis in partition_spec:
+                    if axis is not None:
+                        if isinstance(axis, tuple):
+                            for a in axis:
+                                num_shards *= mesh.shape[a]
+                        else:
+                            num_shards *= mesh.shape[axis]
+                per_shard_bytes += tensor_bytes // num_shards
+
+    num_devices = len(mesh.devices.flat)
+    print(f"Sharding stats ({num_devices} devices):")
+    print(
+        f"  Sharded:    {num_sharded} tensors, {sharded_bytes / 10**9:.2f} GB "
+        f"(per-shard total: {per_shard_bytes / 10**9:.2f} GB)"
+    )
+    print(f"  Replicated: {num_replicated} tensors, {replicated_bytes / 10**9:.2f} GB")
+    print(f"  Per-device total: {(per_shard_bytes + replicated_bytes) / 10**9:.2f} GB")
 
     return tensorstore_specs, shardings, global_shapes, dtypes
 
@@ -194,6 +235,7 @@ def load_model(
     global_shapes: Sequence[tuple],
     dtypes: Sequence[jnp.dtype],
     use_colocated_python: bool = False,
+    transfer_concurrent_gb: int = 16,
 ):
     """Load model from checkpoint.
 
@@ -204,6 +246,8 @@ def load_model(
         dtypes: Data types for each array.
         use_colocated_python: If True, load to CPU first then transfer to TPU.
             If False, load directly to TPU.
+        transfer_concurrent_gb: Maximum concurrent GB in flight during CPU to TPU transfer
+            when using colocated Python. Defaults to 16GB.
 
     Returns:
         List of restored JAX arrays.
@@ -214,8 +258,9 @@ def load_model(
         tensorstore_specs=tensorstore_specs,
         global_shapes=global_shapes,
         dtypes=dtypes,
-        concurrent_gb=192,
+        concurrent_gb=400,
         use_colocated_python=use_colocated_python,
+        transfer_concurrent_gb=transfer_concurrent_gb,
     )
     print(f"Loaded {len(restored_values)} arrays")
 
@@ -239,6 +284,12 @@ def main():
         "--profile",
         action="store_true",
         help="Enable JAX profiler (adds overhead, disable for accurate benchmarking)",
+    )
+    parser.add_argument(
+        "--transfer_concurrent_gb",
+        type=int,
+        default=16,
+        help="Maximum concurrent GB during CPU to TPU transfer (colocated mode only). Default: 16",
     )
     args = parser.parse_args()
 
@@ -289,6 +340,7 @@ def main():
                     global_shapes=global_shapes,
                     dtypes=dtypes,
                     use_colocated_python=(args.method == "colocated"),
+                    transfer_concurrent_gb=args.transfer_concurrent_gb,
                 )
                 print(f"✅ Successfully loaded model from {args.ckpt_path}")
                 print(f"Total time took {time.perf_counter() - start_time:.2f} seconds")
