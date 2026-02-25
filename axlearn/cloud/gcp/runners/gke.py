@@ -119,13 +119,14 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
     return None
 
 
-def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
-    """Extracts all topology assignments from jobset, flattened across all jobs.
+def _topology_assignment_from_resource(resource: dict) -> Optional[list[list[str]]]:
+    """Extracts all topology assignments from a k8s resource, flattened across all jobs.
 
-    This function extracts and flattens all assignments across all replicated jobs.
+    This function reads the tpu-provisioner slice-selection annotation, which is present on
+    both JobSet and LeaderWorkerSet resources.
 
     Args:
-        jobset: The JobSet dict.
+        resource: The k8s resource dict (e.g. a JobSet or LeaderWorkerSet response).
 
     Returns:
         A flattened list of all topology assignments across all jobs, or None if not found.
@@ -134,7 +135,7 @@ def _topology_assignment_from_jobset(jobset: dict) -> Optional[list[list[str]]]:
         This returns: [["sb-1", "sb-2"], ["sb-3"], ["sb-4"]]
     """
     topology_assignments_str = (
-        jobset.get("metadata", {})
+        resource.get("metadata", {})
         .get("annotations", {})
         .get("tpu-provisioner.cloud.google.com/slice-selection")
     )
@@ -419,7 +420,7 @@ class GKERunnerJob(BaseRunnerJob):
 
             # Validate topology assignments match between env and jobset
             topology_assignment_env = _topology_assignment_from_env()
-            topology_assignment_jobset = _topology_assignment_from_jobset(jobset=resp)
+            topology_assignment_jobset = _topology_assignment_from_resource(resource=resp)
             if not _compare_topology_assignments(
                 topology_assignment_env, topology_assignment_jobset
             ):
@@ -949,6 +950,7 @@ class LWSRunnerJob(BaseRunnerJob):
         PROGRESSING = "PROGRESSING"
         RUNNING = "RUNNING"
         NOT_STARTED = "NOT_STARTED"
+        RESCHEDULED = "RESCHEDULED"
 
     def _get_status(self) -> Status:
         """Retrieves the current status of the job.
@@ -972,6 +974,17 @@ class LWSRunnerJob(BaseRunnerJob):
                 version="v1",
                 plural="leaderworkersets",
             )
+
+            # Validate topology assignments match between env and LWS resource.
+            topology_assignment_env = _topology_assignment_from_env()
+            topology_assignment_lws = _topology_assignment_from_resource(resource=resp)
+            if not _compare_topology_assignments(topology_assignment_env, topology_assignment_lws):
+                logging.info(
+                    "Topology assignment changed. Env subblocks: %s, LWS subblocks: %s",
+                    topology_assignment_env,
+                    topology_assignment_lws,
+                )
+                return LWSRunnerJob.Status.RESCHEDULED
 
             status = resp.get("status", {})
             conditions = status.get("conditions", [])
@@ -1040,6 +1053,9 @@ class LWSRunnerJob(BaseRunnerJob):
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
 
+            elif status == LWSRunnerJob.Status.RESCHEDULED:
+                logging.info("LWS configuration changed. Rescheduling the LeaderWorkerSet...")
+                self._delete()
             elif status == LWSRunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
                 # pylint: disable-next=protected-access

@@ -33,7 +33,7 @@ from axlearn.cloud.gcp.runners.gke import (
     _infer_processor_type,
     _infer_reservation,
     _topology_assignment_from_env,
-    _topology_assignment_from_jobset,
+    _topology_assignment_from_resource,
 )
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -551,11 +551,11 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
             expected=[["sb-1", "sb-2"], ["sb-3", "sb-4"], ["sb-5", "sb-6"]],
         ),
     )
-    def test_topology_assignment_from_jobset(
+    def test_topology_assignment_from_resource(
         self, jobset: dict, expected: Optional[list[list[str]]]
     ):
-        """Test _topology_assignment_from_jobset extracts topology assignments correctly."""
-        self.assertEqual(expected, _topology_assignment_from_jobset(jobset))
+        """Test _topology_assignment_from_resource extracts topology assignments correctly."""
+        self.assertEqual(expected, _topology_assignment_from_resource(jobset))
 
     @parameterized.parameters(
         # Test case 1: Valid topology assignment from env
@@ -1704,6 +1704,8 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 ),
                 spec=None,
                 num_slices=1,
+                metadata={},
+                topology_assignment=None,
                 expected=runner_gke.LWSRunnerJob.Status.PROGRESSING,
             ),
             dict(
@@ -1716,6 +1718,8 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 ),
                 spec=None,
                 num_slices=1,
+                metadata={},
+                topology_assignment=None,
                 expected=runner_gke.LWSRunnerJob.Status.RUNNING,
             ),
             dict(
@@ -1728,11 +1732,127 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 ),
                 spec=None,
                 num_slices=1,
+                metadata={},
+                topology_assignment=None,
                 expected=runner_gke.LWSRunnerJob.Status.UPDATING,
+            ),
+            # Topology assignments match between env and LWS annotation.
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Available", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"workers": [["slice1", "slice2"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["slice1", "slice2"]]',
+                expected=runner_gke.LWSRunnerJob.Status.RUNNING,
+            ),
+            # Topology assignments do not match between env and LWS annotation.
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Available", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"workers": [["slice1", "slice2"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["slice3", "slice4"]]',
+                expected=runner_gke.LWSRunnerJob.Status.RESCHEDULED,
+            ),
+            # Multi-group topology assignments match (leader + workers).
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Available", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"leader": [["sb-1"]], "workers": [["sb-2", "sb-3"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["sb-1"], ["sb-2", "sb-3"]]',
+                expected=runner_gke.LWSRunnerJob.Status.RUNNING,
+            ),
+            # Multi-group topology assignments do not match.
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Available", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                metadata={
+                    "annotations": {
+                        "tpu-provisioner.cloud.google.com/slice-selection": (
+                            '{"leader": [["sb-1"]], "workers": [["sb-2", "sb-3"]]}'
+                        ),
+                    }
+                },
+                topology_assignment='[["sb-1"], ["sb-4", "sb-5"]]',
+                expected=runner_gke.LWSRunnerJob.Status.RESCHEDULED,
+            ),
+            # No topology annotation and no env var: both None, considered equal.
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Available", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                metadata={},
+                topology_assignment=None,
+                expected=runner_gke.LWSRunnerJob.Status.RUNNING,
+            ),
+            # Env var set but no annotation: mismatch -> RESCHEDULED.
+            dict(
+                tier=None,
+                job_version=None,
+                status=dict(
+                    conditions=[
+                        dict(type="Available", status="True"),
+                    ]
+                ),
+                spec=None,
+                num_slices=1,
+                metadata={},
+                topology_assignment='[["slice1"]]',
+                expected=runner_gke.LWSRunnerJob.Status.RESCHEDULED,
             ),
         )
     )
-    def test_get_status(
+    def test_get_status(  # pylint: disable=too-many-positional-arguments
         self,
         status: dict,
         num_slices: int,
@@ -1740,6 +1860,8 @@ class LWSRunnerJobTest(parameterized.TestCase):
         tier: str,
         job_version: Optional[int],
         spec: dict,
+        metadata: dict,
+        topology_assignment: Optional[str],
         enable_pre_provisioner: Optional[bool] = None,
     ):
         cfg = self._job_config(
@@ -1754,12 +1876,16 @@ class LWSRunnerJobTest(parameterized.TestCase):
         if isinstance(status, Exception):
             mock_get_status = mock.Mock(side_effect=status)
         else:
-            mock_get_status = mock.Mock(return_value=dict(status=status, spec=spec))
+            mock_get_status = mock.Mock(
+                return_value=dict(metadata=metadata, status=status, spec=spec)
+            )
+
+        env_dict = {"BASTION_TIER": tier, BASTION_JOB_VERSION_ENV_VAR: job_version}
+        if topology_assignment is not None:
+            env_dict["BASTION_JOB_TOPOLOGY_ASSIGNMENT"] = topology_assignment
 
         with (
-            mock.patch.dict(
-                "os.environ", {"BASTION_TIER": tier, BASTION_JOB_VERSION_ENV_VAR: job_version}
-            ),
+            mock.patch.dict("os.environ", env_dict),
             mock.patch(
                 "kubernetes.client.CustomObjectsApi",
                 return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
@@ -1792,6 +1918,34 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 # pytype: disable=attribute-error
                 job._pre_provisioner.delete_for.assert_called()
                 # pytype: enable=attribute-error
+
+    def test_rescheduled(self):
+        """Tests that RESCHEDULED status triggers _delete and continues the loop."""
+        cfg = self._job_config(
+            command="",
+            name="test-name",
+            cluster="test-cluster",
+        )
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
+
+        with mock.patch.multiple(
+            job,
+            _get_status=mock.Mock(
+                side_effect=[
+                    runner_gke.LWSRunnerJob.Status.RESCHEDULED,
+                    runner_gke.LWSRunnerJob.Status.FAILED,
+                ]
+            ),
+            _delete=mock.DEFAULT,
+            _inner=mock.DEFAULT,
+            _pre_provisioner=mock.DEFAULT,
+        ):
+            job._execute()
+
+            # _delete should be called once for the RESCHEDULED status.
+            job._delete.assert_called_once()  # pytype: disable=attribute-error
 
     def test_name_alias(self):
         """Tests that names set via flag aliases are retained."""
