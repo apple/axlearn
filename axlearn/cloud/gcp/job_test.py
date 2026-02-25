@@ -688,3 +688,35 @@ class TPUGKELeaderWorkerSetTest(TestCase):
             for key, value in labels.items():
                 self.assertIn(key, lws_labels)
                 self.assertEqual(lws_labels[key], value)
+
+    def test_builder_name_propagated_on_role_override(self):
+        """Test that overriding cfg.name after from_flags propagates to builder and builder.inner.
+
+        In multi-role jobs, cfg.name is set to a role-specific name (e.g. "<job>-actor") after
+        from_flags has already populated the builder config with the base job name. The fix in
+        GKELeaderWorkerSet.__init__ ensures the builder (and its inner config) always reflect
+        the final cfg.name rather than the stale from_flags name.
+        """
+        cfg, bundler_cfg = self._job_config(
+            command="test-command",
+            bundler_cls=CloudBuildBundler,
+            num_replicas=1,
+        )
+        base_name = cfg.name  # e.g. "fake-name"
+        role_name = f"{base_name}-actor"
+
+        # Simulate what a multi-role orchestrator does: override name after from_flags.
+        cfg.name = role_name
+
+        # The builder config still carries the base name at this point (pre-fix behaviour).
+        # After instantiation, the fix must have propagated role_name to both builder and
+        # builder.inner.
+        gke_job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+        # pylint: disable-next=protected-access
+        builder_cfg = cast(
+            pathways_utils.PathwaysLeaderWorkerTemplate.Config,
+            gke_job._builder.config,
+        )
+        self.assertEqual(builder_cfg.name, role_name)
+        self.assertEqual(builder_cfg.inner.name, role_name)

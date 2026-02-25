@@ -685,6 +685,15 @@ class GKELeaderWorkerSet(GCPJob):
         ):
             builder_cfg.enable_tpu_slice_auto_provisioning = cfg.enable_tpu_slice_auto_provisioning
 
+        # Propagate the LWS name to the builder (and its inner config, if any) so that
+        # node selectors like pre-provisioner-id use the role-specific name rather than
+        # the base job name set during from_flags. This is important for multi-role jobs
+        # where cfg.name is overridden to a role-specific name (e.g. "<job>-actor") after
+        # from_flags has already populated the builder config with the base job name.
+        builder_cfg.name = cfg.name
+        if hasattr(builder_cfg, "inner") and builder_cfg.inner is not None:
+            builder_cfg.inner.name = cfg.name
+
         # This instantiatees a builder for constructing replicated job specs, which will be managed
         # together under the leaderworkerset represented by this class.
         # Note the distinction from bundlers, which are responsible for bundling any code assets
