@@ -567,6 +567,7 @@ class GKELeaderWorkerSet(GCPJob):
         gke_gateway_route: bool = False
         http_route: Optional[LWSHTTPRoute.Config] = None
         health_check_policy: Optional[LWSHealthCheckPolicy.Config] = None
+        enable_telemetry: bool = False
         backend_policy: Optional[LWSGCPBackendPolicy.Config] = None
         enable_tpu_slice_auto_provisioning: Optional[bool] = None
 
@@ -577,6 +578,7 @@ class GKELeaderWorkerSet(GCPJob):
         fv.set_default("retry_interval", fv.retry_interval or 60)
 
         fv.set_default("gke_gateway_route", fv.gke_gateway_route or False)
+        fv.set_default("enable_telemetry", fv.enable_telemetry or False)
         # When gke_gateway_route is set, enable_service is implicitly True
         if fv.gke_gateway_route:
             fv.set_default("enable_service", True)
@@ -635,13 +637,21 @@ class GKELeaderWorkerSet(GCPJob):
             "Protocol list needed for different port and targetport combinations",
             **common_kwargs,
         )
+        # TODO: Avoid same flag twice
         flags.DEFINE_boolean(
             "gke_gateway_route",
             False,
             "Enable gke_gateway_route with notary-proxy sidecars for direct gateway routing",
             **common_kwargs,
         )
+        # TODO: Avoid same flag twice
         flags.DEFINE_boolean(
+            "enable_telemetry",
+            False,
+            "Enable telemetry with otel-sidecar for sending metrics to Otel collector",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
             "enable_tpu_slice_auto_provisioning",
             None,
             "Auto provision TPU slices based on the topology assignment.",
@@ -659,6 +669,7 @@ class GKELeaderWorkerSet(GCPJob):
         cfg.port_names = fv.port_names
         cfg.service_type = fv.service_type
         cfg.gke_gateway_route = fv.gke_gateway_route
+        cfg.enable_telemetry = fv.enable_telemetry
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: BaseDockerBundler):
@@ -680,7 +691,6 @@ class GKELeaderWorkerSet(GCPJob):
         # required to run the job.
         self._builder: BaseLeaderWorkerTemplate = cfg.builder.instantiate(bundler=bundler)
 
-        # Wire gke_gateway_route flag to service and http_route configs
         if cfg.service is not None:
             cfg.service.set(name=cfg.name, gke_gateway_route=cfg.gke_gateway_route)
         if cfg.http_route is not None:

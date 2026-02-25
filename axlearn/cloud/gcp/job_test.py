@@ -652,7 +652,6 @@ class TPUGKELeaderWorkerSetTest(TestCase):
 
             # Check spec
             self.assertIn("spec", lws_spec)
-            self.assertIn("replicas", lws_spec["spec"])
             self.assertIn("leaderWorkerTemplate", lws_spec["spec"])
 
     @parameterized.product(

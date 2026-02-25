@@ -97,9 +97,17 @@ _PATHWAYS_SHM_DIR = "/tmp/ifrt_proxy"
 _PATHWAYS_SHM_VOLUME_NAME = "shared-memory"
 
 # Notary proxy configuration for gke_gateway_route
-NOTARY_PROXY_IMAGE = "REDACTED_INTERNAL_REGISTRY/polymer/notary-proxy:44d03e27b8c9"
+NOTARY_PROXY_IMAGE = "REDACTED_INTERNAL_REGISTRY/polymer/notary-proxy:884a9a5f23ea"
 NOTARY_PROXY_HTTP_PORT = 38081
 NOTARY_PROXY_GRPC_PORT = 39001
+
+# OpenTelemetry collector image for enable_telemetry
+OTEL_COLLECTOR_IMAGE = "otel/opentelemetry-collector-contrib:0.144.0"
+OTEL_COLLECTOR_GRPC_PORT = 4317
+OTEL_COLLECTOR_HTTP_PORT = 4318
+OTEL_COLLECTOR_SIDECAR_NAME = "otel-sidecar"
+OTEL_COLLECTOR_CONFIG_NAME = "otel-sidecar-config"
+OTEL_COLLECTOR_CONFIG_MOUNT_PATH = "/conf"
 
 
 def get_colocated_python_image(image_id: str) -> str:
@@ -936,6 +944,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         enable_service: bool = None
         gke_gateway_route: bool = None
         enable_health_probes: Optional[bool] = None
+        enable_telemetry: bool = None
 
         # Health probe configuration for inference pods.
         # - startup_probe_failure_threshold: Max consecutive failures before probe fails.
@@ -999,6 +1008,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "Enable express route with notary-proxy sidecars for direct gateway routing",
             **common_kwargs,
         )
+        flags.DEFINE_boolean(
+            "enable_telemetry",
+            False,
+            "Enable telemetry with otel-sidecar for sending metrics to Otel collector",
+            **common_kwargs,
+        )
         flags.DEFINE_integer(
             "startup_probe_failure_threshold",
             360,
@@ -1029,6 +1044,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         fv.set_default("enable_service", fv.enable_service or False)
         fv.set_default("gke_gateway_route", fv.gke_gateway_route or False)
         fv.set_default("enable_health_probes", fv.enable_health_probes or False)
+        fv.set_default("enable_telemetry", fv.enable_telemetry or False)
 
     @classmethod
     def default_config(cls):
@@ -1166,6 +1182,28 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
         )
 
+    def _get_notary_configmap_name(self, config_type: str) -> str:
+        """Returns the appropriate ConfigMap name based on telemetry setting.
+
+        Args:
+            config_type: Either "http" or "grpc"
+
+        Returns:
+            ConfigMap name
+        """
+        cfg: PathwaysLeaderWorkerTemplate.Config = self.config
+
+        if cfg.enable_telemetry:
+            if config_type == "http":
+                return "notary-proxy-config-otl-sidecar"
+            else:  # grpc
+                return "notary-proxy-config-otl-sidecar-grpc"
+        else:
+            if config_type == "http":
+                return "notary-proxy-config-sidecar"
+            else:  # grpc
+                return "notary-proxy-config-sidecar-grpc"
+
     def _build_notary_sidecar_containers(self) -> list[Nested[Any]]:
         """Builds notary-proxy sidecar containers for gke_gateway_route.
 
@@ -1223,7 +1261,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             },
             "volumeMounts": [
                 {
-                    "name": "notary-proxy-config-sidecar",
+                    "name": self._get_notary_configmap_name("http"),
                     "mountPath": "/app/configs/notary-proxy.yml",
                     "subPath": "notary-proxy.yml",
                 }
@@ -1254,7 +1292,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             },
             "volumeMounts": [
                 {
-                    "name": "notary-proxy-config-sidecar-grpc",
+                    "name": self._get_notary_configmap_name("grpc"),
                     "mountPath": "/app/configs/notary-proxy.yml",
                     "subPath": "notary-proxy.yml",
                 }
@@ -1264,6 +1302,56 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         containers.append(grpc_container)
 
         return containers
+
+    def _build_otel_sidecar_container(self) -> dict:
+        """Builds otel-sidecar container for telemetry.
+
+        Returns:
+            A dict corresponding to the otel-sidecar container spec.
+        """
+        cfg: TPULeaderWorkerTemplate.Config = self._inner.config
+
+        return {
+            "name": OTEL_COLLECTOR_SIDECAR_NAME,
+            "image": OTEL_COLLECTOR_IMAGE,
+            "args": [f"--config={OTEL_COLLECTOR_CONFIG_MOUNT_PATH}/otel-collector-config.yaml"],
+            "env": [
+                {"name": "LWS_NAME", "value": cfg.name},
+                {
+                    "name": "POD_NAME",
+                    "valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}},
+                },
+                {
+                    "name": "NAMESPACE",
+                    "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}},
+                },
+            ],
+            "ports": [
+                {"name": "otlp-grpc", "containerPort": OTEL_COLLECTOR_GRPC_PORT, "protocol": "TCP"},
+                {"name": "otlp-http", "containerPort": OTEL_COLLECTOR_HTTP_PORT, "protocol": "TCP"},
+            ],
+            "volumeMounts": [
+                {"name": OTEL_COLLECTOR_CONFIG_NAME, "mountPath": OTEL_COLLECTOR_CONFIG_MOUNT_PATH}
+            ],
+            "resources": {
+                "requests": {"cpu": "200m", "memory": "256Mi"},
+                "limits": {"cpu": "1000m", "memory": "512Mi"},
+            },
+            "readinessProbe": {
+                "httpGet": {"path": "/", "port": 13133},
+                "initialDelaySeconds": 5,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            },
+            "livenessProbe": {
+                "httpGet": {"path": "/", "port": 13133},
+                "initialDelaySeconds": 30,
+                "periodSeconds": 15,
+                "timeoutSeconds": 5,
+                "failureThreshold": 5,
+            },
+        }
 
     def _build_head_container(self) -> dict:
         cfg: PathwaysLeaderWorkerTemplate.Config = self.config
@@ -1391,17 +1479,31 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         # Add notary-proxy sidecars when gke_gateway_route is enabled
         if self.config.gke_gateway_route:
             containers.extend(self._build_notary_sidecar_containers())
-            # Add ConfigMap volumes for notary-proxy
+            # Add ConfigMap volumes for notary-proxy (names change based on telemetry)
+            http_cm_name = self._get_notary_configmap_name("http")
+            grpc_cm_name = self._get_notary_configmap_name("grpc")
+
             volumes.append(
                 dict(
-                    name="notary-proxy-config-sidecar",
-                    configMap=dict(name="notary-proxy-config-sidecar"),
+                    name=http_cm_name,
+                    configMap=dict(name=http_cm_name),
                 )
             )
             volumes.append(
                 dict(
-                    name="notary-proxy-config-sidecar-grpc",
-                    configMap=dict(name="notary-proxy-config-sidecar-grpc"),
+                    name=grpc_cm_name,
+                    configMap=dict(name=grpc_cm_name),
+                )
+            )
+
+        # Add otel-sidecar when telemetry is enabled
+        if self.config.enable_telemetry:
+            containers.append(self._build_otel_sidecar_container())
+            # Add otel-sidecar ConfigMap volume
+            volumes.append(
+                dict(
+                    name=OTEL_COLLECTOR_CONFIG_NAME,
+                    configMap=dict(name=OTEL_COLLECTOR_CONFIG_NAME),
                 )
             )
 

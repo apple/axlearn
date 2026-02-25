@@ -781,3 +781,151 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 self.assertEqual(len(pod_spec["containers"]), 3)
                 self.assertNotIn("notary-proxy", container_names)
                 self.assertNotIn("notary-proxy-grpc", container_names)
+
+    @parameterized.parameters([True, False])
+    def test_enable_telemetry_otel_sidecar(self, enable_telemetry):
+        """Tests that otel-sidecar container is added when enable_telemetry=True."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                enable_telemetry=enable_telemetry,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test-telemetry",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = builder.build_leader_pod()
+            pod_spec = pod["spec"]
+
+            container_names = [c["name"] for c in pod_spec["containers"]]
+
+            # pathways-proxy and pathways-rm should always be present
+            self.assertIn(_PATHWAYS_PROXY_CONTAINER_NAME, container_names)
+            self.assertIn(_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME, container_names)
+
+            if enable_telemetry:
+                # When enable_telemetry=True, otel-sidecar should be present
+                self.assertIn("otel-sidecar", container_names)
+
+                # Check otel-sidecar container details
+                otel_sidecar = next(
+                    c for c in pod_spec["containers"] if c["name"] == "otel-sidecar"
+                )
+                self.assertEqual(otel_sidecar["image"], pathways_utils.OTEL_COLLECTOR_IMAGE)
+                # Check that both gRPC and HTTP ports are present
+                port_configs = {
+                    port["name"]: port["containerPort"] for port in otel_sidecar["ports"]
+                }
+                self.assertEqual(
+                    port_configs.get("otlp-grpc"), pathways_utils.OTEL_COLLECTOR_GRPC_PORT
+                )
+                self.assertEqual(
+                    port_configs.get("otlp-http"), pathways_utils.OTEL_COLLECTOR_HTTP_PORT
+                )
+
+                # Check otel-sidecar ConfigMap volume is present
+                volume_names = [v["name"] for v in pod_spec["volumes"]]
+                self.assertIn(pathways_utils.OTEL_COLLECTOR_CONFIG_NAME, volume_names)
+            else:
+                # When enable_telemetry=False, otel-sidecar should NOT be present
+                self.assertNotIn("otel-sidecar", container_names)
+
+    @parameterized.parameters(
+        (False, False),  # Neither flag enabled
+        (True, False),  # Only gke_gateway_route
+        (False, True),  # Only enable_telemetry
+        (True, True),  # Both flags enabled
+    )
+    def test_gke_gateway_route_and_telemetry_combination(self, gke_gateway_route, enable_telemetry):
+        """Tests correct container and volume configuration with different flag combinations."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                gke_gateway_route=gke_gateway_route,
+                enable_telemetry=enable_telemetry,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test-combo",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = builder.build_leader_pod()
+            pod_spec = pod["spec"]
+
+            container_names = [c["name"] for c in pod_spec["containers"]]
+            volume_names = [v["name"] for v in pod_spec["volumes"]]
+
+            # Base containers always present
+            expected_count = 3  # head, pathways-proxy, pathways-rm
+
+            # Check notary-proxy containers
+            if gke_gateway_route:
+                expected_count += 2  # notary-proxy and notary-proxy-grpc
+                self.assertIn("notary-proxy", container_names)
+                self.assertIn("notary-proxy-grpc", container_names)
+            else:
+                self.assertNotIn("notary-proxy", container_names)
+                self.assertNotIn("notary-proxy-grpc", container_names)
+
+            # Check otel-sidecar
+            if enable_telemetry:
+                expected_count += 1  # otel-sidecar
+                self.assertIn("otel-sidecar", container_names)
+                self.assertIn(pathways_utils.OTEL_COLLECTOR_CONFIG_NAME, volume_names)
+            else:
+                self.assertNotIn("otel-sidecar", container_names)
+                self.assertNotIn(pathways_utils.OTEL_COLLECTOR_CONFIG_NAME, volume_names)
+
+            self.assertEqual(len(pod_spec["containers"]), expected_count)
+
+    @parameterized.parameters(
+        (False, "notary-proxy-config-sidecar", "notary-proxy-config-sidecar-grpc"),
+        (True, "notary-proxy-config-otl-sidecar", "notary-proxy-config-otl-sidecar-grpc"),
+    )
+    def test_configmap_switching_based_on_telemetry(
+        self, enable_telemetry, expected_http_cm, expected_grpc_cm
+    ):
+        """Tests that ConfigMap names change based on enable_telemetry flag."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                gke_gateway_route=True,
+                enable_telemetry=enable_telemetry,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test-configmap-switching",
+                command="test_command",
+                output_dir="FAKE",
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = builder.build_leader_pod()
+            pod_spec = pod["spec"]
+
+            # Check that correct ConfigMap volumes are used
+            volume_names = [v["name"] for v in pod_spec["volumes"]]
+            self.assertIn(expected_http_cm, volume_names)
+            self.assertIn(expected_grpc_cm, volume_names)
+
+            # Verify notary-proxy containers use the correct ConfigMap
+            notary_http = next(c for c in pod_spec["containers"] if c["name"] == "notary-proxy")
+            notary_grpc = next(
+                c for c in pod_spec["containers"] if c["name"] == "notary-proxy-grpc"
+            )
+
+            http_volume_mount = notary_http["volumeMounts"][0]["name"]
+            grpc_volume_mount = notary_grpc["volumeMounts"][0]["name"]
+
+            self.assertEqual(http_volume_mount, expected_http_cm)
+            self.assertEqual(grpc_volume_mount, expected_grpc_cm)

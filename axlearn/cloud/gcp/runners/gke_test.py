@@ -4,7 +4,7 @@
 import contextlib
 import dataclasses
 
-# pylint: disable=no-self-use,protected-access
+# pylint: disable=no-self-use,protected-access,redefined-outer-name
 from collections.abc import Sequence
 from typing import Optional
 from unittest import mock
@@ -17,9 +17,10 @@ from absl.testing import parameterized
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import FlagConfigurable, define_flags, from_flags
-from axlearn.cloud.gcp import bundler, node_pool_provisioner
+from axlearn.cloud.gcp import bundler, job, node_pool_provisioner
 from axlearn.cloud.gcp.job_flink import FlinkJobStatus
 from axlearn.cloud.gcp.jobset_utils import BASTION_JOB_VERSION_LABEL, TPUReplicatedJob
+from axlearn.cloud.gcp.k8s_backend_policy import LWSGCPBackendPolicy
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.pathways_utils import PathwaysLeaderWorkerTemplate
 from axlearn.cloud.gcp.runners import gke as runner_gke
@@ -1633,6 +1634,43 @@ class LWSRunnerJobTest(parameterized.TestCase):
         fv.mark_as_parsed()
         LWSRunnerJob.set_defaults(fv)
         self.assertIsNotNone(fv["name"].default)
+
+    def test_backend_policy_initialized_in_runner_config(self):
+        """Tests that backend_policy config is initialized in runner.
+
+        This is a regression test for a bug where backend_policy was None,
+        preventing GCPBackendPolicy from being created even when both
+        gke_gateway_route=True and enable_telemetry=True.
+        """
+        # Get the runner config
+        runner_cfg = named_runner_configs("gke_tpu_lws_pathways")
+
+        # Check that inner is GKELeaderWorkerSet
+        self.assertIsInstance(runner_cfg.inner, job.GKELeaderWorkerSet.Config)
+
+        # Check that backend_policy is initialized (not None)
+        self.assertIsNotNone(
+            runner_cfg.inner.backend_policy,
+            "backend_policy must be initialized in gke_tpu_lws_pathways "
+            "runner config. Without this, GCPBackendPolicy will never be "
+            "created even when both gke_gateway_route=True and "
+            "enable_telemetry=True.",
+        )
+
+        # Check that it's the correct type
+        self.assertIsInstance(
+            runner_cfg.inner.backend_policy,
+            LWSGCPBackendPolicy.Config,
+            "backend_policy should be an LWSGCPBackendPolicy.Config",
+        )
+
+        # Check that other gateway-related configs are also initialized
+        self.assertIsNotNone(runner_cfg.inner.service, "service should be initialized")
+        self.assertIsNotNone(runner_cfg.inner.http_route, "http_route should be initialized")
+        self.assertIsNotNone(
+            runner_cfg.inner.health_check_policy,
+            "health_check_policy should be initialized",
+        )
 
     @parameterized.product(
         status=[
