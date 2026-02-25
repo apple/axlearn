@@ -938,8 +938,8 @@ class TPUSplashAttention(TPUFlashAttention):
                 sliding, _ = split(bias, SlidingWindowAttentionBias)
                 key: Tensor = input_batch["key"]
                 kv_seq_len = key.shape[1]
-                # TODO(c_lan): Support logit_sinks for non-fused bwd kernel.
-                if sliding.has_value() and "logit_sinks" not in input_batch:
+                # TODO(c_lan): Support logit_sink for non-fused bwd kernel.
+                if sliding.has_value() and input_batch.get("logit_sink") is None:
                     if kv_seq_len >= 16 * 1024 and kv_seq_len / sliding.sliding_window_size >= 4.0:
                         logging.info(
                             "Not using fused kernel for splash attention backward pass for better "
