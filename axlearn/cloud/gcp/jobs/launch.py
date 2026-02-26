@@ -436,15 +436,15 @@ class BaseBastionManagedJob(FlagConfigurable):
                 "BASTION_SUBMISSION_DURATION_S": str(int(current_time - process_start_time)),
                 "BASTION_SUBMISSION_TS": str(int(process_start_time)),
             }
-            if code_assets_path := self._bundler.code_assets_path():
-                logging.info("Code asset path for job: %s", code_assets_path)
+            if code_asset_path := self._bundler.code_asset_path():
+                logging.info("Code asset path for job: %s", code_asset_path)
 
             jobspec = new_jobspec(
                 name=cfg.name,
                 command=cfg.command,
                 metadata=metadata,
                 env_vars=runner_env_vars,
-                code_asset_path=code_assets_path,
+                code_asset_path=code_asset_path,
             )
             serialize_jobspec(jobspec, f)
             self._bastion_dir.submit_job(cfg.name, job_spec_file=f.name)
