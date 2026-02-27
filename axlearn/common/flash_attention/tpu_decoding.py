@@ -57,6 +57,7 @@ def _tpu_decoding_kernel(
     k_ref,
     v_ref,
     b_ref,
+    logit_sink_ref,
     # Outputs.
     o_ref,
     # Scatch.
@@ -76,8 +77,14 @@ def _tpu_decoding_kernel(
     # m_i and l_i (see FlashAttention paper) are updated during the k,v loop.
     @pl.when(non_empty_kv_block_index == 0)
     def init():
-        m_i[...] = jnp.full_like(m_i, NEG_INF)
-        l_i[...] = jnp.zeros_like(l_i)
+        if logit_sink_ref is not None:
+            # logit_sink_ref has shape (q_seq_head, 1), tiled by caller.
+            m_i[...] = logit_sink_ref[...]
+            # Initialize l_i = exp(sink - sink) = 1 for the sink's contribution.
+            l_i[...] = jnp.ones_like(l_i)
+        else:
+            m_i[...] = jnp.full_like(m_i, NEG_INF)
+            l_i[...] = jnp.zeros_like(l_i)
         o_scratch[...] = jnp.zeros_like(o_scratch)
 
     # Note: on CPU interpret mode, pl.program_id() cannot appear in functions decorated by
@@ -208,6 +215,13 @@ class TPUDecoding(BaseSingleStepDecoding):
         q_seq_head = q.shape[-2]  # = q_seq_len * num_q_heads_per_kv_head
         assert q_seq_head <= 512
 
+        # Reshape logit_sink from (num_q_heads,) to (kv_heads, q_seq_head, 1) for kernel tiling.
+        logit_sink: Tensor | None = input_batch.get("logit_sink", None)
+        logit_sink_spec = None
+        if logit_sink is not None:
+            logit_sink = logit_sink.reshape(kv_heads, q_seq_head, 1).astype(jnp.float32)
+            logit_sink_spec = pl.BlockSpec((None, q_seq_head, 1), lambda b, h, j, *args: (h, 0, 0))
+
         def kv_index_map(
             batch_idx, head_idx, kv_block_idx, kv_seq_len, kv_block_offset, kv_block_offset_size
         ):
@@ -247,6 +261,7 @@ class TPUDecoding(BaseSingleStepDecoding):
                     kv_spec,
                     kv_spec,
                     bias_spec,
+                    logit_sink_spec,
                 ],
                 out_specs=q_spec,
                 scratch_shapes=[
@@ -262,5 +277,5 @@ class TPUDecoding(BaseSingleStepDecoding):
                 dimension_semantics=("parallel", "parallel", "arbitrary")
             ),
             interpret=self.cfg.interpret,
-        )(kv_seq_len, kv_block_offset, kv_block_offset_size, q, k, v, bias)
+        )(kv_seq_len, kv_block_offset, kv_block_offset_size, q, k, v, bias, logit_sink)
         return out.reshape(orig_q_shape)

@@ -306,6 +306,8 @@ class GPUPagedAttention(BasePagedAttention):
         """See `BasePagedAttention.is_supported`."""
         if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
+        if input_batch.get("logit_sink") is not None:
+            return self._log_unsupported("logit_sink is not supported.")
         key: Tensor = input_batch["key"]
         if not self._check_block_size(input_batch, block_size=self.cfg.gpu_block_size):
             return False

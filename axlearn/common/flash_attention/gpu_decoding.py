@@ -295,6 +295,8 @@ class GPUDecoding(BaseSingleStepDecoding):
             return False
         if kv_cache_type != KVCache:
             return self._log_unsupported(f"{kv_cache_type=}")
+        if input_batch.get("logit_sink") is not None:
+            return self._log_unsupported("logit_sink is not supported.")
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])

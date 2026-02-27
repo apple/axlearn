@@ -179,6 +179,7 @@ class DecodingTest(TestCase):
         window_len=[-1, 16, 127],
         # pylint: disable-next=possibly-used-before-assignment
         decoding_fn=decoding_fns,
+        use_logit_sink=[False, True],
     )
     # TODO: Try to reduce positional arguments
     # pylint: disable-next=too-many-positional-arguments
@@ -194,6 +195,7 @@ class DecodingTest(TestCase):
         kv_head_factor: int,
         window_len: int,
         decoding_fn: BaseFlashAttention,
+        use_logit_sink: bool,
     ):
         if seq_len >= 1024 and jax.default_backend() == "cpu":
             self.skipTest("Too slow on CPU.")
@@ -219,12 +221,15 @@ class DecodingTest(TestCase):
             query_offset=seq_len - padding - 1,
             **data_args,
         )
+        logit_sink = None
+        if use_logit_sink:
+            logit_sink = jax.random.normal(jax.random.PRNGKey(42), (num_heads,)) * 100.0
         input_batch = dict(
             query=q,
             key=k,
             value=v,
             bias=bias,
-            logit_sink=None,
+            logit_sink=logit_sink,
         )
         fn = decoding_fn.default_config().set(**cfg).instantiate()
         is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=KVCache)
@@ -236,6 +241,9 @@ class DecodingTest(TestCase):
             and decoding_fn is CuDNNGPUFlashAttentionWithExplicitBias
             and input_dtype is jnp.float32
         ):
+            self.assertFalse(is_supported)
+            return
+        if use_logit_sink and decoding_fn in (GPUDecoding, CuDNNGPUFlashAttentionWithExplicitBias):
             self.assertFalse(is_supported)
             return
         self.assertTrue(is_supported)

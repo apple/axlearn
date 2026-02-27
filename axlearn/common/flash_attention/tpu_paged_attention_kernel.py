@@ -186,6 +186,26 @@ def _make_index_map(
     return dense_index_map
 
 
+def _make_index_map_for_logit_sink(
+    megacore_mode: Optional[str] = None,
+    num_cores: int = 2,
+    is_rearranged: bool = False,
+):
+    """Creates an index map function for logit_sink tensor."""
+
+    def index_map(core_index, b, h, i, *_):
+        del b, i
+        head_idx = h
+        if megacore_mode == "kv_head":
+            head_idx = h * num_cores + core_index
+
+        if is_rearranged:
+            return (head_idx, 0, 0)
+        return (head_idx, 0)
+
+    return index_map
+
+
 # TODO: Try to reduce positional arguments
 # pylint: disable-next=too-many-positional-arguments
 def _paged_flash_attention_sparse_kernel(
@@ -201,6 +221,7 @@ def _paged_flash_attention_sparse_kernel(
     k_pages_hbm_ref,  # (n_kv_heads, batch_size * pages_per_sequence, page_size, head_dim)
     v_pages_hbm_ref,  # (n_kv_heads, batch_size * pages_per_sequence, page_size, head_dim)
     bias_ref,  # (n_groups, pages_per_compute_block * page_size)
+    logit_sink_ref,  # (n_groups, 1) or None
     # Outputs
     o_ref,  # (n_groups, head_dim)
     # scratches
@@ -324,8 +345,14 @@ def _paged_flash_attention_sparse_kernel(
 
         @pl.when(valid_block_index == 0)
         def init():
-            m_i[...] = jnp.full_like(m_i, NEG_INF)
-            l_i[...] = jnp.zeros_like(l_i)
+            if logit_sink_ref is not None:
+                # logit_sink_ref has shape (n_groups, 1), tiled by caller.
+                m_i[...] = logit_sink_ref[...]
+                # Initialize l_i = exp(sink - sink) = 1 for the sink's contribution.
+                l_i[...] = jnp.ones_like(l_i)
+            else:
+                m_i[...] = jnp.full_like(m_i, NEG_INF)
+                l_i[...] = jnp.zeros_like(l_i)
             o_scratch[...] = jnp.zeros_like(o_scratch)
             o_ref[...] = jnp.zeros_like(o_ref)
 
@@ -365,7 +392,7 @@ def _paged_flash_attention_sparse_kernel(
         # instability for query_step > 1
         precision = jax.lax.Precision.DEFAULT
         qk = pl.dot(q, k.T, precision=precision)
-        if softmax_scale != 0:
+        if softmax_scale != 1.0:
             qk *= softmax_scale
         if bias_ref is not None:
             qk += bias_ref[...]
@@ -410,6 +437,7 @@ def _paged_flash_attention_kernel(
     k_pages_hbm_ref,  # (num_kv_heads, batch_size * pages_per_sequence, page_size, head_dim)
     v_pages_hbm_ref,  # (num_kv_heads, batch_size * pages_per_sequence, page_size, head_dim)
     bias_ref,  # (n_groups, pages_per_compute_block * page_size)
+    logit_sink_ref,  # (n_groups, 1) or None
     # outputs
     o_ref,  # (n_groups, head_dim)
     # scratchs
@@ -543,8 +571,14 @@ def _paged_flash_attention_kernel(
 
         @pl.when(i == 0)
         def init():
-            m_i[...] = jnp.full_like(m_i, NEG_INF)
-            l_i[...] = jnp.zeros_like(l_i)
+            if logit_sink_ref is not None:
+                # logit_sink_ref has shape (n_groups, 1), tiled by caller.
+                m_i[...] = logit_sink_ref[...]
+                # Initialize l_i = exp(sink - sink) = 1 for the sink's contribution.
+                l_i[...] = jnp.ones_like(l_i)
+            else:
+                m_i[...] = jnp.full_like(m_i, NEG_INF)
+                l_i[...] = jnp.zeros_like(l_i)
             o_scratch[...] = jnp.zeros_like(o_scratch)
             o_ref[...] = jnp.zeros_like(o_ref)
 
@@ -573,7 +607,7 @@ def _paged_flash_attention_kernel(
         # instability for query_step > 1
         precision = jax.lax.Precision.DEFAULT
         qk = pl.dot(q, k.T, precision=precision)
-        if softmax_scale != 0:
+        if softmax_scale != 1.0:
             qk *= softmax_scale
         if bias_ref is not None:
             qk += bias_ref[...]

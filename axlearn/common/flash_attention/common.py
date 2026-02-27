@@ -336,8 +336,6 @@ class BaseSingleStepDecoding(BaseFlashAttention):
             return self._log_unsupported(f"{query.shape[1]=} != 1")
         if self.cfg.dropout_rate != 0.0:
             raise ValueError("Dropout rate cannot be set for decoding!")
-        if input_batch["logit_sink"] is not None:
-            return self._log_unsupported("logit_sink is not supported.")
         return True
 
 
@@ -392,8 +390,12 @@ class BasePagedAttention(BaseSingleStepDecoding):
             return self._log_unsupported(f"{query.shape[1]=} != 1")
         if self.cfg.dropout_rate != 0.0:
             raise ValueError("Dropout rate cannot be set for decoding!")
-        if input_batch["logit_sink"] is not None:
-            return self._log_unsupported("logit_sink is not supported.")
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
+        if logit_sink is not None and logit_sink.shape[0] != query.shape[2]:
+            raise ValueError(
+                f"Expects logit sink num heads {logit_sink.shape[0]} to be equal to "
+                f"num query heads {query.shape[2]}."
+            )
         if query.shape[2] % key.shape[0] != 0:
             return self._log_unsupported(
                 f"Number of Q heads {query.shape[2]} must be divisible "

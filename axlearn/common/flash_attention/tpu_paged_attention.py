@@ -33,6 +33,7 @@ from axlearn.common.config import config_class
 from axlearn.common.flash_attention.common import BasePagedAttention
 from axlearn.common.flash_attention.tpu_paged_attention_kernel import (
     _make_index_map,
+    _make_index_map_for_logit_sink,
     _paged_flash_attention_kernel,
     _paged_flash_attention_sparse_kernel,
     prepare_block_sparse_map,
@@ -148,6 +149,7 @@ class TPUPagedAttention(BasePagedAttention):
         value: Tensor = input_batch["value"]
         page_tables: Tensor = input_batch["page_tables"]
         bias: BaseAttentionBias = input_batch["bias"]
+        logit_sink: Tensor | None = input_batch.get("logit_sink", None)
 
         query = query.squeeze(1)
         batch_size, num_q_heads, head_dim = query.shape
@@ -201,6 +203,15 @@ class TPUPagedAttention(BasePagedAttention):
                     is_sparse=sparse_mode,
                 ),
             )
+
+        logit_sink_spec = None
+        if logit_sink is not None:
+            logit_sink = logit_sink.reshape(num_q_heads, 1).astype(jnp.float32)
+            logit_sink_spec = pl.BlockSpec(
+                (num_groups, 1),
+                _make_index_map_for_logit_sink(megacore_mode, num_cores, is_rearranged=False),
+            )
+
         if num_groups % 8 != 0:
             # Reshape q to hint XLA to pick a <1x128> layout otherwise
             # it will pick a <8x128> layout for a <1x128> memref inside
@@ -224,6 +235,13 @@ class TPUPagedAttention(BasePagedAttention):
                         is_sparse=sparse_mode,
                     ),
                 )
+            if logit_sink is not None:
+                logit_sink = logit_sink.reshape(num_q_heads, 1, 1).astype(jnp.float32)
+                logit_sink_spec = pl.BlockSpec(
+                    (num_groups, None, 1),
+                    _make_index_map_for_logit_sink(megacore_mode, num_cores, is_rearranged=True),
+                )
+
             q_dtype_for_kernel_launch = jnp.float32
 
         dimension_semantics: Sequence[Literal["parallel", "arbitrary"]]
@@ -243,6 +261,7 @@ class TPUPagedAttention(BasePagedAttention):
             pl.BlockSpec(memory_space=pltpu.ANY),  # Key pages
             pl.BlockSpec(memory_space=pltpu.ANY),  # Value pages
             bias_spec,  # Bias
+            logit_sink_spec,  # Logit sink
         ]
         scratch_shapes = (
             pltpu.VMEM((num_groups, 1), jnp.float32),  # m_i
@@ -278,6 +297,7 @@ class TPUPagedAttention(BasePagedAttention):
             key,
             value,
             bias,
+            logit_sink,
         )
         num_scalars = 4
         if sparse_mode:

@@ -28,6 +28,7 @@ class PagedAttentionKernelTest(TestCase):
         head_dim=(128, 256),
         sliding_window_size=(None, 128),
         megacore_mode=(None, "batch", "kv_head"),
+        use_logit_sink=(False, True),
     )
     @pytest.mark.skip(reason="Fails in CI due to OOM.")
     def test_paged_attention(
@@ -39,17 +40,19 @@ class PagedAttentionKernelTest(TestCase):
         head_dim,
         sliding_window_size,
         megacore_mode,
+        use_logit_sink,
     ):
         max_kv_len = 2048
         block_size = 512
         seq_lens = jnp.array([1, 3, 256, 513, 1023, 2048])
         batch_size = len(seq_lens)
+        num_q_heads = num_kv_heads * q_kv_head_ratio
 
         q, k_pages, v_pages, page_indices, bias = generate_paged_attention_data(
             batch_size=batch_size,
             query_len=1,  # Single-step decoding
             kv_len=max_kv_len,
-            num_heads=num_kv_heads * q_kv_head_ratio,
+            num_heads=num_q_heads,
             per_head_dim=head_dim,
             num_kv_heads=num_kv_heads,
             page_size=page_size,
@@ -58,6 +61,10 @@ class PagedAttentionKernelTest(TestCase):
             dtype=dtype,
             query_offset=seq_lens - 1,
         )
+
+        logit_sink = None
+        if use_logit_sink:
+            logit_sink = jax.random.normal(jax.random.PRNGKey(42), (num_q_heads,)) * 5.0
 
         paged_attn = (
             TPUPagedAttention.default_config()
@@ -76,6 +83,7 @@ class PagedAttentionKernelTest(TestCase):
             "value": v_pages,
             "page_tables": page_indices,
             "bias": bias,
+            "logit_sink": logit_sink,
         }
         output = paged_attn(input_batch)
 
