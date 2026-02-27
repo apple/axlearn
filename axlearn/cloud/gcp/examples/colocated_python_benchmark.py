@@ -234,8 +234,6 @@ def load_model(
     shardings: Sequence[jax.sharding.NamedSharding],
     global_shapes: Sequence[tuple],
     dtypes: Sequence[jnp.dtype],
-    use_colocated_python: bool = False,
-    transfer_concurrent_gb: int = 16,
 ):
     """Load model from checkpoint.
 
@@ -244,10 +242,6 @@ def load_model(
         shardings: Target shardings for the restored arrays.
         global_shapes: Global shapes for each array.
         dtypes: Data types for each array.
-        use_colocated_python: If True, load to CPU first then transfer to TPU.
-            If False, load directly to TPU.
-        transfer_concurrent_gb: Maximum concurrent GB in flight during CPU to TPU transfer
-            when using colocated Python. Defaults to 16GB.
 
     Returns:
         List of restored JAX arrays.
@@ -259,8 +253,6 @@ def load_model(
         global_shapes=global_shapes,
         dtypes=dtypes,
         concurrent_gb=400,
-        use_colocated_python=use_colocated_python,
-        transfer_concurrent_gb=transfer_concurrent_gb,
     )
     print(f"Loaded {len(restored_values)} arrays")
 
@@ -284,12 +276,6 @@ def main():
         "--profile",
         action="store_true",
         help="Enable JAX profiler (adds overhead, disable for accurate benchmarking)",
-    )
-    parser.add_argument(
-        "--transfer_concurrent_gb",
-        type=int,
-        default=16,
-        help="Maximum concurrent GB during CPU to TPU transfer (colocated mode only). Default: 16",
     )
     args = parser.parse_args()
 
@@ -333,14 +319,14 @@ def main():
             )
 
             with maybe_profile(args.profile, profile_dir):
+                if args.method == "default":
+                    os.environ["COLOCATED_PYTHON_DESERIALIZE"] = "0"
                 start_time = time.perf_counter()
                 loaded_values = load_model(
                     tensorstore_specs=tensorstore_specs,
                     shardings=shardings,
                     global_shapes=global_shapes,
                     dtypes=dtypes,
-                    use_colocated_python=(args.method == "colocated"),
-                    transfer_concurrent_gb=args.transfer_concurrent_gb,
                 )
                 print(f"✅ Successfully loaded model from {args.ckpt_path}")
                 print(f"Total time took {time.perf_counter() - start_time:.2f} seconds")
