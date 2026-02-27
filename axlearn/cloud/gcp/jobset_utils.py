@@ -43,6 +43,11 @@ from axlearn.common.utils import Nested
 # Set 80% of the max value as the requested memory.
 _MEMORY_REQUEST_PERCENTAGE = 0.8
 
+# Storage class constants for ephemeral persistent disk.
+_STORAGE_CLASS_PD_BALANCED = "pd-balanced"
+_STORAGE_CLASS_HYPERDISK_BALANCED = "hyperdisk-balanced"
+_PERSISTENT_DISK_SIZE_MAX_GIB = 2048
+
 
 # A label added to the jobset to indicate job version.
 BASTION_JOB_VERSION_LABEL = "bastion-job-version"
@@ -112,6 +117,21 @@ class HostMount(VolumeMount):
 
     host_path: str
     type: str = "Directory"
+
+
+@dataclass(kw_only=True)
+class EphemeralDiskMount(VolumeMount):
+    """Configures an ephemeral PersistentVolumeClaim backed by a GCP storage class.
+
+    Attributes:
+        storage_class: Kubernetes StorageClass name (e.g. 'hyperdisk-balanced', 'pd-balanced').
+        size_gb: Requested disk size in GiB.
+    """
+
+    name: str = "persistent-disk"
+    mount_path: str = "/data"
+    storage_class: str
+    size_gb: int
 
 
 @dataclass
@@ -263,6 +283,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         env_vars: dict[str, str] = {}
         gcsfuse_mount: Optional[GCSFuseMount] = None
         host_mounts: Optional[Sequence[HostMount]] = None
+        ephemeral_disk: Optional[EphemeralDiskMount] = None
         service_account: Optional[str] = None
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
@@ -422,6 +443,12 @@ class TPUJobBuilder(SingleReplicatedJob):
             "The GKE PriorityClass for the job.",
             **common_kwargs,
         )
+        flags.DEFINE_integer(
+            "persistent_disk_size_gb",
+            None,
+            "If set, attach an ephemeral persistent disk of this size (GiB) mounted at /data.",
+            **common_kwargs,
+        )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -445,6 +472,22 @@ class TPUJobBuilder(SingleReplicatedJob):
         cfg.additional_node_networks = gcp_settings(
             "additional_node_networks", required=False, fv=fv
         )
+        if fv.persistent_disk_size_gb is not None:
+            if not 0 < fv.persistent_disk_size_gb <= _PERSISTENT_DISK_SIZE_MAX_GIB:
+                raise ValueError(
+                    f"--persistent_disk_size_gb={fv.persistent_disk_size_gb} must be between 1 and "
+                    f"{_PERSISTENT_DISK_SIZE_MAX_GIB} GiB."
+                )
+            tpu_version = infer_tpu_version(infer_tpu_type(fv.instance_type))
+            # v5p and v5litepod do not support hyperdisk-balanced, so fall back to pd-balanced.
+            if tpu_version in ("v5p", "v5litepod"):
+                storage_class = _STORAGE_CLASS_PD_BALANCED
+            else:
+                storage_class = _STORAGE_CLASS_HYPERDISK_BALANCED
+            cfg.ephemeral_disk = EphemeralDiskMount(
+                storage_class=storage_class,
+                size_gb=fv.persistent_disk_size_gb,
+            )
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
@@ -491,6 +534,9 @@ class TPUJobBuilder(SingleReplicatedJob):
         if cfg.host_mounts:
             for mount in cfg.host_mounts:
                 self._maybe_add_volume_mount(volume_mounts, spec=mount)
+
+        if cfg.ephemeral_disk:
+            self._maybe_add_volume_mount(volume_mounts, spec=cfg.ephemeral_disk)
 
         env_vars = {**cfg.env_vars}
         if cfg.enable_tpu_ici_resiliency is not None:
@@ -710,6 +756,24 @@ class TPUJobBuilder(SingleReplicatedJob):
                         hostPath=dict(path=mount.host_path, type=mount.type),
                     )
                 )
+
+        if cfg.ephemeral_disk:
+            volumes.append(
+                dict(
+                    name=cfg.ephemeral_disk.name,
+                    ephemeral=dict(
+                        volumeClaimTemplate=dict(
+                            spec=dict(
+                                accessModes=["ReadWriteOnce"],
+                                storageClassName=cfg.ephemeral_disk.storage_class,
+                                resources=dict(
+                                    requests=dict(storage=f"{cfg.ephemeral_disk.size_gb}Gi")
+                                ),
+                            )
+                        )
+                    ),
+                )
+            )
 
         # If running from bastion, a scheduling tier will be specified in env.
         # Tier "0" corresponds to reserved; otherwise we use preemptible.

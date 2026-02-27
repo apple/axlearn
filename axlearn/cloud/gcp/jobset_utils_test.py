@@ -30,9 +30,11 @@ from axlearn.cloud.gcp.jobset_utils import (
     _ANNOTATION_NODE_SERVICE_ACCOUNT,
     _MEMORY_REQUEST_PERCENTAGE,
     _METADATA_GOOGLE_INTERNAL_IP,
+    _PERSISTENT_DISK_SIZE_MAX_GIB,
     BASTION_JOB_VERSION_LABEL,
     BaseReplicatedJob,
     CompositeReplicatedJob,
+    EphemeralDiskMount,
     GCSFuseMount,
     HostMount,
     TPUReplicatedJob,
@@ -578,6 +580,141 @@ class TPUReplicatedJobTest(TestCase):
                 TPUReplicatedJob.verify_custom_topology_availability(accelerator)
         else:
             TPUReplicatedJob.verify_custom_topology_availability(accelerator)
+
+    @parameterized.parameters(
+        # v6e → hyperdisk-balanced
+        dict(
+            instance_type="tpu-v6e-16",
+            persistent_disk_size_gb=500,
+            expected_class="hyperdisk-balanced",
+        ),
+        # v4 → hyperdisk-balanced
+        dict(
+            instance_type="tpu-v4-8",
+            persistent_disk_size_gb=100,
+            expected_class="hyperdisk-balanced",
+        ),
+        # v5p → pd-balanced
+        dict(instance_type="tpu-v5p-8", persistent_disk_size_gb=200, expected_class="pd-balanced"),
+        # v5litepod → pd-balanced
+        dict(
+            instance_type="tpu-v5litepod-16",
+            persistent_disk_size_gb=300,
+            expected_class="pd-balanced",
+        ),
+    )
+    def test_persistent_disk_storage_class(
+        self, instance_type, persistent_disk_size_gb, expected_class
+    ):
+        """Tests that from_flags sets the correct storage class for ephemeral_disk."""
+        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
+            fv = flags.FlagValues()
+            jobset_utils.TPUReplicatedJob.define_flags(fv)
+            fv.set_default("name", "test-name")
+            fv.set_default("instance_type", instance_type)
+            fv.set_default("topology", None)
+            setattr(fv, "persistent_disk_size_gb", persistent_disk_size_gb)
+            fv.mark_as_parsed()
+            cfg = jobset_utils.TPUReplicatedJob.from_flags(fv)
+            self.assertIsNotNone(cfg.ephemeral_disk)
+            self.assertEqual(cfg.ephemeral_disk.storage_class, expected_class)
+            self.assertEqual(cfg.ephemeral_disk.size_gb, persistent_disk_size_gb)
+            self.assertEqual(cfg.ephemeral_disk.name, "persistent-disk")
+            self.assertEqual(cfg.ephemeral_disk.mount_path, "/data")
+
+    def test_no_persistent_disk_when_flag_unset(self):
+        """Tests that ephemeral_disk is None when --persistent_disk_size_gb is not provided."""
+        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
+            fv = flags.FlagValues()
+            jobset_utils.TPUReplicatedJob.define_flags(fv)
+            fv.set_default("name", "test-name")
+            fv.set_default("instance_type", "tpu-v6e-16")
+            fv.set_default("topology", None)
+            fv.mark_as_parsed()
+            cfg = jobset_utils.TPUReplicatedJob.from_flags(fv)
+            self.assertIsNone(cfg.ephemeral_disk)
+
+    def test_persistent_disk_size_exceeds_limit(self):
+        """Tests that from_flags raises ValueError when persistent_disk_size_gb is out of range."""
+        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
+            for bad_size in (0, -1, _PERSISTENT_DISK_SIZE_MAX_GIB + 1):
+                fv = flags.FlagValues()
+                jobset_utils.TPUReplicatedJob.define_flags(fv)
+                fv.set_default("name", "test-name")
+                fv.set_default("instance_type", "tpu-v6e-16")
+                fv.set_default("topology", None)
+                setattr(fv, "persistent_disk_size_gb", bad_size)
+                fv.mark_as_parsed()
+                with self.assertRaisesRegex(ValueError, "must be between"):
+                    jobset_utils.TPUReplicatedJob.from_flags(fv)
+
+    @parameterized.parameters(
+        dict(
+            instance_type="tpu-v6e-16",
+            persistent_disk_size_gb=500,
+            expected_class="hyperdisk-balanced",
+        ),
+        dict(instance_type="tpu-v5p-8", persistent_disk_size_gb=200, expected_class="pd-balanced"),
+    )
+    def test_persistent_disk_pod_spec(self, instance_type, persistent_disk_size_gb, expected_class):
+        """Tests that _build_pod and _build_container include ephemeral disk volume and mount."""
+        with self._job_config(
+            bundler_cls=ArtifactRegistryBundler,
+            instance_type=instance_type,
+            persistent_disk_size_gb=persistent_disk_size_gb,
+        ) as (cfg, bundler_cfg):
+            cfg.set(command="test-command", output_dir="gs://bucket/output")
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = job._build_pod()  # pylint: disable=protected-access
+
+            # Check that the ephemeral volume is present in pod volumes.
+            volumes = pod["spec"]["volumes"]
+            ephemeral_vols = [v for v in volumes if v.get("name") == "persistent-disk"]
+            self.assertLen(ephemeral_vols, 1)
+            vol = ephemeral_vols[0]
+            self.assertIn("ephemeral", vol)
+            claim_spec = vol["ephemeral"]["volumeClaimTemplate"]["spec"]
+            self.assertEqual(claim_spec["storageClassName"], expected_class)
+            self.assertEqual(claim_spec["accessModes"], ["ReadWriteOnce"])
+            self.assertEqual(
+                claim_spec["resources"]["requests"]["storage"],
+                f"{persistent_disk_size_gb}Gi",
+            )
+
+            # Check that the volume mount is present in the main container.
+            container = job._build_container()  # pylint: disable=protected-access
+            mounts = container["volumeMounts"]
+            data_mounts = [m for m in mounts if m.get("name") == "persistent-disk"]
+            self.assertLen(data_mounts, 1)
+            self.assertEqual(data_mounts[0]["mountPath"], "/data")
+
+    def test_no_persistent_disk_pod_spec(self):
+        """Tests that no ephemeral disk volume or mount appears when flag is not set."""
+        with self._job_config(
+            bundler_cls=ArtifactRegistryBundler,
+            instance_type="tpu-v6e-16",
+        ) as (cfg, bundler_cfg):
+            cfg.set(command="test-command", output_dir="gs://bucket/output")
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = job._build_pod()  # pylint: disable=protected-access
+
+            volumes = pod["spec"]["volumes"]
+            ephemeral_vols = [v for v in volumes if v.get("name") == "persistent-disk"]
+            self.assertEmpty(ephemeral_vols)
+
+            container = job._build_container()  # pylint: disable=protected-access
+            mounts = container["volumeMounts"]
+            data_mounts = [m for m in mounts if m.get("name") == "persistent-disk"]
+            self.assertEmpty(data_mounts)
+
+    def test_ephemeral_disk_mount_dataclass(self):
+        """Tests EphemeralDiskMount defaults and field assignment."""
+        m = EphemeralDiskMount(storage_class="hyperdisk-balanced", size_gb=500)
+        self.assertEqual(m.name, "persistent-disk")
+        self.assertEqual(m.mount_path, "/data")
+        self.assertEqual(m.storage_class, "hyperdisk-balanced")
+        self.assertEqual(m.size_gb, 500)
+        self.assertEqual(m.read_only, False)
 
 
 class CompositeReplicatedJobTest(TestCase):
