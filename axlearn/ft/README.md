@@ -9,7 +9,7 @@ When we start an AXLearn job, Bastion asks GKE to:
 1. provision TPU VMs,
 2. schedule Kubernetes pods on those VMs, and
 3. start a trainer process inside each pod.
-   - Inside each pod, Kuberentes starts a main container, along with other sidecar containers
+   - Inside each pod, Kubernetes starts a main container, along with other sidecar containers
    - The trainer process runs in each main container.
 
 After that, all trainer processes call `jax.distributed.initialize` so they can discover one another and collectively form a device mesh across all TPUs.
