@@ -4,6 +4,7 @@
 
 import contextlib
 import io
+import json
 import math
 import os
 from datetime import datetime
@@ -823,3 +824,96 @@ class A3HighReplicatedJobTest(TestCase):
                 self.assertEqual(
                     main_container_env_vars["XLA_FLAGS"]["value"], env_vars["XLA_FLAGS"]
                 )
+
+
+class TopologyAssignmentTest(TestCase):
+    """Tests topology assignment functionality."""
+
+    def _tpu_child_config(
+        self,
+        *,
+        job_name: str = "worker",
+        instance_type: str = "tpu-7x-128",
+        num_replicas: int = 1,
+        enable_tpu_slice_auto_provisioning: bool = True,
+    ):
+        """Helper to create a TPUReplicatedJob config for composite job tests."""
+        return TPUReplicatedJob.default_config().set(
+            name=job_name,
+            job_name=job_name,
+            command="echo test",
+            project="test-project",
+            output_dir="gs://test-bucket/output",
+            accelerator=AcceleratorConfig(instance_type=instance_type, num_replicas=num_replicas),
+            enable_tpu_slice_auto_provisioning=enable_tpu_slice_auto_provisioning,
+        )
+
+    def test_tpu_job_get_workload_labels_with_topology(self):
+        """TPUJobBuilder.get_workload_labels returns slice-autoprovisioning label."""
+        with mock_gcp_settings([jobset_utils.__name__]):
+            child_cfg = self._tpu_child_config(job_name="worker")
+            child_cfg.topology_assignment = [["sb-1"]]
+            job = child_cfg.instantiate(bundler=mock.create_autospec(Bundler))
+            self.assertEqual(
+                {"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "sync"},
+                job.get_workload_labels(),
+            )
+
+    def test_tpu_job_get_workload_annotations_with_topology(self):
+        """TPUJobBuilder.get_workload_annotations returns slice-selection annotation."""
+        with mock_gcp_settings([jobset_utils.__name__]):
+            child_cfg = self._tpu_child_config(job_name="worker")
+            child_cfg.topology_assignment = [["sb-1"]]
+            job = child_cfg.instantiate(bundler=mock.create_autospec(Bundler))
+            annotations = job.get_workload_annotations()
+            self.assertIn("tpu-provisioner.cloud.google.com/slice-selection", annotations)
+            selection = json.loads(annotations["tpu-provisioner.cloud.google.com/slice-selection"])
+            self.assertEqual({"worker": [["sb-1"]]}, selection)
+
+    def test_tpu_job_get_workload_labels_without_topology(self):
+        """TPUJobBuilder.get_workload_labels returns empty dict when no topology."""
+        with mock_gcp_settings([jobset_utils.__name__]):
+            child_cfg = self._tpu_child_config(job_name="worker")
+            job = child_cfg.instantiate(bundler=mock.create_autospec(Bundler))
+            self.assertEqual({}, job.get_workload_labels())
+            self.assertEqual({}, job.get_workload_annotations())
+
+    def test_tpu_job_get_workload_labels_provisioning_disabled(self):
+        """TPUJobBuilder.get_workload_labels returns empty dict when provisioning disabled."""
+        with mock_gcp_settings([jobset_utils.__name__]):
+            child_cfg = self._tpu_child_config(
+                job_name="worker", enable_tpu_slice_auto_provisioning=False
+            )
+            child_cfg.topology_assignment = [["sb-1"]]
+            job = child_cfg.instantiate(bundler=mock.create_autospec(Bundler))
+            self.assertEqual({}, job.get_workload_labels())
+            self.assertEqual({}, job.get_workload_annotations())
+
+    def test_composite_get_workload_labels_merges_children(self):
+        """CompositeReplicatedJob.get_workload_labels merges from enabled children."""
+        with mock_gcp_settings([jobset_utils.__name__]):
+            child_cfg = self._tpu_child_config(job_name="worker")
+            child_cfg.topology_assignment = [["sb-1"]]
+            composite_cfg = CompositeReplicatedJob.default_config().set(
+                name="composite", inner={"a": child_cfg}
+            )
+            composite = composite_cfg.instantiate(bundler=mock.create_autospec(Bundler))
+            self.assertEqual(
+                {"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "sync"},
+                composite.get_workload_labels(),
+            )
+
+    def test_composite_get_workload_annotations_merges_children(self):
+        """CompositeReplicatedJob.get_workload_annotations merges from enabled children."""
+        with mock_gcp_settings([jobset_utils.__name__]):
+            child_a = self._tpu_child_config(job_name="a-worker")
+            child_a.topology_assignment = [["sb-1"]]
+            child_b = self._tpu_child_config(job_name="b-worker")
+            child_b.topology_assignment = [["sb-2"]]
+            composite_cfg = CompositeReplicatedJob.default_config().set(
+                name="composite", inner={"a": child_a, "b": child_b}
+            )
+            composite = composite_cfg.instantiate(bundler=mock.create_autospec(Bundler))
+            annotations = composite.get_workload_annotations()
+            # Both children contribute; annotations will be merged (last wins for same key)
+            self.assertIn("tpu-provisioner.cloud.google.com/slice-selection", annotations)

@@ -150,197 +150,6 @@ class TPUGKEJobTest(TestCase):
                 self.assertIn(key, jobset_labels)
                 self.assertEqual(jobset_labels[key], value)
 
-    @parameterized.parameters(
-        # Single job with correct assignments
-        dict(
-            jobs=[("tpu-worker", 2, "tpu7x", "4x4x8")],
-            topology_assignments=[["sb-1", "sb-2"], ["sb-3", "sb-4"]],
-            expected={"tpu-worker": [["sb-1", "sb-2"], ["sb-3", "sb-4"]]},
-        ),
-        # Multiple TPU jobs
-        dict(
-            jobs=[
-                ("trainer", 1, "tpu7x", "4x4x8"),  # 7x-256
-                ("evaluator", 1, "tpu7x", "4x4x4"),  # 7x-128
-            ],
-            topology_assignments=[["sb-1", "sb-2"], ["sb-3"]],
-            expected={"trainer": [["sb-1", "sb-2"]], "evaluator": [["sb-3"]]},
-        ),
-        # Multiple TPU jobs, with multiple replicas
-        dict(
-            jobs=[
-                ("trainer", 2, "tpu7x", "4x4x8"),  # 7x-256
-                ("evaluator", 3, "tpu7x", "4x4x4"),  # 7x-128
-            ],
-            topology_assignments=[["sb-1", "sb-2"], ["sb-3", "sb-4"], ["sb-5"], ["sb-6"], ["sb-7"]],
-            expected={
-                "trainer": [["sb-1", "sb-2"], ["sb-3", "sb-4"]],
-                "evaluator": [["sb-5"], ["sb-6"], ["sb-7"]],
-            },
-        ),
-        # Multiple TPU jobs, with multiple replicas, assignment reversed
-        dict(
-            jobs=[
-                ("trainer", 2, "tpu7x", "4x4x8"),  # 7x-256
-                ("evaluator", 3, "tpu7x", "4x4x4"),  # 7x-128
-            ],
-            topology_assignments=[["sb-5"], ["sb-6"], ["sb-7"], ["sb-1", "sb-2"], ["sb-3", "sb-4"]],
-            expected={
-                "trainer": [["sb-1", "sb-2"], ["sb-3", "sb-4"]],
-                "evaluator": [["sb-5"], ["sb-6"], ["sb-7"]],
-            },
-        ),
-        # Unsupported TPU version
-        dict(
-            jobs=[("v5p-job", 1, "tpu-v5p-slice", "4x4x8")],
-            topology_assignments=[["sb-1"]],
-            expected=(ValueError, "TPU version 'v5p'.* does not support subblock super slicing"),
-        ),
-        # Insufficient assignments
-        dict(
-            jobs=[("tpu-worker", 2, "tpu7x", "4x4x8")],
-            topology_assignments=[["sb-1", "sb-2"]],  # Only 1, but needs 2 replicas
-            expected=(ValueError, "Could not find unused topology assignment with 2 subblock"),
-        ),
-        # Wrong subblock count
-        dict(
-            jobs=[("tpu-worker", 1, "tpu7x", "4x4x8")],  # Needs 2 subblocks
-            topology_assignments=[["sb-1"]],  # Only 1 subblock
-            expected=(ValueError, "Could not find unused topology assignment with 2 subblock"),
-        ),
-        # Mixed CPU/TPU jobs
-        dict(
-            jobs=[
-                ("cpu-coordinator", 1, None, None),  # CPU job
-                ("tpu-worker", 1, "tpu7x", "4x4x4"),  # TPU job
-            ],
-            topology_assignments=[["sb-1"]],
-            expected={"tpu-worker": [["sb-1"]]},
-        ),
-        # Unknown system
-        dict(
-            jobs=[("invalid-job", 1, "unknown-tpu", "9x9x9")],
-            topology_assignments=[["sb-1"]],
-            expected=(
-                ValueError,
-                "Could not find system characteristics.*accelerator"
-                "='unknown-tpu'.*topology='9x9x9'",
-            ),
-        ),
-        # Skip wrong sizes
-        dict(
-            jobs=[("tpu-worker", 2, "tpu7x", "4x4x8")],  # Needs 2 subblocks
-            topology_assignments=[
-                ["sb-wrong"],  # Wrong size (1), skip
-                ["sb-1", "sb-2"],  # Correct (2), use for replica 0
-                ["sb-wrong-2"],  # Wrong size (1), skip
-                ["sb-3", "sb-4"],  # Correct (2), use for replica 1
-            ],
-            expected={"tpu-worker": [["sb-1", "sb-2"], ["sb-3", "sb-4"]]},
-        ),
-        # Correct assignment at end
-        dict(
-            jobs=[("tpu-worker", 1, "tpu7x", "4x4x8")],  # Needs 2 subblocks
-            topology_assignments=[
-                ["sb-1"],  # Wrong size (1), skip
-                ["sb-2", "sb-3", "sb-4"],  # Wrong size (3), skip
-                ["sb-5"],  # Wrong size (1), skip
-                ["sb-6", "sb-7"],  # Correct size (2), use this
-            ],
-            expected={"tpu-worker": [["sb-6", "sb-7"]]},
-        ),
-        # Mixed sizes multi-job
-        dict(
-            jobs=[
-                ("small-job", 1, "tpu7x", "4x4x4"),  # 7x-128: needs 1 subblock
-                ("large-job", 1, "tpu7x", "4x4x8"),  # 7x-256: needs 2 subblocks
-            ],
-            topology_assignments=[
-                ["sb-1", "sb-2"],  # Size 2, for large-job
-                ["sb-3"],  # Size 1, for small-job
-                ["sb-4", "sb-5", "sb-6"],  # Size 3, unused
-            ],
-            expected={"small-job": [["sb-3"]], "large-job": [["sb-1", "sb-2"]]},
-        ),
-    )
-    def test_get_tpu_replicated_job_topology_selection(
-        self, jobs: list, topology_assignments: list, expected
-    ):
-        """Test topology selection for TPU replicated jobs.
-
-        Args:
-            jobs: List of job specs as tuples (name, replicas, gke_accelerator, topology).
-                For CPU jobs, gke_accelerator and topology should be None.
-            topology_assignments: List of subblock assignments.
-            expected: Either a dict mapping job names to assignments (success case),
-                or a tuple of (exception_class, error_regex) for error cases.
-        """
-
-        def _make_tpu_job(name: str, replicas: int, gke_accelerator: str, topology: str):
-            """Helper to build a TPU replicated job spec."""
-            return {
-                "name": name,
-                "replicas": replicas,
-                "template": {
-                    "spec": {
-                        "template": {
-                            "spec": {
-                                "nodeSelector": {
-                                    "cloud.google.com/gke-tpu-accelerator": gke_accelerator,
-                                    "cloud.google.com/gke-tpu-topology": topology,
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-
-        def _make_cpu_job(name: str, replicas: int):
-            """Helper to build a CPU replicated job spec."""
-            return {
-                "name": name,
-                "replicas": replicas,
-                "template": {
-                    "spec": {
-                        "template": {
-                            "spec": {"nodeSelector": {"axlearn/nodepool_type": "workload"}}
-                        }
-                    }
-                },
-            }
-
-        # Build replicated jobs from specs
-        replicated_jobs = []
-        for name, replicas, gke_accelerator, topology in jobs:
-            if gke_accelerator is None:
-                # CPU job
-                replicated_jobs.append(_make_cpu_job(name, replicas))
-            else:
-                # TPU job
-                replicated_jobs.append(_make_tpu_job(name, replicas, gke_accelerator, topology))
-
-        cfg, bundler_cfg = self._job_config(
-            command="test-command",
-            bundler_cls=CloudBuildBundler,
-        )
-        gke_job: job.GKEJob = cfg.instantiate(bundler=bundler_cfg.instantiate())
-
-        if isinstance(expected, tuple):
-            # Error case
-            exception_class, error_regex = expected
-            # pylint: disable-next=protected-access
-            with self.assertRaisesRegex(exception_class, error_regex):
-                gke_job._get_tpu_replicated_job_topology_selection(
-                    replicated_jobs, topology_assignments
-                )
-        else:
-            # Success case
-            # pylint: disable-next=protected-access
-            result = gke_job._get_tpu_replicated_job_topology_selection(
-                replicated_jobs, topology_assignments
-            )
-            self.assertEqual(expected, result)
-
 
 class GPUGKEJobTest(TestCase):
     """Tests GKEJob with GPUs."""
@@ -598,61 +407,70 @@ class TPUGKELeaderWorkerSetTest(TestCase):
             },
         }
 
-        # Create a mock builder that returns our mock template
+        # Build expected labels/annotations from the builder based on provisioning config.
+        if enable_tpu_slice_auto_provisioning and topology_assignment:
+            expected_builder_labels = {
+                "tpu-provisioner.cloud.google.com/slice-autoprovisioning": "async"
+            }
+            expected_builder_annotations = {
+                "tpu-provisioner.cloud.google.com/slice-selection": json.dumps(
+                    {"workers": topology_assignment}
+                )
+            }
+        else:
+            expected_builder_labels = {}
+            expected_builder_annotations = {}
+
+        # Create a mock builder with get_workload_labels/annotations returning expected values.
         mock_builder = mock.Mock()
         mock_builder.return_value = mock_leader_worker_template
+        mock_builder.get_workload_labels.return_value = expected_builder_labels
+        mock_builder.get_workload_annotations.return_value = expected_builder_annotations
 
-        # Create the GKE job instance first
+        # Create the GKE job instance
         gke_job = cfg.instantiate(bundler=bundler_cfg.instantiate())
 
         # Replace the builder with our mock (this is what we're testing)
         gke_job._builder = mock_builder
 
-        # Mock get_topology_assignment
-        with mock.patch(
-            f"{job.__name__}.get_topology_assignment",
-            return_value=topology_assignment,
-        ):
-            # Build the leaderworkerset
-            lws_spec = gke_job._build_leaderworkerset()
+        lws_spec = gke_job._build_leaderworkerset()
 
-            # Check metadata
-            self.assertIn("metadata", lws_spec)
-            self.assertIn("name", lws_spec["metadata"])
-            self.assertEqual(cfg.name, lws_spec["metadata"]["name"])
+        # Check metadata
+        self.assertIn("metadata", lws_spec)
+        self.assertIn("name", lws_spec["metadata"])
+        self.assertEqual(cfg.name, lws_spec["metadata"]["name"])
 
-            # Check labels
-            labels = lws_spec["metadata"].get("labels", {})
-            slice_auto_provisioning_label = (
-                "tpu-provisioner.cloud.google.com/slice-autoprovisioning"
+        # Check labels
+        labels = lws_spec["metadata"].get("labels", {})
+        slice_auto_provisioning_label = "tpu-provisioner.cloud.google.com/slice-autoprovisioning"
+        if expect_label:
+            self.assertIn(slice_auto_provisioning_label, labels)
+            self.assertEqual("async", labels[slice_auto_provisioning_label])
+        else:
+            self.assertNotIn(slice_auto_provisioning_label, labels)
+
+        # Check annotations
+        annotations = lws_spec["metadata"].get("annotations", {})
+        slice_selection_annotation = "tpu-provisioner.cloud.google.com/slice-selection"
+        if expect_annotation:
+            self.assertIn(slice_selection_annotation, annotations)
+            slice_selection = json.loads(annotations[slice_selection_annotation])
+            self.assertIn("workers", slice_selection)
+            self.assertEqual(topology_assignment, slice_selection["workers"])
+        else:
+            self.assertNotIn(slice_selection_annotation, annotations)
+
+        # Verify exclusive topology annotations are removed when auto provisioning
+        if expect_annotation:
+            self.assertNotIn(
+                "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology",
+                annotations,
             )
-            if expect_label:
-                self.assertIn(slice_auto_provisioning_label, labels)
-                self.assertEqual("async", labels[slice_auto_provisioning_label])
-            else:
-                self.assertNotIn(slice_auto_provisioning_label, labels)
 
-            # Check annotations
-            annotations = lws_spec["metadata"].get("annotations", {})
-            slice_selection_annotation = "tpu-provisioner.cloud.google.com/slice-selection"
-            if expect_annotation:
-                self.assertIn(slice_selection_annotation, annotations)
-                slice_selection = json.loads(annotations[slice_selection_annotation])
-                self.assertIn("workers", slice_selection)
-                self.assertEqual(topology_assignment, slice_selection["workers"])
-            else:
-                self.assertNotIn(slice_selection_annotation, annotations)
-
-            # Verify exclusive topology annotations are removed when auto provisioning
-            if expect_annotation:
-                self.assertNotIn(
-                    "leaderworkerset.sigs.k8s.io/subgroup-exclusive-topology",
-                    annotations,
-                )
-
-            # Check spec
-            self.assertIn("spec", lws_spec)
-            self.assertIn("leaderWorkerTemplate", lws_spec["spec"])
+        # Check spec
+        self.assertIn("spec", lws_spec)
+        self.assertIn("replicas", lws_spec["spec"])
+        self.assertIn("leaderWorkerTemplate", lws_spec["spec"])
 
     @parameterized.product(
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],

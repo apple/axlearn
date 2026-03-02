@@ -65,7 +65,6 @@ import enum
 import json
 import os
 import time
-from itertools import chain
 from typing import Optional, cast
 
 import kubernetes as k8s
@@ -119,95 +118,69 @@ def _infer_reservation(jobset_spec: dict) -> Optional[str]:
     return None
 
 
-def _topology_assignment_from_resource(resource: dict) -> Optional[list[list[str]]]:
-    """Extracts all topology assignments from a k8s resource, flattened across all jobs.
+def _slice_selection_annotation_from_resource(resource: dict) -> Optional[str]:
+    """Extracts the raw slice-selection annotation string from a k8s resource.
 
-    This function reads the tpu-provisioner slice-selection annotation, which is present on
-    both JobSet and LeaderWorkerSet resources.
+    This annotation is present on both JobSet and LeaderWorkerSet resources when
+    TPU slice auto-provisioning is configured.
 
     Args:
         resource: The k8s resource dict (e.g. a JobSet or LeaderWorkerSet response).
 
     Returns:
-        A flattened list of all topology assignments across all jobs, or None if not found.
-        For example, if the annotation contains:
-        {"job1": [["sb-1", "sb-2"], ["sb-3"]], "job2": [["sb-4"]]}
-        This returns: [["sb-1", "sb-2"], ["sb-3"], ["sb-4"]]
+        The raw annotation string, or None if not present.
     """
-    topology_assignments_str = (
+    return (
         resource.get("metadata", {})
         .get("annotations", {})
         .get("tpu-provisioner.cloud.google.com/slice-selection")
     )
-    if not topology_assignments_str:
-        return None
-
-    try:
-        topology_dict: dict[str, list[list[str]]] = json.loads(topology_assignments_str)
-    except json.JSONDecodeError as e:
-        logging.warning(
-            "Failed to parse topology assignments from annotations %s. error: %s",
-            topology_assignments_str,
-            e,
-        )
-        return None
-
-    # Flatten all assignments across all jobs
-    all_assignments: list[list[str]] = []
-    for job_assignments in topology_dict.values():
-        all_assignments.extend(job_assignments)
-
-    return all_assignments
 
 
-def _topology_assignment_from_env() -> Optional[list[list[str]]]:
-    topology_assignments_env = os.environ.get("BASTION_JOB_TOPOLOGY_ASSIGNMENT")
-    if not topology_assignments_env:
-        logging.debug("No %s environment variable set.", "BASTION_JOB_TOPOLOGY_ASSIGNMENT")
-        return None
-
-    try:
-        return json.loads(topology_assignments_env)
-    except json.JSONDecodeError as e:
-        logging.warning(
-            "Failed to parse topology assignments from env var "
-            "BASTION_JOB_TOPOLOGY_ASSIGNMENT %s. error: %s",
-            topology_assignments_env,
-            e,
-        )
-        return None
-
-
-def _compare_topology_assignments(
-    env_assignments: Optional[list[list[str]]], jobset_assignments: Optional[list[list[str]]]
+def _compare_slice_selection(
+    expected_annotation: Optional[str], deployed_annotation: Optional[str]
 ) -> bool:
-    """Compares topology assignments from env and jobset.
+    """Compares expected and deployed slice-selection annotations.
 
-    Ensures they contain the same subblocks.
+    Both None means no topology is configured, which is considered equal.
+    Otherwise parses both as JSON dicts of the form ``{key: [[subblock, ...], ...]}``,
+    and checks equivalence order-insensitively:
+      - Both dicts must have the same set of keys.
+      - For each key, both must contain the same set of slices (outer list order ignored).
+      - Each slice is treated as a set of subblock strings (inner list order ignored).
 
     Args:
-        env_assignments: Topology assignments from environment variable.
-        jobset_assignments: Topology assignments from jobset annotation (flattened across jobs).
+        expected_annotation: The JSON string from the builder's get_workload_annotations().
+        deployed_annotation: The JSON string from the deployed k8s resource annotation.
 
     Returns:
-        True if both assignments contain the same set of subblocks, False otherwise.
-    """
-    # If both are None, consider them equal
-    if env_assignments is None and jobset_assignments is None:
-        return True
+        True if both annotations are equivalent (or both are None), False otherwise.
 
-    # If one is None and the other isn't, they don't match
-    if env_assignments is None or jobset_assignments is None:
+    Raises:
+        ValueError: If either annotation string is not valid JSON.
+    """
+    if expected_annotation is None and deployed_annotation is None:
+        return True
+    if expected_annotation is None or deployed_annotation is None:
         return False
 
-    # Flatten and extract all subblock IDs from env assignments
-    env_subblocks = set(chain(*env_assignments))
+    try:
+        expected = json.loads(expected_annotation)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse expected slice-selection annotation: {e!r}") from e
 
-    # Flatten and extract all subblock IDs from jobset assignments
-    jobset_subblocks = set(chain(*jobset_assignments))
+    try:
+        deployed = json.loads(deployed_annotation)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse deployed slice-selection annotation: {e!r}") from e
 
-    # Compare as sets (order and grouping don't matter)
-    return env_subblocks == jobset_subblocks
+    if expected.keys() != deployed.keys():
+        return False
+
+    def _normalize(slices: list) -> frozenset:
+        return frozenset(frozenset(subblocks) for subblocks in slices)
+
+    return all(_normalize(expected[k]) == _normalize(deployed[k]) for k in expected)
 
 
 def _infer_processor_type(jobset_spec: dict) -> Optional[str]:
@@ -345,6 +318,7 @@ class GKERunnerJob(BaseRunnerJob):
         cfg.event_publisher = event_queue_from_config(flag_values=fv)
         if is_vertexai_tensorboard_configured(fv):
             cfg.vertexai_tb_uploader = VertexAITensorboardUploader.from_flags(fv)
+
         return cfg
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
@@ -418,16 +392,17 @@ class GKERunnerJob(BaseRunnerJob):
             if runner_utils.should_recreate_job(tier, reservation, processor_type=processor_type):
                 return GKERunnerJob.Status.RESCHEDULED
 
-            # Validate topology assignments match between env and jobset
-            topology_assignment_env = _topology_assignment_from_env()
-            topology_assignment_jobset = _topology_assignment_from_resource(resource=resp)
-            if not _compare_topology_assignments(
-                topology_assignment_env, topology_assignment_jobset
-            ):
+            # Validate topology assignments match between builder config and deployed resource.
+            # If the builder expects a slice-selection annotation, check it matches the resource.
+            expected_slice_selection = self._inner.get_workload_annotations().get(
+                "tpu-provisioner.cloud.google.com/slice-selection"
+            )
+            deployed_slice_selection = _slice_selection_annotation_from_resource(resource=resp)
+            if not _compare_slice_selection(expected_slice_selection, deployed_slice_selection):
                 logging.info(
-                    "Topology assignment changed. Env subblocks: %s, Jobset subblocks: %s",
-                    topology_assignment_env,
-                    topology_assignment_jobset,
+                    "Topology assignment changed. Expected: %s, Deployed: %s",
+                    expected_slice_selection,
+                    deployed_slice_selection,
                 )
                 return GKERunnerJob.Status.RESCHEDULED
 
@@ -975,14 +950,17 @@ class LWSRunnerJob(BaseRunnerJob):
                 plural="leaderworkersets",
             )
 
-            # Validate topology assignments match between env and LWS resource.
-            topology_assignment_env = _topology_assignment_from_env()
-            topology_assignment_lws = _topology_assignment_from_resource(resource=resp)
-            if not _compare_topology_assignments(topology_assignment_env, topology_assignment_lws):
+            # Validate topology assignments match between builder config and deployed resource.
+            # If the builder expects a slice-selection annotation, check it matches the resource.
+            expected_slice_selection = self._inner.get_workload_annotations().get(
+                "tpu-provisioner.cloud.google.com/slice-selection"
+            )
+            deployed_slice_selection = _slice_selection_annotation_from_resource(resource=resp)
+            if not _compare_slice_selection(expected_slice_selection, deployed_slice_selection):
                 logging.info(
                     "Topology assignment changed. Env subblocks: %s, LWS subblocks: %s",
-                    topology_assignment_env,
-                    topology_assignment_lws,
+                    expected_slice_selection,
+                    deployed_slice_selection,
                 )
                 return LWSRunnerJob.Status.RESCHEDULED
 

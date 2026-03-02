@@ -4,6 +4,7 @@
 
 import copy
 import io
+import json
 import logging
 import os
 from typing import Any, Optional, Sequence, Union
@@ -840,6 +841,22 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
 
         return replicated_jobs
 
+    def get_workload_labels(self) -> dict[str, str]:
+        inner_cfg: TPUReplicatedJob.Config = self._inner.config
+        if inner_cfg.enable_tpu_slice_auto_provisioning and inner_cfg.topology_assignment:
+            return {"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "sync"}
+        return {}
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        inner_cfg: TPUReplicatedJob.Config = self._inner.config
+        if inner_cfg.enable_tpu_slice_auto_provisioning and inner_cfg.topology_assignment:
+            return {
+                "tpu-provisioner.cloud.google.com/slice-selection": json.dumps(
+                    {_PATHWAYS_WORKER_REPLICATED_JOB_NAME: inner_cfg.topology_assignment}
+                )
+            }
+        return {}
+
 
 # TODO (ethanli): Consider refactoring with the modifiers pattern.
 class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
@@ -917,6 +934,19 @@ class PathwaysMultiheadReplicatedJob(PathwaysReplicatedJob):
             )
 
         return replicated_jobs
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        inner_cfg: TPUReplicatedJob.Config = self._inner.config
+        if not (inner_cfg.enable_tpu_slice_auto_provisioning and inner_cfg.topology_assignment):
+            return {}
+        # Each pwwk-N job gets exactly one slice assignment from the full topology list.
+        # inner_cfg.topology_assignment[i] is the subblock list for replica i.
+        slice_selection = {
+            f"{_PATHWAYS_WORKER_REPLICATED_JOB_NAME}-{i}": [inner_cfg.topology_assignment[i]]
+            for i in range(inner_cfg.accelerator.num_replicas)
+            if i < len(inner_cfg.topology_assignment)
+        }
+        return {"tpu-provisioner.cloud.google.com/slice-selection": json.dumps(slice_selection)}
 
 
 class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
@@ -1545,3 +1575,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             leaderTemplate=self.build_leader_pod(),
             workerTemplate=self.build_worker_pod(),
         )
+
+    def get_workload_labels(self) -> dict[str, str]:
+        return self._inner.get_workload_labels()
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        return self._inner.get_workload_annotations()

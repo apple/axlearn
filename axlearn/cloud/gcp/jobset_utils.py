@@ -3,6 +3,7 @@
 """Utilities for building Jobset specs."""
 
 import io
+import json
 import logging
 import math
 import os
@@ -27,6 +28,7 @@ from axlearn.cloud.common.utils import (
     namespaced,
     parse_kv_flags,
 )
+from axlearn.cloud.gcp import topology_utils
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
@@ -184,7 +186,7 @@ class BaseReplicatedJob(FlagConfigurable):
                 Each host's output will be placed in `"{output_dir}/output/$HOSTNAME/"`.
                 This directory is used by the sidecar container to sync outputs to GCS using gsutil.
                 Ensure that `output_dir` is a valid GCS path (e.g., `gs://your-bucket/path`).
-            image_id: An optional field to specify the image used for starting the container
+            image_id: An optional field to specify the image used for starting the container.
         """
 
         name: Required[str] = REQUIRED
@@ -226,6 +228,24 @@ class BaseReplicatedJob(FlagConfigurable):
         """
         raise NotImplementedError(type(self))
 
+    def get_workload_labels(self) -> dict[str, str]:
+        """Returns labels to be added to the parent jobset.
+
+        Returns:
+            A dict of labels to merge into the jobset metadata.
+            Empty dict if no additional labels are needed.
+        """
+        return {}
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        """Returns annotations to be added to the parent jobset.
+
+        Returns:
+            A dict of annotations to merge into the jobset metadata.
+            Empty dict if no additional annotations are needed.
+        """
+        return {}
+
 
 @namespaced(mapping="inner")
 class CompositeReplicatedJob(BaseReplicatedJob):
@@ -252,6 +272,18 @@ class CompositeReplicatedJob(BaseReplicatedJob):
         for child in self._inner.values():
             composite.extend(child())
         return composite
+
+    def get_workload_labels(self) -> dict[str, str]:
+        result = {}
+        for child in self._inner.values():
+            result.update(child.get_workload_labels())
+        return result
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        result = {}
+        for child in self._inner.values():
+            result.update(child.get_workload_annotations())
+        return result
 
 
 class SingleReplicatedJob(BaseReplicatedJob):
@@ -408,6 +440,10 @@ class TPUJobBuilder(SingleReplicatedJob):
                 https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
             job_labels: Optional dictionary of custom labels to be applied to the Job metadata.
                 These labels will be added in addition to the default job labels.
+            topology_assignment: An optional TPU topology assignment for this job.
+                Format: [["sub-block-id", ...], ...] where each inner list contains
+                subblock IDs for one replica. When enable_tpu_slice_auto_provisioning is True,
+                this is initialized from the environment variable in from_flags().
         """
 
         reservation: Optional[str] = None
@@ -419,6 +455,7 @@ class TPUJobBuilder(SingleReplicatedJob):
         priority_class: Optional[str] = None
         additional_node_networks: Optional[str] = None
         job_labels: Optional[dict[str, str]] = None
+        topology_assignment: Optional[list[list[str]]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -472,6 +509,11 @@ class TPUJobBuilder(SingleReplicatedJob):
         cfg.additional_node_networks = gcp_settings(
             "additional_node_networks", required=False, fv=fv
         )
+
+        # Initialize topology from the environment when auto-provisioning is enabled.
+        if cfg.enable_tpu_slice_auto_provisioning:
+            cfg.topology_assignment = topology_utils.get_topology_from_env()
+
         if fv.persistent_disk_size_gb is not None:
             if not 0 < fv.persistent_disk_size_gb <= _PERSISTENT_DISK_SIZE_MAX_GIB:
                 raise ValueError(
@@ -962,6 +1004,22 @@ class TPUJobBuilder(SingleReplicatedJob):
             )
 
         return labels
+
+    def get_workload_labels(self) -> dict[str, str]:
+        cfg: TPUJobBuilder.Config = self.config
+        if cfg.enable_tpu_slice_auto_provisioning and cfg.topology_assignment:
+            return {"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "sync"}
+        return {}
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        cfg: TPUJobBuilder.Config = self.config
+        if cfg.enable_tpu_slice_auto_provisioning and cfg.topology_assignment:
+            return {
+                "tpu-provisioner.cloud.google.com/slice-selection": json.dumps(
+                    {cfg.job_name: cfg.topology_assignment}
+                )
+            }
+        return {}
 
 
 class TPUReplicatedJob(TPUJobBuilder):

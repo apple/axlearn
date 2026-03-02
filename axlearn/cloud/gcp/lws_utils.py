@@ -2,6 +2,7 @@
 
 """Utilities for building LeaderWorkerSet specs"""
 
+import json
 from typing import Any, Optional, Sequence
 
 from absl import flags
@@ -93,6 +94,24 @@ class BaseLeaderWorkerTemplate(FlagConfigurable):
         """
         raise NotImplementedError(type(self))
 
+    def get_workload_labels(self) -> dict[str, str]:
+        """Returns labels to be added to the parent LeaderWorkerSet.
+
+        Returns:
+            A dict of labels to merge into the LWS metadata.
+            Empty dict if no additional labels are needed.
+        """
+        return {}
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        """Returns annotations to be added to the parent LeaderWorkerSet.
+
+        Returns:
+            A dict of annotations to merge into the LWS metadata.
+            Empty dict if no additional annotations are needed.
+        """
+        return {}
+
 
 class TPULeaderWorkerTemplate(TPUJobBuilder):
     """Builds a LeaderWorkerTemplate spec for a generic TPU workload"""
@@ -112,6 +131,22 @@ class TPULeaderWorkerTemplate(TPUJobBuilder):
             )
 
         return pod
+
+    def get_workload_labels(self) -> dict[str, str]:
+        cfg: TPUJobBuilder.Config = self.config
+        if cfg.enable_tpu_slice_auto_provisioning and cfg.topology_assignment:
+            return {"tpu-provisioner.cloud.google.com/slice-autoprovisioning": "async"}
+        return {}
+
+    def get_workload_annotations(self) -> dict[str, str]:
+        cfg: TPUJobBuilder.Config = self.config
+        if cfg.enable_tpu_slice_auto_provisioning and cfg.topology_assignment:
+            return {
+                "tpu-provisioner.cloud.google.com/slice-selection": json.dumps(
+                    {"workers": cfg.topology_assignment}
+                )
+            }
+        return {}
 
     def __call__(self) -> Sequence[Nested[Any]]:
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
