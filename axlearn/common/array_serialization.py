@@ -18,6 +18,7 @@ https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/
 """
 import asyncio
 import functools
+import gc
 import math
 import os
 import threading
@@ -786,12 +787,14 @@ async def _run_colocated_deserialize(
         # block_until_ready is run in an executor so the event loop can continue
         # dispatching other coroutines while waiting for this array to materialize.
         await loop.run_in_executor(multi_thread_pool, cpu_array.block_until_ready)
-        return await loop.run_in_executor(
+        tpu_array = await loop.run_in_executor(
             multi_thread_pool,
             _blocking_device_put,
             cpu_array,
             tpu_sharding,
         )
+        del cpu_array  # Release CPU buffer promptly; don't wait for coroutine frame to exit.
+        return tpu_array
 
     async def _load_and_transfer_one_rate_limited(
         idx: int,
@@ -835,6 +838,8 @@ async def _run_colocated_deserialize(
 
     total_time = time.perf_counter() - start_time
     logging.info("Pipelined colocated deserialization completed in %.2f seconds", total_time)
+
+    gc.collect()
 
     return tpu_arrays
 
