@@ -702,8 +702,17 @@ class Decoder(BaseLayer):
         input_segment_ids = input_batch.get("input_segment_ids", None)
         positions = input_batch.get("positions", None)
 
+        # TODO(dhwang2): Remove this temp solution. After PR #2057, emb prefill uses init_states.
+        def infer_fwd_dtype():
+            leaves = jax.tree_util.tree_leaves(self.parameters["emb"])
+            first_float_leaf = next(
+                (v for v in leaves if jnp.issubdtype(v.dtype, jnp.floating)), None
+            )
+            return first_float_leaf.dtype if first_float_leaf is not None else self.dtype()
+
+        fwd_dtype = infer_fwd_dtype()
         with child_context("emb_init_states", module=self.emb):
-            emb = self.emb.init_states(batch_size=input_ids.shape[0], dtype=self.dtype())
+            emb = self.emb.init_states(batch_size=input_ids.shape[0], dtype=fwd_dtype)
         states, outputs = self._forward_for_mode(
             mode=ForwardMode.INIT_STATES,
             cached_states=dict(emb=emb, transformer_state=time_step),
