@@ -277,6 +277,12 @@ def main():
         action="store_true",
         help="Enable JAX profiler (adds overhead, disable for accurate benchmarking)",
     )
+    parser.add_argument(
+        "--num_iters",
+        type=int,
+        default=1,
+        help="Number of times to repeat the load benchmark (default: 1)",
+    )
     args = parser.parse_args()
 
     # Disable persistent compilation cache for fair benchmarking
@@ -309,7 +315,8 @@ def main():
     state_spec = create_state_spec_from_checkpoint(args.ckpt_path)
     print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
 
-    print(f"--- Running {args.method} benchmark ---")
+    num_iterations = args.num_iters
+    print(f"--- Running {args.method} benchmark ({num_iterations} iterations) ---")
     loaded_values = None
     try:
         with create_mesh():
@@ -318,21 +325,36 @@ def main():
                 args.ckpt_path, state_spec
             )
 
+            if args.method == "default":
+                os.environ["COLOCATED_PYTHON_DESERIALIZE"] = "0"
+
+            loaded_values = None
             with maybe_profile(args.profile, profile_dir):
-                if args.method == "default":
-                    os.environ["COLOCATED_PYTHON_DESERIALIZE"] = "0"
-                start_time = time.perf_counter()
-                loaded_values = load_model(
-                    tensorstore_specs=tensorstore_specs,
-                    shardings=shardings,
-                    global_shapes=global_shapes,
-                    dtypes=dtypes,
-                )
-                print(f"✅ Successfully loaded model from {args.ckpt_path}")
-                print(f"Total time took {time.perf_counter() - start_time:.2f} seconds")
-                print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
+                for i in range(num_iterations):
+                    # Drop reference to TPU arrays and sleep for 150s for better memory observation.
+                    if loaded_values is not None:
+                        del loaded_values
+                        loaded_values = None
+                        time.sleep(150)
+
+                    print(f"\n--- Iteration {i + 1}/{num_iterations} ---")
+                    start_time = time.perf_counter()
+                    loaded_values = load_model(
+                        tensorstore_specs=tensorstore_specs,
+                        shardings=shardings,
+                        global_shapes=global_shapes,
+                        dtypes=dtypes,
+                    )
+                    elapsed = time.perf_counter() - start_time
+                    print(f"✅ Successfully loaded model from {args.ckpt_path}")
+                    print(f"Total time took {elapsed:.2f} seconds")
+                    print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
+
+                    # Sleep in between iterations.
+                    if i < num_iterations - 1:
+                        time.sleep(150)
     finally:
-        # Always clean up, even if benchmark fails
+        # Always clean up, even if benchmark fails.
         if loaded_values is not None:
             cleanup_loaded_arrays(loaded_values)
 
