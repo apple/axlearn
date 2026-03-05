@@ -36,6 +36,27 @@ def get_hf_models_cache_dir() -> Path:
     return hf_models_cache_dir
 
 
+def _recursive_copy_map(src_dir: str, dst_dir: str) -> dict[str, str]:
+    """Recursively collect {source_path: destination_path} for all files under src_dir."""
+    copy_map = {}
+    for item_name in fs.listdir(src_dir):
+        src_item = os.path.join(src_dir, item_name)
+        dst_item = os.path.join(dst_dir, item_name)
+        if fs.isdir(src_item):
+            copy_map.update(_recursive_copy_map(src_item, dst_item))
+        else:
+            copy_map[src_item] = dst_item
+    return copy_map
+
+
+def _recursive_copy_dir(src_dir: str, dst_dir: str):
+    """Recursively copy all files from src_dir to dst_dir."""
+    for src_path, dst_path in _recursive_copy_map(src_dir, dst_dir).items():
+        Path(dst_path).parent.mkdir(parents=True, exist_ok=True)
+        logging.info("Downloading %s to %s", src_path, dst_path)
+        fs.copy(src_path, dst_path)
+
+
 def download_hf_models_from_remote(remote_path: str) -> str:
     """Downloads HuggingFace model artifacts from remote storage like gs:// or s3://.
 
@@ -51,18 +72,11 @@ def download_hf_models_from_remote(remote_path: str) -> str:
     cache_dir = get_hf_models_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_pretrained_model_path = cache_dir / model_name
+
     if not local_pretrained_model_path.exists():
         local_pretrained_model_path.mkdir(parents=True)
-        for filename in fs.listdir(remote_path):
-            logging.info(
-                "Downloading %s to %s",
-                os.path.join(remote_path, filename),
-                local_pretrained_model_path / filename,
-            )
-            fs.copy(
-                os.path.join(remote_path, filename),
-                str(local_pretrained_model_path / filename),
-            )
+        _recursive_copy_dir(remote_path, str(local_pretrained_model_path))
+
     return str(local_pretrained_model_path)
 
 
