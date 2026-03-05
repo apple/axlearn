@@ -5,7 +5,8 @@ worker status reporting, replica status reporting, and restart requests.
 """
 
 import logging
-from typing import Optional
+import threading
+from typing import Any, Optional
 
 import grpc
 
@@ -31,12 +32,51 @@ class ManagerClient:
         """
         self.timeout = timeout
         self.port = port
-        logging.info("ManagerClient initialized: timeout=%.1fs, port=%d", timeout, port)
+        self._channels: dict[tuple[str, int], grpc.Channel] = {}
+        self._channels_lock = threading.Lock()
+        logging.debug("ManagerClient initialized: timeout=%.1fs, port=%d", timeout, port)
 
-    def _create_stub(self, hostname: str, port: int) -> manager_pb2_grpc.ManagerServiceStub:
-        """Create a gRPC stub for the target host."""
-        channel = grpc.insecure_channel(f"{hostname}:{port}")
-        return manager_pb2_grpc.ManagerServiceStub(channel)
+    def _get_stub(self, hostname: str, port: int) -> manager_pb2_grpc.ManagerServiceStub:
+        """Return a cached gRPC stub for the target host, creating the channel if needed."""
+        key = (hostname, port)
+        with self._channels_lock:
+            if key not in self._channels:
+                self._channels[key] = grpc.insecure_channel(f"{hostname}:{port}")
+            return manager_pb2_grpc.ManagerServiceStub(self._channels[key])
+
+    def _grpc_call(
+        self,
+        hostname: str,
+        port: int,
+        method_name: str,
+        request,
+        log_prefix: Optional[str] = None,
+    ) -> Any:
+        """Execute a gRPC call with uniform debug logging.
+
+        Args:
+            hostname: Target hostname.
+            port: Target port.
+            method_name: Name of the gRPC stub method to invoke (e.g. "ReportStatus",
+                "RestartReplicaTraining"). Must match the RPC name in the proto service definition.
+            request: Protobuf request message.
+            log_prefix: Short string used in log messages; defaults to method_name.
+
+        Returns:
+            The response message. Raises exceptions on failure.
+        """
+        prefix = log_prefix or method_name
+        logging.debug("%s: sending to %s:%d", prefix, hostname, port)
+        stub = self._get_stub(hostname, port)
+        response = getattr(stub, method_name)(request, timeout=self.timeout)
+        logging.debug(
+            "%s: response from %s:%d acknowledged=%s",
+            prefix,
+            hostname,
+            port,
+            response.acknowledged,
+        )
+        return response
 
     @retry(max_attempts=3)
     def report_status(
@@ -55,35 +95,16 @@ class ManagerClient:
         if port is None:
             port = self.port
         try:
-            # Create request
             request = manager_pb2.StatusUpdate()
             request.worker_identity.CopyFrom(create_worker_identity_proto())
             request.worker_status.CopyFrom(worker_status)
             request.timestamp.CopyFrom(create_current_timestamp())
 
-            logging.debug(
-                "Sending status update: target=%s:%d, worker=%s, step=%d",
-                target_host,
-                port,
-                request.worker_identity.hostname,
-                worker_status.training_step,
-            )
-
-            # Send request
-            stub = self._create_stub(target_host, port)
-            response = stub.ReportStatus(request, timeout=self.timeout)
-
-            logging.debug(
-                "Status report successful: target=%s:%d, step=%d, acknowledged=%s",
-                target_host,
-                port,
-                worker_status.training_step,
-                response.acknowledged,
-            )
+            response = self._grpc_call(target_host, port, "ReportStatus", request)
             return response.acknowledged
 
         except Exception as e:  # pylint: disable=broad-exception-caught
-            logging.error(
+            logging.debug(
                 "Status report failed: target=%s:%d, step=%d, error=%s",
                 target_host,
                 port,
@@ -120,26 +141,7 @@ class ManagerClient:
             request.replica_status.CopyFrom(replica_status)
             request.timestamp.CopyFrom(create_current_timestamp())
 
-            logging.debug(
-                "Sending replica status: replica_id=%d, target=%s:%d, workers=%d/%d",
-                replica_id,
-                target_host,
-                port,
-                replica_status.reported_workers,
-                replica_status.total_workers,
-            )
-
-            # Send request
-            stub = self._create_stub(target_host, port)
-            response = stub.ReportReplicaStatus(request, timeout=self.timeout)
-
-            logging.debug(
-                "Replica status sent: replica_id=%d, target=%s:%d, acknowledged=%s",
-                replica_id,
-                target_host,
-                port,
-                response.acknowledged,
-            )
+            response = self._grpc_call(target_host, port, "ReportReplicaStatus", request)
             return response.acknowledged
 
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -170,38 +172,22 @@ class ManagerClient:
         if port is None:
             port = self.port
         try:
-            # Create request
             request = manager_pb2.RestartReplicaRequest()
             request.replica_id = replica_id
             request.reason = reason
             request.timestamp.CopyFrom(create_current_timestamp())
 
-            logging.info(
-                "Sending RestartReplicaTraining: target=%s:%d, replica_id=%d, reason='%s'",
+            response = self._grpc_call(
                 target_hostname,
                 port,
-                replica_id,
-                reason,
+                "RestartReplicaTraining",
+                request,
+                f"RestartReplicaTraining(replica={replica_id}, reason='{reason}')",
             )
-
-            # Send request
-            stub = self._create_stub(target_hostname, port)
-            response = stub.RestartReplicaTraining(request, timeout=self.timeout)
-
-            logging.info(
-                "RestartReplicaTraining response: target=%s:%d, replica_id=%d, "
-                "acknowledged=%s, message='%s'",
-                target_hostname,
-                port,
-                replica_id,
-                response.acknowledged,
-                response.message,
-            )
-
             return response.acknowledged
 
         except Exception as e:  # pylint: disable=broad-exception-caught
-            logging.error(
+            logging.debug(
                 "RestartReplicaTraining failed: target=%s:%d, replica_id=%d, "
                 "reason='%s', error=%s",
                 target_hostname,
@@ -221,13 +207,13 @@ class ManagerClient:
         worker_id: int,
         port: Optional[int] = None,
     ) -> bool:
-        """Send restart request to a specific worker (Replica → Worker level).
+        """Send restart request to a specific worker (Replica -> Worker level).
 
         Args:
             target_hostname: Hostname of the worker
             replica_id: Replica ID of the target worker
             reason: Reason for restart
-            worker_id: Worker ID (derived from hostname if None)
+            worker_id: Worker ID of the target worker
             port: Port of the worker (uses default_port if None)
 
         Returns:
@@ -236,7 +222,6 @@ class ManagerClient:
         if port is None:
             port = self.port
         try:
-            # Create request
             request = manager_pb2.RestartRequest()
             request.worker_identity.hostname = target_hostname
             request.worker_identity.replica_id = replica_id
@@ -244,32 +229,17 @@ class ManagerClient:
             request.reason = reason
             request.timestamp.CopyFrom(create_current_timestamp())
 
-            logging.info(
-                "Sending RestartTraining: target=%s:%d, worker_id=%d, reason='%s'",
+            response = self._grpc_call(
                 target_hostname,
                 port,
-                worker_id,
-                reason,
+                "RestartTraining",
+                request,
+                f"RestartTraining(worker={worker_id}, reason='{reason}')",
             )
-
-            # Send request
-            stub = self._create_stub(target_hostname, port)
-            response = stub.RestartTraining(request, timeout=self.timeout)
-
-            logging.info(
-                "RestartTraining response: target=%s:%d, worker_id=%d, "
-                "acknowledged=%s, message='%s'",
-                target_hostname,
-                port,
-                worker_id,
-                response.acknowledged,
-                response.message,
-            )
-
             return response.acknowledged
 
         except Exception as e:  # pylint: disable=broad-exception-caught
-            logging.error(
+            logging.debug(
                 "RestartTraining failed: target=%s:%d, replica_id=%d, "
                 "worker_id=%s, reason='%s', error=%s",
                 target_hostname,
@@ -298,7 +268,6 @@ class ManagerClient:
         if port is None:
             port = self.port
         try:
-            # Create request
             request = manager_pb2.PodShutdownRequest()
             request.worker_identity.CopyFrom(create_worker_identity_proto())
             request.reason = reason
@@ -311,18 +280,7 @@ class ManagerClient:
                 reason,
             )
 
-            # Send request
-            stub = self._create_stub(target_hostname, port)
-            response = stub.ReportPodShutdown(request, timeout=self.timeout)
-
-            logging.info(
-                "Pod shutdown reported: target=%s:%d, acknowledged=%s, message='%s'",
-                target_hostname,
-                port,
-                response.acknowledged,
-                response.message,
-            )
-
+            response = self._grpc_call(target_hostname, port, "ReportPodShutdown", request)
             return response.acknowledged
 
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -336,8 +294,10 @@ class ManagerClient:
             return False
 
     def close(self):
-        """Close client resources (no-op for simplified implementation)."""
-        pass
+        """Close all cached gRPC channels."""
+        for channel in self._channels.values():
+            channel.close()
+        self._channels.clear()
 
     def __enter__(self):
         """Enter context manager."""

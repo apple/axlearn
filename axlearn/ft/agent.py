@@ -86,6 +86,58 @@ def _handle_termination_request(
     return TerminationAction.RESTART
 
 
+def _run_single_attempt(
+    entrypoint_cmd: list[str],
+    restart_count: int,
+    max_restarts: int,
+    process_controller: TrainerProcessController,
+    monitor: "StatusMonitor",
+) -> TerminationAction | None:
+    """Run a single trainer attempt and return the action to take.
+
+    Args:
+        entrypoint_cmd: Command to launch the trainer subprocess.
+        restart_count: Current restart attempt number.
+        max_restarts: Maximum allowed restarts.
+        process_controller: Controller for the trainer process.
+        monitor: Status monitor for the trainer.
+
+    Returns:
+        TerminationAction.EXIT if the agent should exit gracefully,
+        TerminationAction.RESTART if a coordinated restart was requested,
+        None if the attempt failed and the caller should increment restart_count and retry.
+
+    Raises:
+        RuntimeError: When training fails and max restarts are exhausted.
+    """
+    with subprocess.Popen(
+        entrypoint_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    ) as process:
+        process_controller.set_process(process)
+        returncode = monitor.monitor_training_process(process, restart_count)
+        process_controller.clear_process()
+
+        action = _handle_termination_request(process_controller)
+        if action is not None:
+            return action
+
+        if returncode == 0:
+            logging.info("FT Agent: Training completed successfully")
+            return TerminationAction.EXIT
+
+        if restart_count < max_restarts:
+            logging.error("FT Agent: Training failed (code %d), restarting...", returncode)
+        else:
+            logging.error("FT Agent: Max restarts (%d) reached", max_restarts)
+            raise RuntimeError(f"Max restarts reached, last exit code: {returncode}")
+
+    return None
+
+
 def run_ft_agent(trainer_argv: list[str]):
     """The agent launches trainer as a subprocess with fault tolerance.
 
@@ -121,7 +173,7 @@ def run_ft_agent(trainer_argv: list[str]):
             logging.error("FT Agent: Failed to report pod shutdown: %s", e)
 
         # Terminate the trainer process
-        logging.info("FT Agent: Terminating trainer due to signal %d", signum)
+        logging.debug("FT Agent: Terminating trainer due to signal %d", signum)
         process_controller.terminate_training(f"{_POD_SHUTDOWN_REASON_PREFIX} {signum}")
 
         logging.warning("FT Agent: exit with non-zero code due to signal %d recieved.", signum)
@@ -142,37 +194,19 @@ def run_ft_agent(trainer_argv: list[str]):
             try:
                 # Start trainer in its own process group (start_new_session=True)
                 # This allows os.killpg() to terminate all threads cleanly
-                with subprocess.Popen(
-                    entrypoint_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    start_new_session=True,
-                ) as process:
-                    process_controller.set_process(process)
-                    returncode = monitor.monitor_training_process(process)
-                    process_controller.clear_process()
+                action = _run_single_attempt(
+                    entrypoint_cmd, restart_count, max_restarts, process_controller, monitor
+                )
+                if action == TerminationAction.EXIT:
+                    return
+                if action == TerminationAction.RESTART:
+                    continue  # Coordinated restart - don't increment restart_count
+                restart_count += 1
 
-                    # Handle termination requests (SIGTERM or coordinated restart)
-                    action = _handle_termination_request(process_controller)
-                    if action == TerminationAction.EXIT:
-                        return
-                    if action == TerminationAction.RESTART:
-                        continue  # Restart without incrementing restart_count
-
-                    if returncode == 0:
-                        logging.info("FT Agent: Training completed successfully")
-                        return
-                    elif restart_count < max_restarts:
-                        restart_count += 1
-                        logging.error(
-                            "FT Agent: Training failed (code %d), restarting...", returncode
-                        )
-                    else:
-                        logging.error("FT Agent: Max restarts (%d) reached", max_restarts)
-                        sys.exit(returncode)
-
-            except Exception as e:  # pylint: disable=broad-exception-caught
+            except RuntimeError as e:
+                logging.error("FT Agent: %s", e)
+                sys.exit(1)
+            except OSError as e:
                 logging.error("FT Agent: Failed to start trainer: %s", e)
                 process_controller.clear_process()
                 if restart_count < max_restarts:

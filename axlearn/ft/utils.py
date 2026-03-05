@@ -200,7 +200,8 @@ def retry(max_attempts: int = 3, retry_interval: float = 1.0):
 
     Args:
         max_attempts: Maximum number of retry attempts
-        retry_interval: Initial retry interval in seconds
+        retry_interval: Initial retry interval in seconds; doubles on each subsequent attempt,
+            capped at 60 seconds
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
@@ -214,7 +215,7 @@ def retry(max_attempts: int = 3, retry_interval: float = 1.0):
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     if attempt == max_attempts - 1:  # Last attempt
                         raise e
-                    time.sleep(retry_interval)  # Simple delay between retries
+                    time.sleep(min(retry_interval * (2**attempt), 60))  # Exponential backoff
 
         return wrapper
 

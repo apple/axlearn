@@ -52,7 +52,7 @@ class Manager:
         atexit.register(self.cleanup)
 
         # Initialize components based on role
-        logging.info(
+        logging.debug(
             "Initializing manager in worker (replica=%d, worker=%d, port=%d)",
             self._identity.replica_id,
             self._identity.worker_id,
@@ -65,7 +65,7 @@ class Manager:
             self._server = ManagerServer(port=self.port, process_controller=process_controller)
             self._server.start_server()
 
-            logging.info("Manager initialized.")
+            logging.debug("Manager initialized.")
         except Exception as e:
             logging.error("Failed to initialize manager: %s", e)
             self.cleanup()
@@ -164,14 +164,16 @@ class Manager:
         results = {}
 
         for replica_id in range(num_replicas):
-            logging.info("Sending restart request to replica %d: %s", replica_id, reason)
+            logging.debug("Sending restart request to replica %d: %s", replica_id, reason)
             success = self._send_restart_to_replica(replica_id, reason)
             results[replica_id] = success
 
             if success:
-                logging.info("Replica %d restart request acknowledged", replica_id)
+                logging.debug("Replica %d restart request acknowledged", replica_id)
             else:
-                logging.error("Replica %d restart request failed", replica_id)
+                logging.warning(
+                    "Replica %d restart request failed (may still be restarting)", replica_id
+                )
 
         return results
 
@@ -235,4 +237,4 @@ class Manager:
             self._client.close()
         if self._server:
             self._server.stop_server()
-        logging.info("Manager cleanup completed")
+        logging.debug("Manager cleanup completed")

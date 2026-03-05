@@ -4,6 +4,7 @@ Monitors training status and reports to FT manager system for fault tolerance.
 Provides hang detection and automatic restart capabilities.
 """
 
+import json
 import logging
 import re
 import subprocess
@@ -309,7 +310,7 @@ class StatusMonitor:
         """Start monitoring thread."""
         self.monitor_thread = threading.Thread(target=self.monitor_loop, daemon=True)
         self.monitor_thread.start()
-        logging.info("FT Monitor: Started monitoring thread")
+        logging.debug("FT Monitor: Started monitoring thread")
 
     def stop(self):
         """Stop monitoring thread."""
@@ -317,7 +318,7 @@ class StatusMonitor:
         if hasattr(self, "monitor_thread"):
             self.monitor_thread.join(timeout=5)
         self.manager.cleanup()
-        logging.info("FT Monitor: Stopped monitoring thread")
+        logging.debug("FT Monitor: Stopped monitoring thread")
 
     # Convenience methods for easier integration
     def update_step_from_callback(self, step: int):
@@ -332,11 +333,36 @@ class StatusMonitor:
         """
         return self.manager.get_restart_status()
 
-    def monitor_training_process(self, process: "subprocess.Popen") -> int:
+    def _forward_trainer_log_line(self, line: str, restart_count: int) -> None:
+        """Forward a trainer subprocess log line via the logging system.
+
+        Args:
+            line: A single line of text from the trainer's stdout (may include
+                trailing newline).
+            restart_count: The current restart attempt number.
+        """
+        line = line.rstrip("\n")
+        labels = {"ft_trainer": "true", "restart_count": str(restart_count)}
+        logger = logging.getLogger(__name__)
+
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            payload = None
+
+        if payload and isinstance(payload.get("message"), str):
+            level = getattr(logging, payload.get("severity", "INFO"), logging.INFO)
+            logger.log(level, "%s", payload["message"], extra={"labels": labels})
+            return
+
+        logger.info("%s", line, extra={"labels": labels})
+
+    def monitor_training_process(self, process: "subprocess.Popen", restart_count: int = 0) -> int:
         """Monitor training process with integrated restart handling.
 
         Args:
-            process: The training subprocess to monitor
+            process: The training subprocess to monitor.
+            restart_count: Current restart attempt number, included in forwarded logs.
 
         Returns:
             int: Process return code
@@ -353,8 +379,8 @@ class StatusMonitor:
                     if step is not None:
                         self.update_step(step)
 
-                    # Output with FT prefix
-                    print(f"[FT_TRAINER] {line}", end="", flush=True)
+                    # Forward trainer log line preserving original metadata
+                    self._forward_trainer_log_line(line, restart_count)
 
                     # Check if restart was requested through FT system
                     termination_requested, reason = self.get_restart_status()

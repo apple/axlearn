@@ -73,14 +73,14 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
         # Initialize registries based on role
         if self._worker_identity.is_replica_manager:
             self._status_registry: Dict[str, WorkerStatusRecord] = {}
-            logging.info(
+            logging.debug(
                 "Server initialized as replica manager for replica %d",
                 self._worker_identity.replica_id,
             )
 
         if self._worker_identity.is_global_manager:
             self._replica_registry: Dict[int, Dict] = {}
-            logging.info("Server initialized as global manager")
+            logging.debug("Server initialized as global manager")
 
     def _validate_role(self, required_role: str, operation: str) -> None:
         """Validate worker role for operation.
@@ -134,7 +134,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
         self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=self.max_worker_threads))
         self.server.add_insecure_port(f"[::]:{self.port}")
 
-        logging.info(
+        logging.debug(
             "Starting server on port %d (replica=%d, worker=%d)",
             self.port,
             self._worker_identity.replica_id,
@@ -151,11 +151,11 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
         """Stop the gRPC server and clean up resources."""
         if self.server:
             self.server.stop(grace_period)
-            logging.info("Manager server stopped")
+            logging.debug("Manager server stopped")
 
         # Shutdown termination executor (wait for pending tasks to complete)
         self._termination_executor.shutdown(wait=True)
-        logging.info("Termination executor stopped")
+        logging.debug("Termination executor stopped")
 
     def ReportStatus(
         self, request: manager_pb2.StatusUpdate, context
@@ -305,7 +305,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
             successful_forwards = sum(1 for result in forward_results.values() if result)
             total_forwards = len(forward_results)
 
-            logging.info(
+            logging.debug(
                 "Replica %d restart: workers=%d/%d",
                 request.replica_id,
                 successful_forwards,
@@ -341,7 +341,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
             success = self.process_controller.terminate_training(reason)
             if success:
                 action = "shutdown" if is_shutdown else "restart"
-                logging.info("Worker %s training %s completed", hostname, action)
+                logging.debug("Worker %s training %s completed", hostname, action)
                 if is_shutdown:
                     logging.warning("Immediate shutdown requested, exiting after termination")
             else:
@@ -364,7 +364,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 request.reason,
             )
 
-            logging.info("Worker processing restart request")
+            logging.debug("Worker processing restart request")
 
             # Check if this is a shutdown request (not a restart)
             is_shutdown = request.reason.startswith("IMMEDIATE_SHUTDOWN:")
@@ -407,7 +407,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
 
             worker_identity = request.worker_identity
 
-            logging.warning(
+            logging.debug(
                 "Pod shutdown reported: worker=%s (replica=%d, worker=%d), reason='%s'",
                 worker_identity.hostname,
                 worker_identity.replica_id,
@@ -434,7 +434,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
 
     def _handle_pod_shutdown(self, affected_worker: WorkerIdentity, reason: str):
         """Handle pod shutdown by terminating specific worker and restarting all replicas."""
-        logging.warning(
+        logging.debug(
             "Handling pod shutdown for worker %s (replica=%d, worker=%d): %s",
             affected_worker.hostname,
             affected_worker.replica_id,
@@ -445,7 +445,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
         with ManagerClient() as client:
             # Step 1: Terminate the specific affected worker
             shutdown_reason = f"IMMEDIATE_SHUTDOWN: Pod shutdown - {reason}"
-            logging.info("Terminating affected worker %s", affected_worker.hostname)
+            logging.debug("Terminating affected worker %s", affected_worker.hostname)
 
             client.restart_worker(
                 affected_worker.hostname,
@@ -456,7 +456,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
 
             # Step 2: Restart ALL replicas for JAX re-initialization
             restart_reason = f"JAX re-init after pod shutdown: {affected_worker.hostname}"
-            logging.info("Restarting all replicas for JAX re-initialization")
+            logging.debug("Restarting all replicas for JAX re-initialization")
 
             try:
                 num_replicas = get_num_replicas()
@@ -486,7 +486,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
         def restart_single_worker(hostname: str, client: ManagerClient) -> tuple:
             """Send restart request to a single worker."""
             try:
-                logging.info("Forwarding restart to worker: %s", hostname)
+                logging.debug("Forwarding restart to worker: %s", hostname)
                 worker_id = extract_worker_id_from_hostname(hostname)
 
                 success = client.restart_worker(
@@ -494,9 +494,9 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 )
 
                 if success:
-                    logging.info("Worker %s acknowledged restart request", hostname)
+                    logging.debug("Worker %s acknowledged restart request", hostname)
                 else:
-                    logging.warning("Worker %s failed to acknowledge restart request", hostname)
+                    logging.debug("Worker %s failed to acknowledge restart request", hostname)
 
                 return (hostname, success)
 
