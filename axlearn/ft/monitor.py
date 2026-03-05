@@ -89,7 +89,7 @@ class StatusMonitor:
         if sdk is None:
             return -1.0
         try:
-            metric = sdk.monitoring.get_metric("tensorcore_util")
+            metric = sdk.tpumonitoring.get_metric("tensorcore_util")
             float_data = [float(x) for x in metric.data()]
             if not float_data:
                 return -1.0
@@ -213,7 +213,7 @@ class StatusMonitor:
 
         if self.current_tensorcore_util >= 0:
             logging.debug(
-                "FT Monitor: Reported step %d, TC util %.1f%%",
+                "FT Monitor: Reported step %d, TensorCore util %.1f%%",
                 self.current_step,
                 self.current_tensorcore_util,
             )
