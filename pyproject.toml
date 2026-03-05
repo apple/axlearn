@@ -22,6 +22,7 @@ dependencies = [
 core = [
     "absl-py==2.3.1",
     "chex==0.1.91",
+    "etils[epy]==1.13.0",  # pin to ensure importlib-resources is installed (needed by tensorflow-datasets)
     "importlab==0.8.1",  # breaks pytype on 0.8
     "jax==0.8.3",
     "jaxlib==0.8.3",
