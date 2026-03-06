@@ -43,6 +43,88 @@ from jax.experimental.array_serialization import serialization
 from axlearn.common.utils import Tensor
 
 
+class _ColocatedResourceManager:
+    """Manages TensorStore context and event loop on colocated Python workers.
+
+    Encapsulates all sidecar-side state for checkpoint deserialization.
+    Created by _colocated_deserialize_setup and stored as an attribute on the
+    colocated_python module so it can be accessed from other colocated functions
+    without cloudpickle frozen-globals issues.
+
+    Must be created before each deserialization to ensure fresh resources,
+    avoiding accumulation of stale resources across checkpoint reloads.
+    """
+
+    def __init__(self):
+        """Initialize TensorStore context and event loop on colocated Python workers."""
+        self.ts_context = ts.Context(serialization.TS_CONTEXT.spec)
+
+        # Creates a dedicated event loop with a dedicated executor pool.
+        self.event_loop = asyncio.new_event_loop()
+        self.event_loop.set_default_executor(futures.ThreadPoolExecutor(max_workers=os.cpu_count()))
+
+        # Runs the event loop in a background thread.
+        self.loop_thread = threading.Thread(target=self.event_loop.run_forever, daemon=True)
+        self.loop_thread.start()
+        logging.info("_ColocatedResourceManager initialized on sidecar.")
+
+    def __del__(self):
+        """Release TensorStore context and event loop on colocated Python workers."""
+        if hasattr(self, "event_loop") and self.event_loop is not None:
+            # Stop the dedicated event loop.
+            self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+            # Exit the background thread and release resources of the event loop.
+            self.loop_thread.join()
+            self.event_loop.close()
+        logging.info("_ColocatedResourceManager destroyed on sidecar.")
+
+
+@colocated_python.colocated_python
+def _colocated_deserialize_setup(dummy_array: jax.Array) -> jax.Array:
+    """Initialize TensorStore context and event loop on colocated Python workers.
+
+    Must be called before each deserialization to ensure fresh resources,
+    avoiding accumulation of stale resources across checkpoint reloads.
+    """
+    colocated_python.resource_manager = _ColocatedResourceManager()
+    return dummy_array
+
+
+@colocated_python.colocated_python
+def _colocated_deserialize_teardown(dummy_array: jax.Array) -> jax.Array:
+    """Release TensorStore context and event loop on colocated Python workers.
+
+    Must be called after each deserialization to release resources.
+    """
+    import tracemalloc  # pylint: disable=import-outside-toplevel
+    from collections import Counter  # pylint: disable=import-outside-toplevel
+
+    if hasattr(colocated_python, "resource_manager"):
+        colocated_python.resource_manager = None
+
+    gc.collect()
+
+    # Log object counts by type to identify what's accumulating.
+    type_counts = Counter(type(obj).__name__ for obj in gc.get_objects())
+    logging.info("Top 20 object types: %s", type_counts.most_common(20))
+
+    # Log top memory allocations by source location.
+    if not tracemalloc.is_tracing():
+        tracemalloc.start()
+    else:
+        snapshot = tracemalloc.take_snapshot()
+        top_stats = snapshot.statistics("lineno")
+        for stat in top_stats[:20]:
+            logging.info("tracemalloc: %s", stat)
+
+    logging.info(
+        "Teardown complete. live objects: %d, gc garbage: %d",
+        len(gc.get_objects()),
+        len(gc.garbage),
+    )
+    return dummy_array
+
+
 @dataclass
 class _ShardInfo:
     """Stores information for a maybe sliced jax.Shard.
@@ -421,17 +503,24 @@ async def _run_serializer(
         raise e
 
 
-def _blocking_device_put(tensor: Tensor, target: Union[Format, jax.sharding.Sharding]) -> Tensor:
+def _blocking_device_put(
+    tensor: Tensor, target: Union[Format, jax.sharding.Sharding], *, verbose: bool = False
+) -> Tensor:
     """Device put and block until ready.
 
     Args:
         tensor: Array to transfer.
         target: Either a Format (with layout + sharding) or Sharding.
+        verbose: If True, log execution time.
 
     Returns:
         Transferred array.
     """
-    return jax.block_until_ready(jax.device_put(tensor, target))
+    start = time.perf_counter()
+    result = jax.block_until_ready(jax.device_put(tensor, target))
+    if verbose:
+        logging.info("device_put took %.3f seconds", time.perf_counter() - start)
+    return result
 
 
 async def _async_deserialize(
@@ -444,6 +533,7 @@ async def _async_deserialize(
     byte_limiter: serialization._LimitInFlightBytes,
     single_thread_pool: Optional[ThreadPoolExecutor],
     multi_thread_pool: Optional[ThreadPoolExecutor],
+    ts_context: Optional[ts.Context] = None,
 ):
     """Modified from
     https://github.com/jax-ml/jax/blob/e7ec418eba9ada336f755613948cbdf4a9e97d59/jax/experimental/array_serialization/serialization.py#L345
@@ -500,7 +590,12 @@ async def _async_deserialize(
     #   - On AWS (or other non-GCP environments) accessing GCS, gcs_grpc may hit auth/network
     #     issues due to cross-cloud constraints. So we enable this optimization on Pathways
     #     which only runs on GCP for now.
-    context = serialization.TS_CONTEXT
+    if ts_context is not None:
+        logging.info("Using provided TensorStore context for deserialization.")
+        context = ts_context
+    else:
+        logging.info("Using global TensorStore context for deserialization.")
+        context = serialization.TS_CONTEXT
     if os.getenv("ENABLE_GCS_GRPC", "false") == "true":
         logging.debug("gcs_grpc enabled")
         tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
@@ -565,7 +660,9 @@ async def _async_deserialize(
         if h2d_limiter is None:
             # No per-shard H2D gating — caller (e.g. colocated Python path) relies on a global
             # pipeline limiter to bound concurrency instead.
-            result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+            result = await loop.run_in_executor(
+                None, functools.partial(_blocking_device_put, verbose=True), out, layout
+            )
         # Jax >= 0.6.2 changes the behavior of _LimitInFlightBytes, where wait_for_bytes no longer
         # throws an exception if requested_bytes > max_bytes
         # pylint: disable-next=protected-access
@@ -651,7 +748,7 @@ async def _effective_bytes_per_device(
     TensorStore reads whole chunks even if only a partial chunk is needed, so actual bytes
     read can exceed the raw tensor shard size.
     """
-    t = await ts.open(ts.Spec(spec), open=True)
+    t = await ts.open(ts.Spec(spec), open=True, context=serialization.TS_CONTEXT)
     shard_shape = sharding.shard_shape(shape)
     raw_bytes = math.prod(shard_shape) * np.dtype(dtype).itemsize
 
@@ -740,13 +837,21 @@ async def _run_colocated_deserialize(
     # _get_specialized_func is cached on (FunctionInfo, Specialization): with a single function
     # object the cache hits for all arrays that share the same output shape/dtype/sharding,
     # reducing compilations from O(num_arrays) to O(num_unique_output_specs).
+    cpu_mesh = colocated_python.colocated_cpu_devices(tpu_mesh)
+    replicated_sharding = jax.sharding.NamedSharding(cpu_mesh, jax.sharding.PartitionSpec())
+
+    # Initialize fresh TensorStore context and event loop on the sidecar workers.
+    dummy_array = jax.device_put(jnp.array(0), replicated_sharding)
+    _colocated_deserialize_setup.specialize(devices=cpu_devices)(dummy_array)
+
     @colocated_python.colocated_python
     def load_to_cpu(idx: jax.Array):
         i = int(idx)
         # pylint: disable=protected-access
         byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
 
-        return asyncio.run(
+        rm = colocated_python.resource_manager
+        return asyncio.run_coroutine_threadsafe(
             _async_deserialize(
                 cpu_shardings[i],
                 tensorstore_specs[i],
@@ -756,14 +861,14 @@ async def _run_colocated_deserialize(
                 h2d_limiter=None,
                 single_thread_pool=None,
                 multi_thread_pool=None,
-            )
-        )
+                ts_context=rm.ts_context,
+            ),
+            rm.event_loop,
+        ).result()
 
     # Pre-create replicated index arrays across all cpu_devices. colocated_python requires inputs
     # to have one shard per device in the specialized device list.
-    cpu_mesh = colocated_python.colocated_cpu_devices(tpu_mesh)
-    idx_sharding = jax.sharding.NamedSharding(cpu_mesh, jax.sharding.PartitionSpec())
-    idx_arrays = [jax.device_put(jnp.array(i), idx_sharding) for i in range(len(shardings))]
+    idx_arrays = [jax.device_put(jnp.array(i), replicated_sharding) for i in range(len(shardings))]
 
     async def _load_and_transfer_one(
         idx: int,
@@ -793,7 +898,9 @@ async def _run_colocated_deserialize(
             cpu_array,
             tpu_sharding,
         )
-        del cpu_array  # Release CPU buffer promptly; don't wait for coroutine frame to exit.
+        # Explicitly release the CPU buffer once H2D transfer is complete.
+        # This is for deterministic memory release within colocated-python sidecar container.
+        del cpu_array
         return tpu_array
 
     async def _load_and_transfer_one_rate_limited(
@@ -839,7 +946,8 @@ async def _run_colocated_deserialize(
     total_time = time.perf_counter() - start_time
     logging.info("Pipelined colocated deserialization completed in %.2f seconds", total_time)
 
-    gc.collect()
+    # Tear down the TensorStore context and event loop on colocated workers.
+    _colocated_deserialize_teardown.specialize(devices=cpu_devices)(dummy_array)
 
     return tpu_arrays
 
@@ -999,7 +1107,15 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             # Resolve any None shapes from TensorStore metadata before entering the colocated
             # path, since out_specs_fn requires concrete shapes.
             resolved_shapes = [
-                tuple(ts.open(ts.Spec(spec), open=True).result().shape) if shape is None else shape
+                (
+                    tuple(
+                        ts.open(ts.Spec(spec), open=True, context=serialization.TS_CONTEXT)
+                        .result()
+                        .shape
+                    )
+                    if shape is None
+                    else shape
+                )
                 for spec, shape in zip(tensorstore_specs, global_shapes_list)
             ]
 
