@@ -48,6 +48,7 @@ class NodePoolProvisioner(FlagConfigurable):
             service_account_email: Service account email for node pools.
             retry_interval: Number of seconds to retry node pool creation or deletion.
             wait_timeout: Number of seconds to wait for node pool creation or deletion.
+            labels: Optional extra labels to apply to all node pools.
         """
 
         project: Required[str] = REQUIRED
@@ -58,6 +59,7 @@ class NodePoolProvisioner(FlagConfigurable):
         service_account_email: Optional[str] = None
         retry_interval: int = 30
         wait_timeout: int = 30 * 60
+        labels: Optional[dict[str, str]] = None
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -141,7 +143,8 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             job_key = hashlib.sha1(
                 f"{job_cfg.namespace}/{job_cfg.name}-job-{i}".encode()
             ).hexdigest()
-            additional_labels = {"job-key": job_key}
+            additional_labels = cfg.labels if cfg.labels else {}
+            additional_labels.update({"job-key": job_key})
 
             # Populate job-priority label to nodes.
             if job_priority is not None:

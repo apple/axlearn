@@ -184,6 +184,46 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
                 else:
                     self.assertNotIn("cloud.google.com/gke-tpu-auto-restart", additional_labels)
 
+    def test_create_for_with_additional_labels(self):
+        mock_create_node_pools = mock.Mock()
+        mock_construct_node_pool_name = mock.Mock()
+
+        mock_utils = mock.patch.multiple(
+            node_pool_provisioner.__name__,
+            create_node_pools=mock_create_node_pools,
+            construct_node_pool_name=mock_construct_node_pool_name,
+        )
+
+        job_cfg, bundler_cfg, provisioner_cfg = self._mock_configs(num_replicas=2)
+        provisioner_cfg.labels = {"custom-key": "custom-val"}
+        with mock_utils:
+            tpu_gke_job = job_cfg.instantiate(bundler=bundler_cfg.instantiate())
+            provisioner = provisioner_cfg.set(name="pre-provisioner-0").instantiate()
+
+            provisioner.create_for(tpu_gke_job)
+
+            additional_labels_list = mock_create_node_pools.call_args.kwargs[
+                "additional_labels_list"
+            ]
+            for additional_labels in additional_labels_list:
+                self.assertEqual("custom-val", additional_labels.get("custom-key"))
+
+        # Verify computed labels override config labels with the same key.
+        mock_create_node_pools2 = mock.Mock()
+        mock_utils2 = mock.patch.multiple(
+            node_pool_provisioner.__name__,
+            create_node_pools=mock_create_node_pools2,
+            construct_node_pool_name=mock.Mock(),
+        )
+        _, _, provisioner_cfg2 = self._mock_configs(num_replicas=1)
+        provisioner_cfg2.labels = {"job-key": "should-be-overridden"}
+        with mock_utils2:
+            tpu_gke_job2 = job_cfg.instantiate(bundler=bundler_cfg.instantiate())
+            provisioner2 = provisioner_cfg2.set(name="pre-provisioner-0").instantiate()
+            provisioner2.create_for(tpu_gke_job2)
+            labels = mock_create_node_pools2.call_args.kwargs["additional_labels_list"][0]
+            self.assertNotEqual("should-be-overridden", labels.get("job-key"))
+
     @parameterized.parameters(
         dict(num_replicas=1),
         dict(num_replicas=2),
