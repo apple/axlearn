@@ -832,6 +832,70 @@ class ConfigTest(parameterized.TestCase):
         cfg = cfg.clone()
         self.assertEqual("test", cfg.instantiate())
 
+    def test_nested_config_with_noncopyable_proxy(self):
+        """Verifies deepcopy and clone work for nested configs with wrapt-proxied functions.
+
+        Mirrors realistic usage where a trainer config contains nested config_for_function
+        fields (e.g. optimizer, learning rate schedule) and the functions may be wrapt-proxied
+        (non-copyable). Exercises __deepcopy__, clone(), set(), and instantiate() through
+        realistic config nesting.
+        """
+
+        def schedule_fn(peak_lr: float = 0.1, warmup_steps: int = 100):
+            return {"peak_lr": peak_lr, "warmup_steps": warmup_steps}
+
+        def optimizer_fn(learning_rate: float = 0.01, weight_decay: float = 0.0):
+            return {"lr": learning_rate, "wd": weight_decay}
+
+        @config_class
+        class TrainerConfig(ConfigBase):
+            lr_schedule: Any = None
+            optimizer: Any = None
+            num_steps: int = 1000
+
+        # Build a nested config using wrapt-proxied functions.
+        proxy_schedule = self._non_copyable_proxy(schedule_fn)
+        proxy_optimizer = self._non_copyable_proxy(optimizer_fn)
+
+        cfg = TrainerConfig()
+        cfg.lr_schedule = config.config_for_function(proxy_schedule).set(
+            peak_lr=0.01, warmup_steps=500
+        )
+        cfg.optimizer = config.config_for_function(proxy_optimizer).set(
+            learning_rate=0.001, weight_decay=1e-4
+        )
+
+        # clone() exercises ConfigBase.__deepcopy__ on the nested tree.
+        cfg_clone = cfg.clone(num_steps=2000)
+        self.assertIsNot(cfg_clone, cfg)
+        self.assertEqual(2000, cfg_clone.num_steps)
+        self.assertEqual(1000, cfg.num_steps)
+
+        # Nested function configs should be independent copies.
+        self.assertIsNot(cfg_clone.lr_schedule, cfg.lr_schedule)
+        self.assertIsNot(cfg_clone.optimizer, cfg.optimizer)
+
+        # The proxied fn should be the same object (not deepcopied).
+        self.assertIs(cfg_clone.lr_schedule.fn, cfg.lr_schedule.fn)
+        self.assertIs(cfg_clone.optimizer.fn, cfg.optimizer.fn)
+
+        # Mutating the clone should not affect the original.
+        cfg_clone.lr_schedule.set(peak_lr=0.05)
+        self.assertEqual(0.01, cfg.lr_schedule.peak_lr)
+        self.assertEqual(0.05, cfg_clone.lr_schedule.peak_lr)
+
+        # Instantiation should work through the proxied functions.
+        self.assertEqual(
+            {"peak_lr": 0.05, "warmup_steps": 500}, cfg_clone.lr_schedule.instantiate()
+        )
+        self.assertEqual({"lr": 0.001, "wd": 1e-4}, cfg_clone.optimizer.instantiate())
+
+        # copy.deepcopy should also work identically.
+        cfg_deep = copy.deepcopy(cfg)
+        self.assertIsNot(cfg_deep, cfg)
+        self.assertIs(cfg_deep.lr_schedule.fn, cfg.lr_schedule.fn)
+        self.assertEqual({"peak_lr": 0.01, "warmup_steps": 500}, cfg_deep.lr_schedule.instantiate())
+
     def test_config_for_noncopyable_class(self):
         class Dummy:
             def __init__(self, x, **kwargs):

@@ -69,7 +69,7 @@ import re
 import types
 from collections import defaultdict
 from collections.abc import Collection, Iterable
-from functools import cache
+from functools import cache, lru_cache
 from typing import Any, Callable, Generic, Optional, Protocol, Sequence, TypeVar, Union
 
 # attr provides similar features as Python dataclass. Unlike
@@ -78,7 +78,7 @@ from typing import Any, Callable, Generic, Optional, Protocol, Sequence, TypeVar
 #
 # More information about attr can be found at https://www.attrs.org/en/stable/why.html.
 #
-# Our config library relies on `__attrs_post_init__` and `on_setattr=_validate_and_transform_field`
+# Our config library relies on `__attrs_post_init__` and `on_setattr=_on_setattr`
 # to apply validation on field names and values.
 import attr
 
@@ -308,41 +308,52 @@ _maybe_register_optional_type("numpy", "dtype")
 # As of 0.6.1, PartitionSpec is no longer a tuple.
 _maybe_register_optional_type("jax.sharding", "PartitionSpec")
 
+# Immutable types that are safe to shallow-copy (skip deepcopy) for mutation isolation.
+_IMMUTABLE_TYPES = (
+    RequiredFieldValue,
+    type,
+    int,
+    float,
+    str,
+    bool,
+    enum.Enum,
+)
 
-def _validate_and_transform_field(instance, attribute, value):
-    """Validates an attribute as a config field.
+
+def _copy_field(instance, field_name: str, value, memo=None):
+    """Deepcopy a config field value if it is mutable.
+
+    Immutable types, ``None``, and the ``fn``/``klass`` attributes of function/class configs
+    are returned as-is (the latter may be non-copyable wrapt proxies).
 
     Args:
         instance: the ConfigBase instance.
-        attribute: the attrs.Attribute instance.
-        value: the attribute value.
+        field_name: the field name.
+        value: the field value.
+        memo: optional deepcopy memo dict; forwarded to ``copy.deepcopy``.
 
     Returns:
-        The transformed attribute value.
+        The (possibly deepcopied) field value.
     """
-    validate_config_field_name(attribute.name)
-    validate_config_field_value(value)
-
+    if value is None or isinstance(value, _IMMUTABLE_TYPES):
+        return value
     # Exempt klass and fn from copying. Some packages, such as wrapt, decorate via an object proxy
     # which is not copyable. Since klass is known to be a class, and fn is known to be a function,
     # and since these attributes are generally not mutable, we skip the copy step. Other attributes
     # which are also proxies are expected to define __deepcopy__, since it's not immediately obvious
     # how to detect that an object is in fact a proxy in the general case.
-    if (isinstance(instance, FunctionConfigBase) and attribute.name == "fn") or (
-        isinstance(instance, ClassConfigBase) and attribute.name == "klass"
+    if (isinstance(instance, FunctionConfigBase) and field_name == "fn") or (
+        isinstance(instance, ClassConfigBase) and field_name == "klass"
     ):
         return value
+    return copy.deepcopy(value, memo)
 
-    # Copy value so that a mutable value is not shared across configs. This is especially important
-    # when the default value is a mutable value, e.g.,
-    #
-    # @config_class
-    # class Config(BaseLayer.Config):
-    #     linear: Linear.Config = Linear.default_config()
-    #
-    # If we do not copy here, all Config instances will share the same mutable Linear.Config
-    # instance.
-    return copy.deepcopy(value)
+
+def _on_setattr(instance, attribute, value):
+    """attrs ``on_setattr`` hook: validate and copy a config field value."""
+    validate_config_field_name(attribute.name)
+    validate_config_field_value(value)
+    return _copy_field(instance, attribute.name, value)
 
 
 @cache
@@ -394,9 +405,20 @@ class ConfigBase:
         raise MissingConfigClassDecoratorError(f"{type(self)} was not decorated with @config_class")
 
     def __attrs_post_init__(self):
-        # Call setattr to trigger _validate_and_transform_field on all keys and default values.
+        # Re-set defaults via setattr to trigger on_setattr validation + deepcopy for isolation.
         for k, v in self.items():
             setattr(self, k, v)
+
+    def __deepcopy__(self, memo):
+        # Fast path: skip __init__/on_setattr (values are already validated).
+        # Uses _copy_field directly to only deepcopy mutable fields.
+        cls = type(self)
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        for k in _attr_fields_dict_cache(cls):
+            v = getattr(self, k)
+            object.__setattr__(new, k, _copy_field(self, k, v, memo=memo))
+        return new
 
     def __contains__(self, name: str) -> bool:
         return name in _attr_fields_dict_cache(type(self))
@@ -676,7 +698,7 @@ class ConfigBase:
 
 
 def _config_class_kwargs():
-    return dict(init=False, kw_only=True, slots=True, on_setattr=_validate_and_transform_field)
+    return dict(init=False, kw_only=True, slots=True, on_setattr=_on_setattr)
 
 
 def _wrap_config_attr_cls(attr_cls: type, *, name: Optional[str] = None):
@@ -926,9 +948,18 @@ class FunctionConfigBase(InstantiableConfig[T]):
 F = TypeVar("F", bound=Callable)
 
 
+# Cache (attr.make_class()/inspect.signature() is expensive), func often shared across configs.
+@lru_cache(maxsize=1024)
 def _config_class_for_function(fn: F) -> type[FunctionConfigBase]:
     """Returns a config class."""
     init_sig = inspect.signature(fn)
+    # attrs strips leading underscores, resulting in '_' becoming ''. We could get around this via
+    # using an alias, but the safer option is to require explicit names for params. See:
+    # https://github.com/python-attrs/attrs/issues/391
+    # https://github.com/python-attrs/attrs/issues/945
+    for param in ["fn", "_"]:
+        if param in init_sig.parameters:
+            raise ValueError(f"Configured function {fn} should not have a '{param}' parameter.")
     config_attrs = {
         name: _attr_field_from_signature_param(param) for name, param in init_sig.parameters.items()
     }
@@ -958,14 +989,6 @@ def config_for_function(fn: Callable[..., T]) -> Union[Any, FunctionConfigBase[T
     Returns:
         A Config that when instantiated, invokes `fn` based on any config fields that have been set.
     """
-    fn_sig = inspect.signature(fn)
-    # attrs strips leading underscores, resulting in '_' becoming ''. We could get around this via
-    # using an alias, but the safer option is to require explicit names for params. See:
-    # https://github.com/python-attrs/attrs/issues/391
-    # https://github.com/python-attrs/attrs/issues/945
-    for param in ["fn", "_"]:
-        if param in fn_sig.parameters:
-            raise ValueError(f"Configured function {fn} should not have a '{param}' parameter.")
     config_cls = _config_class_for_function(fn)
     return config_cls(fn=fn)
 
