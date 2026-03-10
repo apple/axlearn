@@ -197,38 +197,6 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     return tensorstore_specs, shardings, global_shapes, dtypes
 
 
-def cleanup_loaded_arrays(loaded_arrays: list) -> None:
-    """Clean up loaded arrays and free device memory.
-
-    This function ensures a fair comparison between benchmarks by:
-    1. Blocking until all async operations complete
-    2. Deleting Python references to free device memory
-    3. Clearing JAX caches
-    4. Forcing device synchronization to ensure HBM cleanup completes
-
-    Args:
-        loaded_arrays: List of JAX arrays to clean up.
-    """
-    print("\nCleaning up arrays...")
-
-    # Block until all arrays are ready (ensures async ops complete)
-    for arr in loaded_arrays:
-        arr.block_until_ready()
-
-    loaded_arrays.clear()
-    del loaded_arrays
-
-    # Clear JAX in-memory compilation cache
-    # (Persistent cache is disabled via JAX_ENABLE_COMPILATION_CACHE=0)
-    jax.clear_caches()
-
-    # Force device synchronization to ensure all HBM deallocations complete
-    # This is critical - without it, deallocation may be async and incomplete
-    jax.block_until_ready(jax.numpy.array(0))
-
-    print("Cleanup complete.")
-
-
 def load_model(
     tensorstore_specs: Sequence[Dict[str, Any]],
     shardings: Sequence[jax.sharding.NamedSharding],
@@ -331,12 +299,6 @@ def main():
             loaded_values = None
             with maybe_profile(args.profile, profile_dir):
                 for i in range(num_iterations):
-                    # Drop reference to TPU arrays and sleep for 150s for better memory observation.
-                    if loaded_values is not None:
-                        del loaded_values
-                        loaded_values = None
-                        time.sleep(150)
-
                     print(f"\n--- Iteration {i + 1}/{num_iterations} ---")
                     start_time = time.perf_counter()
                     loaded_values = load_model(
@@ -350,13 +312,14 @@ def main():
                     print(f"Total time took {elapsed:.2f} seconds")
                     print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
 
-                    # Sleep in between iterations.
+                    # Drop reference to TPU arrays and sleep for memory observation.
                     if i < num_iterations - 1:
-                        time.sleep(150)
+                        del loaded_values
+                        loaded_values = None
+                        time.sleep(60)
     finally:
-        # Always clean up, even if benchmark fails.
         if loaded_values is not None:
-            cleanup_loaded_arrays(loaded_values)
+            del loaded_values
 
 
 if __name__ == "__main__":

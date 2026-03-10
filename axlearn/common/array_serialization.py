@@ -43,6 +43,85 @@ from jax.experimental.array_serialization import serialization
 from axlearn.common.utils import Tensor
 
 
+@colocated_python.colocated_python_class
+class _ColocatedStateManager:
+    """Manages config and runtime resources on colocated sidecar.
+
+    __init__ args are pickled and transferred from controller.
+    __init__ runs on the sidecar creating ts_context and event_loop.
+    """
+
+    def __init__(
+        self,
+        cpu_shardings: Sequence[jax.sharding.Sharding],
+        tensorstore_specs: Sequence[dict[str, Any]],
+        global_shapes: Sequence[tuple],
+        dtypes: Sequence[typing.DTypeLike],
+        concurrent_bytes: int,
+    ):
+        # Configurations set from controller.
+        self.cpu_shardings = cpu_shardings
+        self.tensorstore_specs = tensorstore_specs
+        self.global_shapes = global_shapes
+        self.dtypes = dtypes
+        self.concurrent_bytes = concurrent_bytes
+
+        # Runtime resources created on sidecar.
+        self.ts_context = ts.Context(serialization.TS_CONTEXT.spec)
+        self.event_loop = asyncio.new_event_loop()
+        self.event_loop.set_default_executor(futures.ThreadPoolExecutor(max_workers=os.cpu_count()))
+        self.loop_thread = threading.Thread(target=self.event_loop.run_forever, daemon=True)
+        self.loop_thread.start()
+        logging.info("ColocatedStateManager initialized on sidecar.")
+
+    def load_to_cpu(self, idx: jax.Array):
+        """Load a single array to CPU on the sidecar."""
+        i = int(idx)
+        # pylint: disable=protected-access
+        byte_limiter = serialization._LimitInFlightBytes(self.concurrent_bytes)
+        return asyncio.run_coroutine_threadsafe(
+            _async_deserialize(
+                self.cpu_shardings[i],
+                self.tensorstore_specs[i],
+                self.global_shapes[i],
+                self.dtypes[i],
+                byte_limiter=byte_limiter,
+                h2d_limiter=None,
+                single_thread_pool=None,
+                multi_thread_pool=None,
+                ts_context=self.ts_context,
+            ),
+            self.event_loop,
+        ).result()
+
+    def teardown(self):
+        """Release TensorStore context and event loop on colocated Python workers."""
+        if hasattr(self, "event_loop") and self.event_loop is not None:
+            # Shut down the default executor before stopping the loop (1 min timeout).
+            asyncio.run_coroutine_threadsafe(
+                self.event_loop.shutdown_default_executor(
+                    timeout=60
+                ),  # pytype: disable=wrong-keyword-args
+                self.event_loop,
+            ).result()
+            self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+            self.loop_thread.join()
+            self.event_loop.close()
+            self.event_loop = None
+        self.ts_context = None
+        logging.info("ColocatedStateManager destroyed on sidecar.")
+
+    def __del__(self):
+        self.teardown()
+
+
+@colocated_python.colocated_python
+def _colocated_teardown():
+    """Run garbage collection on the sidecar."""
+    gc.collect()
+    logging.info("Colocated teardown complete. Live objects: %d", len(gc.get_objects()))
+
+
 @dataclass
 class _ShardInfo:
     """Stores information for a maybe sliced jax.Shard.
@@ -444,6 +523,7 @@ async def _async_deserialize(
     byte_limiter: serialization._LimitInFlightBytes,
     single_thread_pool: Optional[ThreadPoolExecutor],
     multi_thread_pool: Optional[ThreadPoolExecutor],
+    ts_context: Optional[ts.Context] = None,
 ):
     """Modified from
     https://github.com/jax-ml/jax/blob/e7ec418eba9ada336f755613948cbdf4a9e97d59/jax/experimental/array_serialization/serialization.py#L345
@@ -500,7 +580,8 @@ async def _async_deserialize(
     #   - On AWS (or other non-GCP environments) accessing GCS, gcs_grpc may hit auth/network
     #     issues due to cross-cloud constraints. So we enable this optimization on Pathways
     #     which only runs on GCP for now.
-    context = serialization.TS_CONTEXT
+    context = ts_context or serialization.TS_CONTEXT
+
     if os.getenv("ENABLE_GCS_GRPC", "false") == "true":
         logging.debug("gcs_grpc enabled")
         tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
@@ -651,7 +732,7 @@ async def _effective_bytes_per_device(
     TensorStore reads whole chunks even if only a partial chunk is needed, so actual bytes
     read can exceed the raw tensor shard size.
     """
-    t = await ts.open(ts.Spec(spec), open=True)
+    t = await ts.open(ts.Spec(spec), open=True, context=serialization.TS_CONTEXT)
     shard_shape = sharding.shard_shape(shape)
     raw_bytes = math.prod(shard_shape) * np.dtype(dtype).itemsize
 
@@ -734,36 +815,17 @@ async def _run_colocated_deserialize(
         pipeline_concurrent_bytes / (10**9),
     )
 
-    # Capture all per-array data as lists in the closure so that load_to_cpu can be defined
-    # and specialized exactly once. colocated_python only supports jax.Array as inputs, so we
-    # pass a scalar index array and look up the per-array data inside the function.
-    # _get_specialized_func is cached on (FunctionInfo, Specialization): with a single function
-    # object the cache hits for all arrays that share the same output shape/dtype/sharding,
-    # reducing compilations from O(num_arrays) to O(num_unique_output_specs).
-    @colocated_python.colocated_python
-    def load_to_cpu(idx: jax.Array):
-        i = int(idx)
-        # pylint: disable=protected-access
-        byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
-
-        return asyncio.run(
-            _async_deserialize(
-                cpu_shardings[i],
-                tensorstore_specs[i],
-                global_shapes[i],
-                dtypes[i],
-                byte_limiter=byte_limiter,
-                h2d_limiter=None,
-                single_thread_pool=None,
-                multi_thread_pool=None,
-            )
-        )
+    # Create _ColocatedStateManager on the sidecar, which initializes runtime resources
+    # (__init__ runs on sidecar) and stores config alongside them.
+    colocated_mgr = _ColocatedStateManager(
+        cpu_shardings, tensorstore_specs, global_shapes, dtypes, concurrent_bytes
+    )
 
     # Pre-create replicated index arrays across all cpu_devices. colocated_python requires inputs
     # to have one shard per device in the specialized device list.
     cpu_mesh = colocated_python.colocated_cpu_devices(tpu_mesh)
-    idx_sharding = jax.sharding.NamedSharding(cpu_mesh, jax.sharding.PartitionSpec())
-    idx_arrays = [jax.device_put(jnp.array(i), idx_sharding) for i in range(len(shardings))]
+    replicated_sharding = jax.sharding.NamedSharding(cpu_mesh, jax.sharding.PartitionSpec())
+    idx_arrays = [jax.device_put(jnp.array(i), replicated_sharding) for i in range(len(shardings))]
 
     async def _load_and_transfer_one(
         idx: int,
@@ -771,11 +833,7 @@ async def _run_colocated_deserialize(
         dispatch_pool: ThreadPoolExecutor,
     ):
         """Load one array to CPU via colocated Python, then transfer to TPU."""
-        # Specialize per array with explicit out_specs_fn to avoid stale cached output specs
-        # when arrays have different shapes. _get_specialized_func caches on
-        # (FunctionInfo, Specialization) so arrays sharing the same (shape, dtype, sharding)
-        # will reuse the compiled executable.
-        specialized = load_to_cpu.specialize(
+        specialized = colocated_mgr.load_to_cpu.specialize(  # pytype: disable=name-error
             devices=cpu_devices,
             out_specs_fn=lambda _: jax.ShapeDtypeStruct(
                 shape=global_shapes[idx], dtype=dtypes[idx], sharding=cpu_shardings[idx]
@@ -783,6 +841,8 @@ async def _run_colocated_deserialize(
         )
         loop = asyncio.get_running_loop()
         # Each call dispatched from a separate thread enables concurrent sidecar execution.
+        # Colocated_python only supports jax.Array as inputs, so we pass a scalar index array
+        # and look up the per-array data inside colocated_mgr.load_to_cpu.
         cpu_array = await loop.run_in_executor(dispatch_pool, specialized, idx_arrays[idx])
         # block_until_ready is run in an executor so the event loop can continue
         # dispatching other coroutines while waiting for this array to materialize.
@@ -841,9 +901,13 @@ async def _run_colocated_deserialize(
     total_time = time.perf_counter() - start_time
     logging.info("Pipelined colocated deserialization completed in %.2f seconds", total_time)
 
+    # Deterministically release event loop and executor on the sidecar.
+    colocated_mgr.teardown.specialize(devices=cpu_devices)()
     # Explicitly trigger GC to ensure deterministic memory release within the
     # colocated-python sidecar container.
     gc.collect()
+    # Run gc.collect() and log diagnostics on the sidecar.
+    _colocated_teardown.specialize(devices=cpu_devices)()
 
     return tpu_arrays
 
@@ -1003,7 +1067,15 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             # Resolve any None shapes from TensorStore metadata before entering the colocated
             # path, since out_specs_fn requires concrete shapes.
             resolved_shapes = [
-                tuple(ts.open(ts.Spec(spec), open=True).result().shape) if shape is None else shape
+                (
+                    tuple(
+                        ts.open(ts.Spec(spec), open=True, context=serialization.TS_CONTEXT)
+                        .result()
+                        .shape
+                    )
+                    if shape is None
+                    else shape
+                )
                 for spec, shape in zip(tensorstore_specs, global_shapes_list)
             ]
 
