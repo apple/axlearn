@@ -293,8 +293,8 @@ def main():
                 args.ckpt_path, state_spec
             )
 
-            if args.method == "default":
-                os.environ["COLOCATED_PYTHON_DESERIALIZE"] = "0"
+            if args.method == "colocated":
+                os.environ["COLOCATED_PYTHON_DESERIALIZE"] = "1"
 
             loaded_values = None
             with maybe_profile(args.profile, profile_dir):

@@ -293,22 +293,6 @@ def running_on_pathways():
     return os.getenv("JAX_PLATFORMS") == "proxy"
 
 
-def colocated_python_available() -> bool:
-    """Returns True if colocated Python CPU workers are available at runtime.
-
-    Colocated Python requires:
-    1. Running on Pathways (JAX_PLATFORMS == "proxy").
-    2. At least one colocated CPU device is present (i.e. the sidecar is running).
-    """
-    if not running_on_pathways():
-        return False
-    try:
-        cpu_devices = colocated_python.colocated_cpu_devices(jax.devices())
-        return len(cpu_devices) > 0
-    except Exception:  # pylint: disable=broad-exception-caught
-        return False
-
-
 async def _slice_shard_and_copy_to_host(shard_infos: list[_ShardInfo]):
     """Slices each shard according to shard info and then copy the sliced result to host.
 
@@ -1034,16 +1018,16 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             List of deserialized JAX arrays.
 
         Environment variables:
-            COLOCATED_PYTHON_DESERIALIZE: Set to "0" or "false" to disable colocated Python
-                deserialization even when available. Defaults to enabled when available.
+            COLOCATED_PYTHON_DESERIALIZE: Set to "1" or "true" (case insensitive) to
+                enable colocated Python deserialization. Defaults to disabled.
             COLOCATED_PYTHON_PIPELINE_CONCURRENT_GB: Maximum concurrent GB in flight during
-                CPU to TPU transfer when using colocated Python. Defaults to 64.
+                CPU to TPU transfer when using colocated Python. Defaults to 32.
         """
         self.wait_until_finished()
         start_time = time.perf_counter()
 
-        use_colocated_python = colocated_python_available() and (
-            os.getenv("COLOCATED_PYTHON_DESERIALIZE", "").lower() not in ("0", "false")
+        use_colocated_python = running_on_pathways() and (
+            os.getenv("COLOCATED_PYTHON_DESERIALIZE", "").lower() in ("1", "true")
         )
         logging.info("use_colocated_python=%s", use_colocated_python)
 
@@ -1062,7 +1046,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             # Capture mesh from main thread where context is active
             # (mesh is thread-local and won't be available in background event loop)
             tpu_mesh = thread_resources.env.physical_mesh
-            pipeline_concurrent_gb = int(os.getenv("COLOCATED_PYTHON_PIPELINE_CONCURRENT_GB", "64"))
+            pipeline_concurrent_gb = int(os.getenv("COLOCATED_PYTHON_PIPELINE_CONCURRENT_GB", "32"))
 
             # Resolve any None shapes from TensorStore metadata before entering the colocated
             # path, since out_specs_fn requires concrete shapes.
