@@ -350,7 +350,7 @@ class StatusMonitor:
         except ValueError:
             payload = None
 
-        if payload and isinstance(payload.get("message"), str):
+        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
             level = getattr(logging, payload.get("severity", "INFO"), logging.INFO)
             logger.log(level, "%s", payload["message"], extra={"labels": labels})
             return
