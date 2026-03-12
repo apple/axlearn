@@ -27,6 +27,10 @@ class Vocabulary(Protocol):
     def eos_id(self):
         """EOS token ID."""
 
+    @property
+    def bos_id(self):
+        """BOS token ID."""
+
     def encode(self, s: str) -> Sequence[int]:
         """Tokenizes string to an int sequence."""
         raise NotImplementedError(type(self))
@@ -94,7 +98,11 @@ def with_regex_mapping(
 
 
 def tokenize(
-    ds: Dataset, *, vocab: _DictOr[ConfigOr[Vocabulary]], with_eos: bool = False
+    ds: Dataset,
+    *,
+    vocab: _DictOr[ConfigOr[Vocabulary]],
+    with_eos: bool = False,
+    with_bos: bool = False,
 ) -> Dataset:
     """Tokenizes features.
 
@@ -104,6 +112,7 @@ def tokenize(
             If a mapping is provided, fields will be tokenized with corresponding vocabs.
             If a vocab is provided, it will be broadcasted to all fields.
         with_eos: Whether to append EOS to each field.
+        with_bos: Whether to prepend BOS to each field.
 
     Returns:
         A tokenized dataset.
@@ -111,15 +120,13 @@ def tokenize(
     vocab = jax.tree.map(maybe_instantiate, vocab)
 
     def encode(vocab: Vocabulary, s: str) -> Tensor:
-        ids = vocab.encode(s)
+        # `vocab.encode` can return a list or other sequence.
+        ids_list = list(vocab.encode(s))
+        if with_bos:
+            ids_list.insert(0, vocab.bos_id)
         if with_eos:
-            # Note: numpy can default to floating point if the encoded list is empty, so we
-            # explicitly specify int dtype.
-            if isinstance(ids, list):
-                ids.append(vocab.eos_id)  # Faster to append before converting.
-            else:
-                ids = np.concatenate([np.asarray(ids, dtype=int), [vocab.eos_id]], axis=-1)
-        return np.asarray(ids, dtype=int)
+            ids_list.append(vocab.eos_id)
+        return np.asarray(ids_list, dtype=int)
 
     def fn(example: dict[str, Any]) -> dict[str, Any]:
         output_example = {**example}  # Avoid modifying source keys.

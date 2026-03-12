@@ -8,7 +8,7 @@ from typing import Sequence
 import numpy as np
 import pytest
 import seqio
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.config import config_for_function
 from axlearn.common.input_fake import fake_grain_source
@@ -27,13 +27,18 @@ from axlearn.common.test_utils import TestCase
 class _DummyVocabulary:
     """A dummy vocab."""
 
-    def __init__(self, eos_id: int = -1):
+    def __init__(self, eos_id: int = -1, bos_id: int = 2):
         # Note that default -1 will never show up in ord.
         self._eos_id = eos_id
+        self._bos_id = bos_id
 
     @property
     def eos_id(self):
         return self._eos_id  # pytype: disable=attribute-error
+
+    @property
+    def bos_id(self):
+        return self._bos_id
 
     @property
     def pad_id(self):
@@ -131,6 +136,31 @@ class VocabularyTest(TestCase):
             self.assertTrue(np.all(a["text"] == b["text"]))
             self.assertTrue(np.all(a["text_with_eos"] == b["text_with_eos"]))
 
+        # Test tokenize with with_bos.
+        examples = [
+            {"text": "", "text_with_bos": ""},
+            {"text": "a test", "text_with_bos": "a test"},
+        ]
+        ds = fake_grain_source(examples)
+        ds = tokenize(
+            ds,
+            vocab={
+                "text": _DummyVocabulary(),
+                "text_with_bos": _DummyVocabulary(bos_id=3),
+            },
+            with_bos=True,
+        )
+        expected = [
+            {"text": np.array([2]), "text_with_bos": np.array([3])},
+            {
+                "text": np.array([2, 97, 32, 116, 101, 115, 116]),
+                "text_with_bos": np.array([3, 97, 32, 116, 101, 115, 116]),
+            },
+        ]
+        for a, b in zip(expected, list(ds)):
+            self.assertTrue(np.all(a["text"] == b["text"]))
+            self.assertTrue(np.all(a["text_with_bos"] == b["text_with_bos"]))
+
     @pytest.mark.skipif(
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
@@ -211,3 +241,7 @@ class BytesTest(TestCase):
         expected = [{**x, **y} for x, y in zip(expected, inputs)]
         actual = list(ds)
         self.assertNestedEqual(expected, actual)
+
+
+if __name__ == "__main__":
+    absltest.main()
