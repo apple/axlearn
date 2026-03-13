@@ -1,13 +1,13 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 [project]
 name = "axlearn"
-version = "0.2.0"
+dynamic = ["version"]
 description = "AXLearn"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 
 # Production dependencies.
 # Minimal requirments for axlearn/common/config.py.
@@ -165,14 +165,13 @@ audio = [
     "levenshtein==0.25.1",
 ]
 
-[tool.setuptools.packages.find]
-include = ['axlearn*']
-
-[tool.setuptools.package-data]
-"*" = ["*.sh", "*.txtpb"]
-
-[tool.setuptools.exclude-package-data]
-"*" = ["**/BUILD"]
+[tool.hatch]
+# Read the version from git tags
+version.source = "vcs"
+version.fallback-version = "0.0.0"
+build.targets.wheel.exclude = ["**/BUILD", "axlearn/experiments/testdata"]
+# This is where the code is for historical reasons.
+build.targets.wheel.packages = ["axlearn"]
 
 [tool.pytype]
 inputs = ["axlearn"]

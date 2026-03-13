@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional, TypeVar, Union
 import psutil
 from absl import app, flags, logging
 
-from axlearn.cloud import ROOT_MODULE_NAME
+from axlearn.cloud import DISTRIBUTION_NAME, ROOT_MODULE_NAME
 from axlearn.cloud.common.types import ResourceMap, Topology
 from axlearn.cloud.gcp.tpu import infer_tpu_cores, infer_tpu_resources
 from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
@@ -109,7 +109,7 @@ def get_package_root(root_module_name: str = ROOT_MODULE_NAME) -> str:
 def get_pyproject_version() -> str:
     """Returns the project version, e.g. X.Y.Z."""
     # TODO(markblee): Fix for nightly
-    return importlib.metadata.version(ROOT_MODULE_NAME)
+    return importlib.metadata.version(DISTRIBUTION_NAME)
 
 
 def parse_kv_flags(kv_flags: Sequence[str], *, delimiter: str = ":") -> dict[str, str]:
