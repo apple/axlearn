@@ -7,6 +7,7 @@ from absl import flags
 from absl.testing import parameterized
 
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.pod_mutator import PodMutator
 from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import bundler, jobset_utils, lws_utils, pathways_utils
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
@@ -248,6 +249,43 @@ class PathwaysReplicatedJobTest(TestCase):
             # MXLA flags are generally only present in multi-slice jobs.
             for flag in mxla_arg_flags:
                 self.assertIn(flag, worker_container["args"])
+
+    def test_pod_mutators_propagate_to_worker_pod(self):
+        """Tests that pod_mutators set on PathwaysReplicatedJob propagate to worker pods."""
+
+        class _TestMutator(PodMutator):
+            @pathways_utils.config_class
+            class Config(PodMutator.Config):
+                marker: str = ""
+
+            def mutate(self, job_spec, pod):
+                pod["metadata"]["annotations"]["test-mutator"] = self.config.marker
+                return pod
+
+        with self._job_config(CloudBuildBundler) as (cfg, bundler_cfg):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+            )
+            cfg.pod_mutators = [_TestMutator.default_config().set(marker="pw-marker")]
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+
+            # Verify propagation to inner _config.
+            # pylint: disable-next=protected-access
+            self.assertLen(builder._inner._config.pod_mutators, 1)
+
+            result = builder()
+            # Worker pod should have the mutator applied.
+            worker_job = next(r for r in result if "wk" in r["name"])
+            worker_pod = worker_job["template"]["spec"]["template"]
+            self.assertEqual(worker_pod["metadata"]["annotations"].get("test-mutator"), "pw-marker")
+
+            # Head pod should ALSO have the mutator applied.
+            head_job = next(r for r in result if "hd" in r["name"])
+            head_pod = head_job["template"]["spec"]["template"]
+            self.assertEqual(head_pod["metadata"]["annotations"].get("test-mutator"), "pw-marker")
 
     def test_replicated_job(self):
         with (

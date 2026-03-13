@@ -22,6 +22,7 @@ from axlearn.cloud.common.bastion import (
     serialize_jobspec,
 )
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.pod_mutator import PodMutator
 from axlearn.cloud.common.types import JobMetadata
 from axlearn.cloud.common.utils import AcceleratorConfig, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, jobset_utils
@@ -824,6 +825,25 @@ class A3HighReplicatedJobTest(TestCase):
                 self.assertEqual(
                     main_container_env_vars["XLA_FLAGS"]["value"], env_vars["XLA_FLAGS"]
                 )
+
+    def test_gpu_pod_mutators(self):
+        """Tests that pod_mutators are applied in GPUReplicatedJob._build_pod()."""
+        with self._job_config(ArtifactRegistryBundler, num_replicas=1) as (cfg, bundler_cfg):
+
+            class _TestMutator(PodMutator):
+                @jobset_utils.config_class
+                class Config(PodMutator.Config):
+                    marker: str = ""
+
+                def mutate(self, job_spec, pod):
+                    pod["metadata"]["annotations"]["test-mutator"] = self.config.marker
+                    return pod
+
+            cfg.pod_mutators = [_TestMutator.default_config().set(marker="gpu-marker")]
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            result = job()
+            pod = result[0]["template"]["spec"]["template"]
+            self.assertEqual(pod["metadata"]["annotations"]["test-mutator"], "gpu-marker")
 
 
 class TopologyAssignmentTest(TestCase):

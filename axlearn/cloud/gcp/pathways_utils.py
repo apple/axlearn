@@ -347,6 +347,9 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._bundler = bundler
         self._inner: TPUReplicatedJob = cfg.inner.instantiate(bundler=self._bundler)
         self._inner._user_command_patcher = self._user_command_patcher
+        # Propagate pod_mutators to inner so TPUJobBuilder._build_pod() applies them.
+        # Must set _config directly because self.config returns a deep copy.
+        self._inner._config.pod_mutators = cfg.pod_mutators
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
@@ -550,6 +553,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         cfg: TPUReplicatedJob.Config = self._inner.config
 
         annotations, labels, volumes, tolerations = {}, {}, [], []
+        annotations["axlearn/main-container"] = cfg.name
 
         if os.environ.get(BASTION_JOB_VERSION_ENV_VAR):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
@@ -596,13 +600,18 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         if cfg.priority_class:
             head_pod_spec["priorityClassName"] = cfg.priority_class
 
-        return {
+        head_pod = {
             "metadata": {
                 "annotations": annotations,
                 "labels": labels,
             },
             "spec": head_pod_spec,
         }
+
+        for mutator in self._pod_mutators:
+            head_pod = mutator.mutate(None, head_pod)
+
+        return head_pod
 
     def _build_pathways_head_job(self):
         logging.debug("Building a head job.")
@@ -1091,6 +1100,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         self._bundler = bundler
         self._inner: TPULeaderWorkerTemplate = cfg.inner.instantiate(bundler=self._bundler)
         self._inner._user_command_patcher = self._user_command_patcher
+        # Propagate pod_mutators to inner so TPUJobBuilder._build_pod() applies them.
+        # Must set _config directly because self.config returns a deep copy.
+        self._inner._config.pod_mutators = cfg.pod_mutators
 
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
@@ -1478,6 +1490,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         cfg: TPUReplicatedJob.Config = self._inner.config
 
         annotations, labels, volumes, tolerations = {}, {}, [], []
+        annotations["axlearn/main-container"] = cfg.name
 
         if os.environ.get(BASTION_JOB_VERSION_ENV_VAR):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
@@ -1556,13 +1569,18 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         if cfg.priority_class:
             leader_pod_spec["priorityClassName"] = cfg.priority_class
 
-        return {
+        leader_pod = {
             "metadata": {
                 "annotations": annotations,
                 "labels": labels,
             },
             "spec": leader_pod_spec,
         }
+
+        for mutator in self._pod_mutators:
+            leader_pod = mutator.mutate(None, leader_pod)
+
+        return leader_pod
 
     def __call__(self) -> Nested[Any]:  # pytype: disable=signature-mismatch
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]

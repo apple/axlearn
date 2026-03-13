@@ -20,6 +20,7 @@ from axlearn.cloud.common.bastion import (
     deserialize_jobspec,
 )
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.pod_mutator import PodMutator
 from axlearn.cloud.common.user_command_patcher import UserCommandPatcher
 from axlearn.cloud.common.utils import (
     AcceleratorConfig,
@@ -193,6 +194,7 @@ class BaseReplicatedJob(FlagConfigurable):
         output_dir: Optional[str] = None
         image_id: Optional[str] = None
         user_command_patcher: Optional[UserCommandPatcher.Config] = None
+        pod_mutators: list[PodMutator.Config] = []
 
     @classmethod
     def define_flags(cls, fv):
@@ -215,6 +217,7 @@ class BaseReplicatedJob(FlagConfigurable):
         self._user_command_patcher = (
             cfg.user_command_patcher.instantiate() if cfg.user_command_patcher else None
         )
+        self._pod_mutators = [m.instantiate() for m in cfg.pod_mutators]
         self._bundler = bundler
 
     def __call__(self) -> Sequence[Nested[Any]]:
@@ -786,6 +789,7 @@ class TPUJobBuilder(SingleReplicatedJob):
         cfg: TPUJobBuilder.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
+        annotations["axlearn/main-container"] = cfg.name
 
         volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
@@ -879,18 +883,19 @@ class TPUJobBuilder(SingleReplicatedJob):
         if os.environ.get(BASTION_JOB_VERSION_ENV_VAR):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
+        job_spec = None
         if os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
-            spec = deserialize_jobspec(
+            job_spec = deserialize_jobspec(
                 io.StringIO(os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR))
             )
 
-            labels.update({"job-priority": str(spec.metadata.priority)})
-            labels.update({"user-id": spec.metadata.user_id})
-            labels.update({"project-id": spec.metadata.project_id})
+            labels.update({"job-priority": str(job_spec.metadata.priority)})
+            labels.update({"user-id": job_spec.metadata.user_id})
+            labels.update({"project-id": job_spec.metadata.project_id})
 
             # For job-priority to be populated to node labels when tpu-provisioner is used.
             if not cfg.enable_tpu_slice_auto_provisioning:
-                selector.update({"job-priority": str(spec.metadata.priority)})
+                selector.update({"job-priority": str(job_spec.metadata.priority)})
 
         labels.update({"num-replicas": str(cfg.accelerator.num_replicas)})
 
@@ -979,10 +984,15 @@ class TPUJobBuilder(SingleReplicatedJob):
             spec["hostNetwork"] = True
             spec["dnsPolicy"] = "ClusterFirstWithHostNet"
 
-        return dict(
+        pod = dict(
             metadata=dict(annotations=annotations, labels=labels),
             spec=spec,
         )
+
+        for mutator_cfg in cfg.pod_mutators:
+            pod = mutator_cfg.instantiate().mutate(job_spec, pod)
+
+        return pod
 
     def _build_job_labels(self) -> dict[str, str]:
         """Builds labels for the Job metadata.
@@ -1142,7 +1152,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
         containers = [self._build_main_container()]
         init_containers = self._build_init_containers()
 
-        return dict(
+        pod = dict(
             metadata=dict(annotations=annotations),
             spec=dict(
                 terminationGracePeriodSeconds=60,
@@ -1156,6 +1166,11 @@ class GPUReplicatedJob(SingleReplicatedJob):
                 volumes=volumes,
             ),
         )
+
+        for mutator_cfg in cfg.pod_mutators:
+            pod = mutator_cfg.instantiate().mutate(None, pod)
+
+        return pod
 
     def _build_job(self) -> Nested[Any]:
         """Builds a config for a single Job, which is a set of Pods.

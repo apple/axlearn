@@ -9,7 +9,7 @@ import pytest
 
 from axlearn.cloud.common.utils import AcceleratorConfig
 from axlearn.cloud.gcp.jobset_utils import TPUJobBuilder
-from axlearn.cloud.gcp.lws_utils import TPULeaderWorkerTemplate
+from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
 
 
 class TestTPULeaderWorkerTemplate:
@@ -82,3 +82,19 @@ class TestTPULeaderWorkerTemplate:
             # Verify existing labels are still present
             assert "existing-label" in result["metadata"]["labels"]
             assert result["metadata"]["labels"]["existing-label"] == "existing-value"
+
+
+class TestBaseLeaderWorkerTemplatePodMutators:
+    """Tests that pod_mutators field exists on BaseLeaderWorkerTemplate."""
+
+    def test_pod_mutators_field_exists(self):
+        """BaseLeaderWorkerTemplate.Config should have pod_mutators."""
+        cfg = BaseLeaderWorkerTemplate.default_config()
+        assert hasattr(cfg, "pod_mutators")
+        assert not cfg.pod_mutators
+
+    def test_pod_mutators_field_on_tpu_template(self):
+        """TPULeaderWorkerTemplate should inherit pod_mutators via TPUJobBuilder."""
+        cfg = TPULeaderWorkerTemplate.default_config()
+        assert hasattr(cfg, "pod_mutators")
+        assert not cfg.pod_mutators
