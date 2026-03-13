@@ -145,6 +145,9 @@ _VALID_NAME_CHARS = r"[!-~]+"  # match all printing ASCII characters except spac
 valid_name_re = re.compile(_VALID_NAME_CHARS)
 
 
+_JOB_METADATA_FIELD_NAMES = {f.name for f in dataclasses.fields(JobMetadata)}
+
+
 def bastion_job_flags(flag_values: flags.FlagValues = FLAGS):
     flags.DEFINE_string("name", None, "Name of bastion.", flag_values=flag_values, required=True)
     flags.DEFINE_string("job_name", None, "Name of job.", flag_values=flag_values)
@@ -372,13 +375,24 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
             data["metadata"]["topologies"] = [
                 Topology(**topology) for topology in data["metadata"]["topologies"]
             ]
+        # Backwards compatible: only pass fields that JobMetadata currently supports.
+        skipped = data["metadata"].keys() - _JOB_METADATA_FIELD_NAMES
+        if skipped:
+            logging.info(
+                "deserialize_jobspec: job %s skipping unknown metadata fields: %s",
+                data["name"],
+                skipped,
+            )
+        metadata_kwargs = {
+            k: v for k, v in data["metadata"].items() if k in _JOB_METADATA_FIELD_NAMES
+        }
         return new_jobspec(
             version=data["version"],
             name=data["name"],
             command=data["command"],
             cleanup_command=data.get("cleanup_command", None),
             env_vars=data.get("env_vars", None),
-            metadata=JobMetadata(**data["metadata"]),
+            metadata=JobMetadata(**metadata_kwargs),
             code_asset_path=data.get("code_asset_path", None),
         )
     raise ValidationError(f"Unsupported version: {data["version"]}")

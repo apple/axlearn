@@ -6,6 +6,7 @@
 # pytype: disable=wrong-arg-types,pyi-error
 import contextlib
 import copy
+import dataclasses
 import io
 import itertools
 import json
@@ -334,6 +335,34 @@ class TestJobSpec(parameterized.TestCase):
         )
         with tempfile.NamedTemporaryFile("w+b") as f:
             serialize_jobspec(test_spec, f.name)
+            deserialized_jobspec = deserialize_jobspec(f=f.name)
+            for key in test_spec.__dataclass_fields__:
+                self.assertIn(key, deserialized_jobspec.__dict__)
+                self.assertEqual(deserialized_jobspec.__dict__[key], test_spec.__dict__[key])
+
+    def test_deserialization_skips_unknown_metadata_fields(self):
+        test_spec = new_jobspec(
+            name="test_job",
+            command="test command",
+            env_vars={},
+            metadata=JobMetadata(
+                user_id="test_id",
+                project_id="test_project",
+                # Make sure str timestamp isn't truncated even when some numbers are 0.
+                creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                resources={"test": 8},
+                priority=1,
+                topologies=[],
+            ),
+        )
+        with tempfile.NamedTemporaryFile("w") as f:
+            data = dataclasses.asdict(test_spec)
+            data["metadata"]["unknown_field"] = "unknown_value"
+            data["metadata"]["creation_time"] = data["metadata"]["creation_time"].strftime(
+                "%Y-%m-%d %H:%M:%S.%f"
+            )
+            json.dump(data, f, default=str)
+            f.flush()
             deserialized_jobspec = deserialize_jobspec(f=f.name)
             for key in test_spec.__dataclass_fields__:
                 self.assertIn(key, deserialized_jobspec.__dict__)
