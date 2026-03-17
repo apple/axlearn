@@ -455,6 +455,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         mem_req = f"{self.config.pathways_head_mem}Gi"
         resources = {
             "requests": {"cpu": cpu_req, "memory": mem_req},
+            "limits": {"cpu": cpu_req, "memory": mem_req},
         }
         head_container["resources"] = resources
 

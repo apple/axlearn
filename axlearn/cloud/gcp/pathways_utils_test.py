@@ -156,6 +156,14 @@ class PathwaysReplicatedJobTest(TestCase):
                 }.issubset(env_vars)
             )
 
+            # Check resources
+            self.assertIn("resources", head_container)
+            resources = head_container["resources"]
+            self.assertEqual(resources["requests"]["cpu"], "1000.0m")
+            self.assertEqual(resources["requests"]["memory"], "16Gi")
+            self.assertEqual(resources["limits"]["cpu"], "1000.0m")
+            self.assertEqual(resources["limits"]["memory"], "16Gi")
+
             # Check security context for SYS_PTRACE capability
             self.assertIn("securityContext", head_container)
             security_context = head_container["securityContext"]
