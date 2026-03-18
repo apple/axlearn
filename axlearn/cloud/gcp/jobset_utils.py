@@ -447,6 +447,8 @@ class TPUJobBuilder(SingleReplicatedJob):
                 Format: [["sub-block-id", ...], ...] where each inner list contains
                 subblock IDs for one replica. When enable_tpu_slice_auto_provisioning is True,
                 this is initialized from the environment variable in from_flags().
+            shared_memory_size_gb: Size limit in GiB for the /dev/shm shared memory volume
+                (e.g. 500 for 500Gi). Setting it to 0 means unlimited.
         """
 
         reservation: Optional[str] = None
@@ -459,6 +461,7 @@ class TPUJobBuilder(SingleReplicatedJob):
         additional_node_networks: Optional[str] = None
         job_labels: Optional[dict[str, str]] = None
         topology_assignment: Optional[list[list[str]]] = None
+        shared_memory_size_gb: Optional[int] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -487,6 +490,12 @@ class TPUJobBuilder(SingleReplicatedJob):
             "persistent_disk_size_gb",
             None,
             "If set, attach an ephemeral persistent disk of this size (GiB) mounted at /data.",
+            **common_kwargs,
+        )
+        flags.DEFINE_integer(
+            "shared_memory_size_gb",
+            None,
+            "Limit /dev/shm to this size in GiB (e.g. 500). 0 means unlimited.",
             **common_kwargs,
         )
 
@@ -540,6 +549,8 @@ class TPUJobBuilder(SingleReplicatedJob):
         cfg: TPUJobBuilder.Config = self.config
         if cfg.output_dir is None:
             raise ValueError("cfg.output_dir is required.")
+        if cfg.shared_memory_size_gb is not None and cfg.shared_memory_size_gb < 0:
+            raise ValueError(f"--shared_memory_size_gb={cfg.shared_memory_size_gb} must be >= 0.")
         self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
@@ -572,6 +583,7 @@ class TPUJobBuilder(SingleReplicatedJob):
 
         if cfg.gcsfuse_mount:
             self._maybe_add_volume_mount(volume_mounts, spec=cfg.gcsfuse_mount)
+        if cfg.gcsfuse_mount or cfg.shared_memory_size_gb is not None:
             self._maybe_add_volume_mount(
                 volume_mounts, spec=VolumeMount(name="shared-memory", mount_path="/dev/shm")
             )
@@ -794,6 +806,9 @@ class TPUJobBuilder(SingleReplicatedJob):
         volumes.append(dict(name="shared-output", emptyDir={}))
         if cfg.gcsfuse_mount:
             self.set_up_gcsfuse(cfg, volumes, annotations)
+        elif cfg.shared_memory_size_gb is not None:
+            # when shared_memory_size_gb is set (int), create shared-memory volume
+            volumes.append(self._build_shared_memory_volumes(f"{cfg.shared_memory_size_gb}Gi"))
         if cfg.host_mounts:
             for mount in cfg.host_mounts:
                 volumes.append(

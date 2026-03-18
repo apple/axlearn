@@ -324,18 +324,30 @@ class TPUReplicatedJobTest(TestCase):
                 else:
                     self.fail("host-mount not found!")
 
-            if gcsfuse_mount_spec:
-                self.assertIn("shared-memory", [v["name"] for v in pod_spec["volumes"]])
+            # shared-memory volume is present when gcsfuse or shared_memory_size_gb is set.
+            volume_names = [v["name"] for v in pod_spec["volumes"]]
+            if gcsfuse_mount_spec or cfg.shared_memory_size_gb is not None:
+                self.assertIn("shared-memory", volume_names)
                 for v in pod_spec["volumes"]:
                     if v["name"] == "shared-memory":
-                        self.assertIn("sizeLimit", v["emptyDir"])
-                        size_limit_request = [x for x in gcsfuse_mount_spec if "shared_memory" in x]
-                        self.assertLessEqual(len(size_limit_request), 1)
-                        if size_limit_request:
-                            size_limit_request = size_limit_request[0].split("=")[1]
-                            self.assertEqual(v["emptyDir"]["sizeLimit"], size_limit_request)
+                        self.assertEqual(v["emptyDir"]["medium"], "Memory")
+                        if gcsfuse_mount_spec:
+                            # When gcsfuse is enabled, sizeLimit comes from gcsfuse shared_memory.
+                            size_limit_request = [
+                                x for x in gcsfuse_mount_spec if "shared_memory" in x
+                            ]
+                            if size_limit_request:
+                                expected = size_limit_request[0].split("=")[1]
+                            else:
+                                expected = "1Gi"  # GCSFuseMount default
+                            self.assertEqual(v["emptyDir"]["sizeLimit"], expected)
+                        else:
+                            # Without gcsfuse, uses shared_memory_size_gb.
+                            self.assertEqual(
+                                v["emptyDir"]["sizeLimit"], f"{cfg.shared_memory_size_gb}Gi"
+                            )
             else:
-                self.assertNotIn("shared-memory", [v["name"] for v in pod_spec["volumes"]])
+                self.assertNotIn("shared-memory", volume_names)
 
             self.assertEqual(container["imagePullPolicy"], "Always")
 
@@ -708,6 +720,58 @@ class TPUReplicatedJobTest(TestCase):
             mounts = container["volumeMounts"]
             data_mounts = [m for m in mounts if m.get("name") == "persistent-disk"]
             self.assertEmpty(data_mounts)
+
+    def test_shared_memory_default_no_volume(self):
+        """Tests that shared-memory volume is not created when shared_memory_size_gb is None."""
+        with self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, bundler_cfg):
+            cfg.set(command="test-command", output_dir="gs://bucket/output")
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = job._build_pod()  # pylint: disable=protected-access
+            volumes = pod["spec"]["volumes"]
+            shm_vols = [v for v in volumes if v["name"] == "shared-memory"]
+            self.assertEmpty(shm_vols)
+
+    def test_shared_memory_with_size_limit(self):
+        """Tests that shared-memory volume respects shared_memory_size_gb config."""
+        with self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, bundler_cfg):
+            cfg.set(
+                command="test-command",
+                output_dir="gs://bucket/output",
+                shared_memory_size_gb=500,
+            )
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = job._build_pod()  # pylint: disable=protected-access
+            volumes = pod["spec"]["volumes"]
+            shm_vols = [v for v in volumes if v["name"] == "shared-memory"]
+            self.assertLen(shm_vols, 1)
+            self.assertEqual(shm_vols[0]["emptyDir"]["medium"], "Memory")
+            self.assertEqual(shm_vols[0]["emptyDir"]["sizeLimit"], "500Gi")
+
+    def test_shared_memory_volume_mount_not_present_by_default(self):
+        """Tests that /dev/shm volume mount is not present when shared_memory_size_gb is None."""
+        with self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, bundler_cfg):
+            cfg.set(command="test-command", output_dir="gs://bucket/output")
+            self.assertIsNone(cfg.gcsfuse_mount)
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            container = job._build_container()  # pylint: disable=protected-access
+            shm_mounts = [m for m in container["volumeMounts"] if m.get("name") == "shared-memory"]
+            self.assertEmpty(shm_mounts)
+
+    def test_shared_memory_size_gb_zero_means_unlimited(self):
+        """Tests that shared_memory_size_gb=0 means unlimited (no sizeLimit)."""
+        with self._job_config(bundler_cls=ArtifactRegistryBundler) as (cfg, bundler_cfg):
+            cfg.set(
+                command="test-command",
+                output_dir="gs://bucket/output",
+                shared_memory_size_gb=0,
+            )
+            job = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            pod = job._build_pod()  # pylint: disable=protected-access
+            volumes = pod["spec"]["volumes"]
+            shm_vols = [v for v in volumes if v["name"] == "shared-memory"]
+            self.assertLen(shm_vols, 1)
+            self.assertEqual(shm_vols[0]["emptyDir"]["medium"], "Memory")
+            self.assertEqual(shm_vols[0]["emptyDir"]["sizeLimit"], "0Gi")
 
     def test_ephemeral_disk_mount_dataclass(self):
         """Tests EphemeralDiskMount defaults and field assignment."""
