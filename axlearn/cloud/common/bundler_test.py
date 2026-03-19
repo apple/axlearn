@@ -340,6 +340,40 @@ class DockerBundlerTest(TestWithTemporaryCWD):
                 # Build should not be called.
                 self.assertEqual(mock_build.call_count, 1)
 
+    def test_build_and_push_with_sidecars(self):
+        def mock_build_fn(**kwargs):
+            return kwargs["target"]
+
+        mock_build = mock.Mock(side_effect=mock_build_fn)
+        with (
+            mock.patch.multiple(
+                bundler.__name__,
+                docker_push=lambda x: x,
+                docker_build=mock_build,
+            ),
+            mock.patch.multiple(
+                f"{git_summary.__name__}.{git_summary.GitSummary.__name__}",
+                is_valid=mock.Mock(return_value=False),
+            ),
+        ):
+            _create_dummy_config(self._temp_root.name)
+            with _fake_dockerfile() as dockerfile:
+                cfg = DockerBundler.default_config().set(
+                    image="test",
+                    repo="FAKE_REPO",
+                    dockerfile=str(dockerfile),
+                    target="main-target",
+                    sidecars=["sidecar1", "sidecar2"],
+                )
+                b = cfg.instantiate()
+                res = b.bundle("FAKE_TAG")
+
+                self.assertEqual(res, "main-target")
+                self.assertEqual(mock_build.call_count, 3)
+
+                targets = [call.kwargs["target"] for call in mock_build.call_args_list]
+                self.assertEqual(targets, ["sidecar1", "sidecar2", "main-target"])
+
     @parameterized.product(running_from_source=[True, False], allow_dirty=[False, True])
     @mock.patch(
         f"{git_summary_path}.to_labels",

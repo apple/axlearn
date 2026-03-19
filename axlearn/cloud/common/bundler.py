@@ -508,7 +508,7 @@ class DockerBundler(BaseDockerBundler):
 
         _, tag = image.rsplit(":", maxsplit=1)
         for sidecar in cfg.sidecars:
-            sidecar_bundler = cfg.set(
+            sidecar_bundler = cfg.clone(
                 image=sidecar,
                 target=sidecar,
                 sidecars=[],
