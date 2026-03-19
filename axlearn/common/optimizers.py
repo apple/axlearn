@@ -199,6 +199,26 @@ def adam_partition(base: optax.GradientTransformation) -> PartitionedGradientTra
     return with_partition_fn(base, partition_fn)
 
 
+def replace_with_updates():
+    """Replaces params with updates (gradients)."""
+
+    def update_fn(
+        updates: NestedTensor, state: optax.EmptyState, params: NestedOptParam
+    ) -> tuple[NestedTensor, optax.EmptyState]:
+        # Subtract param value because optax.apply_updates
+        # in Learner._compute_updated_params adds param back.
+        if params is None:
+            raise ValueError(optax.NO_PARAMS_MSG)  # pylint: disable=no-member
+        updates = jax.tree.map(lambda u, p: u - p.value, updates, params)
+        return updates, state
+
+    return PartitionedGradientTransformation(
+        init=lambda params: optax.EmptyState(),
+        update=update_fn,
+        partition=lambda param_specs: optax.EmptyState(),
+    )
+
+
 def scale(step_size: float) -> PartitionedGradientTransformation:
     return with_partition_fn(optax.scale(step_size), lambda _: optax.ScaleState())
 
