@@ -4,10 +4,10 @@ Monitors training status and reports to FT manager system for fault tolerance.
 Provides hang detection and automatic restart capabilities.
 """
 
-import json
 import logging
 import re
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -333,36 +333,21 @@ class StatusMonitor:
         """
         return self.manager.get_restart_status()
 
-    def _forward_trainer_log_line(self, line: str, restart_count: int) -> None:
-        """Forward a trainer subprocess log line via the logging system.
+    def _forward_trainer_log_line(self, line: str) -> None:
+        """Forward a trainer subprocess log line to stdout for Cloud Logging.
 
         Args:
             line: A single line of text from the trainer's stdout (may include
                 trailing newline).
-            restart_count: The current restart attempt number.
         """
-        line = line.rstrip("\n")
-        labels = {"ft_trainer": "true", "restart_count": str(restart_count)}
-        logger = logging.getLogger(__name__)
+        sys.stdout.write(line if line.endswith("\n") else line + "\n")
+        sys.stdout.flush()
 
-        try:
-            payload = json.loads(line)
-        except ValueError:
-            payload = None
-
-        if isinstance(payload, dict) and isinstance(payload.get("message"), str):
-            level = getattr(logging, payload.get("severity", "INFO"), logging.INFO)
-            logger.log(level, "%s", payload["message"], extra={"labels": labels})
-            return
-
-        logger.info("%s", line, extra={"labels": labels})
-
-    def monitor_training_process(self, process: "subprocess.Popen", restart_count: int = 0) -> int:
+    def monitor_training_process(self, process: "subprocess.Popen") -> int:
         """Monitor training process with integrated restart handling.
 
         Args:
             process: The training subprocess to monitor.
-            restart_count: Current restart attempt number, included in forwarded logs.
 
         Returns:
             int: Process return code
@@ -380,7 +365,7 @@ class StatusMonitor:
                         self.update_step(step)
 
                     # Forward trainer log line preserving original metadata
-                    self._forward_trainer_log_line(line, restart_count)
+                    self._forward_trainer_log_line(line)
 
                     # Check if restart was requested through FT system
                     termination_requested, reason = self.get_restart_status()

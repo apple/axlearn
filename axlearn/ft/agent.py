@@ -118,7 +118,7 @@ def _run_single_attempt(
         start_new_session=True,
     ) as process:
         process_controller.set_process(process)
-        returncode = monitor.monitor_training_process(process, restart_count)
+        returncode = monitor.monitor_training_process(process)
         process_controller.clear_process()
 
         action = _handle_termination_request(process_controller)
