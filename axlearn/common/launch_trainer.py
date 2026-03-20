@@ -40,6 +40,36 @@ flags.DEFINE_integer(
     "Used for initializing model parameters and pseudo-random number generation during training.",
 )
 flags.DEFINE_list("trace_at_steps", [], "Step numbers to start a 3-step profile at.")
+flags.DEFINE_integer(
+    "n_steps_for_each_trace",
+    3,
+    "Number of consecutive steps covered by each trace.",
+)
+flags.DEFINE_enum(
+    "tpu_trace_mode",
+    "TRACE_ONLY_XLA",
+    ["TRACE_ONLY_HOST", "TRACE_ONLY_XLA", "TRACE_COMPUTE", "TRACE_COMPUTE_AND_SYNC"],
+    "TPU trace mode. See https://docs.jax.dev/en/latest/profiling.html#tpu-options.",
+)
+flags.DEFINE_enum(
+    "host_tracer_level",
+    "2",
+    ["0", "1", "2", "3"],
+    "Host tracer level. Higher levels capture more host-side activity. "
+    "See https://docs.jax.dev/en/latest/profiling.html#general-options.",
+)
+flags.DEFINE_enum(
+    "device_tracer_level",
+    "1",
+    ["0", "1"],
+    "Device tracer level. See https://docs.jax.dev/en/latest/profiling.html#general-options.",
+)
+flags.DEFINE_enum(
+    "python_tracer_level",
+    "0",
+    ["0", "1"],
+    "Python tracer level. See https://docs.jax.dev/en/latest/profiling.html#general-options.",
+)
 flags.DEFINE_list(
     "eval_trace_at_iters",
     [],
@@ -119,6 +149,16 @@ def get_trainer_config(
     if isinstance(trainer_config.mesh_shape, MeshShape):
         trainer_config.mesh_shape = infer_mesh_shape(trainer_config.mesh_shape)
     trainer_config.start_trace_steps = [int(el) for el in flag_values.trace_at_steps]
+    if flag_values["n_steps_for_each_trace"].present:
+        trainer_config.n_steps_for_each_trace = int(flag_values.n_steps_for_each_trace)
+    if flag_values["tpu_trace_mode"].present:
+        trainer_config.tpu_trace_mode = flag_values.tpu_trace_mode
+    if flag_values["host_tracer_level"].present:
+        trainer_config.host_tracer_level = int(flag_values.host_tracer_level)
+    if flag_values["device_tracer_level"].present:
+        trainer_config.device_tracer_level = int(flag_values.device_tracer_level)
+    if flag_values["python_tracer_level"].present:
+        trainer_config.python_tracer_level = int(flag_values.python_tracer_level)
     if trainer_config.watchdog_timeout_seconds is None:
         trainer_config.watchdog_timeout_seconds = flag_values.trainer_watchdog_timeout_seconds
     if trainer_config.crash_on_hang_timeout_seconds is None:

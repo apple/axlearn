@@ -158,11 +158,27 @@ class SpmdTrainer(Module):
         save_input_iterator: bool = False
 
         # At which steps to start profiler tracing.
-        # Currently each trace will cover 3 consecutive training steps.
-        # The start steps must therefore be at least 3 steps apart from each other.
+        # Each trace will cover `n_steps_for_each_trace` consecutive training steps.
         start_trace_steps: Sequence[int] = []
+        # Number of consecutive steps covered by each trace. If None, defaults to 3.
+        n_steps_for_each_trace: Optional[int] = None
         # By default, only trace on host 0.
         start_trace_process_indices: Union[Literal["all"], Sequence[int]] = [0]
+        # TPU trace mode. One of TRACE_ONLY_HOST, TRACE_ONLY_XLA, TRACE_COMPUTE,
+        # and TRACE_COMPUTE_AND_SYNC.
+        # If None, defaults to TRACE_ONLY_XLA.
+        # See https://docs.jax.dev/en/latest/profiling.html#tpu-options
+        tpu_trace_mode: Optional[str] = None
+        # Host tracer level (0-3). Higher levels capture more host-side activity.
+        # If None, defaults to 2.
+        # See https://docs.jax.dev/en/latest/profiling.html#general-options
+        host_tracer_level: Optional[int] = None
+        # Device tracer level (0 or 1). If None, defaults to 1.
+        # See https://docs.jax.dev/en/latest/profiling.html#general-options
+        device_tracer_level: Optional[int] = None
+        # Python tracer level (0 or 1). If None, defaults to 0.
+        # See https://docs.jax.dev/en/latest/profiling.html#general-options
+        python_tracer_level: Optional[int] = None
 
         # Determines whether to run the XLA Silent-data-corruption Checker (XSC) for a given step.
         # If None, never run the checker.
@@ -1358,8 +1374,27 @@ class SpmdTrainer(Module):
             )
         if should_start_tracing:
             self._step_log("Start profiler tracing")
-            jax.profiler.start_trace(self.summary_writer.config.dir)
-            updated_stop_trace_step = self.step + 3
+            profiler_options = jax.profiler.ProfileOptions()
+            profiler_options.host_tracer_level = (
+                cfg.host_tracer_level if cfg.host_tracer_level is not None else 2
+            )
+            profiler_options.device_tracer_level = (
+                cfg.device_tracer_level if cfg.device_tracer_level is not None else 1
+            )
+            profiler_options.python_tracer_level = (
+                cfg.python_tracer_level if cfg.python_tracer_level is not None else 0
+            )
+            profiler_options.advanced_configuration = {
+                "tpu_trace_mode": (
+                    cfg.tpu_trace_mode if cfg.tpu_trace_mode is not None else "TRACE_ONLY_XLA"
+                )
+            }
+            jax.profiler.start_trace(
+                self.summary_writer.config.dir, profiler_options=profiler_options
+            )
+            updated_stop_trace_step = self.step + (
+                cfg.n_steps_for_each_trace if cfg.n_steps_for_each_trace is not None else 3
+            )
         return updated_stop_trace_step
 
 
