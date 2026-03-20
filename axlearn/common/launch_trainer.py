@@ -42,33 +42,36 @@ flags.DEFINE_integer(
 flags.DEFINE_list("trace_at_steps", [], "Step numbers to start a 3-step profile at.")
 flags.DEFINE_integer(
     "n_steps_for_each_trace",
-    3,
-    "Number of consecutive steps covered by each trace.",
+    None,
+    "Number of consecutive steps covered by each trace. If None, defaults to 3.",
 )
 flags.DEFINE_enum(
     "tpu_trace_mode",
-    "TRACE_ONLY_XLA",
+    None,
     ["TRACE_ONLY_HOST", "TRACE_ONLY_XLA", "TRACE_COMPUTE", "TRACE_COMPUTE_AND_SYNC"],
-    "TPU trace mode. See https://docs.jax.dev/en/latest/profiling.html#tpu-options.",
+    "TPU trace mode. If None, defaults to TRACE_ONLY_XLA. "
+    "See https://docs.jax.dev/en/latest/profiling.html#tpu-options. ",
 )
 flags.DEFINE_enum(
     "host_tracer_level",
-    "2",
+    None,
     ["0", "1", "2", "3"],
     "Host tracer level. Higher levels capture more host-side activity. "
-    "See https://docs.jax.dev/en/latest/profiling.html#general-options.",
+    "If None, defaults to 2. See https://docs.jax.dev/en/latest/profiling.html#general-options.",
 )
 flags.DEFINE_enum(
     "device_tracer_level",
-    "1",
+    None,
     ["0", "1"],
-    "Device tracer level. See https://docs.jax.dev/en/latest/profiling.html#general-options.",
+    "Device tracer level. If None, defaults to 1. "
+    "See https://docs.jax.dev/en/latest/profiling.html#general-options.",
 )
 flags.DEFINE_enum(
     "python_tracer_level",
-    "0",
+    None,
     ["0", "1"],
-    "Python tracer level. See https://docs.jax.dev/en/latest/profiling.html#general-options.",
+    "Python tracer level. If None, defaults to 0. "
+    "See https://docs.jax.dev/en/latest/profiling.html#general-options.",
 )
 flags.DEFINE_list(
     "eval_trace_at_iters",

@@ -1375,20 +1375,14 @@ class SpmdTrainer(Module):
         if should_start_tracing:
             self._step_log("Start profiler tracing")
             profiler_options = jax.profiler.ProfileOptions()
-            profiler_options.host_tracer_level = (
-                cfg.host_tracer_level if cfg.host_tracer_level is not None else 2
-            )
-            profiler_options.device_tracer_level = (
-                cfg.device_tracer_level if cfg.device_tracer_level is not None else 1
-            )
-            profiler_options.python_tracer_level = (
-                cfg.python_tracer_level if cfg.python_tracer_level is not None else 0
-            )
-            profiler_options.advanced_configuration = {
-                "tpu_trace_mode": (
-                    cfg.tpu_trace_mode if cfg.tpu_trace_mode is not None else "TRACE_ONLY_XLA"
-                )
-            }
+            if cfg.host_tracer_level is not None:
+                profiler_options.host_tracer_level = cfg.host_tracer_level
+            if cfg.device_tracer_level is not None:
+                profiler_options.device_tracer_level = cfg.device_tracer_level
+            if cfg.python_tracer_level is not None:
+                profiler_options.python_tracer_level = cfg.python_tracer_level
+            if cfg.tpu_trace_mode is not None:
+                profiler_options.advanced_configuration = {"tpu_trace_mode": cfg.tpu_trace_mode}
             jax.profiler.start_trace(
                 self.summary_writer.config.dir, profiler_options=profiler_options
             )
