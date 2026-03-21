@@ -4,10 +4,9 @@
 
 | Stage | Status |
 | ----- | ------ |
-| CPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-cpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-cpu-main-prb/pipelines) |
-| GPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-gpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-gpu-main-prb/pipelines) |
-| TPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-tpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-tpu-main-prb/pipelines) |
-| Bazel Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-bazel-test-cpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-bazel-test-cpu-main-prb/pipelines) |
+| CPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-cpu-main-build)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-cpu-main-build/pipelines) |
+| GPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-gpu-main-publish)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-gpu-main-publish/pipelines) |
+| TPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-tpu-main-publish)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-tpu-main-publish/pipelines) |
 | PyPI Release | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-release-pypi-main-publish)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-release-pypi-main-publish/pipelines) |
 
 **This library is under active development and the API is subject to change.**
