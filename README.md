@@ -2,6 +2,14 @@
 
 [![build-and-test](https://github.com/apple/axlearn/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/apple/axlearn/actions/workflows/build.yml)
 
+| Stage | Status |
+| ----- | ------ |
+| CPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-cpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-cpu-main-prb/pipelines) |
+| GPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-gpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-gpu-main-prb/pipelines) |
+| TPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-tpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-tpu-main-prb/pipelines) |
+| Bazel Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-bazel-test-cpu-main-prb)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-bazel-test-cpu-main-prb/pipelines) |
+| PyPI Release | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-release-pypi-main-publish)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-release-pypi-main-publish/pipelines) |
+
 **This library is under active development and the API is subject to change.**
 
 ## Table of Contents
@@ -38,3 +46,7 @@ vision, and speech recognition and contains baseline configurations for training
 models.
 
 Please see [Concepts](docs/02-concepts.md) for more details on the core components and design of AXLearn, or [Getting Started](docs/01-start.md) if you want to get your hands dirty.
+
+## PyPI Release
+
+See [RELEASE.md](RELEASE.md) for PyPI release process, version management, and installation instructions.
