@@ -3,6 +3,7 @@
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Dict
 
 from prometheus_client import CollectorRegistry, Gauge, Histogram, generate_latest, multiprocess
 
@@ -15,13 +16,13 @@ BASTION_DOWNLOAD_JOB_ALL_SECONDS = Histogram(
 JOB_TIME_TO_RUNNING_SECONDS = Histogram(
     "bastion_job_time_to_running_seconds",
     "Time in seconds from runner starts a job until until it reaches Running state",
-    buckets=(1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),  # 1s to 1hr
+    buckets=(1, 60, 120, 300, 600, 1800, 3600, 7200, 18000, 36000),  # 1s to 10hr
 )
 
-JOB_RUN_LATENCY_GAUGE = Gauge(
-    "bastion_job_run_latency_seconds",
-    "Time in seconds from runner starts a job until until it reaches Running state",
-    ["job_name"],
+JOB_SUSPENDED_DURATION_SECONDS = Histogram(
+    "bastion_job_suspended_duration_seconds",
+    "Time in seconds the jobset stayed in SUSPENDED state",
+    buckets=(1, 60, 120, 300, 600, 1800, 3600, 7200, 18000, 36000),  # 1s to 10hr
 )
 
 JOB_WAIT_FOR_BUILD_SECONDS = Gauge(
@@ -30,10 +31,22 @@ JOB_WAIT_FOR_BUILD_SECONDS = Gauge(
     ["job_name"],
 )
 
-JOB_SUSPENDED_DURATION_SECONDS = Histogram(
-    "bastion_job_suspended_duration_seconds",
-    "Time in seconds the jobset stayed in SUSPENDED state",
+JOB_COUNTS = Gauge(
+    "bastion_job_counts",
+    "Number of jobs in each status as seen by Bastion",
+    ["status"],
+)
+
+SCHEDULING_CYCLE_LATENCY_SECONDS = Histogram(
+    "bastion_scheduling_latency_seconds",
+    "Time in seconds for a full Bastion scheduling cycle",
     buckets=(1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600),  # 1s to 1hr
+)
+
+JOB_PROVISIONING_RESOURCES_LATENCY_SECONDS = Histogram(
+    "bastion_job_provisioning_resources_latency_seconds",
+    "Time in seconds from provisioning resources start until job reaches RUNNING state",
+    buckets=(1, 60, 120, 300, 600, 1800, 3600, 7200, 18000, 36000),  # 1s to 10hr
 )
 
 
@@ -122,8 +135,24 @@ def record_job_time_to_running(time_seconds: float):
     JOB_TIME_TO_RUNNING_SECONDS.observe(time_seconds)
 
 
-def record_job_run_latency(job_name: str, time_seconds: float):
-    JOB_RUN_LATENCY_GAUGE.labels(job_name).set(time_seconds)
+def record_job_counts_by_status(status_counts: Dict[str, int]):
+    """Update gauges for number of jobs per JobStatus.
+
+    Args:
+        status_counts: Mapping from JobStatus string value to count. All known statuses
+            are emitted (zero-filled) so dashboards don't have gaps.
+    """
+    for status, count in status_counts.items():
+        JOB_COUNTS.labels(status=status).set(count)
+
+
+def record_scheduling_latency(time_seconds: float):
+    """Record the wall-clock time of a full Bastion scheduling cycle.
+
+    Args:
+        time_seconds: Elapsed seconds for one full scheduling cycle.
+    """
+    SCHEDULING_CYCLE_LATENCY_SECONDS.observe(time_seconds)
 
 
 def record_job_wait_for_build(job_name: str, time_seconds: float):
@@ -135,6 +164,15 @@ def record_job_wait_for_build(job_name: str, time_seconds: float):
     the job.
     """
     JOB_WAIT_FOR_BUILD_SECONDS.labels(job_name).set(time_seconds)
+
+
+def record_job_provisioning_resources_latency(time_seconds: float):
+    """Record the time from provisioning resources start until job reaches RUNNING state.
+
+    Args:
+        time_seconds: Elapsed seconds from when resources started provisioning until RUNNING.
+    """
+    JOB_PROVISIONING_RESOURCES_LATENCY_SECONDS.observe(time_seconds)
 
 
 def record_job_suspended_duration(time_seconds: float):

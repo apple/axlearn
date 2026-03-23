@@ -580,6 +580,9 @@ class GKERunnerJob(BaseRunnerJob):
         # Track when the job enters SUSPENDED state.
         suspended_since = None
 
+        # Track when resource provisioning starts.
+        provisioning_start = None
+
         while True:
             status = self._get_status()
 
@@ -624,6 +627,7 @@ class GKERunnerJob(BaseRunnerJob):
                     return
 
                 # Provision node pools for the job to run.
+                provisioning_start = time.perf_counter()
                 if self._pre_provisioner is not None:
                     self._pre_provisioner.create_for(self._inner)
 
@@ -659,7 +663,10 @@ class GKERunnerJob(BaseRunnerJob):
                     # Record the time to reach RUNNING state.
                     elapsed_time = time.perf_counter() - start_time
                     metrics.record_job_time_to_running(elapsed_time)
-                    metrics.record_job_run_latency(cfg.name, elapsed_time)
+                    if provisioning_start is not None:
+                        metrics.record_job_provisioning_resources_latency(
+                            time.perf_counter() - provisioning_start
+                        )
                     self._maybe_publish(
                         cfg.name, msg="Job is running", state=JobLifecycleState.RUNNING
                     )

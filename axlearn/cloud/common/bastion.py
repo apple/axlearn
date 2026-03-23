@@ -98,7 +98,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import suppress
 from datetime import datetime, timezone
 from subprocess import CalledProcessError
-from typing import IO, Any, NamedTuple, Optional, Union
+from typing import IO, Any, Dict, NamedTuple, Optional, Union
 
 from absl import flags, logging
 from tensorflow import nest as tf_nest
@@ -1327,6 +1327,13 @@ class Bastion(Configurable):
         for job_name, job in self._active_jobs.items():
             logging.info("%s: %s", job_name, job.state)
 
+        status_counts = collections.Counter(
+            str(job.state.status) for job in self._active_jobs.values()
+        )
+        counts_by_status: Dict[str, int] = {s.value: 0 for s in JobStatus}
+        counts_by_status.update(status_counts)
+        metrics.record_job_counts_by_status(counts_by_status)
+
         logging.info("==End of update step.")
         logging.info("")
 
@@ -1393,6 +1400,7 @@ class Bastion(Configurable):
             self._update_jobs()
             self._gc_jobs()
             execute_s = time.time() - start
+            metrics.record_scheduling_latency(execute_s)
             if execute_s > cfg.update_interval_seconds:
                 logging.warning(
                     "Execute step exceeded interval: %s > %s",
