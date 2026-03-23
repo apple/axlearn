@@ -116,6 +116,15 @@ def _build_replicated_job(node_selector: dict[str, str]):
     }
 
 
+def _mock_lws_spec(reservation: Optional[str] = None, is_spot: bool = False):
+    node_selector = {"cloud.google.com/gke-tpu-accelerator": "tpu-v5p-slice"}
+    if reservation:
+        node_selector["cloud.google.com/reservation-name"] = reservation
+    if is_spot:
+        node_selector["cloud.google.com/gke-spot"] = "true"
+    return {"leaderWorkerTemplate": {"workerTemplate": {"spec": {"nodeSelector": node_selector}}}}
+
+
 def _mock_hybrid_replicated_jobs(has_tpu: bool, has_cpu: bool):
     replicated_jobs = []
     if has_tpu:
@@ -1836,7 +1845,7 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 # pytype: enable=attribute-error
 
     def test_rescheduled(self):
-        """Tests that RESCHEDULED status triggers _delete and continues the loop."""
+        """Tests that RESCHEDULED status triggers _reschedule and continues the loop."""
         cfg = self._job_config(
             command="",
             name="test-name",
@@ -1854,14 +1863,127 @@ class LWSRunnerJobTest(parameterized.TestCase):
                     runner_gke.LWSRunnerJob.Status.FAILED,
                 ]
             ),
-            _delete=mock.DEFAULT,
+            _reschedule=mock.DEFAULT,
             _inner=mock.DEFAULT,
             _pre_provisioner=mock.DEFAULT,
         ):
             job._execute()
 
-            # _delete should be called once for the RESCHEDULED status.
-            job._delete.assert_called_once()  # pytype: disable=attribute-error
+            # _reschedule should be called once for the RESCHEDULED status.
+            job._reschedule.assert_called_once()  # pytype: disable=attribute-error
+
+    def test_get_status_rescheduled_tier_mismatch(self):
+        """Tests that _get_status returns RESCHEDULED when tier/reservation is mismatched."""
+        cfg = self._job_config(
+            command="test-command",
+            name="test-name",
+            cluster="test-cluster",
+        )
+        job: LWSRunnerJob = cfg.instantiate(bundler=mock.create_autospec(Bundler))
+
+        # LWS has a reservation but BASTION_TIER=1 (spot), so there is a mismatch.
+        mock_resp = dict(
+            metadata={},
+            status={},
+            spec=_mock_lws_spec(reservation="my-reservation"),
+        )
+        mock_get_status = mock.Mock(return_value=mock_resp)
+
+        with (
+            mock.patch.dict("os.environ", {"BASTION_TIER": "1"}),
+            mock.patch(
+                "kubernetes.client.CustomObjectsApi",
+                return_value=mock.Mock(get_namespaced_custom_object_status=mock_get_status),
+            ),
+        ):
+            self.assertEqual(LWSRunnerJob.Status.RESCHEDULED, job._get_status())
+
+    def test_reschedule_lws_deletes_mismatched_node_pools(self):
+        """Tests that _reschedule deletes node pools with mismatched tier (spot at tier=0)."""
+        cfg = self._job_config(
+            command="",
+            name="test-name",
+            cluster="test-cluster",
+        )
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
+
+        # A spot node pool exists, but BASTION_TIER=0 expects a reservation.
+        node_pool_by_label = {
+            "test-name": [
+                {
+                    "name": "pool0",
+                    "config": {
+                        "taints": [
+                            {
+                                "key": "cloud.google.com/gke-spot",
+                                "value": "true",
+                                "effect": "NO_SCHEDULE",
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+        mock_list = mock.Mock(return_value=node_pool_by_label)
+        mock_delete = mock.Mock()
+
+        with (
+            mock.patch.multiple(job, _inner=mock.DEFAULT, _pre_provisioner=None),
+            mock.patch.multiple(
+                runner_gke.__name__,
+                list_node_pools_by_label_key=mock_list,
+                delete_node_pools=mock_delete,
+            ),
+            mock.patch.dict("os.environ", {"BASTION_TIER": "0"}),
+        ):
+            job._reschedule()
+
+        mock_delete.assert_called_once()
+        args, _ = mock_delete.call_args
+        self.assertIn("pool0", args[0])
+
+    def test_reschedule_lws_skips_correct_node_pools(self):
+        """Tests that _reschedule skips node pools that already have the correct tier config."""
+        cfg = self._job_config(
+            command="",
+            name="test-name",
+            cluster="test-cluster",
+        )
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
+
+        # A reservation node pool exists and BASTION_TIER=0 expects a reservation — matches.
+        node_pool_by_label = {
+            "test-name": [
+                {
+                    "name": "pool0",
+                    "config": {
+                        "reservationAffinity": {
+                            "key": "compute.googleapis.com/reservation-name",
+                            "values": ["my-reservation"],
+                        },
+                    },
+                }
+            ]
+        }
+        mock_list = mock.Mock(return_value=node_pool_by_label)
+        mock_delete = mock.Mock()
+
+        with (
+            mock.patch.multiple(job, _inner=mock.DEFAULT, _pre_provisioner=None),
+            mock.patch.multiple(
+                runner_gke.__name__,
+                list_node_pools_by_label_key=mock_list,
+                delete_node_pools=mock_delete,
+            ),
+            mock.patch.dict("os.environ", {"BASTION_TIER": "0"}),
+        ):
+            job._reschedule()
+
+        mock_delete.assert_not_called()
 
     def test_name_alias(self):
         """Tests that names set via flag aliases are retained."""

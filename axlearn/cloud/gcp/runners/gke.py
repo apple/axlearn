@@ -212,6 +212,34 @@ def _infer_processor_type(jobset_spec: dict) -> Optional[str]:
     return None
 
 
+def _infer_reservation_from_lws(lws_spec: dict) -> Optional[str]:
+    """Infers reservation given a LeaderWorkerSet spec."""
+    try:
+        node_selector = lws_spec["leaderWorkerTemplate"]["workerTemplate"]["spec"]["nodeSelector"]
+        reservation = node_selector.get("cloud.google.com/reservation-name", None)
+        logging.info("Inferred reservation from LWS spec: %s", reservation)
+        return reservation
+    except (TypeError, KeyError):
+        logging.warning("Failed to infer reservation from LWS spec.")
+    return None
+
+
+def _infer_processor_type_from_lws(lws_spec: dict) -> Optional[str]:
+    """Infers processor type (tpu, cpu) given a LeaderWorkerSet spec."""
+    try:
+        node_selector = lws_spec["leaderWorkerTemplate"]["workerTemplate"]["spec"]["nodeSelector"]
+        if node_selector.get("cloud.google.com/gke-tpu-accelerator") is not None:
+            logging.info("Inferred processor type from LWS spec: tpu")
+            return "tpu"
+        if node_selector.get("axlearn/nodepool_type") == "workload":
+            logging.info("Inferred processor type from LWS spec: cpu")
+            return "cpu"
+    except (TypeError, KeyError):
+        logging.warning("Failed to infer processor type from LWS spec.")
+    logging.info("Inferred processor type from LWS spec: None")
+    return None
+
+
 # TODO(markblee): Move this to the builder.
 def _infer_job_version(jobset_spec: dict) -> Optional[int]:
     """Infers job version given a jobset spec."""
@@ -957,6 +985,12 @@ class LWSRunnerJob(BaseRunnerJob):
                 plural="leaderworkersets",
             )
 
+            tier = os.environ.get("BASTION_TIER", 0)
+            reservation = _infer_reservation_from_lws(resp["spec"])
+            processor_type = _infer_processor_type_from_lws(resp["spec"])
+            if runner_utils.should_recreate_job(tier, reservation, processor_type=processor_type):
+                return LWSRunnerJob.Status.RESCHEDULED
+
             # Validate topology assignments match between builder config and deployed resource.
             # If the builder expects a slice-selection annotation, check it matches the resource.
             expected_slice_selection = self._inner.get_workload_annotations().get(
@@ -1019,6 +1053,82 @@ class LWSRunnerJob(BaseRunnerJob):
         if self._pre_provisioner is not None:
             self._pre_provisioner.delete_for(self._inner)
 
+    def _reschedule(self):
+        """Reschedules the LWS onto the appropriate tier.
+
+        Mirrors GKERunnerJob._reschedule(): deletes the LWS first, then identifies and
+        deletes any node pools with mismatched tier configuration.
+        """
+        cfg: LWSRunnerJob.Config = self.config
+        logging.info("Deleting LeaderWorkerSet %s", cfg.name)
+        self._inner._delete()  # pylint: disable=protected-access
+
+        node_pool_label_key = "provisioner-nodepool-id"
+        if self._pre_provisioner is not None:
+            node_pool_label_key = PRE_PROVISIONER_LABEL
+        logging.info("Looking up node pools with label key: %s", node_pool_label_key)
+
+        node_pools_dict = list_node_pools_by_label_key(
+            project=cfg.project, zone=cfg.zone, cluster=cfg.cluster, label_key=node_pool_label_key
+        )
+        node_pools = node_pools_dict.get(cfg.name, [])
+        logging.info("Found %d node pool(s) for %s", len(node_pools), cfg.name)
+        if len(node_pools) == 0:
+            logging.info("Could not infer node pool, skipping delete.")
+            return
+        node_pools_to_delete = []
+        for node_pool in node_pools:
+            node_pool_config = node_pool.get("config", {})
+            reservation_affinity = node_pool_config.get("reservationAffinity", {})
+            taints = node_pool_config.get("taints", [])
+            tier = os.environ.get("BASTION_TIER", 0)
+            has_reservation = (
+                reservation_affinity.get("key") == "compute.googleapis.com/reservation-name"
+                and len(reservation_affinity.get("values", [])) > 0
+            )
+            has_spot = any(
+                taint.get("key") == "cloud.google.com/gke-spot"
+                and taint.get("value") == "true"
+                and taint.get("effect") == "NO_SCHEDULE"
+                for taint in taints
+            )
+            logging.info(
+                "Found existing node pool %s with tier %s.\n"
+                "The reservation affinity is: %s\n"
+                "The taints are: %s\n"
+                "has_reservation=%s, has_spot=%s",
+                node_pool["name"],
+                tier,
+                reservation_affinity,
+                taints,
+                has_reservation,
+                has_spot,
+            )
+            if (str(tier) == "0" and not has_reservation) or (str(tier) != "0" and not has_spot):
+                logging.info(
+                    "Since there is a mismatch, we will attempt to delete %s.",
+                    node_pool["name"],
+                )
+                node_pools_to_delete.append(node_pool["name"])
+            else:
+                logging.info("Node pool appears to have the right specs.")
+        if len(node_pools_to_delete) > 0:
+            start_time = time.perf_counter()
+            delete_node_pools(
+                node_pools_to_delete,
+                project=cfg.project,
+                zone=cfg.zone,
+                cluster=cfg.cluster,
+                retry_interval=cfg.retry_interval,
+                wait_timeout=30 * 60 * len(node_pools_to_delete),
+            )
+            elapsed_time = time.perf_counter() - start_time
+            logging.info(
+                "Node pools %s deletion took %s seconds", node_pools_to_delete, elapsed_time
+            )
+        else:
+            logging.info("No node pools require deletion.")
+
     def _execute(self):
         cfg: LWSRunnerJob.Config = self.config
 
@@ -1040,7 +1150,7 @@ class LWSRunnerJob(BaseRunnerJob):
 
             elif status == LWSRunnerJob.Status.RESCHEDULED:
                 logging.info("LWS configuration changed. Rescheduling the LeaderWorkerSet...")
-                self._delete()
+                self._reschedule()
             elif status == LWSRunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
                 # pylint: disable-next=protected-access
