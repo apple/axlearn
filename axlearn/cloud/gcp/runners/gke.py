@@ -1064,9 +1064,14 @@ class LWSRunnerJob(BaseRunnerJob):
                     self._tb_uploader.upload()
                 logging.info("Task %s has status: %s", cfg.name, status)
                 # Only emit events when status changes.
-                if status == LWSRunnerJob.Status.RUNNING and status != last_job_status:
+                if (
+                    status in (LWSRunnerJob.Status.RUNNING, LWSRunnerJob.Status.PROGRESSING)
+                    and status != last_job_status
+                ):
                     self._maybe_publish(
-                        cfg.name, msg="LeaderWorkerSet is running", state=JobLifecycleState.RUNNING
+                        cfg.name,
+                        msg=f"LeaderWorkerSet is {status.name.lower()}",
+                        state=JobLifecycleState.RUNNING,
                     )
                     last_job_status = status
             time.sleep(cfg.status_interval_seconds)
