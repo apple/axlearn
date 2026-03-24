@@ -661,8 +661,13 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 else _PATHWAYS_SERVER_IMAGE
             )
             self.assertEqual(container["image"], server_image)
-            num_args = 4 if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars else 3
+            num_args = 6 if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars else 5
             self.assertEqual(len(container["args"]), num_args)
+            self.assertIn("--tpu_pinned_host_allocation_recycle=true", container["args"])
+            premapped_buffer_args = [
+                a for a in container["args"] if a.startswith("--tpu_premapped_buffer_size=")
+            ]
+            self.assertLen(premapped_buffer_args, 1)
 
             expected_num_init_containers = 2 if _COLOCATED_PYTHON_SIDECAR_NAME in sidecars else 1
             self.assertEqual(expected_num_init_containers, len(pod_spec.get("initContainers", [])))

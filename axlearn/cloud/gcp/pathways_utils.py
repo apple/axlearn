@@ -25,6 +25,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     BASTION_JOB_VERSION_LABEL,
     BaseReplicatedJob,
     FlagConfigurable,
+    TPUJobBuilder,
     TPUReplicatedJob,
     _LoadBalancer,
 )
@@ -277,6 +278,77 @@ class PathwaysColocatedPythonPlugin(FlagConfigurable):
     @property
     def is_colocated_python_enabled(self) -> bool:
         return self._enable_colocated_python
+
+
+def _build_base_pathways_worker_container(
+    *,
+    base_container_builder: TPUJobBuilder,
+    tpu_type: str,
+    colocated_python_plugin: PathwaysColocatedPythonPlugin,
+    resource_manager_address: str,
+) -> dict:
+    """Builds a base pathways worker container.
+
+    Args:
+        base_container_builder: The builder instance (a TPUJobBuilder subclass, e.g.,
+            TPUReplicatedJob or TPULeaderWorkerTemplate) that provides the base container
+            spec via `_build_container()`.
+        tpu_type: The TPU type string (e.g., "v4-8").
+        colocated_python_plugin: The colocated Python plugin instance.
+        resource_manager_address: The address used for --resource_manager_address arg.
+
+    Returns:
+        A dict corresponding to the worker container spec.
+    """
+    system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[tpu_type]
+    host_memory = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS[system.gce_machine_type]
+    # pylint: disable-next=protected-access
+    container = base_container_builder._build_container()
+
+    worker_container = copy.deepcopy(container)
+    args = [
+        f"--server_port={_PATHWAYS_WORKER_PORT}",
+        f"--resource_manager_address={resource_manager_address}:"
+        + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
+        f"--gcs_scratch_location={base_container_builder.config.output_dir}/pathways-staging",
+        # Recycling host memory gives a slight increase in performance.
+        "--tpu_pinned_host_allocation_recycle=true",
+    ]
+    if not colocated_python_plugin.is_colocated_python_enabled:
+        args.append(
+            # The flag below is needed for better H2D performance.
+            # We use 1/4 of the host memory, rounding up to power of 2 as premapped buffer.
+            # Note that pathways worker requires this flag to be a power of 2.
+            f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory//4)*(1<<30)}",
+        )
+    else:
+        # Colocated python uses more host memory.
+        # Thus we need to reduce the premapped buffer size.
+        premapped_buffer_size_gb = min(round_up_to_power_of_2(host_memory // 16), 32)
+        args.extend(
+            [
+                f"--tpu_premapped_buffer_size={premapped_buffer_size_gb * (1<<30)}",
+                f"--cloud_pathways_sidecar_shm_directory={_PATHWAYS_SHM_DIR}",
+            ]
+        )
+    worker_container["args"] = args
+
+    worker_container["image"] = colocated_python_plugin.pathways_server_image
+
+    ports = worker_container.get("ports", [])
+    ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
+    worker_container["ports"] = ports
+    if colocated_python_plugin.is_colocated_python_enabled:
+        worker_container["volumeMounts"] = [
+            dict(name=_PATHWAYS_SHM_VOLUME_NAME, mountPath=_PATHWAYS_SHM_DIR)
+        ]
+
+    # Command will be executed by the head node, and it will compile the model and
+    # distribute works to workers.
+    # So workers doesn't need to execute the command by themselves.
+    worker_container.pop("command")
+
+    return worker_container
 
 
 class PathwaysReplicatedJob(BaseReplicatedJob):
@@ -638,19 +710,18 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self, pathways_worker_replicated_job_index: Optional[int] = None
     ) -> dict:
         """Build the container for the 'pathways-worker' role."""
-        cfg: TPUReplicatedJob.Config = self._inner.config
-        system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        host_memory = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS[system.gce_machine_type]
-        # pylint: disable-next=protected-access
-        container = self._inner._build_container()
-
-        worker_container = copy.deepcopy(container)
-        env_list = worker_container.get("env", [])
-
         pathways_head_address = self._get_pathways_head_address(
             pathways_worker_replicated_job_index=pathways_worker_replicated_job_index
         )
 
+        worker_container = _build_base_pathways_worker_container(
+            base_container_builder=self._inner,
+            tpu_type=self._tpu_type,
+            colocated_python_plugin=self._colocated_python,
+            resource_manager_address=pathways_head_address,
+        )
+
+        env_list = worker_container.get("env", [])
         self._update_env_list(env_list, "MEGASCALE_COORDINATOR_ADDRESS", pathways_head_address)
 
         if self._is_single_head:
@@ -692,49 +763,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
 
         worker_container["env"] = env_list
 
-        worker_container["args"] = [
-            f"--server_port={_PATHWAYS_WORKER_PORT}",
-            f"--resource_manager_address={pathways_head_address}:"
-            + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-            f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
-            # Recycling host memory gives a slight increase in performance.
-            "--tpu_pinned_host_allocation_recycle=true",
-        ]
-        if not self._colocated_python.is_colocated_python_enabled:
-            worker_container["args"].append(
-                # The flag below is needed for better H2D performance.
-                # We use 1/4 of the host memory, rounding up to power of 2 as premapped buffer.
-                # Note that pathways worker requires this flag to be a power of 2.
-                f"--tpu_premapped_buffer_size={round_up_to_power_of_2(host_memory//4)*(1<<30)}",
-            )
-        else:
-            # Colocated python uses more host memory.
-            # Thus we need to reduce the premapped buffer size.
-            premapped_buffer_size_gb = min(round_up_to_power_of_2(host_memory // 16), 32)
-            worker_container["args"].extend(
-                [
-                    f"--tpu_premapped_buffer_size={premapped_buffer_size_gb * (1<<30)}",
-                    f"--cloud_pathways_sidecar_shm_directory={_PATHWAYS_SHM_DIR}",
-                ]
-            )
-
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)
-
-        worker_container["image"] = self._colocated_python.pathways_server_image
-
-        ports = worker_container.get("ports", [])
-        ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
-        worker_container["ports"] = ports
-        if self._colocated_python.is_colocated_python_enabled:
-            worker_container["volumeMounts"] = [
-                dict(name=_PATHWAYS_SHM_VOLUME_NAME, mountPath=_PATHWAYS_SHM_DIR)
-            ]
-
-        # Command will be executed by the head node, and it will compile the model and
-        # distribute works to workers.
-        # So workers doesn't need to execute the command by themselves.
-        worker_container.pop("command")
 
         return worker_container
 
@@ -1112,31 +1142,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         self._colocated_python = cfg.colocated_python.instantiate(bundler=bundler)
 
     def _build_pathways_worker_container(self) -> dict:
-        cfg: TPULeaderWorkerTemplate.Config = self.config
-        # pylint: disable-next=protected-access
-        container = self._inner._build_container()
-
-        worker_container = copy.deepcopy(container)
-        args = [
-            f"--server_port={_PATHWAYS_WORKER_PORT}",
-            "--resource_manager_address=$(LWS_LEADER_ADDRESS):"
-            + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-            f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
-        ]
-        if self._colocated_python.is_colocated_python_enabled:
-            args.append(f"--cloud_pathways_sidecar_shm_directory={_PATHWAYS_SHM_DIR}")
-        worker_container["args"] = args
-        ports = worker_container.get("ports", [])
-        ports.append({"containerPort": _PATHWAYS_WORKER_PORT})
-        worker_container["ports"] = ports
-        worker_container["image"] = self._colocated_python.pathways_server_image
-        if self._colocated_python.is_colocated_python_enabled:
-            worker_container["volumeMounts"] = [
-                dict(name=_PATHWAYS_SHM_VOLUME_NAME, mountPath=_PATHWAYS_SHM_DIR)
-            ]
-
-        worker_container.pop("command")
-        return worker_container
+        return _build_base_pathways_worker_container(
+            base_container_builder=self._inner,
+            tpu_type=self._tpu_type,
+            colocated_python_plugin=self._colocated_python,
+            resource_manager_address="$(LWS_LEADER_ADDRESS)",
+        )
 
     def build_worker_pod(self) -> dict:
         # pylint: disable-next=protected-access
