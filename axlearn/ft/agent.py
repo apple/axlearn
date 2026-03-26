@@ -25,7 +25,7 @@ import sys
 
 from absl import app, flags, logging
 
-from axlearn.ft.monitor import StatusMonitor
+from axlearn.ft.monitor import StatusMonitor, StragglerMonitor
 from axlearn.ft.utils import TrainerProcessController
 
 
@@ -47,6 +47,23 @@ flags.DEFINE_string(
     None,
     "The trainer command to run as a subprocess. "
     "If not set, defaults to 'python3 -m axlearn.common.launch_trainer_main'.",
+)
+flags.DEFINE_boolean(
+    "straggler_detection",
+    False,
+    "Enable detection of workers that are slowing down overall training progress.",
+)
+flags.DEFINE_float(
+    "straggler_worker_sensitivity",
+    8.0,
+    # pylint: disable=line-too-long
+    "Number of standard deviations (for tensorcore utilization) from median to consider a worker a straggler. "
+    "Lower values are more sensitive, higher values are more forgiving, 8.0 is a good medium for workloads.",
+)
+flags.DEFINE_integer(
+    "straggler_worker_sustained_duration_seconds",
+    300,
+    "Seconds a worker must be continuously a straggler before taking action.",
 )
 
 
@@ -148,7 +165,15 @@ def run_ft_agent(trainer_argv: list[str]):
 
     # Initialize FT system
     process_controller = TrainerProcessController()
-    monitor = StatusMonitor(process_controller=process_controller)
+    straggler_monitor = StragglerMonitor(
+        enabled=flags.FLAGS.straggler_detection,
+        sensitivity=flags.FLAGS.straggler_worker_sensitivity,
+        sustained_duration_seconds=flags.FLAGS.straggler_worker_sustained_duration_seconds,
+    )
+    monitor = StatusMonitor(
+        process_controller=process_controller,
+        straggler_monitor=straggler_monitor,
+    )
     monitor.start()
 
     # Build trainer command

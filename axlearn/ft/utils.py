@@ -36,6 +36,16 @@ DEFAULT_MANAGER_PORT = 8901
 # Client timeout in seconds
 DEFAULT_CLIENT_TIMEOUT = 10.0
 
+# Sentinel value indicating tensorcore utilization is unavailable.
+TENSORCORE_UTIL_UNAVAILABLE = -1.0
+
+# Straggler detection log labels
+STRAGGLER_CONFIRMED = "Straggler worker confirmed"
+STRAGGLER_POTENTIAL = "Potential straggler worker"
+
+# How often the monitor reports status to the FT manager (seconds).
+REPORT_INTERVAL_SECONDS = 30
+
 # Compiled regex patterns for hostname parsing
 _WORKER_ID_PATTERN = re.compile(r"^.+?-job-\d+-(\d+)\..+")
 _JOB_NAME_PATTERN = re.compile(r"^(.+?)-job-\d+-\d+\.(\1)(?:\.|$)")
