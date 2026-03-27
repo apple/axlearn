@@ -201,6 +201,29 @@ class CompositeWriterTest(TestCase):
             for sub_writer in writer.writers:
                 sub_writer.log_checkpoint.assert_called_once()
 
+    def test_child_dir_not_overridden(self):
+        """Tests that CompositeWriter does not override a child writer's pre-configured dir."""
+        with (
+            tempfile.TemporaryDirectory() as composite_dir,
+            tempfile.TemporaryDirectory() as child_dir,
+        ):
+            writer = (
+                CompositeWriter.default_config()
+                .set(
+                    name="test_multi_writer",
+                    dir=composite_dir,
+                    writers={
+                        "writer1": SummaryWriter.default_config(),
+                        "writer2": SummaryWriter.default_config().set(dir=child_dir),
+                    },
+                )
+                .instantiate(parent=None)
+            )
+            # writer1 has no dir set, so it should get composite_dir/writer1.
+            self.assertEqual(writer.writers[0].config.dir, os.path.join(composite_dir, "writer1"))
+            # writer2 already has dir set, so it should be preserved.
+            self.assertEqual(writer.writers[1].config.dir, child_dir)
+
 
 class WandBWriterTest(TestCase):
     """Tests WandBWriter."""

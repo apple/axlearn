@@ -105,7 +105,8 @@ class BaseWriter(Module):
 class CompositeWriter(BaseWriter):
     """A collection of named writers.
 
-    This class automatically sets the `dir` field of any child writers.
+    This class automatically sets the `dir` field of child writers that do not already have one.
+    Child writers with a pre-configured `dir` will retain their own value.
     """
 
     @config_class
@@ -118,9 +119,9 @@ class CompositeWriter(BaseWriter):
 
         self._writers: list[BaseWriter] = []
         for writer_name, writer_cfg in cfg.writers.items():
-            self._writers.append(
-                self._add_child(writer_name, writer_cfg.set(dir=os.path.join(cfg.dir, writer_name)))
-            )
+            if not writer_cfg.dir:
+                writer_cfg = writer_cfg.set(dir=os.path.join(cfg.dir, writer_name))
+            self._writers.append(self._add_child(writer_name, writer_cfg))
 
     @property
     def writers(self) -> list[BaseWriter]:
