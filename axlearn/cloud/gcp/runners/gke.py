@@ -668,12 +668,6 @@ class GKERunnerJob(BaseRunnerJob):
                 if suspended_since is None:
                     suspended_since = time.perf_counter()
                     logging.info("Job %s entered SUSPENDED state", cfg.name)
-
-                if status != last_job_status:
-                    self._maybe_publish(
-                        cfg.name, msg="Job provisioning slices", state=JobLifecycleState.STARTING
-                    )
-                    last_job_status = status
             else:
                 # For all other statuses, check if we were tracking a suspend period.
                 if suspended_since is not None:
@@ -701,7 +695,7 @@ class GKERunnerJob(BaseRunnerJob):
                     last_job_status = status
                 elif status == GKERunnerJob.Status.PENDING and status != last_job_status:
                     self._maybe_publish(
-                        cfg.name, msg="Job waiting for nodes", state=JobLifecycleState.STARTING
+                        cfg.name, msg="Job is starting", state=JobLifecycleState.STARTING
                     )
                     last_job_status = status
             time.sleep(cfg.status_interval_seconds)
