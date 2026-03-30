@@ -31,6 +31,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp import topology_utils
 from axlearn.cloud.gcp.config import gcp_settings
+from axlearn.cloud.gcp.k8s_readiness_probe import ReadinessProbe
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
@@ -322,6 +323,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         service_account: Optional[str] = None
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
+        readiness_probe: ReadinessProbe.Config = ReadinessProbe.default_config()
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -378,6 +380,10 @@ class SingleReplicatedJob(BaseReplicatedJob):
             cls.verify_custom_topology_availability(cfg.accelerator)
         # pytype: enable=missing-parameter
         return cfg
+
+    def __init__(self, cfg: Config, *, bundler: Bundler):
+        super().__init__(cfg, bundler=bundler)
+        self.readiness_probe = cfg.readiness_probe.instantiate()
 
     @classmethod
     def verify_custom_topology_availability(cls, accelerator: AcceleratorConfig):
@@ -679,7 +685,7 @@ class TPUJobBuilder(SingleReplicatedJob):
         if spec is not None and spec.code_asset_path:
             command = f"{self._bundler.install_command(spec.code_asset_path)} && {command}"
 
-        return dict(
+        container = dict(
             name=cfg.name,
             image=cfg.image_id or self._bundler.id(cfg.name),
             # https://cloud.google.com/kubernetes-engine/docs/how-to/tpus#tpu-chips-node-pool
@@ -699,6 +705,10 @@ class TPUJobBuilder(SingleReplicatedJob):
             volumeMounts=volume_mounts,
             imagePullPolicy="Always",
         )
+        probe = self.readiness_probe
+        if probe.is_configured():
+            container["readinessProbe"] = probe.build_readiness_probe()
+        return container
 
     def _build_uploader_container(
         self, src: str = "/output", output_volume_mount: Optional[dict] = None
@@ -1122,7 +1132,7 @@ class GPUReplicatedJob(SingleReplicatedJob):
         # Leave trailing space for A3 / A4-specific XLA flags to be added later
         env_vars["XLA_FLAGS"] += " "
 
-        return dict(
+        container = dict(
             name=cfg.name,
             image=self._bundler.id(cfg.name),
             ports=[
@@ -1134,6 +1144,10 @@ class GPUReplicatedJob(SingleReplicatedJob):
             env=env_vars,
             volumeMounts=volume_mounts,
         )
+        probe = self.readiness_probe
+        if probe.is_configured():
+            container["readinessProbe"] = probe.build_readiness_probe()
+        return container
 
     def _build_volumes(self) -> Nested[Any]:
         """Builds a config for volumes."""
