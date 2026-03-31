@@ -164,12 +164,10 @@ class PathwaysReplicatedJobTest(TestCase):
             self.assertEqual(resources["limits"]["cpu"], "1000.0m")
             self.assertEqual(resources["limits"]["memory"], "16Gi")
 
-            # Check security context for SYS_PTRACE capability
+            # Check security context for privileged mode
             self.assertIn("securityContext", head_container)
             security_context = head_container["securityContext"]
-            self.assertIn("capabilities", security_context)
-            self.assertIn("add", security_context["capabilities"])
-            self.assertIn("SYS_PTRACE", security_context["capabilities"]["add"])
+            self.assertTrue(security_context["privileged"])
 
             # Check safe-to-evict annotation
             annotations = pod["metadata"]["annotations"]
