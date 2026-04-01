@@ -41,6 +41,7 @@ evalers['train'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAcc
 evalers['train'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 evalers['train'].metric_calculator.model_method: 'forward'
 evalers['train'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+evalers['train'].summary_writer.max_queue: 1000
 evalers['train'].summary_writer.write_every_n_steps: 1
 evalers['validation'].eval_dtype: 'jax.numpy.bfloat16'
 evalers['validation'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_policy'
@@ -71,6 +72,7 @@ evalers['validation'].metric_calculator.klass: 'axlearn.common.evaler.ModelSumma
 evalers['validation'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 evalers['validation'].metric_calculator.model_method: 'forward'
 evalers['validation'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+evalers['validation'].summary_writer.max_queue: 1000
 evalers['validation'].summary_writer.write_every_n_steps: 1
 input.batcher.feed_batch_size: 8
 input.batcher.fn: 'axlearn.common.input_tf_data.per_feed_batch'

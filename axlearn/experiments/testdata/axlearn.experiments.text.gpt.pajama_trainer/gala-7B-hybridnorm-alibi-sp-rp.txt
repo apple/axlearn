@@ -40,6 +40,7 @@ evalers['openwebtext_2'].metric_calculator.klass: 'axlearn.common.evaler.ModelSu
 evalers['openwebtext_2'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 evalers['openwebtext_2'].metric_calculator.model_method: 'forward'
 evalers['openwebtext_2'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+evalers['openwebtext_2'].summary_writer.max_queue: 1000
 evalers['openwebtext_2'].summary_writer.write_every_n_steps: 1
 input.batcher.fn: 'axlearn.common.input_tf_data.per_feed_batch'
 input.batcher.pad_example_fn: 'axlearn.common.input_tf_data.default_pad_example_fn'

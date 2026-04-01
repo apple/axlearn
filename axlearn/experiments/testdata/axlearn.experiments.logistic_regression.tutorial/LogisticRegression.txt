@@ -18,6 +18,7 @@ evalers['eval'].metric_calculator.klass: 'axlearn.common.evaler.ModelSummaryAccu
 evalers['eval'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 evalers['eval'].metric_calculator.model_method: 'forward'
 evalers['eval'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+evalers['eval'].summary_writer.max_queue: 1000
 evalers['eval'].summary_writer.write_every_n_steps: 1
 input.klass: 'axlearn.common.input_grain.Input'
 input.source.fn: 'axlearn.experiments.logistic_regression.tutorial.build_source'
@@ -51,4 +52,5 @@ prune_empty_state_updates: True
 save_input_iterator: False
 start_trace_process_indices[0]: 0
 summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+summary_writer.max_queue: 1000
 summary_writer.write_every_n_steps: 10

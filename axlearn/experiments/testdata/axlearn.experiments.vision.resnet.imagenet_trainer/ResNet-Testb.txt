@@ -38,6 +38,7 @@ evalers['eval_train'].metric_calculator.klass: 'axlearn.common.evaler.ModelSumma
 evalers['eval_train'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 evalers['eval_train'].metric_calculator.model_method: 'forward'
 evalers['eval_train'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+evalers['eval_train'].summary_writer.max_queue: 1000
 evalers['eval_train'].summary_writer.write_every_n_steps: 1
 evalers['eval_validation'].eval_dtype: 'jax.numpy.bfloat16'
 evalers['eval_validation'].eval_policy.fn: 'axlearn.common.evaler.every_n_steps_policy'
@@ -69,6 +70,7 @@ evalers['eval_validation'].metric_calculator.klass: 'axlearn.common.evaler.Model
 evalers['eval_validation'].metric_calculator.metric_accumulator.klass: 'axlearn.common.metrics.MetricAccumulator'
 evalers['eval_validation'].metric_calculator.model_method: 'forward'
 evalers['eval_validation'].summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+evalers['eval_validation'].summary_writer.max_queue: 1000
 evalers['eval_validation'].summary_writer.write_every_n_steps: 1
 input.batcher.fn: 'axlearn.common.input_tf_data.batch'
 input.batcher.global_batch_size: 256
@@ -206,5 +208,6 @@ prune_empty_state_updates: True
 save_input_iterator: False
 start_trace_process_indices[0]: 0
 summary_writer.klass: 'axlearn.common.summary_writer.SummaryWriter'
+summary_writer.max_queue: 1000
 summary_writer.write_every_n_steps: 100
 train_dtype: 'jax.numpy.bfloat16'
