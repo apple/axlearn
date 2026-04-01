@@ -50,7 +50,7 @@ flags.DEFINE_string(
 )
 flags.DEFINE_boolean(
     "straggler_detection",
-    False,
+    True,
     "Enable detection of workers that are slowing down overall training progress.",
 )
 flags.DEFINE_float(
