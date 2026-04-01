@@ -68,9 +68,9 @@ import inspect
 import re
 import types
 from collections import defaultdict
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Iterator
 from functools import cache, lru_cache
-from typing import Any, Callable, Generic, Optional, Protocol, Sequence, TypeVar, Union
+from typing import Any, Callable, Generic, NoReturn, Optional, Protocol, Sequence, TypeVar, Union
 
 # attr provides similar features as Python dataclass. Unlike
 # dataclass, however, it provides a richer set of features to regulate
@@ -143,6 +143,13 @@ T = TypeVar("T")
 
 
 class RequiredFieldValue:
+    """Sentinel for required config fields that have not been set."""
+
+    def _raise(self, op: str) -> NoReturn:
+        raise TypeError(
+            f"Cannot use a required config field before setting its value (attempted: {op})."
+        )
+
     def __deepcopy__(self, memo):
         return self
 
@@ -152,10 +159,104 @@ class RequiredFieldValue:
     def __repr__(self):
         return "REQUIRED"
 
+    # Attribute access — covers .items(), .keys(), .values(), .set(), etc.
+    def __getattr__(self, name: str) -> Any:
+        raise AttributeError(
+            f"Cannot access attribute '{name}' on a required config field "
+            "before setting its value."
+        )
+
+    # Subscript — covers [key].
+    def __getitem__(self, key: Any) -> Any:
+        self._raise("subscript")
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._raise("subscript")
+
+    # Iteration and containment.
+    def __iter__(self) -> Iterator:  # pylint: disable=non-iterator-returned
+        self._raise("iterate over")
+
+    def __contains__(self, item: Any) -> bool:
+        self._raise("check membership of")
+
+    def __len__(self) -> int:  # pylint: disable=invalid-length-returned
+        self._raise("get length of")
+
+    # Callable.
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self._raise("call")
+
+    # Arithmetic operators.
+    def __add__(self, other: Any) -> Any:
+        self._raise("add")
+
+    def __radd__(self, other: Any) -> Any:
+        self._raise("add")
+
+    def __sub__(self, other: Any) -> Any:
+        self._raise("subtract")
+
+    def __rsub__(self, other: Any) -> Any:
+        self._raise("subtract")
+
+    def __mul__(self, other: Any) -> Any:
+        self._raise("multiply")
+
+    def __rmul__(self, other: Any) -> Any:
+        self._raise("multiply")
+
+    def __truediv__(self, other: Any) -> Any:
+        self._raise("divide")
+
+    def __rtruediv__(self, other: Any) -> Any:
+        self._raise("divide")
+
+    def __floordiv__(self, other: Any) -> Any:
+        self._raise("floor-divide")
+
+    def __mod__(self, other: Any) -> Any:
+        self._raise("modulo")
+
+    def __pow__(self, other: Any) -> Any:
+        self._raise("exponentiate")
+
+    def __neg__(self) -> Any:
+        self._raise("negate")
+
+    def __pos__(self) -> Any:
+        self._raise("apply unary +")
+
+    def __abs__(self) -> Any:
+        self._raise("apply abs() to")
+
+    # Comparison operators.
+    def __lt__(self, other: Any) -> Any:
+        self._raise("compare")
+
+    def __le__(self, other: Any) -> Any:
+        self._raise("compare")
+
+    def __gt__(self, other: Any) -> Any:
+        self._raise("compare")
+
+    def __ge__(self, other: Any) -> Any:
+        self._raise("compare")
+
+    # Type conversions.
+    def __int__(self) -> int:
+        self._raise("convert to int")
+
+    def __float__(self) -> float:
+        self._raise("convert to float")
+
+    def __str__(self) -> str:
+        return "REQUIRED"
+
 
 # TODO(markblee): Raise if trying to set attributes on REQUIRED.
 REQUIRED = RequiredFieldValue()
-Required = Union[T, RequiredFieldValue, Any]
+Required = Union[T, RequiredFieldValue]
 
 
 class MissingConfigClassDecoratorError(TypeError):
