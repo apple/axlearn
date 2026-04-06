@@ -42,6 +42,16 @@ from jax.experimental.array_serialization import serialization
 
 from axlearn.common.utils import Tensor
 
+# Maximum number of concurrent device_put (CPU→TPU) transfers during colocated checkpoint loading.
+# Concurrent device_put calls can deadlock in Pathways; reported to the Pathways team.
+# Limiting to 1 unblocks production with minimal impact since each H2D transfer finishes under 1ms.
+_COLOCATED_H2D_CONCURRENCY = 1
+
+# Timeout (in seconds) for the block_until_ready + H2D transfer step in the colocated
+# deserialization pipeline.  If this fires, it almost certainly indicates a hang.
+# We crash so the pathways head can restart the process with a clean lock state.
+_COLOCATED_TRANSFER_TIMEOUT_SECS = 600  # 10 minutes
+
 
 @colocated_python.colocated_python_class
 class _ColocatedStateManager:
@@ -497,6 +507,27 @@ def _blocking_device_put(tensor: Tensor, target: Union[Format, jax.sharding.Shar
     return jax.block_until_ready(jax.device_put(tensor, target))
 
 
+def _wait_host_array_h2d_transfer(
+    cpu_array: Tensor,
+    target: Union[Format, jax.sharding.Sharding],
+) -> Tensor:
+    """Wait for CPU array to be ready and transfer to device in a single call.
+
+    Merging block_until_ready and device_put into one function reduces the number of
+    GIL acquire/release cycles when submitted via run_in_executor, lowering the chance
+    of GIL-vs-C++-mutex deadlocks.
+
+    Args:
+        cpu_array: Array on CPU that may still be materializing.
+        target: Either a Format (with layout + sharding) or Sharding.
+
+    Returns:
+        Transferred array on the target device.
+    """
+    cpu_array.block_until_ready()
+    return jax.block_until_ready(jax.device_put(cpu_array, target))
+
+
 async def _async_deserialize(
     user_in_sharding: jax.sharding.Sharding | Format,
     tensorstore_spec: dict[str, Any],
@@ -811,12 +842,17 @@ async def _run_colocated_deserialize(
     replicated_sharding = jax.sharding.NamedSharding(cpu_mesh, jax.sharding.PartitionSpec())
     idx_arrays = [jax.device_put(jnp.array(i), replicated_sharding) for i in range(len(shardings))]
 
+    # Limit concurrent device_put calls to avoid a Pathways deadlock
+    # (see _COLOCATED_H2D_CONCURRENCY).
+    h2d_semaphore = asyncio.Semaphore(_COLOCATED_H2D_CONCURRENCY)
+
     async def _load_and_transfer_one(
         idx: int,
         tpu_sharding: jax.sharding.Sharding,
         dispatch_pool: ThreadPoolExecutor,
     ):
         """Load one array to CPU via colocated Python, then transfer to TPU."""
+        logging.info("Array %d: [3/7] start colocated python dispatch.", idx)
         specialized = colocated_mgr.load_to_cpu.specialize(  # pytype: disable=name-error
             devices=cpu_devices,
             out_specs_fn=lambda _: jax.ShapeDtypeStruct(
@@ -828,15 +864,34 @@ async def _run_colocated_deserialize(
         # Colocated_python only supports jax.Array as inputs, so we pass a scalar index array
         # and look up the per-array data inside colocated_mgr.load_to_cpu.
         cpu_array = await loop.run_in_executor(dispatch_pool, specialized, idx_arrays[idx])
-        # block_until_ready is run in an executor so the event loop can continue
-        # dispatching other coroutines while waiting for this array to materialize.
-        await loop.run_in_executor(multi_thread_pool, cpu_array.block_until_ready)
-        tpu_array = await loop.run_in_executor(
-            multi_thread_pool,
-            _blocking_device_put,
-            cpu_array,
-            tpu_sharding,
-        )
+        logging.info("Array %d: [4/7] colocated python returned.", idx)
+        async with h2d_semaphore:
+            logging.info("Array %d: [5/7] h2d begin.", idx)
+            try:
+                tpu_array = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        multi_thread_pool,
+                        _wait_host_array_h2d_transfer,
+                        cpu_array,
+                        tpu_sharding,
+                    ),
+                    timeout=_COLOCATED_TRANSFER_TIMEOUT_SECS,
+                )
+            except asyncio.TimeoutError:
+                # Use logging.error instead of logging.fatal because fatal calls sys.exit,
+                # which could hang during cleanup if threads are deadlocked.
+                logging.error(
+                    "Array %d (shape=%s, dtype=%s): block_until_ready + H2D transfer "
+                    "timed out after %ds. Force-exiting process.",
+                    idx,
+                    global_shapes[idx],
+                    dtypes[idx],
+                    _COLOCATED_TRANSFER_TIMEOUT_SECS,
+                )
+                # A timeout detects deadlocks, when it happens, we let the job crash and restart.
+                # We do not retry because the timed-out thread cannot be cancelled.
+                os._exit(1)
+        logging.info("Array %d: [6/7] h2d done.", idx)
         # Explicitly release the CPU buffer once H2D transfer is complete.
         # This is for deterministic memory release within colocated-python sidecar container.
         del cpu_array
@@ -848,6 +903,7 @@ async def _run_colocated_deserialize(
         dispatch_pool: ThreadPoolExecutor,
     ):
         """Wrapper that applies global limiter to the entire load+transfer operation."""
+        logging.info("Array %d: [1/7] begin.", idx)
         bytes_per_device = effective_bytes[idx]
         # pylint: disable-next=protected-access
         max_capacity = global_limiter._max_bytes
@@ -863,10 +919,12 @@ async def _run_colocated_deserialize(
         bytes_to_reserve = min(bytes_per_device, max_capacity)
 
         await global_limiter.wait_for_bytes(bytes_to_reserve)
+        logging.info("Array %d: [2/7] limiter acquired.", idx)
         try:
             return await _load_and_transfer_one(idx, tpu_sharding, dispatch_pool)
         finally:
             await global_limiter.release_bytes(bytes_to_reserve)
+            logging.info("Array %d: [7/7] fully completed.", idx)
 
     # Dedicated pool for colocated_python dispatch. colocated_python only executes calls
     # concurrently when dispatched from different threads — a separate pool ensures dispatch
