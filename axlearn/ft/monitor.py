@@ -236,7 +236,8 @@ class StatusMonitor:
         trainer=None,
         process_controller=None,
         hang_threshold_in_seconds: int = 600,
-        metrics_sampling_interval_seconds: float = 3.0,
+        # TODO(ruhan-prasad): Reduce interval once Google fixes race condition with libtpu sdk
+        metrics_sampling_interval_seconds: float = 30.0,
         straggler_monitor: Optional[StragglerMonitor] = None,
     ):
         """Initialize status monitor with FT manager.
