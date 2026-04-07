@@ -32,6 +32,7 @@ from axlearn.cloud.common.bastion import (
     JobLifecycleState,
     JobState,
     JobStatus,
+    ProjectResourceUtilization,
     ValidationError,
     _download_job_state,
     _load_runtime_options,
@@ -40,6 +41,8 @@ from axlearn.cloud.common.bastion import (
     _validate_jobspec,
     deserialize_jobspec,
     download_job_batch,
+    format_project_utilization,
+    get_project_utilization,
     is_valid_job_name,
     new_jobspec,
     serialize_jobspec,
@@ -1749,7 +1752,7 @@ class BastionTest(parameterized.TestCase):
             mock_bastion._active_jobs = initial_jobs
 
             # Mock _update_single_job to capture calls
-            mock_update_single_job = mock.Mock(side_effect=lambda job: job)
+            mock_update_single_job = mock.Mock(side_effect=lambda job, **kwargs: job)
 
             # Mock _append_to_history to avoid side effects
             mock_append_to_history = mock.Mock()
@@ -2236,6 +2239,172 @@ class BastionTest(parameterized.TestCase):
 
             for _, job in mock_bastion._active_jobs.items():
                 self.assertEqual(JobStatus.CANCELLING, job.state.status)
+
+    def test_format_project_utilization_basic(self):
+        """Verify output format for a simple dict with one resource type."""
+        utilization = {"v4": ProjectResourceUtilization(usage=42, limit=100)}
+        result = format_project_utilization(utilization)
+        self.assertEqual(result, "v4: 42/100 (42.0%)")
+
+    def test_format_project_utilization_empty(self):
+        """Verify empty dict returns empty string."""
+        result = format_project_utilization({})
+        self.assertEqual(result, "")
+
+    def test_format_project_utilization_multiple_resources(self):
+        """Verify comma-separated sorted output for multiple resource types."""
+        utilization = {
+            "v5p": ProjectResourceUtilization(usage=2, limit=10),
+            "v4": ProjectResourceUtilization(usage=42, limit=100),
+        }
+        result = format_project_utilization(utilization)
+        # Output should be sorted by resource type key.
+        self.assertEqual(result, "v4: 42/100 (42.0%), v5p: 2/10 (20.0%)")
+
+    def test_format_project_utilization_zero_limit(self):
+        """Verify zero limit is handled without division by zero."""
+        utilization = {"v5p": ProjectResourceUtilization(usage=8, limit=0)}
+        result = format_project_utilization(utilization)
+        # When limit is 0, percentage defaults to 0.0%.
+        self.assertEqual(result, "v5p: 8/0 (0.0%)")
+
+    def test_get_project_utilization_present(self):
+        """Verify correct ProjectResourceUtilization values for a known project."""
+        schedule_results = BaseScheduler.ScheduleResults(
+            project_limits={"proj1": {"v4": 100, "v5p": 50}},
+            project_usages={"proj1": {"v4": 30, "v5p": 10}},
+            job_verdicts={},
+        )
+        result = get_project_utilization("proj1", schedule_results)
+        self.assertEqual(result["v4"], ProjectResourceUtilization(usage=30, limit=100))
+        self.assertEqual(result["v5p"], ProjectResourceUtilization(usage=10, limit=50))
+
+    def test_get_project_utilization_missing_project(self):
+        """Verify graceful handling when project not in schedule results."""
+        schedule_results = BaseScheduler.ScheduleResults(
+            project_limits={},
+            project_usages={},
+            job_verdicts={},
+        )
+        result = get_project_utilization("missing_project", schedule_results)
+        self.assertEqual(result, {})
+
+    def test_update_single_job_preemption_message_includes_utilization(self):
+        """Verify preemption history message contains formatted utilization when provided."""
+        popen_spec = {
+            "command": {
+                "poll.return_value": None,
+                "wait.return_value": None,
+                "terminate.return_value": None,
+            },
+        }
+        job = Job(
+            spec=new_jobspec(
+                name="test_job",
+                command="command",
+                cleanup_command="cleanup",
+                metadata=JobMetadata(
+                    user_id="user1",
+                    project_id="proj1",
+                    creation_time=datetime(1900, 1, 1),
+                    resources={"v4": 8},
+                ),
+            ),
+            state=JobState(status=JobStatus.PENDING),
+            command_proc=_mock_piped_popen_fn(popen_spec)("command", "log"),
+            cleanup_proc=None,
+        )
+        schedule_results = BaseScheduler.ScheduleResults(
+            project_usages={"proj1": {"v4": 30}},
+            project_limits={"proj1": {"v4": 100}},
+            job_verdicts={},
+        )
+
+        captured_msgs = []
+
+        def capture_history(j, *, msg, state):
+            del j, state
+            captured_msgs.append(msg)
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _upload_job_state=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
+        )
+        patch_tfio = mock.patch.multiple(
+            bastion.__name__,
+            exists=mock.Mock(return_value=False),
+            copy=mock.DEFAULT,
+            remove=mock.DEFAULT,
+        )
+        with patch_fns, patch_tfio, self._patch_bastion(popen_spec) as mock_bastion:
+            with mock.patch.object(mock_bastion, "_append_to_job_history", capture_history):
+                mock_bastion._update_single_job(job, schedule_results=schedule_results)
+
+        self.assertTrue(
+            any("project utilization" in m for m in captured_msgs),
+            msg=f"Expected 'project utilization' in one of: {captured_msgs}",
+        )
+        self.assertTrue(
+            any("v4: 30/100 (30.0%)" in m for m in captured_msgs),
+            msg=f"Expected utilization detail in one of: {captured_msgs}",
+        )
+
+    def test_update_single_job_preemption_message_without_utilization(self):
+        """Verify preemption message has no utilization info when project_utilization=None."""
+        popen_spec = {
+            "command": {
+                "poll.return_value": None,
+                "wait.return_value": None,
+                "terminate.return_value": None,
+            },
+        }
+        job = Job(
+            spec=new_jobspec(
+                name="test_job",
+                command="command",
+                cleanup_command="cleanup",
+                metadata=JobMetadata(
+                    user_id="user1",
+                    project_id="proj1",
+                    creation_time=datetime(1900, 1, 1),
+                    resources={"v4": 8},
+                ),
+            ),
+            state=JobState(status=JobStatus.PENDING),
+            command_proc=_mock_piped_popen_fn(popen_spec)("command", "log"),
+            cleanup_proc=None,
+        )
+
+        captured_msgs = []
+
+        def capture_history(j, *, msg, state):
+            del j, state
+            captured_msgs.append(msg)
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _upload_job_state=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
+        )
+        patch_tfio = mock.patch.multiple(
+            bastion.__name__,
+            exists=mock.Mock(return_value=False),
+            copy=mock.DEFAULT,
+            remove=mock.DEFAULT,
+        )
+        with patch_fns, patch_tfio, self._patch_bastion(popen_spec) as mock_bastion:
+            with mock.patch.object(mock_bastion, "_append_to_job_history", capture_history):
+                mock_bastion._update_single_job(job, schedule_results=None)
+
+        self.assertTrue(
+            any("PENDING: pre-empting" in m for m in captured_msgs),
+            msg=f"Expected 'PENDING: pre-empting' in one of: {captured_msgs}",
+        )
+        self.assertFalse(
+            any("project utilization" in m for m in captured_msgs),
+            msg=f"Expected no 'project utilization' in: {captured_msgs}",
+        )
 
 
 class BastionDirectoryTest(parameterized.TestCase):

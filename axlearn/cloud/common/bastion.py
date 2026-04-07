@@ -115,7 +115,13 @@ from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.event_queue import BaseQueueClient, Event
 from axlearn.cloud.common.quota import QuotaFn
 from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, ResourceMap
-from axlearn.cloud.common.types import JobMetadata, JobSpec, JobStateMetadata, Topology
+from axlearn.cloud.common.types import (
+    JobMetadata,
+    JobSpec,
+    JobStateMetadata,
+    ResourceType,
+    Topology,
+)
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
 from axlearn.cloud.common.validator import JobValidator
@@ -757,6 +763,64 @@ def set_runtime_options(bastion_dir: str, **kwargs) -> Nested[Any]:
     return runtime_options
 
 
+@dataclasses.dataclass
+class ProjectResourceUtilization:
+    """Holds per-resource-type usage and limit for a project.
+
+    Attributes:
+        usage: Current resource usage for this resource type.
+        limit: Resource limit for this resource type.
+    """
+
+    usage: int
+    limit: int
+
+
+def get_project_utilization(
+    project: str, schedule_results: BaseScheduler.ScheduleResults
+) -> dict[ResourceType, ProjectResourceUtilization]:
+    """Returns per-resource utilization for the given project from schedule_results.
+
+    Args:
+        project: The project ID to look up.
+        schedule_results: The results from a scheduler run.
+
+    Returns:
+        A mapping from resource type to ProjectResourceUtilization. Returns an empty dict if the
+        project is not present in schedule_results.
+    """
+    usages = schedule_results.project_usages.get(project, {})
+    limits = schedule_results.project_limits.get(project, {})
+    resource_types = set(usages) | set(limits)
+    return {
+        resource_type: ProjectResourceUtilization(
+            usage=usages.get(resource_type, 0),
+            limit=limits.get(resource_type, 0),
+        )
+        for resource_type in resource_types
+    }
+
+
+def format_project_utilization(
+    utilization: dict[ResourceType, ProjectResourceUtilization],
+) -> str:
+    """Returns a human-readable per-resource utilization string.
+
+    Args:
+        utilization: Mapping from resource type to ProjectResourceUtilization.
+
+    Returns:
+        A string like 'v4: 42/100 (42.0%), v3: 2/10 (20.0%)'. Returns an empty string if the
+        utilization mapping is empty.
+    """
+    parts = []
+    for resource_type in sorted(utilization):
+        entry = utilization[resource_type]
+        pct = 100.0 * entry.usage / entry.limit if entry.limit > 0 else 0.0
+        parts.append(f"{resource_type}: {entry.usage}/{entry.limit} ({pct:.1f}%)")
+    return ", ".join(parts)
+
+
 class Bastion(Configurable):
     """An orchestrator that schedules and executes jobs."""
 
@@ -1053,7 +1117,12 @@ class Bastion(Configurable):
                 curr_job.spec, curr_job.state = updated_job.spec, updated_job.state
 
     # pylint: disable-next=too-many-statements
-    def _update_single_job(self, job: Job) -> Job:
+    def _update_single_job(
+        self,
+        job: Job,
+        *,
+        schedule_results: Optional[BaseScheduler.ScheduleResults] = None,
+    ) -> Job:
         """Handles all state transitions for a single job.
 
         Assumptions:
@@ -1068,6 +1137,11 @@ class Bastion(Configurable):
         Conditions that must be held at exit (either pre-emption or graceful):
         1. A jobspec must still exist in the remote job dir.
         2. self._active_jobs must be unmodified, besides modifying `job` itself.
+
+        Args:
+            job: The job to update.
+            schedule_results: Optional scheduler results used to enrich preemption history messages
+                with per-resource-type utilization for the job's project.
         """
         if job.state.status == JobStatus.PENDING:
             # Forcefully terminate the command proc and fd, if they exist, and sync logs to remote.
@@ -1079,8 +1153,19 @@ class Bastion(Configurable):
             # 2. Any job logs are sync'ed to remote log dir. The local log file cannot reliably be
             #    expected to be present if/when the job is resumed.
             if job.command_proc is not None:
+                preempt_msg = "PENDING: pre-empting"
+                if schedule_results is not None:
+                    project_utilization = get_project_utilization(
+                        job.spec.metadata.project_id, schedule_results
+                    )
+                    if project_utilization:
+                        preempt_msg = (
+                            f"{preempt_msg} "
+                            f"(project utilization: "
+                            f"{format_project_utilization(project_utilization)})"
+                        )
                 self._append_to_job_history(
-                    job, msg="PENDING: pre-empting", state=JobLifecycleState.PREEMPTING
+                    job, msg=preempt_msg, state=JobLifecycleState.PREEMPTING
                 )
                 logging.info("Pre-empting job: %s", job.spec.name)
                 self._wait_and_close_proc(job.command_proc, kill=True)
@@ -1318,7 +1403,7 @@ class Bastion(Configurable):
         # TODO(markblee): Parallelize this.
         for job_name, job in self._active_jobs.items():
             try:
-                self._update_single_job(job)
+                self._update_single_job(job, schedule_results=schedule_results)
             except (CalledProcessError, RuntimeError) as e:
                 logging.warning("Failed to execute %s: %s", job_name, e)
 
