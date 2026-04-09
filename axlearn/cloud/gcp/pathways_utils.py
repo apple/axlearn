@@ -67,6 +67,9 @@ _PATHWAYS_PROXY_IMAGE = (
 _PATHWAYS_SERVER_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
 )
+# The colocated python sidecar is independent of the axlearn codebase.
+# No need to rebuild for every job launch.
+_COLOCATED_SIDECAR_IMAGE_TAG = "master-20260409"
 
 # With Jax >= 0.8.2, colocated images are the same as the standard
 # TODO(samuel-andersen): Rewrite pathways_utils.py to remove references to
@@ -113,9 +116,9 @@ OTEL_COLLECTOR_CONFIG_MOUNT_PATH = "/conf"
 
 
 def get_colocated_python_image(image_id: str) -> str:
-    path, tag = image_id.rsplit(":", maxsplit=1)
+    path, _ = image_id.rsplit(":", maxsplit=1)
     repo, _ = path.rsplit("/", maxsplit=1)
-    return f"{repo}/{_COLOCATED_PYTHON_SIDECAR_NAME}:{tag}"
+    return f"{repo}/{_COLOCATED_PYTHON_SIDECAR_NAME}:{_COLOCATED_SIDECAR_IMAGE_TAG}"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
