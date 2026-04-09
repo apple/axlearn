@@ -680,8 +680,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             "spec": head_pod_spec,
         }
 
+        job_spec = None
+        if raw := os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
+            job_spec = deserialize_jobspec(io.StringIO(raw))
+
         for mutator in self._pod_mutators:
-            head_pod = mutator.mutate(None, head_pod)
+            head_pod = mutator.mutate(job_spec, head_pod)
 
         return head_pod
 
@@ -1587,8 +1591,12 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             "spec": leader_pod_spec,
         }
 
+        job_spec = None
+        if raw := os.environ.get(_BASTION_SERIALIZED_JOBSPEC_ENV_VAR):
+            job_spec = deserialize_jobspec(io.StringIO(raw))
+
         for mutator in self._pod_mutators:
-            leader_pod = mutator.mutate(None, leader_pod)
+            leader_pod = mutator.mutate(job_spec, leader_pod)
 
         return leader_pod
 
