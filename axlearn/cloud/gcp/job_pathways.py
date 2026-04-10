@@ -24,13 +24,6 @@ class GKEPathwaysJobSet(GKEJob):
     def _build_jobset(self) -> Nested[Any]:
         jobset = super()._build_jobset()
 
-        # TODO (ethanli): Consider refactoring with the modifiers pattern.
-        jobset["spec"]["coordinator"] = dict(
-            replicatedJob=_PATHWAYS_HEAD_REPLICATED_JOB_NAME,
-            jobIndex=0,
-            podIndex=0,
-        )
-
         jobset["spec"]["successPolicy"] = dict(
             operator="All",
             targetReplicatedJobs=[
