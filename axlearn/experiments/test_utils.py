@@ -5,6 +5,7 @@
 import copy
 import enum
 import gc
+import hashlib
 import logging as pylogging
 import os.path
 import pickle
@@ -160,6 +161,158 @@ class GoldenTestType(enum.Enum):
     RUN = "run"
 
 
+# Valid per-param setting keys recognised by the golden config framework.
+_VALID_PER_PARAM_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "weight_decay_scale",
+        "l2_regularizer_scale",
+        "update_scale",
+        "gradient_scale",
+        "learner_update_type",
+        "scale_by_mup_simple",
+        "learner_rule",
+    }
+)
+
+# Mapping from GoldenTestType to the per-param setting keys to include.
+_SETTING_TYPES: dict[GoldenTestType, tuple[str, ...]] = {
+    GoldenTestType.REGULARIZER: ("weight_decay_scale", "l2_regularizer_scale"),
+    GoldenTestType.PARAM_UPDATE: ("update_scale", "gradient_scale", "learner_update_type"),
+    GoldenTestType.LEARNER_RULE: ("learner_rule",),
+}
+
+# Test types that support text generation (as opposed to RUN which produces bytes).
+_TEXT_GOLDEN_TEST_TYPES: frozenset[GoldenTestType] = frozenset(
+    {
+        GoldenTestType.CONFIG,
+        GoldenTestType.INIT,
+        GoldenTestType.REGULARIZER,
+        GoldenTestType.PARAM_UPDATE,
+        GoldenTestType.LEARNER_RULE,
+    }
+)
+
+
+def _per_param_settings_text(
+    module: str,
+    config_name: str,
+    trainer_config: TrainerConfigFn,
+    setting_types: Sequence[str],
+) -> str:
+    """Generate per-param settings debug text, filtered by *setting_types*.
+
+    Calls :func:`per_param_setting_debug_string` to obtain all per-param
+    settings for the given config, validates the returned keys, and
+    concatenates only the entries whose keys match *setting_types*.
+
+    This logic was originally part of
+    ``BaseGoldenConfigTest._per_param_settings()``.  It was extracted into a
+    standalone function so that :func:`generate_golden_text` and external CLI
+    tools can produce per-param settings text without instantiating a test
+    class.
+
+    Args:
+        module: The experiment module object.
+        config_name: The config name within the module.
+        trainer_config: A callable that returns a trainer config.
+        setting_types: Which per-param setting keys to include.
+
+    Returns:
+        The concatenated debug string.
+
+    Raises:
+        ValueError: If the settings dict contains keys not in
+            ``_VALID_PER_PARAM_SETTING_KEYS``.
+    """
+    settings_dict = per_param_setting_debug_string(
+        module=module, config_name=config_name, trainer_config=trainer_config
+    )
+    invalid_keys = set(settings_dict.keys()).difference(_VALID_PER_PARAM_SETTING_KEYS)
+    if invalid_keys:
+        raise ValueError(
+            f"Got invalid param_update keys: {invalid_keys}. "
+            f"Valid options are: {_VALID_PER_PARAM_SETTING_KEYS}."
+        )
+    debug_str = ""
+    for setting_type in setting_types:
+        if setting_type in settings_dict:
+            debug_str += settings_dict[setting_type]
+            debug_str += "\n"
+    if not debug_str:
+        # Not all optimizer configs register per-param settings.
+        logging.warning("No per param settings for %s were found.", setting_types)
+    return debug_str
+
+
+def generate_golden_text(
+    module: str,
+    config_name: str,
+    trainer_config: TrainerConfigFn,
+    test_type: GoldenTestType,
+) -> str:
+    """Generate a deterministic text representation of a trainer config.
+
+    Depending on *test_type*, this returns the config's debug string, the
+    parameter initialisation summary, or the per-param settings text (e.g.
+    weight decay scales, learner rules).  The output is suitable for
+    checksum-based regression testing.
+
+    This logic was originally embedded in
+    ``BaseGoldenConfigTest._get_golden_results()``.  It was extracted into a
+    public function so that the dynamic checksum validation pipeline and CLI
+    tools can generate config text without instantiating a test class.
+
+    Args:
+        module: The imported experiment module object.
+        config_name: A key returned by the module's ``named_trainer_configs()``.
+        trainer_config: A callable that returns a trainer config.
+        test_type: The type of golden test.  Must be one of CONFIG, INIT,
+            REGULARIZER, PARAM_UPDATE, or LEARNER_RULE.
+
+    Returns:
+        The config's text representation.
+
+    Raises:
+        ValueError: If *test_type* is not supported for text generation
+            (e.g. ``GoldenTestType.RUN``).
+    """
+    if test_type not in _TEXT_GOLDEN_TEST_TYPES:
+        raise ValueError(
+            f"{test_type} is not supported for text generation. "
+            f"Supported types: {sorted(t.value for t in _TEXT_GOLDEN_TEST_TYPES)}"
+        )
+
+    if test_type == GoldenTestType.CONFIG:
+        cfg = trainer_config()
+        return cfg.debug_string()
+    elif test_type == GoldenTestType.INIT:
+        cfg = trainer_config()
+        return param_init_debug_string(cfg)  # pytype: disable=wrong-arg-types
+    elif test_type in _SETTING_TYPES:
+        return _per_param_settings_text(
+            module=module,
+            config_name=config_name,
+            trainer_config=trainer_config,
+            setting_types=_SETTING_TYPES[test_type],
+        )
+    else:
+        # Should not be reachable due to the check above, but kept for safety.
+        raise ValueError(f"{test_type} is not supported for text generation.")
+
+
+def compute_golden_checksum(text: str) -> str:
+    """Compute a deterministic SHA-256 checksum of *text*.
+
+    Args:
+        text: The input string.
+
+    Returns:
+        A string in ``"sha256:<hex_digest>"`` format.
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
 # Compare an actual result against a golden result and raise an error if
 # they are sufficiently different.
 # The function must be a function of str arguments or a function of bytes arguments.
@@ -187,8 +340,18 @@ class BaseGoldenConfigTest(TestCase):
         trainer_config: TrainerConfigFn,
         *,
         test_type: GoldenTestType,
+        expected_checksum: Optional[str] = None,
     ):
-        if self._update:
+        if expected_checksum is not None:
+            # Dynamic checksum validation mode.
+            self._check_against_checksum(
+                module,
+                config_name,
+                trainer_config,
+                test_type=test_type,
+                expected_checksum=expected_checksum,
+            )
+        elif self._update:
             self._update_golden_file(
                 module, config_name, trainer_config=trainer_config, test_type=test_type
             )
@@ -196,6 +359,39 @@ class BaseGoldenConfigTest(TestCase):
             self._check_against_golden_file(
                 module, config_name, trainer_config=trainer_config, test_type=test_type
             )
+
+    def _check_against_checksum(
+        self,
+        module: str,
+        config_name: str,
+        trainer_config: TrainerConfigFn,
+        *,
+        test_type: GoldenTestType,
+        expected_checksum: str,
+    ):
+        """Validate a config against an expected checksum.
+
+        This is the dynamic checksum validation mode, used by the CI pipeline
+        instead of comparing against golden files on disk.
+
+        Args:
+            module: The experiment module object.
+            config_name: The config name within the module.
+            trainer_config: A callable that returns a trainer config.
+            test_type: The type of golden test.
+            expected_checksum: The expected checksum in ``"sha256:<hex>"`` format.
+
+        Raises:
+            AssertionError: If the computed checksum does not match.
+        """
+        text = generate_golden_text(module, config_name, trainer_config, test_type)
+        actual_checksum = compute_golden_checksum(text)
+        self.assertEqual(
+            expected_checksum,
+            actual_checksum,
+            f"Checksum mismatch for {module}.{config_name} "
+            f"({test_type.value}): expected={expected_checksum}, got={actual_checksum}",
+        )
 
     @property
     def _filepath(self):
@@ -226,7 +422,6 @@ class BaseGoldenConfigTest(TestCase):
             raise ValueError(f"{test_type} is not supported.")
         return os.path.join(self._testdata, module.__name__, f"{config_name}{suffix}.{file_type}")
 
-    # pylint: disable-next=too-many-branches
     def _get_golden_results(
         self,
         *,
@@ -235,83 +430,18 @@ class BaseGoldenConfigTest(TestCase):
         trainer_config: TrainerConfigFn,
         test_type: GoldenTestType,
     ) -> tuple[Union[str, bytes], GoldenComparisonFn]:
-        """Get the results from the golden test for comparison / serialization."""
-        if test_type == GoldenTestType.CONFIG:
-            cfg = trainer_config()
-            return cfg.debug_string(), self.compare_str
-        elif test_type == GoldenTestType.INIT:
-            cfg = trainer_config()
-            return param_init_debug_string(cfg), self.compare_str
-        elif test_type == GoldenTestType.REGULARIZER:
-            return (
-                self._per_param_settings(
-                    module=module,
-                    config_name=config_name,
-                    trainer_config=trainer_config,
-                    setting_types=("weight_decay_scale", "l2_regularizer_scale"),
-                ),
-                self.compare_str,
-            )
-        elif test_type == GoldenTestType.PARAM_UPDATE:
-            return (
-                self._per_param_settings(
-                    module=module,
-                    config_name=config_name,
-                    trainer_config=trainer_config,
-                    setting_types=("update_scale", "gradient_scale", "learner_update_type"),
-                ),
-                self.compare_str,
-            )
-        elif test_type == GoldenTestType.LEARNER_RULE:
-            return (
-                self._per_param_settings(
-                    module=module,
-                    config_name=config_name,
-                    trainer_config=trainer_config,
-                    setting_types=("learner_rule",),
-                ),
-                self.compare_str,
-            )
-        elif test_type == GoldenTestType.RUN:
-            return self._golden_run(trainer_config=trainer_config)
-        else:
-            raise ValueError(f"{test_type} is not supported.")
+        """Get the results from the golden test for comparison / serialization.
 
-    def _per_param_settings(
-        self,
-        *,
-        module: str,
-        config_name: str,
-        trainer_config: TrainerConfigFn,
-        setting_types: Sequence[str],
-    ) -> str:
-        valid_per_param_setting_keys = {
-            "weight_decay_scale",
-            "l2_regularizer_scale",
-            "update_scale",
-            "gradient_scale",
-            "learner_update_type",
-            "scale_by_mup_simple",
-            "learner_rule",
-        }
-        settings_dict = per_param_setting_debug_string(
-            module=module, config_name=config_name, trainer_config=trainer_config
-        )
-        invalid_keys = set(settings_dict.keys()).difference(valid_per_param_setting_keys)
-        if invalid_keys:
-            raise ValueError(
-                f"Got invalid param_update keys: {invalid_keys}. "
-                f"Valid options are: {valid_per_param_setting_keys}."
-            )
-        debug_str = ""
-        for setting_type in setting_types:
-            if setting_type in settings_dict:
-                debug_str += settings_dict[setting_type]
-                debug_str += "\n"
-        if not debug_str:
-            # Not all optimizer configs register per-param settings.
-            logging.warning("No per param settings for %s were found.", setting_types)
-        return debug_str
+        For text-based test types (CONFIG, INIT, REGULARIZER, PARAM_UPDATE,
+        LEARNER_RULE), this delegates to :func:`generate_golden_text`.
+        For RUN, it delegates to :meth:`_golden_run`.
+        """
+        if test_type == GoldenTestType.RUN:
+            return self._golden_run(trainer_config=trainer_config)
+        if test_type in _TEXT_GOLDEN_TEST_TYPES:
+            text = generate_golden_text(module, config_name, trainer_config, test_type)
+            return text, self.compare_str
+        raise ValueError(f"{test_type} is not supported.")
 
     def _golden_run(self, trainer_config: TrainerConfigFn) -> tuple[bytes, GoldenComparisonFn]:
         """Checks that the trainer state after running for a few steps matches a reference file.
