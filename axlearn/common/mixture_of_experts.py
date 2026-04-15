@@ -2485,11 +2485,12 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         """Runs forward pass on the linear layers and dispatching and combining."""
         cfg = self.config
         x = with_sharding_constraint(x, cfg.input_dim_to_partition_spec["bsm"])
-        logits = jnp.einsum("bsm,me->bse", x, self.parameters["gate_weight"])
+        logits = jnp.einsum("bsm,me->bse", x.astype(jnp.float32), self.parameters["gate_weight"])
+        assert logits.dtype == jnp.float32
 
         # Perform gating based on logits. Casting to float32 precision is usually needed for
         # stable performance.
-        gating = self.gating(logits.astype(jnp.float32), cfg.seq_load_balance_loss_weight)
+        gating = self.gating(logits, cfg.seq_load_balance_loss_weight)
         # gate_assignment: [B, S, K] where each value is in [0, E-1], representing which
         # expert to use for a token.
         gate_assignment = with_sharding_constraint(
@@ -2587,11 +2588,9 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
 
             # [B' x S' x K, H']
             activation_0 = self._padded_gmm(sorted_inputs, wi_0, tokens_per_expert)
-            activation_0 = self._remat_name(activation_0, "linear1_0")
             activation_0 = get_activation_fn(cfg.activation[0])(activation_0)
 
             activation_1 = self._padded_gmm(sorted_inputs, wi_1, tokens_per_expert)
-            activation_1 = self._remat_name(activation_1, "linear1_1")
             activation_1 = get_activation_fn(cfg.activation[1])(activation_1)
 
             intermediate = activation_0 * activation_1
@@ -2601,7 +2600,6 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
 
             # [B' x S x K, M]
             sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
-            sorted_output = self._remat_name(sorted_output, "linear2")
             if thread_resources.env.physical_mesh.shape["model"] > 1:
                 # If output is partitioned across "model", we need to reduce-scatter. Otherwise,
                 # we do an allreduce.
@@ -2618,9 +2616,11 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             unsorted_output = _custom_gather(sorted_output, combine_indices, sorted_indices)
             output = unsorted_output.reshape(B, S, num_experts_per_token, unsorted_output.shape[-1])
             # Apply the expert weights.
-            output *= expert_weights.astype(output.dtype)[..., None]
+            output *= expert_weights[..., None]
+            assert expert_weights.dtype == jnp.float32
+            assert output.dtype == jnp.float32
             # [B', S', M']
-            output = jnp.sum(output, axis=-2)
+            output = jnp.sum(output, axis=-2).astype(x.dtype)
             return output, *additional_outputs
 
         out, *additional_outputs = wrapper(
