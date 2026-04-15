@@ -765,37 +765,41 @@ def set_runtime_options(bastion_dir: str, **kwargs) -> Nested[Any]:
 
 @dataclasses.dataclass
 class ProjectResourceUtilization:
-    """Holds per-resource-type usage and limit for a project.
+    """Holds per-resource-type usage and quota for a project.
 
     Attributes:
         usage: Current resource usage for this resource type.
-        limit: Resource limit for this resource type.
+        quota: Resource quota for this resource type.
     """
 
     usage: int
-    limit: int
+    quota: int
 
 
 def get_project_utilization(
-    project: str, schedule_results: BaseScheduler.ScheduleResults
+    project: str,
+    schedule_results: BaseScheduler.ScheduleResults,
+    project_quota: ResourceMap,
 ) -> dict[ResourceType, ProjectResourceUtilization]:
-    """Returns per-resource utilization for the given project from schedule_results.
+    """Returns per-resource utilization for the given project.
 
     Args:
         project: The project ID to look up.
-        schedule_results: The results from a scheduler run.
+        schedule_results: The results from a scheduler run, used to obtain current resource usages.
+        project_quota: The assigned quota for the project, used as the resource quota. This should
+            come from the bastion's quota function (e.g. QuotaInfo.project_resources[project]).
 
     Returns:
         A mapping from resource type to ProjectResourceUtilization. Returns an empty dict if the
-        project is not present in schedule_results.
+        project is not present in schedule_results and has no quota entries.
     """
     usages = schedule_results.project_usages.get(project, {})
-    limits = schedule_results.project_limits.get(project, {})
-    resource_types = set(usages) | set(limits)
+    quotas = project_quota
+    resource_types = set(usages) | set(quotas)
     return {
         resource_type: ProjectResourceUtilization(
             usage=usages.get(resource_type, 0),
-            limit=limits.get(resource_type, 0),
+            quota=quotas.get(resource_type, 0),
         )
         for resource_type in resource_types
     }
@@ -816,8 +820,8 @@ def format_project_utilization(
     parts = []
     for resource_type in sorted(utilization):
         entry = utilization[resource_type]
-        pct = 100.0 * entry.usage / entry.limit if entry.limit > 0 else 0.0
-        parts.append(f"{resource_type}: {entry.usage}/{entry.limit} ({pct:.1f}%)")
+        pct = 100.0 * entry.usage / entry.quota if entry.quota > 0 else 0.0
+        parts.append(f"{resource_type}: {entry.usage}/{entry.quota} ({pct:.1f}%)")
     return ", ".join(parts)
 
 
@@ -889,6 +893,42 @@ class Bastion(Configurable):
         self._uploader = cfg.uploader.set(src_dir=_LOG_DIR, dst_dir=self._log_dir).instantiate()
         self._event_publisher = maybe_instantiate(cfg.event_publisher)
         self._validator = cfg.validator.instantiate() if cfg.validator else None
+
+    def _build_preemption_message(
+        self,
+        job: "Job",
+        schedule_results: Optional[BaseScheduler.ScheduleResults],
+    ) -> str:
+        """Builds the preemption history message for a job.
+
+        Args:
+            job: The job being preempted.
+            schedule_results: Optional scheduler results used to look up project utilization.
+
+        Returns:
+            A message string, e.g.:
+                "PENDING: pre-empting (project utilization: v4: 38/100 (38.0%))"
+        """
+        base = "PENDING: pre-empting"
+        if schedule_results is None:
+            return base
+        project_id = job.spec.metadata.project_id
+        project_quota = self._quota().project_resources.get(project_id, {})
+        utilization = get_project_utilization(project_id, schedule_results, project_quota)
+        if not utilization:
+            return base
+        # Add the preempted job's own resources back to each utilization entry so that the
+        # displayed usage reflects the cluster state at the time of preemption rather than
+        # the post-preemption state reported by the scheduler.
+        job_resources: ResourceMap = job.spec.metadata.resources
+        adjusted_utilization = {}
+        for resource_type, entry in utilization.items():
+            job_demand = job_resources.get(resource_type, 0)
+            adjusted_utilization[resource_type] = ProjectResourceUtilization(
+                usage=entry.usage + job_demand,
+                quota=entry.quota,
+            )
+        return f"{base} (project utilization: {format_project_utilization(adjusted_utilization)})"
 
     def _append_to_job_history(self, job: Job, *, msg: str, state: JobLifecycleState):
         with fs_open(os.path.join(self._job_history_dir, f"{job.spec.name}"), "a") as f:
@@ -1153,21 +1193,13 @@ class Bastion(Configurable):
             # 2. Any job logs are sync'ed to remote log dir. The local log file cannot reliably be
             #    expected to be present if/when the job is resumed.
             if job.command_proc is not None:
-                preempt_msg = "PENDING: pre-empting"
-                if schedule_results is not None:
-                    project_utilization = get_project_utilization(
-                        job.spec.metadata.project_id, schedule_results
-                    )
-                    if project_utilization:
-                        preempt_msg = (
-                            f"{preempt_msg} "
-                            f"(project utilization: "
-                            f"{format_project_utilization(project_utilization)})"
-                        )
+                preemption_msg = self._build_preemption_message(job, schedule_results)
                 self._append_to_job_history(
-                    job, msg=preempt_msg, state=JobLifecycleState.PREEMPTING
+                    job,
+                    msg=preemption_msg,
+                    state=JobLifecycleState.PREEMPTING,
                 )
-                logging.info("Pre-empting job: %s", job.spec.name)
+                logging.info("Pre-empting job: %s (%s)", job.spec.name, preemption_msg)
                 self._wait_and_close_proc(job.command_proc, kill=True)
                 job.command_proc = None
                 logging.info("Job is pre-empted: %s", job.spec.name)

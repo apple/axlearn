@@ -2242,7 +2242,7 @@ class BastionTest(parameterized.TestCase):
 
     def test_format_project_utilization_basic(self):
         """Verify output format for a simple dict with one resource type."""
-        utilization = {"v4": ProjectResourceUtilization(usage=42, limit=100)}
+        utilization = {"v4": ProjectResourceUtilization(usage=42, quota=100)}
         result = format_project_utilization(utilization)
         self.assertEqual(result, "v4: 42/100 (42.0%)")
 
@@ -2254,43 +2254,49 @@ class BastionTest(parameterized.TestCase):
     def test_format_project_utilization_multiple_resources(self):
         """Verify comma-separated sorted output for multiple resource types."""
         utilization = {
-            "v5p": ProjectResourceUtilization(usage=2, limit=10),
-            "v4": ProjectResourceUtilization(usage=42, limit=100),
+            "v5p": ProjectResourceUtilization(usage=2, quota=10),
+            "v4": ProjectResourceUtilization(usage=42, quota=100),
         }
         result = format_project_utilization(utilization)
         # Output should be sorted by resource type key.
         self.assertEqual(result, "v4: 42/100 (42.0%), v5p: 2/10 (20.0%)")
 
-    def test_format_project_utilization_zero_limit(self):
-        """Verify zero limit is handled without division by zero."""
-        utilization = {"v5p": ProjectResourceUtilization(usage=8, limit=0)}
+    def test_format_project_utilization_zero_quota(self):
+        """Verify zero quota is handled without division by zero."""
+        utilization = {"v5p": ProjectResourceUtilization(usage=8, quota=0)}
         result = format_project_utilization(utilization)
-        # When limit is 0, percentage defaults to 0.0%.
+        # When quota is 0, percentage defaults to 0.0%.
         self.assertEqual(result, "v5p: 8/0 (0.0%)")
 
     def test_get_project_utilization_present(self):
         """Verify correct ProjectResourceUtilization values for a known project."""
         schedule_results = BaseScheduler.ScheduleResults(
-            project_limits={"proj1": {"v4": 100, "v5p": 50}},
+            project_limits={},
             project_usages={"proj1": {"v4": 30, "v5p": 10}},
             job_verdicts={},
         )
-        result = get_project_utilization("proj1", schedule_results)
-        self.assertEqual(result["v4"], ProjectResourceUtilization(usage=30, limit=100))
-        self.assertEqual(result["v5p"], ProjectResourceUtilization(usage=10, limit=50))
+        project_quota = {"v4": 100, "v5p": 50}
+        result = get_project_utilization("proj1", schedule_results, project_quota)
+        self.assertEqual(result["v4"], ProjectResourceUtilization(usage=30, quota=100))
+        self.assertEqual(result["v5p"], ProjectResourceUtilization(usage=10, quota=50))
 
     def test_get_project_utilization_missing_project(self):
-        """Verify graceful handling when project not in schedule results."""
+        """Verify graceful handling when project not in schedule results and quota is empty."""
         schedule_results = BaseScheduler.ScheduleResults(
             project_limits={},
             project_usages={},
             job_verdicts={},
         )
-        result = get_project_utilization("missing_project", schedule_results)
+        result = get_project_utilization("missing_project", schedule_results, {})
         self.assertEqual(result, {})
 
     def test_update_single_job_preemption_message_includes_utilization(self):
-        """Verify preemption history message contains formatted utilization when provided."""
+        """Verify preemption history message contains formatted utilization when provided.
+
+        The job has resources {"v4": 8}.  The scheduler reports project_usages {"v4": 30} *after*
+        removing the preempted job.  The preemption message should display 30 + 8 = 38 so that the
+        utilization shown reflects the state at the moment of preemption.
+        """
         popen_spec = {
             "command": {
                 "poll.return_value": None,
@@ -2314,9 +2320,10 @@ class BastionTest(parameterized.TestCase):
             command_proc=_mock_piped_popen_fn(popen_spec)("command", "log"),
             cleanup_proc=None,
         )
+        # Scheduler reports 30 v4 chips in use *after* the preempted job was removed.
         schedule_results = BaseScheduler.ScheduleResults(
             project_usages={"proj1": {"v4": 30}},
-            project_limits={"proj1": {"v4": 100}},
+            project_limits={},
             job_verdicts={},
         )
 
@@ -2325,6 +2332,12 @@ class BastionTest(parameterized.TestCase):
         def capture_history(j, *, msg, state):
             del j, state
             captured_msgs.append(msg)
+
+        mock_quota_info = QuotaInfo(
+            total_resources=[{"v4": 200}],
+            project_resources={"proj1": {"v4": 100}},
+            project_membership={},
+        )
 
         patch_fns = mock.patch.multiple(
             bastion.__name__,
@@ -2338,6 +2351,7 @@ class BastionTest(parameterized.TestCase):
             remove=mock.DEFAULT,
         )
         with patch_fns, patch_tfio, self._patch_bastion(popen_spec) as mock_bastion:
+            mock_bastion._quota = mock.Mock(return_value=mock_quota_info)
             with mock.patch.object(mock_bastion, "_append_to_job_history", capture_history):
                 mock_bastion._update_single_job(job, schedule_results=schedule_results)
 
@@ -2345,9 +2359,10 @@ class BastionTest(parameterized.TestCase):
             any("project utilization" in m for m in captured_msgs),
             msg=f"Expected 'project utilization' in one of: {captured_msgs}",
         )
+        # Usage should be 30 (from scheduler) + 8 (job's own resources) = 38.
         self.assertTrue(
-            any("v4: 30/100 (30.0%)" in m for m in captured_msgs),
-            msg=f"Expected utilization detail in one of: {captured_msgs}",
+            any("v4: 38/100 (38.0%)" in m for m in captured_msgs),
+            msg=f"Expected utilization detail 'v4: 38/100 (38.0%)' in one of: {captured_msgs}",
         )
 
     def test_update_single_job_preemption_message_without_utilization(self):
@@ -2405,6 +2420,142 @@ class BastionTest(parameterized.TestCase):
             any("project utilization" in m for m in captured_msgs),
             msg=f"Expected no 'project utilization' in: {captured_msgs}",
         )
+
+    def test_update_single_job_preemption_message_adds_job_resources_to_usage(self):
+        """Job resources absent from scheduler's project_usages are still added to utilization.
+
+        The scheduler may not report a resource type at all if no other running job uses it.
+        In that case the preempted job's demand for that resource should still appear in the
+        utilization display (usage == job demand, not zero).
+        """
+        popen_spec = {
+            "command": {
+                "poll.return_value": None,
+                "wait.return_value": None,
+                "terminate.return_value": None,
+            },
+        }
+        # Job uses v4 (8) and v5p (16).  Scheduler reports only v4 (0) for the project —
+        # i.e. no other job of this project was running v5p at schedule time.
+        job = Job(
+            spec=new_jobspec(
+                name="test_job",
+                command="command",
+                cleanup_command="cleanup",
+                metadata=JobMetadata(
+                    user_id="user1",
+                    project_id="proj1",
+                    creation_time=datetime(1900, 1, 1),
+                    resources={"v4": 8, "v5p": 16},
+                ),
+            ),
+            state=JobState(status=JobStatus.PENDING),
+            command_proc=_mock_piped_popen_fn(popen_spec)("command", "log"),
+            cleanup_proc=None,
+        )
+        # Scheduler reports only v4 usage; v5p is entirely absent.
+        schedule_results = BaseScheduler.ScheduleResults(
+            project_usages={"proj1": {"v4": 0}},
+            project_limits={},
+            job_verdicts={},
+        )
+
+        captured_msgs = []
+
+        def capture_history(j, *, msg, state):
+            del j, state
+            captured_msgs.append(msg)
+
+        mock_quota_info = QuotaInfo(
+            total_resources=[{"v4": 200, "v5p": 200}],
+            project_resources={"proj1": {"v4": 100, "v5p": 80}},
+            project_membership={},
+        )
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _upload_job_state=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
+        )
+        patch_tfio = mock.patch.multiple(
+            bastion.__name__,
+            exists=mock.Mock(return_value=False),
+            copy=mock.DEFAULT,
+            remove=mock.DEFAULT,
+        )
+        with patch_fns, patch_tfio, self._patch_bastion(popen_spec) as mock_bastion:
+            mock_bastion._quota = mock.Mock(return_value=mock_quota_info)
+            with mock.patch.object(mock_bastion, "_append_to_job_history", capture_history):
+                mock_bastion._update_single_job(job, schedule_results=schedule_results)
+
+        # v4: 0 (scheduler) + 8 (job) = 8; v5p: not in scheduler usages → 0 + 16 = 16.
+        self.assertTrue(
+            any("v4: 8/100" in m for m in captured_msgs),
+            msg=f"Expected 'v4: 8/100' in one of: {captured_msgs}",
+        )
+        self.assertTrue(
+            any("v5p: 16/80" in m for m in captured_msgs),
+            msg=f"Expected 'v5p: 16/80' in one of: {captured_msgs}",
+        )
+
+    def test_update_single_job_preemption_message_is_logged(self):
+        """Verify the preemption message is emitted to the log at INFO level."""
+        popen_spec = {
+            "command": {
+                "poll.return_value": None,
+                "wait.return_value": None,
+                "terminate.return_value": None,
+            },
+        }
+        job = Job(
+            spec=new_jobspec(
+                name="test_job",
+                command="command",
+                cleanup_command="cleanup",
+                metadata=JobMetadata(
+                    user_id="user1",
+                    project_id="proj1",
+                    creation_time=datetime(1900, 1, 1),
+                    resources={"v4": 8},
+                ),
+            ),
+            state=JobState(status=JobStatus.PENDING),
+            command_proc=_mock_piped_popen_fn(popen_spec)("command", "log"),
+            cleanup_proc=None,
+        )
+        schedule_results = BaseScheduler.ScheduleResults(
+            project_usages={"proj1": {"v4": 30}},
+            project_limits={},
+            job_verdicts={},
+        )
+        mock_quota_info = QuotaInfo(
+            total_resources=[{"v4": 200}],
+            project_resources={"proj1": {"v4": 100}},
+            project_membership={},
+        )
+
+        patch_fns = mock.patch.multiple(
+            bastion.__name__,
+            _upload_job_state=mock.DEFAULT,
+            send_signal=mock.DEFAULT,
+        )
+        patch_tfio = mock.patch.multiple(
+            bastion.__name__,
+            exists=mock.Mock(return_value=False),
+            copy=mock.DEFAULT,
+            remove=mock.DEFAULT,
+        )
+        with patch_fns, patch_tfio, self._patch_bastion(popen_spec) as mock_bastion:
+            mock_bastion._quota = mock.Mock(return_value=mock_quota_info)
+            with self.assertLogs(level="INFO") as log_ctx:
+                mock_bastion._update_single_job(job, schedule_results=schedule_results)
+
+        # The "Pre-empting job" log line should include both the job name and the
+        # preemption message (which contains the utilization detail).
+        log_output = "\n".join(log_ctx.output)
+        self.assertIn("test_job", log_output)
+        self.assertIn("PENDING: pre-empting", log_output)
+        self.assertIn("v4: 38/100 (38.0%)", log_output)
 
 
 class BastionDirectoryTest(parameterized.TestCase):
