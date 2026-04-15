@@ -69,7 +69,7 @@ _PATHWAYS_SERVER_IMAGE = (
 )
 # The colocated python sidecar is independent of the axlearn codebase.
 # No need to rebuild for every job launch.
-_COLOCATED_SIDECAR_IMAGE_TAG = "master-20260409"
+_COLOCATED_SIDECAR_IMAGE_TAG = "master-20260415"
 
 # With Jax >= 0.8.2, colocated images are the same as the standard
 # TODO(samuel-andersen): Rewrite pathways_utils.py to remove references to
