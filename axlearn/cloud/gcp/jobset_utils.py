@@ -133,7 +133,7 @@ class EphemeralDiskMount(VolumeMount):
     """
 
     name: str = "persistent-disk"
-    mount_path: str = "/data"
+    mount_path: str = "/mnt"
     storage_class: str
     size_gb: int
 

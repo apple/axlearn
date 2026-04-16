@@ -634,7 +634,7 @@ class TPUReplicatedJobTest(TestCase):
             self.assertEqual(cfg.ephemeral_disk.storage_class, expected_class)
             self.assertEqual(cfg.ephemeral_disk.size_gb, persistent_disk_size_gb)
             self.assertEqual(cfg.ephemeral_disk.name, "persistent-disk")
-            self.assertEqual(cfg.ephemeral_disk.mount_path, "/data")
+            self.assertEqual(cfg.ephemeral_disk.mount_path, "/mnt")
 
     def test_no_persistent_disk_when_flag_unset(self):
         """Tests that ephemeral_disk is None when --persistent_disk_size_gb is not provided."""
@@ -700,7 +700,7 @@ class TPUReplicatedJobTest(TestCase):
             mounts = container["volumeMounts"]
             data_mounts = [m for m in mounts if m.get("name") == "persistent-disk"]
             self.assertLen(data_mounts, 1)
-            self.assertEqual(data_mounts[0]["mountPath"], "/data")
+            self.assertEqual(data_mounts[0]["mountPath"], "/mnt")
 
     def test_no_persistent_disk_pod_spec(self):
         """Tests that no ephemeral disk volume or mount appears when flag is not set."""
@@ -777,7 +777,7 @@ class TPUReplicatedJobTest(TestCase):
         """Tests EphemeralDiskMount defaults and field assignment."""
         m = EphemeralDiskMount(storage_class="hyperdisk-balanced", size_gb=500)
         self.assertEqual(m.name, "persistent-disk")
-        self.assertEqual(m.mount_path, "/data")
+        self.assertEqual(m.mount_path, "/mnt")
         self.assertEqual(m.storage_class, "hyperdisk-balanced")
         self.assertEqual(m.size_gb, 500)
         self.assertEqual(m.read_only, False)
