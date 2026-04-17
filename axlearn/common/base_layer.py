@@ -106,7 +106,13 @@ from jax import numpy as jnp
 from axlearn.common import param_init
 from axlearn.common.config import ConfigOr, Configurable, config_class, maybe_instantiate
 from axlearn.common.metrics import WeightedSummary
-from axlearn.common.module import Module, child_context, current_context, new_output_collection
+from axlearn.common.module import (
+    Module,
+    child_context,
+    current_context,
+    new_output_collection,
+    nowrap,
+)
 from axlearn.common.param_init import DefaultInitializer, FanAxes
 from axlearn.common.traceback_util import no_stack_summary
 from axlearn.common.utils import (
@@ -589,6 +595,7 @@ class BaseLayer(Module):
 
         return maybe_call_with_remat
 
+    @nowrap
     def dtype(self):
         if self.config.dtype is not None:
             return self.config.dtype

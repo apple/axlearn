@@ -12,7 +12,8 @@ from axlearn.common.attention import MultiheadAttention
 from axlearn.common.attention_bias import SlidingWindowAttentionBias
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
-from axlearn.common.utils import Nested, Tensor, sequence_mask
+from axlearn.common.module import nowrap
+from axlearn.common.utils import Nested, Tensor
 
 
 class SlidingWindowKVCache(BaseKVCache):
@@ -42,6 +43,7 @@ class SlidingWindowKVCache(BaseKVCache):
         # Out of window position.
         return -(self.config.cached_kv_length + 1)
 
+    @nowrap
     def init_states(self, shape: BaseKVCache.Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
         # NB: key and value in init_state are transposed so that source_length is in the last
         # dimension as a TPU fusion optimization for one-hot matmul. See KVCache.
@@ -62,7 +64,7 @@ class SlidingWindowKVCache(BaseKVCache):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        unpadded_len: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
         """Updates the sliding window KV cache per extend step.
@@ -72,10 +74,9 @@ class SlidingWindowKVCache(BaseKVCache):
             k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             key_positions: An optional Tensor of shape [1|batch, step_length].
-            unpadded_len: An optional Tensor of shape [batch]. Specifies the number of
-                non-padding tokens per sequence. When provided, only the first `unpadded_len[i]`
-                tokens of sequence `i` are considered valid and will be cached. Padding tokens
-                are masked out and marked as invalid positions.
+            segment_ids: An optional Tensor of shape [batch, step_length]. `segment_ids == 0`
+                represents padding tokens that should not be cached. Padding tokens are masked out
+                and marked as invalid positions.
 
         Returns:
             A tuple (updated_state, output):
@@ -93,14 +94,9 @@ class SlidingWindowKVCache(BaseKVCache):
 
         # [1|batch, step_length] -> [batch, step_length]
         key_positions = jnp.broadcast_to(key_positions, (batch, step_len))
-        if unpadded_len is not None:
-            if unpadded_len.shape[0] != batch:
-                raise ValueError(f"{unpadded_len.shape=} must be [{batch}].")
-            seq_mask = sequence_mask(
-                lengths=unpadded_len, max_len=step_len, dtype=key_positions.dtype
-            )
-            # update_single rolls key_positions, so mark invalid positions.
-            key_positions = jnp.where(seq_mask, key_positions, invalid)
+        if segment_ids is not None:
+            # Mark padding positions as invalid so they are not stored in the ring buffer.
+            key_positions = jnp.where(segment_ids != 0, key_positions, invalid)
 
         # [B, T, N, H] --> [B, N, H, T].
         k_proj = jnp.einsum("btnh->bnht", k_proj)

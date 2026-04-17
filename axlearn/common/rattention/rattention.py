@@ -44,7 +44,6 @@ from axlearn.common.utils import (
     NestedTensor,
     PartitionSpec,
     Tensor,
-    TensorSpec,
     get_current_abstract_or_physical_mesh,
 )
 
@@ -383,21 +382,15 @@ class ResidualLinearAttention(BaseLayer):
         self,
         *,
         mode: ForwardMode,
-        query: Union[Tensor, TensorSpec],
-        qkv_proj: Optional[BaseQKVLinear.Output] = None,
+        query: Tensor,
+        qkv_proj: BaseQKVLinear.Output,
         cached_states: Optional[NestedTensor] = None,
+        segment_ids: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Optional[Tensor]], Tensor]:
         """Forward function for linear attention."""
         assert page_pool is None
-        # Initialize states.
         cfg = self.config
-        if qkv_proj is None:
-            assert isinstance(query, TensorSpec) and mode == ForwardMode.INIT_STATES
-            init_state = self._compute_init_state(batch_size=query.shape[0]).astype(query.dtype)
-            time_step = jnp.zeros((query.shape[0],), dtype=jnp.int32)
-            return dict(time_step=time_step, state=init_state), None
-
         q_proj, k_proj, v_proj = qkv_proj
         if cfg.use_qk_scale:
             q_proj = q_proj * self.parameters["q_scale"]
@@ -408,32 +401,29 @@ class ResidualLinearAttention(BaseLayer):
                 q_proj=q_proj, k_proj=k_proj, v_proj=v_proj
             )
             return None, output
-        else:
+        elif mode == ForwardMode.PREFILL:
+            assert segment_ids is not None, "segment_ids must be provided for prefilling."
+            time_step = jnp.sum(segment_ids != 0, axis=-1)
+            state, output = self._compute_linear_attention_parallel(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                v_proj=v_proj,
+                time_step=time_step,
+            )
+        elif mode == ForwardMode.EXTEND_STEP:
             time_step = cached_states["time_step"]
-
-            if mode == ForwardMode.INIT_STATES:
-                assert time_step is not None, "time_step must be provided for prefilling."
-                state, output = self._compute_linear_attention_parallel(
-                    q_proj=q_proj,
-                    k_proj=k_proj,
-                    v_proj=v_proj,
-                    time_step=time_step,
-                )
-
-            elif mode == ForwardMode.EXTEND_STEP:
-                prev_state = cached_states["state"]
-                state, output = self._compute_linear_attention_step(
-                    q_proj=q_proj,
-                    k_proj=k_proj,
-                    v_proj=v_proj,
-                    time_step=time_step,
-                    state=prev_state,
-                )
-
-                time_step = time_step + query.shape[1]
-            else:
-                raise ValueError(f"Unrecognized mode {mode}.")
-            return dict(time_step=time_step, state=state), output
+            prev_state = cached_states["state"]
+            state, output = self._compute_linear_attention_step(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                v_proj=v_proj,
+                time_step=time_step,
+                state=prev_state,
+            )
+            time_step = time_step + query.shape[1]
+        else:
+            raise ValueError(f"Unrecognized mode {mode}.")
+        return dict(time_step=time_step, state=state), output
 
     def forward(
         self,
@@ -446,31 +436,36 @@ class ResidualLinearAttention(BaseLayer):
             qkv_proj=qkv_proj,
         )[1]
 
-    def init_states(
-        self,
-        query: Union[Tensor, TensorSpec],
-        qkv_proj: Optional[BaseQKVLinear.Output] = None,
-        time_step: Optional[Tensor] = None,
-    ) -> tuple[Nested[Tensor], Tensor]:
-        return self._forward_for_mode(
-            mode=ForwardMode.INIT_STATES,
-            query=query,
-            qkv_proj=qkv_proj,
-            cached_states=dict(time_step=time_step),
-        )
+    def init_states(self, *, batch_size: int, max_len: int, dtype: jnp.dtype) -> Nested[Tensor]:
+        """Initializes decoding cache."""
+        del max_len
+        init_state = self._compute_init_state(batch_size=batch_size).astype(dtype)
+        time_step = jnp.zeros((batch_size,), dtype=jnp.int32)
+        return dict(time_step=time_step, state=init_state)
 
     def extend_step(
         self,
         cached_states: Nested[Tensor],
         query: Tensor,
         qkv_proj: BaseQKVLinear.Output,
+        *,
+        is_prefill: bool = False,
+        segment_ids: Optional[Tensor] = None,
         **kwargs,
     ) -> tuple[Nested[Tensor], Tensor]:
+        """Computes incremental outputs.
+
+        Args:
+            is_prefill: If True, uses PREFILL mode; otherwise EXTEND_STEP.
+            segment_ids: Required for PREFILL mode.
+        """
+        mode = ForwardMode.PREFILL if is_prefill else ForwardMode.EXTEND_STEP
         return self._forward_for_mode(
-            mode=ForwardMode.EXTEND_STEP,
+            mode=mode,
             query=query,
             qkv_proj=qkv_proj,
             cached_states=cached_states,
+            segment_ids=segment_ids,
             **kwargs,
         )
 
@@ -605,11 +600,10 @@ class RAttention(FlashAttention):
         self,
         *,
         mode: ForwardMode,
-        query: Union[Tensor, TensorSpec],
+        query: Tensor,
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        unpadded_len: Optional[int] = None,
         attention_logit_biases: Union[None, Tensor, BaseAttentionBias] = None,
         segment_ids: Optional[Tensor] = None,
         query_positions: Optional[Tensor] = None,
@@ -625,11 +619,11 @@ class RAttention(FlashAttention):
         k_proj/v_proj as kv_state to the output.
 
         Notes on intermediate variables:
-            * unpadded_len vs time_step: time_step denotes the starting point where unpadded_len
-              denotes the length of progression.
+            * segment_ids vs time_step: time_step denotes the starting point where segment_ids
+              denotes which tokens are valid (non-padding).
             * k_proj/v_proj vs full_k_proj/full_v_proj: the former could be single token during
-              extend_step whereas the latter always means the kv for the whole sequence. Residual_la
-              always takes in full_k_proj/full_v_proj.
+              extend_step whereas the latter always means the kv for the whole sequence.
+              Residual_la always takes in full_k_proj/full_v_proj.
 
         TODO (bailin-wang): full_k_proj/full_v_proj should be replaced with partial_k_proj/
             partial_v_proj which only stores kv for in-window tokens.
@@ -640,7 +634,7 @@ class RAttention(FlashAttention):
         # 0. Handle states along with query/key positions.
         if query_positions is None:
             query_positions = jnp.arange(query.shape[1])[None]
-        if mode in (ForwardMode.EXTEND_STEP, ForwardMode.INIT_STATES):
+        if mode in (ForwardMode.EXTEND_STEP, ForwardMode.PREFILL):
             assert cached_states is not None
             time_step = cached_states["time_step"]
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
@@ -672,7 +666,7 @@ class RAttention(FlashAttention):
                         k_proj=k_proj,
                         v_proj=v_proj,
                         key_positions=query_positions,
-                        unpadded_len=unpadded_len,
+                        segment_ids=segment_ids,
                         page_pool=page_pool,
                     )
                     if mode == ForwardMode.EXTEND_STEP:
@@ -681,7 +675,7 @@ class RAttention(FlashAttention):
                     else:
                         # During prefill, q/k/v_proj are the same as in the forward pass.
                         # kv_cache.extend_step() was called to update the kv_cache.
-                        assert mode == ForwardMode.INIT_STATES
+                        assert mode == ForwardMode.PREFILL
                         full_k_proj, full_v_proj = k_proj, v_proj
                         key_positions = query_positions
                         kv_state = KVState(k_proj, v_proj, key_positions)
@@ -698,17 +692,19 @@ class RAttention(FlashAttention):
             # Update recurrent state of LA.
             if cfg.residual_la is None:
                 rla_state = None
+                rla_output = None
             else:
-                if mode == ForwardMode.INIT_STATES:
-                    rla_state, rla_output = self.residual_la.init_states(
-                        query, (q_proj, full_k_proj, full_v_proj), unpadded_len
-                    )
-                else:
-                    rla_state, rla_output = self.residual_la.extend_step(
-                        cached_states["rla_state"], query, (q_proj, full_k_proj, full_v_proj)
-                    )
+                rla_state, rla_output = self.residual_la.extend_step(
+                    cached_states["rla_state"],
+                    query,
+                    (q_proj, full_k_proj, full_v_proj),
+                    is_prefill=(mode == ForwardMode.PREFILL),
+                    segment_ids=segment_ids,
+                )
 
-            step_len = unpadded_len if unpadded_len is not None else query.shape[1]
+            step_len = (
+                jnp.sum(segment_ids != 0, axis=-1) if segment_ids is not None else query.shape[1]
+            )
             new_time_step = time_step + step_len
             new_cached_states = dict(
                 swa_state=swa_state, rla_state=rla_state, time_step=new_time_step
@@ -731,8 +727,7 @@ class RAttention(FlashAttention):
             attention_logit_biases += self._mask_tpl.instantiate(
                 target_positions=query_positions, source_positions=key_positions, dtype=q_proj.dtype
             )
-        if segment_ids is not None:
-            assert mode == ForwardMode.FORWARD, "segment_ids must be None in inference."
+        if segment_ids is not None and mode == ForwardMode.FORWARD:
             attention_logit_biases += SegmentIdAttentionBias(segment_ids)
 
         # Assemble the final results.
@@ -772,50 +767,55 @@ class RAttention(FlashAttention):
         num_head_repeats = self.config.num_heads // key_or_value.shape[-2]
         return jnp.repeat(key_or_value, num_head_repeats, axis=-2)
 
-    def init_states(
+    def init_states(self, *, batch_size: int, max_len: int, dtype: jnp.dtype) -> Nested[Tensor]:
+        """Initializes decoding cache for SWA and residual LA."""
+        cfg = self.config
+
+        states = dict(time_step=jnp.zeros([batch_size], dtype=jnp.int32))
+
+        kv_shape = KVCache.Shape(
+            batch_size=batch_size,
+            kv_len=max_len,
+            num_kv_heads=self.i_proj.num_kv_heads,
+            per_head_dim=self.per_head_dim(),
+        )
+        states.update(swa_state=self.kv_cache.init_states(shape=kv_shape, dtype=dtype))
+
+        if cfg.residual_la is not None:
+            with child_context("residual_la", module=self.residual_la):
+                rla_state = self.residual_la.init_states(
+                    batch_size=batch_size, max_len=max_len, dtype=dtype
+                )
+            states.update(rla_state=rla_state)
+
+        return states
+
+    def extend_step(
         self,
+        cached_states: NestedTensor,
+        query: Tensor,
         *,
-        time_step: Optional[Tensor],
-        query: Union[Tensor, TensorSpec],
-        key: Optional[Tensor] = None,
-        value: Optional[Tensor] = None,
+        is_prefill: bool = False,
+        segment_ids: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
-    ) -> tuple[Nested[Tensor], Optional[FlashAttention.Output]]:
-        if key is not None and query.shape[1] != key.shape[1]:
-            raise ValueError("Cross-attention extend_step is not supported.")
-        cfg = self.config
+        **kwargs,
+    ) -> tuple[Nested[Tensor], FlashAttention.Output]:
+        """Computes incremental outputs.
 
-        init_states = dict(time_step=jnp.zeros([query.shape[0]], dtype=jnp.int32))
-
-        if kv_state is None:
-            kv_shape = KVCache.Shape(
-                batch_size=query.shape[0],
-                kv_len=query.shape[1],
-                num_kv_heads=self.i_proj.num_kv_heads,
-                per_head_dim=self.per_head_dim(),
-            )
-            init_states.update(
-                swa_state=self.kv_cache.init_states(shape=kv_shape, dtype=query.dtype)
-            )
-
-        # `rla_state` for prefilling (i.e., query is Tensor) will be set later.
-        if isinstance(query, TensorSpec) and cfg.residual_la is not None:
-            init_states.update(rla_state=self.residual_la.init_states(query)[0])
-
-        if time_step is None:
-            return init_states, None
-
-        cached_states, output = self._forward_for_mode(
-            mode=ForwardMode.INIT_STATES,
+        Args:
+            is_prefill: If True, uses PREFILL mode; otherwise EXTEND_STEP.
+            segment_ids: Required for PREFILL mode.
+        """
+        mode = ForwardMode.PREFILL if is_prefill else ForwardMode.EXTEND_STEP
+        return self._forward_for_mode(
+            mode=mode,
             query=query,
-            key=key,
-            value=value,
-            unpadded_len=time_step,
-            cached_states=init_states,
+            cached_states=cached_states,
+            segment_ids=segment_ids,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
             return_aux=return_aux,
+            **kwargs,
         )
-        return cached_states, output

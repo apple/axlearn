@@ -562,7 +562,7 @@ class TestCoCaModel(parameterized.TestCase):
             # Zero-out outputs starting from initial time_step, and test that we can recover the
             # full outputs by calling extend_step starting from time_step.
             # [batch, tgt_len].
-            time_step_mask = jnp.arange(tgt_len) < time_step[:, None]
+            time_step_mask = utils.sequence_mask(lengths=time_step, max_len=tgt_len)
             # [batch, tgt_len, num_classes].
             logits = initial_outputs["logits"] * time_step_mask[:, :, None]
         else:

@@ -24,7 +24,7 @@ from axlearn.common.module import functional as F
 from axlearn.common.rattention.kernels.utils import FeatureMap
 from axlearn.common.rattention.rattention import RAttention, ResidualLinearAttention
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import TensorSpec
+from axlearn.common.utils import sequence_mask
 
 if jax.default_backend() == "gpu":
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
@@ -130,16 +130,14 @@ class ResidualLinearAttentionTest(TestCase):
                 inputs={"query": query, "qkv_proj": qkv_proj},
             )
 
-            query_spec = TensorSpec([batch, seq_len, model_dim])
             init_state, _ = F(
                 res_lattn,
                 prng_key=jax.random.PRNGKey(123),
                 state=res_lattn_params,
                 is_training=False,
-                inputs={"query": query_spec, "time_step": None},
+                inputs={"batch_size": batch, "max_len": seq_len, "dtype": dtype},
                 method="init_states",
             )
-            init_state = init_state[0]
 
             decoder_output_data = jnp.zeros((seq_len, batch, num_heads, per_head_dim), dtype=dtype)
 
@@ -213,13 +211,29 @@ class ResidualLinearAttentionTest(TestCase):
             )
 
             # Prefill + Extend outputs.
+            init_state, _ = F(
+                res_lattn,
+                prng_key=jax.random.PRNGKey(123),
+                state=res_lattn_params,
+                is_training=False,
+                inputs={"batch_size": batch, "max_len": seq_len, "dtype": dtype},
+                method="init_states",
+            )
             (prefill_state, prefill_output), _ = F(
                 res_lattn,
                 prng_key=jax.random.PRNGKey(123),
                 state=res_lattn_params,
                 is_training=False,
-                inputs={"query": query, "qkv_proj": qkv_proj, "time_step": time_step},
-                method="init_states",
+                inputs={
+                    "cached_states": init_state,
+                    "query": query,
+                    "qkv_proj": qkv_proj,
+                    "is_prefill": True,
+                    "segment_ids": sequence_mask(
+                        lengths=time_step, max_len=query.shape[1], dtype=jnp.int32
+                    ),
+                },
+                method="extend_step",
             )
 
             time_step_mask = (jnp.arange(seq_len)[None, :] < time_step[:, None]).astype(dtype)
@@ -427,23 +441,17 @@ class RAttentionTest(TestCase):
             )
 
             # 2. Test Extend.
-            query_spec = TensorSpec([batch, seq_len, model_dim], dtype=jnp.float32)
             rattn_init_state, _ = F(
                 rnn_lattn,
                 prng_key=jax.random.PRNGKey(123),
                 state=rnn_lattn_params,
                 is_training=False,
-                inputs={"query": query_spec, "time_step": None},
+                inputs={"batch_size": batch, "max_len": seq_len, "dtype": jnp.float32},
                 method="init_states",
-            )[0]
-            flash_attn_init_state, _ = F(
-                flash_attn,
-                prng_key=jax.random.PRNGKey(123),
-                state=flash_attn_params,
-                is_training=False,
-                inputs={"query": query_spec, "time_step": None},
-                method="init_states",
-            )[0]
+            )
+            flash_attn_init_state = flash_attn.init_states(
+                batch_size=batch, max_len=seq_len, dtype=jnp.float32
+            )
 
             for t in range(3):
                 rattn_extend_state = {"cached_states": rattn_init_state, "return_aux": {"kv_state"}}
@@ -497,30 +505,49 @@ class RAttentionTest(TestCase):
 
         # Test Prefill.
         time_step = jnp.arange(batch, dtype=jnp.int32) + 6
+        rattn_prefill_init, _ = F(
+            rnn_lattn,
+            prng_key=jax.random.PRNGKey(123),
+            state=rnn_lattn_params,
+            is_training=False,
+            inputs={"batch_size": batch, "max_len": seq_len, "dtype": jnp.float32},
+            method="init_states",
+        )
         rattn_prefill_state, rattn_prefill_output = F(
             rnn_lattn,
             prng_key=jax.random.PRNGKey(123),
             state=rnn_lattn_params,
             is_training=False,
             inputs={
+                "cached_states": rattn_prefill_init,
                 "query": query,
-                "time_step": time_step,
+                "is_prefill": True,
+                "segment_ids": sequence_mask(
+                    lengths=time_step, max_len=query.shape[1], dtype=jnp.int32
+                ),
                 "return_aux": {"kv_state"},
             },
-            method="init_states",
+            method="extend_step",
         )[0]
 
+        flash_attn_prefill_init = flash_attn.init_states(
+            batch_size=batch, max_len=seq_len, dtype=jnp.float32
+        )
         flash_attn_prefill_state, flash_attn_prefill_output = F(
             flash_attn,
             prng_key=jax.random.PRNGKey(123),
             state=flash_attn_params,
             is_training=False,
             inputs={
+                "cached_states": flash_attn_prefill_init,
                 "query": query,
-                "time_step": time_step,
+                "is_prefill": True,
+                "segment_ids": sequence_mask(
+                    lengths=time_step, max_len=query.shape[1], dtype=jnp.int32
+                ),
                 "return_aux": {"kv_state"},
             },
-            method="init_states",
+            method="extend_step",
         )[0]
         assert_allclose(rattn_prefill_output.data, flash_attn_prefill_output.data, atol=1e-3)
 
@@ -590,16 +617,14 @@ class RAttentionTest(TestCase):
                 inputs={"query": query},
             )
 
-            query_spec = TensorSpec([batch, seq_len, model_dim], dtype=jnp.float32)
             init_state, _ = F(
                 rnn_lattn,
                 prng_key=jax.random.PRNGKey(123),
                 state=rnn_lattn_params,
                 is_training=False,
-                inputs={"query": query_spec, "time_step": None},
+                inputs={"batch_size": batch, "max_len": seq_len, "dtype": jnp.float32},
                 method="init_states",
             )
-            init_state = init_state[0]
 
             decoder_output_data = jnp.zeros((seq_len, batch, model_dim), dtype=jnp.float32)
             extend_state = {"cached_states": init_state}
@@ -677,16 +702,28 @@ class RAttentionTest(TestCase):
             )
 
             # Prefill + Extend outputs.
+            init_state, _ = F(
+                rnn_lattn,
+                prng_key=jax.random.PRNGKey(123),
+                state=rnn_lattn_params,
+                is_training=False,
+                inputs={"batch_size": batch, "max_len": seq_len, "dtype": dtype},
+                method="init_states",
+            )
             (prefill_state, prefill_output), _ = F(
                 rnn_lattn,
                 prng_key=jax.random.PRNGKey(123),
                 state=rnn_lattn_params,
                 is_training=False,
                 inputs={
+                    "cached_states": init_state,
                     "query": query,
-                    "time_step": time_step,
+                    "is_prefill": True,
+                    "segment_ids": sequence_mask(
+                        lengths=time_step, max_len=query.shape[1], dtype=jnp.int32
+                    ),
                 },
-                method="init_states",
+                method="extend_step",
             )
 
             time_step_mask = (jnp.arange(seq_len)[None, :] < time_step[:, None]).astype(dtype)

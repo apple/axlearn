@@ -216,7 +216,7 @@ class TestDecoder(TestCase):
             # Note that each batch example may have a different prefix length.
             # [batch_size, source_length].
             prefix_length = jnp.array([1, 3, 6])
-            prefix_mask = jnp.arange(source_length) < prefix_length[:, None]
+            prefix_mask = utils.sequence_mask(lengths=prefix_length, max_len=source_length)
             prefix = input_ids * prefix_mask + ref_cfg.pad_token_id * (1 - prefix_mask)
             # Set last token to a non-pad token, to fix the prefix length.
             oh_indices = jax.nn.one_hot(prefix_length - 1, source_length, dtype=prefix.dtype)
@@ -234,15 +234,14 @@ class TestDecoder(TestCase):
                 prng_key=jax.random.PRNGKey(2),
                 method="beam_search_decode",
             )
-            with utils.numeric_checks(False):
-                ref_decoder_outputs, _ = functional(
-                    ref_decoder,
-                    inputs=inputs,
-                    state=ref_decoder_state,
-                    is_training=False,
-                    prng_key=jax.random.PRNGKey(2),
-                    method="beam_search_decode",
-                )
+            ref_decoder_outputs, _ = functional(
+                ref_decoder,
+                inputs=inputs,
+                state=ref_decoder_state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(2),
+                method="beam_search_decode",
+            )
         np.testing.assert_array_equal(test_decoder_outputs.sequences, ref_decoder_outputs.sequences)
 
     @parameterized.parameters(None, 0.0, 0.2)
@@ -485,7 +484,8 @@ class TestDecoder(TestCase):
             jax.random.PRNGKey(1), shape=[batch_size, tgt_len], minval=1, maxval=vocab_size
         )
         # Use full sequence length for both methods.
-        time_step = jnp.full([batch_size], tgt_len, dtype=jnp.int32)
+        prefill_len = tgt_len // 2
+        time_step = jnp.full([batch_size], prefill_len, dtype=jnp.int32)
 
         # Method 1: prefill_states (processes entire sequence at once)
         (prefill_state, prefill_outputs), _ = functional(
@@ -497,38 +497,31 @@ class TestDecoder(TestCase):
             method="prefill_states",
         )
 
-        # Method 2: init_states + extend_step for each token (with configurable dtype)
+        # Method 2: init_states + extend_step with full sequence (actual prefill style)
         init_state = layer.init_states(
             batch_size=batch_size, max_sequence_length=tgt_len, dtype=dtype
         )
-        cached_states = init_state
-        step_logits = []
-        for t in range(tgt_len):
-            (cached_states, outputs), _ = functional(
-                layer,
-                inputs=dict(
-                    cached_states=cached_states,
-                    input_batch=dict(input_ids=input_ids[:, t : t + 1]),
+        (cached_states, outputs), _ = functional(
+            layer,
+            inputs=dict(
+                cached_states=init_state,
+                is_prefill=True,
+                input_batch=dict(
+                    input_ids=input_ids,
+                    input_segment_ids=utils.sequence_mask(
+                        lengths=time_step, max_len=tgt_len, dtype=jnp.int32
+                    ),
                 ),
-                state=layer_params,
-                is_training=False,
-                prng_key=jax.random.PRNGKey(2),
-                method="extend_step",
-            )
-            step_logits.append(outputs["logits"])
-
-        step_logits = jnp.concatenate(step_logits, axis=1)
-
-        # Compare logits at the last position (should match regardless of cache dtype).
-        self.assertEqual(prefill_outputs["logits"].shape, step_logits.shape)
-        assert_allclose(prefill_outputs["logits"], step_logits)
-        # Compare KV cache states (cast to same dtype for comparison).
-        atol = 1e-6
-        chex.assert_trees_all_close(
-            jax.tree.map(lambda x: x.astype(jnp.float32), prefill_state["transformer_state"]),
-            jax.tree.map(lambda x: x.astype(jnp.float32), cached_states["transformer_state"]),
-            atol=atol,
+            ),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            method="extend_step",
         )
+
+        self.assertEqual(prefill_outputs["logits"].shape, outputs["logits"].shape)
+        assert_allclose(prefill_outputs["logits"], outputs["logits"])
+        chex.assert_trees_all_close(prefill_state, cached_states)
 
     @parameterized.product(
         stack_cfg=[
@@ -664,7 +657,7 @@ class TestDecoder(TestCase):
         # Explicitly fill positions >= prefix_length with pad_token_id.
         # Note that each batch example may have a different prefix length.
         # [batch_size, tgt_len].
-        prefix_mask = jnp.arange(tgt_len) < prefix_length[:, None]
+        prefix_mask = utils.sequence_mask(lengths=prefix_length, max_len=tgt_len)
         prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
         # Set last token to a non-pad token, to fix the prefix length.
         oh_indices = jax.nn.one_hot(prefix_length - 1, tgt_len, dtype=prefix.dtype)
@@ -698,6 +691,11 @@ class TestDecoder(TestCase):
                 # Ensure that cache is not initially empty.
                 def tokens_to_scores(token_ids, cache):
                     chex.assert_trees_all_equal(jnp.any(cache["time_step"] != 0), True)
+                    # input_ids is only in cache when attention_mask is configured.
+                    if cfg.attention_mask is not None:
+                        chex.assert_trees_all_equal(
+                            jnp.any(cache["input_ids"] != pad_token_id), True
+                        )
                     return fn(token_ids, cache)
 
                 return tokens_to_scores

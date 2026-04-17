@@ -140,11 +140,11 @@ from axlearn.common.utils import (
     Nested,
     PartitionSpec,
     Tensor,
-    TensorSpec,
     VDict,
     as_tensor,
     flatten_items,
     save_and_offload_only_these_names_regex,
+    sequence_mask,
     shapes,
 )
 
@@ -2782,11 +2782,7 @@ class MultiheadAttentionTest(TestCase):
             inputs=inputs,
         )
 
-        initial_state, initial_output = layer.init_states(
-            time_step=None,
-            query=TensorSpec([batch_size, tgt_len], dtype=dtype),
-            kv_state=kv_state,
-        )
+        initial_state = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=dtype)
         if page_size is not None:
             # populate the kv_pages and page_indices
             max_pages_each_request = (tgt_len + page_size - 1) // page_size
@@ -2799,7 +2795,6 @@ class MultiheadAttentionTest(TestCase):
                 (batch_size, max_pages_each_request)
             )
 
-        self.assertIsNone(initial_output)
         if kv_state is None:
             for k in ["key", "value"]:
                 # Check that the cache dtype is inferred as the layer dtype.
@@ -3082,19 +3077,25 @@ class MultiheadAttentionTest(TestCase):
         )
 
         time_step = jnp.arange(batch_size)
+        initial_states = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=dtype)
+        # Prefill using extend_step with mode=PREFILL.
         (initial_states, initial_output), _ = F(
             layer,
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
             inputs=dict(
-                time_step=time_step,
+                cached_states=initial_states,
                 query=query,
                 key=key,
                 value=value,
+                is_prefill=True,
+                segment_ids=sequence_mask(
+                    lengths=time_step, max_len=query.shape[1], dtype=jnp.int32
+                ),
                 return_aux=return_aux,
             ),
-            method="init_states",
+            method="extend_step",
         )
 
         # Check time_step and shapes of state.
@@ -3104,7 +3105,7 @@ class MultiheadAttentionTest(TestCase):
         # Zero-out outputs starting from initial time_step, and test that we can recover the full
         # outputs by calling extend_step starting from time_step.
         # [batch, tgt_len].
-        time_step_mask = jnp.arange(tgt_len) < time_step[:, None]
+        time_step_mask = sequence_mask(lengths=time_step, max_len=tgt_len)
         # [batch, tgt_len, model_dim].
         decoder_output = initial_output.data * time_step_mask[..., None]
         # [batch, tgt_len, model_dim] --> [batch, model_dim, tgt_len].
@@ -3825,33 +3826,33 @@ class TransformerAttentionLayerTest(TestCase):
 
         for start_time_step in (-1, 0, 2, decode_len):
             if start_time_step < 0:
-                (cached_states, init_outputs), _ = F(
-                    layer,
-                    inputs=dict(
-                        time_step=None,
-                        target=TensorSpec(target.shape, target.dtype),
-                        **input_kwargs,
-                    ),
-                    state=layer_params,
-                    is_training=True,
-                    prng_key=jax.random.PRNGKey(0),
-                    method="init_states",
+                cached_states = layer.init_states(
+                    batch_size=batch, max_len=decode_len, dtype=target.dtype
                 )
-                self.assertIsNone(init_outputs)
                 data = jnp.zeros([batch, decode_len, model_dim])
                 start_time_step = 0
             else:
+                cached_states = layer.init_states(
+                    batch_size=batch, max_len=decode_len, dtype=target.dtype
+                )
+                # Prefill using extend_step with mode=PREFILL.
                 (cached_states, prefill_outputs), _ = F(
                     layer,
                     inputs=dict(
-                        time_step=jnp.array([start_time_step] * batch, dtype=jnp.int32),
                         target=target,
+                        cached_states=cached_states,
+                        is_prefill=True,
+                        segment_ids=sequence_mask(
+                            lengths=jnp.array([start_time_step] * batch, dtype=jnp.int32),
+                            max_len=target.shape[1],
+                            dtype=jnp.int32,
+                        ),
                         **input_kwargs,
                     ),
                     state=layer_params,
                     is_training=True,
                     prng_key=jax.random.PRNGKey(0),
-                    method="init_states",
+                    method="extend_step",
                 )
                 data = prefill_outputs.data
 
@@ -4310,7 +4311,7 @@ class BaseTransformerTest(TestCase):
         # Explicitly fill positions >= prefix_length with pad_token_id.
         # Note that each batch example may have a different prefix length.
         # [batch_size, seq_len].
-        prefix_mask = jnp.arange(seq_len) < prefix_length[:, None]
+        prefix_mask = sequence_mask(lengths=prefix_length, max_len=seq_len)
         prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
         # Set last token to a non-pad token, to fix the prefix length.
         oh_indices = jax.nn.one_hot(prefix_length - 1, seq_len, dtype=prefix.dtype)
@@ -4365,33 +4366,33 @@ class BaseTransformerTest(TestCase):
                 continue
             print(f"start_time_step={start_time_step} layer={type(layer)}")
             if start_time_step < 0:
-                (cached_states, init_outputs), _ = F(
-                    layer,
-                    inputs=dict(
-                        time_step=None,
-                        data=TensorSpec([batch_size, tgt_len], dtype=target.dtype),
-                        **input_kwargs,
-                    ),
-                    state=layer_params,
-                    is_training=True,
-                    prng_key=jax.random.PRNGKey(0),
-                    method="init_states",
+                cached_states = layer.init_states(
+                    batch_size=batch_size, max_len=tgt_len, dtype=target.dtype
                 )
-                self.assertIsNone(init_outputs)
                 decoder_output = jnp.zeros_like(target)
                 start_time_step = 0
             else:
+                cached_states = layer.init_states(
+                    batch_size=batch_size, max_len=tgt_len, dtype=target.dtype
+                )
+                # Prefill using extend_step with mode=PREFILL.
                 (cached_states, prefill_outputs), _ = F(
                     layer,
                     inputs=dict(
-                        time_step=jnp.array([start_time_step] * batch_size, dtype=jnp.int32),
                         data=jnp.asarray(target),
+                        cached_states=cached_states,
+                        is_prefill=True,
+                        target_segment_ids=sequence_mask(
+                            lengths=jnp.array([start_time_step] * batch_size, dtype=jnp.int32),
+                            max_len=target.shape[1],
+                            dtype=jnp.int32,
+                        ),
                         **input_kwargs,
                     ),
                     state=layer_params,
                     is_training=True,
                     prng_key=jax.random.PRNGKey(0),
-                    method="init_states",
+                    method="extend_step",
                 )
                 decoder_output = prefill_outputs.data
             # Transpose to [tgt_len, batch_size, model_dim].
@@ -4984,11 +4985,9 @@ class StackedTransformerTest(BaseTransformerTest):
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
-        initial_state, initial_output = layer.init_states(
-            time_step=None,
-            data=TensorSpec([batch_size, tgt_len], dtype=target.dtype),
+        initial_state = layer.init_states(
+            batch_size=batch_size, max_len=tgt_len, dtype=target.dtype
         )
-        self.assertIsNone(initial_output)
         inputs = dict(
             cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
         )
@@ -5113,6 +5112,10 @@ class StackedTransformerTest(BaseTransformerTest):
             prng_key=jax.random.PRNGKey(0),
         )
         # Initialize state.
+        initial_states = layer.init_states(
+            batch_size=batch_size, max_len=tgt_len, dtype=target.dtype
+        )
+        # Prefill using extend_step with mode=PREFILL.
         time_step = jnp.arange(batch_size)
         (initial_states, initial_output), _ = F(
             layer,
@@ -5120,19 +5123,23 @@ class StackedTransformerTest(BaseTransformerTest):
             is_training=False,
             prng_key=jax.random.PRNGKey(456),
             inputs=dict(
-                time_step=time_step,
+                cached_states=initial_states,
                 data=target,
+                is_prefill=True,
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
+                target_segment_ids=sequence_mask(
+                    lengths=time_step, max_len=target.shape[1], dtype=jnp.int32
+                ),
                 return_aux=return_aux,
             ),
-            method="init_states",
+            method="extend_step",
         )
 
         # Zero-out outputs starting from initial time_step, and test that we can recover the full
         # outputs by calling extend_step starting from time_step.
-        time_step_mask = jnp.arange(tgt_len) < time_step[:, None]
+        time_step_mask = sequence_mask(lengths=time_step, max_len=tgt_len)
         # [batch, tgt_len, model_dim].
         decoder_output = initial_output.data * time_step_mask[..., None]
         # [num_layers, batch, num_heads, tgt_len, tgt_len].

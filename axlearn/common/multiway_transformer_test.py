@@ -27,7 +27,7 @@ from axlearn.common.multiway_transformer import (
     _set_model_config,
 )
 from axlearn.common.test_utils import assert_allclose
-from axlearn.common.utils import TensorSpec, VDict, as_tensor, count_model_params
+from axlearn.common.utils import VDict, as_tensor, count_model_params, sequence_mask
 from axlearn.vision import mask_generator
 
 
@@ -138,10 +138,7 @@ class ModelTest(parameterized.TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
-        initial_state, initial_output = layer.init_states(
-            time_step=None, data=TensorSpec([batch_size, tgt_len], dtype=jnp.float32)
-        )
-        self.assertIsNone(initial_output)
+        initial_state = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=jnp.float32)
         inputs = dict(
             cached_states=initial_state, cross_attention_data=source, return_aux=return_aux
         )
@@ -244,26 +241,33 @@ class ModelTest(parameterized.TestCase):
             prng_key=jax.random.PRNGKey(0),
         )
         # Initialize state.
+        initial_states = layer.init_states(
+            batch_size=target.shape[0], max_len=target.shape[1], dtype=target.dtype
+        )
         time_step = jnp.arange(batch_size)
         (initial_states, initial_output), _ = F(
             layer,
-            state=layer_params,
-            is_training=False,
-            prng_key=jax.random.PRNGKey(456),
             inputs=dict(
-                time_step=time_step,
                 data=target,
+                cached_states=initial_states,
+                is_prefill=True,
+                segment_ids=sequence_mask(
+                    lengths=time_step, max_len=target.shape[1], dtype=jnp.int32
+                ),
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=source,
                 cross_attention_logit_biases=cross_attention_logit_biases,
                 return_aux=return_aux,
             ),
-            method="init_states",
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+            method="extend_step",
         )
 
         # Zero-out outputs starting from initial time_step, and test that we can recover the full
         # outputs by calling extend_step starting from time_step.
-        time_step_mask = jnp.arange(tgt_len) < time_step[:, None]
+        time_step_mask = sequence_mask(lengths=time_step, max_len=tgt_len)
         # [batch, tgt_len, model_dim].
         decoder_output = initial_output.data * time_step_mask[..., None]
         # [num_layers, batch, num_heads, tgt_len, tgt_len].

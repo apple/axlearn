@@ -28,8 +28,8 @@ from axlearn.common.config import (
     config_class,
 )
 from axlearn.common.layers import Dropout, Embedding, LayerNormStateless, Linear, get_activation_fn
-from axlearn.common.module import Module, Tensor
-from axlearn.common.utils import NestedTensor, TensorSpec
+from axlearn.common.module import Module, Tensor, nowrap
+from axlearn.common.utils import NestedTensor
 
 
 def modulate(*, x, shift, scale):
@@ -475,17 +475,22 @@ class DiTAttentionLayer(BaseLayer):
         output = input + x
         return output
 
-    def init_states(self, input_spec: TensorSpec) -> NestedTensor:
+    @nowrap
+    def init_states(self, *, batch_size: int, max_len: int, dtype: jnp.dtype) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
-            input_spec: TensorSpec [batch, num_length, target_dim] corresponding to query vector.
+            batch_size: KV cache batch size.
+            max_len: KV cache max len.
+            dtype: KV cache dtype.
 
         Returns:
             init_states: A Nested Tensor state depending on the `attention` layer implementation.
         """
         states = dict()
-        states["attention"], _ = self.attention.init_states(time_step=None, query=input_spec)
+        states["attention"] = self.attention.init_states(
+            batch_size=batch_size, max_len=max_len, dtype=dtype
+        )
         return states
 
     def extend_step(
@@ -596,17 +601,22 @@ class DiTBlock(BaseLayer):
 
         return x
 
-    def init_states(self, input_spec: TensorSpec) -> NestedTensor:
+    @nowrap
+    def init_states(self, *, batch_size: int, max_len: int, dtype: jnp.dtype) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
         Args:
-            input_spec: TensorSpec [batch, target_length, target_dim] corresponding to query vector.
+            batch_size: KV cache batch size.
+            max_len: KV cache max len.
+            dtype: KV cache dtype.
 
         Returns:
             init_states: A Nested Tensor state depending on the `attention` layer implementation.
         """
         states = dict()
-        states["attention"] = self.attention.init_states(input_spec=input_spec)
+        states["attention"] = self.attention.init_states(
+            batch_size=batch_size, max_len=max_len, dtype=dtype
+        )
         return states
 
     def extend_step(

@@ -288,7 +288,7 @@ class TestCausalEncoder(TestCase):
             # Zero-out outputs starting from initial time_step, and test that we can recover the
             # full outputs by calling extend_step starting from time_step.
             # [batch, tgt_len].
-            time_step_mask = jnp.arange(source_length) < time_step[:, None]
+            time_step_mask = utils.sequence_mask(lengths=time_step, max_len=source_length)
             # [batch, tgt_len, hidden_dim].
             hidden_states = initial_outputs["hidden_states"] * time_step_mask[:, :, None]
         else:

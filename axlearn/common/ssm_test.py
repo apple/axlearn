@@ -50,7 +50,7 @@ from axlearn.common.ssm import (
 )
 from axlearn.common.ssm_kernels.ssd_kernels import ssd
 from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
-from axlearn.common.utils import Nested, Tensor, TensorSpec, cast_floats
+from axlearn.common.utils import Nested, Tensor, cast_floats, sequence_mask
 
 try:
     from mamba_ssm.modules.mamba2_simple import Mamba2Simple  # pytype: disable=import-error
@@ -425,11 +425,7 @@ class MambaMixerLayerTest(TestCase):
             prng_key=jax.random.PRNGKey(2),
             inputs=inputs,
         )
-        initial_state, initial_output = layer.init_states(
-            time_step=None,
-            query=TensorSpec([batch_size, tgt_len], dtype=dtype),
-        )
-        self.assertIsNone(initial_output)
+        initial_state = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=dtype)
         for k in ["conv_input", "state"]:
             self.assertEqual(initial_state[k].dtype, dtype)
 
@@ -479,13 +475,23 @@ class MambaMixerLayerTest(TestCase):
             inputs=dict(query=query),
         )
         time_step = jnp.arange(batch_size)
+        # First create empty cache via init_states.
+        init_state = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=dtype)
+        # Then prefill via extend_step with mode=PREFILL.
         (initial_states, initial_output), _ = F(
             layer,
             state=layer_params,
             is_training=False,
             prng_key=jax.random.PRNGKey(3),
-            inputs=dict(time_step=time_step, query=query),
-            method="init_states",
+            inputs=dict(
+                cached_states=init_state,
+                query=query,
+                is_prefill=True,
+                target_segment_ids=sequence_mask(
+                    lengths=time_step, max_len=query.shape[1], dtype=jnp.int32
+                ),
+            ),
+            method="extend_step",
         )
         self.assertTrue(jnp.all(time_step == initial_states["time_step"]))
         for k in ["conv_input", "state"]:
@@ -500,7 +506,7 @@ class MambaMixerLayerTest(TestCase):
         # Zero-out outputs starting from initial time_step, and test that we can recover the full
         # outputs by calling extend_step starting from time_step.
         # [batch, tgt_len].
-        time_step_mask = (jnp.arange(tgt_len) < time_step[:, None]).astype(dtype)
+        time_step_mask = sequence_mask(lengths=time_step, max_len=tgt_len, dtype=dtype)
         # [batch, tgt_len, model_dim].
         decoder_output = initial_output.data * time_step_mask[..., None]
 
@@ -555,12 +561,10 @@ def _test_extend_step(layer_cfg: InstantiableConfig, *, model_dim: int, dtype: j
         inputs=inputs,
     )
     if isinstance(layer, MambaMixerLayer):
-        init_kwargs = dict(query=TensorSpec([batch_size, tgt_len], dtype=dtype))
+        init_state = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=dtype)
     else:
-        init_kwargs = dict(data=TensorSpec([batch_size, tgt_len], dtype=dtype))
-    initial_state, initial_output = layer.init_states(time_step=None, **init_kwargs)
-    assert initial_output is None
-    inputs = dict(cached_states=initial_state)
+        init_state = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=dtype)
+    inputs = dict(cached_states=init_state)
     decoder_output = jnp.zeros(shape=[tgt_len, batch_size, model_dim])
     for t in range(tgt_len):
         inputs["data"] = jnp.expand_dims(query[:, t, :], axis=1)
@@ -605,23 +609,30 @@ def _test_prefill_states(layer_cfg: InstantiableConfig, *, model_dim: int, dtype
         inputs=inputs,
     )
     time_step = jnp.arange(batch_size)
+    # First create empty cache via init_states.
+    init_state = layer.init_states(batch_size=batch_size, max_len=tgt_len, dtype=dtype)
+    # Then prefill via extend_step with mode=PREFILL.
     (initial_states, initial_output), _ = F(
         layer,
         state=layer_params,
         is_training=False,
         prng_key=jax.random.PRNGKey(3),
         inputs=dict(
-            time_step=time_step,
+            cached_states=init_state,
             data=query,
+            is_prefill=True,
+            target_segment_ids=sequence_mask(
+                lengths=time_step, max_len=query.shape[1], dtype=jnp.int32
+            ),
             self_attention_logit_biases=self_attention_logit_biases,
         ),
-        method="init_states",
+        method="extend_step",
     )
 
     # Zero-out outputs starting from initial time_step, and test that we can recover the full
     # outputs by calling extend_step starting from time_step.
     # [batch, tgt_len].
-    time_step_mask = (jnp.arange(tgt_len) < time_step[:, None]).astype(dtype)
+    time_step_mask = sequence_mask(lengths=time_step, max_len=tgt_len, dtype=dtype)
     # [batch, tgt_len, model_dim].
     decoder_output = initial_output.data * time_step_mask[..., None]
 
@@ -1185,7 +1196,7 @@ class Mamba2MixerLayerTest(TestCase):
         self.assertTrue(initial_state.ssd_state.dtype, cache_dtype)
         self.assertTrue(initial_output.data.dtype, dtype)
 
-        time_step_mask = (jnp.arange(seq_len) < time_step[:, None]).astype(dtype)
+        time_step_mask = sequence_mask(lengths=time_step, max_len=seq_len, dtype=dtype)
         decoder_output = initial_output.data * time_step_mask[..., None]
 
         inputs = dict(cache=initial_state)
@@ -1392,7 +1403,7 @@ class JambaMamba2BlockTest(TestCase):
             method="prefill_states",
         )
 
-        time_step_mask = (jnp.arange(seq_len) < time_step[:, None]).astype(dtype)
+        time_step_mask = sequence_mask(lengths=time_step, max_len=seq_len, dtype=dtype)
         decoder_output = initial_output.data * time_step_mask[..., None]
 
         inputs = dict(cached_states=initial_state)

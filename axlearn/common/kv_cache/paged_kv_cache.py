@@ -14,6 +14,7 @@ from axlearn.common.kv_cache.base_kv_cache import KVState
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.kv_cache.paged_kv_cache_gpu_kernel import gpu_scatter_update_pages_shmap_fn
 from axlearn.common.kv_cache.paged_kv_cache_tpu_kernel import tpu_scatter_update_pages_shmap_fn
+from axlearn.common.module import nowrap
 from axlearn.common.utils import Nested, Tensor, get_current_abstract_or_physical_mesh
 
 
@@ -115,6 +116,7 @@ class PagedKVCache(KVCache):
 
     PADDING_PAGE_ID = 0
 
+    @nowrap
     def init_states(self, shape: KVCache.Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
         """Initialize the KV States.
 
@@ -132,7 +134,7 @@ class PagedKVCache(KVCache):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        unpadded_len: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], KVCache.Output]:
         """Extend the cache with the new key and value.
@@ -159,7 +161,7 @@ class PagedKVCache(KVCache):
                     k_pages = k_pages.at[k, actual_page_idx, page_offset].set(k_proj[i, j, k, :])
                     v_pages = v_pages.at[k, actual_page_idx, page_offset].set(v_proj[i, j, k, :])
         """
-        del unpadded_len
+        del segment_ids
 
         if k_proj.shape != v_proj.shape:
             raise ValueError(f"{k_proj.shape=} != {v_proj.shape=}")

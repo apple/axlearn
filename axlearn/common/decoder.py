@@ -47,11 +47,12 @@ from axlearn.common.module import (
     child_context,
     current_context,
     new_output_collection,
+    nowrap,
 )
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
-    TensorSpec,
+    sequence_mask,
     validate_contains_paths,
     with_sharding_constraint,
 )
@@ -128,7 +129,7 @@ class BaseDecoder(Protocol):
     def prng_key(self) -> Tensor:
         """A PRNG key for sampling."""
 
-    # TODO(markblee): Remove this in favor of prefill_states.
+    @nowrap
     def init_states(
         self, *, batch_size: int, max_sequence_length: int, dtype: jnp.dtype
     ) -> Nested[Tensor]:
@@ -143,13 +144,11 @@ class BaseDecoder(Protocol):
             The cache as a Nested Tensor with key and value initialized.
         """
 
+    # TODO(dhwang2): Remove this in favor of init_states.
     def prefill_states(
         self, *, time_step: Tensor, input_batch: Nested[Tensor], **kwargs
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
-        """Initializes cache for autoregressive cached decoding.
-
-        TODO(markblee): Rename to init_states once we add support for decoding at non-zero time
-        step.
+        """Initializes cache for autoregressive cached decoding, DEPRECATED.
 
         Args:
             time_step: A Tensor of shape [batch]. Each value is an index into the length dimension
@@ -166,7 +165,13 @@ class BaseDecoder(Protocol):
         """
 
     def extend_step(
-        self, *, cached_states: Nested[Tensor], input_batch: Nested[Tensor], **kwargs
+        self,
+        *,
+        cached_states: Nested[Tensor],
+        input_batch: Nested[Tensor],
+        is_prefill: bool = False,
+        segment_ids: Optional[Tensor] = None,
+        **kwargs,
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """Computes incremental outputs during autoregressive decoding.
 
@@ -177,6 +182,9 @@ class BaseDecoder(Protocol):
                 input_ids: An int Tensor of shape [batch, target_step_length], where
                     `target_step_length` is 1.
                 Additional modality data (e.g., audio) can be included for multimodal decoding.
+            is_prefill: If True, uses ForwardMode.PREFILL; otherwise ForwardMode.EXTEND_STEP.
+            segment_ids: An optional Tensor of shape [batch, target_step_length].
+                Values must be binary: 0 for padding, 1 for valid tokens.
             kwargs: Additional kwargs for incremental decoding.
 
         Returns:
@@ -238,7 +246,7 @@ class DecodingLayer(Configurable):
         validate_contains_paths(input_batch, paths=["prefix"])
         prefix = input_batch["prefix"]
 
-        cfg: DecodingLayer.Config = self.config
+        cfg = self.config
         tokens_to_scores_fn = self._tokens_to_scores(
             num_decodes=num_decodes,
             cross_attention_data=cross_attention_data,
@@ -307,7 +315,7 @@ class DecodingLayer(Configurable):
         validate_contains_paths(input_batch, paths=["prefix"])
         prefix = input_batch["prefix"]
 
-        cfg: DecodingLayer.Config = self.config
+        cfg = self.config
         logits_modifier = maybe_instantiate(logits_modifier)
         tokens_to_scores_fn = self._tokens_to_scores(
             num_decodes=num_decodes,
@@ -543,30 +551,18 @@ class Decoder(BaseLayer):
                 cross_attention_logit_biases=cross_attention_logit_biases,
             )
             cached_states = None
-        elif mode == ForwardMode.INIT_STATES:
+        elif mode in (ForwardMode.PREFILL, ForwardMode.EXTEND_STEP):
             assert cached_states is not None
-            if input_segment_ids is not None:
-                raise ValueError("input_segment_ids is not supported in INIT_STATES.")
             cached_states["emb"], x = self.emb.extend_step(
-                cached_states=cached_states["emb"], input_batch=emb_batch
-            )
-            cached_states["transformer_state"], x = self.transformer.init_states(
-                time_step=cached_states["transformer_state"],
-                data=x,
-                self_attention_logit_biases=self_attention_logit_biases,
-                cross_attention_data=cross_attention_data,
-                cross_attention_logit_biases=cross_attention_logit_biases,
-            )
-        elif mode == ForwardMode.EXTEND_STEP:
-            assert cached_states is not None
-            if input_segment_ids is not None:
-                raise ValueError("input_segment_ids is not supported in EXTEND_STEP.")
-            cached_states["emb"], x = self.emb.extend_step(
-                cached_states=cached_states["emb"], input_batch=emb_batch
+                is_prefill=(mode == ForwardMode.PREFILL),
+                cached_states=cached_states["emb"],
+                input_batch=emb_batch,
             )
             cached_states["transformer_state"], x = self.transformer.extend_step(
                 cached_states=cached_states["transformer_state"],
                 data=x,
+                is_prefill=(mode == ForwardMode.PREFILL),
+                target_segment_ids=input_segment_ids,
                 self_attention_logit_biases=self_attention_logit_biases,
                 cross_attention_data=cross_attention_data,
                 cross_attention_logit_biases=cross_attention_logit_biases,
@@ -658,15 +654,15 @@ class Decoder(BaseLayer):
         )
         return output
 
+    @nowrap
     def init_states(
         self, *, batch_size: int, max_sequence_length: int, dtype: jnp.dtype
     ) -> NestedTensor:
         """See `BaseDecoder.init_states` for details."""
         cfg: Decoder.Config = self.config
         emb = self.emb.init_states(batch_size=batch_size, dtype=dtype)
-        transformer_state, _ = self.transformer.init_states(
-            time_step=None,
-            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=dtype),
+        transformer_state = self.transformer.init_states(
+            batch_size=batch_size, max_len=max_sequence_length, dtype=dtype
         )
         init_state = dict(
             emb=emb,
@@ -679,6 +675,7 @@ class Decoder(BaseLayer):
             )
         return init_state
 
+    # TODO(dhwang2): delete this API.
     def prefill_states(
         self,
         *,
@@ -686,7 +683,7 @@ class Decoder(BaseLayer):
         input_batch: Nested[Tensor],
         **kwargs,
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
-        """See `BaseDecoder.prefill_states` for details.
+        """See `BaseDecoder.prefill_states` for details, DEPRECATED.
 
         Args:
             time_step: A Tensor of shape [batch_size]. See `BaseDecoder.prefill_states` for details.
@@ -699,8 +696,13 @@ class Decoder(BaseLayer):
         cfg = self.config
         validate_contains_paths(input_batch, paths=["input_ids"])
         input_ids: Tensor = input_batch["input_ids"]
-        input_segment_ids = input_batch.get("input_segment_ids", None)
-        positions = input_batch.get("positions", None)
+        if "input_segment_ids" in input_batch:
+            raise ValueError("input_segment_ids is supported only in FORWARD.")
+        if "positions" in input_batch:
+            raise ValueError("positions is supported only in FORWARD.")
+
+        batch_size = input_ids.shape[0]
+        max_sequence_length = input_ids.shape[1]
 
         # TODO(dhwang2): Remove this temp solution. After PR #2057, emb prefill uses init_states.
         def infer_fwd_dtype():
@@ -711,20 +713,20 @@ class Decoder(BaseLayer):
             return first_float_leaf.dtype if first_float_leaf is not None else self.dtype()
 
         fwd_dtype = infer_fwd_dtype()
-        with child_context("emb_init_states", module=self.emb):
-            emb = self.emb.init_states(batch_size=input_ids.shape[0], dtype=fwd_dtype)
-        states, outputs = self._forward_for_mode(
-            mode=ForwardMode.INIT_STATES,
-            cached_states=dict(emb=emb, transformer_state=time_step),
-            input_batch=input_batch,
-            # TODO(markblee): Consider supporting packed inputs for more efficient prefilling.
-            self_attention_logit_biases=self.compute_attention_logit_biases(
-                input_ids, segment_ids=input_segment_ids, positions=positions
-            ),
+        cached_states = self.init_states(
+            batch_size=batch_size, max_sequence_length=max_sequence_length, dtype=fwd_dtype
+        )
+        states, outputs = self.extend_step(
+            cached_states=cached_states,
+            input_batch={
+                **input_batch,
+                "input_segment_ids": sequence_mask(
+                    lengths=time_step, max_len=input_ids.shape[1], dtype=jnp.int32
+                ),
+            },
+            is_prefill=True,
             **kwargs,
         )
-        self.add_module_output("prefill_hidden_states", outputs["hidden_states"])
-        states["time_step"] = time_step
         if cfg.attention_mask is not None:
             states["input_ids"] = input_ids
         return states, outputs
@@ -734,10 +736,12 @@ class Decoder(BaseLayer):
         *,
         cached_states: Nested[Tensor],
         input_batch: Nested[Tensor],
+        is_prefill: bool = False,
         **kwargs,
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """See `BaseDecoder.forward_step` for details."""
         cfg = self.config
+        mode = ForwardMode.PREFILL if is_prefill else ForwardMode.EXTEND_STEP
         time_step: Tensor = cached_states["time_step"]
         assert time_step.ndim == 1
 
@@ -774,24 +778,28 @@ class Decoder(BaseLayer):
         else:
             self_attention_biases = None
 
-        if "input_segment_ids" in kwargs:
-            raise ValueError("input_segment_ids is supported only in FORWARD.")
         if "positions" in kwargs:
             raise ValueError("positions is supported only in FORWARD.")
 
+        input_segment_ids = input_batch.get("input_segment_ids", None)
         updated_states, outputs = self._forward_for_mode(
-            mode=ForwardMode.EXTEND_STEP,
+            mode=mode,
             input_batch={**input_batch, "positions": positions},  # emb may use positional encoding
             self_attention_logit_biases=self_attention_biases,
             cached_states=cached_states,
             **kwargs,
+        )
+        if mode == ForwardMode.PREFILL:
+            self.add_module_output("prefill_hidden_states", outputs["hidden_states"])
+        step_len = (
+            jnp.sum(input_segment_ids != 0, axis=-1) if input_segment_ids is not None else step
         )
         updated_states.update(
             # There are some non-greedy DFS/BFS and sliding attention algorithms that
             # recursively search through potentials.
             # They backtrace to some anchor time step after exploring for t steps.
             # This requires tracking time_step separately from the attention time_step.
-            time_step=(cached_states["time_step"] + step),
+            time_step=(cached_states["time_step"] + step_len),
         )
         if cfg.attention_mask is not None:
             updated_states["input_ids"] = updated_inputs

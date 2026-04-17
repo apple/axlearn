@@ -20,8 +20,8 @@ from axlearn.common.base_model import BaseModel
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import BaseClassificationHead, set_dropout_rate_recursively
-from axlearn.common.module import Module, Tensor, child_context
-from axlearn.common.utils import Nested, NestedTensor, TensorSpec
+from axlearn.common.module import Module, Tensor, child_context, nowrap
+from axlearn.common.utils import Nested, NestedTensor, sequence_mask
 
 
 class Encoder(BaseLayer):
@@ -161,6 +161,7 @@ class CausalEncoder(Encoder):
         )
         num_cls_tokens: int = 0  # cls tokens to be appended at the end of seq.
 
+    @nowrap
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
@@ -172,9 +173,10 @@ class CausalEncoder(Encoder):
             The cache as a `NestedTensor` with key and value initialized.
         """
         cfg: CausalEncoder.Config = self.config
-        init_state, _ = self.transformer.init_states(
-            time_step=None,
-            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=jnp.float32),
+        init_state = self.transformer.init_states(
+            batch_size=batch_size,
+            max_len=max_sequence_length,
+            dtype=self.dtype(),
         )
         return dict(
             transformer_state=init_state,
@@ -287,12 +289,22 @@ class CausalEncoder(Encoder):
     ) -> tuple[NestedTensor, NestedTensor]:
         # Note: this follows `Decoder.prefill_states` closely. Refer to that method for details.
         # TODO(markblee): Possibly consolidate some of this with decoder.
+        batch_size, max_sequence_length = input_ids.shape
         x = self.emb(
             input_batch=dict(inputs=input_ids, token_type_ids=token_type_ids, positions=None)
         )
-        transformer_state, x = self.transformer.init_states(
-            time_step=time_step,
+        init_state = self.transformer.init_states(
+            batch_size=batch_size,
+            max_len=max_sequence_length,
+            dtype=self.dtype(),
+        )
+        transformer_state, x = self.transformer.extend_step(
+            cached_states=init_state,
             data=x,
+            is_prefill=True,
+            target_segment_ids=sequence_mask(
+                lengths=time_step, max_len=input_ids.shape[1], dtype=jnp.int32
+            ),
             self_attention_logit_biases=self.compute_attention_logit_biases(input_ids),
         )
         x = x.data

@@ -14,7 +14,7 @@ https://arxiv.org/pdf/2111.02358.pdf
 https://github.com/microsoft/unilm/tree/master/vlmo
 """
 
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
 from jax import numpy as jnp
@@ -33,10 +33,10 @@ from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import REQUIRED, InstantiableConfig, Required, config_class
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.layers import Dropout, Embedding, LayerNorm, set_dropout_rate_recursively
-from axlearn.common.module import Module, NestedTensor, Tensor, child_context
+from axlearn.common.module import Module, NestedTensor, Tensor, child_context, nowrap
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, GaussianInitializer
 from axlearn.common.poolings import BasePoolingLayer, FirstNTokenPooling
-from axlearn.common.utils import Nested, TensorSpec
+from axlearn.common.utils import Nested
 from axlearn.common.vision_transformer import VisualEmbedding
 
 TEXT_MODALITY = 0
@@ -91,6 +91,7 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         mode: ForwardMode,
         data: Tensor,
         feed_forward_index: int = 0,
+        segment_ids: Optional[Tensor] = None,
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
@@ -105,7 +106,8 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
                 details.
             data: A Tensor of shape [batch, target_length, target_dim].
             feed_forward_index: An integer indicating which expert (feed-forward layer) to use.
-            self_attention_logit_biases: An optional Tensor representing the self-attention biases.
+            segment_ids: See ``On segment_ids`` in `attention.py`. During extend_step,
+                `segment_ids == 0` represents padding tokens.
             cross_attention_data: An optional Tensor of shape [batch, source_length, source_dim].
             cross_attention_logit_biases: An optional Tensor representing the cross-attention
                 biases.
@@ -144,26 +146,17 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
                     return_aux=self_attention_return_aux,
                 ),
             )
-        elif mode == ForwardMode.INIT_STATES:
-            self_atten_state, self_atten_outputs = self.self_attention.init_states(
-                time_step=cached_states["self_attention"],
-                target=data,
-                attention_logit_biases=self_attention_logit_biases,
-                return_aux=self_attention_return_aux,
-            )
-        elif mode == ForwardMode.EXTEND_STEP:
+        elif mode in (ForwardMode.PREFILL, ForwardMode.EXTEND_STEP):
             self_atten_state, self_atten_outputs = self.self_attention.extend_step(
                 cached_states=cached_states["self_attention"],
                 target=data,
+                is_prefill=(mode == ForwardMode.PREFILL),
+                segment_ids=segment_ids,
                 attention_logit_biases=self_attention_logit_biases,
                 return_aux=self_attention_return_aux,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
-
-        if self_atten_outputs is None:
-            assert mode == ForwardMode.INIT_STATES
-            return dict(self_attention=self_atten_state), None
 
         data = self_atten_outputs.data
         self.vlog(3, "self_attention.output=%s", data.sum())
@@ -217,19 +210,12 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         )
         return output
 
-    def init_states(
-        self,
-        time_step: Optional[Tensor],
-        data: Union[Tensor, TensorSpec],
-        feed_forward_index: int = 0,
-        **kwargs,
-    ) -> tuple[Nested[Tensor], Optional[Output]]:
-        return self._forward_for_mode(
-            mode=ForwardMode.INIT_STATES,
-            cached_states=dict(self_attention=time_step),
-            data=data,
-            feed_forward_index=feed_forward_index,
-            **kwargs,
+    @nowrap
+    def init_states(self, *, batch_size: int, max_len: int, dtype: jnp.dtype) -> Nested[Tensor]:
+        return dict(
+            self_attention=self.self_attention.init_states(
+                batch_size=batch_size, max_len=max_len, dtype=dtype
+            )
         )
 
     # pylint: disable-next=arguments-differ
@@ -238,14 +224,18 @@ class MultiwayTransformerLayer(BaseTransformerLayer):
         cached_states: NestedTensor,
         data: Tensor,
         *,
+        is_prefill: bool = False,
         feed_forward_index: int = 0,
+        segment_ids: Optional[Tensor] = None,
         **kwargs,
     ) -> tuple[NestedTensor, Output]:
+        mode = ForwardMode.PREFILL if is_prefill else ForwardMode.EXTEND_STEP
         return self._forward_for_mode(
-            mode=ForwardMode.EXTEND_STEP,
+            mode=mode,
             cached_states=cached_states,
             data=data,
             feed_forward_index=feed_forward_index,
+            segment_ids=segment_ids,
             **kwargs,
         )
 

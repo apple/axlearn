@@ -9,26 +9,33 @@ import jax
 import jax.numpy as jnp
 
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.module import nowrap
 from axlearn.common.utils import Nested, Tensor
+
+# Sentinel value for padding/unused key positions. Must exceed any reachable query position so
+# that `causal_mask = query_pos >= key_pos` returns False for them.
+_INVALID_KV_POSITION = jnp.iinfo(jnp.int32).max
 
 
 class KVCache(BaseKVCache):
     """Default KV cache.
 
     Manages the kv_cache provided with max_len and updates it at each time_step.
+    Padding tokens (segment_ids == 0) are not written to the cache; the causal attention mask
+    naturally excludes unwritten slots via `query_pos >= slot_index`.
     """
 
+    @nowrap
     def init_states(self, shape: BaseKVCache.Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
         # NB: key and value in init_state are transposed so that source_length is in the last
         # dimension as a TPU fusion optimization for one-hot matmul.
         # Reference:
         # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.
-        shape = (shape.batch_size, shape.num_kv_heads, shape.per_head_dim, shape.kv_len)
-        init_states = dict(
-            key=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
-            value=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
+        shape_kv = (shape.batch_size, shape.num_kv_heads, shape.per_head_dim, shape.kv_len)
+        return dict(
+            key=jnp.zeros(shape=shape_kv, dtype=self._cache_dtype(dtype)),
+            value=jnp.zeros(shape=shape_kv, dtype=self._cache_dtype(dtype)),
         )
-        return init_states
 
     def extend_step(
         self,
@@ -37,15 +44,10 @@ class KVCache(BaseKVCache):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        unpadded_len: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
-        # TODO(dhwang2): By returning only the valid portions of the KV (by unpadded_len),
-        # the attention complexity can be reduced from O(max_len²) to O(unpadded_len²), especially
-        # in prefill.
-        # The remaining part after `unpadded_len` is considered padding.
         assert page_pool is None
-        del unpadded_len
         if k_proj.shape != v_proj.shape:
             raise ValueError(f"{k_proj.shape=} != {v_proj.shape=}")
         if k_proj.shape[1] != key_positions.shape[1]:
@@ -54,6 +56,13 @@ class KVCache(BaseKVCache):
         cached_key: Tensor = cached_states["key"]
         cached_value: Tensor = cached_states["value"]
         batch, step_size = k_proj.shape[:2]
+
+        # [1|batch, step_length] -> [batch, step_length]
+        key_positions = jnp.broadcast_to(key_positions, (batch, step_size))
+        # Padding tokens get _INVALID_KV_POSITION so they never occupy a valid cache slot.
+        if segment_ids is not None:
+            key_positions = jnp.where(segment_ids != 0, key_positions, _INVALID_KV_POSITION)
+
         # [B, T, N, H] --> [B, N, H, T].
         k_proj = jnp.einsum("btnh->bnht", k_proj)
         v_proj = jnp.einsum("btnh->bnht", v_proj)
@@ -66,30 +75,32 @@ class KVCache(BaseKVCache):
         # when step_size is small, one-hot matmul is 10-20% faster on both TPU and GPU.
         if step_size < threshold:
             source_len = cached_key.shape[-1]
-            # Create a dispatch matrix of shape [B, T=step, S].
+            # Padding positions (mapped to _INVALID_KV_POSITION ≥ source_len) produce all-zero
+            # one_hot rows, leaving every cache slot untouched.
             oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
-            # Create a mask of shape [B, 1, 1, S].
-            negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
+            keep_mask = ~oh_indices.any(axis=1)  # [B, S]
 
-            k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
-            v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
-
-            # Ensure that we accumulate using the original dtype.
-            cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
-            cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
+            k_scattered = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
+            v_scattered = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
+            cached_key = cached_key * keep_mask[:, None, None, :] + k_scattered.astype(
+                cached_key.dtype
+            )
+            cached_value = cached_value * keep_mask[:, None, None, :] + v_scattered.astype(
+                cached_value.dtype
+            )
         else:
             # Note: KV transpose is an optimization for one-hot matmul and is not related to
             # dynamic_update_slice_in_dim. As a result, KV transpose only adds overhead for it.
             # Since small step_size scenarios are more frequent, we accept slowdown in this case.
 
-            # Function to update the cache for a single batch element.
             def update_single(cached_kv_slice, kv_proj_slice, time_idx):
                 return jax.lax.dynamic_update_slice_in_dim(
                     cached_kv_slice, kv_proj_slice, time_idx, axis=-1
                 )
 
-            # Use jax.vmap to vectorize over the batch dimension.
             vmap_update = jax.vmap(update_single)
+            # Use the first (valid) position as the write offset. `segment_ids` must be contiguous
+            # at the beginning (e.g., [1,1,1,0,0,0]).
             time_step = jnp.broadcast_to(key_positions[:, 0], [batch])
             cached_key = vmap_update(cached_key, k_proj.astype(cached_key.dtype), time_step)
             cached_value = vmap_update(cached_value, v_proj.astype(cached_key.dtype), time_step)
@@ -101,7 +112,7 @@ class KVCache(BaseKVCache):
         # [B, S, N, H]
         k_proj = jnp.einsum("bnhs->bsnh", cached_key)
         v_proj = jnp.einsum("bnhs->bsnh", cached_value)
-        # Currently, the part larger than unpadded_len is also being overwritten in the KV cache,
-        # and this part is filtered out by the causal mask through key_positions.
-        key_positions = jnp.arange(k_proj.shape[1])[None]  # [1, source_length]
-        return updated_state, self.Output(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
+        key_positions_out = jnp.arange(k_proj.shape[1])[None]  # [1, source_length]
+        return updated_state, self.Output(
+            k_proj=k_proj, v_proj=v_proj, key_positions=key_positions_out
+        )

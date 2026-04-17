@@ -37,7 +37,7 @@ from axlearn.common.layers import LayerNormStateless
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
 from axlearn.common.torch_utils import parameters_from_torch_layer
-from axlearn.common.utils import TensorSpec, as_tensor
+from axlearn.common.utils import as_tensor
 from axlearn.common.vision_transformer import ConvertToSequence
 
 
@@ -745,7 +745,9 @@ class TestDiTAttn(parameterized.TestCase):
             prng_key=prng_key,
         )
 
-        cached_states = layer.init_states(input_spec=TensorSpec(inputs.shape, inputs.dtype))
+        cached_states = layer.init_states(
+            batch_size=batch_size, max_len=seq_len, dtype=inputs.dtype
+        )
         step_sizes = (1, 2, 3)
         step_outputs = []
         i = 0
@@ -855,7 +857,9 @@ class TestDiTBlock(parameterized.TestCase):
             prng_key=prng_key,
         )
 
-        cached_states = layer.init_states(input_spec=TensorSpec(inputs.shape, inputs.dtype))
+        cached_states = layer.init_states(
+            batch_size=batch_size, max_len=seq_len, dtype=inputs.dtype
+        )
         step_sizes = (1, 2, 3)
         step_outputs = []
         i = 0

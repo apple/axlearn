@@ -44,10 +44,16 @@ from axlearn.common.layers import (
 )
 from axlearn.common.loss import cross_entropy
 from axlearn.common.metrics import WeightedSummary
-from axlearn.common.module import Module
+from axlearn.common.module import Module, nowrap
 from axlearn.common.multi_stream_model import FusionNetwork, MultiStreamModel, StreamEncoder
 from axlearn.common.poolings import AttentionPooling, BasePoolingLayer, LastNTokenPooling
-from axlearn.common.utils import Nested, NestedTensor, Tensor, TensorSpec, validate_contains_paths
+from axlearn.common.utils import (
+    Nested,
+    NestedTensor,
+    Tensor,
+    sequence_mask,
+    validate_contains_paths,
+)
 from axlearn.common.vision_transformer import VisionTransformer, layer_norm_config
 from axlearn.vision.clip import CLIPFusionNetwork
 
@@ -163,6 +169,7 @@ class CoCaTextStreamEncoder(StreamEncoder):
         }
         return output_dict
 
+    @nowrap
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
@@ -650,6 +657,7 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
 
         return loss, {"logits": logits}
 
+    @nowrap
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """Initializes cache for autoregressive cached decoding.
 
@@ -660,10 +668,10 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         Returns:
             The cache as a `NestedTensor` with key and value initialized.
         """
-        cfg = self.config
-        init_state, _ = self.transformer.init_states(
-            time_step=None,
-            data=TensorSpec([batch_size, max_sequence_length, cfg.dim], dtype=jnp.float32),
+        init_state = self.transformer.init_states(
+            batch_size=batch_size,
+            max_len=max_sequence_length,
+            dtype=self.dtype(),
         )
         return dict(transformer_state=init_state)
 
@@ -677,9 +685,19 @@ class CoCaCaptioningFusionNetwork(FusionNetwork):
         cross_attention_logit_biases: Optional[Tensor] = None,
     ) -> tuple[NestedTensor, NestedTensor]:
         cfg = self.config
-        transformer_state, transformer_data = self.transformer.init_states(
-            time_step=time_step,
+        batch_size, max_sequence_length = input_ids.shape
+        init_state = self.transformer.init_states(
+            batch_size=batch_size,
+            max_len=max_sequence_length,
+            dtype=self.dtype(),
+        )
+        transformer_state, transformer_data = self.transformer.extend_step(
+            cached_states=init_state,
             data=input_features,
+            is_prefill=True,
+            target_segment_ids=sequence_mask(
+                lengths=time_step, max_len=max_sequence_length, dtype=jnp.int32
+            ),
             self_attention_logit_biases=self.attention_mask(
                 segment_ids=input_ids != cfg.pad_token_id,
                 positions=jnp.arange(input_ids.shape[-1])[None, :],
@@ -870,6 +888,7 @@ class CoCaModel(MultiStreamModel):
         output = self._stream_encoder["visual_encoder"](input_batch)
         return output["output_features"]
 
+    @nowrap
     def init_states(self, *, batch_size: int, max_sequence_length: int) -> NestedTensor:
         """See `BaseDecoder.init_states` for details."""
         textual_encoder_states = self._stream_encoder["textual_encoder"].init_states(

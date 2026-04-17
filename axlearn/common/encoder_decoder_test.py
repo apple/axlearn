@@ -208,7 +208,7 @@ class TestEncoderDecoder(TestCase):
             # Explicitly fill positions >= prefix_length with pad_token_id.
             # Note that each batch example may have a different prefix length.
             # [batch_size, tgt_len].
-            prefix_mask = jnp.arange(tgt_len) < prefix_length[:, None]
+            prefix_mask = utils.sequence_mask(lengths=prefix_length, max_len=tgt_len)
             prefix = prefix * prefix_mask + pad_token_id * (1 - prefix_mask)
             # Set last token to a non-pad token, to fix the prefix length.
             oh_indices = jax.nn.one_hot(prefix_length - 1, tgt_len, dtype=prefix.dtype)

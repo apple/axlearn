@@ -36,7 +36,7 @@ from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.rnn import BaseRNNCell, IdentityCell, LSTMCell
 from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
-from axlearn.common.utils import Nested, NestedTensor, Tensor, safe_not, shapes
+from axlearn.common.utils import Nested, NestedTensor, Tensor, safe_not, sequence_mask, shapes
 
 _NEG_INF = -1.0e7
 
@@ -1701,7 +1701,7 @@ class LASDecoderModelTest(TestCase):
         # Explicitly fill positions >= prefix_length with pad_id (-1).
         # Note that each batch example may have a different prefix length.
         # [batch_size, max_tgt_len].
-        prefix_mask = jnp.arange(max_tgt_len) < prefix_length[:, None]
+        prefix_mask = sequence_mask(lengths=prefix_length, max_len=max_tgt_len)
         prefix = prefix * prefix_mask + pad_id * (1 - prefix_mask)
 
         @functools.partial(jax.jit, static_argnames=("method", "num_decodes", "logits_modifier"))

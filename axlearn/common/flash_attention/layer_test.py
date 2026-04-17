@@ -55,7 +55,6 @@ from axlearn.common.layers import set_bias_recursively
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase, is_supported_mesh_shape
-from axlearn.common.utils import TensorSpec
 
 
 def _fake_inputs(
@@ -883,18 +882,10 @@ class TestFlashAttention(TestCase):
             )
 
             # Prepare initial states.
-            initial_state, initial_output = test_layer.init_states(
-                time_step=None,
-                query=TensorSpec([batch, seq_len], dtype=dtype),
-                kv_state=kv_state,
+            initial_state = test_layer.init_states(batch_size=batch, max_len=seq_len, dtype=dtype)
+            ref_initial_state = ref_layer.init_states(
+                batch_size=batch, max_len=seq_len, dtype=dtype
             )
-            ref_initial_state, ref_inital_output = ref_layer.init_states(
-                time_step=None,
-                query=TensorSpec([batch, seq_len], dtype=dtype),
-                kv_state=kv_state,
-            )
-            self.assertIsNone(initial_output)
-            self.assertIsNone(ref_inital_output)
             if page_size is not None:
                 # Populate the kv_pages and page_indices.
                 max_pages_each_request = (seq_len + page_size - 1) // page_size

@@ -21,7 +21,7 @@ from jax import numpy as jnp
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.layers import Linear, MultiLinear
-from axlearn.common.module import Module, child_context, new_output_collection
+from axlearn.common.module import Module, child_context, new_output_collection, nowrap
 from axlearn.common.repeat import Repeat
 from axlearn.common.utils import Nested, Tensor, VDict, get_or_none, split_prng_key
 
@@ -44,6 +44,7 @@ class BaseRNNCell(BaseLayer):
         cfg = self.config
         return cfg.output_dim if cfg.output_dim is not None else cfg.input_dim
 
+    @nowrap
     def init_states(self, *, batch_size: int) -> Nested[Tensor]:
         """Returns the initial states, to be used by `extend_step`."""
         raise NotImplementedError(type(self))
@@ -176,6 +177,7 @@ class LSTMCell(BaseRNNCell):
         if cfg.norm is not None:
             self._add_child("norm", cfg.norm.set(input_dim=self.hidden_dim))
 
+    @nowrap
     def init_states(self, *, batch_size: int) -> Nested[Tensor]:
         cfg = self.config
         # Using the naming convention of:
@@ -285,6 +287,7 @@ class StackedRNNLayer(BaseRNNCell):
             )
         return state
 
+    @nowrap
     def init_states(self, *, batch_size: int) -> list[Nested[Tensor]]:
         """Returns a list of initial step states from all layers."""
         states_list = [layer.init_states(batch_size=batch_size) for layer in self._layers]
@@ -339,6 +342,7 @@ class StackedRNNLayer(BaseRNNCell):
 class _RNNRepeat(Repeat):
     """A Repeat layer with layer = children class of BaseRNNCell."""
 
+    @nowrap
     def init_states(self, *, batch_size: int) -> Nested[Tensor]:
         """Returns the initial states of all layers."""
 
@@ -422,6 +426,7 @@ class RepeatedRNNLayer(BaseRNNCell):
             )
         )
 
+    @nowrap
     def init_states(self, *, batch_size: int) -> Nested[Tensor]:
         return self.repeat.init_states(batch_size=batch_size)
 
@@ -446,6 +451,7 @@ class IdentityCell(BaseRNNCell):
                 f"input_dim = {cfg.input_dim}, output_dim = {cfg.output_dim}."
             )
 
+    @nowrap
     def init_states(self, *, batch_size: int) -> Nested[Tensor]:
         """Returns the initial states, to be used by `extend_step`."""
         return {}

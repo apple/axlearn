@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
+from axlearn.common.module import nowrap
 from axlearn.common.utils import Nested, Tensor
 
 
@@ -64,6 +65,7 @@ class BaseKVCache(BaseLayer):
         assert dtype is not None
         return dtype
 
+    @nowrap
     def init_states(self, shape: Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
         """Initializes KV cache.
 
@@ -83,7 +85,7 @@ class BaseKVCache(BaseLayer):
         k_proj: Tensor,
         v_proj: Tensor,
         key_positions: Tensor,
-        unpadded_len: Optional[Tensor] = None,
+        segment_ids: Optional[Tensor] = None,
         page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Output]:
         """Updates the KV cache per extend step.
@@ -97,9 +99,8 @@ class BaseKVCache(BaseLayer):
             k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
             key_positions: An optional Tensor of shape [1|batch, step_length].
-            unpadded_len: An optional Tensor of shape [batch]. Specifies the number of
-                non-padding tokens per sequence. When provided, only the first `unpadded_len[i]`
-                tokens of sequence `i` are considered valid for caching. The actual behavior
+            segment_ids: An optional Tensor of shape [batch, step_length]. `segment_ids == 0`
+                represents padding tokens that should not be cached. The actual behavior
                 depends on the specific KV cache implementation.
             page_pool: See file-level docstring of `attention.py`.
 
