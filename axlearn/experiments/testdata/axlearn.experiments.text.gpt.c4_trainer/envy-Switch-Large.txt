@@ -191,7 +191,6 @@ mesh_shape[3]: -1
 mesh_shape[4]: 1
 mesh_shape[5]: 1
 model.batch_axis_names: None
-model.decoder.attention_mask: None
 model.decoder.decoding.klass: 'axlearn.common.decoder.DecodingLayer'
 model.decoder.dim: 2048
 model.decoder.dropout_rate: 0.0

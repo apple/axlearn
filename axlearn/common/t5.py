@@ -19,6 +19,7 @@ from jax import numpy as jnp
 
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
+    CausalAttentionLogitBiasLayer,
     StackedTransformerLayer,
     TransformerAttentionLayer,
     apply_attention_logit_biases,
@@ -315,6 +316,7 @@ class T5Decoder(Decoder):
     @classmethod
     def default_config(cls: type["T5Decoder"]) -> Decoder.Config:
         cfg = super().default_config()  # type: T5Decoder.Config
+        cfg.attention_mask = CausalAttentionLogitBiasLayer.default_config()
         cfg.transformer = t5_transformer_stack_config()
         # T5 uses RMSNorm instead of LayerNorm.
         cfg.output_norm = RMSNorm.default_config()

@@ -952,6 +952,7 @@ class DecoderTest(TestCase):
         axlearn_layer_cfg = AxlearnDecoder.default_config().set(
             vocab_size=vocab_size,
             dim=emb_dim,
+            attention_mask=AxlearnCausalAttentionLogitBiasLayer.default_config(),
             transformer=AxlearnStackedTransformerLayer.default_config().set(
                 num_layers=num_layers, layer=axlearn_transformer_layer_cfg
             ),

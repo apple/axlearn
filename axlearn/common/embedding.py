@@ -67,16 +67,16 @@ class BaseEmbedding(BaseLayer):
     def extend_step(
         self,
         *,
-        is_prefill: bool = False,
         cached_states: Nested[Tensor],
         input_batch: Nested[Tensor],
+        is_prefill: bool = False,
     ) -> tuple[Nested[Tensor], Tensor]:
         """Extends one step for streaming decode.
 
         Args:
-            is_prefill: If True, indicates prefill mode; otherwise extend-step mode.
             cached_states: Cached states from previous step or init_state.
             input_batch: Input batch for current step.
+            is_prefill: If True, indicates prefill mode; otherwise extend-step mode.
 
         Returns:
             A tuple of (updated_states, embeddings).

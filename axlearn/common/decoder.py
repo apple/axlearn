@@ -13,7 +13,6 @@ from axlearn.common import logit_modifiers
 from axlearn.common.attention import (
     AttentionLogitBiasLayer,
     BaseStackedTransformerLayer,
-    CausalAttentionLogitBiasLayer,
     ForwardMode,
     StackedTransformerLayer,
 )
@@ -455,11 +454,9 @@ class Decoder(BaseLayer):
     class Config(BaseLayer.Config):
         """Configures Decoder."""
 
-        # attention_mask can be None if the attention layer supports the causal mode, e.g.,
-        # FlashAttention with `causal=True`.
-        attention_mask: Optional[AttentionLogitBiasLayer.Config] = (
-            CausalAttentionLogitBiasLayer.default_config()
-        )
+        # DEPRECATED, because `attention_mask` uses quadratic memory, even with Flash Attention.
+        # Please use `attention.mask`, which constructs the mask procedurally.
+        attention_mask: Optional[AttentionLogitBiasLayer.Config] = None
         vocab_size: Required[int] = REQUIRED  # Size of vocabulary.
         # Dimensionality of embeddings and inputs to each transformer layer.
         dim: Required[int] = REQUIRED
@@ -554,9 +551,9 @@ class Decoder(BaseLayer):
         elif mode in (ForwardMode.PREFILL, ForwardMode.EXTEND_STEP):
             assert cached_states is not None
             cached_states["emb"], x = self.emb.extend_step(
-                is_prefill=(mode == ForwardMode.PREFILL),
                 cached_states=cached_states["emb"],
                 input_batch=emb_batch,
+                is_prefill=(mode == ForwardMode.PREFILL),
             )
             cached_states["transformer_state"], x = self.transformer.extend_step(
                 cached_states=cached_states["transformer_state"],
