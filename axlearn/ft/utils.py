@@ -92,14 +92,21 @@ class TrainerProcessController:
         self.current_process: Optional[subprocess.Popen] = None
         self.termination_requested = False
         self.termination_reason = ""
+        self.restart_count = 0
         self.lock = threading.Lock()
 
-    def set_process(self, process: subprocess.Popen):
-        """Set the current trainer process."""
+    def set_process(self, process: subprocess.Popen, restart_count: int = 0):
+        """Set the current trainer process.
+
+        Args:
+            process: The trainer subprocess.
+            restart_count: The agent's current restart count for this attempt.
+        """
         with self.lock:
             self.current_process = process
             self.termination_requested = False
             self.termination_reason = ""
+            self.restart_count = restart_count
 
     def _cleanup_tpu_lock_files(self) -> None:
         """Clean up TPU lock files.

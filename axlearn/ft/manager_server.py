@@ -80,6 +80,7 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
 
         if self._worker_identity.is_global_manager:
             self._replica_registry: Dict[int, Dict] = {}
+            self._global_restart_count = 0
             logging.debug("Server initialized as global manager")
 
     def _validate_role(self, required_role: str, operation: str) -> None:
@@ -301,7 +302,9 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
             )
 
             # Forward restart request to all workers in this replica
-            forward_results = self._forward_restart_to_workers(request.reason)
+            forward_results = self._forward_restart_to_workers(
+                request.reason, restart_count=request.restart_count
+            )
             successful_forwards = sum(1 for result in forward_results.values() if result)
             total_forwards = len(forward_results)
 
@@ -365,6 +368,23 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
             )
 
             logging.debug("Worker processing restart request")
+
+            # Discard stale restart requests — if this worker has already
+            # restarted past this generation, the request is outdated.
+            if (
+                self.process_controller
+                and request.restart_count > 0
+                and request.restart_count <= self.process_controller.restart_count
+            ):
+                message = (
+                    f"Ignoring stale restart request: request restart_count="
+                    f"{request.restart_count}, local restart_count="
+                    f"{self.process_controller.restart_count}"
+                )
+                logging.info(message)
+                return self._create_success_response(
+                    manager_pb2.RestartResponse, acknowledged=False, message=message
+                )
 
             # Check if this is a shutdown request (not a restart)
             is_shutdown = request.reason.startswith("IMMEDIATE_SHUTDOWN:")
@@ -432,6 +452,97 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
             )
             raise
 
+    def RequestGlobalRestart(
+        self, request: manager_pb2.RequestGlobalRestartRequest, context
+    ) -> manager_pb2.RequestGlobalRestartResponse:
+        """Handle global restart requests from any worker (global manager only).
+
+        Updates the global restart count, fans out RestartReplicaTraining to all
+        replicas, and returns the current global restart count.
+        """
+        try:
+            self._validate_role("global_manager", "handle global restart requests")
+
+            worker_identity = request.worker_identity
+            logging.warning(
+                "Global restart requested by worker %s (replica=%d, worker=%d): "
+                "reason='%s', worker_restart_count=%d",
+                worker_identity.hostname,
+                worker_identity.replica_id,
+                worker_identity.worker_id,
+                request.reason,
+                request.restart_count,
+            )
+
+            # Only fan out restart if this is a new restart generation.
+            # If another worker already triggered a restart for this or a later
+            # generation, skip the fan-out to avoid redundant restarts.
+            should_fan_out_restart = False
+            with self._registry_lock:
+                if request.restart_count + 1 > self._global_restart_count:
+                    self._global_restart_count = request.restart_count + 1
+                    should_fan_out_restart = True
+                current_global_restart_count = self._global_restart_count
+
+            if should_fan_out_restart:
+                restart_reason = (
+                    f"Coordinated restart: {request.reason} "
+                    f"(requested by replica {worker_identity.replica_id} "
+                    f"worker {worker_identity.worker_id})"
+                )
+                self._restart_all_replicas(
+                    restart_reason, restart_count=current_global_restart_count
+                )
+            else:
+                logging.info(
+                    "FT Monitor: Skipping redundant restart fan-out from %s "
+                    "(replica=%d, worker=%d, restart_count=%d, global_restart_count=%d)",
+                    worker_identity.hostname,
+                    worker_identity.replica_id,
+                    worker_identity.worker_id,
+                    request.restart_count,
+                    current_global_restart_count,
+                )
+
+            return self._create_success_response(
+                manager_pb2.RequestGlobalRestartResponse,
+                message=f"Global restart initiated, global_restart_count="
+                f"{current_global_restart_count}",
+                global_restart_count=current_global_restart_count,
+            )
+
+        except grpc.RpcError:
+            raise
+        except Exception as e:
+            self._create_error_response(
+                context, grpc.StatusCode.INTERNAL, f"RequestGlobalRestart error: {e}"
+            )
+            raise
+
+    def _restart_all_replicas(self, reason: str, restart_count: int = 0):
+        """Send restart requests to all replicas.
+
+        Args:
+            reason: Reason for restart.
+            restart_count: Global restart count for this restart event.
+        """
+        try:
+            num_replicas = get_num_replicas()
+            with ManagerClient() as client:
+                for replica_id in range(num_replicas):
+                    replica_hostname = get_replica_head_hostname(replica_id)
+                    try:
+                        client.restart_replica(
+                            replica_hostname,
+                            replica_id,
+                            reason,
+                            restart_count=restart_count,
+                        )
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logging.error("Failed to send restart to replica %d: %s", replica_id, e)
+        except ValueError as e:
+            logging.error("Failed to restart replicas: %s", e)
+
     def _handle_pod_shutdown(self, affected_worker: WorkerIdentity, reason: str):
         """Handle pod shutdown by terminating specific worker and restarting all replicas."""
         logging.debug(
@@ -468,11 +579,12 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 logging.error("Failed to restart replicas: %s", e)
                 raise
 
-    def _forward_restart_to_workers(self, reason: str) -> Dict[str, bool]:
+    def _forward_restart_to_workers(self, reason: str, restart_count: int = 0) -> Dict[str, bool]:
         """Forward restart request to all workers in this replica (replica manager only).
 
         Args:
             reason: Reason for restart
+            restart_count: Global restart count for this restart event.
 
         Returns:
             dict: Map of hostname -> success status
@@ -490,7 +602,11 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
                 worker_id = extract_worker_id_from_hostname(hostname)
 
                 success = client.restart_worker(
-                    hostname, self._worker_identity.replica_id, reason, worker_id
+                    hostname,
+                    self._worker_identity.replica_id,
+                    reason,
+                    worker_id,
+                    restart_count=restart_count,
                 )
 
                 if success:

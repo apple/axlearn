@@ -33,7 +33,7 @@ class TerminationAction(enum.Enum):
     """Action to take after a termination request."""
 
     EXIT = "exit"  # Pod shutdown - exit gracefully
-    RESTART = "restart"  # Coordinated restart - restart without counting against max_restarts
+    RESTART = "restart"  # Coordinated process-level restart - increment restart count
 
 
 # Constant for pod shutdown signal reason prefix
@@ -78,8 +78,8 @@ def _handle_termination_request(
     Returns:
         TerminationAction.EXIT if pod shutdown was requested (caller should return/exit
             gracefully),
-        TerminationAction.RESTART if coordinated restart was requested (caller should continue
-            without incrementing restart count),
+        TerminationAction.RESTART if coordinated restart was requested (caller should
+            increment restart count and retry),
         None if no termination was requested (caller should handle returncode normally).
     """
     termination_requested, reason = process_controller.check_termination_requested()
@@ -95,7 +95,7 @@ def _handle_termination_request(
         )
         return TerminationAction.EXIT
 
-    # Coordinated restart (JAX re-init) - restart trainer without counting against max_restarts
+    # Coordinated restart - counts against max_restarts
     logging.info(
         "FT Agent: Coordinated restart requested (%s), restarting trainer",
         reason,
@@ -134,7 +134,7 @@ def _run_single_attempt(
         text=True,
         start_new_session=True,
     ) as process:
-        process_controller.set_process(process)
+        process_controller.set_process(process, restart_count=restart_count)
         returncode = monitor.monitor_training_process(process)
         process_controller.clear_process()
 
@@ -145,6 +145,14 @@ def _run_single_attempt(
         if returncode == 0:
             logging.info("FT Agent: Training completed successfully")
             return TerminationAction.EXIT
+
+        # Training failed — report to global manager for coordinated restart
+        reason = f"Training process exited with code {returncode}"
+        logging.error("FT Agent: %s, requesting coordinated global restart...", reason)
+        try:
+            monitor.manager.request_global_restart(reason, restart_count)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logging.warning("FT Agent: Failed to request global restart: %s", e)
 
         if restart_count < max_restarts:
             logging.error("FT Agent: Training failed (code %d), restarting...", returncode)
@@ -222,10 +230,10 @@ def run_ft_agent(trainer_argv: list[str]):
                 action = _run_single_attempt(
                     entrypoint_cmd, restart_count, max_restarts, process_controller, monitor
                 )
+                # TODO: (ruhan-prasad) add logic for handling replica restart
                 if action == TerminationAction.EXIT:
                     return
-                if action == TerminationAction.RESTART:
-                    continue  # Coordinated restart - don't increment restart_count
+                # Update restart count if process-level rather than pod-level
                 restart_count += 1
 
             except RuntimeError as e:

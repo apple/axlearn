@@ -191,6 +191,23 @@ class Manager:
 
         return self._client.report_pod_shutdown(reason)
 
+    def request_global_restart(self, reason: str, restart_count: int) -> int:
+        """Request coordinated global restart from global manager.
+
+        Any worker can call this to request that all worker replicas restart together.
+
+        Args:
+            reason: Reason for restart
+            restart_count: This worker's current restart count
+
+        Returns:
+            int: Global restart count from the global manager, or -1 on failure
+        """
+        if not self._client:
+            raise RuntimeError("Client not available for global restart request")
+
+        return self._client.request_global_restart(reason, restart_count)
+
     def restart_local_training(self, reason: str = "Manual restart") -> bool:
         """Restart local training process if available.
 

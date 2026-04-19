@@ -156,7 +156,12 @@ class ManagerClient:
 
     @retry(max_attempts=3)
     def restart_replica(
-        self, target_hostname: str, replica_id: int, reason: str, port: Optional[int] = None
+        self,
+        target_hostname: str,
+        replica_id: int,
+        reason: str,
+        port: Optional[int] = None,
+        restart_count: int = 0,
     ) -> bool:
         """Send restart request to a replica manager (Global -> Replica level).
 
@@ -165,6 +170,7 @@ class ManagerClient:
             replica_id: Target replica ID
             reason: Reason for restart
             port: Port of the replica manager (uses default_port if None)
+            restart_count: Global restart count this request belongs to
 
         Returns:
             bool: True if restart was acknowledged, False otherwise
@@ -176,6 +182,7 @@ class ManagerClient:
             request.replica_id = replica_id
             request.reason = reason
             request.timestamp.CopyFrom(create_current_timestamp())
+            request.restart_count = restart_count
 
             response = self._grpc_call(
                 target_hostname,
@@ -206,6 +213,7 @@ class ManagerClient:
         reason: str,
         worker_id: int,
         port: Optional[int] = None,
+        restart_count: int = 0,
     ) -> bool:
         """Send restart request to a specific worker (Replica -> Worker level).
 
@@ -215,6 +223,7 @@ class ManagerClient:
             reason: Reason for restart
             worker_id: Worker ID of the target worker
             port: Port of the worker (uses default_port if None)
+            restart_count: Global restart count this request belongs to
 
         Returns:
             bool: True if restart was acknowledged, False otherwise
@@ -228,6 +237,7 @@ class ManagerClient:
             request.worker_identity.worker_id = worker_id
             request.reason = reason
             request.timestamp.CopyFrom(create_current_timestamp())
+            request.restart_count = restart_count
 
             response = self._grpc_call(
                 target_hostname,
@@ -292,6 +302,48 @@ class ManagerClient:
                 str(e),
             )
             return False
+
+    @retry(max_attempts=3)
+    def request_global_restart(
+        self, reason: str, restart_count: int, port: Optional[int] = None
+    ) -> int:
+        """Request coordinated global restart from global manager.
+
+        Args:
+            reason: Reason for restart
+            restart_count: This worker's current restart count
+            port: Port of the global manager (uses default_port if None)
+
+        Returns:
+            int: Global restart count from the global manager
+
+        Raises:
+            Exception: If the request fails after all retry attempts.
+        """
+        target_hostname = get_global_manager_hostname()
+        if port is None:
+            port = self.port
+
+        request = manager_pb2.RequestGlobalRestartRequest()
+        request.worker_identity.CopyFrom(create_worker_identity_proto())
+        request.reason = reason
+        request.restart_count = restart_count
+        request.timestamp.CopyFrom(create_current_timestamp())
+
+        logging.warning(
+            "Requesting global restart: target=%s:%d, reason='%s', restart_count=%d",
+            target_hostname,
+            port,
+            reason,
+            restart_count,
+        )
+
+        response = self._grpc_call(target_hostname, port, "RequestGlobalRestart", request)
+        logging.info(
+            "Global restart acknowledged, global_restart_count=%d",
+            response.global_restart_count,
+        )
+        return response.global_restart_count
 
     def close(self):
         """Close all cached gRPC channels."""

@@ -60,6 +60,7 @@ message RestartReplicaRequest {
   int32 replica_id = 1;
   string reason = 2;                            // Reason for restart
   google.protobuf.Timestamp timestamp = 3;     // When restart was initiated
+  int32 restart_count = 4;                      // Global restart count this request belongs to
 }
 
 message RestartReplicaResponse {
@@ -73,6 +74,7 @@ message RestartRequest {
   WorkerIdentity worker_identity = 1;
   string reason = 2;                            // Reason for restart
   google.protobuf.Timestamp timestamp = 3;     // When restart was initiated
+  int32 restart_count = 4;                      // Global restart count this request belongs to
 }
 
 message RestartResponse {
@@ -94,6 +96,21 @@ message PodShutdownResponse {
   google.protobuf.Timestamp timestamp = 3;
 }
 
+// Request coordinated global restart (any worker to global manager)
+message RequestGlobalRestartRequest {
+  WorkerIdentity worker_identity = 1;
+  string reason = 2;
+  int32 restart_count = 3;                        // Requesting worker's current restart count
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message RequestGlobalRestartResponse {
+  bool acknowledged = 1;
+  string message = 2;
+  int32 global_restart_count = 3;                 // Global manager's current restart count
+  google.protobuf.Timestamp timestamp = 4;
+}
+
 // FT manager service
 service ManagerService {
   // Worker to replica head status reporting
@@ -110,4 +127,7 @@ service ManagerService {
 
   // Pod shutdown notification
   rpc ReportPodShutdown(PodShutdownRequest) returns (PodShutdownResponse);
+
+  // Any worker to global manager: request coordinated restart of all replicas
+  rpc RequestGlobalRestart(RequestGlobalRestartRequest) returns (RequestGlobalRestartResponse);
 }
