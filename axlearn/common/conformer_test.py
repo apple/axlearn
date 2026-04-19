@@ -7,12 +7,18 @@ from unittest.mock import patch
 
 import jax
 import numpy as np
+import pytest
 import torch
 from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
+from jax.sharding import NamedSharding, PartitionSpec
 
-from axlearn.common.attention import build_remat_spec
+from axlearn.common.attention import (
+    MultiheadAttention,
+    TransformerFeedForwardLayer,
+    build_remat_spec,
+)
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     LeftRightWindowAttentionBias,
@@ -25,7 +31,7 @@ from axlearn.common.conformer import (
     set_double_shard_weights_config,
 )
 from axlearn.common.module import functional as F
-from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.test_utils import TestCase, assert_allclose, is_supported_mesh_shape
 from axlearn.common.utils import safe_not
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
@@ -369,6 +375,189 @@ class ConformerLayerTest(TestCase):
         self.assertSequenceEqual(
             self_atten.output_linear.param_partition_spec, (fsdp_axis_names, tp_axis_names, None)
         )
+
+    @parameterized.product(
+        batch_axis_names=(("data", "fsdp"),),
+        fsdp_axis_names=("fsdp",),
+        tp_axis_names=("model",),
+        seq_axis_names=("seq",),
+        mesh_shape=((2, 2, 1, 2),),
+        data_shape=((4, 50, 8),),
+    )
+    @pytest.mark.for_8_devices
+    def test_mocking_sharding(
+        self,
+        batch_axis_names,
+        fsdp_axis_names,
+        tp_axis_names,
+        seq_axis_names,
+        mesh_shape,
+        data_shape,
+    ):
+        # Add XLA_FLAGS=--xla_force_host_platform_device_count=8 before running the test
+        if not is_supported_mesh_shape(mesh_shape):
+            self.skipTest(f"Unsupported mesh shape {mesh_shape}")
+        with jax.make_mesh(mesh_shape, ("data", "fsdp", "seq", "model")) as mesh:
+            num_heads = 2
+            cfg = ConformerLayer.default_config().set(name="conformer", input_dim=data_shape[-1])
+            cfg.self_attention.attention.num_heads = num_heads
+            set_double_shard_weights_config(
+                cfg,
+                batch_axis_names=batch_axis_names,
+                fsdp_axis_names=fsdp_axis_names,
+                tp_axis_names=tp_axis_names,
+                seq_axis_names=seq_axis_names,
+            )
+
+            data_prng, param_prng, forward_prng = jax.random.split(jax.random.PRNGKey(0), 3)
+
+            # Test parameter sharding
+            base_layer = cfg.set(name="base").instantiate(parent=None)
+            model_param_partition_specs = jax.tree.map(
+                lambda spec: NamedSharding(mesh, spec.mesh_axes),
+                base_layer.create_parameter_specs_recursively(),
+            )
+            base_state = jax.jit(
+                base_layer.initialize_parameters_recursively,
+                in_shardings=NamedSharding(mesh, PartitionSpec(None)),
+                out_shardings=model_param_partition_specs,
+            )(param_prng)
+            self.assertEqual(
+                base_state["ff_start"]["linear1"]["weight"].sharding.spec,
+                PartitionSpec("fsdp", "model"),
+            )
+            self.assertEqual(
+                base_state["ff_start"]["linear2"]["weight"].sharding.spec,
+                PartitionSpec("model", "fsdp"),
+            )
+            self.assertEqual(
+                base_state["ff_end"]["linear1"]["weight"].sharding.spec,
+                PartitionSpec("fsdp", "model"),
+            )
+            self.assertEqual(
+                base_state["ff_end"]["linear2"]["weight"].sharding.spec,
+                PartitionSpec("model", "fsdp"),
+            )
+            self.assertEqual(
+                base_state["self_attention"]["attention"]["i_proj"]["qkv_proj"][
+                    "weight"
+                ].sharding.spec,
+                PartitionSpec(None, "fsdp", "model", None),
+            )
+            self.assertEqual(
+                base_state["self_attention"]["attention"]["o_proj"]["weight"].sharding.spec,
+                PartitionSpec("fsdp", "model", None),
+            )
+            self.assertEqual(
+                base_state["lconv"]["linear1_0"]["weight"].sharding.spec,
+                PartitionSpec("fsdp", "model"),
+            )
+            self.assertEqual(
+                base_state["lconv"]["linear1_1"]["weight"].sharding.spec,
+                PartitionSpec("fsdp", "model"),
+            )
+            self.assertEqual(
+                base_state["lconv"]["linear2"]["weight"].sharding.spec,
+                PartitionSpec("model", "fsdp"),
+            )
+            self.assertEqual(
+                base_state["lconv"]["conv"]["weight"].sharding.spec,
+                PartitionSpec(None, None, "model"),
+            )
+
+            # Test model state sharding
+            x = jax.random.normal(data_prng, data_shape)
+            x = jax.device_put(
+                x,
+                NamedSharding(mesh, PartitionSpec(batch_axis_names, seq_axis_names, tp_axis_names)),
+            )
+            paddings = jnp.zeros_like(x[:, :, 0]).astype(jnp.bool_)
+            segment_ids = safe_not(paddings).astype(jnp.int32)
+
+            # Test FeedForward
+            def patched_remat_name_ff(_, tensor, name):
+                def callback(sharding):
+                    if name in ("linear1_0", "linear2"):
+                        self.assertEqual(
+                            sharding.spec, PartitionSpec(("data", "fsdp"), None, "model")
+                        )
+
+                jax.debug.inspect_array_sharding(tensor, callback=callback)
+                return tensor
+
+            with patch.object(TransformerFeedForwardLayer, "_remat_name", patched_remat_name_ff):
+
+                @jax.jit
+                def jit_fn_ff():
+                    base_outputs, _ = F(
+                        base_layer,
+                        state=base_state,
+                        is_training=True,
+                        prng_key=forward_prng,
+                        inputs=dict(inputs=x, segment_ids=segment_ids),
+                    )
+                    return base_outputs
+
+                jit_fn_ff()
+
+            # Test Attention
+            def patched_remat_name_mh(_, tensor, name):
+                def callback(sharding):
+                    if name in ("q_proj", "k_proj", "v_proj", "context"):
+                        self.assertEqual(
+                            sharding.spec,
+                            PartitionSpec(
+                                ("data", "fsdp"),
+                            ),
+                        )
+                    elif name == "o_proj":
+                        self.assertEqual(
+                            sharding.spec, PartitionSpec(("data", "fsdp"), None, "model")
+                        )
+
+                jax.debug.inspect_array_sharding(tensor, callback=callback)
+                return tensor
+
+            with patch.object(MultiheadAttention, "_remat_name", patched_remat_name_mh):
+
+                @jax.jit
+                def jit_fn_mh():
+                    base_outputs, _ = F(
+                        base_layer,
+                        state=base_state,
+                        is_training=True,
+                        prng_key=forward_prng,
+                        inputs=dict(inputs=x, segment_ids=segment_ids),
+                    )
+                    return base_outputs
+
+                jit_fn_mh()
+
+            # Test LConv
+            def patched_remat_name_lc(_, tensor, name):
+                def callback(sharding):
+                    if name in ("linear1_0", "linear1_1", "linear2"):
+                        self.assertEqual(
+                            sharding.spec, PartitionSpec(("data", "fsdp"), None, "model")
+                        )
+
+                jax.debug.inspect_array_sharding(tensor, callback=callback)
+                return tensor
+
+            with patch.object(LConvLayer, "_remat_name", patched_remat_name_lc):
+
+                @jax.jit
+                def jit_fn_lc():
+                    base_outputs, _ = F(
+                        base_layer,
+                        state=base_state,
+                        is_training=True,
+                        prng_key=forward_prng,
+                        inputs=dict(inputs=x, segment_ids=segment_ids),
+                    )
+                    return base_outputs
+
+                jit_fn_lc()
 
 
 if __name__ == "__main__":
