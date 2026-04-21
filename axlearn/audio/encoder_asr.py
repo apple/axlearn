@@ -23,7 +23,7 @@ from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.conformer import RepeatedConformerLayer
 from axlearn.common.ein_ops import rearrange
 from axlearn.common.layers import Dropout, Linear
-from axlearn.common.module import Module
+from axlearn.common.module import Module, nowrap
 from axlearn.common.utils import Nested, Tensor, safe_not
 
 
@@ -246,6 +246,7 @@ class ASREncoder(BaseLayer):
         )
         return context_features
 
+    @nowrap
     def init_states(self, *, batch_size: int, dtype: jnp.dtype) -> Nested[Tensor]:
         """Initializes empty cached states for decoding.
 
