@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent import futures
 from types import TracebackType
-from typing import Any, NamedTuple, Optional, Protocol, Union, runtime_checkable
+from typing import Any, Callable, NamedTuple, Optional, Protocol, Union, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -82,6 +82,36 @@ class CheckpointValidationType(str, enum.Enum):
     EXACT_UP_TO_DTYPE = "EXACT_UP_TO_DTYPE"
     CONTAINS_STATE = "CONTAINS_STATE"
     CONTAINS_STATE_UP_TO_DTYPE = "CONTAINS_STATE_UP_TO_DTYPE"
+
+
+# A callable that filters state before checkpoint restoration.
+RestoreStateFilter = Callable[
+    [Union[NestedTensor, NestedTensorSpec]], Union[NestedTensor, NestedTensorSpec]
+]
+
+
+def drop_learner_optimizer_cfg() -> InstantiableConfig[RestoreStateFilter]:
+    """Returns a config that instantiates to a filter dropping `learner/optimizer` from state.
+
+    Useful for eval-only checkpoint loading. Evalers only need model params and optionally
+    `learner/ema`. Skipping the optimizer avoids validation failures when the checkpoint was
+    produced by a different optimizer (e.g. RL training) and also saves memory and time.
+    """
+
+    def fn() -> RestoreStateFilter:
+        def filter_fn(state):
+            if isinstance(state, dict) and "learner" in state:
+                learner = state["learner"]
+                if isinstance(learner, dict) and "optimizer" in learner:
+                    return {
+                        **state,
+                        "learner": {k: v for k, v in learner.items() if k != "optimizer"},
+                    }
+            return state
+
+        return filter_fn
+
+    return config_for_function(fn)
 
 
 def parse_step_from_dir(step_dir: str) -> int:
@@ -307,6 +337,7 @@ class StateStorage(Configurable):
         state: Union[NestedTensor, NestedTensorSpec],
         *,
         ckpt_dir: str,
+        validation: CheckpointValidationType = CheckpointValidationType.EXACT,
     ) -> NestedTensor:
         raise NotImplementedError(type(self))
 
@@ -950,6 +981,14 @@ class Checkpointer(BaseCheckpointer):
         summary_writer: Optional[SummaryWriter.Config] = None
         # An optional custom index file writer that writes after checkpoint write is complete.
         index_writer: Optional[ConfigOr[IndexFileWriter]] = None
+        # Checkpoint validation type used during restore. If None, defaults to EXACT.
+        # Use CONTAINS_STATE_UP_TO_DTYPE for evaluation or export scenarios
+        # where the checkpoint may have extra keys or different dtypes.
+        validation: Optional[CheckpointValidationType] = None
+        # An optional filter applied to the state before passing it to storage.restore_from_dir.
+        # This allows dropping state subtrees (e.g., learner/optimizer) that are not needed.
+        # See `drop_learner_optimizer_cfg` for a common filter.
+        restore_state_filter: Optional[InstantiableConfig[RestoreStateFilter]] = None
 
     @classmethod
     def _all_checkpoint_paths(cls, base_dir: str) -> list[str]:
@@ -1188,6 +1227,11 @@ class Checkpointer(BaseCheckpointer):
         checkpoint has been written.
         """
         cfg: Checkpointer.Config = self.config
+        validation = cfg.validation or CheckpointValidationType.EXACT
+
+        # Apply restore_state_filter if configured.
+        if cfg.restore_state_filter is not None:
+            state = cfg.restore_state_filter.instantiate()(state)
 
         def validate_and_restore(*, step: int, ckpt_dir: str):
             ckpt_index = os.path.join(ckpt_dir, "index")
@@ -1196,7 +1240,10 @@ class Checkpointer(BaseCheckpointer):
                     f"Checkpoint {ckpt_dir} is incomplete -- expected {ckpt_index} to be present."
                 )
             restored_state = self._storage.restore_from_dir(
-                step=step, state=state, ckpt_dir=ckpt_dir
+                step=step,
+                state=state,
+                ckpt_dir=ckpt_dir,
+                validation=validation,
             )
             logging.info("Restored state from ckpt at step %s", step)
             if "summary_writer" in self.children:

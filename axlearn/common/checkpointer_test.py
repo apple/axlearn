@@ -43,6 +43,7 @@ from axlearn.common.checkpointer import (
     TensorStoreStateStorage,
     async_save_tf_savables,
     check_state_structure,
+    drop_learner_optimizer_cfg,
     every_n_steps_and_last_policy,
     every_n_steps_policy,
     read_state_spec,
@@ -1247,6 +1248,53 @@ class CheckpointerTest(test_utils.TestCase):
                     ckpt.save(step=0, state=state0)
                     ckpt.wait_until_finished()
         self.assertEqual(has_exc, True)
+
+    def test_restore_with_eval_config(self):
+        """Checkpointer with validation + restore_state_filter drops optimizer and restores."""
+        mesh_shape = (1, 1)
+        if not test_utils.is_supported_mesh_shape(mesh_shape):
+            return
+        with _mesh(mesh_shape):
+            cfg = _checkpointer_config(Checkpointer)
+            cfg.save_policy.min_step = 0
+            cfg.validation = CheckpointValidationType.CONTAINS_STATE_UP_TO_DTYPE
+            cfg.restore_state_filter = drop_learner_optimizer_cfg()
+            ckpt: Checkpointer = cfg.instantiate(parent=None)
+
+            # Save state that includes learner with optimizer and ema.
+            state = dict(
+                model=dict(weight=jnp.ones([4], dtype=jnp.float32)),
+                learner=dict(
+                    optimizer=dict(mu=jnp.zeros([4], dtype=jnp.float32)),
+                    ema=dict(ema=jnp.ones([4], dtype=jnp.float32)),
+                ),
+            )
+            ckpt.save(step=0, state=state)
+            ckpt.wait_until_finished()
+
+            # Restore: filter drops optimizer from target, CONTAINS_STATE_UP_TO_DTYPE
+            # tolerates extra optimizer keys in the checkpoint.
+            step, restored = ckpt.restore(step=0, state=state)
+            self.assertEqual(step, 0)
+            self.assertNestedEqual(restored["model"]["weight"], state["model"]["weight"])
+            ema = restored["learner"]["ema"]["ema"]
+            self.assertNestedEqual(ema, state["learner"]["ema"]["ema"])
+            self.assertNotIn("optimizer", restored["learner"])
+
+            # Without these config fields (default EXACT), the same restore would fail
+            # because the target includes optimizer but shapes/structure may differ.
+            cfg_strict = _checkpointer_config(Checkpointer)
+            cfg_strict.dir = cfg.dir
+            ckpt_strict: Checkpointer = cfg_strict.instantiate(parent=None)
+            with self.assertRaisesRegex(ValueError, "checkpoint tree dtypes or shapes"):
+                # Target has only model (no learner) — EXACT requires exact match.
+                ckpt_strict.restore(
+                    step=0,
+                    state=dict(model=dict(weight=jnp.ones([4], dtype=jnp.float32))),
+                )
+
+            ckpt.stop()
+            ckpt_strict.stop()
 
 
 class TensorStoreStateStorageTest(test_utils.TestCase):
