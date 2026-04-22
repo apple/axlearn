@@ -843,7 +843,9 @@ class GumbelSoftmaxVectorQuantizerTest(TestCase):
         )
         batch_size, seq_len = 2, 4
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_forward_against_fairseq.npy"),
+            os.path.join(
+                testdata_dir, "axlearn.common.quantizer_test", "test_forward_against_fairseq.npy"
+            ),
             allow_pickle=True,
         ).item()
         ref_outputs = testcase["outputs"]
