@@ -1771,6 +1771,41 @@ class LWSRunnerJobTest(parameterized.TestCase):
                 topology_assignment='[["slice1"]]',
                 expected=runner_gke.LWSRunnerJob.Status.RESCHEDULED,
             ),
+            # Tier promoted to 0, LWS only Progressing (not Available): pending → RESCHEDULED.
+            dict(
+                tier="0",
+                job_version=None,
+                status=dict(conditions=[dict(type="Progressing", status="True")]),
+                spec=_mock_lws_spec(is_spot=True),
+                num_slices=1,
+                metadata={},
+                topology_assignment=None,
+                expected=runner_gke.LWSRunnerJob.Status.RESCHEDULED,
+            ),
+            # Tier promoted to 0, LWS is Available: still RESCHEDULED because current LWS
+            # conditions don't reliably reflect worker state (is_pending hardcoded to True).
+            dict(
+                tier="0",
+                job_version=None,
+                status=dict(conditions=[dict(type="Available", status="True")]),
+                spec=_mock_lws_spec(is_spot=True),
+                num_slices=1,
+                metadata={},
+                topology_assignment=None,
+                expected=runner_gke.LWSRunnerJob.Status.RESCHEDULED,
+            ),
+            # Tier promoted to 0, LWS UpdateInProgress: reschedule happens before conditions
+            # check (is_pending=True hardcoded) → RESCHEDULED.
+            dict(
+                tier="0",
+                job_version=None,
+                status=dict(conditions=[dict(type="UpdateInProgress", status="True")]),
+                spec=_mock_lws_spec(is_spot=True),
+                num_slices=1,
+                metadata={},
+                topology_assignment=None,
+                expected=runner_gke.LWSRunnerJob.Status.RESCHEDULED,
+            ),
         )
     )
     def test_get_status(  # pylint: disable=too-many-positional-arguments

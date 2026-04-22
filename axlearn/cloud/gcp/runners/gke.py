@@ -982,7 +982,15 @@ class LWSRunnerJob(BaseRunnerJob):
             tier = os.environ.get("BASTION_TIER", 0)
             reservation = _infer_reservation_from_lws(resp["spec"])
             processor_type = _infer_processor_type_from_lws(resp["spec"])
-            if runner_utils.should_recreate_job(tier, reservation, processor_type=processor_type):
+            # Hardcode is_pending=True: ideally we would only reschedule tier promotions
+            # (tier=0, no reservation) when the LWS is not actively running, letting running
+            # jobs continue until preemption. However, current LWS status conditions don't
+            # reliably reflect whether workers are actually running, so we always reschedule.
+            # Once LWS conditions are more dependable this can be revisited:
+            # https://github.com/kubernetes-sigs/lws/commit/7a4e3c1638d75c235aa1d79dce1dc4fe16b09269
+            if runner_utils.should_recreate_job(
+                tier, reservation, processor_type=processor_type, is_pending=True
+            ):
                 return LWSRunnerJob.Status.RESCHEDULED
 
             # Validate topology assignments match between builder config and deployed resource.
