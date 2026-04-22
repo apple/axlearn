@@ -270,6 +270,106 @@ def _infer_job_count(jobset_spec: dict) -> Optional[int]:
     return None
 
 
+def _get_mismatched_node_pools(
+    name: str,
+    tier: str,
+    project: str,
+    zone: str,
+    cluster: str,
+    node_pool_label_key: str,
+) -> list[dict]:
+    """Returns node pool objects whose tier config doesn't match the given tier.
+
+    Compares reserved vs. spot configuration: tier=0 expects a reservation affinity,
+    tier>0 expects a spot taint. Any pool that doesn't match is returned for deletion.
+
+    Args:
+        name: The job name used to look up node pools by label.
+        tier: The current bastion tier (e.g., "0", "1").
+        project: GCP project.
+        zone: GCP zone.
+        cluster: GKE cluster name.
+        node_pool_label_key: Label key to use when looking up node pools.
+
+    Returns:
+        A list of node pool objects whose tier config mismatches the given tier.
+        Each object is the raw GCP API node pool dict, including a "name" field and
+        a "status" field (e.g. "RUNNING", "PROVISIONING").
+    """
+    node_pools = list_node_pools_by_label_key(
+        project=project, zone=zone, cluster=cluster, label_key=node_pool_label_key
+    ).get(name, [])
+    mismatched = []
+    for pool in node_pools:
+        pool_config = pool.get("config", {})
+        reservation_affinity = pool_config.get("reservationAffinity", {})
+        taints = pool_config.get("taints", [])
+        has_reservation = (
+            reservation_affinity.get("key") == "compute.googleapis.com/reservation-name"
+            and len(reservation_affinity.get("values", [])) > 0
+        )
+        has_spot = any(
+            taint.get("key") == "cloud.google.com/gke-spot"
+            and taint.get("value") == "true"
+            and taint.get("effect") == "NO_SCHEDULE"
+            for taint in taints
+        )
+        logging.info(
+            "Found existing node pool %s with tier %s.\n"
+            "The reservation affinity is: %s\n"
+            "The taints are: %s\n"
+            "has_reservation=%s, has_spot=%s",
+            pool["name"],
+            tier,
+            reservation_affinity,
+            taints,
+            has_reservation,
+            has_spot,
+        )
+        if (str(tier) == "0" and not has_reservation) or (str(tier) != "0" and not has_spot):
+            logging.info(
+                "Since there is a mismatch, we will attempt to delete %s.",
+                pool["name"],
+            )
+            mismatched.append(pool)
+        else:
+            logging.info("Node pool appears to have the right specs.")
+    return mismatched
+
+
+def _pre_provision(cfg, pre_provisioner: NodePoolProvisioner, inner) -> None:
+    """Deletes wrong-tier node pools left by a prior runner, then provisions new ones.
+
+    Used in the NOT_STARTED path for both GKERunnerJob and LWSRunnerJob to ensure the job
+    starts on a node pool matching the current bastion tier.
+
+    Args:
+        cfg: Runner job config with name, project, zone, cluster, retry_interval.
+        pre_provisioner: NodePoolProvisioner to use for provisioning.
+        inner: Inner job instance passed to pre_provisioner.create_for().
+    """
+    tier = os.environ.get("BASTION_TIER", 0)
+    mismatched = _get_mismatched_node_pools(
+        cfg.name, tier, cfg.project, cfg.zone, cfg.cluster, PRE_PROVISIONER_LABEL
+    )
+    pools_to_delete = [pool["name"] for pool in mismatched]
+    if pools_to_delete:
+        logging.info(
+            "Deleting %d wrong-tier node pool(s) before provisioning: %s",
+            len(pools_to_delete),
+            pools_to_delete,
+        )
+        delete_node_pools(
+            pools_to_delete,
+            project=cfg.project,
+            zone=cfg.zone,
+            cluster=cfg.cluster,
+            retry_interval=cfg.retry_interval,
+            wait_timeout=30 * 60 * len(pools_to_delete),
+        )
+    pre_provisioner.create_for(inner)
+
+
 class GKERunnerJob(BaseRunnerJob):
     """Launches and monitors a GKE job via k8s JobSet API."""
 
@@ -657,7 +757,7 @@ class GKERunnerJob(BaseRunnerJob):
                 # Provision node pools for the job to run.
                 provisioning_start = time.perf_counter()
                 if self._pre_provisioner is not None:
-                    self._pre_provisioner.create_for(self._inner)
+                    _pre_provision(cfg, self._pre_provisioner, self._inner)
 
                 self._inner.execute()
                 self._maybe_publish(
@@ -1070,66 +1170,50 @@ class LWSRunnerJob(BaseRunnerJob):
             node_pool_label_key = PRE_PROVISIONER_LABEL
         logging.info("Looking up node pools with label key: %s", node_pool_label_key)
 
-        node_pools_dict = list_node_pools_by_label_key(
-            project=cfg.project, zone=cfg.zone, cluster=cfg.cluster, label_key=node_pool_label_key
+        tier = os.environ.get("BASTION_TIER", 0)
+        mismatched = _get_mismatched_node_pools(
+            cfg.name, tier, cfg.project, cfg.zone, cfg.cluster, node_pool_label_key
         )
-        node_pools = node_pools_dict.get(cfg.name, [])
-        logging.info("Found %d node pool(s) for %s", len(node_pools), cfg.name)
-        if len(node_pools) == 0:
-            logging.info("Could not infer node pool, skipping delete.")
-            return
-        node_pools_to_delete = []
-        for node_pool in node_pools:
-            node_pool_config = node_pool.get("config", {})
-            reservation_affinity = node_pool_config.get("reservationAffinity", {})
-            taints = node_pool_config.get("taints", [])
-            tier = os.environ.get("BASTION_TIER", 0)
-            has_reservation = (
-                reservation_affinity.get("key") == "compute.googleapis.com/reservation-name"
-                and len(reservation_affinity.get("values", [])) > 0
-            )
-            has_spot = any(
-                taint.get("key") == "cloud.google.com/gke-spot"
-                and taint.get("value") == "true"
-                and taint.get("effect") == "NO_SCHEDULE"
-                for taint in taints
-            )
-            logging.info(
-                "Found existing node pool %s with tier %s.\n"
-                "The reservation affinity is: %s\n"
-                "The taints are: %s\n"
-                "has_reservation=%s, has_spot=%s",
-                node_pool["name"],
-                tier,
-                reservation_affinity,
-                taints,
-                has_reservation,
-                has_spot,
-            )
-            if (str(tier) == "0" and not has_reservation) or (str(tier) != "0" and not has_spot):
-                logging.info(
-                    "Since there is a mismatch, we will attempt to delete %s.",
-                    node_pool["name"],
-                )
-                node_pools_to_delete.append(node_pool["name"])
-            else:
-                logging.info("Node pool appears to have the right specs.")
-        if len(node_pools_to_delete) > 0:
+        pools_to_delete = [pool["name"] for pool in mismatched]
+        if pools_to_delete:
             start_time = time.perf_counter()
-            delete_node_pools(
-                node_pools_to_delete,
-                project=cfg.project,
-                zone=cfg.zone,
-                cluster=cfg.cluster,
-                retry_interval=cfg.retry_interval,
-                wait_timeout=30 * 60 * len(node_pools_to_delete),
-            )
+            self._delete_node_pools(pools_to_delete)
             elapsed_time = time.perf_counter() - start_time
-            logging.info(
-                "Node pools %s deletion took %s seconds", node_pools_to_delete, elapsed_time
-            )
+            logging.info("Node pools %s deletion took %s seconds", pools_to_delete, elapsed_time)
         else:
             logging.info("No node pools require deletion.")
+
+    def _delete_node_pools(self, pools: list[str]):
+        """Deletes the given node pools using job config parameters."""
+        cfg: LWSRunnerJob.Config = self.config
+        delete_node_pools(
+            pools,
+            project=cfg.project,
+            zone=cfg.zone,
+            cluster=cfg.cluster,
+            retry_interval=cfg.retry_interval,
+            wait_timeout=30 * 60 * len(pools),
+        )
+
+    def _start(self):
+        """Waits for bundling, cleans up wrong-tier pools, and submits the LWS.
+
+        Raises:
+            RuntimeError: If bundling failed and the job should be aborted.
+        """
+        cfg: LWSRunnerJob.Config = self.config
+        # pylint: disable-next=protected-access
+        image_id = self._inner._builder.config.image_id
+        # Note: while the wait is blocking, the bastion will kill the runner process
+        # when it needs to reschedule.
+        self._bundler.wait_until_finished(image_id or cfg.name)
+
+        # Before provisioning, remove any wrong-tier node pools left by a prior runner,
+        # then provision new ones for the job to run.
+        if self._pre_provisioner is not None:
+            _pre_provision(cfg, self._pre_provisioner, self._inner)
+
+        self._inner.execute()
 
     def _execute(self):
         cfg: LWSRunnerJob.Config = self.config
@@ -1155,21 +1239,11 @@ class LWSRunnerJob(BaseRunnerJob):
                 self._reschedule()
             elif status == LWSRunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
-                # pylint: disable-next=protected-access
-                image_id = self._inner._builder.config.image_id
                 try:
-                    # Note: while the wait is blocking, the bastion will kill the runner process
-                    # when it needs to reschedule.
-                    self._bundler.wait_until_finished(image_id or cfg.name)
-                except RuntimeError as e:
-                    logging.error("Bundling failed: %s. Aborting the job.", e)
+                    self._start()
+                except RuntimeError:
+                    logging.exception("Failed to start job. Aborting.")
                     return
-
-                # Provision node pools for the job to run.
-                if self._pre_provisioner is not None:
-                    self._pre_provisioner.create_for(self._inner)
-
-                self._inner.execute()
             else:
                 # Ensure VertexAI Tensorboard Uploader is running.
                 if self._tb_uploader:

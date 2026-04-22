@@ -221,17 +221,23 @@ class GPUGKERunnerJobTest(parameterized.TestCase):
             bundler=mock.create_autospec(Bundler)
         )
 
-        with mock.patch.multiple(
-            job,
-            _get_status=mock.Mock(
-                side_effect=[
-                    runner_gke.GKERunnerJob.Status.NOT_STARTED,
-                    runner_gke.GKERunnerJob.Status.COMPLETED,
-                ]
+        with (
+            mock.patch.multiple(
+                job,
+                _get_status=mock.Mock(
+                    side_effect=[
+                        runner_gke.GKERunnerJob.Status.NOT_STARTED,
+                        runner_gke.GKERunnerJob.Status.COMPLETED,
+                    ]
+                ),
+                _delete=mock.DEFAULT,
+                _inner=mock.DEFAULT,
+                _pre_provisioner=mock.DEFAULT,
             ),
-            _delete=mock.DEFAULT,
-            _inner=mock.DEFAULT,
-            _pre_provisioner=mock.DEFAULT,
+            mock.patch(
+                f"{runner_gke.__name__}._get_mismatched_node_pools",
+                return_value=[],
+            ),
         ):
             job._inner._builder.config.image_id = None
             job._execute()
@@ -1232,6 +1238,12 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     _pre_provisioner=mock.DEFAULT,
                 )
             )
+            stack.enter_context(
+                mock.patch(
+                    f"{runner_gke.__name__}._get_mismatched_node_pools",
+                    return_value=[],
+                )
+            )
             job._inner._builder.config.image_id = image_id
             job._execute()
 
@@ -2019,6 +2031,96 @@ class LWSRunnerJobTest(parameterized.TestCase):
             job._reschedule()
 
         mock_delete.assert_not_called()
+
+    def test_not_started_deletes_wrong_tier_non_running_pool(self):
+        """Tests that NOT_STARTED branch deletes a non-RUNNING wrong-tier pool before create_for."""
+        cfg = self._job_config(
+            command="",
+            name="test-name",
+            cluster="test-cluster",
+            enable_pre_provisioner=True,
+        )
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
+
+        # Pool object returned by _get_mismatched_node_pools with PROVISIONING status.
+        mismatched_pool = {"name": "test-name-pool0", "status": "PROVISIONING"}
+        mock_mismatched = mock.Mock(return_value=[mismatched_pool])
+        mock_delete = mock.Mock()
+
+        with (
+            mock.patch.multiple(
+                job,
+                _get_status=mock.Mock(
+                    side_effect=[
+                        runner_gke.LWSRunnerJob.Status.NOT_STARTED,
+                        runner_gke.LWSRunnerJob.Status.FAILED,
+                    ]
+                ),
+                _inner=mock.DEFAULT,
+                _pre_provisioner=mock.DEFAULT,
+            ),
+            mock.patch(
+                f"{runner_gke.__name__}._get_mismatched_node_pools",
+                mock_mismatched,
+            ),
+            mock.patch(
+                f"{runner_gke.__name__}.delete_node_pools",
+                mock_delete,
+            ),
+            mock.patch.dict("os.environ", {"BASTION_TIER": "0"}),
+        ):
+            job._execute()
+
+        mock_delete.assert_called_once()
+        args, _ = mock_delete.call_args
+        self.assertIn("test-name-pool0", args[0])
+
+    def test_not_started_deletes_running_wrong_tier_pool(self):
+        """Tests that NOT_STARTED branch deletes a RUNNING wrong-tier pool before create_for."""
+        cfg = self._job_config(
+            command="",
+            name="test-name",
+            cluster="test-cluster",
+            enable_pre_provisioner=True,
+        )
+        job: LWSRunnerJob = cfg.set(status_interval_seconds=0).instantiate(
+            bundler=mock.create_autospec(Bundler)
+        )
+
+        # Pool object returned by _get_mismatched_node_pools with RUNNING status.
+        mismatched_pool = {"name": "test-name-pool0", "status": "RUNNING"}
+        mock_mismatched = mock.Mock(return_value=[mismatched_pool])
+        mock_delete = mock.Mock()
+
+        with (
+            mock.patch.multiple(
+                job,
+                _get_status=mock.Mock(
+                    side_effect=[
+                        runner_gke.LWSRunnerJob.Status.NOT_STARTED,
+                        runner_gke.LWSRunnerJob.Status.FAILED,
+                    ]
+                ),
+                _inner=mock.DEFAULT,
+                _pre_provisioner=mock.DEFAULT,
+            ),
+            mock.patch(
+                f"{runner_gke.__name__}._get_mismatched_node_pools",
+                mock_mismatched,
+            ),
+            mock.patch(
+                f"{runner_gke.__name__}.delete_node_pools",
+                mock_delete,
+            ),
+            mock.patch.dict("os.environ", {"BASTION_TIER": "0"}),
+        ):
+            job._execute()
+
+        mock_delete.assert_called_once()
+        args, _ = mock_delete.call_args
+        self.assertIn("test-name-pool0", args[0])
 
     def test_name_alias(self):
         """Tests that names set via flag aliases are retained."""
