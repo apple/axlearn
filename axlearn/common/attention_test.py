@@ -1820,6 +1820,75 @@ class QKVLinearTest(TestCase):
                 # Check that the outputs are close for all pairs.
                 self.assertNestedAllClose(outputs[layer_a], outputs[layer_b])
 
+    @parameterized.parameters(
+        dict(use_roformer=False),  # Direct QLinear.
+        dict(use_roformer=True),  # QLinear wrapped inside RoFormerQKVLinear.
+    )
+    def test_qlinear_kv_sharing(self, use_roformer: bool):
+        """init_states and extend_step must produce the same cache tree for KV-sharing layers.
+
+        KV-sharing layers (QLinear) should not allocate kv_cache in init_states,
+        matching extend_step which skips kv_cache for these layers.
+        Tests both direct QLinear and QLinear wrapped inside RoFormerQKVLinear.
+        """
+        batch_size, seq_len, input_dim, num_heads, hidden_dim = 2, 8, 16, 2, 32
+        num_layers = 2
+
+        cfg = _StackedTransformerLayerWithKVState.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            num_layers=num_layers,
+            layer=[],
+        )
+        for i in range(num_layers):
+            layer_cfg = TransformerLayer.default_config()
+            layer_cfg.self_attention.attention.num_heads = num_heads
+            layer_cfg.feed_forward.hidden_dim = hidden_dim
+            if i == 1:
+                if use_roformer:
+                    layer_cfg.self_attention.attention.input_linear = (
+                        RoFormerQKVLinear.default_config().set(
+                            input_linear=QLinear.default_config(),
+                            rotary_value=False,
+                        )
+                    )
+                else:
+                    layer_cfg.self_attention.attention.input_linear = QLinear.default_config()
+            cfg.layer.append(layer_cfg)
+
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        init_cache = layer.init_states(batch_size=batch_size, max_len=seq_len, dtype=jnp.float32)
+
+        # KV-sharing layer should not have kv_cache.
+        self.assertIn("kv_cache", init_cache[0]["self_attention"]["attention"])
+        self.assertNotIn("kv_cache", init_cache[1]["self_attention"]["attention"])
+
+        # extend_step tree must match init_states tree.
+        data = jax.random.normal(jax.random.PRNGKey(1), (batch_size, seq_len, input_dim))
+        (extend_cache, _), _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            state=state,
+            inputs=dict(
+                cached_states=init_cache,
+                data=data,
+                is_prefill=True,
+                return_aux={"self_attention_kv_state"},
+            ),
+            method="extend_step",
+        )
+        init_paths = sorted(
+            "/".join(str(p) for p in path)
+            for path, _ in jax.tree_util.tree_leaves_with_path(init_cache)
+        )
+        extend_paths = sorted(
+            "/".join(str(p) for p in path)
+            for path, _ in jax.tree_util.tree_leaves_with_path(extend_cache)
+        )
+        self.assertEqual(init_paths, extend_paths)
+
 
 class PerDimScaleTest(TestCase):
     """Tests PerDimScale."""
@@ -5381,6 +5450,73 @@ class StackedTransformerTest(BaseTransformerTest):
             ),
             shapes(outputs),
         )
+
+    @parameterized.parameters(
+        dict(use_roformer=False),  # Direct QLinear.
+        dict(use_roformer=True),  # QLinear wrapped inside RoFormerQKVLinear.
+    )
+    def test_kv_sharing(self, use_roformer: bool):
+        """init_states and extend_step must return the same cache tree for KV-sharing layers."""
+        batch_size, seq_len, input_dim, num_heads, hidden_dim = 2, 8, 16, 2, 32
+        num_layers = 2
+
+        cfg = _StackedTransformerLayerWithKVState.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            num_layers=num_layers,
+            layer=[],
+        )
+        for i in range(num_layers):
+            layer_cfg = TransformerLayer.default_config()
+            layer_cfg.self_attention.attention.num_heads = num_heads
+            layer_cfg.feed_forward.hidden_dim = hidden_dim
+            if i == 1:
+                if use_roformer:
+                    layer_cfg.self_attention.attention.input_linear = (
+                        RoFormerQKVLinear.default_config().set(
+                            input_linear=QLinear.default_config(),
+                            rotary_value=False,
+                        )
+                    )
+                else:
+                    layer_cfg.self_attention.attention.input_linear = QLinear.default_config()
+            cfg.layer.append(layer_cfg)
+
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+
+        # init_states tree.
+        init_cache = layer.init_states(batch_size=batch_size, max_len=seq_len, dtype=jnp.float32)
+
+        # extend_step(is_prefill=True) tree.
+        data = jax.random.normal(jax.random.PRNGKey(1), (batch_size, seq_len, input_dim))
+        (extend_cache, _), _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            state=state,
+            inputs=dict(
+                cached_states=init_cache,
+                data=data,
+                is_prefill=True,
+                return_aux={"self_attention_kv_state"},
+            ),
+            method="extend_step",
+        )
+
+        init_paths = sorted(
+            "/".join(str(p) for p in path)
+            for path, _ in jax.tree_util.tree_leaves_with_path(init_cache)
+        )
+        extend_paths = sorted(
+            "/".join(str(p) for p in path)
+            for path, _ in jax.tree_util.tree_leaves_with_path(extend_cache)
+        )
+        self.assertEqual(init_paths, extend_paths)
+
+        # KV-sharing layer (index 1) should NOT have kv_cache.
+        self.assertNotIn("kv_cache", init_cache[1]["self_attention"]["attention"])
+        self.assertNotIn("kv_cache", extend_cache[1]["self_attention"]["attention"])
 
     def test_stack_vs_repeat(self):
         self._compare_layers(StackedTransformerLayer, RepeatedTransformerLayer)

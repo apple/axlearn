@@ -690,7 +690,6 @@ class Decoder(BaseLayer):
         Returns:
             See `BaseDecoder.prefill_states` for details.
         """
-        cfg = self.config
         validate_contains_paths(input_batch, paths=["input_ids"])
         input_ids: Tensor = input_batch["input_ids"]
         if "input_segment_ids" in input_batch:
@@ -724,8 +723,6 @@ class Decoder(BaseLayer):
             is_prefill=True,
             **kwargs,
         )
-        if cfg.attention_mask is not None:
-            states["input_ids"] = input_ids
         return states, outputs
 
     def extend_step(

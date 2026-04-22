@@ -1922,16 +1922,24 @@ class MultiheadAttention(BaseLayer):
             ValueError: If `mode` is unsupported.
         """
         cfg: MultiheadAttention.Config = self.config
-        has_external_kv_state = kv_state is not None
+        kv_sharing = _has_kv_sharing(cfg.input_linear)
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 f"key and value must be both None or both set, key:{type(key)}, value:{type(value)}"
             )
-        if has_external_kv_state:  # KV cache sharing branch.
+        if kv_sharing:
+            if kv_state is None:
+                raise ValueError("kv_state must be provided for KV sharing (QLinear) layers.")
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
-            # Note: self.i_proj must be QLinear, and KVCache must be no-op.
+            kv_kwargs = dict(kv_state=kv_state)
+        elif kv_state is not None:
+            # TODO(axlearn-dev): remove this branch if possible.
+            # Non-sharing layers that accept external kv_state (e.g. QKVLinearWithExternalKVState)
+            # merge it with locally computed KV.
+            if key is not None or value is not None:
+                raise ValueError("kv_state should not be specified together with key/value")
             kv_kwargs = dict(kv_state=kv_state)
         elif key is not None:
             if mode == ForwardMode.EXTEND_STEP:
@@ -1959,7 +1967,7 @@ class MultiheadAttention(BaseLayer):
         v_proj = maybe_shard(v_proj, cfg.v_partition_spec or cfg.q_partition_spec)
 
         if cfg.scale_kv_before_cache_update:
-            if has_external_kv_state:
+            if kv_sharing:
                 # TODO(hanzhi-zhou): Relax this restriction. Some KV sharing models support this if
                 # KV-shared layers don't have their own KV normalization layers.
                 raise ValueError(
@@ -1987,7 +1995,7 @@ class MultiheadAttention(BaseLayer):
                 jnp.sum(segment_ids != 0, axis=-1) if segment_ids is not None else q_proj.shape[1]
             )
             new_cached_states = dict(time_step=time_step + step_len)
-            if not has_external_kv_state:
+            if not kv_sharing:
                 # In prefill, init_states already called self.kv_cache.init_states.
                 new_cached_states["kv_cache"], kv_cache_output = self.kv_cache.extend_step(
                     cached_states["kv_cache"],
@@ -2214,7 +2222,7 @@ class MultiheadAttention(BaseLayer):
         """
         cfg = self.config
         time_step = jnp.zeros([batch_size], dtype=jnp.int32)
-        if issubclass(cfg.input_linear.klass, QLinear):
+        if _has_kv_sharing(cfg.input_linear):
             return dict(time_step=time_step)
 
         kv_shape = KVCache.Shape(
@@ -2300,6 +2308,19 @@ class MultiheadAttention(BaseLayer):
         """The config for the default function used to compute the key scale."""
 
         return config_for_function(constant_scale_fn).set(value=1)
+
+
+def _has_kv_sharing(input_linear_cfg: BaseQKVLinear.Config) -> bool:
+    """Check if input_linear config uses KV sharing (QLinear), recursively."""
+    assert isinstance(input_linear_cfg, BaseQKVLinear.Config), type(input_linear_cfg)
+    if isinstance(input_linear_cfg, QLinear.Config):
+        return True
+    # Handles wrappers like RoFormerQKVLinear that wrap QLinear via an `input_linear` field.
+    inner = getattr(input_linear_cfg, "input_linear", None)
+    if inner is None:
+        return False
+    assert isinstance(inner, BaseQKVLinear.Config), type(inner)
+    return _has_kv_sharing(inner)
 
 
 def compute_gqa_logits(q_proj: Tensor, k_proj: Tensor) -> Tensor:
