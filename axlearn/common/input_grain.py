@@ -155,6 +155,7 @@ def array_record_dataset(
     *,
     data_source_cls: type[grain.ArrayRecordDataSource] = grain.ArrayRecordDataSource,
     seed: Optional[int],
+    **data_source_cls_args: Any,
 ) -> Dataset:
     """Builds an ArrayRecord dataset.
 
@@ -167,11 +168,12 @@ def array_record_dataset(
             pass `FileInstruction`s.
         data_source_cls: A class reference to a subclass of ArrayRecordDataSource.
         seed: Seed for any downstream transformations (e.g. `shuffle` or `random_map`).
+        **data_source_cls_args: Additional keyword arguments forwarded to `data_source_cls`.
 
     Returns:
         An ArrayRecord dataset.
     """
-    source = data_source_cls(paths)
+    source = data_source_cls(paths, **data_source_cls_args)
     ds = grain.MapDataset.source(source)
     if seed is not None:
         ds = ds.seed(seed)
