@@ -576,33 +576,42 @@ class GKERunnerJob(BaseRunnerJob):
                     statuses[status] += job.get(status, 0)
             logging.info("Statuses: %s", statuses)
 
-            # The job can enter PENDING state in a few different ways:
-            # 1. If any slice fails, and we're waiting on jobset to retry, we consider the job
-            #     PENDING. Note that if jobset fails overall, it'll show up in the "conditions"
-            #     above.
-            # 2. If all replicated job statuses above report 0, none of the jobs have started.
-            if (retryable_failure := statuses.get("failed", 0)) or all(
-                v == 0 for v in statuses.values()
-            ):
-                if retryable_failure:
-                    logging.info("One or more child jobs failed, waiting for jobset to retry.")
-                # Take this opportunity to reschedule if needed.
-                if runner_utils.should_recreate_job(
-                    tier,
-                    reservation,
-                    processor_type=processor_type,
-                    is_pending=True,
-                ):
-                    return GKERunnerJob.Status.RESCHEDULED
-                return GKERunnerJob.Status.PENDING
-
-            # Return status if all replicas agree.
+            # Return status if all replicas are accounted for and none have failed.
+            # Note: "failed" in replicatedJobsStatus is retryable — jobset automatically retries
+            # failed replicas. Once all retries are exhausted, jobset sets a top-level condition
+            # (Completed/Failed), which is already handled by the conditions loop above.
             total_job_count = _infer_job_count(resp["spec"])
-            for status, count in statuses.items():
-                # TODO(markblee): Fix this by refactoring _get_status to inner.
-                # By doing so, we can also get rid of the other GKERunnerJob subclasses.
-                if count == total_job_count:
-                    return GKERunnerJob.Status[status.upper()]
+            if (
+                total_job_count
+                and sum(statuses.values()) == total_job_count
+                and not statuses.get("failed", 0)
+            ):
+                # All replicas agree on a single non-failed status (e.g. all READY/SUCCEEDED).
+                for status, count in statuses.items():
+                    if status != "failed" and count == total_job_count:
+                        return GKERunnerJob.Status[status.upper()]
+                # Mixed ready/succeeded: some replicas done, others still running.
+                if statuses.get("ready", 0):
+                    return GKERunnerJob.Status.READY
+                # Unreachable: sum==total with no failed and no ready implies all succeeded,
+                # which the all-agree loop above would have already returned.
+                raise RuntimeError(f"Unexpected replicatedJobsStatus: {statuses}")
+
+            # The job can enter PENDING state in a few different ways:
+            # 1. Not all replicas are accounted for yet (e.g. Active but not yet Ready).
+            # 2. Partial degradation: replicas dropped without being formally marked failed.
+            # 3. Some replicas failed and jobset is retrying.
+            if statuses.get("failed", 0):
+                logging.info("One or more child jobs failed, waiting for jobset to retry.")
+            # Take this opportunity to reschedule if needed.
+            if runner_utils.should_recreate_job(
+                tier,
+                reservation,
+                processor_type=processor_type,
+                is_pending=True,
+            ):
+                return GKERunnerJob.Status.RESCHEDULED
+            return GKERunnerJob.Status.PENDING
         except k8s.client.exceptions.ApiException as e:
             if e.status == 404:
                 return GKERunnerJob.Status.NOT_STARTED

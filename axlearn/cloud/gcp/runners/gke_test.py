@@ -696,6 +696,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
             ),
             # Number of replicated job statuses do not match slices.
+            # One ready but spec has no replicas count: treated as pending (partial degradation).
             GetStatusTestConfig(
                 tier=None,
                 job_version=None,
@@ -706,7 +707,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 ),
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"])),
                 num_slices=2,
-                expected=runner_gke.GKERunnerJob.Status.UNKNOWN,
+                expected=runner_gke.GKERunnerJob.Status.PENDING,
             ),
             # All replicated jobs succeeded. No need to wait for jobset conditions.
             GetStatusTestConfig(
@@ -913,6 +914,90 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 metadata={"annotations": {}},
                 topology_assignment='[["slice1", "slice2"]]',
                 expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
+            ),
+            # Partial degradation (ready=7/8, tier promoted): treated as pending → RESCHEDULED.
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=7, failed=0, succeeded=0)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
+            ),
+            # Partial degradation without tier mismatch: returns PENDING (not UNKNOWN).
+            GetStatusTestConfig(
+                tier=None,
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=7, failed=0, succeeded=0)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.PENDING,
+            ),
+            # All failed (retryable): still PENDING/RESCHEDULED, not FAILED.
+            GetStatusTestConfig(
+                tier=None,
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=0, failed=8, succeeded=0)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.PENDING,
+            ),
+            # Fully running (ready == total): READY, not PENDING.
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=8, failed=0, succeeded=0)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.READY,
+            ),
+            # Mixed ready/succeeded (some done, some still running): READY, not PENDING.
+            GetStatusTestConfig(
+                tier=None,
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=7, succeeded=1, failed=0)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.READY,
+            ),
+            # Mixed ready/succeeded with tier mismatch: READY, not RESCHEDULED. The job is
+            # actively running so we don't interrupt it even if the tier changed.
+            GetStatusTestConfig(
+                tier="0",
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=7, succeeded=1, failed=0)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.READY,
+            ),
+            # Mixed ready/succeeded/failed: failed gate excludes the sum==total branch,
+            # so the job falls through to PENDING/RESCHEDULED.
+            GetStatusTestConfig(
+                tier=None,
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=4, succeeded=3, failed=1)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.PENDING,
+            ),
+            # Some replicas in Active state (not tracked): sum < total, treated as PENDING.
+            # This mirrors the original weiwei concern: Active=6, Ready=0, Succeeded=1.
+            GetStatusTestConfig(
+                tier=None,
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=0, succeeded=1, failed=0)]),
+                spec=dict(replicatedJobs=_mock_replicated_jobs(["spot"], num_replicas=8)),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.PENDING,
+            ),
+            # Empty replicatedJobs list: total_job_count=0 should not match zero counts.
+            GetStatusTestConfig(
+                tier=None,
+                job_version=None,
+                status=dict(replicatedJobsStatus=[dict(ready=0, failed=0, succeeded=0)]),
+                spec=dict(replicatedJobs=[]),
+                num_slices=1,
+                expected=runner_gke.GKERunnerJob.Status.PENDING,
             ),
         ),
         enable_pre_provisioner=(None, False, True),
