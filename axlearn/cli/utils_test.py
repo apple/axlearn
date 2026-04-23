@@ -8,9 +8,8 @@ import tempfile
 from io import StringIO
 from unittest import mock
 
-import pytest
 from absl.flags import FlagValues, argparse_flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cli.utils import CommandGroup, CommandType, _insert_flags, absl_main
 
@@ -57,7 +56,7 @@ class TestUtils(parameterized.TestCase):
 
     def setUp(self):
         if not shutil.which(self.root_module):
-            pytest.skip(f"CLI {self.root_module} has not been installed -- skipping tests.")
+            self.skipTest(f"CLI {self.root_module} has not been installed -- skipping tests.")
 
     def test_basic(self):
         # Test that invoking an invalid command group or command exits with error.
@@ -403,3 +402,7 @@ class TestUtils(parameterized.TestCase):
                 self.assertEqual(
                     self.root_module, mock_popen.call_args[1]["env"]["AXLEARN_CLI_NAME"]
                 )
+
+
+if __name__ == "__main__":
+    absltest.main()

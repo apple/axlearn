@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.attention_bias import causal_mask
 from axlearn.common.flash_attention.common import ReferenceMHA
@@ -102,3 +102,7 @@ class PagedAttentionKernelTest(TestCase):
             atol=atol,
             rtol=rtol,
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

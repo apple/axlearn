@@ -4,12 +4,12 @@
 # pylint: disable=protected-access
 
 import contextlib
+import unittest
 from collections.abc import Sequence
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
-import pytest
 from absl.testing import absltest, parameterized
 
 from axlearn.audio.spectrum_augmenter import MaskSampler, SpectrumAugmenter
@@ -209,7 +209,7 @@ class SpectrumAugmenterTest(TestCase):
         ],
         input_shape=[(4, 32, 16, 1)],
     )
-    @pytest.mark.skip(reason="Comment out to run manually.")
+    @unittest.skip("Comment out to run manually.")
     def test_visualize(self, input_shape: Sequence[int], **kwargs):
         inputs = jnp.ones(input_shape)
         paddings = jnp.zeros([input_shape[0], input_shape[1]], jnp.bool)

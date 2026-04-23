@@ -3,7 +3,7 @@
 """Tests common GPT trainer utils."""
 
 import jax
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.config import config_for_function
 from axlearn.common.input_fake import fake_text_source
@@ -58,3 +58,7 @@ class TrainerConfigTest(TestCase):
                 self.assertNotIn(axis, visited)
                 visited.add(axis)
             self.assertGreater(len(visited), 0)
+
+
+if __name__ == "__main__":
+    absltest.main()

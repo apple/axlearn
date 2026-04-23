@@ -13,7 +13,7 @@ os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 # pylint: enable=wrong-import-position
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.ad_checkpoint import checkpoint_policies
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
@@ -230,3 +230,7 @@ class TestFlashAttentionRemat(TestCase):
                     str(jax.jit(remat).lower(params, inputs).as_text("hlo")).count(" dot("),
                     no_remat_dots_count,
                 )
+
+
+if __name__ == "__main__":
+    absltest.main()

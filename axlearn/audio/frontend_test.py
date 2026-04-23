@@ -82,7 +82,7 @@ class LogMelFrontendTest(parameterized.TestCase, tf.test.TestCase):
     @pytest.mark.fp64
     def test_against_ref(self, frame_size_ms, hop_size_ms, pre_emphasis, sample_rate):
         if sample_rate == 24_000 and frame_size_ms == 31.9375:
-            pytest.skip(reason="ms_to_samples is not integer in the case.")
+            self.skipTest("ms_to_samples is not integer in the case.")
         batch_size, max_seconds = 4, 13
         num_filters = 80
 
