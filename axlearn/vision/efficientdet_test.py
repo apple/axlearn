@@ -3,7 +3,7 @@
 """Tests EfficientDet layers."""
 import jax.random
 import numpy as np
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import flatten_items
@@ -324,3 +324,7 @@ class EfficientDetTest(parameterized.TestCase):
             total_num_params += param.size
 
         self.assertEqual(expected_num_params[efficientdet_variant], total_num_params)
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -66,3 +66,7 @@ class RoIAlignerTest(absltest.TestCase):
         np.testing.assert_allclose(3 * np.ones((2, 2, 1)), roi_features[0][2])
         np.testing.assert_allclose(4 * np.ones((2, 2, 1)), roi_features[0][3])
         np.testing.assert_allclose(5 * np.ones((2, 2, 1)), roi_features[0][4])
+
+
+if __name__ == "__main__":
+    absltest.main()

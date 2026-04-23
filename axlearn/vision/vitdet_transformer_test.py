@@ -5,7 +5,7 @@ import math
 
 import jax
 import numpy as np
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
@@ -161,3 +161,7 @@ class ViTDetTransformerTest(TestCase):
             state=state,
             inputs=dict(image=as_tensor(inputs)),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()
