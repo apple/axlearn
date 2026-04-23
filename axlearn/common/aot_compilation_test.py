@@ -2,6 +2,8 @@
 
 from typing import cast
 
+from absl.testing import absltest
+
 from axlearn.common import test_utils
 from axlearn.common.aot_compilation import reshape_devices
 from axlearn.common.utils import HybridMeshShape
@@ -42,3 +44,7 @@ class AOTCompilationTest(test_utils.TestCase):
         self.assertEqual(mesh_shape.ici_mesh_shape, (1, 4))
         self.assertEqual(mesh_shape.dcn_mesh_shape, (2, 1))
         self.assertEqual(devices.shape, (2, 4))
+
+
+if __name__ == "__main__":
+    absltest.main()

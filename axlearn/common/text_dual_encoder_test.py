@@ -7,7 +7,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import learner
 from axlearn.common.bert import bert_embedding_config, bert_model_config, bert_transformer_config
@@ -625,3 +625,7 @@ class TestFLOPsLossLayer(TestCase):
             )
 
             self.assertEqual(loss, expected_loss)
+
+
+if __name__ == "__main__":
+    absltest.main()

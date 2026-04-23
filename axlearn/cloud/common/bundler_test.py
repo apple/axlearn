@@ -12,7 +12,7 @@ from unittest import mock
 
 import toml
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common import bundler, config, git_summary
 from axlearn.cloud.common.bundler import BaseTarBundler, Bundler, DockerBundler, get_bundler_config
@@ -425,3 +425,7 @@ class DockerBundlerTest(TestWithTemporaryCWD):
             self.assertEqual(running_from_source, mock_dirty.called)
             self.assertEqual(running_from_source and allow_dirty, to_disk.called)
             self.assertEqual(running_from_source and allow_dirty, to_labels.called)
+
+
+if __name__ == "__main__":
+    absltest.main()

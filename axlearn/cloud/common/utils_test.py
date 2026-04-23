@@ -665,3 +665,7 @@ class FlagConfigurableTest(parameterized.TestCase):
         cfg = NotMapping.default_config()
         with self.assertRaisesRegex(ValueError, "mapping at inner"):
             utils.define_flags(cfg, fv)
+
+
+if __name__ == "__main__":
+    pytest.main()

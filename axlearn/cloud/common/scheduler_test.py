@@ -939,3 +939,7 @@ class TestJobScheduler(parameterized.TestCase):
                 mock_reporter_as_fn.assert_called_once()
             else:
                 mock_reporter_as_fn.assert_not_called()
+
+
+if __name__ == "__main__":
+    absltest.main()

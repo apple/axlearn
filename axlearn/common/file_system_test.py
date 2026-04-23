@@ -268,3 +268,7 @@ class GsTest(TestWithTemporaryCWD):
             fs.glob("gs://axlearn-public/testdata/gcp_test/tmp"),
             tf.io.gfile.glob("gs://axlearn-public/testdata/gcp_test/tmp"),
         )
+
+
+if __name__ == "__main__":
+    pytest.main()

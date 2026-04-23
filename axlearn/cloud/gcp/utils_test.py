@@ -8,7 +8,7 @@ import tempfile
 from unittest import mock
 
 from absl import app
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp import utils
 
@@ -100,3 +100,7 @@ class UtilsTest(parameterized.TestCase):
     def test_load_kube_config_none(self, **kwargs):
         with self.assertRaisesRegex(app.UsageError, "must all be specified"):
             utils.load_kube_config(**kwargs)
+
+
+if __name__ == "__main__":
+    absltest.main()

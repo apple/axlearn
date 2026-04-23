@@ -4,7 +4,7 @@
 
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
 
@@ -138,3 +138,7 @@ class TestQuantizedDotGeneral(TestCase):
             )
             reference = jnp.einsum(*inputs)
             self.assertNestedAllClose(output, reference, atol=0.25, rtol=0.2)
+
+
+if __name__ == "__main__":
+    absltest.main()

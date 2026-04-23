@@ -14,3 +14,7 @@ def test_l2_normalize(shape, axis):
     x = np.random.rand(*shape)
     ref = tf.math.l2_normalize(x, axis)
     assert jnp.allclose(l2_normalize(x, eps=1e-12, axis=axis), ref.numpy())
+
+
+if __name__ == "__main__":
+    pytest.main()

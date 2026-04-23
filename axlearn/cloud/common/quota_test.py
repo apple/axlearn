@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import Sequence
 
 import toml
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.quota import QuotaInfo, get_resource_limits, get_user_projects
 
@@ -121,3 +121,7 @@ class QuotaUtilsTest(parameterized.TestCase):
                 expected,
                 get_user_projects(f.name, user),
             )
+
+
+if __name__ == "__main__":
+    absltest.main()

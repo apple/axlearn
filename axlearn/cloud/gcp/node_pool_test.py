@@ -6,7 +6,7 @@ from typing import Optional
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp import node_pool as node_pool_utils
 from axlearn.cloud.gcp.node_pool import (
@@ -393,3 +393,7 @@ class NodePoolUtilsTest(parameterized.TestCase):
             jobset_namespace=jobset_namespace, jobset_name=jobset_name, index=index
         )
         self.assertEqual(expected, res)
+
+
+if __name__ == "__main__":
+    absltest.main()

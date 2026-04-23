@@ -6,7 +6,7 @@
 from unittest import mock
 
 from absl import flags, logging
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp.measurement import GoodputRecorder
 from axlearn.common import measurement
@@ -517,3 +517,7 @@ class GoodputRecorderTest(parameterized.TestCase):
             with recorder.maybe_monitor_all():
                 pass
             mock_monitor_cls.assert_not_called()
+
+
+if __name__ == "__main__":
+    absltest.main()

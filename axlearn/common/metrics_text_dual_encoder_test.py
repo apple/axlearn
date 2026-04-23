@@ -7,7 +7,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental.pjit import pjit
 
 from axlearn.common.eval_retrieval_test import DummyRetrievalModel
@@ -291,3 +291,7 @@ class TextDualEncoderMetricCalculatorTest(TestCase):
             )
         self.assertNestedAllClose(summaries, expected_metrics)
         self.assertNestedAllClose(summaries_from_similarity_matrix, expected_metrics)
+
+
+if __name__ == "__main__":
+    absltest.main()

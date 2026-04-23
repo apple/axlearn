@@ -303,3 +303,7 @@ class SummaryTest(TestCase):
         bad = ImageSummary(jax.numpy.ones((1, 1)))
         with self.assertRaises(ValueError):
             bad.validate()
+
+
+if __name__ == "__main__":
+    pytest.main()

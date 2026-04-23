@@ -2,7 +2,7 @@
 
 """Tests system characteristics."""
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp import system_characteristics
 
@@ -51,3 +51,7 @@ class SystemCharacteristicsTest(parameterized.TestCase):
     def test_get_host_bounds(self, topology: str, tpu_version: str, expected):
         result = system_characteristics.get_host_bounds(topology, tpu_version)
         self.assertEqual(result, expected)
+
+
+if __name__ == "__main__":
+    absltest.main()

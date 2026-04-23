@@ -8,7 +8,7 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 import numpy as np
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental.pjit import pjit
 
 from axlearn.common.attention_bias import NEG_INF
@@ -447,3 +447,7 @@ class KnnMetricCalculatorTest(TestCase, parameterized.TestCase):
             "num_valid": 3,
         }
         self.assertNestedAllClose(summaries, expected_metrics)
+
+
+if __name__ == "__main__":
+    absltest.main()

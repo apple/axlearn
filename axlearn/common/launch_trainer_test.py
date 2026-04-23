@@ -194,3 +194,9 @@ class GetTrainerConfigTest(TestCase):
 
             # Verify that the pre-existing value was not overridden
             self.assertEqual(cfg.crash_on_hang_timeout_seconds, 5000)
+
+
+if __name__ == "__main__":
+    import pytest
+
+    pytest.main()

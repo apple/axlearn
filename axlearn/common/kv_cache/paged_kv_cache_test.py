@@ -6,7 +6,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.kv_cache.base_kv_cache import KVState
 from axlearn.common.kv_cache.kv_cache import KVCache
@@ -157,3 +157,7 @@ class PagedKVCacheTest(TestCase):
             self.assertNestedEqual(
                 ref_out.v_proj[start_batch:end_batch], test_v_proj[start_batch:end_batch]
             )
+
+
+if __name__ == "__main__":
+    absltest.main()

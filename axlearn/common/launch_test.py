@@ -59,3 +59,9 @@ class TestInitContext(TestCase):
         with mock.patch("importlib.import_module", side_effect=side_effect):
             with _init_context(fv):
                 self.assertEqual(list(expect.values()), actual_specs)
+
+
+if __name__ == "__main__":
+    import pytest
+
+    pytest.main()

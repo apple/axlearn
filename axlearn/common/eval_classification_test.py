@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental.pjit import pjit
 
 from axlearn.common.eval_classification import PrecisionRecallMetricCalculator
@@ -236,3 +236,7 @@ class ClassificationMetricCalculatorTest(parameterized.TestCase):
         )
         for key in summaries.keys():
             assert_allclose(summaries[key], expected_metrics[key])
+
+
+if __name__ == "__main__":
+    absltest.main()

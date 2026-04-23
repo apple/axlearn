@@ -3,7 +3,7 @@
 """Tests utils."""
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from aqt.jax.v2.config import CalibrationMode, DequantMode, DotGeneral, Tensor
 
 from axlearn.common.quantized_dot_general.utils import (
@@ -103,3 +103,7 @@ class TestUtils(TestCase):
                 ),
             )
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

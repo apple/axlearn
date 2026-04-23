@@ -802,3 +802,7 @@ class LmEvalInputTest(TestCase):
         self.assertNestedEqual(
             [{"target_ids": np.array([[4, 5, 6]]), "target_num_bytes": np.array([1])}], actual
         )
+
+
+if __name__ == "__main__":
+    pytest.main()

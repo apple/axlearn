@@ -7,7 +7,7 @@ from unittest.mock import patch
 import chex
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import optimizers, schedule
 from axlearn.common.attention import MultiheadAttention, TransformerFeedForwardLayer
@@ -545,3 +545,7 @@ class GradientMonitorTest(TestCase):
         self.assertLess(
             float(jnp.linalg.norm(grads_2["weight"])), float(jnp.linalg.norm(grads_1["weight"]))
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

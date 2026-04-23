@@ -4,7 +4,7 @@
 from collections.abc import Sequence
 
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.input_ranking import rank_by_value
 from axlearn.common.test_utils import TestCase
@@ -99,3 +99,7 @@ class RankByValueTest(TestCase):
             NotImplementedError, "Only implemented for rank-1 tensors. Got rank-2."
         ):
             rank_by_value(input_key="label", output_key="rank", ascending=True, allow_ties=True)(ds)
+
+
+if __name__ == "__main__":
+    absltest.main()

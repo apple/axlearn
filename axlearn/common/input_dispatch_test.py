@@ -215,3 +215,7 @@ class SpmdInputDispatcherTest(TestCase):
 
             with self.assertRaisesRegex(ValueError, "empty"):
                 cfg.clone(partition_spec=PartitionSpec()).instantiate(parent=None)
+
+
+if __name__ == "__main__":
+    pytest.main()

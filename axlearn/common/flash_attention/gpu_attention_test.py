@@ -525,3 +525,7 @@ def test_cudnn_dropout_determinism():
     for i in range(10):
         chex.assert_trees_all_equal(fn(input_batch), outputs[i])
         chex.assert_trees_all_equal(jax.grad(grad_fn, argnums=(0, 1, 2))(q, k, v, bias), grads[i])
+
+
+if __name__ == "__main__":
+    pytest.main()

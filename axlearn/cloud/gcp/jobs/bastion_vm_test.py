@@ -4,6 +4,7 @@
 # pylint: disable=protected-access
 
 from absl import flags
+from absl.testing import absltest
 
 from axlearn.cloud.gcp.jobs import bastion_vm
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
@@ -21,3 +22,7 @@ class MainTest(TestWithTemporaryCWD):
             self.assertIsNotNone(fv["project"].default)
             self.assertIsNotNone(fv["zone"].default)
             self.assertIsNotNone(fv["env_id"].default)
+
+
+if __name__ == "__main__":
+    absltest.main()

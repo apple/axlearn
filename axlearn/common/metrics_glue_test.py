@@ -234,3 +234,7 @@ class GLUEMetricAccumulatorTest(TestCase):
         actual = metric_accumulator.summaries()
 
         self.assertNestedAllClose(expected, actual)
+
+
+if __name__ == "__main__":
+    pytest.main()

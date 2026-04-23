@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import checkify
 from sklearn.metrics import ndcg_score
 from sklearn.metrics._ranking import _tie_averaged_dcg as sklearn_tie_averaged_dcg
@@ -455,3 +455,7 @@ class CalculateMeanMetricTest(TestCase):
                 categories=jnp.array([0, 1, 0]),
                 query_padding=jnp.array([False, False, False]),
             )
+
+
+if __name__ == "__main__":
+    absltest.main()

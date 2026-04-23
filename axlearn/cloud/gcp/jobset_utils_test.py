@@ -12,7 +12,7 @@ from typing import Optional
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
@@ -1001,3 +1001,7 @@ class TopologyAssignmentTest(TestCase):
             annotations = composite.get_workload_annotations()
             # Both children contribute; annotations will be merged (last wins for same key)
             self.assertIn("tpu-provisioner.cloud.google.com/slice-selection", annotations)
+
+
+if __name__ == "__main__":
+    absltest.main()

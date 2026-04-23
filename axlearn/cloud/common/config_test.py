@@ -9,7 +9,7 @@ from typing import Optional, Union
 from unittest import mock
 
 from absl import app, flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud import ROOT_MODULE_NAME
 from axlearn.cloud.common.config import (
@@ -470,3 +470,7 @@ class CLITest(TestWithTemporaryCWD):
         _assert_get("labels", "['a', 'b']\n")
         _assert_get(None, app.UsageError("Usage: config get <setting_name>"))
         _assert_get("invalid_setting", app.UsageError("Unknown setting invalid_setting."))
+
+
+if __name__ == "__main__":
+    absltest.main()

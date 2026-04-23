@@ -4,7 +4,7 @@
 import contextlib
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.pod_mutator import PodMutator
@@ -978,3 +978,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
 
             self.assertEqual(http_volume_mount, expected_http_cm)
             self.assertEqual(grpc_volume_mount, expected_grpc_cm)
+
+
+if __name__ == "__main__":
+    absltest.main()

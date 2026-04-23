@@ -8,6 +8,7 @@ import time
 from unittest import mock
 
 import tensorflow as tf
+from absl.testing import absltest
 
 from axlearn.common.liveness_monitor import LivenessMonitor, TfSummaryMonitor
 from axlearn.common.test_utils import TestWithTemporaryCWD
@@ -77,3 +78,7 @@ class TfSummaryMonitorTest(TestWithTemporaryCWD):
             self.assertTrue(monitor.started())
             self.assertAlmostEqual(monitor._latest, t0 + 100)
             self.assertTrue(monitor.ping())
+
+
+if __name__ == "__main__":
+    absltest.main()

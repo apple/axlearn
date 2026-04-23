@@ -7,7 +7,7 @@ from datetime import datetime
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
@@ -246,3 +246,7 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
 
             self.assertEqual(num_replicas, mock_construct_node_pool_name.call_count)
             self.assertEqual(1, mock_delete_node_pools.call_count)
+
+
+if __name__ == "__main__":
+    absltest.main()

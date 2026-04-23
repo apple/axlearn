@@ -3,6 +3,7 @@
 """Tests job utilities."""
 
 from absl import flags
+from absl.testing import absltest
 
 from axlearn.cloud.common.job import Job, _with_retry
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -95,3 +96,7 @@ class UtilTest(TestCase):
 
         with self.assertRaisesRegex(ValueError, "Failed"):
             _with_retry(FailN(3), max_tries=2)
+
+
+if __name__ == "__main__":
+    absltest.main()

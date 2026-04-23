@@ -4,7 +4,7 @@
 
 from typing import Union
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp.tpu import (
     infer_tpu_cores,
@@ -55,3 +55,7 @@ class TpuUtilsTest(parameterized.TestCase):
     def test_unknown_tpu_version(self):
         with self.assertRaisesRegex(ValueError, "Unknown TPU version"):
             infer_tpu_version("v5lite-16")
+
+
+if __name__ == "__main__":
+    absltest.main()

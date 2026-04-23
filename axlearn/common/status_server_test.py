@@ -8,6 +8,7 @@ import time
 import urllib.request
 
 import pytest
+from absl.testing import absltest
 
 from axlearn.common import status_server
 from axlearn.common.test_utils import TestCase
@@ -46,3 +47,7 @@ class StatusServerTest(TestCase):
 
         self.assertEqual(exit_info.type, SystemExit)
         self.assertEqual(exit_info.value.code, -1)
+
+
+if __name__ == "__main__":
+    absltest.main()

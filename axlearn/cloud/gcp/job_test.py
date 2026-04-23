@@ -8,7 +8,7 @@ from typing import Optional, cast
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import define_flags, from_flags
@@ -538,3 +538,7 @@ class TPUGKELeaderWorkerSetTest(TestCase):
         )
         self.assertEqual(builder_cfg.name, role_name)
         self.assertEqual(builder_cfg.inner.name, role_name)
+
+
+if __name__ == "__main__":
+    absltest.main()

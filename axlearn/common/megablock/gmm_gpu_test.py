@@ -13,7 +13,7 @@ from typing import Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import lax
 
 from axlearn.common.megablock.ops import gmm as gmm_lib
@@ -370,3 +370,7 @@ class GmmTest(TestCase):
 
         self.assertNestedAllClose(grad_lhs, expected_grad_lhs, atol=atol, rtol=rtol)
         self.assertNestedAllClose(grad_rhs, expected_grad_rhs, atol=atol, rtol=rtol)
+
+
+if __name__ == "__main__":
+    absltest.main()

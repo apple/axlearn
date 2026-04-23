@@ -2,7 +2,7 @@
 
 """Tests VM utilities."""
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp.vm import VmInfo, format_vm_info, get_vm_node_status
 
@@ -54,3 +54,7 @@ class VmUtilsTest(parameterized.TestCase):
             ),
             format_vm_info(vms, metadata=["b"]),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

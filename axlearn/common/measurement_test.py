@@ -6,7 +6,7 @@
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import measurement, measurement_base
 
@@ -50,7 +50,7 @@ class UtilsTest(parameterized.TestCase):
         # Try initializing from another module.
         dict(
             recorder_type=(
-                f"axlearn.experiments.testdata.{__name__.replace(".", "_")}.dummy_recorder:"
+                "axlearn.experiments.testdata.axlearn_common_measurement_test.dummy_recorder:"
                 "dummy_recorder"
             ),
             expected="DummyRecorder",
@@ -119,3 +119,7 @@ class UtilsTest(parameterized.TestCase):
 
         self.assertIsNotNone(measurement.global_recorder)
         self.assertIn("GoodputRecorder", str(type(measurement.global_recorder)))
+
+
+if __name__ == "__main__":
+    absltest.main()

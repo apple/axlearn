@@ -98,3 +98,7 @@ class TestBaseLeaderWorkerTemplatePodMutators:
         cfg = TPULeaderWorkerTemplate.default_config()
         assert hasattr(cfg, "pod_mutators")
         assert not cfg.pod_mutators
+
+
+if __name__ == "__main__":
+    pytest.main()

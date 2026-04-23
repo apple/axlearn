@@ -13,6 +13,7 @@ from typing import Sequence
 
 import jax
 import orbax.checkpoint as ocp
+from absl.testing import absltest
 from jax import numpy as jnp
 from jax.experimental import mesh_utils
 
@@ -78,3 +79,7 @@ class OrbaxCheckpointerTest(test_utils.TestCase):
 
             assert manager.latest_step() == n
             assert manager.all_steps() == [n]
+
+
+if __name__ == "__main__":
+    absltest.main()

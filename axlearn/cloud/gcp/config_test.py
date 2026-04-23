@@ -5,6 +5,7 @@
 import os
 
 from absl import flags
+from absl.testing import absltest
 
 from axlearn.cloud.common import config
 from axlearn.cloud.common.config_test import _setup_fake_repo, create_default_config
@@ -241,3 +242,7 @@ class ConfigTest(TestWithTemporaryCWD):
         # When env_id is not set, it falls back to zone
         self.assertEqual("test-zone", gcp_config.gcp_settings("env_id", fv=flag_values))
         self.assertEqual("test-bucket", gcp_config.gcp_settings("bucket", fv=flag_values))
+
+
+if __name__ == "__main__":
+    absltest.main()

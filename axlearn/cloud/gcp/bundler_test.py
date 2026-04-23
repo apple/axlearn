@@ -5,7 +5,7 @@
 import contextlib
 from unittest import mock
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import BaseDockerBundler, _bundlers, get_bundler_config
 from axlearn.cloud.gcp import bundler
@@ -208,3 +208,7 @@ class CloudBuildBundlerTest(TestCase):
                 ):
                     b.wait_until_finished("test-name")
                 self.assertEqual(2, mock_status.call_count)
+
+
+if __name__ == "__main__":
+    absltest.main()
