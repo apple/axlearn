@@ -7,7 +7,6 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 from absl.testing import absltest, parameterized
 from jax.experimental.pjit import pjit
 
@@ -106,15 +105,13 @@ class TestMinibatchSharding(test_utils.TestCase):
         ("two_steps", 2),
         ("four_steps", 4),
     )
-    @pytest.mark.skipif(
-        jax.device_count() != 4 or jax.process_count() != 1,
-        reason=(
-            "Incorrect device & process count for mesh.\n"
-            "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
-        ),
-    )
     def test_minibatch_partitioner_default(self, steps):
         """Tests grad accumulation with minibatch steps and default minibatch partitioner."""
+        if jax.device_count() != 4 or jax.process_count() != 1:
+            self.skipTest(
+                "Incorrect device & process count for mesh. "
+                "Use XLA_FLAGS=--xla_force_host_platform_device_count=4 to run locally."
+            )
 
         # pylint: disable=too-many-function-args
         with jax.sharding.Mesh(
