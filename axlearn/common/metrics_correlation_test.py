@@ -3,11 +3,12 @@
 """Tests correlation metrics."""
 
 # pylint: disable=no-self-use
+import unittest
+
 import evaluate
 import jax
 import jax.numpy as jnp
-import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from scipy.stats import pearsonr as scipy_pearson_corrcoef
 from scipy.stats import rankdata as scipy_rankdata
 from scipy.stats import spearmanr as scipy_spearman_corrcoef
@@ -48,7 +49,7 @@ class TestMetrics(TestWithTemporaryCWD):
         assert_allclose(expected, actual)
 
     @parameterized.product(batch_size=[100, 500, 1000, 5000, 10000], num_classes=[2, 10, 20, 30])
-    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    @unittest.skip("Intended to be run manually as it requires `evaluate.load`.")
     def test_matthews_corrcoef_hf(self, batch_size, num_classes):
         pred = jax.random.randint(jax.random.PRNGKey(123), [batch_size], 0, num_classes)
         label = jax.random.randint(jax.random.PRNGKey(321), [batch_size], 0, num_classes)
@@ -95,7 +96,7 @@ class TestMetrics(TestWithTemporaryCWD):
         # Test when everything is masked.
         self.assertEqual(pearson_corrcoef(pred, label, weight=jnp.zeros_like(pred)), 0)
 
-    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    @unittest.skip("Intended to be run manually as it requires `evaluate.load`.")
     def test_pearson_corrcoef_hf(self):
         batch_size = 100
         num_classes = 30
@@ -147,7 +148,7 @@ class TestMetrics(TestWithTemporaryCWD):
         actual = jit_spearman_corrcoef(pred, label, mask=mask)
         assert_allclose(expected, actual)
 
-    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    @unittest.skip("Intended to be run manually as it requires `evaluate.load`.")
     def test_spearman_corrcoef_hf(self):
         batch_size = 100
 
@@ -165,3 +166,7 @@ class TestMetrics(TestWithTemporaryCWD):
     def test_pearson_corrcoef_validation(self):
         with self.assertRaisesRegex(ValueError, "shapes should be equal"):
             pearson_corrcoef(jnp.ones(5), jnp.ones(3))
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -10,12 +10,12 @@ To run tests with Weights & Biases writers, run this file with:
 
 import os
 import tempfile
+import unittest
 from enum import Enum
 from unittest import mock
 
 import jax
 import numpy as np
-import pytest
 import tensorflow as tf
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
@@ -127,11 +127,11 @@ class SummaryWriterTest(TestCase):
                         # skip the trainer config one, as it is too long.
                         summaries[summary] = tf.make_ndarray(tensor_event.tensor_proto)
 
+            klass_module = DummyModelForSummaryWriters.__module__
+            klass_name = DummyModelForSummaryWriters.__qualname__
             expected = {
                 "trainer_config/dtype": tf.constant(b"'jax.numpy.float32'"),
-                "trainer_config/klass": tf.constant(
-                    b"'axlearn.common.summary_writer_test.DummyModelForSummaryWriters'"
-                ),
+                "trainer_config/klass": tf.constant(f"'{klass_module}.{klass_name}'".encode()),
                 "trainer_config/layer.bias": tf.constant(b"False"),
                 "trainer_config/layer.input_dim": tf.constant(b"32"),
                 "trainer_config/layer.klass": tf.constant(b"'axlearn.common.layers.Linear'"),
@@ -242,8 +242,8 @@ class WandBWriterTest(TestCase):
         )
 
     @parameterized.product(step=[5, 10, 20, 30, 40])
-    @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
-    @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
+    @unittest.skipIf(wandb is None, "wandb package not installed.")
+    @unittest.skipIf("WANDB_API_KEY" not in os.environ, "wandb api key not found.")
     def test_add_summary(self, step):
         with tempfile.TemporaryDirectory() as tempdir:
             try:
@@ -314,8 +314,8 @@ class WandBWriterTest(TestCase):
                 assert stored_flat_config == flat_config
                 assert stored_config == config
 
-    @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
-    @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
+    @unittest.skipIf(wandb is None, "wandb package not installed.")
+    @unittest.skipIf("WANDB_API_KEY" not in os.environ, "wandb api key not found.")
     def test_resume(self):
         with tempfile.TemporaryDirectory() as tempdir:
             try:
@@ -344,8 +344,8 @@ class WandBWriterTest(TestCase):
             finally:
                 wandb.finish()
 
-    @pytest.mark.skipif(wandb is None, reason="wandb package not installed.")
-    @pytest.mark.skipif("WANDB_API_KEY" not in os.environ, reason="wandb api key not found.")
+    @unittest.skipIf(wandb is None, "wandb package not installed.")
+    @unittest.skipIf("WANDB_API_KEY" not in os.environ, "wandb api key not found.")
     def test_wandb_settings_kwargs(self):
         with tempfile.TemporaryDirectory() as tempdir:
             try:
