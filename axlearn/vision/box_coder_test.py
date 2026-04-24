@@ -105,3 +105,7 @@ class BoxCoderTest(parameterized.TestCase, absltest.TestCase):
         np.testing.assert_allclose(
             jnp.asarray(expected_output), encoded_boxes, rtol=1e-6, atol=1e-6
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

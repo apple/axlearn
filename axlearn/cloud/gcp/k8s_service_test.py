@@ -3,7 +3,7 @@
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import k8s_service
@@ -156,3 +156,7 @@ class GKELWSService(TestCase):
             http_port = next((p for p in ports if p.name == "http"), None)
             self.assertIsNotNone(http_port)
             self.assertIsNone(getattr(http_port, "app_protocol", None))
+
+
+if __name__ == "__main__":
+    absltest.main()

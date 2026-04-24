@@ -3,7 +3,7 @@
 """Test class for device_mon.py."""
 import time
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.config import config_class
 from axlearn.common.monitoring.device_monitor import DeviceMonitor, DeviceMonitorClient
@@ -90,3 +90,7 @@ class TestDeviceMonitor(parameterized.TestCase):
         with device_monitor.start_monitoring():
             time.sleep(0.2)
             self.assertTrue(device_monitor.is_host_idle())
+
+
+if __name__ == "__main__":
+    absltest.main()

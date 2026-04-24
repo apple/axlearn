@@ -330,3 +330,7 @@ class RCNNDetectionMetricTest(absltest.TestCase):
             inputs=dict(outputs=outputs, labels=labels, paddings=paddings),
         )
         np.testing.assert_almost_equal(0.0313 / 3, loss, decimal=4)
+
+
+if __name__ == "__main__":
+    absltest.main()

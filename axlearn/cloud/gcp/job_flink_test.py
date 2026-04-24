@@ -7,7 +7,7 @@ import logging
 from typing import Optional
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import define_flags, from_flags
@@ -552,3 +552,7 @@ class FlinkTPUGKEJobTest(TestCase):
             )
             logging.warning(json.dumps(job_submission, indent=2))
             raise
+
+
+if __name__ == "__main__":
+    absltest.main()

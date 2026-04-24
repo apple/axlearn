@@ -6,7 +6,7 @@ import time
 from unittest import mock, skipIf
 
 import jax
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.monitoring.device_monitor import DeviceMonitor
 from axlearn.common.monitoring.gpu_device_monitor import GPUMonitorClient
@@ -94,3 +94,7 @@ class TestGPUDeviceMonitor(parameterized.TestCase):
         with device_monitor.start_monitoring():
             time.sleep(0.3)
             self.assertTrue(device_monitor.is_host_idle())
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -6,7 +6,7 @@
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp.jobs import logs
 from axlearn.common.test_utils import TestWithTemporaryCWD
@@ -46,3 +46,7 @@ class MainTest(TestWithTemporaryCWD):
                 self.assertIn('timestamp>="start_time"', kwargs["filter_"])
             if end_time:
                 self.assertIn('timestamp<="end_time"', kwargs["filter_"])
+
+
+if __name__ == "__main__":
+    absltest.main()

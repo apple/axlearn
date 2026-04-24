@@ -2,7 +2,7 @@
 
 """Tests runner utils."""
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp.runners import utils as runner_utils
 
@@ -32,3 +32,7 @@ class UtilsTest(parameterized.TestCase):
                 tier, reservation, processor_type=processor_type, is_pending=is_pending
             ),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

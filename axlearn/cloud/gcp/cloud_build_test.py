@@ -5,7 +5,7 @@
 from unittest import mock
 from unittest.mock import MagicMock
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from google.cloud.compute_v1 import ListRegionsRequest, RegionsClient
 from google.cloud.devtools.cloudbuild_v1 import Build, ListBuildsRequest
 
@@ -552,3 +552,7 @@ class CloudBuildTest(TestCase):
         mock_list_builds_in_region.assert_called_once_with(
             project_id=project_id, image_name=image_name, tags=tags, region=region
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

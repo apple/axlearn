@@ -88,3 +88,7 @@ class RPNSamplerTest(absltest.TestCase):
         np.testing.assert_array_less(background_iou, 0.5)
         boxes_close_as_set(rpn_samples.proposal_boxes, proposal_boxes)
         padded_boxes_close_as_set(rpn_samples.groundtruth_boxes, groundtruth_boxes)
+
+
+if __name__ == "__main__":
+    absltest.main()

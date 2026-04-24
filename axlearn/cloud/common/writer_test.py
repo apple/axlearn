@@ -66,3 +66,7 @@ class TfioWriterTest(absltest.TestCase):
                 w.write("line\n")
             # At least 2 output files.
             self.assertGreater(len(os.listdir(temp_dir)), 1)
+
+
+if __name__ == "__main__":
+    absltest.main()

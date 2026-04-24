@@ -255,3 +255,7 @@ class RCNNSamplerTest(absltest.TestCase):
         np.testing.assert_array_equal(
             [[False, False, False, False, False, True, False, True]], rcnn_samples.paddings
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

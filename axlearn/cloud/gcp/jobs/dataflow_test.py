@@ -8,7 +8,7 @@ from typing import Optional, Type, cast
 from unittest import mock
 
 from absl import app, flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, BaseDockerBundler, _bundlers
 from axlearn.cloud.common.utils import canonicalize_to_string, define_flags, from_flags
@@ -217,3 +217,7 @@ class DataflowMainTest(TestWithTemporaryCWD):
         mock_cfg = {"bundler.repo": "a", "bundler.image": "b"}
         with _mock_job(running_from_vm, **mock_cfg):
             main(["cli", "start", "--", "cmd"])
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -194,3 +194,7 @@ class LabelSamplerTest(absltest.TestCase):
         # Jax newer versions have a strong enforcement of shape for == operator.
         np.testing.assert_array_equal(0, np.sum(out_labels == paddings[:, :2]))
         np.testing.assert_array_equal(False, samples.paddings)
+
+
+if __name__ == "__main__":
+    absltest.main()

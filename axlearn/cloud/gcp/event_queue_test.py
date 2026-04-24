@@ -6,6 +6,7 @@ import os
 from unittest import mock
 
 from absl import flags
+from absl.testing import absltest
 
 from axlearn.cloud.common import config
 from axlearn.cloud.common.config_test import _setup_fake_repo, create_default_config
@@ -75,3 +76,7 @@ class EventQueueTest(TestWithTemporaryCWD):
         self.assertEqual(base_queue_client_config.host, "test-host")
         self.assertEqual(base_queue_client_config.port, 8000)
         self.assertEqual(base_queue_client_config.num_tries, 2)
+
+
+if __name__ == "__main__":
+    absltest.main()

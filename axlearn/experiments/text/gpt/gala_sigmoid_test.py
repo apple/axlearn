@@ -3,7 +3,7 @@
 """Tests Gala sigmoid methods."""
 from absl.testing import absltest
 
-from axlearn.common import input_tf_data, utils
+from axlearn.common import input_tf_data
 from axlearn.common.config import config_for_function
 from axlearn.common.test_utils import TestCase
 from axlearn.common.trainer import SpmdTrainer
@@ -26,5 +26,4 @@ class SetConfigTest(TestCase):
 
 
 if __name__ == "__main__":
-    with utils.numeric_checks(True):
-        absltest.main()
+    absltest.main()

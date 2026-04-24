@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import jax
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.monitoring import gpu_client
 
@@ -133,3 +133,7 @@ class TestGPUMetrics(parameterized.TestCase):
         )
 
         self.assertEqual(res, 20.0)
+
+
+if __name__ == "__main__":
+    absltest.main()

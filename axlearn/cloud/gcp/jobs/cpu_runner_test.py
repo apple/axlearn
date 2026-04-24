@@ -13,7 +13,7 @@ import subprocess
 from unittest import mock
 
 from absl import app, flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp import bundler
 from axlearn.cloud.gcp.bundler import GCSTarBundler
@@ -352,3 +352,7 @@ class CPURunnerMainTest(TestWithTemporaryCWD):
             if not running_from_vm:
                 # Bundling should happen if running locally.
                 mock_job.bundler.bundle.assert_called()
+
+
+if __name__ == "__main__":
+    absltest.main()

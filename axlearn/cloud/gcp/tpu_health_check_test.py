@@ -6,7 +6,7 @@ import os
 import tempfile
 from unittest import mock
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.gcp import tpu_health_check_main
 from axlearn.cloud.gcp.tpu_health_check import (
@@ -95,3 +95,7 @@ class TpuUtilsTest(parameterized.TestCase):
             global_health_check("global=180", output_dir=d)
             mock_exit.assert_called_once()
             self._check_failure_file(d, "program error")
+
+
+if __name__ == "__main__":
+    absltest.main()

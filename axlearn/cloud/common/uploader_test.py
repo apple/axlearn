@@ -5,7 +5,7 @@
 
 from unittest import mock
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.common.config import config_for_function
@@ -50,3 +50,7 @@ class UploaderTest(parameterized.TestCase):
             self.assertEqual(mock_proc.terminate.call_count, 1)
             self.assertEqual(mock_proc.join.call_count, 4)
             self.assertIsNone(up._upload_proc)
+
+
+if __name__ == "__main__":
+    absltest.main()

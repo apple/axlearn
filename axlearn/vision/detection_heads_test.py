@@ -3,7 +3,7 @@
 """Tests detection heads."""
 import jax.random
 import numpy as np
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import utils
 from axlearn.common.module import functional as F
@@ -151,3 +151,7 @@ class RPNHeadTest(parameterized.TestCase):
             + norm_param_count
         )
         self.assertEqual(total_param_count, utils.count_model_params(state))
+
+
+if __name__ == "__main__":
+    absltest.main()
