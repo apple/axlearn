@@ -4,7 +4,7 @@
 
 import jax
 import jax.numpy as jnp
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from transformers.models.clip import modeling_clip as hf_clip
 
 from axlearn.common.attention import LearnedPositionalEmbedding
@@ -304,3 +304,7 @@ class HFClipTest(BaseParamConverterTest):
         self.assertIn("self_attention", params)
         self.assertIn("attention", params["self_attention"])
         self.assertIn("kv_cache", params["self_attention"]["attention"])
+
+
+if __name__ == "__main__":
+    absltest.main()

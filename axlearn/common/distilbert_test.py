@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from transformers.models.distilbert import configuration_distilbert as hf_distilbert_config
 from transformers.models.distilbert import modeling_distilbert as hf_distilbert
 
@@ -96,3 +96,7 @@ class TestDistilBertModel(parameterized.TestCase):
         )
 
         assert_allclose(layer_outputs[TEXT_EMBEDDINGS], as_tensor(ref_outputs[0][:, 0:1]))
+
+
+if __name__ == "__main__":
+    absltest.main()

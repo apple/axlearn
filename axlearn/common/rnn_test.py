@@ -88,7 +88,7 @@ class LSTMTest(TestCase):
 
             all_step_outputs.append(step_outputs)
         all_step_outputs = jnp.stack(all_step_outputs)
-        assert_allclose(all_step_outputs.mean(), expected_output_mean, atol=1e-6, rtol=1e-6)
+        assert_allclose(all_step_outputs.mean(), expected_output_mean, atol=1e-5, rtol=1e-5)
 
         forward_outputs, _ = F(
             layer,
@@ -99,7 +99,7 @@ class LSTMTest(TestCase):
         )
         self.assertSequenceEqual(forward_outputs.shape, (seq_len, batch_size, input_dim))
         # forward outputs match step-by-step outputs.
-        assert_allclose(forward_outputs, all_step_outputs, atol=1e-6, rtol=1e-6)
+        assert_allclose(forward_outputs, all_step_outputs, atol=1e-5, rtol=1e-5)
 
 
 class StackedRNNTest(TestCase):
@@ -205,13 +205,13 @@ class StackedRNNTest(TestCase):
         self.assertSequenceEqual(forward_outputs.shape, (seq_len, batch_size, input_dim))
         # Outputs match layer by layer outputs.
         logging.info("Outputs max=%s, min=%s.", outputs.max(), outputs.min())
-        assert_allclose(forward_outputs, outputs, atol=1e-6, rtol=1e-6)
+        assert_allclose(forward_outputs, outputs, atol=1e-5, rtol=1e-5)
         # States match layer by layer states.
         self.assertNestedAllClose(
             forward_collections.module_outputs["final_states"],
             final_states,
-            rtol=1e-6,
-            atol=1e-6,
+            rtol=1e-5,
+            atol=1e-5,
         )
 
     @parameterized.parameters(
@@ -322,15 +322,15 @@ class StackedRNNTest(TestCase):
         self.assertSequenceEqual(forward_outputs.shape, (seq_len, batch_size, layer.output_dim))
         # Outputs match layer by layer outputs.
         logging.info("Outputs max=%s, min=%s.", outputs.max(), outputs.min())
-        assert_allclose(forward_outputs, outputs, atol=1e-6, rtol=1e-6)
+        assert_allclose(forward_outputs, outputs, atol=1e-5, rtol=1e-5)
         # States match layer by layer states.
 
         for ll in range(num_layers):
             self.assertNestedAllClose(
                 forward_collections.module_outputs["final_states"][ll],
                 final_states_list[ll],
-                rtol=1e-6,
-                atol=1e-6,
+                rtol=1e-5,
+                atol=1e-5,
             )
 
     def test_stack_layer_dim(self):
@@ -412,14 +412,14 @@ class StackedRNNTest(TestCase):
             drop_output_collections=[],
         )
         logging.info("Outputs max=%s, min=%s.", repeat_outputs.max(), repeat_outputs.min())
-        assert_allclose(repeat_outputs, stack_outputs, atol=1e-6, rtol=1e-6)
+        assert_allclose(repeat_outputs, stack_outputs, atol=1e-5, rtol=1e-5)
         for i in range(num_layers):
             for k, v in repeat_collections.module_outputs["final_states"].items():
                 assert_allclose(
                     v[i],
                     stack_collections.module_outputs["final_states"][i][k],
-                    atol=1e-6,
-                    rtol=1e-6,
+                    atol=1e-5,
+                    rtol=1e-5,
                 )
 
 

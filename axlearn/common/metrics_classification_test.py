@@ -5,12 +5,12 @@
 # pylint: disable=no-self-use
 # pytype: disable=attribute-error
 import logging
+import unittest
 
 import evaluate
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 from absl.testing import absltest, parameterized
 from jax import nn
 from jax.experimental import checkify
@@ -90,7 +90,7 @@ class TestMetrics(TestWithTemporaryCWD):
         actual = jit_f_score(label, pred, beta=beta, weight=weight)
         assert_allclose(expected, actual)
 
-    @pytest.mark.skip(reason="Intended to be run manually as it requires `evaluate.load`.")
+    @unittest.skip("Intended to be run manually as it requires `evaluate.load`.")
     def test_f_score_hf(self):
         batch_size = 100
         num_classes = 2

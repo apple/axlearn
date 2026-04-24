@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from transformers import DebertaV2Config, DebertaV2ForSequenceClassification
 from transformers.models.deberta_v2 import modeling_deberta_v2 as hf_deberta_v2
 
@@ -682,3 +682,7 @@ class DeBERTaModelTest(TestCase):
             self.assertNestedAllClose(test_outputs["logits"], ref_outputs["logits"])
         elif method == "forward":
             self.assertAlmostEqual(test_outputs[0].item(), ref_outputs["loss"].item(), places=6)
+
+
+if __name__ == "__main__":
+    absltest.main()

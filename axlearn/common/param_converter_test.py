@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 import jax
 import pytest
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from transformers import BertConfig, PreTrainedModel
 from transformers.models.bert import modeling_bert as hf_bert
@@ -1291,3 +1291,7 @@ class T5XModelConverterTest(TestCase):
         self.assertNestedAllClose(
             test_outputs["logits"] * label_mask, testcase["outputs"] * label_mask, atol=self.atol
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

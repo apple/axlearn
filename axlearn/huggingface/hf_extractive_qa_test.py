@@ -6,7 +6,7 @@ import os
 import jax.random
 import numpy as np
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.bert.configuration_bert import BertConfig
@@ -284,3 +284,7 @@ class HfExtractiveQuestionAnsweringWrapperTest(parameterized.TestCase):
         self.assertEqual(
             "pretrained_model_path is required when hf_config is not specified.", str(e.exception)
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

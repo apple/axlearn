@@ -7,7 +7,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 from jax.experimental.pjit import pjit
 
@@ -210,3 +210,7 @@ class HuggingFacePreTrainedBuilderTest(TestCase):
             dict(weight=as_tensor(x.weight.transpose(0, 1)), bias=x.bias),
             output.trainer_state.model,
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -15,7 +15,7 @@ from typing import Optional, Union
 import pytest
 import regex as re
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from transformers import GPT2Tokenizer, PreTrainedTokenizer, RobertaTokenizer
 
 from axlearn.common.input_test_utils import tokenizers_dir
@@ -293,3 +293,7 @@ class BPEVocabularyTest(BaseBPEVocabularyTest):
         ids = vocab.encode_tf(text)
         recovered = vocab._decode_tf(ids)
         self.assertEqual("this is a test", recovered.numpy().decode("utf-8"))
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -6,7 +6,7 @@ from typing import Any, Optional
 import jax
 import numpy as np
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.sharding import Mesh
 
 from axlearn.common.base_layer import BaseLayer
@@ -122,3 +122,7 @@ class TestDeBERTaBuilder(TestCase):
             )
 
             self.assertNestedAllClose(test_outputs, ref_outputs.last_hidden_state, atol=1e-4)
+
+
+if __name__ == "__main__":
+    absltest.main()
