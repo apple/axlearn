@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import jax.random
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax._src.mesh import ResourceEnv, thread_resources
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh
@@ -828,3 +828,7 @@ class RAttentionTest(TestCase):
             assert_allclose(outputs_1.data, outputs_2.data, atol=1e-3)
             # Make sure that the external KV state is passed along unchanged.
             self.assertNestedAllClose(outputs_1.kv_state, outputs_2.kv_state, atol=1e-3)
+
+
+if __name__ == "__main__":
+    absltest.main()

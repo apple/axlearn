@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from transformers import BertConfig, BertModel
 
 from axlearn.common.module import functional as F
@@ -96,3 +96,7 @@ class TestBertStreamEncoderConfig(parameterized.TestCase):
         )
 
         assert_allclose(layer_outputs[POSITIVE_EMBEDDINGS], as_tensor(emb.unsqueeze(1)))
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -14,7 +14,7 @@ import jax
 import jax.random
 import numpy as np
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer
@@ -199,3 +199,7 @@ class SpladePoolingTest(TestCase):
         self.verify_splade_against_ref(
             inputs, splade_layer, paddings=paddings, splade_mode=mode, model_args=model_args
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

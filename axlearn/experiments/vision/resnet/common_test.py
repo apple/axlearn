@@ -2,7 +2,7 @@
 
 """Tests ResNet config builders."""
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import schedule
 from axlearn.common.config import config_for_function
@@ -36,3 +36,7 @@ class ConfigTest(TestCase):
         cfg.set(backbone=ResNet.resnet18_config(), num_classes=100)
         # Make sure we can instantiate.
         cfg.set(name="test").instantiate(parent=None)
+
+
+if __name__ == "__main__":
+    absltest.main()

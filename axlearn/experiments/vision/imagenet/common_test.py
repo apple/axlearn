@@ -2,7 +2,7 @@
 
 """Tests ImageNet configs."""
 
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.test_utils import TestWithTemporaryCWD
 from axlearn.common.utils import set_data_dir
@@ -42,3 +42,7 @@ class InputConfigTest(TestWithTemporaryCWD):
             else:
                 # In the eval case, expect to see only 2 batches.
                 self.assertEqual(num_examples, 2)
+
+
+if __name__ == "__main__":
+    absltest.main()

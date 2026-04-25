@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax._src.mesh import ResourceEnv, thread_resources
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec
@@ -1560,3 +1560,7 @@ class GPUMamba2MixerLayerTest(TestCase):
         torch_output_np = torch_output.cpu().detach().numpy()
 
         assert_allclose(torch_output_np, jax_output_np, atol=1e-2, rtol=1e-2)
+
+
+if __name__ == "__main__":
+    absltest.main()

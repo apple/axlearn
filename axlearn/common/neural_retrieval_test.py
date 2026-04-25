@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from transformers import DPRContextEncoder, DPRQuestionEncoder
 from transformers.models.dpr import modeling_dpr as hf_dpr
 
@@ -142,3 +142,7 @@ class TestDPRContextEncoder(parameterized.TestCase):
         )
 
         assert_allclose(layer_outputs[POSITIVE_EMBEDDINGS], as_tensor(ref_outputs[0].unsqueeze(1)))
+
+
+if __name__ == "__main__":
+    absltest.main()

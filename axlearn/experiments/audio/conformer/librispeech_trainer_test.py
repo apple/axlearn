@@ -2,6 +2,8 @@
 
 """Tests Conformer LibriSpeech configs."""
 
+from absl.testing import absltest
+
 from axlearn.experiments import test_utils
 from axlearn.experiments.audio.conformer import librispeech_trainer
 
@@ -13,3 +15,7 @@ class LibriSpeechTrainerTest(test_utils.TrainerConfigTestCase):
         self._test_with_trainer_config(
             librispeech_trainer.named_trainer_configs()["conformer-test-ctc"](),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

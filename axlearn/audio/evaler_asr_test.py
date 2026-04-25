@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import seqio
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 
 from axlearn.audio.decoder_asr import DecodeOutputs
@@ -318,3 +318,7 @@ class WordErrorRateMetricCalculatorTest(TestCase):
         self.assertNestedAllClose(
             outputs["word_errors/sentence_accuracy"].mean, 0.0  # pytype: disable=attribute-error
         )
+
+
+if __name__ == "__main__":
+    absltest.main()

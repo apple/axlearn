@@ -3,6 +3,7 @@
 """Tests RNN layers."""
 # pylint: disable=no-self-use
 # pytype: disable=name-error
+import jax
 import jax.random
 import pytest
 from absl import logging
@@ -110,6 +111,7 @@ class StackedRNNTest(TestCase):
     )
     @pytest.mark.fp64
     def test_repeat_forward_vs_layerwise(self, norm_cfg, hidden_dim, num_layers):
+        jax.config.update("jax_enable_x64", True)
         batch_size, seq_len, input_dim = 8, 10, 7
         output_dim = input_dim
         layer: RepeatedRNNLayer = (
@@ -227,6 +229,7 @@ class StackedRNNTest(TestCase):
     )
     @pytest.mark.fp64
     def test_stack_forward_vs_layerwise(self, layer_cfgs):
+        jax.config.update("jax_enable_x64", True)
         batch_size, seq_len, input_dim = 8, 10, 7
         num_layers = len(layer_cfgs)
         output_dims = [3, 2, 5, 4, 1][:num_layers]

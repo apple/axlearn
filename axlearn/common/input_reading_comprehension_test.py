@@ -7,7 +7,7 @@ import os
 from typing import Callable, Union
 
 import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from transformers import RobertaTokenizer
 
 from axlearn.common.config import config_for_class, config_for_function
@@ -649,3 +649,7 @@ class InputReadingComprehensionTest(parameterized.TestCase):
             wrapper("Hello world!"),
             hf_tokenizer.encode(hf_tokenizer.tokenize("Hello world!"), add_special_tokens=False),
         )
+
+
+if __name__ == "__main__":
+    absltest.main()
