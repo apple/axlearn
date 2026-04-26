@@ -77,3 +77,7 @@ class GoldenConfigTest(test_utils.BaseGoldenConfigTest):
     @pytest.mark.skip("Intended to be run manually.")
     def test_run(self, *args):
         self._test(*args, test_type=test_utils.GoldenTestType.RUN)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-x", "--no-header"])

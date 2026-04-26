@@ -2,10 +2,11 @@
 
 """Tests fuji v3 vocabulary."""
 
+import unittest
+
 import numpy as np
-import pytest
 import tensorflow.compat.v2 as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import input_text, input_tf_data
 from axlearn.common.config import config_for_class, config_for_function
@@ -20,7 +21,7 @@ from axlearn.common.test_utils import TestCase  # pytype: disable=pyi-error
 from axlearn.experiments.text.gpt.vocabulary_fuji_v3 import FujiV3Vocabulary
 
 
-@pytest.mark.skip(reason="no tokenizer file.")
+@unittest.skip("no tokenizer file.")
 class FujiV3VocabularyTest(TestCase):
     """Tests FujiV3VocabularyTest."""
 
@@ -199,3 +200,7 @@ class FujiV3VocabularyTest(TestCase):
         self.assertNestedAllClose(
             target_labels[: non_padded_length - 1], input_ids[1:non_padded_length]
         )
+
+
+if __name__ == "__main__":
+    absltest.main()
