@@ -9,6 +9,7 @@ from unittest import TestCase, mock
 from unittest.mock import MagicMock
 
 import pika
+from absl.testing import absltest
 
 from axlearn.cloud.common.event_queue import (
     Event,
@@ -93,3 +94,7 @@ class TestRabbitMQClient(TestCase):
 
         with self.assertRaises(EventQueueConnectionError):
             rabbitmq_client.connect()
+
+
+if __name__ == "__main__":
+    absltest.main()

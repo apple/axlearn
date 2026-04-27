@@ -13,7 +13,7 @@ from unittest import mock
 import kubernetes as k8s
 import requests
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import BASTION_JOB_VERSION_ENV_VAR
 from axlearn.cloud.common.bundler import Bundler
@@ -2225,3 +2225,7 @@ class LWSRunnerJobTest(parameterized.TestCase):
             fv.set_default("alias_name", "test-name")
             from_flags(cfg, fv)
             self.assertEqual(cfg.name, fv.alias_name)
+
+
+if __name__ == "__main__":
+    absltest.main()

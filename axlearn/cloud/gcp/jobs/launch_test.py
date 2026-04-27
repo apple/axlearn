@@ -12,7 +12,7 @@ from typing import Optional, Union
 from unittest import mock
 
 from absl import app, flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobState as BastionJobState
@@ -910,3 +910,7 @@ class MainTest(parameterized.TestCase):
             fv(argv)  # Parse flags.
             launch.main(argv, fv=fv)
             self.assertTrue(mock_job.list.called)
+
+
+if __name__ == "__main__":
+    absltest.main()

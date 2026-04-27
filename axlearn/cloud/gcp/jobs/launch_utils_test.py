@@ -11,7 +11,7 @@ from typing import Union
 from unittest import mock
 
 from absl import flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobMetadata, JobSpec, JobState, JobStatus
@@ -340,3 +340,7 @@ class TestListUtils(parameterized.TestCase):
                 ],
                 table.get_col("GKE_STATE"),
             )
+
+
+if __name__ == "__main__":
+    absltest.main()

@@ -87,3 +87,7 @@ class ExperimentNameTest(absltest.TestCase):
         self.assertGreater(len(result), 0)
         # The result should end with a hash suffix when truncated
         self.assertRegex(result, r"-[a-f0-9]{8}$")
+
+
+if __name__ == "__main__":
+    absltest.main()

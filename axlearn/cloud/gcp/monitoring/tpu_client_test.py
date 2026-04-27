@@ -21,7 +21,7 @@ from typing import Dict, Sequence, Union
 
 import grpc
 from absl import logging
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from tpu_info import device
 from tpu_info.proto import tpu_metric_service_pb2 as tpu_metrics
 from tpu_info.proto import tpu_metric_service_pb2_grpc as tpu_metrics_grpc
@@ -333,3 +333,7 @@ class TestMetricsV2(parameterized.TestCase):
             list(tpu_client.MetricName), chip_type=device.TpuChip.V5P, addr="localhost:8080"
         )
         self.assertListEqual(result, [])
+
+
+if __name__ == "__main__":
+    absltest.main()
