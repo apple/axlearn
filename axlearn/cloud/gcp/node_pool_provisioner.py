@@ -49,6 +49,9 @@ class NodePoolProvisioner(FlagConfigurable):
             retry_interval: Number of seconds to retry node pool creation or deletion.
             wait_timeout: Number of seconds to wait for node pool creation or deletion.
             labels: Optional extra labels to apply to all node pools.
+            disk_type: Optional disk type for node pool nodes (e.g. "pd-balanced").
+            boot_disk_kms_key: Optional KMS key for boot disk encryption.
+            enable_confidential_storage: Whether to enable confidential storage on nodes.
         """
 
         project: Required[str] = REQUIRED
@@ -60,6 +63,9 @@ class NodePoolProvisioner(FlagConfigurable):
         retry_interval: int = 30
         wait_timeout: int = 30 * 60
         labels: Optional[dict[str, str]] = None
+        disk_type: Optional[str] = None
+        boot_disk_kms_key: Optional[str] = None
+        enable_confidential_storage: Optional[bool] = None
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
@@ -68,6 +74,10 @@ class NodePoolProvisioner(FlagConfigurable):
         cfg.zone = gcp_settings("zone", fv=fv)
         cfg.cluster = gcp_settings("gke_cluster", fv=fv)
         cfg.service_account_email = gcp_settings("service_account_email", required=False, fv=fv)
+        cfg.disk_type = gcp_settings("gke_disk_type", required=False, fv=fv)
+        cfg.boot_disk_kms_key = gcp_settings("gke_boot_disk_kms_key", required=False, fv=fv)
+        enable_cs = gcp_settings("gke_enable_confidential_storage", required=False, fv=fv)
+        cfg.enable_confidential_storage = enable_cs.strip().lower() == "true" if enable_cs else None
         return cfg
 
     def create_for(self, job: GKEJob):
@@ -104,6 +114,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             builder_cfg = builder_cfg.inner
         acc_cfg = builder_cfg.accelerator
         reservation = builder_cfg.reservation
+        reservation_project = builder_cfg.reservation_project
         location_hint = builder_cfg.location_hint
         enable_tpu_ici_resiliency = builder_cfg.enable_tpu_ici_resiliency
         enable_tpu_smart_repair = builder_cfg.enable_tpu_smart_repair
@@ -113,6 +124,12 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
 
         tier = os.environ.get("BASTION_TIER", 0)
         if tier == "0" and reservation is not None:
+            # By default, a bare reservation name is assumed to belong to the same project
+            # as the node pool. For shared reservations owned by a different project, GKE
+            # requires the fully-qualified format:
+            # projects/{project}/reservations/{reservation}.
+            if reservation_project is not None and not reservation.startswith("projects/"):
+                reservation = f"projects/{reservation_project}/reservations/{reservation}"
             logging.info("Found tier=%s in env. Using reservation=%s", tier, reservation)
             use_spot_vm = False
         else:
@@ -165,6 +182,7 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             # Inference jobs like Flink/Beam jobs use node pool as single
             # host nodes, we don't set topology for them
             topology = None
+
         create_node_pools(
             node_pool_names,
             project=cfg.project,
@@ -180,6 +198,9 @@ class TPUNodePoolProvisioner(NodePoolProvisioner):
             enable_tpu_ici_resiliency=enable_tpu_ici_resiliency,
             service_account_email=cfg.service_account_email,
             additional_labels_list=additional_labels_list,
+            disk_type=cfg.disk_type,
+            boot_disk_kms_key=cfg.boot_disk_kms_key,
+            enable_confidential_storage=cfg.enable_confidential_storage,
             retry_interval=cfg.retry_interval,
             wait_timeout=cfg.wait_timeout,
         )

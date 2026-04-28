@@ -77,6 +77,9 @@ def _node_pool_body(
     location_hint: Optional[str] = None,
     enable_tpu_ici_resiliency: Optional[bool] = None,
     disk_size: int = 100,
+    disk_type: Optional[str] = None,
+    boot_disk_kms_key: Optional[str] = None,
+    enable_confidential_storage: Optional[bool] = None,
     service_account_email: Optional[str] = None,
     additional_labels: Optional[dict[str, str]] = None,
     metadata: Optional[dict[str, str]] = None,
@@ -100,6 +103,9 @@ def _node_pool_body(
         location_hint: Location of TPU reservation.
         enable_tpu_ici_resiliency: Whether to enable TPU ICI resiliency.
         disk_size: Size of disk to provision (in GB).
+        disk_type: Optional disk type for nodes (e.g. "pd-balanced").
+        boot_disk_kms_key: Optional KMS key for boot disk encryption.
+        enable_confidential_storage: Whether to enable confidential storage.
         service_account_email: Optional service account email to use.
         additional_labels: Additional labels to add.
         metadata: Optional metadata for the instance.
@@ -158,6 +164,35 @@ def _node_pool_body(
     if additional_labels is not None:
         labels.update(additional_labels)
 
+    node_config = {
+        "diskSizeGb": disk_size,
+        "labels": labels,
+        "machineType": machine_type,
+        "metadata": metadata or {},
+        "preemptible": False,
+        "serviceAccount": service_account_email,
+        "shieldedInstanceConfig": {
+            "enableIntegrityMonitoring": True,
+            "enableSecureBoot": True,
+        },
+        "tags": ["allow-internet-egress"],
+        "taints": [
+            {
+                "effect": "NO_SCHEDULE",
+                "key": "google.com/tpu",
+                "value": "present",
+            },
+        ],
+        **reservation_conf,
+    }
+
+    if disk_type is not None:
+        node_config["diskType"] = disk_type
+    if boot_disk_kms_key is not None:
+        node_config["bootDiskKmsKey"] = boot_disk_kms_key
+    if enable_confidential_storage is not None:
+        node_config["enableConfidentialStorage"] = enable_confidential_storage
+
     return {
         "nodePool": {
             "name": name,
@@ -189,27 +224,7 @@ def _node_pool_body(
             "queuedProvisioning": {
                 "enabled": False,  # Not QRM specific.
             },
-            "config": {
-                "diskSizeGb": disk_size,
-                "labels": labels,
-                "machineType": machine_type,
-                "metadata": metadata or {},
-                "preemptible": False,
-                "serviceAccount": service_account_email,
-                "shieldedInstanceConfig": {
-                    "enableIntegrityMonitoring": True,
-                    "enableSecureBoot": True,
-                },
-                "tags": ["allow-internet-egress"],
-                "taints": [
-                    {
-                        "effect": "NO_SCHEDULE",
-                        "key": "google.com/tpu",
-                        "value": "present",
-                    },
-                ],
-                **reservation_conf,
-            },
+            "config": node_config,
             **placement_policy,
         },
     }
@@ -400,6 +415,9 @@ def create_node_pool(
     enable_tpu_ici_resiliency: Optional[bool] = None,
     service_account_email: Optional[str] = None,
     additional_labels: Optional[dict[str, str]] = None,
+    disk_type: Optional[str] = None,
+    boot_disk_kms_key: Optional[str] = None,
+    enable_confidential_storage: Optional[bool] = None,
     fire_and_forget: bool = False,
 ) -> Any:
     """Create a node pool.
@@ -424,6 +442,9 @@ def create_node_pool(
         enable_tpu_ici_resiliency: Whether to enable TPU ICI resiliency.
         service_account_email: Service account email.
         additional_labels: Additional labels attached to the node pool.
+        disk_type: Optional disk type for nodes (e.g. "pd-balanced").
+        boot_disk_kms_key: Optional KMS key for boot disk encryption.
+        enable_confidential_storage: Whether to enable confidential storage.
         fire_and_forget: If True, execute creation and return immediately regardless of failures.
             If False, raise an exception if node pool creation fails.
 
@@ -449,6 +470,9 @@ def create_node_pool(
         enable_tpu_ici_resiliency=enable_tpu_ici_resiliency,
         service_account_email=service_account_email,
         additional_labels=additional_labels,
+        disk_type=disk_type,
+        boot_disk_kms_key=boot_disk_kms_key,
+        enable_confidential_storage=enable_confidential_storage,
     )
 
     # Create the node pool
@@ -481,6 +505,9 @@ def create_node_pools(
     enable_tpu_ici_resiliency: Optional[bool] = None,
     service_account_email: Optional[str] = None,
     additional_labels_list: Optional[list[dict[str, str]]] = None,
+    disk_type: Optional[str] = None,
+    boot_disk_kms_key: Optional[str] = None,
+    enable_confidential_storage: Optional[bool] = None,
     retry_interval: int = 30,
     wait_timeout: int = 0,
 ):
@@ -506,6 +533,9 @@ def create_node_pools(
         enable_tpu_ici_resiliency: Whether to enable TPU ICI resiliency.
         service_account_email: Service account email.
         additional_labels_list: Additional labels attached to each node pool.
+        disk_type: Optional disk type for nodes (e.g. "pd-balanced").
+        boot_disk_kms_key: Optional KMS key for boot disk encryption.
+        enable_confidential_storage: Whether to enable confidential storage.
         retry_interval: Time in seconds between retries.
         wait_timeout: Seconds to wait for node pools to delete.
             This function doesn't wait if wait_timeout <= 0.
@@ -550,6 +580,9 @@ def create_node_pools(
                     enable_tpu_ici_resiliency=enable_tpu_ici_resiliency,
                     service_account_email=service_account_email,
                     additional_labels=additional_labels,
+                    disk_type=disk_type,
+                    boot_disk_kms_key=boot_disk_kms_key,
+                    enable_confidential_storage=enable_confidential_storage,
                     fire_and_forget=True,
                 )
                 logging.warning("Node pool %s is %s", node_pool_name, node_pool_status)
@@ -644,7 +677,16 @@ def get_node_pool_status(
         logging.debug("Node Pool %s status: %s", node_pool_cid, res)
         if "status" in res:
             status: str = res["status"]
-            return NodePoolStatus[status.upper()]
+            node_pool_status = NodePoolStatus[status.upper()]
+            if node_pool_status in (NodePoolStatus.ERROR, NodePoolStatus.RUNNING_WITH_ERROR):
+                logging.warning(
+                    "Node Pool %s is %s. statusMessage: %s, conditions: %s",
+                    node_pool_cid,
+                    node_pool_status,
+                    res.get("statusMessage", "N/A"),
+                    res.get("conditions", "N/A"),
+                )
+            return node_pool_status
         return NodePoolStatus.UNKNOWN
     except errors.HttpError as e:
         if e.resp.status == 404:
