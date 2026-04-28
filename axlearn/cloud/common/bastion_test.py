@@ -25,8 +25,10 @@ from axlearn.cloud.common.bastion import (
     _BASTION_SERIALIZED_JOBSPEC_ENV_VAR,
     _JOB_DIR,
     _LOG_DIR,
+    _ORPHAN_MISSING_COUNT_THRESHOLD,
     Bastion,
     BastionDirectory,
+    DownloadJobsResult,
     Job,
     JobLifecycleEvent,
     JobLifecycleState,
@@ -965,6 +967,69 @@ class BastionTest(parameterized.TestCase):
             )
 
             self.assertEqual(2 * len(expected_jobs), mock_bastion._validator._validate_call_count)
+
+    def _make_job(self, name: str, status: JobStatus = JobStatus.ACTIVE) -> Job:
+        return Job(
+            spec=new_jobspec(
+                name=name,
+                command="",
+                metadata=JobMetadata(
+                    user_id="user1",
+                    project_id="project1",
+                    creation_time=datetime(1900, 1, 1, 0, 0, 0, 0),
+                    resources={"test": 8},
+                ),
+            ),
+            state=JobState(status=status),
+            command_proc=None,
+            cleanup_proc=None,
+        )
+
+    def _empty_download_result(self) -> DownloadJobsResult:
+        return DownloadJobsResult(jobs={}, jobs_with_user_states=set(), invalid_jobs={})
+
+    def test_sync_jobs_missing_count_defers_orphan(self):
+        """Jobs absent from remote fewer than threshold times are not removed."""
+        with self._patch_bastion() as mock_bastion:
+            mock_bastion._active_jobs["job1"] = self._make_job("job1")
+
+            with mock.patch.object(
+                bastion, "download_job_batch", return_value=self._empty_download_result()
+            ):
+                for i in range(1, _ORPHAN_MISSING_COUNT_THRESHOLD):
+                    mock_bastion._sync_jobs()
+                    self.assertIn("job1", mock_bastion._active_jobs)
+                    self.assertEqual(mock_bastion._job_missing_counts["job1"], i)
+
+    def test_sync_jobs_missing_count_triggers_orphan_at_threshold(self):
+        """Jobs absent from remote exactly threshold times are removed and counter cleaned up."""
+        with self._patch_bastion() as mock_bastion:
+            mock_bastion._active_jobs["job1"] = self._make_job("job1")
+
+            with mock.patch.object(
+                bastion, "download_job_batch", return_value=self._empty_download_result()
+            ):
+                for _ in range(_ORPHAN_MISSING_COUNT_THRESHOLD):
+                    mock_bastion._sync_jobs()
+
+            self.assertNotIn("job1", mock_bastion._active_jobs)
+            self.assertNotIn("job1", mock_bastion._job_missing_counts)
+
+    def test_sync_jobs_missing_count_resets_on_reappear(self):
+        """Counter resets when a job reappears, preventing premature orphan detection."""
+        with self._patch_bastion() as mock_bastion:
+            job = self._make_job("job1")
+            mock_bastion._active_jobs["job1"] = job
+            mock_bastion._job_missing_counts["job1"] = _ORPHAN_MISSING_COUNT_THRESHOLD - 1
+
+            present_result = DownloadJobsResult(
+                jobs={"job1": job}, jobs_with_user_states=set(), invalid_jobs={}
+            )
+            with mock.patch.object(bastion, "download_job_batch", return_value=present_result):
+                mock_bastion._sync_jobs()
+
+            self.assertIn("job1", mock_bastion._active_jobs)
+            self.assertNotIn("job1", mock_bastion._job_missing_counts)
 
     @parameterized.product(
         [
