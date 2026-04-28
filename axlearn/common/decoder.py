@@ -51,6 +51,7 @@ from axlearn.common.module import (
 from axlearn.common.utils import (
     Nested,
     NestedTensor,
+    maybe_shard,
     sequence_mask,
     validate_contains_paths,
     with_sharding_constraint,
@@ -586,6 +587,9 @@ class Decoder(BaseLayer):
                 if self.config.logits_forward_dtype
                 else x
             )
+            # Shard hidden states before the logit matmul to prevent XLA from
+            # materializing the full [batch, seq, vocab] tensor.
+            logits_x = maybe_shard(logits_x, self.config.logits_partition_spec)
             if "lm_head" in self.children:
                 logits = self.lm_head(logits_x)
             else:
