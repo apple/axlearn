@@ -403,6 +403,7 @@ class GKERunnerJob(BaseRunnerJob):
         pre_provisioner: Optional[NodePoolProvisioner.Config] = None
         # The event publisher sends events into queue.
         event_publisher: Optional[BaseQueueClient.Config] = None
+        tags: Optional[list[str]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
@@ -420,6 +421,7 @@ class GKERunnerJob(BaseRunnerJob):
         flags.DEFINE_boolean(
             "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
         )
+        flags.DEFINE_multi_string("tags", None, "Job specific tags.", **common_kwargs)
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
@@ -976,6 +978,7 @@ class LWSRunnerJob(BaseRunnerJob):
         pre_provisioner: Optional[NodePoolProvisioner.Config] = None
         # The event publisher sends events into queue.
         event_publisher: Optional[BaseQueueClient.Config] = None
+        tags: Optional[list[str]] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues = FLAGS):
@@ -993,6 +996,7 @@ class LWSRunnerJob(BaseRunnerJob):
         flags.DEFINE_boolean(
             "enable_pre_provisioner", None, "Whether to enable pre-provisioner.", **common_kwargs
         )
+        flags.DEFINE_multi_string("tags", None, "Job specific tags.", **common_kwargs)
 
     @classmethod
     def set_defaults(cls, fv: flags.FlagValues):
