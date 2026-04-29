@@ -82,7 +82,7 @@ from typing import Any, Callable, NamedTuple, Optional, Protocol, Sequence, Unio
 import jax
 from absl import logging
 from jax import numpy as jnp
-from jax._src.mesh import thread_resources
+from jax._src.mesh import get_abstract_mesh, thread_resources
 
 from axlearn.common import param_init
 from axlearn.common.attention_bias import (
@@ -1041,13 +1041,18 @@ class FusedGroupedQKVLinear(BaseQKVLinear):
             # This sharding hint is needed since compiler sometimes will generate large allgather
             # before the split and then slice, which is not the ideal compilation. Ensure sharding
             # after the split to ensure allgather is inserted after the split.
-            axis_names = thread_resources.env.physical_mesh.axis_names
-            batch_axes = tuple(x for x in axis_names if x in ("data", "fsdp")) or None
+            # Use get_abstract_mesh() to respect shard_map Manual axes.
+            auto_axes = set(get_abstract_mesh().auto_axes)
+            batch_axes = tuple(
+                x
+                for x in thread_resources.env.physical_mesh.axis_names
+                if x in ("data", "fsdp") and x in auto_axes
+            )
             spec = PartitionSpec(
-                batch_axes,
-                "seq" if "seq" in axis_names else None,
-                "model" if "model" in axis_names else None,
-                None,
+                batch_axes or PartitionSpec.UNCONSTRAINED,
+                "seq" if "seq" in auto_axes else PartitionSpec.UNCONSTRAINED,
+                "model" if "model" in auto_axes else PartitionSpec.UNCONSTRAINED,
+                PartitionSpec.UNCONSTRAINED,
             )
         q_proj = with_sharding_constraint(q_proj, spec)
         k_proj = with_sharding_constraint(k_proj, spec)

@@ -16,6 +16,7 @@
 
 import contextlib
 import copy
+import functools
 import itertools
 
 # pylint: disable=too-many-lines,duplicate-code,no-self-use
@@ -1748,6 +1749,55 @@ class QKVLinearTest(TestCase):
                 cfg.set(num_kv_heads=num_kv_heads)
             layer = cfg.instantiate(parent=None)
             self.assertEqual(expected, layer.num_kv_heads)
+
+    @pytest.mark.for_8_devices
+    def test_fused_grouped_qkv_inside_shard_map(self):
+        """FusedGroupedQKVLinear.forward() must work inside shard_map.
+
+        When shard_map marks data/fsdp as Manual for data parallelism,
+        FusedGroupedQKVLinear must not reference those Manual axes in its
+        dynamically-built PartitionSpec for with_sharding_constraint.
+        """
+        if not is_supported_mesh_shape((4, 2)):
+            self.skipTest("Unsupported mesh shape")
+        model_dim, num_heads, num_kv_heads, per_head_dim = 16, 4, 2, 4
+        cfg = attention.FusedGroupedQKVLinear.default_config().set(
+            name="test",
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            per_head_dim=per_head_dim,
+        )
+        layer = cfg.instantiate(parent=None)
+        state = layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
+        mesh = jax.make_mesh((4, 2), ("data", "model"))
+        query = jnp.ones((4, 8, model_dim))
+        state_specs = jax.tree.map(lambda _: PartitionSpec(), state)
+
+        @jax.jit
+        @functools.partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=(state_specs, PartitionSpec("data")),
+            out_specs=PartitionSpec("data"),
+            check_vma=False,
+            axis_names={"data"},
+        )
+        def f(state, query):
+            out, _ = F(
+                layer,
+                state=state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(0),
+                inputs=dict(query=query),
+            )
+            return out.query
+
+        with mesh:
+            result = f(state, query)
+        self.assertEqual(result.shape, (4, 8, num_heads, per_head_dim))
 
     @parameterized.parameters(
         (QKVLinear.default_config(), QLinear.default_config()),
