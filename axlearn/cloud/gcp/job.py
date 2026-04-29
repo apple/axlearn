@@ -106,6 +106,8 @@ class GKEJob(GCPJob):
             queue: The Kueue LocalQueue to use. If not set, no queue is used.
             annotations: JobSet annotations (or config instantiating to annotations).
             labels: JobSet labels (or config instantiating to labels).
+            enable_replica_restart: If True, only the failed replica is restarted instead
+                of the entire JobSet. Requires JobSet controller v0.11.1+.
         """
 
         builder: Required[BaseReplicatedJob.Config] = REQUIRED
@@ -115,6 +117,7 @@ class GKEJob(GCPJob):
         annotations: Optional[ConfigOr[dict]] = None
         labels: Optional[ConfigOr[dict]] = None
         enable_tpu_slice_auto_provisioning: Optional[bool] = None
+        enable_replica_restart: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -131,6 +134,13 @@ class GKEJob(GCPJob):
             "enable_tpu_slice_auto_provisioning",
             None,
             "Auto provision TPU slices based on the topology assignment.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "enable_replica_restart",
+            None,
+            "If True, only the failed replica is restarted instead of the entire JobSet "
+            "on failure. Requires JobSet controller v0.11.1+ with the RestartJob feature gate.",
             **common_kwargs,
         )
 
@@ -169,6 +179,29 @@ class GKEJob(GCPJob):
         """Returns workload annotations from the underlying builder."""
         return self._builder.get_workload_annotations()
 
+    def _build_failure_policy(self, replicated_jobs: Sequence[dict]) -> dict:
+        """Builds the failurePolicy dict for a JobSet spec.
+
+        Args:
+            replicated_jobs: List of replicated job dicts (each must have a "name" key).
+
+        Returns:
+            A dict suitable for the JobSet spec's failurePolicy field.
+        """
+        cfg: GKEJob.Config = self.config
+        policy = dict(maxRestarts=cfg.max_tries - 1)
+
+        if cfg.enable_replica_restart:
+            policy["rules"] = [
+                dict(
+                    name="default_rule",
+                    action="RestartJob",
+                    targetReplicatedJobs=[rj["name"] for rj in replicated_jobs],
+                )
+            ]
+
+        return policy
+
     def _build_jobset(self) -> Nested[Any]:
         """Builds a config for a JobSet, which is a set of Jobs.
 
@@ -202,7 +235,7 @@ class GKEJob(GCPJob):
         return dict(
             metadata=dict(name=cfg.name, annotations=annotations, labels=labels),
             spec=dict(
-                failurePolicy=dict(maxRestarts=cfg.max_tries - 1),
+                failurePolicy=self._build_failure_policy(replicated_jobs),
                 replicatedJobs=replicated_jobs,
             ),
         )

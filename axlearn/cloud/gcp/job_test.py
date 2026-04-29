@@ -151,6 +151,61 @@ class TPUGKEJobTest(TestCase):
                 self.assertEqual(jobset_labels[key], value)
 
 
+class BuildFailurePolicyTest(TestCase):
+    """Tests GKEJob._build_failure_policy."""
+
+    def run(self, result=None):
+        # Run tests under mock user and settings.
+        self._settings = default_mock_settings()
+        with mock_gcp_settings(
+            [jobset_utils.__name__, bundler.__name__],
+            settings=self._settings,
+        ):
+            return super().run(result)
+
+    def _make_job(self, *, enable_replica_restart: Optional[bool] = None, max_tries: int = 10):
+        fv = flags.FlagValues()
+        cfg = job.GKEJob.default_config().set(
+            builder=jobset_utils.TPUReplicatedJob.default_config()
+        )
+        define_flags(cfg, fv)
+        fv.name = "fake-name"
+        fv.output_dir = "FAKE"
+        fv.instance_type = "tpu-v4-8"
+        fv.max_tries = max_tries
+        fv.enable_replica_restart = enable_replica_restart
+        fv.mark_as_parsed()
+        from_flags(cfg, fv, command="")
+        return cfg.instantiate(bundler=mock.create_autospec(Bundler, instance=True))
+
+    def test_default_no_replica_restart(self):
+        gke_job = self._make_job()
+        policy = gke_job._build_failure_policy([{"name": "train"}])
+        self.assertEqual(policy, {"maxRestarts": 9})
+
+    def test_enable_replica_restart(self):
+        gke_job = self._make_job(enable_replica_restart=True)
+        policy = gke_job._build_failure_policy([{"name": "train"}])
+        self.assertEqual(policy["maxRestarts"], 9)
+        self.assertLen(policy["rules"], 1)
+        rule = policy["rules"][0]
+        self.assertEqual(rule["name"], "default_rule")
+        self.assertEqual(rule["action"], "RestartJob")
+        self.assertEqual(rule["targetReplicatedJobs"], ["train"])
+
+    def test_replica_restart_multiple_replicated_jobs(self):
+        gke_job = self._make_job(enable_replica_restart=True)
+        replicated_jobs = [{"name": "train"}, {"name": "eval"}]
+        policy = gke_job._build_failure_policy(replicated_jobs)
+        self.assertEqual(policy["rules"][0]["targetReplicatedJobs"], ["train", "eval"])
+
+    @parameterized.parameters(5, 10, 20)
+    def test_max_restarts_derived_from_max_tries(self, max_tries):
+        gke_job = self._make_job(max_tries=max_tries)
+        policy = gke_job._build_failure_policy([{"name": "train"}])
+        self.assertEqual(policy["maxRestarts"], max_tries - 1)
+
+
 class GPUGKEJobTest(TestCase):
     """Tests GKEJob with GPUs."""
 
