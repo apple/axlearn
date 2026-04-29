@@ -1,6 +1,8 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests normalization utils."""
+import sys
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -17,4 +19,4 @@ def test_l2_normalize(shape, axis):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())

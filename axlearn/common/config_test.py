@@ -7,6 +7,7 @@ import collections
 import copy
 import dataclasses
 import math
+import sys
 import typing
 from collections import defaultdict
 from typing import Any, Callable, Optional, Union
@@ -1183,4 +1184,4 @@ if __name__ == "__main__":
     # it sets __name__ to "__main__" instead of "config_test".  These incorrect values confuse
     # axlearn.common.config.debug_string, which then produces incorrectly named fields and causes
     # the test/CI to fail. So, here we have to use pytest.main.
-    pytest.main()
+    sys.exit(pytest.main())

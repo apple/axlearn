@@ -12,6 +12,8 @@ Example commands:
 
 """
 
+import sys
+
 import pytest
 from absl.testing import parameterized
 
@@ -80,4 +82,4 @@ class GoldenConfigTest(test_utils.BaseGoldenConfigTest):
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-x", "--no-header"])
+    sys.exit(pytest.main([__file__, "-x", "--no-header"]))

@@ -4,6 +4,7 @@
 # pylint: disable=protected-access
 
 import os
+import sys
 from unittest import mock
 
 import pytest
@@ -271,4 +272,4 @@ class GsTest(TestWithTemporaryCWD):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())

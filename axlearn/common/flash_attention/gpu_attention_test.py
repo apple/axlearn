@@ -15,6 +15,7 @@ PARALLEL_GPU_TEST=1 pytest -n 8 axlearn/common/flash_attention/gpu_attention_tes
 ```
 """
 import functools
+import sys
 from typing import Any, Callable, Literal, Optional
 
 import chex
@@ -528,4 +529,4 @@ def test_cudnn_dropout_determinism():
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())

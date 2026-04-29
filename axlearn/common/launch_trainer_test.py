@@ -197,6 +197,8 @@ class GetTrainerConfigTest(TestCase):
 
 
 if __name__ == "__main__":
+    import sys
+
     import pytest
 
-    pytest.main()
+    sys.exit(pytest.main())

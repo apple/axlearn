@@ -3,6 +3,7 @@
 """Tests for lws_utils."""
 
 import copy
+import sys
 from unittest import mock
 
 import pytest
@@ -101,4 +102,4 @@ class TestBaseLeaderWorkerTemplatePodMutators:
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())

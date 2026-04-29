@@ -3,6 +3,7 @@
 """Tests input dispatcher."""
 
 import random
+import sys
 
 import jax
 import numpy as np
@@ -218,4 +219,4 @@ class SpmdInputDispatcherTest(TestCase):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())

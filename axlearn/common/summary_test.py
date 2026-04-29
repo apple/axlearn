@@ -5,6 +5,7 @@
 import dataclasses
 import functools
 import os
+import sys
 import tempfile
 
 import chex
@@ -306,4 +307,4 @@ class SummaryTest(TestCase):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())

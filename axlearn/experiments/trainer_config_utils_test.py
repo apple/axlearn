@@ -2,6 +2,7 @@
 
 """Tests trainer config utilities."""
 
+import sys
 import threading
 from typing import Optional
 
@@ -279,4 +280,4 @@ class TestConfigMapCache(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())

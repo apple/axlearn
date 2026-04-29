@@ -4,6 +4,7 @@
 
 import functools
 import os
+import sys
 from typing import Callable
 
 import grain.python as grain
@@ -805,4 +806,4 @@ class LmEvalInputTest(TestCase):
 
 
 if __name__ == "__main__":
-    pytest.main()
+    sys.exit(pytest.main())
