@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from typing import Any, Optional, Sequence, Union
+from urllib.parse import urlparse
 
 from absl import flags
 
@@ -183,6 +184,27 @@ def get_xla_options(
     return {k: v for k, v in xla_options.items() if k.startswith("xla_")}
 
 
+def _pathways_staging_dir(output_dir: str, *, shared: bool = False) -> str:
+    """Returns the GCS staging directory for Pathways.
+
+    Args:
+        output_dir: The job output directory (e.g., gs://bucket/axlearn/jobs/job-name).
+        shared: If True, uses the bucket root for cache reuse across jobs.
+            Falls back to per-job staging with a warning if output_dir is not a GCS path.
+    """
+    if shared:
+        if not output_dir.startswith("gs://"):
+            logging.warning(
+                "Shared pathways staging requires a GCS output_dir, got: %s. "
+                "Falling back to per-job staging.",
+                output_dir,
+            )
+        else:
+            parsed = urlparse(output_dir)
+            return f"gs://{parsed.netloc}/pathways-staging"
+    return f"{output_dir}/pathways-staging"
+
+
 def round_up_to_power_of_2(n):
     """
     Rounds an integer up to the nearest power of 2.
@@ -213,10 +235,13 @@ class PathwaysColocatedPythonPlugin(FlagConfigurable):
         Attributes:
             pathways_proxy_image: The Pathways proxy image.
             pathways_server_image: The Pathways server image.
+            pathways_disable_shared_cache: If True, use per-job output directory for
+                pathways staging instead of the shared bucket root.
         """
 
         pathways_proxy_image: Optional[str] = None
         pathways_server_image: Optional[str] = None
+        pathways_disable_shared_cache: Optional[bool] = None
 
     @classmethod
     def define_flags(cls, fv):
@@ -232,6 +257,13 @@ class PathwaysColocatedPythonPlugin(FlagConfigurable):
             "pathways_server_image",
             None,
             "Allows a custom Pathways server image to be provided.",
+            **common_kwargs,
+        )
+        flags.DEFINE_boolean(
+            "pathways_disable_shared_cache",
+            None,
+            "If True, use the per-job output directory for pathways staging instead of "
+            "the shared bucket root.",
             **common_kwargs,
         )
 
@@ -309,11 +341,15 @@ def _build_base_pathways_worker_container(
     container = base_container_builder._build_container()
 
     worker_container = copy.deepcopy(container)
+    gcs_scratch_location = _pathways_staging_dir(
+        base_container_builder.config.output_dir,
+        shared=colocated_python_plugin.config.pathways_disable_shared_cache is not True,
+    )
     args = [
         f"--server_port={_PATHWAYS_WORKER_PORT}",
         f"--resource_manager_address={resource_manager_address}:"
         + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
-        f"--gcs_scratch_location={base_container_builder.config.output_dir}/pathways-staging",
+        f"--gcs_scratch_location={gcs_scratch_location}",
         # Recycling host memory gives a slight increase in performance.
         "--tpu_pinned_host_allocation_recycle=true",
     ]
@@ -554,7 +590,10 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         cfg: TPUReplicatedJob.Config = self._inner.config
 
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
-        staging_location = f"{cfg.output_dir}/pathways-staging"
+        gcs_scratch_location = _pathways_staging_dir(
+            cfg.output_dir,
+            shared=self._colocated_python.config.pathways_disable_shared_cache is not True,
+        )
         pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
 
         # If multi-head, every pathways-head will only
@@ -564,7 +603,6 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         cmd_args = [
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
-            f"--gcs_scratch_location={staging_location}",
         ]
         if self._colocated_python.is_colocated_python_enabled:
             cmd_args.append("--sidecar_name=external")
@@ -614,7 +652,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     "--node_type=resource_manager",
                     f"--instance_count={pathways_instance_count}",
                     f"--instance_type={instance_type}",
-                    f"--gcs_scratch_location={staging_location}",
+                    f"--gcs_scratch_location={gcs_scratch_location}",
                 ],
                 volumeMounts=[dict(name="shared-output", mountPath="/output")],
             ),
@@ -1194,12 +1232,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         return worker_pod
 
     def _build_pathways_proxy_container(self) -> dict:
-        cfg: TPULeaderWorkerTemplate.Config = self._inner.config
-        staging_location = f"{cfg.output_dir}/pathways-staging"
         cmd_args = [
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
-            f"--gcs_scratch_location={staging_location}",
         ]
         if self._colocated_python.is_colocated_python_enabled:
             cmd_args.append("--sidecar_name=external")
@@ -1214,7 +1249,10 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
 
     def _build_pathways_rm_container(self) -> dict:
         cfg: TPULeaderWorkerTemplate.Config = self._inner.config
-        staging_location = f"{cfg.output_dir}/pathways-staging"
+        gcs_scratch_location = _pathways_staging_dir(
+            cfg.output_dir,
+            shared=self._colocated_python.config.pathways_disable_shared_cache is not True,
+        )
 
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
@@ -1237,7 +1275,7 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
                 "--node_type=resource_manager",
                 "--instance_count=1",
                 f"--instance_type={pathways_tpu_version}:{system.topology}",
-                f"--gcs_scratch_location={staging_location}",
+                f"--gcs_scratch_location={gcs_scratch_location}",
             ],
             ports=[dict(containerPort=_PATHWAYS_RESOURCE_MANAGER_PORT)],
         )
