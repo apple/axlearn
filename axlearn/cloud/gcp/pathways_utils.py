@@ -30,6 +30,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     TPUReplicatedJob,
     _LoadBalancer,
 )
+from axlearn.cloud.gcp.k8s_readiness_probe import ReadinessProbe, StartupProbe
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
@@ -101,6 +102,11 @@ _PATHWAYS_BACK_OFF_LIMIT = 32
 
 _PATHWAYS_SHM_DIR = "/tmp/ifrt_proxy"
 _PATHWAYS_SHM_VOLUME_NAME = "shared-memory"
+
+# Default health check endpoint used when enable_health_probes is set but no explicit
+# port/path is configured.
+_DEFAULT_HEALTH_CHECK_PORT = 8080
+_DEFAULT_HEALTH_CHECK_PATH = "/v1/health"
 
 # Notary proxy configuration for gke_gateway_route
 NOTARY_PROXY_IMAGE = "REDACTED_INTERNAL_REGISTRY/polymer/notary-proxy:884a9a5f23ea"
@@ -1138,13 +1144,13 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         )
         flags.DEFINE_string(
             "health_check_path",
-            "/v1/health",
+            _DEFAULT_HEALTH_CHECK_PATH,
             "Path for health check endpoint used by startup and readiness probes.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
             "health_check_port",
-            8080,
+            _DEFAULT_HEALTH_CHECK_PORT,
             "Port for health check endpoint used by startup and readiness probes.",
             **common_kwargs,
         )
@@ -1182,6 +1188,42 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
         self._tpu_type = infer_tpu_type(cfg.inner.accelerator.instance_type)
         if self._tpu_type not in USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS:
             raise NotImplementedError(f"Missing system characteristics for {self._tpu_type}")
+
+        # If health probes are enabled, initialize startup and readiness probes on the inner
+        # builder using the configured health check settings, unless they are already configured.
+        logging.info("Enabled health probes %s", cfg.enable_health_probes)
+        if cfg.enable_health_probes:
+            if not self._inner.startup_probe.is_configured():
+                logging.info("Configuring startup probe")
+                # Default startup probe failure threshold: 360 failures × 10s period = 1 hour max
+                # startup time. cfg.startup_probe_failure_threshold may be None due to a flag name
+                # collision with StartupProbe's own startup_probe_failure_threshold flag.
+                startup_failure_threshold = cfg.startup_probe_failure_threshold or 360
+                self._inner.startup_probe = (
+                    StartupProbe.default_config()
+                    .set(
+                        http_port=cfg.health_check_port or _DEFAULT_HEALTH_CHECK_PORT,
+                        http_path=cfg.health_check_path or _DEFAULT_HEALTH_CHECK_PATH,
+                        initial_delay_seconds=30,
+                        period_seconds=10,
+                        timeout_seconds=5,
+                        failure_threshold=startup_failure_threshold,
+                    )
+                    .instantiate()
+                )
+            if not self._inner.readiness_probe.is_configured():
+                logging.info("Configuring readiness probe")
+                self._inner.readiness_probe = (
+                    ReadinessProbe.default_config()
+                    .set(
+                        http_port=cfg.health_check_port or _DEFAULT_HEALTH_CHECK_PORT,
+                        http_path=cfg.health_check_path or _DEFAULT_HEALTH_CHECK_PATH,
+                        period_seconds=10,
+                        timeout_seconds=5,
+                        failure_threshold=3,
+                    )
+                    .instantiate()
+                )
 
         self._colocated_python = cfg.colocated_python.instantiate(bundler=bundler)
 
@@ -1510,33 +1552,20 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ports=([dict(containerPort=cfg.target_port)] if cfg.enable_service else []),
         )
 
-        # Add health probes for inference pods when service is enabled.
-        # This ensures K8s services only route traffic to healthy pods that have
-        # finished loading models and are ready to serve requests.
-        if cfg.enable_health_probes:
-            # startupProbe: Allows long startup time for model loading.
-            # Max startup time = failureThreshold * periodSeconds.
-            container["startupProbe"] = {
-                "httpGet": {
-                    "path": cfg.health_check_path,
-                    "port": cfg.health_check_port,
-                },
-                "initialDelaySeconds": 30,
-                "periodSeconds": 10,
-                "timeoutSeconds": 5,
-                "failureThreshold": cfg.startup_probe_failure_threshold,
-            }
-            # readinessProbe: Checks if the pod is ready to receive traffic.
-            # Once startup completes, this probe runs to determine traffic routing.
-            container["readinessProbe"] = {
-                "httpGet": {
-                    "path": cfg.health_check_path,
-                    "port": cfg.health_check_port,
-                },
-                "periodSeconds": 10,
-                "timeoutSeconds": 5,
-                "failureThreshold": 3,
-            }
+        logging.info("Checking if we have probes to apply")
+        # Apply configured startup/readiness/liveness probes from the inner builder.
+        startup = self._inner.startup_probe
+        if startup.is_configured():
+            logging.info("Adding startup probe")
+            container["startupProbe"] = startup.build_startup_probe()
+        readiness = self._inner.readiness_probe
+        if readiness.is_configured():
+            logging.info("Adding readiness probe")
+            container["readinessProbe"] = readiness.build_readiness_probe()
+        liveness = self._inner.liveness_probe
+        if liveness.is_configured():
+            logging.info("Adding liveness probe")
+            container["livenessProbe"] = liveness.build_liveness_probe()
 
         return container
 

@@ -1,6 +1,6 @@
 # Copyright © 2025 Apple Inc.
 
-"""Kubernetes readiness probe configuration for GKE job containers."""
+"""Kubernetes readiness and liveness probe configuration for GKE job containers."""
 
 from typing import Optional
 
@@ -10,16 +10,20 @@ from axlearn.cloud.common.utils import FlagConfigurable
 from axlearn.common.config import config_class
 
 
-class ReadinessProbe(FlagConfigurable):
-    """Configures a Kubernetes readiness probe (gRPC or HTTP) for a container.
+class _ContainerProbe(FlagConfigurable):
+    """Base class for Kubernetes container probes (readiness, liveness).
 
-    Activate gRPC probing by setting grpc_port; activate HTTP probing by setting http_port.
-    The two probe types are mutually exclusive.
+    Subclasses specialise by providing a ``_flag_prefix`` class attribute and
+    implementing a public ``build_*_probe()`` method that delegates to
+    ``_build_probe()``.
     """
+
+    # Override in subclasses (e.g. "readiness_probe" or "liveness_probe").
+    _flag_prefix: str = ""
 
     @config_class
     class Config(FlagConfigurable.Config):
-        """Configures ReadinessProbe.
+        """Shared probe configuration fields.
 
         Attributes:
             grpc_port: gRPC port. Setting this activates the gRPC probe type.
@@ -31,7 +35,7 @@ class ReadinessProbe(FlagConfigurable):
             period_seconds: How often (in seconds) to perform the probe.
             timeout_seconds: Seconds after which the probe times out.
             success_threshold: Minimum consecutive successes for probe to be considered successful.
-            failure_threshold: Consecutive failures before the pod is marked Unready.
+            failure_threshold: Consecutive failures before the pod is marked Unready/Unhealthy.
         """
 
         # gRPC-specific fields. Non-None grpc_port activates the gRPC probe.
@@ -52,105 +56,107 @@ class ReadinessProbe(FlagConfigurable):
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
+        if not cls._flag_prefix:
+            raise ValueError(f"{cls.__name__} must set a non-empty _flag_prefix.")
+        p = cls._flag_prefix
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_integer(
-            "readiness_probe_grpc_port",
+            f"{p}_grpc_port",
             None,
-            "gRPC port for the readiness probe. Activates gRPC probe type.",
+            f"gRPC port for the {p}. Activates gRPC probe type.",
             **common_kwargs,
         )
         flags.DEFINE_string(
-            "readiness_probe_grpc_service",
+            f"{p}_grpc_service",
             None,
-            "gRPC service name for the readiness probe.",
+            f"gRPC service name for the {p}.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
-            "readiness_probe_http_port",
+            f"{p}_http_port",
             None,
-            "HTTP port for the readiness probe. Activates HTTP probe type.",
+            f"HTTP port for the {p}. Activates HTTP probe type.",
             **common_kwargs,
         )
         flags.DEFINE_string(
-            "readiness_probe_http_path",
+            f"{p}_http_path",
             None,
-            "HTTP path for the readiness probe (e.g. '/healthz').",
+            f"HTTP path for the {p} (e.g. '/healthz').",
             **common_kwargs,
         )
         flags.DEFINE_string(
-            "readiness_probe_http_scheme",
+            f"{p}_http_scheme",
             None,
-            "HTTP scheme for the readiness probe ('HTTP' or 'HTTPS').",
+            f"HTTP scheme for the {p} ('HTTP' or 'HTTPS').",
             **common_kwargs,
         )
         flags.DEFINE_integer(
-            "readiness_probe_initial_delay_seconds",
+            f"{p}_initial_delay_seconds",
             None,
             "Seconds after container start before probes are initiated.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
-            "readiness_probe_period_seconds",
+            f"{p}_period_seconds",
             None,
             "How often (in seconds) to perform the probe.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
-            "readiness_probe_timeout_seconds",
+            f"{p}_timeout_seconds",
             None,
             "Seconds after which the probe times out.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
-            "readiness_probe_success_threshold",
+            f"{p}_success_threshold",
             None,
             "Minimum consecutive successes for probe to be considered successful.",
             **common_kwargs,
         )
         flags.DEFINE_integer(
-            "readiness_probe_failure_threshold",
+            f"{p}_failure_threshold",
             None,
-            "Consecutive failures before the pod is marked Unready.",
+            "Consecutive failures before the pod is marked Unready/Unhealthy.",
             **common_kwargs,
         )
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs):
-        cfg: ReadinessProbe.Config = super().from_flags(fv, **kwargs)
-        cfg.grpc_port = fv.readiness_probe_grpc_port
-        cfg.grpc_service = fv.readiness_probe_grpc_service
-        cfg.http_port = fv.readiness_probe_http_port
-        cfg.http_path = fv.readiness_probe_http_path
-        cfg.http_scheme = fv.readiness_probe_http_scheme
-        cfg.initial_delay_seconds = fv.readiness_probe_initial_delay_seconds
-        cfg.period_seconds = fv.readiness_probe_period_seconds
-        cfg.timeout_seconds = fv.readiness_probe_timeout_seconds
-        cfg.success_threshold = fv.readiness_probe_success_threshold
-        cfg.failure_threshold = fv.readiness_probe_failure_threshold
+        cfg: _ContainerProbe.Config = super().from_flags(fv, **kwargs)
+        p = cls._flag_prefix
+        cfg.grpc_port = getattr(fv, f"{p}_grpc_port")
+        cfg.grpc_service = getattr(fv, f"{p}_grpc_service")
+        cfg.http_port = getattr(fv, f"{p}_http_port")
+        cfg.http_path = getattr(fv, f"{p}_http_path")
+        cfg.http_scheme = getattr(fv, f"{p}_http_scheme")
+        cfg.initial_delay_seconds = getattr(fv, f"{p}_initial_delay_seconds")
+        cfg.period_seconds = getattr(fv, f"{p}_period_seconds")
+        cfg.timeout_seconds = getattr(fv, f"{p}_timeout_seconds")
+        cfg.success_threshold = getattr(fv, f"{p}_success_threshold")
+        cfg.failure_threshold = getattr(fv, f"{p}_failure_threshold")
         return cfg
 
     def is_configured(self) -> bool:
         """Returns True if a probe type has been configured (grpc_port or http_port is set)."""
-        cfg: ReadinessProbe.Config = self.config
+        cfg: _ContainerProbe.Config = self.config
         return cfg.grpc_port is not None or cfg.http_port is not None
 
-    def build_readiness_probe(self) -> dict:
-        """Builds a k8s readiness probe dict, omitting any None fields.
+    def _build_probe(self) -> dict:
+        """Builds the shared k8s probe dict, omitting any None fields.
 
         Returns:
-            A dict corresponding to a k8s readiness probe configuration.
+            A dict corresponding to a k8s probe configuration.
 
         Raises:
             ValueError: If both grpc_port and http_port are set, or if neither is set.
         """
-        cfg: ReadinessProbe.Config = self.config
+        cfg: _ContainerProbe.Config = self.config
 
         if cfg.grpc_port is not None and cfg.http_port is not None:
             raise ValueError("grpc_port and http_port are mutually exclusive; both are set.")
         if cfg.grpc_port is None and cfg.http_port is None:
-            raise ValueError(
-                "Either grpc_port or http_port must be set to build a readiness probe."
-            )
+            raise ValueError("Either grpc_port or http_port must be set to build a probe.")
 
         probe: dict = {}
 
@@ -179,3 +185,93 @@ class ReadinessProbe(FlagConfigurable):
             probe["failureThreshold"] = cfg.failure_threshold
 
         return probe
+
+
+class ReadinessProbe(_ContainerProbe):
+    """Configures a Kubernetes readiness probe (gRPC or HTTP) for a container.
+
+    Activate gRPC probing by setting grpc_port; activate HTTP probing by setting http_port.
+    The two probe types are mutually exclusive.
+
+    A failing readiness probe marks the pod as not-ready (e.g. removes it from Service
+    endpoints), but does NOT restart the container. Use LivenessProbe if you want
+    container restarts on failure.
+    """
+
+    _flag_prefix = "readiness_probe"
+
+    Config = _ContainerProbe.Config
+
+    def build_readiness_probe(self) -> dict:
+        """Builds a k8s readiness probe dict, omitting any None fields.
+
+        Returns:
+            A dict corresponding to a k8s readiness probe configuration.
+
+        Raises:
+            ValueError: If both grpc_port and http_port are set, or if neither is set.
+        """
+        return self._build_probe()
+
+
+class LivenessProbe(_ContainerProbe):
+    """Configures a Kubernetes liveness probe (gRPC or HTTP) for a container.
+
+    Activate gRPC probing by setting grpc_port; activate HTTP probing by setting http_port.
+    The two probe types are mutually exclusive.
+
+    A failing liveness probe causes the kubelet to kill and restart the container.
+    Use ReadinessProbe if you only want to gate traffic without restarting.
+
+    Flags are registered with the ``liveness_probe_`` prefix (e.g.
+    ``liveness_probe_grpc_port``, ``liveness_probe_http_port``).
+    """
+
+    _flag_prefix = "liveness_probe"
+
+    Config = _ContainerProbe.Config
+
+    def build_liveness_probe(self) -> dict:
+        """Builds a k8s liveness probe dict, omitting any None fields.
+
+        Returns:
+            A dict corresponding to a k8s liveness probe configuration.
+
+        Raises:
+            ValueError: If both grpc_port and http_port are set, or if neither is set.
+        """
+        return self._build_probe()
+
+
+class StartupProbe(_ContainerProbe):
+    """Configures a Kubernetes startup probe (gRPC or HTTP) for a container.
+
+    Activate gRPC probing by setting grpc_port; activate HTTP probing by setting http_port.
+    The two probe types are mutually exclusive.
+
+    A startup probe delays the start of liveness and readiness probes until the container
+    has finished initialising. Once the startup probe succeeds, liveness/readiness probes
+    take over. If the startup probe never succeeds within failureThreshold * periodSeconds,
+    the kubelet kills and restarts the container.
+
+    Note: Kubernetes requires successThreshold=1 for startup probes; omitting
+    success_threshold (the default) satisfies this constraint.
+
+    Flags are registered with the ``startup_probe_`` prefix (e.g.
+    ``startup_probe_grpc_port``, ``startup_probe_http_port``).
+    """
+
+    _flag_prefix = "startup_probe"
+
+    Config = _ContainerProbe.Config
+
+    def build_startup_probe(self) -> dict:
+        """Builds a k8s startup probe dict, omitting any None fields.
+
+        Returns:
+            A dict corresponding to a k8s startup probe configuration.
+
+        Raises:
+            ValueError: If both grpc_port and http_port are set, or if neither is set.
+        """
+        return self._build_probe()

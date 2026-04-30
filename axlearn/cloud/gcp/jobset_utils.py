@@ -31,7 +31,7 @@ from axlearn.cloud.common.utils import (
 )
 from axlearn.cloud.gcp import topology_utils
 from axlearn.cloud.gcp.config import gcp_settings
-from axlearn.cloud.gcp.k8s_readiness_probe import ReadinessProbe
+from axlearn.cloud.gcp.k8s_readiness_probe import LivenessProbe, ReadinessProbe, StartupProbe
 from axlearn.cloud.gcp.node_pool import PRE_PROVISIONER_LABEL
 from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
@@ -324,6 +324,8 @@ class SingleReplicatedJob(BaseReplicatedJob):
         # This config is made Optional for backwards compatibility. Default is False.
         enable_pre_provisioner: Optional[bool] = None
         readiness_probe: ReadinessProbe.Config = ReadinessProbe.default_config()
+        liveness_probe: LivenessProbe.Config = LivenessProbe.default_config()
+        startup_probe: StartupProbe.Config = StartupProbe.default_config()
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -384,6 +386,8 @@ class SingleReplicatedJob(BaseReplicatedJob):
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
         self.readiness_probe = cfg.readiness_probe.instantiate()
+        self.liveness_probe = cfg.liveness_probe.instantiate()
+        self.startup_probe = cfg.startup_probe.instantiate()
 
     @classmethod
     def verify_custom_topology_availability(cls, accelerator: AcceleratorConfig):
@@ -705,9 +709,15 @@ class TPUJobBuilder(SingleReplicatedJob):
             volumeMounts=volume_mounts,
             imagePullPolicy="Always",
         )
+        startup = self.startup_probe
+        if startup.is_configured():
+            container["startupProbe"] = startup.build_startup_probe()
         probe = self.readiness_probe
         if probe.is_configured():
             container["readinessProbe"] = probe.build_readiness_probe()
+        liveness = self.liveness_probe
+        if liveness.is_configured():
+            container["livenessProbe"] = liveness.build_liveness_probe()
         return container
 
     def _build_uploader_container(
@@ -1144,9 +1154,15 @@ class GPUReplicatedJob(SingleReplicatedJob):
             env=env_vars,
             volumeMounts=volume_mounts,
         )
+        startup = self.startup_probe
+        if startup.is_configured():
+            container["startupProbe"] = startup.build_startup_probe()
         probe = self.readiness_probe
         if probe.is_configured():
             container["readinessProbe"] = probe.build_readiness_probe()
+        liveness = self.liveness_probe
+        if liveness.is_configured():
+            container["livenessProbe"] = liveness.build_liveness_probe()
         return container
 
     def _build_volumes(self) -> Nested[Any]:

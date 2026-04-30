@@ -11,6 +11,7 @@ from axlearn.cloud.common.pod_mutator import PodMutator
 from axlearn.cloud.common.utils import define_flags, from_flags
 from axlearn.cloud.gcp import bundler, jobset_utils, lws_utils, pathways_utils
 from axlearn.cloud.gcp.bundler import CloudBuildBundler
+from axlearn.cloud.gcp.k8s_readiness_probe import LivenessProbe, ReadinessProbe
 from axlearn.cloud.gcp.pathways_utils import (
     _COLOCATED_PYTHON_SIDECAR_NAME,
     _PATHWAYS_COLOCATED_SERVER_IMAGE,
@@ -978,6 +979,97 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
 
             self.assertEqual(http_volume_mount, expected_http_cm)
             self.assertEqual(grpc_volume_mount, expected_grpc_cm)
+
+    def test_readiness_probe_overrides_enable_health_probes(self):
+        """Tests that a configured readiness_probe overrides the one set by enable_health_probes."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                enable_health_probes=True,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+                readiness_probe=ReadinessProbe.default_config().set(grpc_port=1234),
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            # pylint: disable-next=protected-access
+            container = builder._build_head_container()
+
+            # readinessProbe should use grpc port 1234, not the http one from enable_health_probes
+            self.assertIn("readinessProbe", container)
+            readiness_probe = container["readinessProbe"]
+            self.assertIn("grpc", readiness_probe)
+            self.assertEqual(readiness_probe["grpc"]["port"], 1234)
+            self.assertNotIn("httpGet", readiness_probe)
+
+            # startupProbe should still be present from enable_health_probes
+            self.assertIn("startupProbe", container)
+
+    def test_liveness_probe_added_to_head_container(self):
+        """Tests that a configured liveness_probe is added to the head container."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                enable_health_probes=False,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+                liveness_probe=LivenessProbe.default_config().set(http_port=9090),
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            # pylint: disable-next=protected-access
+            container = builder._build_head_container()
+
+            # livenessProbe should be present with httpGet port 9090
+            self.assertIn("livenessProbe", container)
+            liveness_probe = container["livenessProbe"]
+            self.assertIn("httpGet", liveness_probe)
+            self.assertEqual(liveness_probe["httpGet"]["port"], 9090)
+
+            # readinessProbe should NOT be present (not configured, enable_health_probes=False)
+            self.assertNotIn("readinessProbe", container)
+
+    def test_probes_without_enable_health_probes(self):
+        """Tests that both readiness and liveness probes work without enable_health_probes."""
+        with (
+            self._job_config(
+                CloudBuildBundler,
+                enable_health_probes=False,
+            ) as (cfg, bundler_cfg),
+        ):
+            cfg.inner.set(
+                project="test-project",
+                name="test",
+                command="test_command",
+                output_dir="FAKE",
+                readiness_probe=ReadinessProbe.default_config().set(grpc_port=1234),
+                liveness_probe=LivenessProbe.default_config().set(http_port=8080),
+            ).instantiate(bundler=bundler_cfg.instantiate())
+
+            builder = cfg.instantiate(bundler=bundler_cfg.instantiate())
+            # pylint: disable-next=protected-access
+            container = builder._build_head_container()
+
+            # Both probes should be present
+            self.assertIn("readinessProbe", container)
+            readiness_probe = container["readinessProbe"]
+            self.assertIn("grpc", readiness_probe)
+            self.assertEqual(readiness_probe["grpc"]["port"], 1234)
+
+            self.assertIn("livenessProbe", container)
+            liveness_probe = container["livenessProbe"]
+            self.assertIn("httpGet", liveness_probe)
+            self.assertEqual(liveness_probe["httpGet"]["port"], 8080)
 
 
 if __name__ == "__main__":
