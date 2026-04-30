@@ -370,37 +370,11 @@ def _pre_provision(cfg, pre_provisioner: NodePoolProvisioner, inner) -> None:
     pre_provisioner.create_for(inner)
 
 
-class GKEBaseRunnerJob(BaseRunnerJob):
-    """Shared base for GKE runner jobs (JobSet and LeaderWorkerSet).
-
-    Defines the protocol of shared lifecycle hooks used by both
-    GKERunnerJob and LWSRunnerJob.
-    """
-
-    @property
-    def is_running(self) -> bool:
-        """Returns True when this job has reached its running/ready state."""
-        raise NotImplementedError(type(self))
-
-    def _get_build_name(self) -> str:
-        """Returns the identifier to wait on for the image build.
-        Override in subclasses to customize build name resolution."""
-        raise NotImplementedError(type(self))
-
-    def _on_build_finished(self):
-        """Called after image build completes successfully. Override for post-build actions."""
-        pass
-
-    def _on_job_submitted(self):
-        """Called after the job is submitted to k8s. Override for post-submission actions."""
-        pass
-
-
-class GKERunnerJob(GKEBaseRunnerJob):
+class GKERunnerJob(BaseRunnerJob):
     """Launches and monitors a GKE job via k8s JobSet API."""
 
     @config_class
-    class Config(GKEBaseRunnerJob.Config):
+    class Config(BaseRunnerJob.Config):
         """Configures GKERunnerJob.
 
         Attributes:
@@ -497,17 +471,6 @@ class GKERunnerJob(GKEBaseRunnerJob):
             ).instantiate()
 
         self._event_publisher: BaseQueueClient = maybe_instantiate(cfg.event_publisher)
-        self.last_status = None
-
-    def _get_build_name(self) -> str:
-        # pylint: disable-next=protected-access
-        image_id = self._inner._builder.config.image_id
-        return image_id or self.config.name
-
-    @property
-    def is_running(self) -> bool:
-        """Returns True when this job has reached its running/ready state."""
-        return self.last_status == GKERunnerJob.Status.READY
 
     class Status(enum.Enum):
         """GKE JobSet status.
@@ -611,14 +574,9 @@ class GKERunnerJob(GKEBaseRunnerJob):
             # are "ready", in which case we consider the job as actually running.
             statuses = {k: 0 for k in ["failed", "ready", "succeeded"]}
             for job in resp["status"]["replicatedJobsStatus"]:
-                logging.info(
-                    "Replicated job %s: %s",
-                    job.get("name", "unknown"),
-                    {k: job.get(k, 0) for k in ("failed", "ready", "succeeded", "active")},
-                )
                 for status in statuses:
                     statuses[status] += job.get(status, 0)
-            logging.info("Aggregate statuses: %s", statuses)
+            logging.info("Statuses: %s", statuses)
 
             # Return status if all replicas are accounted for and none have failed.
             # Note: "failed" in replicatedJobsStatus is retryable — jobset automatically retries
@@ -757,6 +715,7 @@ class GKERunnerJob(GKEBaseRunnerJob):
 
         # Keep track of last status to prevent duplicate events.
         last_job_status = None
+
         # Track when the job enters SUSPENDED state.
         suspended_since = None
 
@@ -765,7 +724,6 @@ class GKERunnerJob(GKEBaseRunnerJob):
 
         while True:
             status = self._get_status()
-            self.last_status = status
 
             # Don't retry if FAILED, since we ask GKE to handle retries.
             # Note that job remains ACTIVE until all retries are exhausted.
@@ -790,18 +748,19 @@ class GKERunnerJob(GKEBaseRunnerJob):
                 self._inner._delete()  # pylint: disable=protected-access
             elif status == GKERunnerJob.Status.NOT_STARTED:
                 logging.info("Task has not started. Starting it now...")
+                # pylint: disable-next=protected-access
+                image_id = self._inner._builder.config.image_id
                 try:
                     # Note: while the wait is blocking, the bastion will kill the runner process
                     # when it needs to reschedule.
                     wait_build_start = time.perf_counter()
-                    self._bundler.wait_until_finished(self._get_build_name())
+                    self._bundler.wait_until_finished(image_id or cfg.name)
                     metrics.record_job_wait_for_build(
                         cfg.name, time.perf_counter() - wait_build_start
                     )
                     self._maybe_publish(
                         cfg.name, msg="Cloud build finished", state=JobLifecycleState.STARTING
                     )
-                    self._on_build_finished()
                 except RuntimeError as e:
                     logging.error("Bundling failed: %s. Aborting the job.", e)
                     return
@@ -812,7 +771,6 @@ class GKERunnerJob(GKEBaseRunnerJob):
                     _pre_provision(cfg, self._pre_provisioner, self._inner)
 
                 self._inner.execute()
-                self._on_job_submitted()
                 self._maybe_publish(
                     cfg.name, msg="Provisioning resources", state=JobLifecycleState.STARTING
                 )
@@ -987,11 +945,11 @@ class FlinkGKERunnerJob(GKERunnerJob):
         return GKERunnerJob.Status.UNKNOWN
 
 
-class LWSRunnerJob(GKEBaseRunnerJob):
+class LWSRunnerJob(BaseRunnerJob):
     """Launches and monitors a GKE job via k8s LWS API."""
 
     @config_class
-    class Config(GKEBaseRunnerJob.Config):
+    class Config(BaseRunnerJob.Config):
         """Configures LWSRunnerJob.
 
         Attributes:
@@ -1087,17 +1045,6 @@ class LWSRunnerJob(GKEBaseRunnerJob):
             ).instantiate()
 
         self._event_publisher: BaseQueueClient = maybe_instantiate(cfg.event_publisher)
-        self.last_status = None
-
-    def _get_build_name(self) -> str:
-        # pylint: disable-next=protected-access
-        image_id = self._inner._builder.config.image_id
-        return image_id or self.config.name
-
-    @property
-    def is_running(self) -> bool:
-        """Returns True when this job has reached its running/ready state."""
-        return self.last_status == LWSRunnerJob.Status.RUNNING
 
     class Status(enum.Enum):
         """GKE LeaderWorkerSet status.
@@ -1268,10 +1215,11 @@ class LWSRunnerJob(GKEBaseRunnerJob):
             RuntimeError: If bundling failed and the job should be aborted.
         """
         cfg: LWSRunnerJob.Config = self.config
+        # pylint: disable-next=protected-access
+        image_id = self._inner._builder.config.image_id
         # Note: while the wait is blocking, the bastion will kill the runner process
         # when it needs to reschedule.
-        self._bundler.wait_until_finished(self._get_build_name())
-        self._on_build_finished()
+        self._bundler.wait_until_finished(image_id or cfg.name)
 
         # Before provisioning, remove any wrong-tier node pools left by a prior runner,
         # then provision new ones for the job to run.
@@ -1279,7 +1227,6 @@ class LWSRunnerJob(GKEBaseRunnerJob):
             _pre_provision(cfg, self._pre_provisioner, self._inner)
 
         self._inner.execute()
-        self._on_job_submitted()
 
     def _execute(self):
         cfg: LWSRunnerJob.Config = self.config
@@ -1288,7 +1235,6 @@ class LWSRunnerJob(GKEBaseRunnerJob):
         last_job_status = None
         while True:
             status = self._get_status()
-            self.last_status = status
 
             # Don't retry if FAILED, since we ask GKE to handle retries.
             # Note that LeaderWorkerSet remains ACTIVE until all retries are exhausted.
