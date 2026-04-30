@@ -529,4 +529,4 @@ def test_cudnn_dropout_determinism():
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main())
+    sys.exit(pytest.main([__file__]))

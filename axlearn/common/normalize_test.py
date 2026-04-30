@@ -19,4 +19,4 @@ def test_l2_normalize(shape, axis):
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main())
+    sys.exit(pytest.main([__file__]))

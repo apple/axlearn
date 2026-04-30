@@ -1184,4 +1184,4 @@ if __name__ == "__main__":
     # it sets __name__ to "__main__" instead of "config_test".  These incorrect values confuse
     # axlearn.common.config.debug_string, which then produces incorrectly named fields and causes
     # the test/CI to fail. So, here we have to use pytest.main.
-    sys.exit(pytest.main())
+    sys.exit(pytest.main([__file__]))

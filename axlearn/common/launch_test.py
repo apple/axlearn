@@ -66,4 +66,4 @@ if __name__ == "__main__":
 
     import pytest
 
-    sys.exit(pytest.main())
+    sys.exit(pytest.main([__file__]))

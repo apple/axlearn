@@ -669,4 +669,4 @@ class FlagConfigurableTest(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main())
+    sys.exit(pytest.main([__file__]))
