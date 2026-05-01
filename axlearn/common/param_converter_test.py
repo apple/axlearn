@@ -148,8 +148,8 @@ class ParameterTest(BaseParamConverterTest):
             bos_token_id=3,
             eos_token_id=1,
         )
-        self.hf_cfg = hf_roberta.RobertaConfig(**hf_cfg_kwargs)
-        self.hf_bert_cfg = hf_bert.BertConfig(**hf_cfg_kwargs)
+        self.hf_cfg = hf_roberta.RobertaConfig(attn_implementation="eager", **hf_cfg_kwargs)
+        self.hf_bert_cfg = hf_bert.BertConfig(attn_implementation="eager", **hf_cfg_kwargs)
 
     def _bert_model_config(
         self,
@@ -850,6 +850,7 @@ class TestHFMultiStreamTextEmbeddingModel(TestCase):
                 projection_dim=0,
                 add_pooling_layer=False,
                 output_norm=None,
+                attn_implementation="eager",
             ),
             "doc_encoder": BertConfig(
                 vocab_size=8,
@@ -863,6 +864,7 @@ class TestHFMultiStreamTextEmbeddingModel(TestCase):
                 projection_dim=0,
                 add_pooling_layer=False,
                 output_norm=None,
+                attn_implementation="eager",
             ),
         }
 

@@ -32,6 +32,7 @@ class HFClipTest(BaseParamConverterTest):
             max_position_embeddings=12,
             vocab_size=24,
             hidden_act="quick_gelu",
+            attn_implementation="eager",
         )
         clip_vision_cfg = dict(
             hidden_size=32,
@@ -41,10 +42,18 @@ class HFClipTest(BaseParamConverterTest):
             num_hidden_layers=3,
             num_attention_heads=8,
             hidden_act="quick_gelu",
+            attn_implementation="eager",
         )
         self.clip_cfg = hf_clip.CLIPConfig(
-            text_config_dict=clip_text_cfg, vision_config_dict=clip_vision_cfg, projection_dim=48
+            text_config_dict=clip_text_cfg,
+            vision_config_dict=clip_vision_cfg,
+            projection_dim=48,
+            attn_implementation="eager",
         )
+        # pylint: disable-next=protected-access
+        self.clip_cfg.vision_config._attn_implementation = "eager"
+        # pylint: disable-next=protected-access
+        self.clip_cfg.text_config._attn_implementation = "eager"
 
     def _dummy_clip_input(self, batch: int):
         image_inputs = jax.random.randint(

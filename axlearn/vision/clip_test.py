@@ -110,6 +110,7 @@ class TestCLIPEncoder(parameterized.TestCase):
             num_hidden_layers=num_layers,
             num_attention_heads=num_heads,
             hidden_act=get_hf_act(act_fn),
+            attn_implementation="eager",
         )
         ref_visual_encoder = hf_clip.CLIPVisionTransformer(clip_config)
 
@@ -180,6 +181,7 @@ class TestCLIPEncoder(parameterized.TestCase):
             eos_token_id=EOS_TOKEN_ID,
             vocab_size=HF_VOCAB_SIZE,
             hidden_act=get_hf_act(act_fn),
+            attn_implementation="eager",
         )
         ref_textual_encoder = hf_clip.CLIPTextTransformer(clip_config)
 
@@ -342,7 +344,10 @@ class TestCLIPModel(parameterized.TestCase):
             hidden_act=get_hf_act(act_fn),
         )
         clip_config = hf_clip.CLIPConfig(
-            text_config_dict=text_config, vision_config_dict=vision_config, projection_dim=48
+            text_config_dict=text_config,
+            vision_config_dict=vision_config,
+            projection_dim=48,
+            attn_implementation="eager",
         )
         ref_clip_model = hf_clip.CLIPModel(clip_config)
 

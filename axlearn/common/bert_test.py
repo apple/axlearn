@@ -135,6 +135,7 @@ class BertTest(TestCase):
             # https://github.com/huggingface/transformers/blob/215e0681e4c3f6ade6e219d022a5e640b42fcb76/src/transformers/activations.py#L27-L37
             hidden_act="gelu_new",
             classifier_dropout=0.0,
+            attn_implementation="eager",
             num_labels=2,
         )
 
