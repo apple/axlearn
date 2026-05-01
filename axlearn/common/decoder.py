@@ -105,18 +105,24 @@ def _segment_ids_from_causal_input_ids(input_ids: Tensor, *, pad_token_id: int) 
     return jax.lax.cummax(non_pad_indicator, axis=input_ids.ndim - 1, reverse=True)
 
 
-def _scores_from_logits(
+def log_probs_from_logits(
     logits: Tensor, logits_modifier: Optional[LogitsToLogitsFn] = None
 ) -> Tensor:
-    """Produces decoding scores from logits and optional logit modifier."""
-    if logits.dtype in (jnp.bfloat16, jnp.float16):
-        # Cast for log softmax.
-        logits = logits.astype(jnp.float32)
+    """Computes log probabilities from logits, with an optional modifier.
 
+    Args:
+        logits: A float Tensor of shape [..., vocab_size].
+        logits_modifier: An optional function to modify the log probabilities
+            (e.g. top-k, top-p filtering). Applied after log_softmax.
+
+    Returns:
+        Log probabilities of same shape as logits.
+    """
+    if logits.dtype in (jnp.bfloat16, jnp.float16):
+        logits = logits.astype(jnp.float32)
     log_probs = jax.nn.log_softmax(logits)
     if logits_modifier is not None:
         log_probs = logits_modifier(log_probs)
-
     return log_probs
 
 
@@ -259,6 +265,8 @@ class DecodingLayer(Configurable):
         time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
         prefill_batch = {**input_batch}
         prefill_batch["input_ids"] = input_ids
+        # Note: it prefills `k-1` tokens and used the last prefix token in first generation loop.
+        # TODO(axlearn-dev): prefill all prefix tokens in one shot.
         init_states, _ = self._decoder.prefill_states(
             time_step=time_step,
             input_batch=prefill_batch,
@@ -314,43 +322,61 @@ class DecodingLayer(Configurable):
         """
         validate_contains_paths(input_batch, paths=["prefix"])
         prefix = input_batch["prefix"]
-
         cfg = self.config
         logits_modifier = maybe_instantiate(logits_modifier)
-        tokens_to_scores_fn = self._tokens_to_scores(
-            num_decodes=num_decodes,
-            cross_attention_data=cross_attention_data,
-            cross_attention_logit_biases=cross_attention_logit_biases,
-            logits_modifier=logits_modifier,
-        )
+
         input_ids = self._pad(
             prefix, max_sequence_length=max_sequence_length, pad_id=cfg.pad_token_id
         )
-        time_step = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id)
-        prefill_batch = {**input_batch}
-        prefill_batch["input_ids"] = input_ids
+        prefill_len = infer_initial_time_step(prefix, pad_id=cfg.pad_token_id) + 1
+
+        # Prefill all prefix tokens in one shot.
         init_states, init_outputs = self._decoder.prefill_states(
-            time_step=time_step,
-            input_batch=prefill_batch,
+            time_step=prefill_len,
+            input_batch={**input_batch, "input_ids": input_ids},
             cross_attention_data=cross_attention_data,
             cross_attention_logit_biases=cross_attention_logit_biases,
         )
-        init_scores = _scores_from_logits(init_outputs["logits"], logits_modifier=logits_modifier)
-        # Extract scores corresponding to prefix tokens. Since each sequence in input_ids starts
-        # with the [BOS] token, shift them so they line up with the scores of the output tokens.
-        score_indices = jnp.roll(input_ids[:, :, None], shift=-1)
-        # [batch_size, seq_len, vocab_size] --> [batch_size, seq_len].
-        init_scores = jnp.squeeze(jnp.take_along_axis(init_scores, score_indices, axis=-1), axis=-1)
+        logsoftmax = log_probs_from_logits(init_outputs["logits"], logits_modifier=logits_modifier)
+
+        def _input_ids_after_prefill(input_ids, logsoftmax, first_key):
+            # Sample the first generated token from the last prefilled position's logits,
+            # then place it in input_ids so sample_decode treats it as part of the prompt.
+            batch_idx = jnp.arange(input_ids.shape[0])
+            first_gen_logits = logsoftmax[batch_idx, prefill_len - 1, :]
+            first_gen_token = jax.random.categorical(first_key, logits=first_gen_logits)
+            oh = jax.nn.one_hot(prefill_len, input_ids.shape[1], dtype=input_ids.dtype)
+            input_ids = input_ids * (1 - oh) + first_gen_token[:, None] * oh
+            return input_ids
+
+        first_key, decode_key = jax.random.split(self._decoder.prng_key)
+        input_ids = _input_ids_after_prefill(input_ids, logsoftmax, first_key)
+
+        # Compute per-token scores: init_scores[b, i] = log P(input_ids[b, i+1] | tokens 0..i).
+        def _get_init_scores(logsoftmax, input_ids):
+            indices = jnp.roll(input_ids, shift=-1)[:, :, None]
+            init_scores = jnp.squeeze(jnp.take_along_axis(logsoftmax, indices, axis=-1), axis=-1)
+            score_mask = sequence_mask(lengths=prefill_len, max_len=init_scores.shape[-1])
+            init_scores = init_scores * score_mask
+            return init_scores
+
+        init_scores = _get_init_scores(logsoftmax, input_ids)
+
         return sample_decode(
             inputs=input_ids,
-            time_step=time_step,
+            time_step=prefill_len,
             cache=init_states,
-            tokens_to_scores=tokens_to_scores_fn,
+            tokens_to_scores=self._tokens_to_scores(
+                num_decodes=num_decodes,
+                cross_attention_data=cross_attention_data,
+                cross_attention_logit_biases=cross_attention_logit_biases,
+                logits_modifier=logits_modifier,
+            ),
             stop_decoding_condition=(
                 stop_decoding_condition or StopOnSubsequence([[cfg.eos_token_id]])
             ),
             num_decodes=num_decodes,
-            prng_key=self._decoder.prng_key,
+            prng_key=decode_key,
             pad_id=cfg.pad_token_id,
             input_token_scores=init_scores,
         )
@@ -426,7 +452,7 @@ class DecodingLayer(Configurable):
                 )
 
             logits = outputs["logits"]
-            log_probs = _scores_from_logits(logits[:, -1, :], logits_modifier=logits_modifier)
+            log_probs = log_probs_from_logits(logits[:, -1, :], logits_modifier=logits_modifier)
             return log_probs, updated_state
 
         return tokens_to_scores
@@ -687,7 +713,8 @@ class Decoder(BaseLayer):
         """See `BaseDecoder.prefill_states` for details, DEPRECATED.
 
         Args:
-            time_step: A Tensor of shape [batch_size]. See `BaseDecoder.prefill_states` for details.
+            time_step: A Tensor of shape [batch_size] representing the number of tokens to
+                prefill per example (i.e., prefill_len).
             input_batch: See `forward` for details.
             kwargs: See `forward` for details.
 

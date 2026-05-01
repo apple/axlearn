@@ -227,7 +227,7 @@ class TestEncoderDecoder(TestCase):
             if method == "sample_decode":
                 # Modify logits so that we will always sample the last token ID.
                 inputs["logits_modifier"] = (
-                    lambda logits: jnp.full_like(logits, decoding.NEG_INF).at[:, -1].set(0)
+                    lambda logits: jnp.full_like(logits, decoding.NEG_INF).at[..., -1].set(0)
                 )
 
             outputs, _ = F(

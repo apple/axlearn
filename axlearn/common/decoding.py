@@ -1042,6 +1042,8 @@ def sample_decode(
         token_scores=input_token_scores,
     )
 
+    prefix_len = time_step + 1  # [batch].
+
     def sample_decode_loop_cond_fn(state: DecodingState) -> bool:
         """Sample decode loop termination condition."""
         # TODO(markblee): More generally, can we wrap all conditions into stop_decoding_condition?
@@ -1074,7 +1076,7 @@ def sample_decode(
         # Sample next token IDs according to logits.
         prng_key, updated_prng_key = jax.random.split(state.prng_key)
         # [batch, num_decodes].
-        sampled_next_token = jax.random.categorical(prng_key, logits=candidate_log_probs, axis=2)
+        next_token = jax.random.categorical(prng_key, logits=candidate_log_probs, axis=2)
 
         # We allow next_index to exceed `max_decode_len-1`:
         # - When reading from next_index, mode="clip" will effectively read `max_decode_len-1`;
@@ -1082,16 +1084,6 @@ def sample_decode(
         # [batch].
         next_index = cur_index + 1
 
-        # Collect next input token.
-        # [batch, num_decodes].
-        next_input_token = jnp.squeeze(
-            jnp.take_along_axis(state.sequences, next_index[:, None, None], axis=2, mode="clip"),
-            axis=2,
-        )
-        out_of_prompt = next_input_token == pad_id
-
-        # Compute the overall next token based on whether we are inside the prompt or not.
-        next_token = sampled_next_token * out_of_prompt + next_input_token * ~out_of_prompt
         # [batch, num_decodes].
         next_token_log_prob = jnp.sum(
             candidate_log_probs * jax.nn.one_hot(next_token, candidate_log_probs.shape[-1]),
@@ -1123,9 +1115,7 @@ def sample_decode(
             state.token_scores * (1 - oh_indices)
             + jnp.expand_dims(next_token_log_prob, 2) * oh_indices
         )
-        # TODO(dhwang2): unify out_of_prompt and prefix_len as out_of_prompt become redundant.
-        prefix_len = time_step + 1
-        should_stop = out_of_prompt & stop_decoding_condition(
+        should_stop = stop_decoding_condition(
             index=jnp.minimum(next_index, max_decode_len - 1),
             sequences=updated_sequences,
             prefix_len=prefix_len,

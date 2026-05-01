@@ -27,7 +27,7 @@ from axlearn.audio.decoder_asr import (
 )
 from axlearn.common import attention, causal_lm
 from axlearn.common.config import config_for_function
-from axlearn.common.decoder import _scores_from_logits
+from axlearn.common.decoder import log_probs_from_logits
 from axlearn.common.decoding import NEG_INF
 from axlearn.common.logit_modifiers import top_k_logits
 from axlearn.common.metrics import WeightedSummary
@@ -503,7 +503,7 @@ class CTCDecoderModelTest(TestCase):
             method="predict",
         )
         # Transpose since torch ctc_loss expects [max_seq_len, batch_size, ...].
-        ref_inputs = as_torch_tensor(_scores_from_logits(logits)).transpose(0, 1)
+        ref_inputs = as_torch_tensor(log_probs_from_logits(logits)).transpose(0, 1)
         ref_target_labels = as_torch_tensor(target_labels)
         ref_per_example_loss = torch.nn.functional.ctc_loss(
             log_probs=ref_inputs,
