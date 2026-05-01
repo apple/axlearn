@@ -1,0 +1,2 @@
+backbone/weight: uniform(-sqrt(3.0 / fan_avg), sqrt(3.0 / fan_avg)), shape=(2, 1), axes=FanAxes(in_axis=-2, out_axis=-1, batch_axis=())
+backbone/bias: constant(0.0)
