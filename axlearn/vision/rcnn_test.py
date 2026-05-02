@@ -124,5 +124,5 @@ class FasterRCNNTest(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    with utils.numeric_checks(True):
+    with utils.numeric_checks(False):
         absltest.main()

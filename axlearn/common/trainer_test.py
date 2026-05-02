@@ -536,9 +536,9 @@ class TrainerTest(test_utils.TestCase):
                     # As of Jax >= 0.6.0, enable_python_cache=False no longer affects the
                     # AOT compilation path. We now expect the cache hits to be 0
                     if jax.__version__ >= "0.6.0":
-                        pytest.skip(
-                            # pylint: disable-next=line-too-long
-                            "AOT compilation path is not affected by 'enable_python_cache' with Jax >= 0.6.0"
+                        self.skipTest(
+                            "AOT compilation path is not affected by"
+                            " 'enable_python_cache' with Jax >= 0.6.0"
                         )
                     # We expect to have hit the lowering cache on all but one step.
                     self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
@@ -552,9 +552,9 @@ class TrainerTest(test_utils.TestCase):
             else:
                 if not enable_python_cache:
                     if jax.__version__ >= "0.6.0":
-                        pytest.skip(
-                            # pylint: disable-next=line-too-long
-                            "AOT compilation path is not affected by 'enable_python_cache' with Jax >= 0.6.0"
+                        self.skipTest(
+                            "AOT compilation path is not affected by"
+                            " 'enable_python_cache' with Jax >= 0.6.0"
                         )
                     self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)
                     self.assertEqual(mocked_compile_fn.call_count, cfg.max_step)
@@ -1226,12 +1226,16 @@ class TrainerTest(test_utils.TestCase):
     @pytest.mark.for_8_devices
     def test_input_dispatch_basic(self, multiple: float):
         """Tests input dispatch with at least 1 per process."""
+        if jax.device_count() < 2:
+            self.skipTest("Requires multiple devices")
         self._test_input_dispatch(multiple)
 
     @parameterized.parameters([1 / 2, 1 / 4])
     @pytest.mark.tpu
     def test_input_dispatch_every_other_process(self, multiple: float):
         """Tests input dispatch with some padding feeds. Requires process_count > 1."""
+        if not test_utils.is_supported_platform("tpu"):
+            self.skipTest("Requires TPU backend")
         self._test_input_dispatch(multiple, backend="tpu")
 
     def test_optional_batch_axes(self):

@@ -8,7 +8,6 @@ from collections.abc import Mapping, Sequence
 from typing import Optional, Union
 
 import numpy as np
-import pytest
 import seqio
 import tensorflow as tf
 from absl.testing import absltest, parameterized
@@ -130,7 +129,6 @@ class AddTokenTypeIDTest(test_utils.TestCase):
             "feature_lengths": dict(query=3, answer=3),
         },
     )
-    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
     def test_add_token_type_ids_single_example(
         self,
         input_key: Union[str, Sequence[str]],
@@ -138,6 +136,8 @@ class AddTokenTypeIDTest(test_utils.TestCase):
         is_ragged: bool,
         feature_lengths: Optional[Mapping[str, int]] = None,
     ):
+        if not os.path.exists(_T5_VOCAB_FILE):
+            self.skipTest("Missing testdata.")
         ds = self.create_source_ds(num_examples=1)
         vocab = SentencePieceVocabulary(_T5_VOCAB_FILE)
         keys = [input_key] if isinstance(input_key, str) else input_key
@@ -189,7 +189,6 @@ class AddTokenTypeIDTest(test_utils.TestCase):
             "feature_lengths": dict(query=3, answer=3),
         },
     )
-    @pytest.mark.skipif(not os.path.exists(_T5_VOCAB_FILE), reason="Missing testdata.")
     def test_add_token_type_ids_multiple_examples(
         self,
         input_key: Union[str, Sequence[str]],
@@ -197,6 +196,8 @@ class AddTokenTypeIDTest(test_utils.TestCase):
         is_ragged: bool,
         feature_lengths: Optional[Mapping[str, int]] = None,
     ):
+        if not os.path.exists(_T5_VOCAB_FILE):
+            self.skipTest("Missing testdata.")
         ds = self.create_source_ds(num_examples=3)
         vocab = SentencePieceVocabulary(_T5_VOCAB_FILE)
         keys = [input_key] if isinstance(input_key, str) else input_key
@@ -257,8 +258,9 @@ class TokenizeExampleTest(test_utils.TestCase):
             newlines_replaced_with="\n",
         ),
     )
-    @pytest.mark.skipif(not os.path.exists(_OPT_VOCAB_FILE), reason="Missing testdata.")
     def test_tokenize_example(self, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
+        if not os.path.exists(_OPT_VOCAB_FILE):
+            self.skipTest("Missing testdata.")
         self._test_tokenize_example(
             vocab_cfg=vocab_cfg, newlines_replaced_with=newlines_replaced_with
         )
@@ -294,8 +296,9 @@ class NumBytesTest(test_utils.TestCase):
             newlines_replaced_with="\n",
         ),
     )
-    @pytest.mark.skipif(not os.path.exists(_OPT_VOCAB_FILE), reason="Missing testdata.")
     def test_num_bytes(self, vocab_cfg: InstantiableConfig, newlines_replaced_with: str):
+        if not os.path.exists(_OPT_VOCAB_FILE):
+            self.skipTest("Missing testdata.")
         self._test_num_bytes(vocab_cfg=vocab_cfg, newlines_replaced_with=newlines_replaced_with)
 
 

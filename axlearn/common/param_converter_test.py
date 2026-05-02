@@ -79,6 +79,7 @@ from axlearn.common.utils_text_dual_encoder import bert_text_embedding_stream_en
 from axlearn.huggingface import hf_text_encoder
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
+_MODULE_NAME = "axlearn.common.param_converter_test"
 tokenizers_dir = os.path.join(testdata_dir, "tokenizers")
 
 
@@ -996,7 +997,7 @@ class T5XModelConverterTest(TestCase):
 
     def test_parameters_from_t5x_ff(self):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_ff.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_ff.npy"),
             allow_pickle=True,
         ).item()
 
@@ -1019,7 +1020,9 @@ class T5XModelConverterTest(TestCase):
     def test_parameters_from_t5x_rel_pos_emb(self, bidirectional: bool):
         testcase = jnp.load(
             os.path.join(
-                testdata_dir, __name__, f"test_parameters_from_t5x_rel_pos_emb_{bidirectional}.npy"
+                testdata_dir,
+                _MODULE_NAME,
+                f"test_parameters_from_t5x_rel_pos_emb_{bidirectional}.npy",
             ),
             allow_pickle=True,
         ).item()
@@ -1044,7 +1047,7 @@ class T5XModelConverterTest(TestCase):
     @parameterized.parameters([QKVLinear, FusedQKVLinear])
     def test_parameters_from_t5x_attention(self, proj_cls: type[BaseQKVLinear]):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_attention.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_attention.npy"),
             allow_pickle=True,
         ).item()
 
@@ -1069,7 +1072,7 @@ class T5XModelConverterTest(TestCase):
 
     def test_parameters_from_t5x_layer_norm(self):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_layer_norm.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_layer_norm.npy"),
             allow_pickle=True,
         ).item()
 
@@ -1086,7 +1089,7 @@ class T5XModelConverterTest(TestCase):
 
     def test_parameters_from_t5x_dense(self):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_dense.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_dense.npy"),
             allow_pickle=True,
         ).item()
 
@@ -1110,7 +1113,7 @@ class T5XModelConverterTest(TestCase):
 
     def test_parameters_from_t5x_embedding(self):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_embedding.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_embedding.npy"),
             allow_pickle=True,
         ).item()
 
@@ -1134,7 +1137,9 @@ class T5XModelConverterTest(TestCase):
 
     def test_parameters_from_t5x_transformer_layer(self):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_transformer_layer.npy"),
+            os.path.join(
+                testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_transformer_layer.npy"
+            ),
             allow_pickle=True,
         ).item()
 
@@ -1156,7 +1161,7 @@ class T5XModelConverterTest(TestCase):
     @parameterized.parameters(StackedTransformerLayer, RepeatedTransformerLayer)
     def test_parameters_from_t5x_decoder(self, stack_cls: type[BaseStackedTransformerLayer]):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_decoder.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_decoder.npy"),
             allow_pickle=True,
         ).item()
 
@@ -1205,7 +1210,7 @@ class T5XModelConverterTest(TestCase):
     @parameterized.parameters([StackedTransformerLayer, RepeatedTransformerLayer])
     def test_parameters_from_t5x_encoder(self, stack_cls: type[BaseStackedTransformerLayer]):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_encoder.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_encoder.npy"),
             allow_pickle=True,
         ).item()
 
@@ -1254,7 +1259,9 @@ class T5XModelConverterTest(TestCase):
         proj_cls: type[BaseQKVLinear],
     ):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_parameters_from_t5x_encoder_decoder.npy"),
+            os.path.join(
+                testdata_dir, _MODULE_NAME, "test_parameters_from_t5x_encoder_decoder.npy"
+            ),
             allow_pickle=True,
         ).item()
 

@@ -34,6 +34,7 @@ from axlearn.common.utils import Tensor, as_tensor
 
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
+_MODULE_NAME = "axlearn.common.t5_test"
 
 
 def random_inputs_for_t5(
@@ -190,7 +191,9 @@ class RelativePositionTest(TestCase):
     def test_buckets_against_t5x(self, bidirectional, seq_len):
         testcase = jnp.load(
             os.path.join(
-                testdata_dir, __name__, f"test_buckets_against_t5x_{bidirectional}_{seq_len}.npy"
+                testdata_dir,
+                _MODULE_NAME,
+                f"test_buckets_against_t5x_{bidirectional}_{seq_len}.npy",
             ),
             allow_pickle=True,
         ).item()

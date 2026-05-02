@@ -35,6 +35,7 @@ from axlearn.common.test_utils import TestCase, assert_allclose, is_supported_me
 from axlearn.common.utils import safe_not
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
+_MODULE_NAME = "axlearn.common.conformer_test"
 
 
 class LConvLayerTest(TestCase):
@@ -92,7 +93,7 @@ class ConformerLayerTest(TestCase):
         min_num_tokens = 5
 
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, "test_against_fairseq.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, "test_against_fairseq.npy"),
             allow_pickle=True,
         ).item()
         segment_ids = safe_not(testcase["paddings"]).astype(jnp.int32)

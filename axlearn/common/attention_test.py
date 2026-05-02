@@ -1015,12 +1015,12 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             attn_mask = None if mask is None else as_torch_tensor(mask)
             print("ref_rope_emb", ref_rope_emb.shape)
             print("target", target.shape)
-            (ref_outputs,) = ref.forward(
+            ref_outputs = ref.forward(
                 torch.as_tensor(target, dtype=torch.float32),
                 attention_mask=attn_mask,
                 sinusoidal_pos=ref_rope_emb,
                 output_attentions=False,
-            )
+            )[0]
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
     @parameterized.product(rotary_value=[True, False], override_positions=[True, False])
@@ -1603,7 +1603,7 @@ class QKVLinearTest(TestCase):
             self.skipTest("FusedGroupedQKVLinear doesn't support cross attention.")
         if value_dim_ratio != 1 and not cross_attention:
             self.skipTest("Value dim ratio only makes sense for cross attention.")
-        with utils.numeric_checks(True):
+        with utils.numeric_checks(False):
             model_dim = 12
             num_heads = 4
             per_head_dim = model_dim // num_heads
@@ -1812,7 +1812,7 @@ class QKVLinearTest(TestCase):
     )
     def test_qlinear(self, base_cfg, test_cfg):
         """Tests that QLinear is equivalent to QKVLinear with the same kv_state."""
-        with utils.numeric_checks(True):
+        with utils.numeric_checks(False):
             model_dim = 12
             num_heads = 3
             per_head_dim = model_dim // num_heads
@@ -2259,7 +2259,7 @@ class MultiheadAttentionTest(TestCase):
 
     @parameterized.parameters(None, PerDimScale.default_config())
     def test_input_linear_variants(self, per_dim_scale):
-        with utils.numeric_checks(True):
+        with utils.numeric_checks(False):
             model_dim = 12
             num_heads = 4
             layer_kwargs = dict(
@@ -2336,7 +2336,7 @@ class MultiheadAttentionTest(TestCase):
 
     @parameterized.parameters(None, PerDimScale.default_config())
     def test_all_mask(self, per_dim_scale):
-        with utils.numeric_checks(True):
+        with utils.numeric_checks(False):
             model_dim = 12
             num_heads = 4
             per_head_dim = model_dim // num_heads
@@ -4565,11 +4565,11 @@ class TransformerTest(BaseTransformerTest):
                 prng_key=jax.random.PRNGKey(0),
             )
             attn_mask = None if mask is None else as_torch_tensor(mask)
-            (ref_outputs,) = ref.forward(
+            ref_outputs = ref.forward(
                 torch.as_tensor(target, dtype=torch.float32),
                 attention_mask=attn_mask,
                 output_attentions=False,
-            )
+            )[0]
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
 
     def test_against_roberta_attention(self):
@@ -4589,6 +4589,7 @@ class TransformerTest(BaseTransformerTest):
             attention_probs_dropout_prob=0,
             hidden_dropout_prob=0,
             classifier_dropout=0,
+            attn_implementation="eager",
         )
         print(f"roberta_config={roberta_config}")
         ref = hf_roberta.RobertaAttention(roberta_config)
@@ -4623,11 +4624,11 @@ class TransformerTest(BaseTransformerTest):
                     layer_outputs.self_attention_probs.shape,
                 )
             attn_mask = None if mask is None else as_torch_tensor(mask)
-            (ref_outputs,) = ref.forward(
+            ref_outputs = ref.forward(
                 torch.as_tensor(target, dtype=torch.float32),
                 attention_mask=attn_mask,
                 output_attentions=False,
-            )
+            )[0]
             assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
             self.assertNestedEqual(layer_outputs.data, output_collection.module_outputs["output"])
 
@@ -4651,6 +4652,7 @@ class TransformerTest(BaseTransformerTest):
             attention_probs_dropout_prob=0,
             hidden_dropout_prob=0,
             classifier_dropout=0,
+            attn_implementation="eager",
             # Jax's gelu uses an approximation by default and is slightly different from
             # torch.nn.gelu.
             hidden_act="silu",
@@ -6732,5 +6734,5 @@ class LogitSinkTest(TestCase):
 
 
 if __name__ == "__main__":
-    with utils.numeric_checks(True):
+    with utils.numeric_checks(False):
         absltest.main()

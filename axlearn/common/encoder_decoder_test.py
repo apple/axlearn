@@ -37,6 +37,7 @@ from axlearn.common.test_utils import TestCase, assert_allclose, dummy_padding_m
 from axlearn.common.torch_utils import parameters_from_torch_layer
 
 testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
+_MODULE_NAME = "axlearn.common.encoder_decoder_test"
 
 
 def set_decoder_cross_attention_config(
@@ -538,7 +539,7 @@ class TestAgainstT5X(TestCase):
     @parameterized.parameters(False, True)
     def test_against_t5x(self, packing: bool):
         testcase = jnp.load(
-            os.path.join(testdata_dir, __name__, f"test_against_t5x_{packing}.npy"),
+            os.path.join(testdata_dir, _MODULE_NAME, f"test_against_t5x_{packing}.npy"),
             allow_pickle=True,
         ).item()
 

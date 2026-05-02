@@ -983,6 +983,11 @@ class StackedMixedSSMTransformerTest(TestCase):
 class Mamba2RecurrenceTest(TestCase):
     """Test the correctness of the Mamba2 recurrence for decoding."""
 
+    def setUp(self):
+        super().setUp()
+        if jax.default_backend() != "tpu" or jax.device_count() != 4:
+            self.skipTest("Test requires four TPU chips")
+
     @classmethod
     def setup_class(cls):
         devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
@@ -1044,6 +1049,11 @@ class Mamba2RecurrenceTest(TestCase):
     reason="Test requires four chips, e.g., one v5p gcp instance.",
 )
 class Mamba2MixerLayerTest(TestCase):
+    def setUp(self):
+        super().setUp()
+        if jax.default_backend() != "tpu" or jax.device_count() != 4:
+            self.skipTest("Test requires four TPU chips")
+
     @classmethod
     def setup_class(cls):
         devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
@@ -1231,6 +1241,11 @@ class Mamba2MixerLayerTest(TestCase):
     reason="Test requires four chips, e.g., one v5p gcp instance.",
 )
 class JambaMamba2BlockTest(TestCase):
+    def setUp(self):
+        super().setUp()
+        if jax.default_backend() != "tpu" or jax.device_count() != 4:
+            self.skipTest("Test requires four TPU chips")
+
     @classmethod
     def setup_class(cls):
         devices = mesh_utils.create_device_mesh((2, 1, 1, 1, 2))
@@ -1438,6 +1453,11 @@ class JambaMamba2BlockTest(TestCase):
     reason="Test requires mamba_ssm to be installed on a GPU machine",
 )
 class GPUMamba2MixerLayerTest(TestCase):
+    def setUp(self):
+        super().setUp()
+        if jax.default_backend() != "gpu" or not MAMBA_INSTALLED:
+            self.skipTest("Test requires mamba_ssm on a GPU machine")
+
     @classmethod
     def setup_class(cls):
         num_devices = jax.device_count()
