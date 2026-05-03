@@ -27,7 +27,7 @@ core = [
     "jaxlib==0.8.3",
     "ml-dtypes==0.5.3",
     "msgpack==1.1.0",  # for checkpointing.
-    "nltk==3.7",  # for text preprocessing
+    "nltk==3.9.2",  # for text preprocessing
     "optax==0.2.6",  # Fix for TPU 7x
     "portpicker",
     "pyarrow<21.0.0",  # Pin to v20.x to avoid PyExtensionType -> ExtensionType breaking change in v21

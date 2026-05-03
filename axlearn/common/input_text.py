@@ -14,6 +14,7 @@ Note that while tfds is used, Hugging Face datasets can be loaded using `hugging
 See: https://www.tensorflow.org/datasets/community_catalog/huggingface
 """
 import functools
+import os
 import random
 from collections.abc import Sequence
 from typing import Callable, Optional, Union
@@ -38,6 +39,17 @@ from axlearn.common.utils import Tensor
 INPUT_IDS = "input_ids"
 TOKEN_TYPE_IDS = "token_type_ids"
 TARGET_LABELS = "target_labels"
+
+
+@functools.lru_cache(maxsize=None)
+def _ensure_bundled_nltk_data_on_path() -> None:
+    # Make the bundled punkt_tab english corpus (under `nltk_data/`) discoverable by
+    # nltk.data.find, so `split_sentences` works offline (required for Bazel/RBE) without
+    # each caller having to configure nltk.data.path. Called lazily to avoid mutating
+    # global state at import time.
+    bundled = os.path.join(os.path.dirname(__file__), "nltk_data")
+    if bundled not in nltk.data.path:
+        nltk.data.path.insert(0, bundled)
 
 
 def perplexity(targets: Sequence[str], scores: Sequence[int]) -> dict[str, seqio.metrics.Scalar]:
@@ -472,8 +484,8 @@ def split_sentences(
         string values representing full documents, and where each output example is a dict
         containing key "text" with string values representing full sentences.
     """
-    nltk.download("punkt")
     passthrough_keys = passthrough_keys or []
+    _ensure_bundled_nltk_data_on_path()
 
     def sentence_tokenize(text: tf.Tensor) -> numpy.typing.ArrayLike:
         # List of strings. [num_sentences+1]
