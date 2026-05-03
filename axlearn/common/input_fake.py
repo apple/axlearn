@@ -174,56 +174,6 @@ class FakeSequenceClassificationInput(EmptyInput):
         )
 
 
-class FakeExtractiveQuestionAnsweringInput(EmptyInput):
-    """Produces fake extractive QA inputs."""
-
-    def __next__(self):
-        cfg = self.config
-        self._num_batches += 1
-        if cfg.total_num_batches is not None and self._num_batches > cfg.total_num_batches:
-            raise StopIteration()
-        self._prng_key, tokens_key = jax.random.split(self._prng_key, 2)
-        if cfg.global_batch_size <= 0 or cfg.global_batch_size % jax.process_count() != 0:
-            raise ValueError(
-                f"Global batch size ({cfg.global_batch_size}) "
-                f"must be positive and divisible by process count ({jax.process_count()})"
-            )
-        batch_size = cfg.global_batch_size // jax.process_count()
-        # TODO(@ivan-s-montero): Use fake_text_source so that tokenization will also be tested.
-        input_ids = jax.random.randint(
-            tokens_key,
-            shape=[batch_size, cfg.source_length],
-            minval=0,
-            maxval=cfg.max_token_id,
-            dtype=np.int32,
-        )
-        start_positions = jax.random.randint(
-            tokens_key,
-            shape=[batch_size],
-            minval=0,
-            maxval=cfg.source_length,
-            dtype=np.int32,
-        )
-        end_positions = jax.random.randint(
-            tokens_key,
-            shape=[batch_size],
-            minval=0,
-            maxval=cfg.source_length,
-            dtype=np.int32,
-        )
-        token_type_ids = (
-            jax.numpy.zeros_like(input_ids).at[:, jax.numpy.min(start_positions) :].set(1)
-        )
-        return as_tensor(
-            dict(
-                input_ids=input_ids,
-                start_positions=start_positions,
-                end_positions=end_positions,
-                token_type_ids=token_type_ids,
-            )
-        )
-
-
 def fake_source(
     is_training: bool,
     examples: Sequence[dict[str, tf.Tensor]],
@@ -364,7 +314,7 @@ def fake_classification_source(
         examples=[
             {
                 source_key: ("train" if is_training else "eval")
-                + f" classification question {ix}, Choose {". ".join(classes)}\n Answer:",
+                + f" classification question {ix}, Choose {'. '.join(classes)}\n Answer:",  # pylint: disable=inconsistent-quotes
                 target_key: f"{classes[ix % num_classes]}",
             }
             for ix in range(2 * 2 if is_training else 2)
@@ -406,7 +356,7 @@ def fake_classification_source_instruct_lm(
         examples=[
             {
                 text_key: ("train" if is_training else "eval")
-                + f" classification question {ix}, Choose {". ".join(classes)}\n Answer:"
+                + f" classification question {ix}, Choose {'. '.join(classes)}\n Answer:"  # pylint: disable=inconsistent-quotes
                 + eoa_text
                 + f" {classes[ix % num_classes]}"
                 + eob_text,
