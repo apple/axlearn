@@ -10,14 +10,14 @@ from absl.testing import absltest, parameterized
 
 from axlearn.common.kv_cache.base_kv_cache import KVState
 from axlearn.common.kv_cache.kv_cache import KVCache
-from axlearn.common.kv_cache.paged_kv_cache import (
-    PagedKVCache,
+from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
+from axlearn.common.kv_cache.paged_kv_cache_gpu_kernel import gpu_scatter_update_pages_shmap_fn
+from axlearn.common.kv_cache.paged_kv_cache_tpu_kernel import tpu_scatter_update_pages_shmap_fn
+from axlearn.common.kv_cache.paged_kv_storage import (
     reconstruct_kv,
     scatter_update_pages,
     scatter_update_pages_kernel,
 )
-from axlearn.common.kv_cache.paged_kv_cache_gpu_kernel import gpu_scatter_update_pages_shmap_fn
-from axlearn.common.kv_cache.paged_kv_cache_tpu_kernel import tpu_scatter_update_pages_shmap_fn
 from axlearn.common.test_utils import TestCase
 
 test_fns = []

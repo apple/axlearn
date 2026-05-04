@@ -2,12 +2,13 @@
 
 """Base KVCache layer."""
 
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Union
 
 import jax.numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
+from axlearn.common.kv_cache.paged_kv_storage import PagedKVStorage, reconstruct_kv
 from axlearn.common.module import nowrap
 from axlearn.common.utils import Nested, Tensor
 
@@ -26,6 +27,13 @@ class KVState(NamedTuple):
     v_proj: Tensor
     key_positions: Tensor
     page_indices: Optional[Tensor] = None
+
+
+# Either a dense `KVState` (today's only return type from `extend_step`) or a concrete
+# `PagedKVStorage` variant (future — landed alongside the emitter in the follow-up PR).
+# Downstream callers that want a dense view hand this to
+# `BaseKVCache.as_dense_kv`.
+AttentionInputs = Union[KVState, PagedKVStorage]
 
 
 class BaseKVCache(BaseLayer):
@@ -113,11 +121,22 @@ class BaseKVCache(BaseLayer):
         raise NotImplementedError(type(self))
 
     @classmethod
-    def maybe_normalize_kv(cls, kv_state: KVState) -> tuple[Tensor, Tensor]:
-        """Normalize the KV shape if they're not already normalized.
+    def as_dense_kv(cls, kv_state: AttentionInputs) -> tuple[Tensor, Tensor]:
+        """Return a dense `(k_proj, v_proj)` pair from any attention input.
 
-        Returns:
-            A tuple of [k_proj, v_proj], each with shape [batch_size, seq_len, kv_heads, head_dim].
+        Dispatches on storage type:
+        - `PagedKVStorage` variants call `as_dense` to materialise pages.
+        - `KVState` with `page_indices is None` is returned as-is.
+        - `KVState` with populated `page_indices` is the legacy paged-cache
+          return from today's `PagedKVCache.extend_step`; reconstructed via
+          `reconstruct_kv`. This branch is removed once `PagedKVCache` emits
+          `Bf16PagedStorage` directly (follow-up PR).
         """
-        assert kv_state.page_indices is None
-        return kv_state.k_proj, kv_state.v_proj
+        if isinstance(kv_state, PagedKVStorage):
+            return kv_state.as_dense()
+        if kv_state.page_indices is None:
+            return kv_state.k_proj, kv_state.v_proj
+        return (
+            reconstruct_kv(kv_state.page_indices, kv_state.k_proj),
+            reconstruct_kv(kv_state.page_indices, kv_state.v_proj),
+        )
