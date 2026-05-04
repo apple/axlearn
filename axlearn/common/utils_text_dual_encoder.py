@@ -10,15 +10,12 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.bert import bert_embedding_config, bert_model_config, bert_transformer_config
-from axlearn.common.config import config_for_function
 from axlearn.common.layers import L2Norm, Linear
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.poolings import BasePoolingLayer, FirstNTokenPooling
 from axlearn.common.state_builder import Builder, ChainBuilder, Converter, RestoreAndConvertBuilder
 from axlearn.common.text_dual_encoder import TextEmbeddingStreamEncoder
 from axlearn.common.text_encoder import TextEmbeddingEncoder
-from axlearn.huggingface.hf_module import download_hf_models_from_remote
-from axlearn.huggingface.hf_state_builder import HuggingFacePreTrainedBuilder
 
 # Initializer that is consistent with Huggingface's initialization for BERT model.
 HF_PARAM_INIT = DefaultInitializer.default_config().set(
@@ -143,42 +140,6 @@ def init_state_builder_config(
         )
     else:
         return init_state_builder
-
-
-def hf_pretrained_builder_config(  # pylint: disable=dangerous-default-value
-    *,
-    model_path: str,
-    target_scope: list[str] = [],
-    source_scope: list[str] = ["encoder"],
-) -> Builder.Config:
-    """Constructs HuggingFacePreTrainedBuilder to initialize from HF models.
-
-    The builder will replace the target model's parameters under
-    target_scope1->target_scope2->... to the HF model's parameters under
-    source_scope1->source_scope2->...
-
-    Args:
-        model_path: Local or gs location of the model artifacts folder.
-        target_scope: List of scope path of target state.
-        source_scope: List of scope path of source state.
-
-    Returns:
-        HuggingFacePreTrainedBuilder config to initialize from HF models.
-    """
-    # Lazily import to avoid introducing a dependency otherwise.
-    # pylint: disable-next=import-outside-toplevel
-    from transformers import AutoModel
-
-    def auto_from_pretrained(model_path: str):
-        model_path = download_hf_models_from_remote(model_path)
-        return AutoModel.from_pretrained(model_path)
-
-    builder = HuggingFacePreTrainedBuilder.default_config().set(
-        hf_layer_config=config_for_function(auto_from_pretrained).set(model_path=model_path),
-        target_scope=target_scope,
-        source_scope=source_scope,
-    )
-    return builder
 
 
 def init_state_builder_siamese_model_config(
