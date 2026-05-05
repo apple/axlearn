@@ -3,15 +3,18 @@
 """A KVCache stores KV tokens in paged format."""
 
 from functools import partial
-from typing import Optional
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
 
+from axlearn.common.kv_cache.base_kv_cache import KVState
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.kv_cache.paged_kv_cache_gpu_kernel import gpu_scatter_update_pages_shmap_fn
 from axlearn.common.kv_cache.paged_kv_cache_tpu_kernel import tpu_scatter_update_pages_shmap_fn
 from axlearn.common.kv_cache.paged_kv_storage import (
+    PagedKVStorage,
+    reconstruct_kv,
     scatter_update_pages,
     scatter_update_pages_kernel,
 )
@@ -34,6 +37,25 @@ class PagedKVCache(KVCache):
     """
 
     PADDING_PAGE_ID = 0
+
+    @classmethod
+    def as_dense_kv(cls, kv_state: Union[KVState, PagedKVStorage]) -> tuple[Tensor, Tensor]:
+        """Materialise dense `(k, v)` for any paged attention input.
+
+        Handles both the legacy `KVState`-with-populated-`page_indices` emission
+        from today's `extend_step` (reconstructed via `reconstruct_kv`) and the
+        forthcoming `PagedKVStorage` variants (delegated to `.as_dense()`).
+        Plain dense `KVState` (prefill path, `page_indices is None`) falls
+        through to the base implementation.
+        """
+        if isinstance(kv_state, PagedKVStorage):
+            return kv_state.as_dense()
+        if kv_state.page_indices is not None:
+            return (
+                reconstruct_kv(kv_state.page_indices, kv_state.k_proj),
+                reconstruct_kv(kv_state.page_indices, kv_state.v_proj),
+            )
+        return super().as_dense_kv(kv_state)
 
     @nowrap
     def init_states(self, shape: KVCache.Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:

@@ -135,15 +135,10 @@ class RegisterBf16KernelTest(TestCase):
 
 
 class AsDenseKvDispatchTest(TestCase):
-    """Freeze `BaseKVCache.as_dense_kv` dispatch.
+    """Freeze `BaseKVCache.as_dense_kv` default (dense `KVState`) behaviour.
 
-    Downstream callers (`rattention.py` after the paged-SWA fix,
-    `attention.py`'s base `_compute_attention`) rely on this method
-    to hand back dense `(k, v)` regardless of whether the cache's
-    `extend_step` emitted a `KVState` or a paged variant. This test
-    ensures the dispatch never quietly regresses — if someone adds a
-    third `AttentionInputs` arm and forgets to teach `as_dense_kv`
-    about it, this test catches it.
+    Paged variants are handled by `PagedKVCache.as_dense_kv` and covered in
+    `paged_kv_cache_test.py`.
     """
 
     def test_dense_kv_state_returns_inputs_unchanged(self):
@@ -157,30 +152,6 @@ class AsDenseKvDispatchTest(TestCase):
         # Dense path: identity — no copy, no reconstruction.
         self.assertIs(k_out, k)
         self.assertIs(v_out, v)
-
-    def test_paged_storage_returns_dense_reconstruction(self):
-        storage = _make_bf16_storage()  # Bf16PagedStorage fixture
-
-        k_out, v_out = BaseKVCache.as_dense_kv(storage)
-
-        # Paged path: must materialise dense tensors from the page pool —
-        # NOT hand back the pool (`[num_kv_heads, total_num_pages,
-        # page_size, head_dim]`) as-is. That was the silent-corruption
-        # failure mode flagged in review.
-        batch, pages_per_request = storage.page_indices.shape
-        num_kv_heads, _, page_size, head_dim = storage.k_proj.shape
-        self.assertEqual(
-            k_out.shape, (batch, pages_per_request * page_size, num_kv_heads, head_dim)
-        )
-        self.assertEqual(
-            v_out.shape, (batch, pages_per_request * page_size, num_kv_heads, head_dim)
-        )
-        self.assertTrue(
-            jnp.array_equal(k_out, reconstruct_kv(storage.page_indices, storage.k_proj))
-        )
-        self.assertTrue(
-            jnp.array_equal(v_out, reconstruct_kv(storage.page_indices, storage.v_proj))
-        )
 
 
 if __name__ == "__main__":
