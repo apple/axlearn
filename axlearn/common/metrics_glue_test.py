@@ -3,14 +3,13 @@
 """Tests GLUE metrics."""
 # pylint: disable=no-self-use
 # pytype: disable=attribute-error
-import sys
+import unittest
 from typing import Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.metrics_glue import GLUEMetricAccumulator, GLUEMetricCalculator, glue_metrics
 from axlearn.common.test_utils import DummyForwardModel, TestCase, assert_allclose
@@ -23,7 +22,7 @@ except ModuleNotFoundError:
     t5 = None
 
 
-@pytest.mark.skipif(t5 is None, reason="T5 is not installed.")
+@unittest.skipIf(t5 is None, "T5 is not installed.")
 class T5GLUEMetricsTest(TestCase):
     def test_against_t5(self):
         # We throw in some random (possibly invalid) test cases, as though they were predicted by a
@@ -238,4 +237,4 @@ class GLUEMetricAccumulatorTest(TestCase):
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__]))
+    absltest.main()

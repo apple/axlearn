@@ -8,17 +8,16 @@ import pathlib
 import shlex
 import signal
 import subprocess
-import sys
 import tempfile
 import time
+import unittest
 from collections.abc import Sequence
 from typing import Optional, Union
 from unittest import mock
 
 import psutil
-import pytest
 from absl import app, flags
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud import ROOT_MODULE
 from axlearn.cloud.common import utils
@@ -112,7 +111,7 @@ class UtilsTest(TestWithTemporaryCWD):
             self.assertEqual(expected, utils.parse_action(argv, options=options, default=default))
 
     # TODO(markblee): Understand and fix flakiness on CI.
-    @pytest.mark.skip(reason="Intended to be run manually, can be flaky in CI.")
+    @unittest.skip("Intended to be run manually, can be flaky in CI.")
     def test_send_signal(self):
         """Tests send_signal by starting a subprocess which has child subprocesses.
 
@@ -182,7 +181,7 @@ class UtilsTest(TestWithTemporaryCWD):
             self.fail("send_signal() raised NoSuchProcess unexpectedly!")
 
     # TODO(tom_gunter,markblee): Understand & fix flakiness on CI.
-    @pytest.mark.skip(reason="Passes locally & in docker but fails on CI, to be fixed.")
+    @unittest.skip("Passes locally & in docker but fails on CI, to be fixed.")
     def test_copy_blobs(self):
         with tempfile.TemporaryDirectory() as read_dir:
             read_dir_path = pathlib.Path(read_dir)
@@ -669,4 +668,4 @@ class FlagConfigurableTest(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__]))
+    absltest.main()

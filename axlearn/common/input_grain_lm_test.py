@@ -4,14 +4,13 @@
 
 import functools
 import os
-import sys
+import unittest
 from typing import Callable
 
 import grain.python as grain
 import numpy as np
-import pytest
 import seqio
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common.input_fake import fake_grain_source
 from axlearn.common.input_grain import Input, Tensor, maybe_to_iter_dataset, prefetch_dataset
@@ -496,9 +495,7 @@ class LmTrainingInputTest(TestCase):
     """Tests `text_to_lm_training_input`."""
 
     @parameterized.parameters("Lorem ipsum dolor sit amet,", " consectetur adipiscing elit\n")
-    @pytest.mark.skipif(
-        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
-    )
+    @unittest.skipIf(not os.path.exists(t5_sentence_piece_vocab_file), "Missing testdata.")
     def test_training_lm_processor_single_example(self, text: str):
         max_len = 32
         vocab = seqio.SentencePieceVocabulary(
@@ -524,9 +521,7 @@ class LmTrainingInputTest(TestCase):
         # The inputs should be one-off the labels.
         self.assertNestedAllClose(target_labels[:-1], input_ids[1:])
 
-    @pytest.mark.skipif(
-        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
-    )
+    @unittest.skipIf(not os.path.exists(t5_sentence_piece_vocab_file), "Missing testdata.")
     def test_training_lm_processor_infinite_dataset(self):
         max_len = 32
         vocab = seqio.SentencePieceVocabulary(
@@ -542,9 +537,7 @@ class LmTrainingInputTest(TestCase):
             max_padding_fraction=0.0,
         )
 
-    @pytest.mark.skipif(
-        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
-    )
+    @unittest.skipIf(not os.path.exists(t5_sentence_piece_vocab_file), "Missing testdata.")
     def test_training_lm_processor_dataset_no_len_func(self):
         max_len = 32
         vocab = seqio.SentencePieceVocabulary(
@@ -623,9 +616,7 @@ class LmTrainingInputTest(TestCase):
             max_padding_fraction=1.0,  # Always pad
         ),
     )
-    @pytest.mark.skipif(
-        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
-    )
+    @unittest.skipIf(not os.path.exists(t5_sentence_piece_vocab_file), "Missing testdata.")
     def test_fake_text_lm_training_data(
         self,
         expected_batches: list[dict[str, Tensor]],
@@ -724,9 +715,7 @@ class LmEvalInputTest(TestCase):
         "On the 20th of June",
         "Here we stand united",
     )
-    @pytest.mark.skipif(
-        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
-    )
+    @unittest.skipIf(not os.path.exists(t5_sentence_piece_vocab_file), "Missing testdata.")
     def test_eval_lm_processor_single_example(self, text):
         max_len = 12
         example = next(iter(self._source(texts=[text], max_len=max_len)))
@@ -745,9 +734,7 @@ class LmEvalInputTest(TestCase):
             target_labels[: non_padded_length - 1], input_ids[1:non_padded_length]
         )
 
-    @pytest.mark.skipif(
-        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
-    )
+    @unittest.skipIf(not os.path.exists(t5_sentence_piece_vocab_file), "Missing testdata.")
     def test_fake_text_lm_eval_data(self):
         texts = [
             "Lorem ipsum dolor sit amet, consectetur adipiscing elit\n",
@@ -806,4 +793,4 @@ class LmEvalInputTest(TestCase):
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__]))
+    absltest.main()

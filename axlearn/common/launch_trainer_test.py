@@ -201,4 +201,6 @@ if __name__ == "__main__":
 
     import pytest
 
+    # pytest.main is required here: importing axlearn.common.launch_trainer registers absl flags
+    # with None defaults. absltest.main() triggers flag parsing which rejects None values.
     sys.exit(pytest.main([__file__]))

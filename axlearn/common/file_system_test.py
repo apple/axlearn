@@ -4,12 +4,10 @@
 # pylint: disable=protected-access
 
 import os
-import sys
 from unittest import mock
 
-import pytest
 import tensorflow as tf
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from axlearn.common import file_system as fs
 from axlearn.common.test_utils import TestWithTemporaryCWD
@@ -194,7 +192,7 @@ class GsTest(TestWithTemporaryCWD):
             # pylint: disable-next=import-outside-toplevel
             from google.api_core.exceptions import GoogleAPIError, NotFound
         except (ImportError, ModuleNotFoundError) as e:
-            pytest.skip(reason=f"Missing dependencies: {e}")
+            self.skipTest(f"Missing dependencies: {e}")
 
         self.assertIsInstance(GoogleAPIError("test"), Exception)
         self.assertIsInstance(NotFound("test"), Exception)
@@ -263,7 +261,6 @@ class GsTest(TestWithTemporaryCWD):
         ):
             fs.glob(f"gs://{bucket_name}/dummy")
 
-    @pytest.mark.gs_login
     def test_glob(self):
         self.assertCountEqual(
             fs.glob("gs://axlearn-public/testdata/gcp_test/tmp"),
@@ -272,4 +269,4 @@ class GsTest(TestWithTemporaryCWD):
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__]))
+    absltest.main()

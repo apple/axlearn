@@ -3,29 +3,25 @@
 """Tests for lws_utils."""
 
 import copy
-import sys
 from unittest import mock
 
-import pytest
+from absl.testing import absltest, parameterized
 
 from axlearn.cloud.common.utils import AcceleratorConfig
 from axlearn.cloud.gcp.jobset_utils import TPUJobBuilder
 from axlearn.cloud.gcp.lws_utils import BaseLeaderWorkerTemplate, TPULeaderWorkerTemplate
 
 
-class TestTPULeaderWorkerTemplate:
+class TestTPULeaderWorkerTemplate(parameterized.TestCase):
     """Tests TPULeaderWorkerTemplate."""
 
-    @pytest.mark.parametrize(
-        "enable_tpu_slice_auto_provisioning,expected_label_present",
-        [
-            # Test when auto provisioning is enabled
-            (True, True),
-            # Test when auto provisioning is disabled
-            (False, False),
-            # Test when auto provisioning is None (not set)
-            (None, False),
-        ],
+    @parameterized.parameters(
+        # Test when auto provisioning is enabled
+        dict(enable_tpu_slice_auto_provisioning=True, expected_label_present=True),
+        # Test when auto provisioning is disabled
+        dict(enable_tpu_slice_auto_provisioning=False, expected_label_present=False),
+        # Test when auto provisioning is None (not set)
+        dict(enable_tpu_slice_auto_provisioning=None, expected_label_present=False),
     )
     def test_build_pod_inject_slice_selector(
         self, enable_tpu_slice_auto_provisioning, expected_label_present
@@ -75,31 +71,31 @@ class TestTPULeaderWorkerTemplate:
             # Check if the inject-slice-selector label is present
             inject_label = "tpu-provisioner.cloud.google.com/inject-slice-selector"
             if expected_label_present:
-                assert inject_label in result["metadata"]["labels"]
-                assert result["metadata"]["labels"][inject_label] == "true"
+                self.assertIn(inject_label, result["metadata"]["labels"])
+                self.assertEqual(result["metadata"]["labels"][inject_label], "true")
             else:
-                assert inject_label not in result["metadata"]["labels"]
+                self.assertNotIn(inject_label, result["metadata"]["labels"])
 
             # Verify existing labels are still present
-            assert "existing-label" in result["metadata"]["labels"]
-            assert result["metadata"]["labels"]["existing-label"] == "existing-value"
+            self.assertIn("existing-label", result["metadata"]["labels"])
+            self.assertEqual(result["metadata"]["labels"]["existing-label"], "existing-value")
 
 
-class TestBaseLeaderWorkerTemplatePodMutators:
+class TestBaseLeaderWorkerTemplatePodMutators(absltest.TestCase):
     """Tests that pod_mutators field exists on BaseLeaderWorkerTemplate."""
 
     def test_pod_mutators_field_exists(self):
         """BaseLeaderWorkerTemplate.Config should have pod_mutators."""
         cfg = BaseLeaderWorkerTemplate.default_config()
-        assert hasattr(cfg, "pod_mutators")
-        assert not cfg.pod_mutators
+        self.assertTrue(hasattr(cfg, "pod_mutators"))
+        self.assertFalse(cfg.pod_mutators)
 
     def test_pod_mutators_field_on_tpu_template(self):
         """TPULeaderWorkerTemplate should inherit pod_mutators via TPUJobBuilder."""
         cfg = TPULeaderWorkerTemplate.default_config()
-        assert hasattr(cfg, "pod_mutators")
-        assert not cfg.pod_mutators
+        self.assertTrue(hasattr(cfg, "pod_mutators"))
+        self.assertFalse(cfg.pod_mutators)
 
 
 if __name__ == "__main__":
-    sys.exit(pytest.main([__file__]))
+    absltest.main()
