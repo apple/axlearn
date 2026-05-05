@@ -424,6 +424,10 @@ class TPUReplicatedJobTest(TestCase):
             self.assertIn("gsutil -m rsync -r /output", sync_command)
             self.assertIn("$HOSTNAME", sync_command)
             self.assertIn("sleep", sync_command)
+            # Verify SIGTERM handler performs a final sync before exiting.
+            self.assertIn("trap", sync_command)
+            self.assertIn("TERM", sync_command)
+            self.assertIn("exit 0", sync_command)
 
             if enable_pre_provisioner:
                 self.assertIn(PRE_PROVISIONER_LABEL, node_selector)

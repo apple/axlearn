@@ -737,7 +737,10 @@ class TPUJobBuilder(SingleReplicatedJob):
         output_volume_mount = output_volume_mount or self._output_volume_mount
         dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
-        sync_command = f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done"
+        sync_command = (
+            f"trap 'gsutil -m rsync -r {src} {dst}; exit 0' TERM; "
+            f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s} & wait $!; done"
+        )
         resources = {
             "requests": {"cpu": "100m", "memory": "128Mi"},
             "limits": {"cpu": "500m", "memory": "256Mi"},
