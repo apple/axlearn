@@ -6382,9 +6382,10 @@ class PositionalEmbeddingTest(TestCase):
             assert_allclose(outputs[position], embeddings_tensor[position])
 
 
-@pytest.mark.parametrize("x, output", [(300, 512), (127.1, 128), (128, 128), (0.1, 2)])
-def test_next_power_of_two(x, output):
-    assert _next_power_of_two(x) == output
+class NextPowerOfTwoTest(parameterized.TestCase):
+    @parameterized.parameters((300, 512), (127.1, 128), (128, 128), (0.1, 2))
+    def test_next_power_of_two(self, x, output):
+        self.assertEqual(_next_power_of_two(x), output)
 
 
 class BottleNeckAdapterTransformerLayerTest(TestCase):

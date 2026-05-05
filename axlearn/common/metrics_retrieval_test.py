@@ -172,35 +172,36 @@ class TopKRecallTest(TestCase):
         np.testing.assert_equal(np.asarray(out), expected)
 
 
-def test_average_precision_at_k():
-    sim = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
-    relevance_labels = jnp.asarray(
-        [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 1, 0], [0, 0, 0, 0, 0, 0, 0]]
-    )
-    top_ks_for_map = [1, 2, 3, -1]
-    maps = average_precision_at_k(sim, relevance_labels, top_ks_for_map)
-    expected_maps = {
-        1: [(1 / 1) / 1, 1 / 1, 0.0],
-        2: [(1 / 1 + 2 / 2) / 2, (1 / 1 + 0) / 2, 0.0],
-        3: [(1 / 1 + 2 / 2 + 0) / 3, (1 / 1 + 0 + 0) / 3, 0.0],
-        -1: [
-            (1 / 1 + 2 / 2 + 0 + 3 / 4 + 4 / 5 + 0 + 5 / 7) / 5,
-            (1 / 1 + 0 + 0 + 0 + 2 / 5 + 3 / 6 + 4 / 7) / 4,
-            0.0,
-        ],
-    }
+class AveragePrecisionAtKTest(TestCase):
+    def test_average_precision_at_k(self):
+        sim = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
+        relevance_labels = jnp.asarray(
+            [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 1, 0], [0, 0, 0, 0, 0, 0, 0]]
+        )
+        top_ks_for_map = [1, 2, 3, -1]
+        maps = average_precision_at_k(sim, relevance_labels, top_ks_for_map)
+        expected_maps = {
+            1: [(1 / 1) / 1, 1 / 1, 0.0],
+            2: [(1 / 1 + 2 / 2) / 2, (1 / 1 + 0) / 2, 0.0],
+            3: [(1 / 1 + 2 / 2 + 0) / 3, (1 / 1 + 0 + 0) / 3, 0.0],
+            -1: [
+                (1 / 1 + 2 / 2 + 0 + 3 / 4 + 4 / 5 + 0 + 5 / 7) / 5,
+                (1 / 1 + 0 + 0 + 0 + 2 / 5 + 3 / 6 + 4 / 7) / 4,
+                0.0,
+            ],
+        }
 
-    for k in top_ks_for_map:
-        assert jnp.allclose(maps[k], jnp.asarray(expected_maps[k]))
+        for k in top_ks_for_map:
+            assert jnp.allclose(maps[k], jnp.asarray(expected_maps[k]))
 
-    top_ks_for_map = [1, 2, 3]
-    maps = average_precision_at_k(sim, relevance_labels, top_ks_for_map)
-    for k in top_ks_for_map:
-        assert jnp.allclose(maps[k], jnp.asarray(expected_maps[k]))
+        top_ks_for_map = [1, 2, 3]
+        maps = average_precision_at_k(sim, relevance_labels, top_ks_for_map)
+        for k in top_ks_for_map:
+            assert jnp.allclose(maps[k], jnp.asarray(expected_maps[k]))
 
-    with pytest.raises(AssertionError):
-        top_ks_for_map = [1, 2, 999]
-        average_precision_at_k(sim, relevance_labels, top_ks_for_map)
+        with pytest.raises(AssertionError):
+            top_ks_for_map = [1, 2, 999]
+            average_precision_at_k(sim, relevance_labels, top_ks_for_map)
 
 
 class NDCGTest(TestCase):
@@ -326,60 +327,80 @@ class NDCGTest(TestCase):
             )
 
 
-def test_average_rank():
-    scores = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
-    relevance_labels = jnp.asarray(
-        [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 0, 0], [0, 0, 0, 1, 0, 1, 0]]
-    )
-    query_padding = jnp.asarray([[0], [0], [1]])
-    avg_rank = average_rank(
-        scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
-    )["avg_rank"]
-    expected_rank = (1 + 5) / 2
-    assert expected_rank == avg_rank
+class AverageRankTest(TestCase):
+    def test_average_rank(self):
+        scores = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
+        relevance_labels = jnp.asarray(
+            [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 0, 0], [0, 0, 0, 1, 0, 1, 0]]
+        )
+        query_padding = jnp.asarray([[0], [0], [1]])
+        avg_rank = average_rank(
+            scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
+        )["avg_rank"]
+        expected_rank = (1 + 5) / 2
+        assert expected_rank == avg_rank
+
+    def test_average_rank_with_no_relevant_item_query(self):
+        scores = jnp.asarray(
+            [
+                [1, 5, 6, 7, 2, 4, 3],
+                [4, 3, 2, 5, 1, 7, 6],
+                [1, 1, 1, 1, 1, 1, 1],
+                [4, 3, 2, 5, 1, 7, 6],
+            ]
+        )
+        relevance_labels = jnp.asarray(
+            [
+                [1, 0, 1, 1, 0, 1, 1],
+                [0, 1, 1, 0, 1, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ]
+        )
+        query_padding = jnp.asarray([[0], [0], [1], [0]])
+        avg_rank = average_rank(
+            scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
+        )["avg_rank"]
+        expected_rank = (1 + 5) / 2
+        assert expected_rank == avg_rank
 
 
-def test_average_rank_with_no_relevant_item_query():
-    scores = jnp.asarray(
-        [[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1], [4, 3, 2, 5, 1, 7, 6]]
-    )
-    relevance_labels = jnp.asarray(
-        [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 0, 0], [0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0]]
-    )
-    query_padding = jnp.asarray([[0], [0], [1], [0]])
-    avg_rank = average_rank(
-        scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
-    )["avg_rank"]
-    expected_rank = (1 + 5) / 2
-    assert expected_rank == avg_rank
+class MRRTest(TestCase):
+    def test_mrr(self):
+        scores = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
+        relevance_labels = jnp.asarray(
+            [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 0, 0], [0, 0, 1, 0, 1, 0, 0]]
+        )
+        query_padding = jnp.asarray([[0], [0], [1]])
+        mrr = mean_reciprocal_rank(
+            scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
+        )["mrr"]
+        expected_mrr = (1 / 1 + 1 / 5) / 2
+        assert expected_mrr == mrr
 
-
-def test_mrr():
-    scores = jnp.asarray([[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1]])
-    relevance_labels = jnp.asarray(
-        [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 0, 0], [0, 0, 1, 0, 1, 0, 0]]
-    )
-    query_padding = jnp.asarray([[0], [0], [1]])
-    mrr = mean_reciprocal_rank(
-        scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
-    )["mrr"]
-    expected_mrr = (1 / 1 + 1 / 5) / 2
-    assert expected_mrr == mrr
-
-
-def test_mrr_with_no_relevant_item_query():
-    scores = jnp.asarray(
-        [[1, 5, 6, 7, 2, 4, 3], [4, 3, 2, 5, 1, 7, 6], [1, 1, 1, 1, 1, 1, 1], [4, 3, 2, 5, 1, 7, 6]]
-    )
-    relevance_labels = jnp.asarray(
-        [[1, 0, 1, 1, 0, 1, 1], [0, 1, 1, 0, 1, 0, 0], [0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0]]
-    )
-    query_padding = jnp.asarray([[0], [0], [1], [0]])
-    mrr = mean_reciprocal_rank(
-        scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
-    )["mrr"]
-    expected_mrr = (1 / 1 + 1 / 5) / 2
-    assert expected_mrr == mrr
+    def test_mrr_with_no_relevant_item_query(self):
+        scores = jnp.asarray(
+            [
+                [1, 5, 6, 7, 2, 4, 3],
+                [4, 3, 2, 5, 1, 7, 6],
+                [1, 1, 1, 1, 1, 1, 1],
+                [4, 3, 2, 5, 1, 7, 6],
+            ]
+        )
+        relevance_labels = jnp.asarray(
+            [
+                [1, 0, 1, 1, 0, 1, 1],
+                [0, 1, 1, 0, 1, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ]
+        )
+        query_padding = jnp.asarray([[0], [0], [1], [0]])
+        mrr = mean_reciprocal_rank(
+            scores=scores, relevance_labels=relevance_labels, query_padding=query_padding
+        )["mrr"]
+        expected_mrr = (1 / 1 + 1 / 5) / 2
+        assert expected_mrr == mrr
 
 
 class CalculateMeanMetricTest(TestCase):
