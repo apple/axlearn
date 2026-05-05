@@ -76,6 +76,7 @@ Tensor = jax.Array
 NestedTree = Union[Any, dict[str, Any]]
 NestedTensor = Union[Tensor, dict[str, Any]]  # DEPRECATED, use Nested[Tensor].
 NestedPartitionSpec = Optional[Union[PartitionSpec, dict[str, Any]]]
+PartitionSpecType = Sequence[Union[str, Sequence[str], None]]
 
 T = TypeVar("T")
 

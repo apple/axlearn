@@ -14,7 +14,7 @@ from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpe
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.module import nowrap
 from axlearn.common.param_init import FanAxes
-from axlearn.common.utils import Tensor, maybe_shard, safe_not
+from axlearn.common.utils import PartitionSpecType, Tensor, maybe_shard, safe_not
 
 # The padding type for jax.lax.conv_general_dilated API. Either the strings ‘SAME’, or ‘VALID’, or
 # 'CAUSAL' or a sequence of n (low, high) integer pairs that give the padding to apply before and
@@ -355,9 +355,9 @@ class Conv1D(BaseConv):
         # known as atrous convolution or dilated convolution. If None, assume 1.
         dilation: Optional[int] = None
         # input activation partition spec
-        input_partition_spec: Optional[Sequence[str | Sequence[str] | None]] = None
+        input_partition_spec: Optional[PartitionSpecType] = None
         # output activation partition spec
-        output_partition_spec: Optional[Sequence[str | Sequence[str] | None]] = None
+        output_partition_spec: Optional[PartitionSpecType] = None
 
     @classmethod
     def default_config(cls):

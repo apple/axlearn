@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from axlearn.common.base_layer import BaseLayer
 from axlearn.common.config import config_class
 from axlearn.common.module import nowrap
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, PartitionSpecType, Tensor
 
 
 class KVState(NamedTuple):
@@ -40,6 +40,8 @@ class BaseKVCache(BaseLayer):
         # the returned KV activations. Therefore, before computing attention, we need to cast
         # the KV tensors to match the query's dtype.
         cache_dtype: Optional[jnp.dtype] = None
+        # Partition spec in BTNH layout [batch, seq_len, num_kv_heads, head_dim].
+        kv_partition_spec: Optional[PartitionSpecType] = None
 
     class Output(KVState):
         pass

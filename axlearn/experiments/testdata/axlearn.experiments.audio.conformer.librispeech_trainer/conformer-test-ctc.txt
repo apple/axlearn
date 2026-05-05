@@ -157,6 +157,7 @@ model.encoder.context.context.layer.self_attention.attention.input_linear.layer.
 model.encoder.context.context.layer.self_attention.attention.input_linear.layer.param_partition_spec[2]: None
 model.encoder.context.context.layer.self_attention.attention.key_scale.klass: 'axlearn.common.attention.ScaleKey'
 model.encoder.context.context.layer.self_attention.attention.klass: 'axlearn.common.attention.MultiheadAttentionXL'
+model.encoder.context.context.layer.self_attention.attention.kv_cache.klass: 'axlearn.common.kv_cache.kv_cache.KVCache'
 model.encoder.context.context.layer.self_attention.attention.num_heads: 2
 model.encoder.context.context.layer.self_attention.attention.output_linear.bias: True
 model.encoder.context.context.layer.self_attention.attention.output_linear.klass: 'axlearn.common.attention.MultiheadOutputLinear'

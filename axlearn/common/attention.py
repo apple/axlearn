@@ -140,6 +140,7 @@ from axlearn.common.utils import (
     Nested,
     NestedTensor,
     PartitionSpec,
+    PartitionSpecType,
     RematPolicy,
     SavePattern,
     Tensor,
@@ -1745,8 +1746,7 @@ class MultiheadAttention(BaseLayer):
         # TODO (apghml) Remove this field and have AttentionLogitBiasLayer return an AttentionBias.
         causal: Optional[bool] = None
         # Determines KV cache's behavior, such as standard, sliding window, sparse KV cache, etc.
-        # If None, uses KVCache.default_config().
-        kv_cache: Optional[BaseKVCache.Config] = None
+        kv_cache: BaseKVCache.Config = KVCache.default_config()
 
         # Sets whether key and value should be scaled before `extend_step` or after.
         # If False or None, the following code sequence will apply.
@@ -1772,18 +1772,18 @@ class MultiheadAttention(BaseLayer):
         logit_sink: Optional[bool] = None
 
         # Partition spec for query ([batch, seq, q_heads, head_dim]) after input projections.
-        q_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+        q_partition_spec: Optional[PartitionSpecType] = None
 
         # Partition spec for key ([batch, seq, kv_heads, head_dim]) after input projections.
         # Follows `q_partition_spec` if None.
-        k_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+        k_partition_spec: Optional[PartitionSpecType] = None
 
         # Partition spec for value ([batch, seq, kv_heads, head_dim]) after input projections.
         # Follows `q_partition_spec` if None.
-        v_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+        v_partition_spec: Optional[PartitionSpecType] = None
 
         # Partition spec for output ([batch, seq, hidden_dim]) after output projections.
-        o_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+        o_partition_spec: Optional[PartitionSpecType] = None
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1827,9 +1827,7 @@ class MultiheadAttention(BaseLayer):
         self._add_child("scale_query", cfg.query_scale.set(per_head_dim=self.per_head_dim()))
         # Add key scaling layer.
         self._add_child("scale_key", cfg.key_scale.set(per_head_dim=self.per_head_dim()))
-
-        kv_cache = cfg.kv_cache or KVCache.default_config()
-        self._add_child("kv_cache", kv_cache)
+        self._add_child("kv_cache", cfg.kv_cache)
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
@@ -3823,6 +3821,7 @@ def set_attention_partition_specs(
         input_linear_cfg = input_linear_cfg.input_linear
     input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
     cfg.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+    cfg.kv_cache.kv_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names, None)
 
     if set_attn_activation_specs:
         cfg.q_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names, None)

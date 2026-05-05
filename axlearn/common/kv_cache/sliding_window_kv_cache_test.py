@@ -4,7 +4,9 @@
 
 import jax
 import jax.numpy as jnp
+import pytest
 from absl.testing import absltest, parameterized
+from jax.sharding import PartitionSpec
 
 from axlearn.common.kv_cache.sliding_window_kv_cache import SlidingWindowKVCache
 from axlearn.common.test_utils import TestCase, assert_allclose
@@ -109,6 +111,42 @@ class SlidingWindowKVCacheTest(TestCase):
         # They are not stored in the ring buffer.
         assert_allclose(out_pos[:, 0], invalid)
         assert_allclose(out_pos[:, 4], invalid)
+
+    @pytest.mark.for_8_devices
+    def test_init_states_kv_partition_spec(self):
+        """Verify init_states applies kv_partition_spec sharding to key/value and batch-shards
+        key_positions."""
+        if jax.device_count() < 8:
+            self.skipTest("Requires 8+ devices")
+        batch, heads, dim, cached_kv_length = 4, 8, 4, 16
+        kv_partition_spec = (("data",), None, "model", None)
+        layer = (
+            SlidingWindowKVCache.default_config()
+            .set(
+                name="test", cached_kv_length=cached_kv_length, kv_partition_spec=kv_partition_spec
+            )
+            .instantiate(parent=None)
+        )
+        shape = SlidingWindowKVCache.Shape(
+            batch_size=batch, kv_len=32, num_kv_heads=heads, per_head_dim=dim
+        )
+
+        with jax.make_mesh((4, 2), ("data", "model")):
+
+            @jax.jit
+            def f():
+                return layer.init_states(shape=shape, dtype=jnp.float32)
+
+            state = f()
+
+        for name in ("key", "value"):
+            self.assertEqual(state[name].shape, (batch, heads, dim, cached_kv_length))
+            spec = state[name].sharding.spec
+            self.assertEqual(spec, PartitionSpec("data", "model"))
+
+        self.assertEqual(state["key_positions"].shape, (batch, cached_kv_length))
+        kp_spec = state["key_positions"].sharding.spec
+        self.assertEqual(kp_spec, PartitionSpec("data"))
 
 
 if __name__ == "__main__":

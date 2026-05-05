@@ -13,7 +13,7 @@ from axlearn.common.attention_bias import SlidingWindowAttentionBias
 from axlearn.common.config import REQUIRED, Required, config_class
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.module import nowrap
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, maybe_shard
 
 
 class SlidingWindowKVCache(BaseKVCache):
@@ -49,11 +49,22 @@ class SlidingWindowKVCache(BaseKVCache):
         # dimension as a TPU fusion optimization for one-hot matmul. See KVCache.
         cfg = self.config
         shape = (shape.batch_size, shape.num_kv_heads, shape.per_head_dim, cfg.cached_kv_length)
+        # kv_partition_spec is in BTNH layout. Rotate to BNHT for key/value,
+        # and use batch-only spec for key_positions [B, T].
+        bnht_spec = None
+        batch_spec = None
+        if cfg.kv_partition_spec is not None:
+            b, t, n, h = cfg.kv_partition_spec
+            bnht_spec = (b, n, h, t)
+            batch_spec = (b, None)
         return dict(
-            key=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
-            value=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
-            key_positions=jnp.full(
-                (shape[0], cfg.cached_kv_length), self._invaild_position(), dtype=jnp.int32
+            key=maybe_shard(jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)), bnht_spec),
+            value=maybe_shard(jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)), bnht_spec),
+            key_positions=maybe_shard(
+                jnp.full(
+                    (shape[0], cfg.cached_kv_length), self._invaild_position(), dtype=jnp.int32
+                ),
+                batch_spec,
             ),
         )
 

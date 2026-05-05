@@ -54,6 +54,7 @@ from axlearn.common.param_init import (
 from axlearn.common.quantized_dot_general.layers import DenseGeneralBaseLayer
 from axlearn.common.utils import (
     NestedTensor,
+    PartitionSpecType,
     Tensor,
     maybe_shard,
     partial_with_fn_metadata,
@@ -366,9 +367,9 @@ class RMSNormStateless(BaseNormalizationLayer):
         # Cast input to this dtype for the 'forward' call. If None, do not cast.
         forward_dtype: Optional[jnp.dtype] = jnp.float32
         # If not None, how to partition input activation values.
-        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        input_partition_spec: Optional[PartitionSpecType] = None
         # If not None, how to partition output activation values.
-        output_partition_spec: Optional[tuple[Optional[str]]] = None
+        output_partition_spec: Optional[PartitionSpecType] = None
         # If True, center the input by subtracting the mean before RMS normalization.
         # This variant is used in Gemma and Qwen3-Next and provides better numerical stability.
         zero_centered: Optional[bool] = None
@@ -728,7 +729,7 @@ class Linear(DenseGeneralBaseLayer):
         # Whether to add a bias.
         bias: bool = True
         # If not None, how to partition output values.
-        output_partition_spec: Optional[tuple[Optional[str]]] = None
+        output_partition_spec: Optional[PartitionSpecType] = None
 
     @classmethod
     def default_config(cls):
@@ -869,11 +870,11 @@ class Embedding(BaseLayer):
         num_embeddings: Required[int] = REQUIRED  # Maximum number of embeddings in table.
         dim: Required[int] = REQUIRED  # Embedding vector dimensionality.
         # If not None, how to partition input activation values.
-        input_partition_spec: Optional[tuple[Optional[str]]] = None
+        input_partition_spec: Optional[PartitionSpecType] = None
         # If not None, how to partition embedding table.
-        embedding_partition_spec: Optional[tuple[Optional[str]]] = None
+        embedding_partition_spec: Optional[PartitionSpecType] = None
         # If not None, how to partition output activation values.
-        output_partition_spec: Optional[tuple[Optional[str]]] = None
+        output_partition_spec: Optional[PartitionSpecType] = None
         # Optional scaling of the embedding activations.
         scale: Optional["Embedding.Scale"] = None
         # Constant scaling factor (required when scale=Scale.CONSTANT).

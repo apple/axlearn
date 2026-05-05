@@ -4,7 +4,9 @@
 
 import jax
 import jax.numpy as jnp
+import pytest
 from absl.testing import absltest, parameterized
+from jax.sharding import PartitionSpec
 
 from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.test_utils import TestCase, assert_allclose
@@ -156,6 +158,33 @@ class KVCacheTest(TestCase):
         assert_allclose(onehot_output.key_positions, dynamic_output.key_positions)
         self.assertEqual(onehot_output.k_proj.dtype, dynamic_output.k_proj.dtype)
         self.assertEqual(onehot_output.v_proj.dtype, dynamic_output.v_proj.dtype)
+
+    @pytest.mark.for_8_devices
+    def test_init_states_kv_partition_spec(self):
+        """Verify init_states applies kv_partition_spec sharding inside jit."""
+        if jax.device_count() < 8:
+            self.skipTest("Requires 8+ devices")
+        batch, kv_len, heads, dim = 4, 16, 8, 4
+        kv_partition_spec = (("data",), None, "model", None)
+        layer = (
+            KVCache.default_config()
+            .set(name="test", kv_partition_spec=kv_partition_spec)
+            .instantiate(parent=None)
+        )
+        shape = KVCache.Shape(batch_size=batch, kv_len=kv_len, num_kv_heads=heads, per_head_dim=dim)
+
+        with jax.make_mesh((4, 2), ("data", "model")):
+
+            @jax.jit
+            def f():
+                return layer.init_states(shape=shape, dtype=jnp.float32)
+
+            state = f()
+
+        for name in ("key", "value"):
+            self.assertEqual(state[name].shape, (batch, heads, dim, kv_len))
+            spec = state[name].sharding.spec
+            self.assertEqual(spec, PartitionSpec("data", "model"))
 
 
 if __name__ == "__main__":

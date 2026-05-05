@@ -10,7 +10,7 @@ import jax.numpy as jnp
 
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.module import nowrap
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, maybe_shard
 
 # Sentinel value for padding/unused key positions. Must exceed any reachable query position so
 # that `causal_mask = query_pos >= key_pos` returns False for them.
@@ -31,10 +31,16 @@ class KVCache(BaseKVCache):
         # dimension as a TPU fusion optimization for one-hot matmul.
         # Reference:
         # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.
+        cfg = self.config
         shape_kv = (shape.batch_size, shape.num_kv_heads, shape.per_head_dim, shape.kv_len)
+        # kv_partition_spec is in BTNH layout. Rotate to BNHT to match stored tensor layout.
+        bnht_spec = None
+        if cfg.kv_partition_spec is not None:
+            b, t, n, h = cfg.kv_partition_spec
+            bnht_spec = (b, n, h, t)
         return dict(
-            key=jnp.zeros(shape=shape_kv, dtype=self._cache_dtype(dtype)),
-            value=jnp.zeros(shape=shape_kv, dtype=self._cache_dtype(dtype)),
+            key=maybe_shard(jnp.zeros(shape=shape_kv, dtype=self._cache_dtype(dtype)), bnht_spec),
+            value=maybe_shard(jnp.zeros(shape=shape_kv, dtype=self._cache_dtype(dtype)), bnht_spec),
         )
 
     def extend_step(
