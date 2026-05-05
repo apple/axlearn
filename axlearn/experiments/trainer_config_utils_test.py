@@ -280,4 +280,8 @@ class TestConfigMapCache(parameterized.TestCase):
 
 
 if __name__ == "__main__":
+    # pytest.main is required here: absltest.main() sets __module__ to "" and __name__ to
+    # "__main__", which breaks tests that assert correct module identity (e.g., line 170 asserts
+    # wrapped_f.__module__ == "axlearn.experiments.trainer_config_utils_test") and tests that
+    # compare debug_string() output containing fully-qualified module paths.
     sys.exit(pytest.main([__file__]))
