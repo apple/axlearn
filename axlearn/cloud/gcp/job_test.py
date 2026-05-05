@@ -28,7 +28,7 @@ class TPUGKEJobTest(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [jobset_utils.__name__, bundler.__name__],
+            [jobset_utils.__name__, bundler.__name__, pathways_utils.__name__],
             settings=self._settings,
         ):
             return super().run(result)
@@ -158,7 +158,7 @@ class BuildFailurePolicyTest(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [jobset_utils.__name__, bundler.__name__],
+            [jobset_utils.__name__, bundler.__name__, pathways_utils.__name__],
             settings=self._settings,
         ):
             return super().run(result)
@@ -213,7 +213,7 @@ class GPUGKEJobTest(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [jobset_utils.__name__, bundler.__name__],
+            [jobset_utils.__name__, bundler.__name__, pathways_utils.__name__],
             settings=self._settings,
         ):
             return super().run(result)
@@ -330,7 +330,7 @@ class TPUGKELeaderWorkerSetTest(TestCase):
         # Run tests under mock user and settings.
         self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [jobset_utils.__name__, bundler.__name__],
+            [jobset_utils.__name__, bundler.__name__, pathways_utils.__name__],
             settings=self._settings,
         ):
             return super().run(result)

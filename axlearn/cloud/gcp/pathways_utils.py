@@ -8,7 +8,6 @@ import json
 import logging
 import os
 from typing import Any, Optional, Sequence, Union
-from urllib.parse import urlparse
 
 from absl import flags
 
@@ -20,6 +19,7 @@ from axlearn.cloud.common.bastion import (
 )
 from axlearn.cloud.common.bundler import Bundler
 from axlearn.cloud.common.utils import parse_kv_flags
+from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.jobset_utils import (
     _ANNOTATION_NODE_SERVICE_ACCOUNT,
     _METADATA_GOOGLE_INTERNAL_IP,
@@ -194,20 +194,12 @@ def _pathways_staging_dir(output_dir: str, *, shared: bool = False) -> str:
     """Returns the GCS staging directory for Pathways.
 
     Args:
-        output_dir: The job output directory (e.g., gs://bucket/axlearn/jobs/job-name).
-        shared: If True, uses the bucket root for cache reuse across jobs.
-            Falls back to per-job staging with a warning if output_dir is not a GCS path.
+        output_dir: The job output directory, used as fallback when shared is False.
+        shared: If True, uses ttl_bucket from gcp settings for cache reuse across jobs.
     """
     if shared:
-        if not output_dir.startswith("gs://"):
-            logging.warning(
-                "Shared pathways staging requires a GCS output_dir, got: %s. "
-                "Falling back to per-job staging.",
-                output_dir,
-            )
-        else:
-            parsed = urlparse(output_dir)
-            return f"gs://{parsed.netloc}/pathways-staging"
+        ttl_bucket = gcp_settings("ttl_bucket", required=True)
+        return f"gs://{ttl_bucket}/pathways-staging"
     return f"{output_dir}/pathways-staging"
 
 

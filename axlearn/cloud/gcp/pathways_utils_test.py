@@ -71,7 +71,7 @@ class PathwaysReplicatedJobTest(TestCase):
 
     @contextlib.contextmanager
     def _job_config(self, bundler_cls: type[Bundler], instance_type: str = "tpu-v5p-16", **kwargs):
-        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
+        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__, pathways_utils.__name__]):
             fv = flags.FlagValues()
             cfg = pathways_utils.PathwaysReplicatedJob.default_config().set(
                 inner=jobset_utils.TPUReplicatedJob.default_config()
@@ -462,7 +462,7 @@ class PathwaysMultiheadReplicatedJobTest(TestCase):
 
     @contextlib.contextmanager
     def _job_config(self, bundler_cls: type[Bundler], num_replicas: int, **kwargs):
-        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__]):
+        with mock_gcp_settings([jobset_utils.__name__, bundler.__name__, pathways_utils.__name__]):
             fv = flags.FlagValues()
             cfg = pathways_utils.PathwaysMultiheadReplicatedJob.default_config().set(
                 inner=jobset_utils.TPUReplicatedJob.default_config()
@@ -579,7 +579,7 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
 
     @contextlib.contextmanager
     def _job_config(self, bundler_cls: type[Bundler], **kwargs):
-        with mock_gcp_settings([lws_utils.__name__, bundler.__name__]):
+        with mock_gcp_settings([lws_utils.__name__, bundler.__name__, pathways_utils.__name__]):
             fv = flags.FlagValues()
             cfg = pathways_utils.PathwaysLeaderWorkerTemplate.default_config()
             define_flags(cfg, fv)
