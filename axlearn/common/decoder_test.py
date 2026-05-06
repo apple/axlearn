@@ -110,13 +110,22 @@ class TestDecoder(TestCase):
 
         # Test values.
         def layer_output(state, layer):
-            return functional(
+            forward_outputs, _ = functional(
                 layer,
                 inputs=dict(input_batch=dict(input_ids=inputs)),
                 state=state,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(2),
-            )[0]["logits"]
+            )
+            logits, _ = functional(
+                layer,
+                inputs=dict(forward_outputs=forward_outputs),
+                state=state,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(2),
+                method="compute_logits",
+            )
+            return logits
 
         # Similarities with encoder_decoder_test.
         # pylint: disable=duplicate-code
@@ -199,13 +208,22 @@ class TestDecoder(TestCase):
 
             # Test values.
             def layer_output(state, layer):
-                return functional(
+                forward_outputs, _ = functional(
                     layer,
                     inputs=dict(input_batch=dict(input_ids=input_ids)),
                     state=state,
                     is_training=False,
                     prng_key=jax.random.PRNGKey(2),
-                )[0]["logits"]
+                )
+                logits, _ = functional(
+                    layer,
+                    inputs=dict(forward_outputs=forward_outputs),
+                    state=state,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(2),
+                    method="compute_logits",
+                )
+                return logits
 
             ref_decoder_logits = layer_output(ref_decoder_state, ref_decoder)
             test_decoder_logits = layer_output(test_decoder_state, test_decoder)
@@ -426,6 +444,14 @@ class TestDecoder(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
+        forward_logits, _ = functional(
+            layer,
+            inputs=dict(forward_outputs=forward_outputs),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
+            method="compute_logits",
+        )
 
         # Streaming pass: init_states + extend_step.
         cached_states = layer.init_states(
@@ -457,8 +483,8 @@ class TestDecoder(TestCase):
             step_logits.append(outputs["logits"])
 
         step_logits = jnp.concatenate(step_logits, axis=1)
-        self.assertEqual(forward_outputs["logits"].shape, step_logits.shape)
-        assert_allclose(forward_outputs["logits"], step_logits)
+        self.assertEqual(forward_logits.shape, step_logits.shape)
+        assert_allclose(forward_logits, step_logits)
 
     @parameterized.parameters(jnp.float32, jnp.bfloat16)
     def test_prefill_states_vs_init_states_extend_step(self, dtype: jnp.dtype):
@@ -775,14 +801,22 @@ class TestDecoder(TestCase):
             dummy_input_ids = jnp.ones([1, 1], jnp.int32)
 
             # Test forward.
-            outputs, _ = functional(
+            forward_outputs, _ = functional(
                 decoder,
                 inputs=dict(input_batch=dict(input_ids=dummy_input_ids)),
                 is_training=True,
                 state=layer_params,
                 prng_key=prng_key,
             )
-            chex.assert_trees_all_close(outputs["logits"], logits / temperature)
+            forward_logits, _ = functional(
+                decoder,
+                inputs=dict(forward_outputs=forward_outputs),
+                state=layer_params,
+                is_training=True,
+                prng_key=prng_key,
+                method="compute_logits",
+            )
+            chex.assert_trees_all_close(forward_logits, logits / temperature)
 
             # Test prefill.
             (cached_states, prefill_outputs), _ = functional(
@@ -936,9 +970,16 @@ class TestDecoder(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(2),
         )
+        logits, _ = functional(
+            decoder,
+            inputs=dict(forward_outputs=outputs),
+            state=decoder_state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(2),
+            method="compute_logits",
+        )
 
         # Verify that logits are computed and have the expected shape
-        logits = outputs["logits"]
         self.assertEqual(logits.shape, (2, source_length, vocab_size))
         # Verify logits are finite (not NaN or inf)
         self.assertTrue(jnp.all(jnp.isfinite(logits)))

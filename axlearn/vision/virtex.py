@@ -243,7 +243,9 @@ class VirTexModel(ImageBackboneModelMixin, BaseLayer):
             input_batch=dict(input_ids=decoder_ids),
             cross_attention_data=projected_visual_features,
         )
-        metrics = self._metrics(predictions["logits"], decoder_labels)
+        with child_context("compute_logits", module=self.textual):
+            logits = self.textual.compute_logits(predictions)
+        metrics = self._metrics(logits, decoder_labels)
 
         aux_outputs = dict(visual_features=projected_visual_features, **predictions)
         return metrics["loss"], aux_outputs if return_aux else {}

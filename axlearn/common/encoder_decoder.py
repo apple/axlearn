@@ -94,8 +94,6 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         Returns:
             A dict containing:
                 hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
-                logits: A float Tensor of shape [batch_size, target_len, num_classes], where
-                    num_classes depends on the configured lm_head.
 
         Raises:
             ValueError: If source_segment_ids and target_segment_ids are not provided together.
@@ -128,6 +126,19 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
         )
         return decoder_output
 
+    def compute_logits(self, predictions: dict[str, Tensor]) -> "Tensor":
+        """Computes logits from decoder hidden states.
+
+        Args:
+            predictions: the output dict from predict(), including
+                hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
+
+        Returns:
+            logits: A float Tensor of shape [batch_size, target_len, num_classes].
+        """
+        with child_context("compute_logits", module=self.decoder):
+            return self.decoder.compute_logits(predictions)
+
     def compute_attention_logit_biases(self, source_ids: Tensor) -> Tensor:
         """Produces cross-attention logit biases.
 
@@ -146,12 +157,12 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
     def _metrics(
         self, input_batch: Nested[Tensor], *, predict_outputs: Nested[Tensor]
     ) -> tuple[Tensor, Nested[Tensor]]:
-        """Computes metrics from logits and target labels like loss and per token loss.
+        """Computes metrics from hidden states and target labels like loss and per token loss.
 
         Args:
             input_batch: See parent `forward` for details.
             predict_outputs: A dict containing:
-                logits: A float Tensor of shape [batch_size, target_len, vocab_size].
+                hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
 
         Returns:
             A tuple (loss, aux_outputs):
@@ -160,8 +171,8 @@ class EncoderDecoderModel(BaseEncoderDecoderModel):
                     per_token_loss: A float Tensor of shape [batch_size, target_len].
         """
         validate_contains_paths(input_batch, paths=["target_labels"])
-        validate_contains_paths(predict_outputs, paths=["logits"])
-        logits: Tensor = predict_outputs["logits"]
+        validate_contains_paths(predict_outputs, paths=["hidden_states"])
+        logits: Tensor = self.compute_logits(predict_outputs)
         target_labels: Tensor = input_batch["target_labels"]
 
         num_classes = logits.shape[-1]

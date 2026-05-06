@@ -405,7 +405,7 @@ class Model(BaseModel):
         input_batch: NestedTensor,
         return_aux: bool = False,
     ) -> tuple[Tensor, NestedTensor]:
-        """Produce decoder-only loss and predictions including logits and decoder hidden states in
+        """Produce decoder-only loss and predictions including decoder hidden states in
         auxiliary outputs.
 
         Args:
@@ -422,12 +422,11 @@ class Model(BaseModel):
                     unique positive values for different input sequences.
                 input_positions: An optional int Tensor of shape [batch_size, target_len] with
                     non-negative values representing token position indices.
-            return_aux: boolean to determine whether logits and decoder hidden states are returned.
+            return_aux: boolean to determine whether decoder hidden states and metrics are returned.
 
         Returns:
             loss: a scalar float Tensor.
             aux_outputs (a dict):
-                logits: a float Tensor of shape [batch_size, seq_len, vocab_size].
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim].
                 metrics: a nested Tensor. See corresponding `metrics` implementation for details.
         """
@@ -438,8 +437,10 @@ class Model(BaseModel):
         if target_labels is not None:
             loss, metrics = self._metrics(input_batch=input_batch, predict_outputs=predictions)
             aux_outputs.update(loss=loss, metrics=metrics)
-        # If return_aux, return the logits and output pre LM head (useful for downstream tasks),
-        # as well as training metrics like the per-token-loss.
+        # If return_aux, return the decoder hidden states, as well as training metrics like
+        # the per-token-loss.
+        # Logits are not returned, because they can exceed 10 GB in long-context scenarios.
+        # If you need logits, call `extract_logits(input_batch)`.
         #
         # N.B. Do not enable for large-scale training since auxiliary outputs are not partitioned.
         # TODO(rpang): support partitioning of auxiliary outputs.
@@ -519,11 +520,24 @@ class Model(BaseModel):
                     Used as decoder input ids. Values should be in the range [0, vocab_size].
 
         Returns:
-           A float Tensor of shape [batch_size, target_len, hidden_dim].
+            logits: A float Tensor of shape [batch_size, target_len, num_classes].
         """
         self._constrain_input_batch(input_batch)
         predictions = self.predict(input_batch)
-        return predictions["logits"]
+        return self.compute_logits(predictions)
+
+    def compute_logits(self, predictions: Nested[Tensor]) -> Tensor:
+        """Computes logits from decoder hidden states.
+
+        Args:
+            predictions: the output dict from predict(), including
+                hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
+
+        Returns:
+            logits: A float Tensor of shape [batch_size, target_len, num_classes].
+        """
+        with child_context("compute_logits", module=self.decoder):
+            return self.decoder.compute_logits(predictions)
 
     def score(self, input_batch: Nested[Tensor]) -> Nested[Tensor]:
         """Produce decoder score like per_token_loss and live_targets.
@@ -546,7 +560,7 @@ class Model(BaseModel):
         return {k: v for k, v in results.items() if k in ("per_token_loss", "live_targets")}
 
     def predict(self, input_batch: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Produce decoder logits and hidden states.
+        """Produce decoder hidden states.
 
         Args:
             input_batch: a dict with the following entries:
@@ -561,7 +575,6 @@ class Model(BaseModel):
 
         Returns:
             A dict containing:
-                logits: a float Tensor of shape [batch_size, seq_len, vocab_size]
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
         self._constrain_input_batch(input_batch)
@@ -582,9 +595,14 @@ class Model(BaseModel):
         target_labels = jnp.where(target_labels == cfg.decoder.pad_token_id, -1, target_labels)
 
         ctx = self.get_invocation_context()
+        # Reuse pre-computed logits when available to avoid duplicate computation nodes.
+        if "logits" in predict_outputs:
+            logits = predict_outputs["logits"]
+        else:
+            logits = self.compute_logits(predict_outputs)
         loss, metrics = self.metrics.forward(
             input_batch={**input_batch, "target_labels": target_labels},
-            predict_outputs=predict_outputs,
+            predict_outputs={**predict_outputs, "logits": logits},
             module_outputs=ctx.get_module_outputs(),
         )
         # Flatten summaries for backwards compatibility.

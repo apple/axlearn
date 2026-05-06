@@ -602,6 +602,20 @@ class Decoder(BaseLayer):
             self._add_tensor_stats("norm_outputs", x)
         x = self.output_dropout(x)
 
+        return cached_states, dict(hidden_states=x)
+
+    def compute_logits(self, forward_outputs: Nested[Tensor]) -> Tensor:
+        """Computes logits from decoder forward outputs.
+
+        Args:
+            forward_outputs: A dict containing:
+                hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
+
+        Returns:
+            A float Tensor of shape [batch_size, target_len, num_classes].
+        """
+        x: Tensor = forward_outputs["hidden_states"]
+
         if self.config.logits_forward_dtype == jnp.float32:
             logits_context = jax.default_matmul_precision("float32")
         else:
@@ -626,8 +640,7 @@ class Decoder(BaseLayer):
         if self._output_logits_modifier is not None:
             logits = self._output_logits_modifier(logits)
         logits = with_sharding_constraint(logits, PartitionSpec(*self.config.logits_partition_spec))
-        # TODO(markblee): Rename to just "transformer". "transformer_state" is a bit redundant.
-        return cached_states, dict(logits=logits, hidden_states=x)
+        return logits
 
     def forward(
         self,
@@ -637,8 +650,7 @@ class Decoder(BaseLayer):
         cross_attention_logit_biases: Optional[Tensor] = None,
         **kwargs,
     ) -> dict[str, Tensor]:
-        """Computes decoder hidden states and logits from input ids and cross attention hidden
-        states.
+        """Computes decoder hidden states from input ids and cross attention hidden states.
 
         Args:
             input_batch: A dict containing:
@@ -659,8 +671,6 @@ class Decoder(BaseLayer):
         Returns:
             A dict containing:
                 hidden_states: A float Tensor of shape [batch_size, target_len, hidden_dim].
-                logits: A float Tensor of shape [batch_size, target_len, num_classes], where
-                    num_classes depends on the configured lm_head.
         """
         validate_contains_paths(input_batch, paths=["input_ids"])
         input_ids = input_batch["input_ids"]
@@ -814,6 +824,9 @@ class Decoder(BaseLayer):
             cached_states=cached_states,
             **kwargs,
         )
+        # Logits are included here (unlike forward()) because decoding always needs them,
+        # and the tensor is small ([B, step, V]) compared to full-sequence forward ([B, T, V]).
+        outputs["logits"] = self.compute_logits(outputs)
         if mode == ForwardMode.PREFILL:
             self.add_module_output("prefill_hidden_states", outputs["hidden_states"])
         step_len = (
