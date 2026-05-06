@@ -85,7 +85,10 @@ class VirTexTest(parameterized.TestCase):
 
     @parameterized.parameters("B16", "B32", "L16", "L32", "H14", "G14")
     # TODO(markblee): Re-enable in CI when we have access to a larger instance.
+    # absltest ignores @pytest.mark.high_cpu; @absltest.skip ensures bazel-test-cpu
+    # also skips to avoid OOM on large ViT variants (H14, G14).
     @pytest.mark.high_cpu
+    @absltest.skip("high_cpu: ViT backbone too large for RBE worker")
     def test_aux_outputs_vit(self, vit_name: str):
         cfg = VirTexModel.vit_backbone_config(vit_name)
         self._add_textual_config(cfg)
