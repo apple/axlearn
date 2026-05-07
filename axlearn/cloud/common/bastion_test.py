@@ -1761,7 +1761,7 @@ class BastionTest(parameterized.TestCase):
                 ),
             },
         ),
-        # Test case 7: Job with changing topology should go to PENDING
+        # Test case 7: Job with changing topology (same tier) stays ACTIVE for in-place patch
         dict(
             initial_jobs={
                 "job1": Job(
@@ -1790,7 +1790,7 @@ class BastionTest(parameterized.TestCase):
             },
             expected_states={
                 "job1": JobState(
-                    status=JobStatus.PENDING,
+                    status=JobStatus.ACTIVE,
                     metadata={"tier": 0, "topology_assignment": [["subblock-b"]]},
                 ),
             },
@@ -1825,6 +1825,9 @@ class BastionTest(parameterized.TestCase):
             # Mock _append_to_job_history to avoid side effects
             mock_append_to_job_history = mock.Mock()
 
+            # Mock _wait_and_close_proc to avoid process-level side effects
+            mock_wait_and_close_proc = mock.Mock()
+
             # Mock _is_proc_complete to always return False
             patch_is_proc_complete = mock.patch(
                 f"{bastion.__name__}._is_proc_complete", return_value=False
@@ -1836,6 +1839,7 @@ class BastionTest(parameterized.TestCase):
                 mock.patch.object(
                     mock_bastion, "_append_to_job_history", mock_append_to_job_history
                 ),
+                mock.patch.object(mock_bastion, "_wait_and_close_proc", mock_wait_and_close_proc),
                 patch_is_proc_complete,
             ):
                 mock_bastion._update_jobs()

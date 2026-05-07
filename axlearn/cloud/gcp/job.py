@@ -179,6 +179,18 @@ class GKEJob(GCPJob):
         """Returns workload annotations from the underlying builder."""
         return self._builder.get_workload_annotations()
 
+    def _patch_annotations(self, annotations: dict[str, str]):
+        """Patch the live JobSet's metadata.annotations via merge-patch."""
+        cfg: GKEJob.Config = self.config
+        k8s.client.CustomObjectsApi().patch_namespaced_custom_object(
+            group="jobset.x-k8s.io",
+            version="v1alpha2",
+            namespace=cfg.namespace,
+            plural="jobsets",
+            name=cfg.name,
+            body={"metadata": {"annotations": annotations}},
+        )
+
     def _build_failure_policy(self, replicated_jobs: Sequence[dict]) -> dict:
         """Builds the failurePolicy dict for a JobSet spec.
 

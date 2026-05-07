@@ -899,7 +899,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                     }
                 },
                 topology_assignment='[["slice3", "slice4"]]',
-                expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
+                expected=runner_gke.GKERunnerJob.Status.PATCHED,
             ),
             # Topology set in builder but no annotation deployed yet: mismatch -> RESCHEDULED.
             GetStatusTestConfig(
@@ -913,7 +913,7 @@ class TPUGKERunnerJobTest(parameterized.TestCase):
                 spec=dict(replicatedJobs=_mock_replicated_jobs(["test-reservation"], None, 1)),
                 metadata={"annotations": {}},
                 topology_assignment='[["slice1", "slice2"]]',
-                expected=runner_gke.GKERunnerJob.Status.RESCHEDULED,
+                expected=runner_gke.GKERunnerJob.Status.PATCHED,
             ),
             # Partial degradation (ready=7/8, tier promoted): treated as pending → RESCHEDULED.
             GetStatusTestConfig(

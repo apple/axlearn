@@ -1425,6 +1425,28 @@ class Bastion(Configurable):
                 ):
                     # Resume if not running, or keep running if scheduling tier did not change.
                     job.state.status = JobStatus.ACTIVE
+                elif changed_topology and not changed_tiers:
+                    # Topology changed but tier is the same. We must restart the runner
+                    # because topology_assignment is read from BASTION_JOB_TOPOLOGY_ASSIGNMENT
+                    # env var at process startup (during config construction) and cannot be
+                    # updated in a running process. The new runner detects the mismatch and
+                    # patches the JobSet annotation in-place.
+                    self._append_to_job_history(
+                        job,
+                        msg=f"Topology changed from {old_topology} to {new_topology}. "
+                        "Restarting runner for in-place patch.",
+                        state=JobLifecycleState.RESCHEDULING,
+                    )
+                    logging.info(
+                        "Topology changed for %s (no tier change). "
+                        "Restarting runner to patch in-place.",
+                        job.spec.name,
+                    )
+                    if job.command_proc is not None:
+                        self._wait_and_close_proc(job.command_proc, kill=True)
+                        job.command_proc = None
+                        logging.info("Runner stopped for %s.", job.spec.name)
+                    job.state.status = JobStatus.ACTIVE
                 else:
                     # Job changed scheduling tiers, and must be restarted on the new tier.
                     # NOTE: this can possibly lead to thrashing of jobs that frequently switch
@@ -1432,20 +1454,18 @@ class Bastion(Configurable):
                     # low priority to high priority if it was demoted recently.
                     # TODO(markblee): Add instrumentation to track frequency of tier changes to
                     # see whether this is necessary.
-                    assert job.state.status == JobStatus.ACTIVE and (
-                        changed_tiers or changed_topology
-                    )
-                    reason = []
-                    if changed_tiers:
-                        reason.append(f"tier from {old_tier} to {new_tier}")
-                    if changed_topology:
-                        reason.append(f"topology from {old_topology} to {new_topology}")
+                    assert job.state.status == JobStatus.ACTIVE and changed_tiers
                     self._append_to_job_history(
                         job,
-                        msg=f"Rescheduling due to changed {" and ".join(reason)}",
+                        msg=f"Rescheduling due to changed tier from {old_tier} to {new_tier}",
                         state=JobLifecycleState.RESCHEDULING,
                     )
-                    logging.info("Rescheduling %s due to %s", job.spec.name, reason)
+                    logging.info(
+                        "Rescheduling %s due to tier change from %s to %s",
+                        job.spec.name,
+                        old_tier,
+                        new_tier,
+                    )
                     job.state.status = JobStatus.PENDING
             else:
                 # Pre-empt/stay queued.

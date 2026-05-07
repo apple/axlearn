@@ -541,6 +541,7 @@ class GKERunnerJob(GKEBaseRunnerJob):
         SUCCEEDED = "SUCCEEDED"
         UPDATING = "UPDATING"
         RESCHEDULED = "RESCHEDULED"
+        PATCHED = "PATCHED"
 
     # TODO(markblee): Consider moving some of the logic here into the inner impl.
     def _get_status(self) -> Status:
@@ -559,19 +560,21 @@ class GKERunnerJob(GKEBaseRunnerJob):
             if runner_utils.should_recreate_job(tier, reservation, processor_type=processor_type):
                 return GKERunnerJob.Status.RESCHEDULED
 
-            # Validate topology assignments match between builder config and deployed resource.
-            # If the builder expects a slice-selection annotation, check it matches the resource.
+            # Check if the deployed slice-selection annotation matches what the builder expects.
+            deployed_slice_selection = _slice_selection_annotation_from_resource(resource=resp)
             expected_slice_selection = self._inner.get_workload_annotations().get(
                 "tpu-provisioner.cloud.google.com/slice-selection"
             )
-            deployed_slice_selection = _slice_selection_annotation_from_resource(resource=resp)
-            if not _compare_slice_selection(expected_slice_selection, deployed_slice_selection):
+            topology_match = _compare_slice_selection(
+                expected_slice_selection, deployed_slice_selection
+            )
+            if not topology_match:
                 logging.info(
-                    "Topology assignment changed. Expected: %s, Deployed: %s",
+                    "Topology mismatch detected.\n  Expected: %s\n  Deployed: %s",
                     expected_slice_selection,
                     deployed_slice_selection,
                 )
-                return GKERunnerJob.Status.RESCHEDULED
+                return GKERunnerJob.Status.PATCHED
 
             expected_job_version = os.environ.get(BASTION_JOB_VERSION_ENV_VAR, None)
             current_job_version = _infer_job_version(resp["spec"])
@@ -670,6 +673,26 @@ class GKERunnerJob(GKEBaseRunnerJob):
         self._inner._delete()  # pylint: disable=protected-access
         if self._pre_provisioner is not None:
             self._pre_provisioner.delete_for(self._inner)
+
+    def _patch_topology(self):
+        """Patch the JobSet's slice-selection annotation in-place."""
+        cfg: GKERunnerJob.Config = self.config
+        expected_annotations = self._inner.get_workload_annotations()
+        slice_selection = expected_annotations.get(
+            "tpu-provisioner.cloud.google.com/slice-selection"
+        )
+        logging.info(
+            "Patching JobSet %s slice-selection annotation in-place. Value: %s",
+            cfg.name,
+            slice_selection,
+        )
+        try:
+            self._inner._patch_annotations(  # pylint: disable=protected-access
+                {"tpu-provisioner.cloud.google.com/slice-selection": slice_selection}
+            )
+            logging.info("Successfully patched JobSet %s.", cfg.name)
+        except Exception as e:  # pylint: disable=broad-except
+            logging.error("Failed to patch JobSet %s: %s", cfg.name, e)
 
     def _reschedule(self):
         """Reschedules the jobset onto the appropriate tier.
@@ -783,8 +806,11 @@ class GKERunnerJob(GKEBaseRunnerJob):
                 logging.info("Task %s exited with status: %s.", cfg.name, status)
                 return
             elif status == GKERunnerJob.Status.RESCHEDULED:
-                logging.info("Jobset configuration changed. Rescheduling the jobset...")
+                logging.info("RESCHEDULED detected, performing full reschedule.")
                 self._reschedule()
+            elif status == GKERunnerJob.Status.PATCHED:
+                logging.info("Topology mismatch detected, patching annotation.")
+                self._patch_topology()
             elif status == GKERunnerJob.Status.UPDATING:
                 logging.info("Newer job version is available. Relaunching the jobset...")
                 self._inner._delete()  # pylint: disable=protected-access
