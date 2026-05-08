@@ -8,7 +8,6 @@ from unittest.mock import patch
 import jax
 import numpy as np
 import pytest
-import torch
 from absl import logging
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
@@ -81,8 +80,6 @@ class ConformerLayerTest(TestCase):
         comparison we use a small convolution window (3) and only compare the prefixes that are not
         affected by padding.
         """
-        torch.use_deterministic_algorithms(True)
-        torch.manual_seed(0)
         dim, num_heads = 6, 2
         cfg = ConformerLayer.default_config().set(name="conformer", input_dim=dim)
         cfg.lconv.vlog = 5

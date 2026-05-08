@@ -1,0 +1,8 @@
+# PyTorch dependencies for parity test golden file generation.
+# These are isolated from the main requirements to prevent new torch-dependent code.
+# CPU-only: resolved via --torch-backend=cpu in BUILD args.
+# Delete this file once all parity tests are migrated to golden files (issue #2469).
+torch
+torchvision
+transformers
+timm
