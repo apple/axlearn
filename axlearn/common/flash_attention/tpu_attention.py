@@ -43,6 +43,7 @@ from axlearn.common.attention_bias import (
     split,
     truncated_key_mask,
 )
+from axlearn.common.flash_attention.attention_types import FlashAttentionWithShardMapSpecs
 from axlearn.common.flash_attention.common import (
     BaseFlashAttention,
     get_segment_ids,
@@ -51,7 +52,6 @@ from axlearn.common.flash_attention.common import (
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.flash_attention.splash_attention_mask import ComputableMask
-from axlearn.common.flash_attention.types import FlashAttentionWithShardMapSpecs
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.utils import Nested, Tensor
 

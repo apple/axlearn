@@ -18,8 +18,8 @@ from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobState as BastionJobState
 from axlearn.cloud.common.bastion import JobStatus, deserialize_jobspec, new_jobspec
 from axlearn.cloud.common.bundler import BUNDLE_EXCLUDE, Bundler
+from axlearn.cloud.common.job_types import JobSpec, Topology
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.common.types import JobSpec, Topology
 from axlearn.cloud.common.utils import FlagConfigurable, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.jobs import bastion_vm, launch

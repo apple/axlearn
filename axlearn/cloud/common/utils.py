@@ -20,7 +20,7 @@ import psutil
 from absl import app, flags, logging
 
 from axlearn.cloud import DISTRIBUTION_NAME, ROOT_MODULE_NAME
-from axlearn.cloud.common.types import ResourceMap, Topology
+from axlearn.cloud.common.job_types import ResourceMap, Topology
 from axlearn.cloud.gcp.tpu import infer_tpu_cores, infer_tpu_resources
 from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 from axlearn.common.config import REQUIRED, ConfigBase, Configurable, Required, config_class

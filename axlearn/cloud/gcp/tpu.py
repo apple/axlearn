@@ -7,7 +7,7 @@ from typing import Any
 
 from absl import logging
 
-from axlearn.cloud.common.types import ResourceMap
+from axlearn.cloud.common.job_types import ResourceMap
 from axlearn.common.compiler_options import infer_tpu_type, infer_tpu_version
 
 

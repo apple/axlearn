@@ -4,7 +4,7 @@
 
 from typing import Any, Optional
 
-from axlearn.cloud.common.types import JobSpec
+from axlearn.cloud.common.job_types import JobSpec
 from axlearn.common.config import Configurable
 from axlearn.common.utils import Nested
 

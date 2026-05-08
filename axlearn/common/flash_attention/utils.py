@@ -6,6 +6,7 @@ from typing import Any, Literal, Optional
 from absl import logging
 
 from axlearn.common.attention_bias import BaseAttentionBias
+from axlearn.common.flash_attention.attention_types import FlashAttentionWithShardMapSpecs
 from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.gpu_attention import (
     CuDNNGPUFlashAttention,
@@ -21,7 +22,6 @@ from axlearn.common.flash_attention.tpu_attention import (
 )
 from axlearn.common.flash_attention.tpu_decoding import TPUDecoding
 from axlearn.common.flash_attention.tpu_paged_attention import TPUPagedAttention
-from axlearn.common.flash_attention.types import FlashAttentionWithShardMapSpecs
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
 from axlearn.common.utils import Tensor

@@ -13,7 +13,7 @@ from absl import flags
 
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import JobStatus
-from axlearn.cloud.common.types import ResourceType
+from axlearn.cloud.common.job_types import ResourceType
 from axlearn.cloud.common.utils import Table, define_flags
 from axlearn.cloud.gcp.config import gcp_settings
 from axlearn.cloud.gcp.utils import GCPAPI, list_k8s_jobsets

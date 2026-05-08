@@ -18,8 +18,7 @@ from typing import Any, NamedTuple, Optional, Protocol
 
 from absl import logging
 
-from axlearn.cloud.common.quota import QuotaFn
-from axlearn.cloud.common.types import (
+from axlearn.cloud.common.job_types import (
     JobMetadata,
     JobQueue,
     JobStateMetadata,
@@ -28,6 +27,7 @@ from axlearn.cloud.common.types import (
     ResourceMap,
     ResourceType,
 )
+from axlearn.cloud.common.quota import QuotaFn
 from axlearn.common.config import (
     REQUIRED,
     ConfigOr,

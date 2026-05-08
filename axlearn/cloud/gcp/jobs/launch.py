@@ -118,9 +118,9 @@ from axlearn.cloud.common.bastion import BastionDirectory
 from axlearn.cloud.common.bastion import Job as BastionJob
 from axlearn.cloud.common.bastion import new_jobspec, serialize_jobspec
 from axlearn.cloud.common.bundler import Bundler, bundler_flags, get_bundler_config
+from axlearn.cloud.common.job_types import JobSpec, ResourceMap, Topology
 from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_user_projects
 from axlearn.cloud.common.scheduler import JobMetadata
-from axlearn.cloud.common.types import JobSpec, ResourceMap, Topology
 from axlearn.cloud.common.utils import (
     FlagConfigurable,
     configure_logging,

@@ -22,8 +22,8 @@ from axlearn.cloud.common.bastion import (
     serialize_jobspec,
 )
 from axlearn.cloud.common.bundler import Bundler
+from axlearn.cloud.common.job_types import JobMetadata
 from axlearn.cloud.common.pod_mutator import PodMutator
-from axlearn.cloud.common.types import JobMetadata
 from axlearn.cloud.common.utils import AcceleratorConfig, define_flags, from_flags
 from axlearn.cloud.gcp import bundler, jobset_utils
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler, CloudBuildBundler

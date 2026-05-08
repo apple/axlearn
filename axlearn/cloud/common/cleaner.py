@@ -5,8 +5,8 @@ import logging
 from collections.abc import Sequence
 from enum import Enum
 
+from axlearn.cloud.common.job_types import JobSpec
 from axlearn.cloud.common.scheduler import JobScheduler
-from axlearn.cloud.common.types import JobSpec
 from axlearn.common.config import (
     REQUIRED,
     Configurable,

@@ -15,9 +15,9 @@ from axlearn.cloud.common.cleaner import (
     CompositeCleaner,
     UnschedulableCleaner,
 )
+from axlearn.cloud.common.job_types import JobSpec
 from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import BaseScheduler, JobMetadata, JobScheduler, JobVerdict
-from axlearn.cloud.common.types import JobSpec
 from axlearn.common.config import REQUIRED, Required, config_class, config_for_function
 
 

@@ -8,7 +8,7 @@ from typing import Protocol
 
 import toml
 
-from axlearn.cloud.common.types import ProjectResourceMap, ResourceMap
+from axlearn.cloud.common.job_types import ProjectResourceMap, ResourceMap
 from axlearn.common.file_system import readfile
 
 QUOTA_CONFIG_DIR = "project-quotas"

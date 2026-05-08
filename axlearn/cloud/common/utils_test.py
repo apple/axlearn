@@ -21,7 +21,7 @@ from absl.testing import absltest, parameterized
 
 from axlearn.cloud import ROOT_MODULE
 from axlearn.cloud.common import utils
-from axlearn.cloud.common.types import Topology
+from axlearn.cloud.common.job_types import Topology
 from axlearn.common.config import REQUIRED, ConfigBase, Configurable, Required, config_class
 from axlearn.common.test_utils import TestWithTemporaryCWD
 

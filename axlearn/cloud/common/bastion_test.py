@@ -51,10 +51,10 @@ from axlearn.cloud.common.bastion import (
     set_runtime_options,
 )
 from axlearn.cloud.common.cleaner import Cleaner
+from axlearn.cloud.common.job_types import JobMetadata, JobSpec, ResourceMap, Topology
 from axlearn.cloud.common.quota import QuotaInfo
 from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, JobVerdict
 from axlearn.cloud.common.scheduler_test import mock_quota_config
-from axlearn.cloud.common.types import JobMetadata, JobSpec, ResourceMap, Topology
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.validator import JobValidator
 from axlearn.common.config import config_for_function

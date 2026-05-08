@@ -113,15 +113,15 @@ except ModuleNotFoundError:
 from axlearn.cloud.common import metrics
 from axlearn.cloud.common.cleaner import Cleaner
 from axlearn.cloud.common.event_queue import BaseQueueClient, Event
-from axlearn.cloud.common.quota import QuotaFn
-from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, ResourceMap
-from axlearn.cloud.common.types import (
+from axlearn.cloud.common.job_types import (
     JobMetadata,
     JobSpec,
     JobStateMetadata,
     ResourceType,
     Topology,
 )
+from axlearn.cloud.common.quota import QuotaFn
+from axlearn.cloud.common.scheduler import BaseScheduler, JobScheduler, ResourceMap
 from axlearn.cloud.common.uploader import Uploader
 from axlearn.cloud.common.utils import merge, send_signal
 from axlearn.cloud.common.validator import JobValidator
