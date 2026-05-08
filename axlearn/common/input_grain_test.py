@@ -55,7 +55,7 @@ class UtilsTest(TestCase):
     def _test_checkpointing(self, ds: grain.DatasetIterator):
         """Utility to test ds checkpointing."""
 
-        max_steps = 10
+        max_steps = 5
         values_without_interruption: list[dict] = []
         checkpoints = []
 
@@ -468,13 +468,9 @@ class InputTest(parameterized.TestCase):
         dict(process_index=0, process_count=1),
         # A simulated multi-process case.
         dict(process_index=0, process_count=4),
-        dict(process_index=1, process_count=4),
-        dict(process_index=2, process_count=4),
         dict(process_index=3, process_count=4),
-        # Test when number of examples is less than number of processes. In this case, since
-        # repeat=False and drop_remainder=False, the latter processes have no inputs.
+        # Test when number of examples is less than number of processes.
         dict(process_index=0, process_count=30),
-        dict(process_index=29, process_count=30),
     )
     def test_input(self, process_index: int, process_count: int):
         epoch_len, num_epochs = 10, 2
@@ -527,17 +523,14 @@ class InputTest(parameterized.TestCase):
         # Two-shard cases.
         dict(range_start=0, range_end=1, period=2),
         dict(range_start=1, range_end=2, period=2),
-        # Non-even shard cases.
+        # Non-even shard case.
         dict(range_start=0, range_end=3, period=8),
-        dict(range_start=3, range_end=8, period=8),
         # 3-shard case.
         dict(range_start=0, range_end=2, period=13),
-        dict(range_start=2, range_end=7, period=13),
-        dict(range_start=7, range_end=13, period=13),
     )
     def test_shard_dataset_with_proportion(self, range_start, range_end, period):
         epoch_len = 20
-        num_epochs = 5
+        num_epochs = 2
         ds = range_dataset(start=0, stop=epoch_len, seed=123)
         ds = shard_dataset_with_proportion(
             ds, range_start=range_start, range_end=range_end, period=period

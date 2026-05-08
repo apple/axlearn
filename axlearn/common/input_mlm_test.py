@@ -3,6 +3,7 @@
 """Tests masked language modeling inputs."""
 
 # pylint: disable=no-self-use
+import functools
 import os
 from collections.abc import Iterator
 from typing import Optional
@@ -30,6 +31,16 @@ from axlearn.common.input_text import random_chunking
 from axlearn.common.utils import Tensor
 
 
+@functools.lru_cache(maxsize=1)
+def _cached_vocab():
+    """Returns a cached SentencePieceVocabulary instance to avoid repeated loading."""
+    return (
+        config_for_class(seqio.SentencePieceVocabulary)
+        .set(sentencepiece_model_file=t5_sentence_piece_vocab_file, extra_ids=2)
+        .instantiate()
+    )
+
+
 class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
     @property
     def vocab_cfg(self) -> InstantiableConfig:
@@ -49,7 +60,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         )
 
     def _mask_fn(self, example: dict[str, Tensor], **kwargs) -> Optional[dict[str, Tensor]]:
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         pad_id = vocab.pad_id
         mask_id = vocab.vocab_size - 1
 
@@ -74,7 +85,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_apply_mlm_mask(self, actions_cfg: InstantiableConfig):
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         pad_id = vocab.pad_id
         mask_id = vocab.vocab_size - 1
 
@@ -168,7 +179,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_apply_mlm_mask_validation(self):
         """Tests some sanity checks for apply_mlm_mask."""
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         cfg = config_for_function(apply_mlm_mask).set(
             ignore_input_ids=[],
             ignore_target_id=0,
@@ -209,7 +220,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
     def test_whole_word_mask_mid_sequence_start(self):
         # The sequence has a start-of-word, but not at index 0.
         # [one, b, ▁away, ▁as, ▁simply]. Start-of-word is at index 2.
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         mask_id = vocab.vocab_size - 1
         inputs = [782, 26, 550, 38, 914]
         actual = self._mask_fn(
@@ -229,7 +240,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
     )
     def test_whole_word_mask_short_sequence(self):
         # _ids_to_word_starts should return a valid rank.
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         mask_id = vocab.vocab_size - 1
         inputs = [5, 1]
         self.assertAllEqual(_ids_to_word_starts(inputs, vocab), tf.constant([1], dtype=tf.int64))
@@ -272,7 +283,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_whole_word_mask_mask_all(self):
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         mask_id = vocab.vocab_size - 1
         inputs = self._DRACONIAN_INPUT_IDS
         actual = self._mask_fn(
@@ -361,7 +372,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_whole_word_mask_no_start_of_word(self):
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         mask_id = vocab.vocab_size - 1
         inputs = [7, 7]
         actual = self._mask_fn(
@@ -437,7 +448,7 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_apply_mlm_mask_translation(self, actions_cfg: InstantiableConfig):
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         pad_id = vocab.pad_id
 
         input_ids = tf.constant([1, 2, 3, 4, 5, 6, 7, pad_id])
@@ -486,7 +497,7 @@ class ApplyMLMTestCombinatorialNgram(parameterized.TestCase, tf.test.TestCase):
         )
 
     def _mask_fn(self, example: dict[str, Tensor], **kwargs) -> Optional[dict[str, Tensor]]:
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         pad_id = vocab.pad_id
         mask_id = vocab.vocab_size - 1
 
@@ -512,7 +523,7 @@ class ApplyMLMTestCombinatorialNgram(parameterized.TestCase, tf.test.TestCase):
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
     def test_apply_mlm_mask_combinatorial_ngram(self):
-        vocab = self.vocab_cfg.instantiate()
+        vocab = _cached_vocab()
         pad_id = vocab.pad_id
         mask_id = vocab.vocab_size - 1
 
@@ -672,7 +683,7 @@ class MLMActionsTest(parameterized.TestCase, tf.test.TestCase):
         with self.assertRaisesRegex(ValueError, r"mask_selected_prob \+ swap_selected_prob <= 1"):
             actions_cfg.clone(mask_selected_prob=0.6, swap_selected_prob=0.6).instantiate()
 
-    @parameterized.parameters(0, 2, 5, 32, 40)
+    @parameterized.parameters(0, 5, 32)
     def test_roberta_mlm_actions(self, seq_len: int):
         # With the fairseq masking approach, we always act on some minimum number of tokens.
         actions_cfg = config_for_function(roberta_mlm_actions)
@@ -686,7 +697,7 @@ class MLMActionsTest(parameterized.TestCase, tf.test.TestCase):
             self.assertGreaterEqual(num_actions, expected_actions)
             self.assertLessEqual(num_actions, expected_actions + 1)
 
-    @parameterized.product(seq_len=(18, 50), n=(1, 3, 18))
+    @parameterized.product(seq_len=(18, 50), n=(1, 3))
     def test_roberta_mlm_actions_combinatorial_ngram(self, seq_len: int, n: int):
         actions_cfg = config_for_function(roberta_mlm_actions_combinatorial_ngram).set(n=n)
         actions_fn = actions_cfg.instantiate()

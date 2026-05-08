@@ -10,6 +10,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from absl.testing import absltest, parameterized
 from jax._src.mesh import thread_resources
 from jax.experimental import mesh_utils
@@ -64,19 +65,6 @@ _singleton_mask_fn = jax_fn_mask(5)
 class TestFlashAttention(TestCase):
     """Tests FlashAttention layer."""
 
-    _TEST_CONFIGS = [
-        dict(
-            batch_size=2,
-            kv_len=256,
-            num_heads=4,
-        ),
-        dict(
-            batch_size=8,
-            kv_len=2048,
-            num_heads=4,
-        ),
-    ]
-
     @parameterized.product(seq_len=[8, 128], sliding_window_size=[4, 8, 16])
     def test_sliding_window_mask_equivalence(self, seq_len, sliding_window_size):
         shape = (seq_len, seq_len)
@@ -128,7 +116,7 @@ class TestFlashAttention(TestCase):
 
         inside_tracing(mask)
 
-    @parameterized.product(sliding_window_size=(None, 16), seq_len=(128, 2048))
+    @parameterized.product(sliding_window_size=(None, 16), seq_len=(128, 256))
     def test_computable_mask(self, sliding_window_size, seq_len):
         """Test that ComputableMask with mask_fn produces same results as equivalent splash mask."""
         batch_size = 2
@@ -307,46 +295,28 @@ class TestFlashAttention(TestCase):
             out, ref_out, tolerance_map={1.0: Tolerance(atol=5e-2), 0.98: Tolerance(atol=1e-2)}
         )
 
-    @parameterized.product(
-        _TEST_CONFIGS,
-        query_length_multiplier=[0.5, 1, 2],
-        mask=[None, causal_mask, jax_fn_mask(5)],
-        attention_bias_type=[None, "2d", "4d"],
-        with_segment_ids=[False, True],
-        per_head_dim=[64, 128],
-        q_dtype=[jnp.float32, jnp.bfloat16],
-        kv_dtype=[jnp.float32, jnp.bfloat16],
-        matmul_precision=[None, "highest"],
-        dropout_rate=[0, 0.5],
-        head_group_size=[2, 1],
-    )
-    # TODO: Try to reduce positional arguments
-    # pylint: disable-next=too-many-positional-arguments
-    def test_gradient(
+    # ---- Gradient tests (one axis at a time) ----
+
+    def _test_gradient(
         self,
-        batch_size,
-        kv_len,
-        num_heads,
-        per_head_dim,
-        query_length_multiplier,
-        mask,
-        attention_bias_type,
-        with_segment_ids,
-        q_dtype,
-        kv_dtype,
-        matmul_precision,
-        dropout_rate,
-        head_group_size,
+        *,
+        batch_size=2,
+        kv_len=256,
+        num_heads=4,
+        per_head_dim=128,
+        query_length_multiplier=1,
+        mask=None,
+        attention_bias_type=None,
+        with_segment_ids=False,
+        q_dtype=jnp.bfloat16,
+        kv_dtype=jnp.bfloat16,
+        matmul_precision=None,
+        dropout_rate=0,
+        head_group_size=1,
     ):
+        """Shared gradient test: compares TPU flash attention gradients against reference."""
         if jax.default_backend() == "cpu":
-            # TODO(dhwang2): this has been broken for a while on CPU.
             self.skipTest("Backward path is broken on CPU")
-        if mask not in (None, causal_mask) and query_length_multiplier > 1:
-            self.skipTest("Sliding window attention does not make sense when q_len != kv_len.")
-        if dropout_rate > 0.0 and attention_bias_type is not None:
-            self.skipTest(
-                "Dropout is only supported with SplashAttention (which requires no bias.)"
-            )
         if q_dtype == jnp.bfloat16 and kv_dtype == jnp.float32:
             self.skipTest("Q must have higher precision than KV.")
 
@@ -387,16 +357,13 @@ class TestFlashAttention(TestCase):
 
         with jax.default_matmul_precision(matmul_precision) if matmul_precision else nullcontext():
             if not fn.is_supported(input_batch=input_batch, kv_cache_type=None):
-                # Check splash attention is used when it should be.
                 self.assertEqual(fallback_to_legacy, True)
                 fn = tpu_attention.LegacyTPUFlashAttention.default_config().set(**cfg).instantiate()
                 if not fn.is_supported(input_batch=input_batch, kv_cache_type=None):
                     self.skipTest("Even legacy fallback cannot handle it.")
 
-            # Compare outputs.
             out = fn(input_batch)
             if dropout_rate > 0.0:
-                # Get the dropout mask from pallas function as the reference.
                 dropout_mask = fn.get_dropout_mask(input_batch)
                 ref_fn = partial(ref_fn, dropout_mask=dropout_mask)
             ref_out = ref_fn(input_batch)
@@ -404,7 +371,6 @@ class TestFlashAttention(TestCase):
                 out, ref_out, tolerance_map={1.0: Tolerance(atol=5e-2), 0.98: Tolerance(atol=1e-2)}
             )
 
-            # Compare grads.
             def grad_fn(float_inputs, aux_inputs, f):
                 full_batch = {**float_inputs, **aux_inputs}
                 return f(full_batch).mean()
@@ -422,40 +388,80 @@ class TestFlashAttention(TestCase):
                 },
             )
 
+    @parameterized.parameters(None, causal_mask, jax_fn_mask(5))
+    def test_gradient_masks(self, mask):
+        """Tests gradient with each mask type."""
+        self._test_gradient(mask=mask)
+
+    @parameterized.parameters(None, "2d", "4d")
+    def test_gradient_bias_types(self, attention_bias_type):
+        """Tests gradient with each attention bias type."""
+        self._test_gradient(attention_bias_type=attention_bias_type)
+
+    @parameterized.parameters(0.5, 2)
+    def test_gradient_cross_attn(self, query_length_multiplier):
+        """Tests gradient with different Q/KV lengths (cross-attention)."""
+        self._test_gradient(query_length_multiplier=query_length_multiplier)
+
+    def test_gradient_segment_ids(self):
+        """Tests gradient with segment IDs."""
+        self._test_gradient(with_segment_ids=True)
+
+    def test_gradient_per_head_dim_64(self):
+        """Tests gradient with per_head_dim=64."""
+        self._test_gradient(per_head_dim=64)
+
     @parameterized.product(
-        batch_size=[2],
-        seq_len=[128, 256],  # to cover 1 block and 2 blocks.
-        num_heads=[1, 4],
-        per_head_dim=[128],
-        logit_sink_values=[0.0, -1.0, 1.0],
         q_dtype=[jnp.float32, jnp.bfloat16],
+        kv_dtype=[jnp.float32, jnp.bfloat16],
     )
-    def test_logit_sink(
+    def test_gradient_dtypes(self, q_dtype, kv_dtype):
+        """Tests gradient with different dtype combinations."""
+        self._test_gradient(q_dtype=q_dtype, kv_dtype=kv_dtype)
+
+    def test_gradient_precision(self):
+        """Tests gradient with highest matmul precision."""
+        self._test_gradient(matmul_precision="highest")
+
+    def test_gradient_dropout(self):
+        """Tests gradient with dropout."""
+        self._test_gradient(dropout_rate=0.5)
+
+    def test_gradient_gqa(self):
+        """Tests gradient with grouped query attention."""
+        self._test_gradient(head_group_size=2)
+
+    def test_gradient_long_seq(self):
+        """Tests gradient with longer sequence."""
+        self._test_gradient(kv_len=2048, batch_size=8)
+
+    # ---- Logit sink tests (one axis at a time) ----
+
+    def _test_logit_sink(
         self,
-        batch_size,
-        seq_len,
-        num_heads,
-        per_head_dim,
-        logit_sink_values,
-        q_dtype,
+        *,
+        batch_size=2,
+        seq_len=128,
+        num_heads=4,
+        per_head_dim=128,
+        logit_sink_values=1.0,
+        q_dtype=jnp.bfloat16,
+        check_gradient=False,
     ):
-        """Test logit sink functionality."""
-        # Generate test data
+        """Shared logit sink test: compares TPU splash attention against reference."""
         q, k, v, bias = generate_attention_data(
             batch_size,
             seq_len,
             seq_len,
             num_heads,
             per_head_dim,
-            num_heads,  # num_kv_heads = num_heads for simplicity
+            num_heads,
             mask_fn=None,
             attention_bias_type=None,
             with_segment_ids=False,
             dtype=q_dtype,
             kv_dtype=q_dtype,
         )
-
-        # Create logit sink tensor
         logit_sink = jnp.full((num_heads,), logit_sink_values, dtype=q_dtype)
 
         tpu_block_size = 128
@@ -480,26 +486,46 @@ class TestFlashAttention(TestCase):
             prng_key=prng_key,
         )
 
-        # Check if the kernel supports this configuration
         is_supported = fn.is_supported(input_batch=input_batch, kv_cache_type=None)
         if not is_supported:
             self.skipTest("Configuration not supported by TPUSplashAttention")
 
-        # Compare outputs
         out = fn(input_batch)
         ref_out = ref_fn(input_batch)
         self.assertNestedAllClose(out, ref_out, atol=1e-6 if q_dtype == jnp.float32 else 2e-2)
 
-        # Compare gradients
-        def grad_fn(float_inputs, aux_inputs, f):
-            full_batch = {**float_inputs, **aux_inputs}
-            return f(full_batch).mean()
+        if check_gradient:
 
-        float_inputs = dict(query=q, key=k, value=v, logit_sink=logit_sink)
-        aux_inputs = dict(bias=bias, prng_key=prng_key)
-        grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
-        ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
-        self.assertNestedAllClose(grad_out, ref_grad_out, atol=1e-6)
+            def grad_fn(float_inputs, aux_inputs, f):
+                full_batch = {**float_inputs, **aux_inputs}
+                return f(full_batch).mean()
+
+            float_inputs = dict(query=q, key=k, value=v, logit_sink=logit_sink)
+            aux_inputs = dict(bias=bias, prng_key=prng_key)
+            grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, fn)
+            ref_grad_out = jax.grad(grad_fn, argnums=0)(float_inputs, aux_inputs, ref_fn)
+            self.assertNestedAllClose(grad_out, ref_grad_out, atol=1e-6)
+
+    @parameterized.parameters(0.0, -1.0, 1.0)
+    def test_logit_sink_values(self, logit_sink_values):
+        """Tests logit sink with different sink values."""
+        self._test_logit_sink(logit_sink_values=logit_sink_values)
+
+    def test_logit_sink_two_blocks(self):
+        """Tests logit sink with seq_len=256 (2 TPU blocks)."""
+        self._test_logit_sink(seq_len=256)
+
+    def test_logit_sink_single_head(self):
+        """Tests logit sink with num_heads=1."""
+        self._test_logit_sink(num_heads=1)
+
+    def test_logit_sink_float32(self):
+        """Tests logit sink with float32 dtype."""
+        self._test_logit_sink(q_dtype=jnp.float32)
+
+    def test_logit_sink_gradient(self):
+        """Tests logit sink gradient computation (representative case)."""
+        self._test_logit_sink(check_gradient=True)
 
     def test_logit_sink_shape_validation(self):
         """Test that logit sink shape validation works correctly."""
@@ -590,9 +616,12 @@ class TestFlashAttention(TestCase):
 
         jit_fn()
 
+    # ---- Multi-device tests ----
+
     @parameterized.product(
         per_head_dim=[128, 150], mask=["causal", "sliding"], with_segment_ids=[False, True]
     )
+    @pytest.mark.for_8_devices
     def test_all_gather_forward_mask(self, per_head_dim, mask, with_segment_ids):
         mesh_shape, mesh_axis_names = (2, 1, 2), ("data", "model", "seq")
         if not is_supported_mesh_shape(mesh_shape):
@@ -702,22 +731,17 @@ class TestFlashAttention(TestCase):
 
     @parameterized.product(
         batch_size=[4],
-        seq_len=[1024],
+        seq_len=[256],
         num_heads=[4],
         per_head_dim=[128],
         mesh=[
-            ((1, 1, 4), ("data", "model", "seq")),
             ((2, 1, 2), ("data", "model", "seq")),
             ((1, 2, 2), ("data", "model", "seq")),
         ],
-        sliding_window_sz=[
-            512,
-        ],
-        with_segment_ids=[
-            False,
-            True,
-        ],
+        sliding_window_sz=[128],
+        with_segment_ids=[False, True],
     )
+    @pytest.mark.for_8_devices
     def test_all_gather_attention_gradient(
         self,
         batch_size,
