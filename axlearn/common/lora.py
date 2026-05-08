@@ -481,6 +481,10 @@ class LoraFusedQKVLinear(BaseQKVLinear):
         # The adapter config for LoRA.
         adapter: LoraFusedQKVAdapter.Config = LoraFusedQKVAdapter.default_config()
 
+    @classmethod
+    def is_kv_sharing(cls, cfg: Config) -> bool:
+        return cfg.layer.klass.is_kv_sharing(cfg.layer)
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config

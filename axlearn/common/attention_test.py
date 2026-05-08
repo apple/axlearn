@@ -1939,6 +1939,22 @@ class QKVLinearTest(TestCase):
         )
         self.assertEqual(init_paths, extend_paths)
 
+    @parameterized.parameters(
+        dict(cfg=QKVLinear.default_config(), expected=False),
+        dict(cfg=FusedQKVLinear.default_config(), expected=False),
+        dict(cfg=QLinear.default_config(), expected=True),
+        dict(
+            cfg=RoFormerQKVLinear.default_config().set(
+                input_linear=QLinear.default_config(),
+                rotary_value=False,
+            ),
+            expected=True,
+        ),
+        dict(cfg=RoFormerQKVLinear.default_config().set(rotary_value=False), expected=False),
+    )
+    def test_is_kv_sharing(self, cfg, expected):
+        self.assertEqual(cfg.klass.is_kv_sharing(cfg), expected)
+
 
 class PerDimScaleTest(TestCase):
     """Tests PerDimScale."""

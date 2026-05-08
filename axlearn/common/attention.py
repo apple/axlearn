@@ -686,6 +686,16 @@ class BaseQKVLinear(BaseLayer):
         # [batch, source_length, num_heads, per_head_dim].
         value: Tensor
 
+    @classmethod
+    def is_kv_sharing(cls, cfg: Config) -> bool:
+        """Check if the given config uses KV sharing (i.e., relies on external KVState).
+
+        Subclasses that wrap an inner BaseQKVLinear should override this to delegate
+        to the inner layer's config. This avoids brittle field-name guessing.
+        """
+        del cfg
+        return False
+
     @property
     def num_kv_heads(self):
         return self.config.num_heads
@@ -817,6 +827,10 @@ class QLinear(BaseQKVLinear):
 
         # The layer used to project.
         layer: MultiheadInputLinear.Config = MultiheadInputLinear.default_config()
+
+    @classmethod
+    def is_kv_sharing(cls, cfg: Config) -> bool:
+        return True
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
@@ -1575,6 +1589,10 @@ class RoFormerQKVLinear(BaseQKVLinear):
         # If set, only this fraction of the per_head_dim is rotated.
         partial_rope_factor: Optional[float] = None
 
+    @classmethod
+    def is_kv_sharing(cls, cfg: Config) -> bool:
+        return cfg.input_linear.klass.is_kv_sharing(cfg.input_linear)
+
     def __init__(self, cfg: QKVLinear.Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
@@ -1925,7 +1943,7 @@ class MultiheadAttention(BaseLayer):
             ValueError: If `mode` is unsupported.
         """
         cfg: MultiheadAttention.Config = self.config
-        kv_sharing = _has_kv_sharing(cfg.input_linear)
+        kv_sharing = cfg.input_linear.klass.is_kv_sharing(cfg.input_linear)
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
@@ -2225,7 +2243,7 @@ class MultiheadAttention(BaseLayer):
         """
         cfg = self.config
         time_step = jnp.zeros([batch_size], dtype=jnp.int32)
-        if _has_kv_sharing(cfg.input_linear):
+        if cfg.input_linear.klass.is_kv_sharing(cfg.input_linear):
             return dict(time_step=time_step)
 
         kv_shape = KVCache.Shape(
@@ -2311,19 +2329,6 @@ class MultiheadAttention(BaseLayer):
         """The config for the default function used to compute the key scale."""
 
         return config_for_function(constant_scale_fn).set(value=1)
-
-
-def _has_kv_sharing(input_linear_cfg: BaseQKVLinear.Config) -> bool:
-    """Check if input_linear config uses KV sharing (QLinear), recursively."""
-    assert isinstance(input_linear_cfg, BaseQKVLinear.Config), type(input_linear_cfg)
-    if isinstance(input_linear_cfg, QLinear.Config):
-        return True
-    # Handles wrappers like RoFormerQKVLinear that wrap QLinear via an `input_linear` field.
-    inner = getattr(input_linear_cfg, "input_linear", None)
-    if inner is None:
-        return False
-    assert isinstance(inner, BaseQKVLinear.Config), type(inner)
-    return _has_kv_sharing(inner)
 
 
 def compute_gqa_logits(q_proj: Tensor, k_proj: Tensor) -> Tensor:

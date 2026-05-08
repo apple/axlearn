@@ -20,6 +20,7 @@ from axlearn.common.attention import (
     MultiheadOutputLinear,
     QKVLinear,
     QLinear,
+    RoFormerQKVLinear,
 )
 from axlearn.common.attention_bias import CausalAttentionBias
 from axlearn.common.ein_ops import rearrange
@@ -283,6 +284,80 @@ class LoraFusedQKVLinearTest(TestCase):
         step_data = jnp.concatenate(step_data, axis=1)
         self.assertEqual(step_data.dtype, fwd_outputs.data.dtype)
         assert_allclose(step_data, fwd_outputs.data)
+
+    @parameterized.parameters(
+        dict(cfg=LoraFusedQKVLinear.default_config(), expected=False),
+        dict(
+            cfg=LoraFusedQKVLinear.default_config().set(
+                layer=QKVLinear.default_config(),
+            ),
+            expected=False,
+        ),
+        dict(
+            cfg=LoraFusedQKVLinear.default_config().set(
+                layer=QLinear.default_config(),
+            ),
+            expected=True,
+        ),
+        dict(
+            cfg=RoFormerQKVLinear.default_config().set(
+                input_linear=LoraFusedQKVLinear.default_config().set(
+                    layer=QLinear.default_config()
+                ),
+                rotary_value=False,
+            ),
+            expected=True,
+        ),
+    )
+    def test_is_kv_sharing(self, cfg, expected):
+        self.assertEqual(cfg.klass.is_kv_sharing(cfg), expected)
+
+    def test_extend_step_with_kv_sharing(self):
+        """LoraFusedQKVLinear wrapping QLinear must work with MHA init_states/extend_step."""
+        model_dim = 6
+        num_heads = 2
+        lora_cfg = LoraFusedQKVLinear.default_config().set(layer=QLinear.default_config())
+        lora_cfg.adapter.set(rank=2, alpha=4, enable_lora=dict(query=True, key=False, value=False))
+        cfg = MultiheadAttention.default_config().set(
+            name="test",
+            input_linear=lora_cfg,
+            query_dim=model_dim,
+            key_dim=model_dim,
+            value_dim=model_dim,
+            num_heads=num_heads,
+            mask=CausalAttentionBias.default_config(),
+        )
+        layer = cfg.instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key = jax.random.split(prng_key)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        batch, seq_len = 2, 6
+        per_head_dim = model_dim // num_heads
+        query = jax.random.uniform(jax.random.PRNGKey(0), [batch, seq_len, model_dim])
+        k_proj = jax.random.uniform(
+            jax.random.PRNGKey(1), [batch, seq_len, num_heads, per_head_dim]
+        )
+        v_proj = jax.random.uniform(
+            jax.random.PRNGKey(2), [batch, seq_len, num_heads, per_head_dim]
+        )
+        kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=jnp.arange(seq_len)[None])
+
+        # init_states should not allocate kv_cache for QLinear-based layers.
+        cached_states = layer.init_states(batch_size=batch, max_len=seq_len, dtype=query.dtype)
+        self.assertNotIn("kv_cache", cached_states)
+
+        # extend_step should work without crashing.
+        step_inputs = dict(cached_states=cached_states, query=query[:, :1], kv_state=kv_state)
+        (cached_states, step_outs), _ = F(
+            layer,
+            prng_key=prng_key,
+            state=layer_params,
+            inputs=step_inputs,
+            is_training=False,
+            method="extend_step",
+        )
+        self.assertEqual(step_outs.data.shape, (batch, 1, model_dim))
 
 
 class LoraMultiheadOutputLinearTest(TestCase):
