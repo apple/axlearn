@@ -198,17 +198,19 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 mask_id=782,
             ).instantiate()
 
+    # The whole-word-mask sub-cases below were originally a single monolithic test method
+    # that ran serially under one pytest worker. They are split so pytest-xdist (and Bazel
+    # via `shard_count`) can run them in parallel, avoiding the 300s pytest-timeout.
     # TODO(markblee): avoid depending on seed in tests.
-    # pylint: disable-next=too-many-statements
+
     @pytest.mark.skipif(
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
     )
-    def test_whole_word_mask(self):
+    def test_whole_word_mask_mid_sequence_start(self):
+        # The sequence has a start-of-word, but not at index 0.
+        # [one, b, ▁away, ▁as, ▁simply]. Start-of-word is at index 2.
         vocab = self.vocab_cfg.instantiate()
         mask_id = vocab.vocab_size - 1
-
-        # Test a case where there the sequence has a start-of-word, but not at index 0.
-        # [one, b, ▁away, ▁as, ▁simply]. In this case, start-of-word is at index 2.
         inputs = [782, 26, 550, 38, 914]
         actual = self._mask_fn(
             {"input_ids": tf.constant(inputs)},
@@ -219,14 +221,16 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 swap_selected_prob=0.0,
             ),
         )
-        expected = {
-            "input_ids": tf.constant([mask_id] * len(inputs)),
-            "target_labels": tf.constant(inputs),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        self.assertAllEqual(actual["input_ids"], tf.constant([mask_id] * len(inputs)))
+        self.assertAllEqual(actual["target_labels"], tf.constant(inputs))
 
-        # Test that _ids_to_word_starts returns a valid rank.
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_short_sequence(self):
+        # _ids_to_word_starts should return a valid rank.
+        vocab = self.vocab_cfg.instantiate()
+        mask_id = vocab.vocab_size - 1
         inputs = [5, 1]
         self.assertAllEqual(_ids_to_word_starts(inputs, vocab), tf.constant([1], dtype=tf.int64))
         actual = self._mask_fn(
@@ -238,41 +242,39 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 swap_selected_prob=0.0,
             ),
         )
-        expected = {
-            "input_ids": tf.constant([mask_id] * len(inputs)),
-            "target_labels": tf.constant(inputs),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        self.assertAllEqual(actual["input_ids"], tf.constant([mask_id] * len(inputs)))
+        self.assertAllEqual(actual["target_labels"], tf.constant(inputs))
 
-        # The text is "The new parking fines are positively draconian.".
-        # Words in "input_ids" below get grouped as
-        # [[37, 126, 3078, [1399, 7], 33, 18294, [3, 3515, 509, 15710, 5], [0]].
-        # <pad> belongs to the last group and is an independent word since we check for
-        # '▁', '<' and '[' to mark start of words. <pad> is not subject to actions.
-        # Test do nothing.
+    # The text is "The new parking fines are positively draconian.".
+    # Words in "input_ids" below get grouped as
+    # [[37, 126, 3078, [1399, 7], 33, 18294, [3, 3515, 509, 15710, 5], [0]].
+    # <pad> belongs to the last group and is an independent word since we check for
+    # '▁', '<' and '[' to mark start of words. <pad> is not subject to actions.
+    _DRACONIAN_INPUT_IDS = [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
+
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_do_nothing(self):
         actual = self._mask_fn(
-            {
-                "input_ids": tf.constant(
-                    [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-                ),
-            },
+            {"input_ids": tf.constant(self._DRACONIAN_INPUT_IDS)},
             whole_word_mask=True,
             actions_cfg=config_for_function(iid_mlm_actions).set(
                 select_token_prob=0.0,
             ),
         )
-        expected = {
-            "input_ids": tf.constant(
-                [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-            ),
-            "target_labels": tf.constant([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        self.assertAllEqual(actual["input_ids"], tf.constant(self._DRACONIAN_INPUT_IDS))
+        self.assertAllEqual(
+            actual["target_labels"], tf.constant([0] * len(self._DRACONIAN_INPUT_IDS))
+        )
 
-        # Test masking all tokens.
-        inputs = [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_mask_all(self):
+        vocab = self.vocab_cfg.instantiate()
+        mask_id = vocab.vocab_size - 1
+        inputs = self._DRACONIAN_INPUT_IDS
         actual = self._mask_fn(
             {"input_ids": tf.constant(inputs)},
             whole_word_mask=True,
@@ -282,22 +284,17 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 swap_selected_prob=0.0,
             ),
         )
-        expected = {
-            # Everything masked, except for the final ignored token.
-            "input_ids": tf.constant([mask_id] * (len(inputs) - 1) + [0]),
-            "target_labels": tf.constant(inputs),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        # Everything masked, except for the final ignored token.
+        self.assertAllEqual(actual["input_ids"], tf.constant([mask_id] * (len(inputs) - 1) + [0]))
+        self.assertAllEqual(actual["target_labels"], tf.constant(inputs))
 
-        # Test swapping all tokens.
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_swap_all(self):
         tf.random.set_seed(1234)
         actual = self._mask_fn(
-            {
-                "input_ids": tf.constant(
-                    [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-                ),
-            },
+            {"input_ids": tf.constant(self._DRACONIAN_INPUT_IDS)},
             whole_word_mask=True,
             actions_cfg=config_for_function(iid_mlm_actions).set(
                 select_token_prob=1.0,
@@ -305,24 +302,20 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 swap_selected_prob=1.0,
             ),
         )
-        expected = {
-            "input_ids": tf.constant(
+        self.assertAllEqual(
+            actual["input_ids"],
+            tf.constant(
                 [31635, 29735, 9493, 29289, 21709, 2273, 14791, 21207, 1851, 27560, 21676, 23805, 0]
             ),
-            "target_labels": tf.constant(
-                [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-            ),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        )
+        self.assertAllEqual(actual["target_labels"], tf.constant(self._DRACONIAN_INPUT_IDS))
 
-        # Test keeping all tokens.
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_keep_all(self):
         actual = self._mask_fn(
-            {
-                "input_ids": tf.constant(
-                    [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-                ),
-            },
+            {"input_ids": tf.constant(self._DRACONIAN_INPUT_IDS)},
             whole_word_mask=True,
             actions_cfg=config_for_function(iid_mlm_actions).set(
                 select_token_prob=1.0,
@@ -330,25 +323,17 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 swap_selected_prob=0.0,
             ),
         )
-        expected = {
-            "input_ids": tf.constant(
-                [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-            ),
-            "target_labels": tf.constant(
-                [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-            ),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        self.assertAllEqual(actual["input_ids"], tf.constant(self._DRACONIAN_INPUT_IDS))
+        self.assertAllEqual(actual["target_labels"], tf.constant(self._DRACONIAN_INPUT_IDS))
 
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_word_grouping_consistency(self):
         # 'fines' and 'draconian' need to have the same treatment for all their tokens.
         tf.random.set_seed(1234)
         actual = self._mask_fn(
-            {
-                "input_ids": tf.constant(
-                    [37, 126, 3078, 1399, 7, 33, 18294, 3, 3515, 509, 15710, 5, 0]
-                ),
-            },
+            {"input_ids": tf.constant(self._DRACONIAN_INPUT_IDS)},
             whole_word_mask=True,
             # Equally probable actions.
             actions_cfg=config_for_function(iid_mlm_actions).set(
@@ -372,7 +357,12 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
             self.assertAllEqual(draconian_inp, tf.constant([3, 3515, 509, 15710, 5]))
             self.assertAllEqual(tf.reduce_all(draconian_tgt == 0), True)
 
-        # Test masking all tokens when no "start of word" is detected.
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_no_start_of_word(self):
+        vocab = self.vocab_cfg.instantiate()
+        mask_id = vocab.vocab_size - 1
         inputs = [7, 7]
         actual = self._mask_fn(
             {"input_ids": tf.constant(inputs, dtype=tf.int32)},
@@ -384,14 +374,15 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
             ),
         )
         self.assertAllEqual(_ids_to_word_starts(inputs, vocab), tf.constant([], dtype=tf.int64))
-        expected = {
-            "input_ids": tf.constant([mask_id] * len(inputs), dtype=tf.int32),
-            "target_labels": tf.constant([7, 7], dtype=tf.int32),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        self.assertAllEqual(
+            actual["input_ids"], tf.constant([mask_id] * len(inputs), dtype=tf.int32)
+        )
+        self.assertAllEqual(actual["target_labels"], tf.constant([7, 7], dtype=tf.int32))
 
-        # Test masking all tokens when input is empty.
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_empty_input(self):
         actual = self._mask_fn(
             {"input_ids": tf.constant([], dtype=tf.int32)},
             whole_word_mask=True,
@@ -401,14 +392,13 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 swap_selected_prob=0.0,
             ),
         )
-        expected = {
-            "input_ids": tf.constant([], dtype=tf.int32),
-            "target_labels": tf.constant([], dtype=tf.int32),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        self.assertAllEqual(actual["input_ids"], tf.constant([], dtype=tf.int32))
+        self.assertAllEqual(actual["target_labels"], tf.constant([], dtype=tf.int32))
 
-        # Test masking all tokens when input is all ignored.
+    @pytest.mark.skipif(
+        not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
+    )
+    def test_whole_word_mask_all_ignored(self):
         actual = self._mask_fn(
             {"input_ids": tf.constant([0, 0], dtype=tf.int32)},
             whole_word_mask=True,
@@ -418,12 +408,8 @@ class ApplyMLMTest(parameterized.TestCase, tf.test.TestCase):
                 swap_selected_prob=0.0,
             ),
         )
-        expected = {
-            "input_ids": tf.constant([0, 0], dtype=tf.int32),
-            "target_labels": tf.constant([0, 0], dtype=tf.int32),
-        }
-        self.assertAllEqual(actual["input_ids"], expected["input_ids"])
-        self.assertAllEqual(actual["target_labels"], expected["target_labels"])
+        self.assertAllEqual(actual["input_ids"], tf.constant([0, 0], dtype=tf.int32))
+        self.assertAllEqual(actual["target_labels"], tf.constant([0, 0], dtype=tf.int32))
 
     @pytest.mark.skipif(
         not os.path.exists(t5_sentence_piece_vocab_file), reason="Missing testdata."
