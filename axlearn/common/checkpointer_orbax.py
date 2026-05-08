@@ -431,7 +431,7 @@ class OrbaxCheckpointer(BaseCheckpointer):
 
             return is_save
 
-        CheckpointManager = (
+        CheckpointManager = (  # pylint: disable=invalid-name
             _CheckpointManagerWithTrackerFile
             if cfg.read_latest_checkpoint_from_tracker_file
             else ocp.CheckpointManager
