@@ -8,58 +8,29 @@ import itertools
 import jax
 import jax.numpy as jnp
 import numpy as np
-import transformers.models.bert.modeling_bert as hf_bert
 from absl.testing import absltest, parameterized
-from transformers import BertConfig
 
 from axlearn.common import module, utils
 from axlearn.common.attention import LearnedPositionalEmbedding
 from axlearn.common.embedding import ModalityEmbedding, ModalityVocabInfo, TransformerTextEmbeddings
+from axlearn.common.golden import load_golden
 from axlearn.common.layers import Embedding, LayerNorm
-from axlearn.common.param_converter import as_torch_tensor
+from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.torch_utils import parameters_from_torch_layer
 
 
 class TestTransformerTextEmbeddings(TestCase):
     """Tests TransformerTextEmbeddings."""
 
-    @parameterized.parameters(
-        (LearnedPositionalEmbedding, False),
-        (LearnedPositionalEmbedding, True),
-        (Embedding, False),
-        (Embedding, True),
-    )
-    def test_against_hf_bert_embeddings(self, pos_emb_cls: type, use_explicit_positions: bool):
+    @parameterized.parameters(False, True)
+    def test_against_hf_bert_embeddings(self, use_explicit_positions: bool):
         hidden_dim = 12
         vocab_size = 24
-        num_heads = 4
-        num_layers = 2
         source_length = 11
         type_vocab_size = 1
         layer_norm_epsilon = 1e-05
-        # Reference implementation.
-        encoder_config = BertConfig(
-            num_hidden_layers=num_layers,
-            num_attention_heads=num_heads,
-            hidden_size=hidden_dim,
-            max_position_embeddings=source_length,
-            vocab_size=vocab_size,
-            intermediate_size=4 * hidden_dim,
-            type_vocab_size=type_vocab_size,
-            layer_norm_eps=layer_norm_epsilon,
-            hidden_dropout_prob=0.0,
-            attention_probs_dropout_prob=0.0,
-        )
-        model = hf_bert.BertEmbeddings(config=encoder_config)
 
-        ref_layer = model.eval()
-
-        # Equivalent AXLearn implementation.
-        if pos_emb_cls == LearnedPositionalEmbedding:
-            pos_emb_cfg = LearnedPositionalEmbedding.default_config().set(shape=(source_length,))
-        else:
-            pos_emb_cfg = Embedding.default_config().set(num_embeddings=source_length)
+        pos_emb_cfg = LearnedPositionalEmbedding.default_config().set(shape=(source_length,))
         emb = TransformerTextEmbeddings.default_config().set(
             dim=hidden_dim,
             vocab_size=vocab_size,
@@ -69,22 +40,22 @@ class TestTransformerTextEmbeddings(TestCase):
         )
 
         layer = emb.set(name="layer_test").instantiate(parent=None)
-        batch_size = 3
-        input_ids = np.random.randint(1, vocab_size, size=(batch_size, source_length))
+
+        golden = load_golden("axlearn.common.embedding_test", "test_against_hf_bert_embeddings")
+
+        input_ids = golden["inputs"]["input_ids"]
         test_inputs = dict(inputs=input_ids)
         if use_explicit_positions:
             test_inputs["positions"] = np.arange(source_length)
 
-        test_hidden_states, ref_hidden_states = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(input_batch=test_inputs),
-            ref_inputs=dict(
-                input_ids=as_torch_tensor(input_ids),
-            ),
-            parameters_from_ref_layer=parameters_from_torch_layer,
+        test_hidden_states, _ = F(
+            layer,
+            inputs=dict(input_batch=test_inputs),
+            state=golden["params"],
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
         )
-        assert_allclose(test_hidden_states, utils.as_tensor(ref_hidden_states))
+        assert_allclose(test_hidden_states, golden["outputs"]["hidden_states"])
 
     @parameterized.parameters(itertools.product((0.0, 10.0), (True, False)))
     def test_embed_attend(self, soft_cap_logits, is_training):

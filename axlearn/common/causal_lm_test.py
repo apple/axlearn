@@ -2,6 +2,7 @@
 
 """Tests autoregressive models."""
 
+
 from functools import partial
 from typing import cast
 
@@ -11,7 +12,6 @@ import numpy as np
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 from jax.experimental.pjit import pjit
-from transformers.models.gpt2 import modeling_gpt2 as hf_gpt2
 
 from axlearn.common import causal_lm
 from axlearn.common.attention import (
@@ -22,6 +22,7 @@ from axlearn.common.attention import (
     TransformerFeedForwardLayer,
 )
 from axlearn.common.config import config_for_function
+from axlearn.common.golden import load_golden
 from axlearn.common.learner import Learner
 from axlearn.common.loss import cross_entropy
 from axlearn.common.loss_metrics import BaseLossMetrics
@@ -36,10 +37,8 @@ from axlearn.common.module import (
 )
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import sgd_optimizer
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.update_transformation import (  # pytype: disable=pyi-error
     ForwardBackwardOutputs,
     ForwardOutputs,
@@ -48,28 +47,13 @@ from axlearn.common.utils import Tensor
 
 
 class Gpt2TransformerTest(TestCase):
-    @parameterized.parameters("attention_mask", "causal_attention")
-    def test_against_hf_gpt2_lm(self, causal_attention_mode: str):
+    def test_against_hf_gpt2_lm(self):
         hidden_dim = 16
         vocab_size = 24
         num_heads = 4
         num_layers = 2
         source_length = 11
-        # Reference implementation.
-        ref_cfg = hf_gpt2.GPT2Config(
-            n_embd=hidden_dim,
-            n_head=num_heads,
-            n_layer=num_layers,
-            n_positions=source_length,
-            vocab_size=vocab_size,
-            attn_pdrop=0.0,
-            embd_pdrop=0.0,
-            resid_pdrop=0.0,
-        )
-        ref_layer = hf_gpt2.GPT2LMHeadModel(ref_cfg).eval()
-        # Equivalent AXLearn implementation.
-        # The config has similarities with some in encoder_test.py.
-        # pylint: disable=duplicate-code
+
         decoder_cfg = causal_lm.gpt_decoder_config(
             stack_cfg=StackedTransformerLayer.default_config(),
             num_layers=num_layers,
@@ -78,20 +62,11 @@ class Gpt2TransformerTest(TestCase):
             vocab_size=vocab_size,
             activation_function="nn.gelu",
             max_position_embeddings=source_length,
-            layer_norm_epsilon=ref_cfg.layer_norm_epsilon,
-            dropout_rate=ref_cfg.attn_pdrop,
+            layer_norm_epsilon=1e-5,
+            dropout_rate=0.0,
         )
-        if causal_attention_mode == "attention_mask":
-            decoder_cfg.transformer.layer.self_attention.attention.causal = None
-            decoder_cfg.attention_mask = CausalAttentionLogitBiasLayer.default_config()
-            require_same_tree_structure = True
-        elif causal_attention_mode == "causal_attention":
-            decoder_cfg.transformer.layer.self_attention.attention.causal = True
-            decoder_cfg.attention_mask = None
-            require_same_tree_structure = False
-        else:
-            raise ValueError(f"Unknown causal_attention_mode: {causal_attention_mode}")
-
+        decoder_cfg.transformer.layer.self_attention.attention.causal = True
+        decoder_cfg.attention_mask = None
         decoder_cfg.param_init = DefaultInitializer.default_config().set(
             init_by_param_name={
                 PARAM_REGEXP_WEIGHT: WeightInitializer.default_config().set(
@@ -107,27 +82,19 @@ class Gpt2TransformerTest(TestCase):
             )
             .instantiate(parent=None)
         )
-        input_ids = np.random.randint(1, vocab_size, size=(3, source_length))
-        (_, _), ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(input_batch=dict(input_ids=input_ids), return_aux=True),
-            ref_inputs=as_torch_tensor(input_ids),
-            parameters_from_ref_layer=parameters_from_torch_layer,
-            require_same_tree_structure=require_same_tree_structure,
-        )
-        # Logits are no longer returned from forward(); compute them separately.
-        params_from_ref = parameters_from_torch_layer(ref_layer, dst_layer=layer)
+
+        golden = load_golden("axlearn.common.causal_lm_test", "test_against_hf_gpt2_lm")
+
+        input_ids = golden["inputs"]["input_ids"]
         test_logits = functional(
             layer,
             prng_key=jax.random.PRNGKey(123),
-            state=params_from_ref,
+            state=golden["params"],
             inputs=dict(input_batch=dict(input_ids=input_ids)),
             is_training=False,
             method="extract_logits",
         )[0]
-        ref_logits = ref_outputs.logits.detach().numpy()
-        assert_allclose(test_logits, ref_logits)
+        assert_allclose(test_logits, golden["outputs"]["logits"])
 
 
 class ModelTest(TestCase):

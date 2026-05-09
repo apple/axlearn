@@ -2,18 +2,13 @@
 
 """Tests EncoderDecoder layers."""
 
-import os
 from typing import Literal, Optional
 from unittest import mock
 
 import jax
 import numpy as np
-import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
-from transformers import BertConfig, BertModel, EncoderDecoderConfig
-from transformers import EncoderDecoderModel as HFEncoderDecoderModel
-from transformers import GPT2Config, GPT2LMHeadModel
 
 from axlearn.common import decoding, utils
 from axlearn.common.attention import (
@@ -24,19 +19,17 @@ from axlearn.common.attention import (
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.bert import bert_embedding_config, bert_transformer_config
-from axlearn.common.bert_test import bert_encoder_config_from_hf
 from axlearn.common.causal_lm import gpt_decoder_config
 from axlearn.common.decoder import Decoder, LmHead
 from axlearn.common.encoder import Encoder
 from axlearn.common.encoder_decoder import EncoderDecoderModel
+from axlearn.common.golden import load_golden
 from axlearn.common.layers import set_layer_norm_eps_recursively
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor, parameters_from_t5x_encoder_decoder
+from axlearn.common.param_converter import parameters_from_t5x_encoder_decoder
 from axlearn.common.t5 import t5_encoder_decoder_config
 from axlearn.common.test_utils import TestCase, assert_allclose, dummy_padding_mask
-from axlearn.common.torch_utils import parameters_from_torch_layer
 
-testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 _MODULE_NAME = "axlearn.common.encoder_decoder_test"
 
 
@@ -312,97 +305,59 @@ class TestEncoderDecoder(TestCase):
             )
 
 
-def _gpt2_decoder_config_from_hf(
-    hf_cfg: GPT2Config,
-    vocab_size: Optional[int] = None,
-    layer_norm_epsilon: Optional[float] = None,
-    dropout_rate: Optional[float] = None,
-) -> Decoder.Config:
-    cfg = gpt_decoder_config(
-        stack_cfg=StackedTransformerLayer.default_config(),
-        num_layers=hf_cfg.n_layer,
-        hidden_dim=hf_cfg.n_embd,
-        num_heads=hf_cfg.n_head,
-        vocab_size=vocab_size,
-        activation_function=f"nn.{hf_cfg.activation_function}",
-        max_position_embeddings=hf_cfg.n_positions,
-        layer_norm_epsilon=layer_norm_epsilon,
-        dropout_rate=dropout_rate,
-    )
-    cfg.pad_token_id = hf_cfg.pad_token_id
-    return cfg
-
-
 class TestAgainstHF(TestCase):
-    """Tests EncoderDecoder layer against HF."""
+    """Tests EncoderDecoder layer against HF golden outputs."""
 
     def setUp(self):
         super().setUp()
-        self.hf_encoder_cfg = BertConfig(
-            vocab_size=24,
-            hidden_size=16,
-            num_hidden_layers=2,
-            num_attention_heads=4,
-            intermediate_size=64,
-            max_position_embeddings=11,
-            type_vocab_size=2,
-            hidden_dropout_prob=0.0,
-            attention_probs_dropout_prob=0.0,
-            classifier_dropout=0.0,
-            layer_norm_eps=1e-5,
-        )
-        self.hf_decoder_cfg = GPT2Config(
-            n_embd=self.hf_encoder_cfg.hidden_size,
-            n_head=self.hf_encoder_cfg.num_attention_heads,
-            n_layer=self.hf_encoder_cfg.num_hidden_layers,
-            n_positions=8,  # seq_len.
-            vocab_size=self.hf_encoder_cfg.vocab_size,
-            activation_function="relu",
-            bos_token_id=1,
-            eos_token_id=2,
-            add_cross_attention=True,
-            layer_norm_epsilon=self.hf_encoder_cfg.layer_norm_eps,
-            is_decoder=True,
-            resid_pdrop=0.0,
-            embd_pdrop=0.0,
-            attn_pdrop=0.0,
-            pad_token_id=self.hf_encoder_cfg.pad_token_id,
-        )
-        self.hf_encoder_decoder_cfg = EncoderDecoderConfig.from_encoder_decoder_configs(
-            self.hf_encoder_cfg,
-            self.hf_decoder_cfg,
-        )
+        # Config values matching the HF model used to generate goldens.
+        vocab_size = 24
+        hidden_size = 16
+        num_heads = 4
+        num_layers = 2
+        source_len = 11
+        target_len = 8
+        type_vocab_size = 2
+        layer_norm_eps = 1e-5
+        self.encoder_pad_id = 0
+        self.decoder_pad_id = 0
+        self.source_len = source_len
+        self.target_len = target_len
 
-        # Setup dummy axlearn model.
-        test_encoder = bert_encoder_config_from_hf(
-            self.hf_encoder_cfg,
-            vocab_size=self.hf_encoder_cfg.vocab_size,
-            layer_norm_epsilon=self.hf_encoder_cfg.layer_norm_eps,
-            dropout_rate=self.hf_encoder_cfg.hidden_dropout_prob,
+        # Build AXLearn encoder config (equivalent to bert_encoder_config_from_hf).
+        test_encoder = Encoder.default_config().set(
+            dim=hidden_size,
+            vocab_size=vocab_size,
+            dropout_rate=0.0,
+            emb=bert_embedding_config(
+                type_vocab_size=type_vocab_size,
+                max_position_embeddings=source_len,
+            ),
+            transformer=bert_transformer_config(num_layers=num_layers, num_heads=num_heads),
+            pad_token_id=0,
         )
-        test_decoder = _gpt2_decoder_config_from_hf(
-            self.hf_decoder_cfg,
-            vocab_size=self.hf_decoder_cfg.vocab_size,
-            layer_norm_epsilon=self.hf_decoder_cfg.layer_norm_epsilon,
-            dropout_rate=self.hf_decoder_cfg.embd_pdrop,
+        set_layer_norm_eps_recursively(test_encoder, layer_norm_eps)
+
+        # Build AXLearn decoder config (equivalent to _gpt2_decoder_config_from_hf).
+        test_decoder = gpt_decoder_config(
+            stack_cfg=StackedTransformerLayer.default_config(),
+            num_layers=num_layers,
+            hidden_dim=hidden_size,
+            num_heads=num_heads,
+            vocab_size=vocab_size,
+            activation_function="nn.relu",
+            max_position_embeddings=target_len,
+            layer_norm_epsilon=layer_norm_eps,
+            dropout_rate=0.0,
         )
-        set_decoder_cross_attention_config(test_decoder, self.hf_decoder_cfg.n_head)
+        test_decoder.pad_token_id = self.decoder_pad_id
+        set_decoder_cross_attention_config(test_decoder, num_heads)
+
         self.test_encoder_decoder = (
             EncoderDecoderModel.default_config()
             .set(name="layer_test", encoder=test_encoder, decoder=test_decoder)
             .instantiate(parent=None)
         )
-
-        # Setup dummy HF model.
-        hf_encoder = BertModel(self.hf_encoder_cfg, add_pooling_layer=False)
-        hf_decoder = GPT2LMHeadModel(self.hf_decoder_cfg)
-        hf_encoder_decoder = HFEncoderDecoderModel(
-            encoder=hf_encoder, decoder=hf_decoder, config=self.hf_encoder_decoder_cfg
-        )
-        hf_encoder_decoder.config.pad_token_id = self.hf_encoder_cfg.pad_token_id
-        hf_encoder_decoder.config.decoder_start_token_id = self.hf_decoder_cfg.bos_token_id
-
-        self.hf_encoder_decoder = hf_encoder_decoder.eval()
 
     @parameterized.product(
         # Parameterize how source padding is represented:
@@ -420,137 +375,89 @@ class TestAgainstHF(TestCase):
         if (source_padding_type == "segment_ids") != (target_padding_type == "segment_ids"):
             # segment_ids on source/target should be provided together.
             return
-        batch_size = 3
-        vocab_size = self.hf_encoder_cfg.vocab_size
-        source_len = self.hf_encoder_cfg.max_position_embeddings
-        target_len = self.hf_decoder_cfg.n_positions
-        type_vocab_size = self.hf_encoder_cfg.type_vocab_size
-        encoder_pad_id = self.hf_encoder_cfg.pad_token_id
-        decoder_pad_id = self.hf_decoder_cfg.pad_token_id
 
-        # Initially generate inputs without padding.
-        source_ids = jax.random.randint(
-            jax.random.PRNGKey(101),
-            (batch_size, source_len),
-            minval=encoder_pad_id + 1,
-            maxval=vocab_size,
-            dtype=jnp.int32,
-        )
-        source_token_type_ids = jax.random.randint(
-            jax.random.PRNGKey(102),
-            (batch_size, source_len),
-            minval=0,
-            maxval=type_vocab_size,
-            dtype=jnp.int32,
-        )
-        target_ids = jax.random.randint(
-            jax.random.PRNGKey(103),
-            (batch_size, target_len),
-            minval=decoder_pad_id + 1,
-            maxval=vocab_size,
-            dtype=jnp.int32,
-        )
-        target_labels = jax.random.randint(
-            jax.random.PRNGKey(104),
-            (batch_size, target_len),
-            minval=decoder_pad_id + 1,
-            maxval=vocab_size,
-            dtype=jnp.int32,
-        )
-        hf_source_ids = source_ids
-        hf_target_ids = target_ids
+        # Load golden data.
+        test_name = f"test_forward_{source_padding_type}_{target_padding_type}"
+        golden = load_golden(_MODULE_NAME, test_name)
+
+        # Load inputs from golden.
+        source_ids = jnp.array(golden["inputs"]["source_ids"])
+        source_token_type_ids = jnp.array(golden["inputs"]["source_token_type_ids"])
+        target_ids = jnp.array(golden["inputs"]["target_ids"])
+        target_labels = jnp.array(golden["inputs"]["target_labels"])
+
         source_segment_ids = source_positions = None
         target_segment_ids = target_positions = None
-        source_mask = target_mask = None
-
-        # Generate source paddings.
-        if source_padding_type != "none":
-            source_mask = dummy_padding_mask(batch_size=batch_size, max_seq_len=source_len)
-            hf_source_ids = jnp.where(source_mask, source_ids, encoder_pad_id)
-
-        # Generate target paddings.
-        if target_padding_type != "none":
-            target_mask = dummy_padding_mask(batch_size=batch_size, max_seq_len=target_len)
-            target_labels = jnp.where(target_mask, target_labels, -100)  # HF expects -100.
-            hf_target_ids = jnp.where(target_mask, target_ids, decoder_pad_id)
+        source_mask = golden["inputs"].get("source_mask")
+        target_mask = golden["inputs"].get("target_mask")
+        if source_mask is not None:
+            source_mask = jnp.array(source_mask)
+        if target_mask is not None:
+            target_mask = jnp.array(target_mask)
 
         # Apply source padding masks.
         if source_padding_type == "pad_id":
-            source_ids = jnp.where(source_mask, source_ids, encoder_pad_id)
+            source_ids = jnp.where(source_mask, source_ids, self.encoder_pad_id)
         elif source_padding_type == "segment_ids":
             source_segment_ids = source_mask
-            source_positions = jnp.arange(source_len)[None, :] * source_mask
-            # Make sure we aren't relying on pad_id.
-            self.assertTrue(jnp.all(source_ids > encoder_pad_id))
+            source_positions = jnp.arange(self.source_len)[None, :] * source_mask
 
         # Apply target padding masks.
         if target_padding_type == "pad_id":
-            target_ids = jnp.where(target_mask, target_ids, decoder_pad_id)
+            target_ids = jnp.where(target_mask, target_ids, self.decoder_pad_id)
         elif target_padding_type == "segment_ids":
             target_segment_ids = target_mask
-            target_positions = jnp.arange(target_len)[None, :] * target_mask
-            # Make sure we aren't relying on pad_id.
-            self.assertTrue(jnp.all(target_ids > decoder_pad_id))
+            target_positions = jnp.arange(self.target_len)[None, :] * target_mask
 
-        # Compute outputs.
-        (loss, test_aux), ref_outputs = self._compute_layer_outputs(
-            test_layer=self.test_encoder_decoder,
-            ref_layer=self.hf_encoder_decoder,
-            test_inputs=dict(
-                input_batch=dict(
-                    source=dict(
-                        input_ids=source_ids,
-                        token_type_ids=source_token_type_ids,
-                        input_segment_ids=source_segment_ids,
-                        positions=source_positions,
-                    ),
-                    target=dict(
-                        input_ids=target_ids,
-                        input_segment_ids=target_segment_ids,
-                        positions=target_positions,
-                    ),
-                    target_labels=target_labels,
-                ),
-                return_aux=True,
+        # Load params from golden.
+        state = jax.tree.map(jnp.array, golden["params"])
+
+        # Run the AXLearn model forward pass.
+        input_batch = dict(
+            source=dict(
+                input_ids=source_ids,
+                token_type_ids=source_token_type_ids,
+                input_segment_ids=source_segment_ids,
+                positions=source_positions,
             ),
-            ref_inputs=dict(
-                input_ids=as_torch_tensor(hf_source_ids),
-                attention_mask=(None if source_mask is None else as_torch_tensor(source_mask)),
-                token_type_ids=as_torch_tensor(source_token_type_ids),
-                decoder_input_ids=as_torch_tensor(hf_target_ids),
-                decoder_attention_mask=(
-                    None if target_mask is None else as_torch_tensor(target_mask)
-                ),
-                labels=as_torch_tensor(target_labels).to(torch.long),
-                output_hidden_states=True,
+            target=dict(
+                input_ids=target_ids,
+                input_segment_ids=target_segment_ids,
+                positions=target_positions,
             ),
-            parameters_from_ref_layer=parameters_from_torch_layer,
-            require_same_tree_structure=False,
+            target_labels=target_labels,
+        )
+        (loss, test_aux), _ = F(
+            self.test_encoder_decoder,
+            inputs=dict(input_batch=input_batch, return_aux=True),
+            state=state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
         )
 
         # Compute logits from hidden_states via decoder.compute_logits.
-        params_from_ref = parameters_from_torch_layer(
-            self.hf_encoder_decoder, dst_layer=self.test_encoder_decoder
-        )
         test_logits = F(
             self.test_encoder_decoder.decoder,
             inputs=dict(forward_outputs=test_aux),
-            state=params_from_ref["decoder"],
+            state=state["decoder"],
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
             method="compute_logits",
         )[0]
 
+        # Load expected outputs from golden.
+        ref_logits = jnp.array(golden["outputs"]["logits"])
+        ref_loss = jnp.array(golden["outputs"]["loss"])
+
         # Compare outputs at non-padding positions.
-        ref_logits = utils.as_tensor(ref_outputs.logits)
         if target_mask is not None:
             test_logits *= target_mask[..., None]
             ref_logits *= target_mask[..., None]
-        test_name = f"{source_padding_type}:{target_padding_type}"
+        test_label = f"{source_padding_type}:{target_padding_type}"
 
         # We occasionally observe rounding errors.
-        assert_allclose(test_logits, ref_logits, atol=1e-5, err_msg=test_name)
-        assert_allclose(loss, utils.as_tensor(ref_outputs.loss), err_msg=test_name)
+        assert_allclose(test_logits, ref_logits, atol=1e-5, err_msg=test_label)
+        assert_allclose(loss, ref_loss, err_msg=test_label)
 
 
 class TestAgainstT5X(TestCase):
@@ -558,10 +465,7 @@ class TestAgainstT5X(TestCase):
 
     @parameterized.parameters(False, True)
     def test_against_t5x(self, packing: bool):
-        testcase = jnp.load(
-            os.path.join(testdata_dir, _MODULE_NAME, f"test_against_t5x_{packing}.npy"),
-            allow_pickle=True,
-        ).item()
+        testcase = load_golden(_MODULE_NAME, f"test_against_t5x_{packing}")
 
         # Setup dummy axlearn model.
         cfg = t5_encoder_decoder_config(
@@ -579,6 +483,10 @@ class TestAgainstT5X(TestCase):
             testcase["params"],
             test_encoder_decoder,
         )
+
+        def _maybe_as_tensor(x):
+            return jnp.asarray(x) if x is not None else None
+
         test_outputs, _ = F(
             test_encoder_decoder,
             is_training=False,
@@ -587,16 +495,16 @@ class TestAgainstT5X(TestCase):
             inputs=dict(
                 input_batch=dict(
                     source=dict(
-                        input_ids=testcase["source_ids"],
-                        input_segment_ids=testcase["source_segment_ids"],
-                        positions=testcase["source_positions"],
+                        input_ids=jnp.asarray(testcase["source_ids"]),
+                        input_segment_ids=_maybe_as_tensor(testcase.get("source_segment_ids")),
+                        positions=_maybe_as_tensor(testcase.get("source_positions")),
                     ),
                     target=dict(
-                        input_ids=testcase["target_ids"],
-                        input_segment_ids=testcase["target_segment_ids"],
-                        positions=testcase["target_positions"],
+                        input_ids=jnp.asarray(testcase["target_ids"]),
+                        input_segment_ids=_maybe_as_tensor(testcase.get("target_segment_ids")),
+                        positions=_maybe_as_tensor(testcase.get("target_positions")),
                     ),
-                    target_labels=testcase["target_labels"],
+                    target_labels=jnp.asarray(testcase["target_labels"]),
                 ),
             ),
             method="predict",

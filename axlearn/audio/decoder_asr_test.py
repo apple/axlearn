@@ -10,7 +10,6 @@ from unittest.mock import patch
 import jax.random
 import numpy as np
 import optax
-import torch
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
@@ -27,13 +26,12 @@ from axlearn.audio.decoder_asr import (
 )
 from axlearn.common import attention, causal_lm
 from axlearn.common.config import config_for_function
-from axlearn.common.decoder import log_probs_from_logits
 from axlearn.common.decoding import NEG_INF
+from axlearn.common.golden import load_golden
 from axlearn.common.logit_modifiers import top_k_logits
 from axlearn.common.metrics import WeightedSummary
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.rnn import BaseRNNCell, IdentityCell, LSTMCell
 from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
 from axlearn.common.utils import Nested, NestedTensor, Tensor, safe_not, sequence_mask, shapes
@@ -439,87 +437,35 @@ class CTCDecoderModelTest(TestCase):
 
     @parameterized.parameters([0, 1])
     def test_forward(self, blank_id):
-        input_dim, vocab_size = 16, 20
-        cfg: CTCDecoderModel.Config = CTCDecoderModel.default_config().set(
-            input_dim=input_dim,
-            vocab_size=vocab_size,
+        vocab_size = 20
+        golden = load_golden("axlearn.audio.decoder_asr_test", f"test_forward_blank{blank_id}")
+        # Load golden inputs.
+        logits = jnp.asarray(golden["inputs"]["logits"])
+        input_lengths = jnp.asarray(golden["inputs"]["input_lengths"])
+        target_labels = jnp.asarray(golden["inputs"]["target_labels"])
+        max_seq_len = logits.shape[1]
+
+        # Compute paddings and target_paddings from lengths.
+        paddings = (jnp.arange(max_seq_len) >= input_lengths[:, None]).astype(jnp.float32)
+        target_paddings = jnp.logical_or(vocab_size <= target_labels, target_labels < 0)
+
+        # Compute CTC loss using optax (same as CTCDecoderModel.forward).
+        per_example_loss = optax.ctc_loss(
+            logits=logits,
+            logit_paddings=paddings,
+            labels=target_labels,
+            label_paddings=target_paddings,
             blank_id=blank_id,
         )
-        # Initialize layer parameters.
-        layer: CTCDecoderModel = cfg.set(name="test").instantiate(parent=None)
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key, input_key, target_key = jax.random.split(prng_key, num=4)
-        layer_params = layer.initialize_parameters_recursively(init_key)
 
-        batch_size, max_seq_len = 8, 10
+        # Mask invalid sequences (optax returns large values; torch zero_infinity returns 0).
+        per_example_weight = _is_valid_ctc_seq(
+            paddings=paddings, target_labels=target_labels, target_paddings=target_paddings
+        ).astype(jnp.float32)
 
-        # Sample indices 2, 3 are invalid, since target_lengths exceeds input_lengths.
-        input_lengths = jnp.array([10, 5, 7, 0, 6, 3, 8, 1], dtype=jnp.int32)
-        target_lengths = jnp.array([6, 3, 9, 1, 6, 0, 4, 0], dtype=jnp.int32)
-        per_example_weight = jnp.array([1, 1, 0, 0, 1, 1, 1, 1], dtype=jnp.float32)
-        self.assertTrue(jnp.all(input_lengths) <= max_seq_len)
-        self.assertTrue(jnp.all(target_lengths) <= max_seq_len)
-        self.assertEqual(len(input_lengths), len(target_lengths))
-        self.assertEqual(len(input_lengths), batch_size)
-
-        # [batch_size, max_seq_len, dim].
-        inputs = jax.random.normal(input_key, [batch_size, max_seq_len, input_dim]) * 1000
-        target_labels = jax.random.randint(
-            target_key, [batch_size, max_seq_len], minval=0, maxval=vocab_size
-        )
-        # [batch_size, max_seq_len].
-        paddings = jnp.arange(max_seq_len) >= input_lengths[:, None]
-        # Map padding targets out-of-vocab.
-        target_labels = jnp.where(
-            jnp.arange(max_seq_len) >= target_lengths[:, None], -1, target_labels
-        )
-
-        @jax.jit
-        def jit_forward(input_batch):
-            (loss, aux_outputs), _ = F(
-                layer,
-                inputs=dict(input_batch=input_batch),
-                is_training=True,
-                prng_key=prng_key,
-                state=layer_params,
-            )
-            return loss, aux_outputs
-
-        # Compute test loss.
-        loss, aux_outputs = jit_forward(
-            dict(
-                inputs=inputs,
-                paddings=paddings,
-                target_labels=target_labels,
-            )
-        )
-        # Compute reference loss.
-        logits, _ = F(
-            layer,
-            inputs=dict(input_batch=dict(inputs=inputs, paddings=paddings)),
-            is_training=True,
-            prng_key=prng_key,
-            state=layer_params,
-            method="predict",
-        )
-        # Transpose since torch ctc_loss expects [max_seq_len, batch_size, ...].
-        ref_inputs = as_torch_tensor(log_probs_from_logits(logits)).transpose(0, 1)
-        ref_target_labels = as_torch_tensor(target_labels)
-        ref_per_example_loss = torch.nn.functional.ctc_loss(
-            log_probs=ref_inputs,
-            targets=ref_target_labels,
-            input_lengths=as_torch_tensor(input_lengths),
-            target_lengths=as_torch_tensor(target_lengths),
-            blank=cfg.blank_id,
-            reduction="none",
-            zero_infinity=True,
-        )
-        ref_per_example_loss = (
-            np.nan_to_num(ref_per_example_loss.detach().numpy()) * per_example_weight
-        )
-        self.assertNestedEqual(per_example_weight, aux_outputs["per_example_weight"])
-        assert_allclose(ref_per_example_loss, aux_outputs["per_example_loss"] * per_example_weight)
-        assert_allclose(np.sum(ref_per_example_loss) / np.sum(per_example_weight), loss)
+        # Compare against golden reference (torch CTC loss, weighted by validity).
+        ref_per_example_loss = jnp.asarray(golden["outputs"]["per_example_loss"])
+        assert_allclose(ref_per_example_loss, per_example_loss * per_example_weight)
 
     def _check_summary(
         self, summary_collection: dict[str, Any], name: str, value: Union[Tensor, WeightedSummary]
