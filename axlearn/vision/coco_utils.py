@@ -65,7 +65,9 @@ class COCOWrapper(coco.COCO):  # pytype: disable=annotation-type-mismatch,base-c
             self.dataset = gt_dataset
             self.createIndex()
 
-    def loadRes(self, predictions: list[dict[str, Any]]) -> coco.COCO:
+    def loadRes(  # pylint: disable=invalid-name
+        self, predictions: list[dict[str, Any]]
+    ) -> coco.COCO:
         """Loads result file and return a result api object.
 
         Args:

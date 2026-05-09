@@ -170,6 +170,7 @@ wandb/
 
 # Bazel
 bazel-*
+MODULE.bazel.lock
 
 # Emacs
 *~

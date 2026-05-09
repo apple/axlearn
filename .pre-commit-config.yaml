@@ -17,11 +17,8 @@ repos:
   rev: 5.13.2
   hooks:
   - id: isort
-- repo: local
+- repo: https://github.com/pylint-dev/pylint
+  rev: v4.0.3
   hooks:
   - id: pylint
-    name: pylint
-    entry: pylint
     args: ['--msg-template="{abspath}:{line}: [{msg_id}({symbol}), {obj}] {msg}"']
-    language: system
-    types: [python]
