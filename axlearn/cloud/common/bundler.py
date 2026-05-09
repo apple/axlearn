@@ -77,7 +77,6 @@ BUNDLE_EXCLUDE = [
     ".idea",
     ".cache",
     ".pytest_cache",
-    ".pytype",
     "__pycache__",
     ".ruff_cache",
     ".DS_Store",
