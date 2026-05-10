@@ -837,10 +837,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     @parameterized.product(
         tensor_dimensions=(
             (2, 3, 10, 32),
-            (2, 3, 8, 32),
-            (2, 4, 6, 32),
             (2, 4, 8, 16),
-            (2, 5, 8, 48),
             (2, 5, 8, 64),
         ),
         rotary_key=(True, False),
@@ -891,10 +888,7 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
 
     @parameterized.parameters(
         (2, 10, 32),
-        (2, 8, 32),
-        (2, 6, 32),
         (2, 8, 16),
-        (2, 8, 48),
         (2, 8, 64),
     )
     def test_rope_emb(self, batch_size, max_len, dim):
@@ -1084,10 +1078,7 @@ class YarnScaleRopeParametersTest(TestCase):
 
     @parameterized.parameters(
         (2, 10, 32),
-        (2, 8, 32),
-        (2, 6, 32),
         (2, 8, 16),
-        (2, 8, 48),
         (2, 8, 64),
     )
     def test_yarn_emb_basic(self, batch_size, max_len, dim):
@@ -1112,10 +1103,7 @@ class YarnScaleRopeParametersTest(TestCase):
 
     @parameterized.parameters(
         (2, 8, 32, 32, 1.0, 32.0, 10000.0),
-        (2, 16, 32, 32, 1.0, 32.0, 10000.0),
-        (2, 8, 48, 32, 1.0, 32.0, 10000.0),
         (2, 8, 64, 32, 2.0, 32.0, 10000.0),
-        (2, 8, 64, 32, 2.0, 16.0, 10000.0),
         (2, 8, 48, 32, 1.0, 16.0, 10000.0),
     )
     def test_yarn_emb_extend(

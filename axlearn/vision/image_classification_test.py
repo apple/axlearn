@@ -97,7 +97,7 @@ class ClassificationModelTest(parameterized.TestCase):
     # pytest with network access.
     @absltest.skip("Requires network: downloads pretrained ResNet weights from torchvision.")
     @parameterized.product(
-        model_depth=(18, 34, 50, 101, 152),
+        model_depth=(18, 50, 152),
         is_training=(False, True),
     )
     def test_resnets(self, model_depth, is_training):

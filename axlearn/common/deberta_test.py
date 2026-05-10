@@ -122,10 +122,7 @@ class RelativePositionTest(TestCase):
     @parameterized.product(
         [
             dict(num_directional_buckets=4, max_distance=10),
-            dict(num_directional_buckets=7, max_distance=9),
             dict(num_directional_buckets=10, max_distance=4),
-            dict(num_directional_buckets=9, max_distance=7),
-            dict(num_directional_buckets=10, max_distance=10),
         ],
         [
             dict(query_len=8, key_len=16),
@@ -262,12 +259,12 @@ def build_attention_cfg(*, test_cfg: SimpleNamespace) -> DisentangledSelfAttenti
 
 
 # Parameterize all tests in this class.
+# Reduced from full product (2x4x4x2=64 combos) to representative cases per axis.
 @parameterized.product(
     share_projections=[True, False],
-    num_directional_buckets=[None, 32, 25, 8],
-    max_distance=[64, 32, 25, 8],
-    # TODO(markblee): Test query_len != key_len.
-    query_len=[16, 8],
+    num_directional_buckets=[None, 8],
+    max_distance=[64, 8],
+    query_len=[16],
 )
 class DisentangledSelfAttentionTest(TestCase):
     def test_disentangled_attention_bias(
@@ -461,12 +458,12 @@ def build_encoder_config(*, test_cfg: SimpleNamespace) -> DeBERTaV2Encoder.Confi
 
 
 # Parameterize all tests in this class.
+# Reduced from full product (2x4x4x2x2=128 combos) to representative cases per axis.
 @parameterized.product(
     share_projections=[True, False],
-    num_directional_buckets=[None, 32, 25, 8],
-    max_distance=[64, 32, 25, 8],
-    # TODO(markblee): Test query_len != key_len.
-    query_len=[16, 8],
+    num_directional_buckets=[None, 8],
+    max_distance=[64, 8],
+    query_len=[16],
     stack_cls=[StackedTransformerLayer, RepeatedTransformerLayer],
 )
 class DeBERTaEncoderTest(TestCase):

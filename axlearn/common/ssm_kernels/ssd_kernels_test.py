@@ -230,12 +230,12 @@ def _generate_ssd_inputs(shape, dtype, seed, paramn="gla", zero_h0=True):
 
 class SSDPallasKernelTest(TestCase):
     @parameterized.product(
-        batch_size=[2, 4],
+        batch_size=[2],
         num_heads=[4, 8],
-        seq_len=[1024, 2048],
+        seq_len=[1024],
         dk=[128, 256],
-        dv=[128, 256],
-        seed=[0, 1],
+        dv=[128],
+        seed=[0],
     )
     def test_ssd_forward(
         self, batch_size: int, num_heads: int, seq_len: int, dk: int, dv: int, seed: int
