@@ -15,8 +15,6 @@
 
 
 """Tests Mamba/Mamba2 and Jamba implementations."""
-import math
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -27,12 +25,11 @@ from absl.testing import absltest, parameterized
 from jax._src.mesh import ResourceEnv, thread_resources
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec
-from transformers.activations import ACT2FN
-from transformers.configuration_utils import PretrainedConfig
 
 from axlearn.common.attention import KVCache
 from axlearn.common.attention_bias import make_causal_biases
 from axlearn.common.config import InstantiableConfig
+from axlearn.common.golden import load_golden
 from axlearn.common.module import functional as F
 from axlearn.common.ssm import (
     AssociativeScanMambaRecurrence,
@@ -50,7 +47,7 @@ from axlearn.common.ssm import (
 )
 from axlearn.common.ssm_kernels.ssd_kernels import ssd
 from axlearn.common.test_utils import TestCase, assert_allclose, set_threefry_partitionable
-from axlearn.common.utils import Nested, Tensor, cast_floats, sequence_mask
+from axlearn.common.utils import cast_floats, sequence_mask
 
 try:
     from mamba_ssm.modules.mamba2_simple import Mamba2Simple  # pytype: disable=import-error
@@ -59,274 +56,16 @@ try:
 except ModuleNotFoundError:
     MAMBA_INSTALLED = False
 
-# The following PyTorch Mamba implementations are adapted from:
-# https://github.com/huggingface/transformers/blob/v4.39.3/src/transformers/models/mamba/modeling_mamba.py
-# and
-# https://github.com/huggingface/transformers/blob/v4.39.3/src/transformers/models/mamba/configuration_mamba.py
-
-
-class MambaConfig(PretrainedConfig):
-    """HuffingFace Mamba Config"""
-
-    model_type = "mamba"
-
-    # TODO: Try to reduce positional arguments
-    # pylint: disable-next=too-many-positional-arguments
-    def __init__(
-        self,
-        vocab_size=50280,
-        hidden_size=768,
-        state_size=16,
-        num_hidden_layers=32,
-        layer_norm_epsilon=1e-5,
-        pad_token_id=0,
-        bos_token_id=0,
-        eos_token_id=0,
-        expand=2,
-        conv_kernel=4,
-        use_bias=False,
-        use_conv_bias=True,
-        hidden_act="silu",
-        initializer_range=0.1,
-        residual_in_fp32=True,
-        time_step_rank="auto",
-        time_step_scale=1.0,
-        time_step_min=0.001,
-        time_step_max=0.1,
-        time_step_init_scheme="random",
-        time_step_floor=1e-4,
-        rescale_prenorm_residual=False,
-        use_cache=True,
-        **kwargs,
-    ):
-        self.vocab_size = vocab_size
-        self.hidden_size = hidden_size
-        self.state_size = state_size
-        self.num_hidden_layers = num_hidden_layers
-        self.layer_norm_epsilon = layer_norm_epsilon
-        self.conv_kernel = conv_kernel
-        self.expand = expand
-        self.intermediate_size = int(expand * self.hidden_size)
-        self.bos_token_id = bos_token_id
-        self.eos_token_id = eos_token_id
-        self.pad_token_id = pad_token_id
-        self.use_bias = use_bias
-        self.use_conv_bias = use_conv_bias
-        self.hidden_act = hidden_act
-        self.initializer_range = initializer_range
-        self.time_step_rank = (
-            math.ceil(self.hidden_size / 16) if time_step_rank == "auto" else time_step_rank
-        )
-        self.time_step_scale = time_step_scale
-        self.time_step_min = time_step_min
-        self.time_step_max = time_step_max
-        self.time_step_init_scheme = time_step_init_scheme
-        self.time_step_floor = time_step_floor
-        self.rescale_prenorm_residual = rescale_prenorm_residual
-        self.residual_in_fp32 = residual_in_fp32
-        self.use_cache = use_cache
-
-        super().__init__(
-            bos_token_id=bos_token_id,
-            eos_token_id=eos_token_id,
-            pad_token_id=pad_token_id,
-            **kwargs,
-        )
-
-
-class MambaCache:
-    """HuggingFace MambaCache"""
-
-    def __init__(self, config, batch_size, dtype=torch.float16, device=None):
-        self.seqlen_offset = 0
-        self.dtype = dtype
-        intermediate_size = config.intermediate_size
-        ssm_state_size = config.state_size
-        conv_kernel_size = config.conv_kernel
-
-        self.conv_states = {
-            i: torch.zeros(
-                batch_size, intermediate_size, conv_kernel_size, device=device, dtype=dtype
-            )
-            for i in range(config.num_hidden_layers)
-        }
-        self.ssm_states = {
-            i: torch.zeros(
-                batch_size, intermediate_size, ssm_state_size, device=device, dtype=dtype
-            )
-            for i in range(config.num_hidden_layers)
-        }
-
-
-# pylint: disable=line-too-long
-# pylint: disable=invalid-name
-class MambaMixer(torch.nn.Module):
-    """
-    Compute ∆, A, B, C, and D the state space parameters and compute the `contextualized_states`.
-    A, D are input independent (see Mamba paper [1] Section 3.5.2 "Interpretation of A" for why A isn't selective)
-    ∆, B, C are input-dependent (this is a key difference between Mamba and the linear time invariant S4,
-    and is why Mamba is called **selective** state spaces)
-    """
-
-    def __init__(self, config, layer_idx):
-        super().__init__()
-        self.hidden_size = config.hidden_size
-        self.ssm_state_size = config.state_size
-        self.conv_kernel_size = config.conv_kernel
-        self.intermediate_size = config.intermediate_size
-        self.time_step_rank = config.time_step_rank
-        self.layer_idx = layer_idx
-        self.use_conv_bias = config.use_conv_bias
-        self.conv1d = torch.nn.Conv1d(
-            in_channels=self.intermediate_size,
-            out_channels=self.intermediate_size,
-            bias=config.use_conv_bias,
-            kernel_size=config.conv_kernel,
-            groups=self.intermediate_size,
-            padding=config.conv_kernel - 1,
-        )
-
-        self.activation = config.hidden_act
-        self.act = ACT2FN[config.hidden_act]
-
-        # projection of the input hidden states
-        self.in_proj = torch.nn.Linear(
-            self.hidden_size, self.intermediate_size * 2, bias=config.use_bias
-        )
-        # selective projection used to make dt, B and C input dependant
-        self.x_proj = torch.nn.Linear(
-            self.intermediate_size, self.time_step_rank + self.ssm_state_size * 2, bias=False
-        )
-        # time step projection (discretization)
-        self.dt_proj = torch.nn.Linear(self.time_step_rank, self.intermediate_size, bias=True)
-
-        # S4D real initialization. These are not discretized!
-        # The core is to load them, compute the discrete states, then write the updated state. Keeps the memory bounded
-        A = torch.arange(1, self.ssm_state_size + 1, dtype=torch.float32)[None, :]
-        A = A.expand(self.intermediate_size, -1).contiguous()
-
-        self.A_log = torch.nn.Parameter(torch.log(A))
-        self.D = torch.nn.Parameter(torch.ones(self.intermediate_size))
-        self.out_proj = torch.nn.Linear(
-            self.intermediate_size, self.hidden_size, bias=config.use_bias
-        )
-        self.use_bias = config.use_bias
-
-    # fmt: off
-    def slow_forward(self, input_states, cache_params: Optional[MambaCache]=None):
-        batch_size, seq_len, _ = input_states.shape
-        dtype = input_states.dtype
-        # 1. Gated MLP's linear projection
-        projected_states = self.in_proj(input_states).transpose(1, 2)                   # [batch, 2 * intermediate_size, seq_len]
-        hidden_states, gate = projected_states.chunk(2, dim=1)
-
-        # 2. Convolution sequence transformation
-        if cache_params is not None:
-            ssm_state = cache_params.ssm_states[self.layer_idx]
-            if cache_params.seqlen_offset > 0:
-                conv_state = cache_params.conv_states[self.layer_idx]                   # [batch, intermediate_size, conv_kernel_size]
-                conv_state = torch.roll(conv_state, shifts=-1, dims=-1)
-                conv_state[:, :, -1] = hidden_states[:, :, 0]
-                cache_params.conv_states[self.layer_idx].copy_(conv_state)
-                hidden_states = torch.sum(conv_state * self.conv1d.weight[:, 0, :], dim=-1)
-                if self.use_conv_bias:
-                    hidden_states += self.conv1d.bias
-                hidden_states = self.act(hidden_states).to(dtype).unsqueeze(-1)         # [batch, intermediate_size, 1] : decoding
-            else:
-                conv_state = torch.nn.functional.pad(
-                    hidden_states,
-                    (self.conv_kernel_size - hidden_states.shape[-1], 0)
-                )
-                cache_params.conv_states[self.layer_idx].copy_(conv_state)
-                hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])     # [batch, intermediate_size, seq_len]
-        else:
-            ssm_state = torch.zeros(
-                (batch_size, self.intermediate_size, self.ssm_state_size),
-                device=hidden_states.device, dtype=dtype
-            )
-            hidden_states = self.act(self.conv1d(hidden_states)[..., :seq_len])         # [batch, intermediate_size, seq_len]
-
-        # 3. State Space Model sequence transformation
-        # 3.a. Selection:  [batch, seq_len, self.time_step_rank + self.ssm_state_size * 2]
-        ssm_parameters = self.x_proj(hidden_states.transpose(1, 2))
-        time_step, B, C = torch.split(
-            ssm_parameters, [self.time_step_rank, self.ssm_state_size, self.ssm_state_size], dim=-1
-        )
-        discrete_time_step = self.dt_proj(time_step)                                    # [batch, seq_len, intermediate_size]
-        discrete_time_step = torch.nn.functional.softplus(discrete_time_step).transpose(1, 2) # [batch, intermediate_size, seq_len]
-
-        # 3.b. Discretization: B and C to [batch, seq_len, intermediate_size, ssm_state_size] (SRAM)
-        A = -torch.exp(self.A_log.float())                                              # [intermediate_size, ssm_state_size]
-        discrete_A = torch.exp(A[None, :, None, :] * discrete_time_step[:, :, :, None]) # [batch, intermediate_size, seq_len, ssm_state_size]
-        discrete_B = discrete_time_step[:, :, :, None] * B[:, None, :, :].float()       # [batch, intermediade_size, seq_len, ssm_state_size]
-        deltaB_u = discrete_B * hidden_states[:, :, :, None].float()
-
-        # 3.c perform the recurrence y ← SSM(A, B, C)(x)
-        scan_outputs = []
-        for i in range(seq_len):
-            ssm_state = discrete_A[:, :, i, :] * ssm_state + deltaB_u[:, :, i, :]      # [batch, intermediade_size, ssm_state]
-            scan_output = torch.matmul(ssm_state.to(dtype), C[:, i, :].unsqueeze(-1))  # [batch, intermediade_size, 1]
-            scan_outputs.append(scan_output[:, :, 0])
-        scan_output = torch.stack(scan_outputs, dim=-1)                                # [batch, seq_len, intermediade_size]
-        scan_output = scan_output + (hidden_states * self.D[None, :, None])
-        scan_output = (scan_output * self.act(gate)) # pylint: disable=superfluous-parens
-
-        if cache_params is not None:
-            cache_params.ssm_states[self.layer_idx].copy_(ssm_state)
-
-        # 4. Final linear projection
-        contextualized_states = self.out_proj(scan_output.transpose(1, 2))             # [batch, seq_len, hidden_size]
-        return contextualized_states
-    # fmt: on
-
-    def forward(self, hidden_states, cache_params: Optional[MambaCache] = None):
-        return self.slow_forward(hidden_states, cache_params)
-
 
 class MambaMixerLayerTest(TestCase):
     def test_forward(self):
+        golden = load_golden("axlearn.common.ssm_test", "test_forward")
         model_dim = 4
         state_dim = 16
         test_cfg = MambaMixerLayer.default_config().set(input_dim=model_dim, state_dim=state_dim)
         test_layer = test_cfg.set(name="test").instantiate(parent=None)
-        layer_params = test_layer.initialize_parameters_recursively(jax.random.PRNGKey(0))
-
-        ref_cfg = MambaConfig(hidden_size=model_dim, state_size=state_dim)
-        ref_layer = MambaMixer(ref_cfg, layer_idx=0)
-
-        # Copy parameters.
-        ref_layer.in_proj.weight.data.copy_(
-            torch.from_numpy(
-                np.array(layer_params["input_proj"]["weight"].reshape(model_dim, -1).T)
-            )
-        )
-        ref_layer.conv1d.weight.data.copy_(
-            torch.from_numpy(np.array(layer_params["conv"]["weight"].swapaxes(0, 2)))
-        )
-        ref_layer.conv1d.bias.data.copy_(torch.from_numpy(np.array(layer_params["conv"]["bias"])))
-
-        def _copy_linear_params(
-            our_linear_params: Nested[Tensor], pt_linear_layer: torch.nn.Linear
-        ):
-            pt_linear_layer.weight.data.copy_(
-                torch.from_numpy(np.array(jnp.swapaxes(our_linear_params["weight"], 0, 1)))
-            )
-            if pt_linear_layer.bias is not None:
-                assert "bias" in our_linear_params
-                pt_linear_layer.bias.data.copy_(
-                    torch.from_numpy(np.array(our_linear_params["bias"]))
-                )
-            else:
-                assert "bias" not in our_linear_params
-
-        _copy_linear_params(layer_params["x_proj"], ref_layer.x_proj)
-        _copy_linear_params(layer_params["dt_proj"], ref_layer.dt_proj)
-        _copy_linear_params(layer_params["out_proj"], ref_layer.out_proj)
-
-        # Construct test inputs.
-        batch_size, tgt_len = 2, 6
-        x = jax.random.uniform(jax.random.PRNGKey(1), [batch_size, tgt_len, model_dim])
-        x_pt = torch.from_numpy(np.array(x))
+        layer_params = golden["params"]
+        x = jnp.array(golden["inputs"]["x"])
 
         outputs, _ = F(
             test_layer,
@@ -335,8 +74,7 @@ class MambaMixerLayerTest(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(2),
         )
-        ref_outputs = ref_layer(x_pt)
-        assert_allclose(outputs.data, ref_outputs.detach().numpy())
+        assert_allclose(outputs.data, golden["outputs"]["data"])
 
     def test_associative_scan(self):
         """Tests that a simple linear scan and an associative scan give the same results."""
@@ -1036,7 +774,8 @@ class Mamba2RecurrenceTest(TestCase):
             prng_key=key,
         )
 
-        # alternative input to the kernel; delta by default is applied to x to get x_bar, here we can
+        # alternative input to the kernel; delta by default is applied to x to get
+        # x_bar, here we can
         # also apply it to b to get b_bar first.
         b_bar = b * jnp.expand_dims(delta, axis=-1)
         loga_bar = log_a * delta
@@ -1538,7 +1277,9 @@ class GPUMamba2MixerLayerTest(TestCase):
         xz_w = _j2t(jax_params["xz_proj"]["weight"])  # [d_model, 2, d_inner]
         bc_w = _j2t(jax_params["bc_proj"]["weight"])  # [d_model, 2, dk]
         dt_w = _j2t(jax_params["dt_proj"]["weight"])  # [d_model, num_heads]
-        zxBCdt_w = torch.cat([xz_w[:, 1], xz_w[:, 0], bc_w[:, 0], bc_w[:, 1], dt_w], dim=1)
+        zxBCdt_w = torch.cat(  # pylint: disable=invalid-name
+            [xz_w[:, 1], xz_w[:, 0], bc_w[:, 0], bc_w[:, 1], dt_w], dim=1
+        )
         ref_model.in_proj.weight.data.copy_(zxBCdt_w.T)
 
         # conv1d <-> [x_conv, b_conv, c_conv]

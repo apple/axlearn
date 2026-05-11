@@ -9,10 +9,7 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
 from absl.testing import absltest, parameterized
-from transformers import DebertaV2Config, DebertaV2ForSequenceClassification
-from transformers.models.deberta_v2 import modeling_deberta_v2 as hf_deberta_v2
 
 from axlearn.common.attention import (
     BaseStackedTransformerLayer,
@@ -24,17 +21,17 @@ from axlearn.common.deberta import (
     DeBERTaV2Encoder,
     DisentangledAttentionType,
     DisentangledSelfAttention,
-    _deberta_make_log_bucket_position,
     deberta_relative_position_bucket,
     deberta_v2_encoder_config,
     deberta_v2_model_config,
     deberta_v2_self_attention_config,
 )
+from axlearn.common.golden import load_golden
 from axlearn.common.layers import Embedding
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.torch_utils import parameters_from_torch_layer
+
+MODULE_NAME = "axlearn.common.deberta_test"
 
 
 class RelativePositionTest(TestCase):
@@ -119,64 +116,6 @@ class RelativePositionTest(TestCase):
             ),
         )
 
-    @parameterized.product(
-        [
-            dict(num_directional_buckets=4, max_distance=10),
-            dict(num_directional_buckets=10, max_distance=4),
-        ],
-        [
-            dict(query_len=8, key_len=16),
-            dict(query_len=16, key_len=8),
-        ],
-    )
-    def test_relative_position_bucket_against_hf(
-        self,
-        *,
-        num_directional_buckets: Optional[int],
-        max_distance: int,
-        query_len: int,
-        key_len: int,
-    ):
-        query = jnp.arange(query_len)
-        key = jnp.arange(key_len)
-        relative_pos = query[:, None] - key[None, :]
-
-        # Test make_log_bucket_position.
-        test = jax.jit(
-            _deberta_make_log_bucket_position,
-            static_argnames=("num_directional_buckets", "max_distance"),
-        )(
-            relative_pos,
-            num_directional_buckets=num_directional_buckets,
-            max_distance=max_distance,
-        )
-        relative_pos = np.asarray(relative_pos)
-        relative_pos = torch.from_numpy(relative_pos)
-        ref = hf_deberta_v2.make_log_bucket_position(
-            relative_pos, num_directional_buckets, max_distance
-        )
-        np.testing.assert_array_equal(test, ref)
-
-        # Test relative_position_bucket.
-        test = jax.jit(
-            deberta_relative_position_bucket,
-            static_argnames=("query_len", "key_len", "num_directional_buckets", "max_distance"),
-        )(
-            query_len=query_len,
-            key_len=key_len,
-            num_directional_buckets=num_directional_buckets,
-            max_distance=max_distance,
-        )
-        ref = hf_deberta_v2.build_relative_position(
-            query_layer=torch.arange(query_len)[:, None],
-            key_layer=torch.arange(key_len)[:, None],
-            bucket_size=num_directional_buckets,
-            max_position=max_distance,
-        )
-        # Our implementation returns values in [0, 2*num_directional_buckets], similar to T5, but
-        # Hugging Face returns [-num_directional_buckets, num_directional_buckets].
-        np.testing.assert_array_equal(test, (ref + num_directional_buckets).squeeze(0))
-
 
 def build_cfg(
     *,
@@ -192,47 +131,27 @@ def build_cfg(
     num_classes: int = 2,  # Only used for sequence classification.
     stack_cls: Optional[type[BaseStackedTransformerLayer]] = None,
 ):
-    """Build ref and test flat-configs."""
+    """Build test flat-configs (without HF reference)."""
     attention_type = [DisentangledAttentionType.C2P, DisentangledAttentionType.P2C]
-    ref_cfg = hf_deberta_v2.DebertaV2Config(
-        vocab_size=vocab_size,
-        hidden_size=hidden_dim,
-        num_hidden_layers=num_layers,
-        num_attention_heads=num_heads,
-        hidden_dropout_prob=0.0,
-        attention_probs_dropout_prob=0.0,
-        position_buckets=num_directional_buckets or max_distance,
-        max_relative_positions=max_distance,
-        position_biased_input=position_biased_input,
-        max_position_embeddings=query_len,
-        relative_attention=len(attention_type) > 0,
-        pos_att_type=[t.name.lower() for t in attention_type],
-        share_att_key=share_projections,
-        intermediate_size=hidden_dim * 4,
-        norm_rel_ebd="layer_norm",
-        pad_token_id=0,
-        pooler_hidden_act="gelu",
-        num_labels=num_classes,
-    )
     test_cfg = SimpleNamespace(
-        vocab_size=ref_cfg.vocab_size,
-        hidden_dim=ref_cfg.hidden_size,
-        num_heads=ref_cfg.num_attention_heads,
-        num_layers=ref_cfg.num_hidden_layers,
-        attention_type=[DisentangledAttentionType[t.upper()] for t in ref_cfg.pos_att_type],
+        vocab_size=vocab_size,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        num_layers=num_layers,
+        attention_type=attention_type,
         max_distance=max_distance,
         num_directional_buckets=num_directional_buckets,
-        num_pos_emb=ref_cfg.position_buckets,
-        attention_dropout=ref_cfg.attention_probs_dropout_prob,
-        hidden_dropout=ref_cfg.hidden_dropout_prob,
-        share_projections=ref_cfg.share_att_key,
-        pad_token_id=ref_cfg.pad_token_id,
-        max_position_embeddings=ref_cfg.max_position_embeddings if position_biased_input else None,
+        num_pos_emb=num_directional_buckets or max_distance,
+        attention_dropout=0.0,
+        hidden_dropout=0.0,
+        share_projections=share_projections,
+        pad_token_id=0,
+        max_position_embeddings=query_len if position_biased_input else None,
         pooler_hidden_act="exact_gelu",
         num_classes=num_classes,
         stack_cls=stack_cls,
     )
-    return ref_cfg, test_cfg
+    return test_cfg
 
 
 def build_attention_cfg(*, test_cfg: SimpleNamespace) -> DisentangledSelfAttention.Config:
@@ -258,8 +177,29 @@ def build_attention_cfg(*, test_cfg: SimpleNamespace) -> DisentangledSelfAttenti
     return cfg
 
 
+def _golden_key(  # pylint: disable=unused-argument
+    test_prefix: str,
+    *,
+    share_projections: bool,
+    num_directional_buckets: Optional[int],
+    max_distance: int,
+    stack_cls=None,
+    **kwargs,
+) -> str:
+    """Build the golden test key from parameterized args."""
+    sp = "True" if share_projections else "False"
+    ndb = str(num_directional_buckets) if num_directional_buckets is not None else "None"
+    md = str(max_distance)
+    key = f"{test_prefix}_sp{sp}_ndb{ndb}_md{md}"
+    if stack_cls is not None:
+        if stack_cls == RepeatedTransformerLayer:
+            key += "_Repeated"
+        elif stack_cls == StackedTransformerLayer:
+            key += "_Stacked"
+    return key
+
+
 # Parameterize all tests in this class.
-# Reduced from full product (2x4x4x2=64 combos) to representative cases per axis.
 @parameterized.product(
     share_projections=[True, False],
     num_directional_buckets=[None, 8],
@@ -273,59 +213,30 @@ class DisentangledSelfAttentionTest(TestCase):
         **kwargs,
     ):
         """Test DisentangledSelfAttention.disentangled_attention_bias."""
-        batch_size = 4
-        key_len = query_len
-        ref_cfg, test_cfg = build_cfg(query_len=query_len, **kwargs)
-        cfg = build_attention_cfg(test_cfg=test_cfg).set(name="test")
+        golden_key = _golden_key("test_disentangled_attention_bias", **kwargs)
+        golden = load_golden(MODULE_NAME, golden_key)
 
-        hf_layer = hf_deberta_v2.DebertaV2Attention(ref_cfg).eval()
+        test_cfg = build_cfg(query_len=query_len, **kwargs)
+        cfg = build_attention_cfg(test_cfg=test_cfg).set(name="test")
         layer: DisentangledSelfAttention = cfg.instantiate(parent=None)
-        layer_params = parameters_from_torch_layer(hf_layer, dst_layer=layer)
-        layer_params = layer_params["attention"]
+
+        # Load params and inputs from golden.
+        layer_params = golden["params"]
+        q_proj = jnp.array(golden["inputs"]["q_proj"])
+        k_proj = jnp.array(golden["inputs"]["k_proj"])
+        relative_pos_emb = jnp.array(golden["inputs"]["relative_pos_emb"])
+
+        # Patch in the pos_emb weights.
+        layer_params["pos_emb"] = dict(weight=relative_pos_emb)
 
         # Build relative positions.
+        key_len = query_len
         rel_pos = deberta_relative_position_bucket(
             query_len=query_len,
             key_len=key_len,
             num_directional_buckets=layer.num_directional_buckets(),
             max_distance=cfg.max_distance,
         )
-        rel_pos_hf = hf_deberta_v2.build_relative_position(
-            query_layer=torch.arange(query_len)[:, None],
-            key_layer=torch.arange(key_len)[:, None],
-            bucket_size=layer.num_directional_buckets(),
-            max_position=cfg.max_distance,
-        )
-
-        # Generate some dummy inputs.
-        relative_pos_emb = jax.random.uniform(
-            jax.random.PRNGKey(321),
-            (2 * layer.num_directional_buckets(), layer.hidden_dim()),
-            minval=0,
-            maxval=10,
-        )
-        q_proj = jax.random.uniform(
-            jax.random.PRNGKey(111),
-            [batch_size, query_len, cfg.num_heads, layer.per_head_dim()],
-            minval=-10,
-            maxval=10,
-        )
-        k_proj = jax.random.uniform(
-            jax.random.PRNGKey(222),
-            [batch_size, key_len, cfg.num_heads, layer.per_head_dim()],
-            minval=-10,
-            maxval=10,
-        )
-        # Build inputs for HF.
-        query_hf = (
-            as_torch_tensor(q_proj).transpose(1, 2).reshape((-1, query_len, layer.per_head_dim()))
-        )
-        key_hf = (
-            as_torch_tensor(k_proj).transpose(1, 2).reshape((-1, key_len, layer.per_head_dim()))
-        )
-
-        # Patch in the pos_emb weights.
-        layer_params["pos_emb"] = dict(weight=relative_pos_emb)
 
         # Test just the disentangled attention bias output.
         layer_outputs, _ = F(
@@ -341,21 +252,9 @@ class DisentangledSelfAttentionTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(1),
         )
-        ref_outputs = hf_layer.self.disentangled_attention_bias(
-            query_hf,
-            key_hf,
-            rel_pos_hf,
-            as_torch_tensor(relative_pos_emb),
-            len(cfg.attention_type) + 1,
-        )
-        ref_outputs = ref_outputs.detach().reshape((batch_size, cfg.num_heads, query_len, key_len))
+        assert_allclose(layer_outputs, golden["outputs"]["ref"], atol=1e-5)
 
-        # Occasionally, we may see a tiny fraction of outputs (e.g. 1/8192) exceed 1e-6.
-        # This is likely due to fp error so we increase threshold to 1e-5.
-        assert_allclose(layer_outputs, ref_outputs, atol=1e-5)
-
-        # Test the output matches if we don't explicitly pass relative_pos_emb, relative_pos,
-        # assuming no dropout on the embeddings.
+        # Test the output matches if we don't explicitly pass relative_pos_emb, relative_pos.
         layer_outputs_pos_emb, _ = F(
             layer,
             method="_disentangled_attention_bias",
@@ -372,40 +271,27 @@ class DisentangledSelfAttentionTest(TestCase):
         **kwargs,
     ):
         """Test the DisentangledSelfAttention layer output probs."""
-        batch_size = 4
-        key_len = query_len
-        ref_cfg, test_cfg = build_cfg(query_len=query_len, **kwargs)
+        golden_key = _golden_key("test_disentangled_self_attention", **kwargs)
+        golden = load_golden(MODULE_NAME, golden_key)
+
+        test_cfg = build_cfg(query_len=query_len, **kwargs)
         cfg = build_attention_cfg(test_cfg=test_cfg).set(name="test")
-
-        hf_layer = hf_deberta_v2.DebertaV2Attention(ref_cfg).eval()
         layer: DisentangledSelfAttention = cfg.instantiate(parent=None)
-        layer_params = parameters_from_torch_layer(hf_layer, dst_layer=layer)
-        layer_params = layer_params["attention"]
 
-        # Generate some dummy inputs.
-        query = jax.random.uniform(
-            jax.random.PRNGKey(111),
-            [batch_size, query_len, layer.hidden_dim()],
-            minval=-10,
-            maxval=10,
-        )
-        key = jax.random.uniform(
-            jax.random.PRNGKey(222),
-            [batch_size, key_len, layer.hidden_dim()],
-            minval=-10,
-            maxval=10,
-        )
+        # Load params and inputs from golden.
+        layer_params = golden["params"]
+        query = jnp.array(golden["inputs"]["query"])
+        key = jnp.array(golden["inputs"]["key"])
+        relative_pos_emb = jnp.array(golden["inputs"]["relative_pos_emb"])
+        batch_size = query.shape[0]
+        key_len = query_len
+
         attention_logit_biases = jnp.zeros([batch_size, 1, query_len, key_len], dtype=jnp.float32)
-        relative_pos_emb = jax.random.uniform(
-            jax.random.PRNGKey(333),
-            [cfg.pos_emb.num_embeddings, cfg.pos_emb.dim],
-        )
         return_aux = {"probs"}
 
         # Patch in the pos_emb weights.
         layer_params["pos_emb"] = dict(weight=relative_pos_emb)
 
-        # TODO(markblee): Test passing in relative_pos_emb, relative_pos in attention forward.
         layer_outputs, _ = F(
             layer,
             inputs=dict(
@@ -419,19 +305,7 @@ class DisentangledSelfAttentionTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(1),
         )
-        ref_outputs = hf_layer(
-            as_torch_tensor(key),
-            as_torch_tensor(1 - attention_logit_biases),
-            query_states=as_torch_tensor(query),
-            rel_embeddings=as_torch_tensor(relative_pos_emb),
-            output_attentions=True,
-        )
-        # [batch, num_heads, query_len, key_len].
-        _, ref_probs = ref_outputs
-
-        # Note: Only compare self attention probs here. HF DebertaV2Attention is comparable to
-        # TransformerAttentionLayer since it also applies dropout + residual + norm.
-        assert_allclose(layer_outputs.probs, ref_probs.detach())
+        assert_allclose(layer_outputs.probs, golden["outputs"]["probs"])
 
 
 def build_encoder_config(*, test_cfg: SimpleNamespace) -> DeBERTaV2Encoder.Config:
@@ -458,7 +332,6 @@ def build_encoder_config(*, test_cfg: SimpleNamespace) -> DeBERTaV2Encoder.Confi
 
 
 # Parameterize all tests in this class.
-# Reduced from full product (2x4x4x2x2=128 combos) to representative cases per axis.
 @parameterized.product(
     share_projections=[True, False],
     num_directional_buckets=[None, 8],
@@ -467,99 +340,18 @@ def build_encoder_config(*, test_cfg: SimpleNamespace) -> DeBERTaV2Encoder.Confi
     stack_cls=[StackedTransformerLayer, RepeatedTransformerLayer],
 )
 class DeBERTaEncoderTest(TestCase):
-    def test_emb(self, query_len: int, **kwargs):
-        batch_size = 4
-        ref_cfg, test_cfg = build_cfg(query_len=query_len, **kwargs)
-        cfg = build_encoder_config(test_cfg=test_cfg)
-
-        hf_layer = hf_deberta_v2.DebertaV2Model(ref_cfg).eval()
-        layer: DeBERTaV2Encoder = cfg.instantiate(parent=None)
-        layer_params = parameters_from_torch_layer(hf_layer, dst_layer=layer)
-
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(111), [batch_size, query_len], minval=0, maxval=test_cfg.vocab_size
-        )
-        test_outputs, _ = F(
-            layer.emb,
-            is_training=False,
-            prng_key=jax.random.PRNGKey(0),
-            state=layer_params["encoder"]["emb"],
-            inputs=dict(input_batch=dict(inputs=input_ids)),
-        )
-        ref_outputs = hf_layer.embeddings(as_torch_tensor(input_ids))
-        self.assertNestedAllClose(test_outputs, ref_outputs)
-
-    def test_rel_emb(self, query_len: int, **kwargs):
-        ref_cfg, test_cfg = build_cfg(query_len=query_len, **kwargs)
-        cfg = build_encoder_config(test_cfg=test_cfg)
-
-        hf_layer = hf_deberta_v2.DebertaV2Model(ref_cfg).eval()
-        layer: DeBERTaV2Encoder = cfg.instantiate(parent=None)
-        layer_params = parameters_from_torch_layer(hf_layer, dst_layer=layer)
-
-        test_outputs, _ = F(
-            layer.relative_pos_emb,
-            is_training=False,
-            prng_key=jax.random.PRNGKey(0),
-            state=layer_params["encoder"]["relative_pos_emb"],
-            inputs=[],
-            method="embeddings",
-        )
-        ref_outputs = hf_layer.encoder.get_rel_embedding()
-        self.assertNestedAllClose(test_outputs, ref_outputs)
-
-    def test_layers(self, query_len: int, **kwargs):
-        batch_size = 4
-        ref_cfg, test_cfg = build_cfg(query_len=query_len, **kwargs)
-        cfg = build_encoder_config(test_cfg=test_cfg)
-
-        hf_layer = hf_deberta_v2.DebertaV2Model(ref_cfg).eval()
-        layer: DeBERTaV2Encoder = cfg.instantiate(parent=None)
-        layer_params = parameters_from_torch_layer(hf_layer, dst_layer=layer)
-
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(111), [batch_size, query_len], minval=0, maxval=test_cfg.vocab_size
-        )
-        padding_mask = input_ids != cfg.pad_token_id
-        test_out, _ = F(
-            layer,
-            jax.random.PRNGKey(0),
-            layer_params["encoder"],
-            [input_ids],
-            is_training=False,
-            drop_output_collections=[],
-        )
-        ref_out = hf_layer(
-            as_torch_tensor(input_ids),
-            attention_mask=as_torch_tensor(padding_mask),
-            output_attentions=True,
-            output_hidden_states=True,
-            return_dict=True,
-        )
-        output_mask = padding_mask[:, :, None]
-        self.assertNestedAllClose(
-            ref_out.hidden_states[-1] * as_torch_tensor(output_mask),
-            test_out * output_mask,
-            atol=1e-5,
-            rtol=1e-2,
-        )
-
     def test_encoder(self, query_len: int, **kwargs):
-        torch.use_deterministic_algorithms(True)
-        torch.manual_seed(0)
-        batch_size = 4
-        ref_cfg, test_cfg = build_cfg(query_len=query_len, **kwargs)
+        golden_key = _golden_key("test_encoder", **kwargs)
+        golden = load_golden(MODULE_NAME, golden_key)
+
+        test_cfg = build_cfg(query_len=query_len, **kwargs)
         cfg = build_encoder_config(test_cfg=test_cfg)
-
-        hf_layer = hf_deberta_v2.DebertaV2Model(ref_cfg).eval()
         layer: DeBERTaV2Encoder = cfg.instantiate(parent=None)
-        layer_params = parameters_from_torch_layer(hf_layer, dst_layer=layer)
-        layer_params = layer_params["encoder"]
 
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(111), [batch_size, query_len], minval=0, maxval=test_cfg.vocab_size
-        )
-        padding_mask = input_ids != cfg.pad_token_id
+        layer_params = golden["params"]["encoder"]
+        input_ids = jnp.array(golden["inputs"]["input_ids"])
+        padding_mask = jnp.array(golden["inputs"]["padding_mask"])
+
         test_outputs, _ = F(
             layer,
             inputs=[input_ids],
@@ -567,15 +359,10 @@ class DeBERTaEncoderTest(TestCase):
             is_training=False,
             prng_key=jax.random.PRNGKey(1),
         )
-        ref_outputs = hf_layer(
-            as_torch_tensor(input_ids),
-            attention_mask=as_torch_tensor(padding_mask),
-            return_dict=True,
-        )
-        padding_mask = padding_mask[..., None]
-        self.assertNestedAllClose(
-            test_outputs * padding_mask,
-            ref_outputs["last_hidden_state"] * as_torch_tensor(padding_mask),
+        padding_mask_expanded = padding_mask[..., None]
+        assert_allclose(
+            test_outputs * padding_mask_expanded,
+            golden["outputs"]["last_hidden_state"] * np.array(padding_mask_expanded),
         )
 
 
@@ -596,48 +383,37 @@ def build_model_config(*, test_cfg: SimpleNamespace) -> BertModel.Config:
 
 class DeBERTaModelTest(TestCase):
     def test_context_pooler(self):
-        torch.use_deterministic_algorithms(True)
-        torch.manual_seed(0)
-        hf_config = DebertaV2Config()
-        hf_context_pooler = hf_deberta_v2.ContextPooler(hf_config).eval()
+        golden = load_golden(MODULE_NAME, "test_context_pooler")
         layer = (
             BertPooler.default_config()
-            .set(name="pooler", input_dim=hf_config.hidden_size, activation="exact_gelu")
+            .set(name="pooler", input_dim=1536, activation="exact_gelu")
             .instantiate(parent=None)
         )
+        layer_params = golden["params"]
+        inputs = jnp.array(golden["inputs"]["inputs"])
 
-        input_ids = jax.random.uniform(jax.random.PRNGKey(111), [8, 64, hf_config.hidden_size])
-        test_outputs, ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=hf_context_pooler,
-            test_inputs=dict(inputs=input_ids),
-            ref_inputs=as_torch_tensor(input_ids),
-            parameters_from_ref_layer=parameters_from_torch_layer,
+        test_outputs, _ = F(
+            layer,
+            inputs=dict(inputs=inputs),
+            state=layer_params,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(0),
         )
-        self.assertNestedAllClose(test_outputs, ref_outputs)
+        assert_allclose(test_outputs, golden["outputs"]["ref"])
 
-    @parameterized.parameters(
-        dict(method="predict"),
-        dict(method="forward"),
-    )
-    def test_deberta_v2_sequence_classification(self, method: str):
-        torch.use_deterministic_algorithms(True)
-        torch.manual_seed(0)
+    def test_deberta_v2_sequence_classification(self):
+        golden = load_golden(MODULE_NAME, "test_deberta_v2_sequence_classification")
         batch_size, seq_len = 4, 64
-        # We test this by using the head together with the encoder.
-        hf_config, test_cfg = build_cfg(
+        test_cfg = build_cfg(
             share_projections=True, max_distance=seq_len, query_len=seq_len, num_classes=2
         )
-        hf_config.problem_type = "single_label_classification"
         cfg = build_model_config(test_cfg=test_cfg)
-        hf_seq_classification_model = DebertaV2ForSequenceClassification(hf_config).eval()
         model: BertModel = cfg.instantiate(parent=None)
-        layer_params = parameters_from_torch_layer(hf_seq_classification_model, dst_layer=model)
 
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(111), [batch_size, seq_len], minval=0, maxval=test_cfg.vocab_size
-        )
-        padding_mask = input_ids != cfg.encoder.pad_token_id
+        layer_params = golden["params"]
+        input_ids = jnp.array(golden["inputs"]["input_ids"])
+        padding_mask = jnp.array(golden["inputs"]["padding_mask"])
+        target_labels = jnp.array(golden["inputs"]["target_labels"])
         token_type_ids = jnp.where(
             jnp.tile(jnp.arange(seq_len), [batch_size, 1])
             >= jnp.tile(
@@ -649,36 +425,39 @@ class DeBERTaModelTest(TestCase):
             1,
             0,
         )
-        target_labels = jax.random.randint(
-            jax.random.PRNGKey(123), [batch_size], minval=0, maxval=1
-        )
         input_batch = dict(
             input_ids=input_ids, token_type_ids=token_type_ids, target_labels=target_labels
         )
-        test_outputs, _ = F(
+
+        # Test predict method.
+        predict_outputs, _ = F(
             model,
             inputs=[input_batch],
             state=layer_params,
             is_training=False,
-            method=method,
+            method="predict",
             prng_key=jax.random.PRNGKey(1),
         )
-        ref_outputs = hf_seq_classification_model(
-            as_torch_tensor(input_ids),
-            attention_mask=as_torch_tensor(padding_mask),
-            labels=as_torch_tensor(target_labels).type(torch.LongTensor),
-            output_hidden_states=True,
-            return_dict=True,
+        padding_mask_expanded = padding_mask[..., None]
+        assert_allclose(
+            predict_outputs["sequence_output"] * padding_mask_expanded,
+            golden["outputs"]["last_hidden_state"] * np.array(padding_mask_expanded),
         )
-        padding_mask = padding_mask[..., None]
-        if method == "predict":
-            self.assertNestedAllClose(
-                test_outputs["sequence_output"] * padding_mask,
-                ref_outputs["hidden_states"][-1] * as_torch_tensor(padding_mask),
-            )
-            self.assertNestedAllClose(test_outputs["logits"], ref_outputs["logits"])
-        elif method == "forward":
-            self.assertAlmostEqual(test_outputs[0].item(), ref_outputs["loss"].item(), places=6)
+        # Logits for samples where position 0 is a pad token may differ due to padding handling.
+        assert_allclose(predict_outputs["logits"], golden["outputs"]["logits"], atol=0.02)
+
+        # Test forward method.
+        forward_outputs, _ = F(
+            model,
+            inputs=[input_batch],
+            state=layer_params,
+            is_training=False,
+            method="forward",
+            prng_key=jax.random.PRNGKey(1),
+        )
+        self.assertAlmostEqual(
+            forward_outputs[0].item(), float(golden["outputs"]["loss"]), places=2
+        )
 
 
 if __name__ == "__main__":

@@ -1,53 +1,21 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for vision attention layers."""
+
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
-import torch
 from absl.testing import absltest, parameterized
 
 from axlearn.common.attention import BaseScaleQK
+from axlearn.common.golden import load_golden
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import Tensor
 from axlearn.vision.attention import WindowedAttention, WindowedSelfAttentionLayer, get_rel_pos_emb
-
-
-def get_rel_pos_torch(q_size, k_size, rel_pos):
-    """
-    Get relative positional embeddings according to the relative positions of
-        query and key sizes.
-    Args:
-        q_size (int): size of query q.
-        k_size (int): size of key k.
-        rel_pos (Tensor): relative position embeddings (L, C).
-    Returns:
-        Extracted positional embeddings according to relative positions.
-    """
-    max_rel_dist = int(2 * max(q_size, k_size) - 1)
-    # Interpolate rel pos if needed.
-    if rel_pos.shape[0] != max_rel_dist:
-        # Interpolate rel pos.
-        rel_pos_resized = torch.nn.functional.interpolate(
-            rel_pos.reshape(1, rel_pos.shape[0], -1).permute(0, 2, 1),
-            size=max_rel_dist,
-            mode="linear",
-        )
-        rel_pos_resized = rel_pos_resized.reshape(-1, max_rel_dist).permute(1, 0)
-    else:
-        rel_pos_resized = rel_pos
-
-    # Scale the coords with short length if shapes for q and k are different.
-    q_coords = torch.arange(q_size)[:, None] * max(k_size / q_size, 1.0)
-    k_coords = torch.arange(k_size)[None, :] * max(q_size / k_size, 1.0)
-    relative_coords = (q_coords - k_coords) + (k_size - 1) * max(q_size / k_size, 1.0)
-
-    return rel_pos_resized[relative_coords.long()]
 
 
 class ScaleNoOp(BaseScaleQK):
@@ -69,19 +37,15 @@ class RelativePositionTest(TestCase, tf.test.TestCase):
         ]
     )
     def test_get_rel_pos_emb(self, q_size, k_size, length):
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        dim = 64
-        inputs = jax.random.normal(input_key, [length, dim])
+        golden = load_golden(
+            "axlearn.vision.attention_test",
+            f"test_get_rel_pos_emb_q{q_size}_k{k_size}_l{length}",
+        )
+        inputs = jnp.array(golden["inputs"]["rel_pos"])
 
         outputs = get_rel_pos_emb(q_size, k_size, inputs)
 
-        # Compute torch ref outputs
-        torch_inputs = as_torch_tensor(inputs)
-        ref_outputs = get_rel_pos_torch(q_size, k_size, torch_inputs)
-        ref_outputs = ref_outputs.detach().numpy()
+        ref_outputs = golden["outputs"]["ref"]
 
         # Tests outputs Tensor shape and value
         self.assertAllEqual(outputs.shape, ref_outputs.shape)
