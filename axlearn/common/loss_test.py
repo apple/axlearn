@@ -15,6 +15,7 @@
 # Licensed under CC-BY-NC 4.0 license.
 
 """Tests loss functions."""
+
 # pylint: disable=too-many-lines
 import math
 import re
@@ -32,9 +33,9 @@ import tensorflow as tf
 import torch
 from absl.testing import absltest, parameterized
 from torch import nn
-from torchvision.ops import generalized_box_iou_loss
 
 from axlearn.common.ein_ops import repeat
+from axlearn.common.golden import load_golden
 from axlearn.common.loss import (
     ReductionMethod,
     _reduce_loss,
@@ -210,19 +211,6 @@ def reference_flops_loss_calculation(embeddings, sparsity_threshold=0.0):
     l1_norm_col = tf.reduce_mean(abs_embeddings, axis=0)
     mean_flops_sur = tf.reduce_sum(l1_norm_col * l1_norm_col)
     return mean_flops_sur, average_sparsity_count
-
-
-def reference_koleo_loss(embeddings, eps=1e-8):
-    # Reference from:
-    # https://github.com/facebookresearch/dinov2/blob/main/dinov2/loss/koleo_loss.py
-    embeddings = torch.nn.functional.normalize(embeddings, eps=eps, p=2, dim=-1)
-    dots = torch.mm(embeddings, embeddings.t())
-    n = embeddings.shape[0]
-    dots.view(-1)[:: (n + 1)].fill_(-1)  # Trick to fill diagonal with -1
-    _, I = torch.max(dots, dim=1)  # noqa: E741  # pylint: disable=invalid-name
-    pdist = nn.PairwiseDistance(2, eps=eps)
-    distances = pdist(embeddings, embeddings[I])  # BxD, BxD -> B
-    return -torch.log(distances + eps).mean().numpy()
 
 
 def _softplus(x):
@@ -868,35 +856,6 @@ class LossFunctionsTest(parameterized.TestCase):
         np.testing.assert_array_equal(0.5, outputs["accuracy"])
         np.testing.assert_array_equal(2, outputs["num_examples"])
 
-    @parameterized.parameters(
-        (ReductionMethod.NONE, 1e-7),
-        (ReductionMethod.SUM, 1e-7),
-        (ReductionMethod.MEAN, 1e-7),
-        (ReductionMethod.SUM, 1e-3),
-    )
-    def test_giou_loss_random_input(self, reduction: ReductionMethod, eps: float):
-        batch_size = 8
-        num_samples = 1000
-        predictions = np.random.uniform(0, 1, size=[batch_size, num_samples, 4]).astype(np.float32)
-        predictions[:, :, 2] = predictions[:, :, 0] + predictions[:, :, 2]
-        predictions[:, :, 3] = predictions[:, :, 1] + predictions[:, :, 3]
-        targets = np.random.uniform(0, 1, size=[batch_size, num_samples, 4]).astype(np.float32)
-        targets[:, :, 2] = targets[:, :, 0] + targets[:, :, 2]
-        targets[:, :, 3] = targets[:, :, 1] + targets[:, :, 3]
-        loss = giou_loss(
-            predictions=predictions,
-            targets=targets,
-            reduction=reduction,
-            eps=eps,
-        )
-        # jax uses y1, x1, y2, x2, whereas torch expects x1, y1, x2, y2
-        predictions_torch = torch.Tensor(predictions[:, :, [1, 0, 3, 2]])
-        targets_torch = torch.Tensor(targets[:, :, [1, 0, 3, 2]])
-        ref_loss = generalized_box_iou_loss(
-            predictions_torch, targets_torch, reduction=reduction, eps=eps
-        )
-        assert jnp.allclose(loss, ref_loss.numpy())
-
     def test_giou_loss(self):
         predictions = np.array(
             [
@@ -994,21 +953,16 @@ class LossFunctionsTest(parameterized.TestCase):
         assert jnp.allclose(loss, ref_loss)
 
     def test_negative_cosine_similarity_loss_against_torch(self):
-        predictions = np.random.rand(2, 4, 16)
-        targets = np.random.rand(2, 4, 16)
-        live_targets = np.array([[0, 1, 1, 0], [0, 1, 1, 0]])
+        golden = load_golden(
+            "axlearn.common.loss_test", "test_negative_cosine_similarity_loss_against_torch"
+        )
+        predictions = golden["inputs"]["predictions"]
+        targets = golden["inputs"]["targets"]
+        live_targets = golden["inputs"]["live_targets"]
         loss, _ = negative_cosine_similarity_loss(
             predictions=predictions, targets=targets, live_targets=live_targets
         )
-        # Ref torch implementation from:
-        # https://github.com/baaivision/EVA/blob/86cf99c50612b11bad39bfcf17899c410a7030d4/eva/engine_for_pretraining.py#L39-L42
-        masked_predictions = predictions[:, 1:3, :]
-        masked_targets = targets[:, 1:3, :]
-        ref_loss_fn = nn.CosineSimilarity(dim=-1)
-        ref = -ref_loss_fn(
-            torch.from_numpy(masked_predictions).float(), torch.from_numpy(masked_targets).float()
-        ).mean()
-        assert jnp.allclose(loss, ref.numpy())
+        assert jnp.allclose(loss, jnp.asarray(golden["outputs"]["ref_loss"]))
 
     def test_kl_divergence(self):
         # pylint: disable=protected-access
@@ -1041,24 +995,22 @@ class LossFunctionsTest(parameterized.TestCase):
         # pytype: enable=module-attr
 
     def test_koleo_loss_wo_norm(self):
-        # Input without normalization
-        embeddings = np.random.rand(10, 128)
+        golden = load_golden("axlearn.common.loss_test", "test_koleo_loss_wo_norm")
+        embeddings = golden["inputs"]["embeddings"]
         jax_loss = koleo_loss(embeddings, eps=1e-8)
-        assert jnp.allclose(jax_loss, reference_koleo_loss(torch.Tensor(embeddings), eps=1e-8))
+        assert jnp.allclose(jax_loss, jnp.asarray(golden["outputs"]["ref_loss"]))
 
     def test_koleo_loss_w_norm(self):
-        # Input with normalization
-        embeddings = np.random.rand(10, 128)
-        norm_embeddings = embeddings / np.linalg.norm(embeddings, axis=-1, keepdims=True)
-        jax_loss = koleo_loss(jnp.array(norm_embeddings), eps=1e-8, normalize_embedding=False)
-        assert jnp.allclose(jax_loss, reference_koleo_loss(torch.Tensor(norm_embeddings), eps=1e-8))
+        golden = load_golden("axlearn.common.loss_test", "test_koleo_loss_w_norm")
+        embeddings = golden["inputs"]["embeddings"]
+        jax_loss = koleo_loss(jnp.array(embeddings), eps=1e-8, normalize_embedding=False)
+        assert jnp.allclose(jax_loss, jnp.asarray(golden["outputs"]["ref_loss"]))
 
     def test_koleo_loss_zero_dist(self):
-        embeddings = np.random.rand(10, 128)
-        # Input without normalization and has zero distance between embeddings.
-        two_embeddings = np.concatenate((embeddings, embeddings))
-        jax_loss = koleo_loss(two_embeddings, eps=1e-8)
-        assert jnp.allclose(jax_loss, reference_koleo_loss(torch.Tensor(two_embeddings), eps=1e-8))
+        golden = load_golden("axlearn.common.loss_test", "test_koleo_loss_zero_dist")
+        embeddings = golden["inputs"]["embeddings"]
+        jax_loss = koleo_loss(embeddings, eps=1e-8)
+        assert jnp.allclose(jax_loss, jnp.asarray(golden["outputs"]["ref_loss"]))
 
 
 class PairwiseLossFunctionsTest(TestCase):

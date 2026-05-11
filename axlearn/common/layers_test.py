@@ -33,6 +33,7 @@ from axlearn.common import module, utils
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import config_class
 from axlearn.common.decoder import Decoder
+from axlearn.common.golden import load_golden
 from axlearn.common.layers import (
     BatchNorm,
     BinaryClassificationMetric,
@@ -70,7 +71,6 @@ from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import ConstantInitializer, FanAxes
 from axlearn.common.test_utils import TestCase, assert_allclose, assert_not_allclose
-from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import as_tensor, flatten_items, shapes
 
 
@@ -479,16 +479,21 @@ class LayerTest(TestCase):
         dim = 6
         cfg = LayerNorm.default_config().set(name="norm", input_dim=dim)
         layer = cfg.instantiate(parent=None)  # type: LayerNorm
-        ref_layer = torch.nn.LayerNorm(dim, eps=cfg.eps)
-        inputs = jax.random.normal(jax.random.PRNGKey(123), [2, 5, dim])
-        test_outputs, ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(x=as_tensor(inputs)),
-            ref_inputs=as_torch_tensor(inputs),
-            parameters_from_ref_layer=parameters_from_torch_layer,
+
+        golden = load_golden("axlearn.common.layers_test", "test_layer_norm_against_torch")
+        inputs = jnp.asarray(golden["inputs"]["x"])
+        state = dict(
+            scale=jnp.asarray(golden["params"]["scale"]),
+            bias=jnp.asarray(golden["params"]["bias"]),
         )
-        assert_allclose(test_outputs, as_tensor(ref_outputs))
+        test_outputs, _ = F(
+            layer,
+            state=state,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            inputs=dict(x=inputs),
+        )
+        assert_allclose(test_outputs, golden["outputs"]["ref"])
 
     def test_rms_norm(self):
         dim = 6

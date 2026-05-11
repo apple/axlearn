@@ -3,13 +3,12 @@
 """Tests encoder layers."""
 
 # pylint: disable=no-self-use
+from types import SimpleNamespace
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from absl.testing import absltest, parameterized
-from transformers import BertConfig, BertModel
 
 from axlearn.common import utils
 from axlearn.common.attention import (
@@ -26,17 +25,13 @@ from axlearn.common.bert import (
 )
 from axlearn.common.bert_test import bert_encoder_config_from_hf
 from axlearn.common.encoder import CausalEncoder, Encoder, EncoderModel
+from axlearn.common.golden import load_golden
 from axlearn.common.layers import BaseClassificationHead, set_layer_norm_eps_recursively
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
-from axlearn.common.test_utils import (
-    TestCase,
-    assert_allclose,
-    dummy_segments_positions,
-    take_segment,
-)
-from axlearn.common.torch_utils import parameters_from_torch_layer
+from axlearn.common.test_utils import TestCase, assert_allclose, take_segment
+
+_MODULE_NAME = "axlearn.common.encoder_test"
 
 
 class TestEncoder(TestCase):
@@ -44,7 +39,7 @@ class TestEncoder(TestCase):
 
     def setUp(self):
         super().setUp()
-        self.hf_encoder_cfg = BertConfig(
+        self.hf_encoder_cfg = SimpleNamespace(
             num_hidden_layers=2,
             num_attention_heads=4,
             hidden_size=12,
@@ -63,7 +58,6 @@ class TestEncoder(TestCase):
             dropout_rate=self.hf_encoder_cfg.hidden_dropout_prob,
         )
         self.axlearn_encoder = axlearn_encoder_cfg.set(name="test").instantiate(parent=None)
-        self.hf_encoder = BertModel(self.hf_encoder_cfg, add_pooling_layer=False).eval()
 
     # The configs here have similarities with encoder_decoder.py tests.
     def test_against_hf_encoder(self):
@@ -72,21 +66,8 @@ class TestEncoder(TestCase):
         num_heads = 4
         num_layers = 2
         source_length = 11
-        # Reference implementation.
-        encoder_config = BertConfig(
-            num_hidden_layers=num_layers,
-            num_attention_heads=num_heads,
-            hidden_size=hidden_dim,
-            max_position_embeddings=source_length,
-            vocab_size=vocab_size,
-            intermediate_size=4 * hidden_dim,
-            type_vocab_size=1,
-            layer_norm_eps=1e-05,
-            hidden_dropout_prob=0.0,
-            attention_probs_dropout_prob=0.0,
-        )
-        model = BertModel(config=encoder_config, add_pooling_layer=False)
-        ref_layer = model.eval()
+
+        golden = load_golden(_MODULE_NAME, "test_against_hf_encoder")
 
         # Equivalent AXLearn implementation.
         encoder = Encoder.default_config().set(
@@ -106,59 +87,34 @@ class TestEncoder(TestCase):
         set_layer_norm_eps_recursively(encoder, 1e-5)
 
         layer = encoder.set(name="layer_test").instantiate(parent=None)
-        batch_size = 3
-        input_ids = np.random.randint(1, vocab_size, size=(batch_size, source_length))
+        input_ids = golden["inputs"]["input_ids"]
 
-        # Note: we don't use `_compute_layer_outputs` here for a specific reason:
-        # The same Hugging Face model `BertModel` maps to both `encoder.Encoder` and
-        # `bert.BertModel`, meaning we need to explicitly lookup `params_from_ref["encoder"]` here.
         test_hidden_states, _ = F(
             layer,
             is_training=False,
             prng_key=jax.random.PRNGKey(123),
-            state=parameters_from_torch_layer(ref_layer)["encoder"],
+            state=golden["params"]["encoder"],
             inputs=dict(input_ids=input_ids),
         )
-        ref_layer.eval()
-        ref_outputs = ref_layer(input_ids=as_torch_tensor(input_ids), return_dict=True)
 
-        assert_allclose(test_hidden_states, utils.as_tensor(ref_outputs["last_hidden_state"]))
+        assert_allclose(test_hidden_states, golden["outputs"]["last_hidden_state"])
 
     @parameterized.parameters(1, 2, 3)
     def test_embeddings(self, num_segments: int):
-        batch_size = 3
-        vocab_size = self.hf_encoder_cfg.vocab_size
-        source_len = self.hf_encoder_cfg.max_position_embeddings
-        type_vocab_size = self.hf_encoder_cfg.type_vocab_size
-        source_ids = jax.random.randint(
-            jax.random.PRNGKey(101),
-            (batch_size, source_len),
-            minval=0,
-            maxval=vocab_size,
-            dtype=jnp.int32,
-        )
-        source_type_ids = jax.random.randint(
-            jax.random.PRNGKey(102),
-            (batch_size, source_len),
-            minval=0,
-            maxval=type_vocab_size,
-            dtype=jnp.int32,
-        )
-        source_segment_ids, source_positions = dummy_segments_positions(
-            batch_size, source_len, num_segments=num_segments
-        )
+        golden = load_golden(_MODULE_NAME, f"test_embeddings_{num_segments}")
+
+        source_ids = jnp.asarray(golden["inputs"]["source_ids"])
+        source_type_ids = jnp.asarray(golden["inputs"]["source_type_ids"])
+        source_segment_ids = jnp.asarray(golden["inputs"]["source_segment_ids"])
+        source_positions = jnp.asarray(golden["inputs"]["source_positions"])
 
         for segment in range(num_segments):
-            # Select inputs corresponding to the segment. [batch_size, source_len].
-            hf_source_ids = take_segment(source_ids, source_segment_ids == segment)
-            hf_source_type_ids = take_segment(source_type_ids, source_segment_ids == segment)
-
-            # Compute ref and test embeddings. [batch_size, source_len, hidden_dim].
+            # Compute test embeddings. [batch_size, source_len, hidden_dim].
             test_outputs, _ = F(
                 self.axlearn_encoder.emb,
                 is_training=False,
                 prng_key=jax.random.PRNGKey(123),
-                state=parameters_from_torch_layer(self.hf_encoder)["encoder"]["emb"],
+                state=golden["params"]["encoder"]["emb"],
                 inputs=dict(
                     input_batch=dict(
                         inputs=source_ids,
@@ -167,17 +123,12 @@ class TestEncoder(TestCase):
                     ),
                 ),
             )
-            ref_outputs = self.hf_encoder.embeddings(
-                input_ids=as_torch_tensor(hf_source_ids),
-                token_type_ids=as_torch_tensor(hf_source_type_ids),
-            )
-            ref_outputs = utils.as_tensor(ref_outputs)
-
             # Compare only outputs corresponding to current segment, at the non-padding positions.
-            # [batch_size, source_len, hidden_dim].
-            test_outputs = take_segment(test_outputs, source_segment_ids == segment)
+            hf_source_ids = take_segment(source_ids, source_segment_ids == segment)
+            test_outputs_segment = take_segment(test_outputs, source_segment_ids == segment)
             mask = utils.as_tensor(hf_source_ids != 0)[..., None]
-            assert_allclose(test_outputs * mask, ref_outputs * mask)
+            ref_outputs_segment = golden["outputs"][f"segment_{segment}"]
+            assert_allclose(test_outputs_segment * mask, ref_outputs_segment * mask)
 
     def test_dropout_rate(self):
         hidden_dim = 12

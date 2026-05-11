@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests LoRa implementations."""
+
 # pylint: disable=no-self-use
 
 from functools import partial
@@ -8,8 +9,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
-import torch.nn.functional as torchF
 from absl.testing import absltest, parameterized
 
 from axlearn.common import utils
@@ -24,6 +23,7 @@ from axlearn.common.attention import (
 )
 from axlearn.common.attention_bias import CausalAttentionBias
 from axlearn.common.ein_ops import rearrange
+from axlearn.common.golden import load_golden
 from axlearn.common.layers import Linear
 from axlearn.common.lora import (
     LoraFusedQKVAdapter,
@@ -33,9 +33,9 @@ from axlearn.common.lora import (
     LoraMultiheadOutputLinear,
 )
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
-from axlearn.common.utils import Tensor
+
+_MODULE_NAME = "axlearn.common.lora_test"
 
 
 class LoraLinearTest(TestCase):
@@ -447,17 +447,19 @@ class LoraFusedQKVAdapterTest(TestCase):
         (False, False, True),
     )
     def test_forward_torch(self, enable_q, enable_k, enable_v):
-        batch_size = 3
-        seq_len = 2
         input_dim = 10
         output_dim = 10
         num_heads = 2
         rank = 2
         alpha = 12
         enable_lora = dict(query=enable_q, key=enable_k, value=enable_v)
-        torch_enable_lora = [enable_q, enable_k, enable_v]
 
-        inputs = jax.random.normal(jax.random.PRNGKey(456), (batch_size, seq_len, input_dim))
+        golden = load_golden(
+            _MODULE_NAME,
+            f"test_forward_torch_q{int(enable_q)}_k{int(enable_k)}_v{int(enable_v)}",
+        )
+
+        inputs = jnp.asarray(golden["inputs"]["x"])
 
         layer = (
             LoraFusedQKVAdapter.default_config()
@@ -473,12 +475,11 @@ class LoraFusedQKVAdapterTest(TestCase):
             .instantiate(parent=None)
         )
         state = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
-        state["lora_up"]["weight"] = jax.random.normal(
-            jax.random.PRNGKey(1), state["lora_up"]["weight"].shape
-        )
-        state["lora_down"]["weight"] = jax.random.normal(
-            jax.random.PRNGKey(2), state["lora_down"]["weight"].shape
-        )
+        state["lora_up"]["weight"] = jnp.asarray(golden["params"]["lora_up_weight"])
+        state["lora_down"]["weight"] = jnp.asarray(golden["params"]["lora_down_weight"])
+
+        torch_enable_lora = [enable_q, enable_k, enable_v]
+
         proj, _ = jax.jit(partial(F, layer, is_training=True))(
             state=state,
             prng_key=jax.random.PRNGKey(456),
@@ -488,31 +489,7 @@ class LoraFusedQKVAdapterTest(TestCase):
         outputs = outputs.at[np.array(torch_enable_lora)].add(proj)
         outputs = rearrange(outputs, "p b t n h -> b t (p n h)")
 
-        # [B, T, r * s]
-        lora_a = as_torch_tensor(rearrange(state["lora_down"]["weight"], "d p r -> d (p r)"))
-        lora_b = as_torch_tensor(
-            rearrange(state["lora_up"]["weight"], "p r n h -> r (p n h)")
-        ).transpose(-2, -1)
-        torch_inputs = as_torch_tensor(inputs)
-        after_a = torch_inputs @ lora_a
-        after_b = torchF.conv1d(
-            after_a.transpose(-2, -1), lora_b.unsqueeze(-1), groups=sum(torch_enable_lora)
-        )
-        torch_out = after_b.transpose(-2, -1)
-
-        out_features = output_dim * 3
-        lora_ind = torch.zeros((out_features,), dtype=torch.bool).view(3, -1)
-        lora_ind[torch_enable_lora, :] = True
-        lora_ind = lora_ind.view(-1)
-
-        def zero_pad(x: Tensor):
-            result = x.new_zeros(*x.shape[:-1], out_features)
-            result = result.view(-1, out_features)
-            result[:, lora_ind] = x.reshape(-1, out_features // 3 * sum(torch_enable_lora))
-            return result.view((*x.shape[:-1], out_features))
-
-        torch_out = zero_pad(torch_out) * alpha / rank
-        assert_allclose(outputs, torch_out.detach().numpy())
+        assert_allclose(outputs, golden["outputs"]["torch_out"])
 
 
 if __name__ == "__main__":

@@ -1,19 +1,20 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests BERT layers."""
+
 from contextlib import nullcontext
+from types import SimpleNamespace
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
 from absl.testing import absltest, parameterized
-from transformers.models.bert import modeling_bert as hf_bert
 
 from axlearn.common import bert, utils
 from axlearn.common.attention import BaseStackedTransformerLayer
 from axlearn.common.attention_bias import NEG_INF
+from axlearn.common.golden import load_golden
 from axlearn.common.layers import (
     BinaryClassificationMetric,
     Dropout,
@@ -24,9 +25,13 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
-from axlearn.common.test_utils import TestCase, assert_allclose, dummy_padding_mask
-from axlearn.common.torch_utils import parameters_from_torch_layer
+from axlearn.common.test_utils import TestCase, assert_allclose
+
+_MODULE_NAME = "axlearn.common.bert_test"
+
+
+# TODO(markblee): Consider adding a shared util to convert HF to AXLearn config, something like a
+# config_converter, to avoid the many variants of this code.
 
 
 def dummy_inputs_for_mlm(
@@ -39,36 +44,30 @@ def dummy_inputs_for_mlm(
     ignored_target_id: int,
 ):
     """Builds dummy inputs for AXLearn and Hugging Face BERT."""
+    # pylint: disable=import-outside-toplevel
+    from axlearn.common.param_converter import as_torch_tensor
+    from axlearn.common.test_utils import dummy_padding_mask
+
+    # pylint: enable=import-outside-toplevel
+
     rng = np.random.default_rng(seed=123)
     attention_mask = 1 - dummy_padding_mask(batch_size=batch_size, max_seq_len=max_seq_len)
 
-    # Build target mask (e.g. ignore non-[MASK] tokens).
-    # A value of True indicates a [MASK] token, whereas False indicates non-[MASK].
     targets_mask = rng.integers(0, 2, size=(batch_size, max_seq_len)).astype(bool)
-    # Target should not be [MASK] at padding positions.
     targets_mask = np.logical_and(targets_mask, np.logical_not(attention_mask))
 
-    # Build targets.
     targets = np.full((batch_size, max_seq_len), ignored_target_id)
     targets_vals = rng.integers(1, vocab_size, size=targets.shape)
-    # putmask assigns targets to targets_vals at the locations where targets_mask is True.
-    # Here we assign some targets to be != ignored_target_id, so they're included in loss.
     np.putmask(targets, targets_mask, targets_vals)
 
-    # Build inputs (avoiding [MASK] tokens for now).
     input_ids = rng.choice(
         list(range(1, mask_input_id)) + list(range(mask_input_id + 1, vocab_size)),
         size=(batch_size, max_seq_len),
     )
     input_type_ids = rng.integers(0, type_vocab_size, size=(batch_size, max_seq_len))
-    # Here we assign inputs to be [MASK] where targets are != ignored_target_id.
     np.putmask(input_ids, targets_mask, mask_input_id)
 
-    # Build input padding mask.
-    # Our padding mask is encoded in the inputs directly as `padding_input_id`.
     np.putmask(input_ids, attention_mask, padding_input_id)
-    # hf expects the opposite masking scheme as we do:
-    # A float value of 0. represents padding and 1. represents non-padding.
     hf_attention_mask = np.logical_not(attention_mask)
 
     test_inputs = dict(
@@ -85,10 +84,8 @@ def dummy_inputs_for_mlm(
     return test_inputs, ref_inputs
 
 
-# TODO(markblee): Consider adding a shared util to convert HF to AXLearn config, something like a
-# config_converter, to avoid the many variants of this code.
 def bert_encoder_config_from_hf(
-    hf_cfg: hf_bert.BertConfig,
+    hf_cfg,
     vocab_size: Optional[int] = None,
     layer_norm_epsilon: Optional[float] = None,
     dropout_rate: Optional[float] = None,
@@ -120,7 +117,7 @@ class BertTest(TestCase):
         self.ignored_target_id = -100  # HF only computes loss for labels in [0, vocab_size].
         self.mask_input_id = 1  # [MASK] token
         self.pad_token_id = 0  # [PAD] token
-        self.ref_cfg = hf_bert.BertConfig(
+        self.ref_cfg = SimpleNamespace(
             vocab_size=24,
             hidden_size=16,
             num_hidden_layers=2,
@@ -130,13 +127,10 @@ class BertTest(TestCase):
             type_vocab_size=2,
             hidden_dropout_prob=0.0,
             attention_probs_dropout_prob=0.0,
-            # Note: the results are slightly different between gelu and gelu_new.
-            # Reference:
-            # https://github.com/huggingface/transformers/blob/215e0681e4c3f6ade6e219d022a5e640b42fcb76/src/transformers/activations.py#L27-L37
             hidden_act="gelu_new",
             classifier_dropout=0.0,
-            attn_implementation="eager",
             num_labels=2,
+            layer_norm_eps=1e-12,
         )
 
     def test_attention_mask(self):
@@ -151,7 +145,7 @@ class BertTest(TestCase):
                 [4, 5, 6, 7, self.pad_token_id],
             ]
         )
-        (actual, _) = F(
+        actual, _ = F(
             layer,
             state=layer_params,
             is_training=False,
@@ -192,7 +186,7 @@ class BertTest(TestCase):
                 [4, self.pad_token_id, 6, 7, self.pad_token_id],
             ]
         )
-        (actual, _) = F(
+        actual, _ = F(
             layer,
             state=layer_params,
             is_training=False,
@@ -286,9 +280,7 @@ class BertTest(TestCase):
             [bert.bert_layer_norm_epsilon(dtype=dtype)] * len(all_layer_norm_eps),
         )
 
-    def _bert_mlm_config(
-        self, ref_cfg: Optional[hf_bert.BertConfig] = None
-    ) -> bert.BertModel.Config:
+    def _bert_mlm_config(self, ref_cfg=None) -> bert.BertModel.Config:
         ref_cfg = ref_cfg or self.ref_cfg
         cfg: bert.BertModel.Config = bert.BertModel.default_config()
         cfg = cfg.set(
@@ -307,105 +299,71 @@ class BertTest(TestCase):
 
     def test_for_mlm(self):
         """Test BertModel MLM without masking. In the MLM case, pooler output is disabled."""
-        ref_cfg = self.ref_cfg
-        ref_layer = hf_bert.BertForMaskedLM(ref_cfg).eval()
-
         cfg = self._bert_mlm_config()
         layer = cfg.instantiate(parent=None)
 
-        batch_size = 3
-        max_seq_len = ref_cfg.max_position_embeddings
-        rng = np.random.default_rng(seed=123)
+        golden = load_golden(_MODULE_NAME, "test_for_mlm")
+        input_ids = golden["inputs"]["input_ids"]
+        token_type_ids = golden["inputs"]["token_type_ids"]
+        target_labels = golden["inputs"]["target_labels"]
 
-        # Build target mask (e.g. ignore non-[MASK] tokens).
-        # A value of True indicates a [MASK] token, whereas False indicates non-[MASK].
-        targets_mask = rng.integers(0, 2, size=(batch_size, max_seq_len)).astype(bool)
-
-        # Build targets.
-        targets = np.full((batch_size, max_seq_len), self.ignored_target_id)
-        targets_vals = rng.integers(1, ref_cfg.vocab_size, size=targets.shape)
-        # putmask assigns targets to targets_vals at the locations where targets_mask is True.
-        # Here we assign some targets to be != ignored_target_id, so they're included in loss.
-        np.putmask(targets, targets_mask, targets_vals)
-
-        # Build inputs.
-        input_ids = rng.integers(1, ref_cfg.vocab_size, size=(batch_size, max_seq_len))
-        token_type_ids = rng.integers(1, ref_cfg.type_vocab_size, size=(batch_size, max_seq_len))
-        # Here we assign inputs to be [MASK] where targets are != ignored_target_id.
-        np.putmask(input_ids, targets_mask, self.mask_input_id)
-
-        (loss, aux_outputs), ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(
+        (loss, aux_outputs), _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=golden["params"],
+            inputs=dict(
                 input_batch=dict(
-                    input_ids=input_ids, token_type_ids=token_type_ids, target_labels=targets
+                    input_ids=input_ids, token_type_ids=token_type_ids, target_labels=target_labels
                 ),
                 return_aux=True,
             ),
-            ref_inputs=dict(
-                input_ids=as_torch_tensor(input_ids),
-                token_type_ids=as_torch_tensor(token_type_ids),
-                labels=as_torch_tensor(targets),
-                position_ids=None,
-                output_hidden_states=True,
-            ),
-            parameters_from_ref_layer=parameters_from_torch_layer,
         )
-        padding_mask = (input_ids != self.pad_token_id)[..., None]
+        padding_mask = (np.asarray(input_ids) != self.pad_token_id)[..., None]
 
         assert_allclose(
             aux_outputs["sequence_output"] * padding_mask,
-            utils.as_tensor(ref_outputs.hidden_states[-1]) * padding_mask,
+            golden["outputs"]["hidden_states_last"] * padding_mask,
         )
         assert_allclose(
             aux_outputs["logits"] * padding_mask,
-            utils.as_tensor(ref_outputs.logits) * padding_mask,
+            golden["outputs"]["logits"] * padding_mask,
         )
-        assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
+        assert_allclose(loss, golden["outputs"]["loss"])
 
     def test_for_mlm_with_padding(self):
         """Test BertModel MLM attention with padding. In the MLM case, pooler output is disabled."""
-        ref_cfg = self.ref_cfg
-        ref_layer = hf_bert.BertForMaskedLM(ref_cfg).eval()
-
         cfg = self._bert_mlm_config()
         layer = cfg.instantiate(parent=None)
 
-        test_inputs, ref_inputs = dummy_inputs_for_mlm(
-            batch_size=3,
-            max_seq_len=ref_cfg.max_position_embeddings,
-            vocab_size=ref_cfg.vocab_size,
-            type_vocab_size=ref_cfg.type_vocab_size,
-            mask_input_id=self.mask_input_id,
-            padding_input_id=self.pad_token_id,
-            ignored_target_id=self.ignored_target_id,
-        )
+        golden = load_golden(_MODULE_NAME, "test_for_mlm_with_padding")
+        input_ids = golden["inputs"]["input_ids"]
+        token_type_ids = golden["inputs"]["token_type_ids"]
+        target_labels = golden["inputs"]["target_labels"]
 
-        (loss, aux_outputs), ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(
-                input_batch=test_inputs,
+        (loss, aux_outputs), _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=golden["params"],
+            inputs=dict(
+                input_batch=dict(
+                    input_ids=input_ids, token_type_ids=token_type_ids, target_labels=target_labels
+                ),
                 return_aux=True,
             ),
-            ref_inputs=dict(
-                **ref_inputs,
-                output_hidden_states=True,
-            ),
-            parameters_from_ref_layer=parameters_from_torch_layer,
         )
-        padding_mask = (test_inputs["input_ids"] != self.pad_token_id)[..., None]
+        padding_mask = (np.asarray(input_ids) != self.pad_token_id)[..., None]
 
         assert_allclose(
             aux_outputs["sequence_output"] * padding_mask,
-            utils.as_tensor(ref_outputs.hidden_states[-1]) * padding_mask,
+            golden["outputs"]["hidden_states_last"] * padding_mask,
         )
         assert_allclose(
             aux_outputs["logits"] * padding_mask,
-            utils.as_tensor(ref_outputs.logits) * padding_mask,
+            golden["outputs"]["logits"] * padding_mask,
         )
-        assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
+        assert_allclose(loss, golden["outputs"]["loss"])
 
     def test_loss_metrics(self):
         """Test loss function and metrics."""
@@ -450,11 +408,6 @@ class BertTest(TestCase):
     @parameterized.parameters(1, 2, 3)
     def test_sequence_classification(self, num_classes: int):
         ref_cfg = self.ref_cfg
-        ref_cfg = ref_cfg.from_dict(ref_cfg.to_dict())  # Copy.
-        ref_cfg.num_labels = num_classes
-
-        # Construct ref layer.
-        ref_layer = hf_bert.BertForSequenceClassification(ref_cfg).eval()
 
         # Construct our layer.
         cfg: bert.BertModel.Config = bert.BertModel.default_config()
@@ -462,74 +415,39 @@ class BertTest(TestCase):
             name="layer_test",
             encoder=bert_encoder_config_from_hf(ref_cfg),
             head=bert.BertSequenceClassificationHead.default_config().set(
-                num_classes=ref_cfg.num_labels,
+                num_classes=num_classes,
             ),
             dim=ref_cfg.hidden_size,
             vocab_size=ref_cfg.vocab_size,
         )
-        set_dropout_rate_recursively(
-            cfg.head, ref_cfg.classifier_dropout  # pylint: disable=no-member
-        )
+        set_dropout_rate_recursively(cfg.head, ref_cfg.classifier_dropout)
         layer = cfg.instantiate(parent=None)
 
-        # Generate dummy inputs for sequence classification.
-        batch_size = 4
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(123),
-            shape=(batch_size, ref_cfg.max_position_embeddings),
-            minval=1,
-            maxval=ref_cfg.vocab_size,
-        )
-        padding_mask = dummy_padding_mask(
-            batch_size=batch_size, max_seq_len=ref_cfg.max_position_embeddings
-        )
-        input_ids = input_ids * padding_mask
-        if ref_cfg.num_labels == 1:
-            target_labels = jax.random.uniform(
-                jax.random.PRNGKey(234), shape=(batch_size,), minval=0, maxval=5
-            )
-            hf_labels = as_torch_tensor(target_labels)
-        else:
-            target_labels = jax.random.randint(
-                jax.random.PRNGKey(432),
-                shape=(batch_size,),
-                minval=0,
-                maxval=ref_cfg.num_labels,
-            )
-            hf_labels = as_torch_tensor(target_labels).to(torch.long)
+        golden = load_golden(_MODULE_NAME, f"test_sequence_classification_{num_classes}")
+        input_ids = jnp.asarray(golden["inputs"]["input_ids"])
+        target_labels = jnp.asarray(golden["inputs"]["target_labels"])
 
-        # Compute outputs.
-        (loss, aux_outputs), ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(
+        (loss, aux_outputs), _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=golden["params"],
+            inputs=dict(
                 input_batch=dict(
                     input_ids=input_ids,
                     target_labels=target_labels,
                 ),
                 return_aux=True,
             ),
-            ref_inputs=dict(
-                input_ids=as_torch_tensor(input_ids),
-                attention_mask=as_torch_tensor(padding_mask),
-                labels=hf_labels,
-                output_hidden_states=True,
-            ),
-            parameters_from_ref_layer=parameters_from_torch_layer,
         )
 
         # Compare.
-        assert_allclose(aux_outputs["logits"], utils.as_tensor(ref_outputs.logits))
-        assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
+        assert_allclose(aux_outputs["logits"], golden["outputs"]["logits"])
+        assert_allclose(loss, golden["outputs"]["loss"])
 
     def test_multiple_choice_classification(self):
         num_classes = 2
         ref_cfg = self.ref_cfg
-        ref_cfg = ref_cfg.from_dict(ref_cfg.to_dict())  # Copy.
-        ref_cfg.num_labels = num_classes
-
-        # Construct ref layer.
-        ref_layer = hf_bert.BertForMultipleChoice(ref_cfg)
 
         # Construct our layer.
         cfg: bert.BertModel.Config = bert.BertModel.default_config()
@@ -537,47 +455,27 @@ class BertTest(TestCase):
             name="layer_test",
             encoder=bert_encoder_config_from_hf(ref_cfg),
             head=bert.BertMultipleChoiceHead.default_config().set(
-                num_classes=ref_cfg.num_labels,
+                num_classes=num_classes,
             ),
             dim=ref_cfg.hidden_size,
             vocab_size=ref_cfg.vocab_size,
         )
-        set_dropout_rate_recursively(
-            cfg.head, ref_cfg.classifier_dropout  # pylint: disable=no-member
-        )
+        set_dropout_rate_recursively(cfg.head, ref_cfg.classifier_dropout)
         layer = cfg.instantiate(parent=None)
 
-        # Generate dummy inputs for multiple choice classification.
-        batch_size = 12
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(123),
-            shape=(batch_size, num_classes, ref_cfg.max_position_embeddings),
-            minval=1,
-            maxval=ref_cfg.vocab_size,
-        )
-        token_type_ids = jax.random.randint(
-            jax.random.PRNGKey(124),
-            shape=(batch_size, num_classes, ref_cfg.max_position_embeddings),
-            minval=0,
-            maxval=ref_cfg.type_vocab_size,
-        )
-        padding_mask = dummy_padding_mask(
-            batch_size=batch_size * num_classes, max_seq_len=ref_cfg.max_position_embeddings
-        ).reshape((batch_size, num_classes, ref_cfg.max_position_embeddings))
-        input_ids = input_ids * padding_mask
-        target_labels = jax.random.randint(
-            jax.random.PRNGKey(321), shape=(batch_size,), minval=0, maxval=num_classes
-        )
-        hf_input_ids = as_torch_tensor(input_ids)
-        hf_token_type_ids = as_torch_tensor(token_type_ids)
-        hf_labels = as_torch_tensor(target_labels).to(torch.long)
-        hf_attention_mask = as_torch_tensor(padding_mask)
+        golden = load_golden(_MODULE_NAME, "test_multiple_choice_classification")
+        input_ids = jnp.asarray(golden["inputs"]["input_ids"])
+        token_type_ids = jnp.asarray(golden["inputs"]["token_type_ids"])
+        target_labels = jnp.asarray(golden["inputs"]["target_labels"])
 
-        # Compute outputs.
-        (loss, aux_outputs), ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref_layer,
-            test_inputs=dict(
+        batch_size = input_ids.shape[0]
+
+        (loss, aux_outputs), _ = F(
+            layer,
+            is_training=False,
+            prng_key=jax.random.PRNGKey(123),
+            state=golden["params"],
+            inputs=dict(
                 input_batch=dict(
                     input_ids=input_ids,
                     token_type_ids=token_type_ids,
@@ -585,31 +483,19 @@ class BertTest(TestCase):
                 ),
                 return_aux=True,
             ),
-            ref_inputs=dict(
-                input_ids=hf_input_ids,
-                token_type_ids=hf_token_type_ids,
-                attention_mask=hf_attention_mask,
-                labels=hf_labels,
-            ),
-            parameters_from_ref_layer=parameters_from_torch_layer,
         )
 
         # Compare.
         assert_allclose(
             aux_outputs["logits"].reshape((batch_size, num_classes)),
-            utils.as_tensor(ref_outputs.logits),
+            golden["outputs"]["logits"],
         )
-        assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
+        assert_allclose(loss, golden["outputs"]["loss"])
 
     # pylint: disable=duplicate-code
     @parameterized.parameters(2, 3)
     def test_sequence_binary_classification(self, num_classes: int):
         ref_cfg = self.ref_cfg
-        ref_cfg = ref_cfg.from_dict(ref_cfg.to_dict())  # Copy.
-        ref_cfg.num_labels = num_classes
-        ref_cfg.problem_type = "multi_label_classification"
-        # Construct ref layer.
-        ref_layer = hf_bert.BertForSequenceClassification(ref_cfg)
 
         # Construct our layer.
         cfg: bert.BertModel.Config = bert.BertModel.default_config()
@@ -617,63 +503,71 @@ class BertTest(TestCase):
             name="layer_test",
             encoder=bert_encoder_config_from_hf(ref_cfg),
             head=bert.BertSequenceClassificationHead.default_config().set(
-                num_classes=ref_cfg.num_labels,
+                num_classes=num_classes,
                 metric=BinaryClassificationMetric.default_config(),
             ),
             dim=ref_cfg.hidden_size,
             vocab_size=ref_cfg.vocab_size,
         )
-        set_dropout_rate_recursively(
-            cfg.head, ref_cfg.classifier_dropout  # pylint: disable=no-member
-        )
+        set_dropout_rate_recursively(cfg.head, ref_cfg.classifier_dropout)
         layer = cfg.instantiate(parent=None)
 
-        # Generate dummy inputs for sequence classification.
-        batch_size = 4
-        input_ids = jax.random.randint(
-            jax.random.PRNGKey(123),
-            shape=(batch_size, ref_cfg.max_position_embeddings),
-            minval=1,
-            maxval=ref_cfg.vocab_size,
-        )
-        padding_mask = dummy_padding_mask(
-            batch_size=batch_size, max_seq_len=ref_cfg.max_position_embeddings
-        )
-        input_ids = input_ids * padding_mask
-        target_labels = jax.random.randint(
-            jax.random.PRNGKey(321),
-            shape=(batch_size, num_classes),
-            minval=0,
-            maxval=num_classes,
-        )
         should_raise = num_classes != 2
         ctx = nullcontext()
         if should_raise:
             ctx = self.assertRaisesRegex(ValueError, "only defined for two classes")
+
         with ctx:
-            # Compute outputs.
-            (loss, aux_outputs), ref_outputs = self._compute_layer_outputs(
-                test_layer=layer,
-                ref_layer=ref_layer,
-                test_inputs=dict(
-                    input_batch=dict(
-                        input_ids=input_ids,
-                        target_labels=target_labels,
+            if not should_raise:
+                golden = load_golden(_MODULE_NAME, "test_sequence_binary_classification")
+                input_ids = jnp.asarray(golden["inputs"]["input_ids"])
+                target_labels = jnp.asarray(golden["inputs"]["target_labels"])
+
+                (loss, aux_outputs), _ = F(
+                    layer,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(123),
+                    state=golden["params"],
+                    inputs=dict(
+                        input_batch=dict(
+                            input_ids=input_ids,
+                            target_labels=target_labels,
+                        ),
+                        return_aux=True,
                     ),
-                    return_aux=True,
-                ),
-                ref_inputs=dict(
-                    input_ids=as_torch_tensor(input_ids),
-                    # HF expects float labels for multi-label classification.
-                    labels=as_torch_tensor(target_labels).to(torch.float32),
-                    attention_mask=as_torch_tensor(padding_mask),
-                ),
-                parameters_from_ref_layer=parameters_from_torch_layer,
-            )
-        if not should_raise:
-            # Compare.
-            assert_allclose(aux_outputs["logits"], utils.as_tensor(ref_outputs.logits))
-            assert_allclose(loss, utils.as_tensor(ref_outputs.loss))
+                )
+                # Compare.
+                assert_allclose(aux_outputs["logits"], golden["outputs"]["logits"])
+                assert_allclose(loss, golden["outputs"]["loss"])
+            else:
+                # For num_classes=3, just verify it raises.
+                batch_size = 4
+                input_ids = jax.random.randint(
+                    jax.random.PRNGKey(123),
+                    shape=(batch_size, ref_cfg.max_position_embeddings),
+                    minval=1,
+                    maxval=ref_cfg.vocab_size,
+                )
+                target_labels = jax.random.randint(
+                    jax.random.PRNGKey(321),
+                    shape=(batch_size, num_classes),
+                    minval=0,
+                    maxval=num_classes,
+                )
+                params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+                F(
+                    layer,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(123),
+                    state=params,
+                    inputs=dict(
+                        input_batch=dict(
+                            input_ids=input_ids,
+                            target_labels=target_labels,
+                        ),
+                        return_aux=True,
+                    ),
+                )
 
     # pylint: enable=duplicate-code
     def test_respect_custom_layer_norm_eps(self):

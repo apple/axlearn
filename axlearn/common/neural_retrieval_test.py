@@ -2,18 +2,16 @@
 
 """Tests DPR utils."""
 
-import os
-
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 
+from axlearn.common.golden import load_golden
 from axlearn.common.module import functional as F
 from axlearn.common.neural_retrieval import set_bert_dpr_encoder_config
 from axlearn.common.test_utils import assert_allclose
 from axlearn.common.text_dual_encoder import POSITIVE_EMBEDDINGS, POSITIVE_INPUT_IDS
 
-testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 _MODULE_NAME = "axlearn.common.neural_retrieval_test"
 
 
@@ -34,10 +32,7 @@ class TestDPRQuestionEncoder(parameterized.TestCase):
         layer_cfg.set(name="test")
         layer = layer_cfg.instantiate(parent=None)
 
-        golden = jnp.load(
-            os.path.join(testdata_dir, _MODULE_NAME, "test_dpr_question_encoder.npy"),
-            allow_pickle=True,
-        ).item()
+        golden = load_golden(_MODULE_NAME, "test_dpr_question_encoder")
 
         layer_outputs, _ = F(
             layer,
@@ -73,10 +68,7 @@ class TestDPRContextEncoder(parameterized.TestCase):
         layer_cfg.set(name="test")
         layer = layer_cfg.instantiate(parent=None)
 
-        golden = jnp.load(
-            os.path.join(testdata_dir, _MODULE_NAME, "test_dpr_context_encoder.npy"),
-            allow_pickle=True,
-        ).item()
+        golden = load_golden(_MODULE_NAME, "test_dpr_context_encoder")
 
         layer_outputs, _ = F(
             layer,

@@ -2,18 +2,16 @@
 
 """Tests DistilBert layers."""
 
-import os
-
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest, parameterized
 
 from axlearn.common.distilbert import set_distilbert_config
+from axlearn.common.golden import load_golden
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import assert_allclose
 from axlearn.common.text_encoder import TEXT_EMBEDDINGS
 
-testdata_dir = os.path.join(os.path.dirname(__file__), "../experiments/testdata")
 _MODULE_NAME = "axlearn.common.distilbert_test"
 
 
@@ -42,10 +40,7 @@ class TestDistilBertModel(parameterized.TestCase):
         layer_cfg.set(name="test")
         layer = layer_cfg.instantiate(parent=None)
 
-        golden = jnp.load(
-            os.path.join(testdata_dir, _MODULE_NAME, "test_distilbert.npy"),
-            allow_pickle=True,
-        ).item()
+        golden = load_golden(_MODULE_NAME, "test_distilbert")
 
         layer_outputs, _ = F(
             layer,

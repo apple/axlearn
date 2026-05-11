@@ -24,10 +24,13 @@ from axlearn.common.convolution import (
     StackOverTime,
     compute_conv_paddings,
 )
+from axlearn.common.golden import load_golden
 from axlearn.common.module import functional as F
 from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.test_utils import TestCase, assert_allclose
 from axlearn.common.utils import safe_not, shapes
+
+_MODULE_NAME = "axlearn.common.convolution_test"
 
 
 def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
@@ -1466,56 +1469,24 @@ class ConvTransposeTest(TestCase):
         )
         layer: Conv1DTranspose = cfg.instantiate(parent=None)
 
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(
-                weight=(window, input_dim // groups, output_dim),
-                bias=(output_dim,),
-            ),
-            shapes(layer_params),
+        golden = load_golden(
+            _MODULE_NAME,
+            f"test_conv1d_transpose_grouped_1D_W{window}_S{strides}",
         )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        layer_params = dict(
+            weight=jnp.asarray(golden["params"]["weight"]),
+            bias=jnp.asarray(golden["params"]["bias"]),
         )
 
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 11, input_dim])
-        # Compute layer outputs.
+        inputs = jnp.asarray(golden["inputs"]["x"])
         (outputs, _), _ = F(
             layer,
             inputs=(inputs,),
             is_training=True,
             state=layer_params,
-            prng_key=prng_key,
+            prng_key=jax.random.PRNGKey(123),
         )
-
-        ref = torch.nn.ConvTranspose1d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=0,
-            groups=groups,
-        )
-        # torch.nn.ConvTranspose1d shape: (I, O//G, k0).
-        weight = layer_params["weight"]  # (k0, I//G, O)
-        k0, _, _ = weight.shape
-        weight = jnp.reshape(weight, (k0, input_dim // groups, groups, output_dim // groups))
-        weight = jnp.transpose(weight, (0, 2, 1, 3))
-        weight = jnp.reshape(weight, (k0, input_dim, output_dim // groups))
-        # Flip spatial dim
-        weight = jnp.flip(weight, axis=0)
-        _copy(weight.transpose(1, 2, 0), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 2, 1)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 1))
+        assert_allclose(outputs, golden["outputs"]["ref"])
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
         assert_allclose(outputs.shape, output_shape)
@@ -1595,58 +1566,26 @@ class ConvTransposeTest(TestCase):
         )
         layer: Conv2DTranspose = cfg.instantiate(parent=None)
 
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(
-                weight=(window[0], window[1], output_dim, input_dim),
-                bias=(output_dim,),
-            ),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        w0, w1 = window
+        s0, _ = strides
+        test_name = f"test_conv2d_transpose_{w0}x{w1}"
+        if strides != (1, 1):
+            test_name += f"_S{s0}"
+        golden = load_golden(_MODULE_NAME, test_name)
+        layer_params = dict(
+            weight=jnp.asarray(golden["params"]["weight"]),
+            bias=jnp.asarray(golden["params"]["bias"]),
         )
 
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 10, 7, input_dim])
-        # Compute layer outputs.
+        inputs = jnp.asarray(golden["inputs"]["x"])
         outputs, _ = F(
             layer,
             inputs=(inputs,),
             is_training=True,
             state=layer_params,
-            prng_key=prng_key,
+            prng_key=jax.random.PRNGKey(123),
         )
-
-        # Compute ref outputs.
-        if isinstance(padding, tuple):
-            ref_padding = padding[0]
-        elif isinstance(padding, str):
-            ref_padding = padding.lower()
-            if ref_padding == "valid":
-                ref_padding = 0
-        else:
-            ref_padding = 0
-
-        ref = torch.nn.ConvTranspose2d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-        )
-        # torch.nn.Linear.weight is of shape (output_dim, input_dim, kernel_size...).
-        _copy(layer_params["weight"].transpose(3, 2, 0, 1), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 3, 1, 2)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 1))
+        assert_allclose(outputs, golden["outputs"]["ref"])
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
         assert_allclose(outputs.shape, output_shape)
@@ -1694,64 +1633,26 @@ class ConvTransposeTest(TestCase):
         )
         layer: Conv2DTranspose = cfg.instantiate(parent=None)
 
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(
-                weight=(window[0], window[1], output_dim, input_dim // groups),
-                bias=(output_dim,),
-            ),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        w0, w1 = window
+        s0, _ = strides
+        test_name = f"test_conv2d_transpose_grouped_{w0}x{w1}"
+        if strides != (1, 1):
+            test_name += f"_S{s0}"
+        golden = load_golden(_MODULE_NAME, test_name)
+        layer_params = dict(
+            weight=jnp.asarray(golden["params"]["weight"]),
+            bias=jnp.asarray(golden["params"]["bias"]),
         )
 
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 11, 7, input_dim])
-        # Compute layer outputs.
+        inputs = jnp.asarray(golden["inputs"]["x"])
         outputs, _ = F(
             layer,
             inputs=(inputs,),
             is_training=True,
             state=layer_params,
-            prng_key=prng_key,
+            prng_key=jax.random.PRNGKey(123),
         )
-
-        # Compute ref outputs.
-        if isinstance(padding, tuple):
-            ref_padding = padding[0]
-        elif isinstance(padding, str):
-            ref_padding = padding.lower()
-            if ref_padding == "valid":
-                ref_padding = 0
-        else:
-            ref_padding = 0
-
-        ref = torch.nn.ConvTranspose2d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-            groups=groups,
-        )
-        # torch.nn.ConvTranspose2d shape: (I, O//G, k0, k1).
-        weight = layer_params["weight"]  # (k0, k1, O, I//G)
-        k0, k1, _, _ = weight.shape
-        weight = jnp.reshape(weight, (k0, k1, groups, output_dim // groups, input_dim // groups))
-        weight = jnp.transpose(weight, (0, 1, 3, 2, 4))
-        weight = jnp.reshape(weight, (k0, k1, output_dim // groups, input_dim))
-        _copy(weight.transpose(3, 2, 0, 1), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 3, 1, 2)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 1))
+        assert_allclose(outputs, golden["outputs"]["ref"])
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
         assert_allclose(outputs.shape, output_shape)
@@ -1831,68 +1732,30 @@ class ConvTransposeTest(TestCase):
         )
         layer: Conv3DTranspose = cfg.instantiate(parent=None)
 
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(
-                weight=(window[0], window[1], window[2], input_dim // groups, output_dim),
-                bias=(output_dim,),
-            ),
-            shapes(layer_params),
-        )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
+        # Golden keys use the testcase_name from @parameterized.named_parameters
+        if window == (2, 2, 2) and strides == (1, 1, 1):
+            test_name = "test_conv3d_transpose_grouped_2x2x2"
+        elif window == (2, 2, 2) and strides == (2, 2, 2):
+            test_name = "test_conv3d_transpose_grouped_2x2x2_S2"
+        elif window == (3, 3, 3) and strides == (2, 2, 2):
+            test_name = "test_conv3d_transpose_grouped_3x3_S2"
+        else:
+            raise ValueError(f"Unknown test case: window={window}, strides={strides}")
+        golden = load_golden(_MODULE_NAME, test_name)
+        layer_params = dict(
+            weight=jnp.asarray(golden["params"]["weight"]),
+            bias=jnp.asarray(golden["params"]["bias"]),
         )
 
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 10, 7, 17, input_dim])
-        # Compute layer outputs.
+        inputs = jnp.asarray(golden["inputs"]["x"])
         outputs, _ = F(
             layer,
             inputs=(inputs,),
             is_training=True,
             state=layer_params,
-            prng_key=prng_key,
+            prng_key=jax.random.PRNGKey(123),
         )
-
-        # Compute ref outputs.
-        if isinstance(padding, tuple):
-            ref_padding = padding[0]
-        elif isinstance(padding, str):
-            ref_padding = padding.lower()
-            if ref_padding == "valid":
-                ref_padding = 0
-        else:
-            ref_padding = 0
-
-        ref = torch.nn.ConvTranspose3d(
-            in_channels=input_dim,
-            out_channels=output_dim,
-            kernel_size=window,
-            stride=strides,
-            padding=ref_padding,
-            groups=groups,
-        )
-        # torch.nn.ConvTranspose3d shape: (I, O//G, k0, k1, k2).
-        weight = layer_params["weight"]  # (k0, k1, k2, O, I//G)
-        k0, k1, k2, _, _ = weight.shape
-        weight = jnp.reshape(
-            weight, (k0, k1, k2, input_dim // groups, groups, output_dim // groups)
-        )
-        weight = jnp.transpose(weight, (0, 1, 2, 4, 3, 5))
-        weight = jnp.reshape(weight, (k0, k1, k2, input_dim, output_dim // groups))
-        # Flip spatial dims
-        weight = jnp.flip(weight, axis=(0, 1, 2))
-        _copy(weight.transpose(3, 4, 0, 1, 2), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 4, 1, 2, 3)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 4, 1))
+        assert_allclose(outputs, golden["outputs"]["ref"])
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
         assert_allclose(outputs.shape, output_shape)
