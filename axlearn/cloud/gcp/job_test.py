@@ -181,7 +181,7 @@ class BuildFailurePolicyTest(TestCase):
     def test_default_no_replica_restart(self):
         gke_job = self._make_job()
         policy = gke_job._build_failure_policy([{"name": "train"}])
-        self.assertEqual(policy, {"maxRestarts": 9})
+        self.assertEqual(policy, {"maxRestarts": 9, "restartStrategy": "BlockingRecreate"})
 
     def test_enable_replica_restart(self):
         gke_job = self._make_job(enable_replica_restart=True)

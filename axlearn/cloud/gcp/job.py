@@ -201,7 +201,7 @@ class GKEJob(GCPJob):
             A dict suitable for the JobSet spec's failurePolicy field.
         """
         cfg: GKEJob.Config = self.config
-        policy = dict(maxRestarts=cfg.max_tries - 1)
+        policy = dict(maxRestarts=cfg.max_tries - 1, restartStrategy="BlockingRecreate")
 
         if cfg.enable_replica_restart:
             policy["rules"] = [
