@@ -2515,6 +2515,26 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         # in the implementation, which is inefficient.
         assert cfg.input_dim_to_partition_spec["bsm"][-1] is None
         assert cfg.output_dim_to_partition_spec["emh"][-2] is None
+        assert cfg.output_dim_to_partition_spec["ehm"][-1] is None
+
+        # Pass expert weights into shard_map with their fsdp sharding preserved,
+        # then explicitly all-gather along fsdp inside a jax.checkpoint wrapper.
+        # This prevents SPMD from hoisting one giant all-gather over the stacked
+        # [num_layers, E, M/fsdp, H] parameter tensor outside the scan loop.
+        # The JAX-level all_gather inside checkpoint is recomputed per-iteration in
+        # backward instead of being saved as a stacked residual.
+
+        # The shard_map() implementation below assumes dim H can only be
+        # sharded along the model axis.
+        assert cfg.output_dim_to_partition_spec["emh"][-1] == "model"
+        assert cfg.output_dim_to_partition_spec["ehm"][-2] == "model"
+        assert cfg.dim_to_mesh_axis_map["emh"][-1] == "model"
+        assert cfg.dim_to_mesh_axis_map["ehm"][-2] == "model"
+
+        emh_gather_axes = cfg.dim_to_mesh_axis_map["emh"][1]
+        ehm_gather_axes = cfg.dim_to_mesh_axis_map["ehm"][2]
+        bsm_out_spec = cfg.output_dim_to_partition_spec["bsm"]
+        bskm_out_spec = PartitionSpec(*bsm_out_spec[:2], None, bsm_out_spec[2])
 
         mesh = thread_resources.env.physical_mesh
 
@@ -2524,13 +2544,12 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             in_specs=(
                 cfg.input_dim_to_partition_spec["bsm"],
                 cfg.input_dim_to_partition_spec["bsm"],
-                cfg.input_dim_to_partition_spec["bsm"],
-                cfg.output_dim_to_partition_spec["emh"],
-                cfg.output_dim_to_partition_spec["emh"],
-                cfg.output_dim_to_partition_spec["ehm"],
+                cfg.dim_to_mesh_axis_map["emh"],
+                cfg.dim_to_mesh_axis_map["emh"],
+                cfg.dim_to_mesh_axis_map["ehm"],
             ),
             out_specs=(
-                cfg.output_dim_to_partition_spec["bsm"],
+                bskm_out_spec,
                 *self._additional_shmap_output_sharding(mesh),
             ),
             # Disables a checking pass which jax can't apply when there's a triton | pallas
@@ -2540,10 +2559,9 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
         def wrapper(
             x: Tensor,
             gate_assignment: Tensor,
-            expert_weights: Tensor,
-            wi_0: Tensor,
-            wi_1: Tensor,
-            wo: Tensor,
+            wi_0_sharded: Tensor,
+            wi_1_sharded: Tensor,
+            wo_sharded: Tensor,
         ) -> tuple[Tensor, ...]:
             """Computes unsorted outputs for one sharded block.
 
@@ -2554,84 +2572,122 @@ class TransformerFeedForwardDropFreeMoE(TransformerFeedForwardMoE):
             Args:
                 x: the sharded input batch of the shape [G=B', S', M].
                 gate_assignment: [G=B', S', K].
-                expert_weights: [G=B', S', K].
-                wi_0: the input projection of [E, M, H'].
-                wi_1: the input projection of [E, M, H'].
-                wo: the output projection of [E, H', M'].
+                wi_0_sharded: the input projection of [E, M/fsdp, H/model] (local).
+                wi_1_sharded: the input projection of [E, M/fsdp, H/model] (local).
+                wo_sharded: the output projection of [E, H/model, M/fsdp] (local).
 
             Returns:
                 A tuple of
-                - A tensor of shape [G=B', S', M'].
+                - A tensor of shape [G=B', S', K, M'].
                 - ... optional series of tensors from `_dispatch_hook()[2]`.
             """
             logging.info("Setting the effective group_size=%r", x.shape[0])
             B, S, M = x.shape  # pylint: disable=invalid-name
-            # [B' x S' x K]
-            gate_assignment = gate_assignment.reshape((-1))
-            # x[sorted_indices[:, i]] for i in range(S * K) represents tokens sorted
-            # by which experts they are assigned to.
-            # [B' x S' x K]
-            sorted_indices = jnp.argsort(gate_assignment)
-            token_indices = sorted_indices // num_experts_per_token
-            # Dispatch the tokens.
-            combine_indices = jnp.argsort(sorted_indices)
-            # [B' x S' x K, M]
-            sorted_inputs = _custom_gather(
-                x.reshape(-1, M), token_indices, combine_indices, unique_indices=False
-            )
-            tokens_per_expert = jnp.bincount(gate_assignment, length=cfg.num_experts)
 
-            sorted_inputs, tokens_per_expert, additional_outputs, residuals = self._dispatch_hook(
-                sorted_inputs=sorted_inputs,
-                tokens_per_expert=tokens_per_expert,
-            )
-
-            # [B' x S' x K, H']
-            activation_0 = self._padded_gmm(sorted_inputs, wi_0, tokens_per_expert)
-            activation_0 = get_activation_fn(cfg.activation[0])(activation_0)
-
-            activation_1 = self._padded_gmm(sorted_inputs, wi_1, tokens_per_expert)
-            activation_1 = get_activation_fn(cfg.activation[1])(activation_1)
-
-            intermediate = activation_0 * activation_1
-
-            if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
-                intermediate = self.dropout1(intermediate)
-
-            # [B' x S x K, M]
-            sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
-            if thread_resources.env.physical_mesh.shape["model"] > 1:
-                # If output is partitioned across "model", we need to reduce-scatter. Otherwise,
-                # we do an allreduce.
-                spec = cfg.output_dim_to_partition_spec["bsm"][2]
-                if spec and "model" in spec:
-                    sorted_output = jax.lax.psum_scatter(
-                        sorted_output, "model", scatter_dimension=1, tiled=True
-                    )
+            @jax.jit
+            @partial(jax.checkpoint, prevent_cse=False)
+            def _gather_and_compute(
+                x: Tensor,
+                gate_assignment: Tensor,
+                wi_0_sharded: Tensor,
+                wi_1_sharded: Tensor,
+                wo_sharded: Tensor,
+            ) -> tuple[Tensor, ...]:
+                # Explicitly all-gather expert weights along fsdp inside the
+                # checkpoint scope. Backward will recompute this gather rather
+                # than saving the gathered tensor.
+                if emh_gather_axes is not None:
+                    wi_0 = jax.lax.all_gather(wi_0_sharded, emh_gather_axes, axis=1, tiled=True)
+                    wi_1 = jax.lax.all_gather(wi_1_sharded, emh_gather_axes, axis=1, tiled=True)
                 else:
-                    sorted_output = jax.lax.psum(sorted_output, "model")
-            # [B' x S' x K, M']
-            sorted_output = self._combine_hook(sorted_output=sorted_output, residuals=residuals)
-            # Gather the tokens to their original positions.
-            unsorted_output = _custom_gather(sorted_output, combine_indices, sorted_indices)
-            output = unsorted_output.reshape(B, S, num_experts_per_token, unsorted_output.shape[-1])
-            # Apply the expert weights.
-            output *= expert_weights[..., None]
-            assert expert_weights.dtype == jnp.float32
-            assert output.dtype == jnp.float32
-            # [B', S', M']
-            output = jnp.sum(output, axis=-2).astype(x.dtype)
-            return output, *additional_outputs
+                    wi_0 = wi_0_sharded
+                    wi_1 = wi_1_sharded
+                if ehm_gather_axes is not None:
+                    wo = jax.lax.all_gather(wo_sharded, ehm_gather_axes, axis=2, tiled=True)
+                else:
+                    wo = wo_sharded
+
+                # [B' x S' x K]
+                gate_assignment = gate_assignment.reshape((-1))
+                # x[sorted_indices[:, i]] for i in range(S * K) represents tokens sorted
+                # by which experts they are assigned to.
+                # [B' x S' x K]
+                sorted_indices = jnp.argsort(gate_assignment)
+                token_indices = sorted_indices // num_experts_per_token
+                # Dispatch the tokens.
+                combine_indices = jnp.argsort(sorted_indices)
+                # [B' x S' x K, M]
+                sorted_inputs = _custom_gather(
+                    x.reshape(-1, M), token_indices, combine_indices, unique_indices=False
+                )
+                tokens_per_expert = jnp.bincount(gate_assignment, length=cfg.num_experts)
+
+                sorted_inputs, tokens_per_expert, additional_outputs, residuals = (
+                    self._dispatch_hook(
+                        sorted_inputs=sorted_inputs,
+                        tokens_per_expert=tokens_per_expert,
+                    )
+                )
+
+                # [B' x S' x K, H']
+                activation_0 = self._padded_gmm(sorted_inputs, wi_0, tokens_per_expert)
+                activation_0 = get_activation_fn(cfg.activation[0])(activation_0)
+
+                activation_1 = self._padded_gmm(sorted_inputs, wi_1, tokens_per_expert)
+                activation_1 = get_activation_fn(cfg.activation[1])(activation_1)
+
+                intermediate = activation_0 * activation_1
+
+                if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
+                    intermediate = self.dropout1(intermediate)
+
+                # [B' x S x K, M]
+                sorted_output = self._padded_gmm(intermediate, wo, tokens_per_expert)
+                if thread_resources.env.physical_mesh.shape["model"] > 1:
+                    # If output is partitioned across "model", we need to reduce-scatter. Otherwise,
+                    # we do an allreduce.
+                    spec = cfg.output_dim_to_partition_spec["bsm"][2]
+                    if spec and "model" in spec:
+                        sorted_output = jax.lax.psum_scatter(
+                            sorted_output, "model", scatter_dimension=1, tiled=True
+                        )
+                    else:
+                        sorted_output = jax.lax.psum(sorted_output, "model")
+                # [B' x S' x K, M']
+                sorted_output = self._combine_hook(sorted_output=sorted_output, residuals=residuals)
+                # Gather the tokens to their original positions.
+                unsorted_output = _custom_gather(sorted_output, combine_indices, sorted_indices)
+                # [B', S', K, M']
+                output = unsorted_output.reshape(
+                    B, S, num_experts_per_token, unsorted_output.shape[-1]
+                )
+                return output, *additional_outputs
+
+            return _gather_and_compute(
+                x,
+                gate_assignment,
+                wi_0_sharded,
+                wi_1_sharded,
+                wo_sharded,
+            )
 
         out, *additional_outputs = wrapper(
             x,
             gate_assignment,
-            expert_weights,
             self.parameters["wi_0_weight"],
             self.parameters["wi_1_weight"],
             self.parameters["wo_weight"],
         )
         self._additional_shmap_output_hook(additional_outputs)
+
+        # Apply expert weights outside shard_map to avoid passing extra tensor
+        # through the shard_map boundary and recomputing it in backward.
+        # out: [B, S, K, M'], expert_weights: [B, S, K]
+        out *= expert_weights[..., None]
+        assert expert_weights.dtype == jnp.float32
+        assert out.dtype == jnp.float32
+        # [B, S, M']
+        out = jnp.sum(out, axis=-2).astype(x.dtype)
         return out
 
 
