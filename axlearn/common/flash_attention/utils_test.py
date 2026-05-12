@@ -345,6 +345,138 @@ class TestFlashAttention(TestCase):
                 self.assertNestedAllClose(fwd_out, decoding_output, atol=0.02)
         jax.clear_caches()
 
+    @parameterized.product(
+        _TEST_CONFIGS,
+        backend=["cpu", "tpu"],
+        bias_type=["causal", "sliding"],
+        input_dtype=[jnp.float32],
+        prefix_len=[
+            [64, 64, 64, 64, 64, 64, 64, 64],
+            [32, 40, 48, 56, 64, 72, 80, 88],
+        ],
+        suffix_len=[16, 64],
+    )
+    @pytest.mark.for_8_devices
+    # pylint: disable-next=too-many-positional-arguments
+    def test_incremental_prefill(
+        self,
+        batch,
+        seq_len,
+        num_heads,
+        num_kv_heads,
+        per_head_dim,
+        mesh,
+        mesh_axis_names,
+        backend,
+        bias_type,
+        input_dtype,
+        prefix_len,
+        suffix_len,
+    ):
+        """Tests that incremental prefill (asymmetric Q/K with offset) matches forward pass."""
+        del seq_len
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        prefix_lens = jnp.array(prefix_len[:batch])
+        kv_len = int(prefix_lens.max()) + suffix_len
+
+        query, key, value = _get_inputs(
+            batch=batch,
+            seq_len=kv_len,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads or num_heads,
+            per_head_dim=per_head_dim,
+            input_dtype=input_dtype,
+        )
+
+        # Per-batch target_positions: each row offset by its own prefix_len.
+        fwd_target_positions = jnp.broadcast_to(jnp.arange(kv_len)[None], (batch, kv_len))
+        incr_target_positions = jnp.arange(suffix_len)[None] + prefix_lens[:, None]
+        source_positions = jnp.broadcast_to(jnp.arange(kv_len)[None], (batch, kv_len))
+
+        if bias_type == "causal":
+            fwd_bias = CausalAttentionBias(
+                target_positions=fwd_target_positions,
+                source_positions=source_positions,
+            )
+            incr_bias = CausalAttentionBias(
+                target_positions=incr_target_positions,
+                source_positions=source_positions,
+            )
+        else:
+            assert bias_type == "sliding"
+            fwd_bias = SlidingWindowAttentionBias(
+                mask=sliding_window_causal_mask(sliding_window_size=4),
+                sliding_window_size=4,
+                target_positions=fwd_target_positions,
+                source_positions=source_positions,
+            )
+            incr_bias = SlidingWindowAttentionBias(
+                mask=sliding_window_causal_mask(sliding_window_size=4),
+                sliding_window_size=4,
+                target_positions=incr_target_positions,
+                source_positions=source_positions,
+            )
+
+        with patch("axlearn.common.flash_attention.utils._interpret", return_value=True):
+            # Full forward pass as reference.
+            fwd_fn = utils.flash_attention_implementation(
+                backend,
+                query=query,
+                key=key,
+                value=value,
+                bias=fwd_bias,
+                tpu_block_size=128,
+            )
+            if fwd_fn is None:
+                raise ValueError("Attention implementation is not available.")
+
+            # Incremental prefill: per-batch suffix Q sliced at each batch's prefix_len.
+            suffix_query = jax.vmap(
+                lambda q, pl: jax.lax.dynamic_slice_in_dim(q, pl, suffix_len, axis=0)
+            )(query, prefix_lens)
+            incr_fn = utils.flash_attention_implementation(
+                backend,
+                query=suffix_query,
+                key=key,
+                value=value,
+                bias=incr_bias,
+                kv_cache_type=KVCache,
+                tpu_block_size=128,
+            )
+            if incr_fn is None:
+                raise ValueError("No kernel supports incremental prefill for this backend.")
+
+            with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+                prng_key = jax.random.PRNGKey(0)
+                fwd_batch = dict(
+                    query=query,
+                    key=key,
+                    value=value,
+                    prng_key=prng_key,
+                    bias=fwd_bias,
+                    logit_sink=None,
+                )
+                fwd_out = fwd_fn.fn(fwd_batch)
+
+                incr_batch = dict(
+                    query=suffix_query,
+                    key=key,
+                    value=value,
+                    prng_key=prng_key,
+                    bias=incr_bias,
+                    logit_sink=None,
+                )
+                incr_out = incr_fn.fn(input_batch=incr_batch)
+
+                # Extract each batch element's suffix from the full forward output.
+                fwd_suffix_out = jax.vmap(
+                    lambda out, pl: jax.lax.dynamic_slice_in_dim(out, pl, suffix_len, axis=0)
+                )(fwd_out, prefix_lens)
+                self.assertNestedAllClose(fwd_suffix_out, incr_out, atol=1e-4)
+        jax.clear_caches()
+
 
 if __name__ == "__main__":
     absltest.main()

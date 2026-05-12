@@ -17,6 +17,7 @@ from axlearn.common.flash_attention.gpu_decoding import GPUDecoding
 from axlearn.common.flash_attention.gpu_paged_attention import GPUPagedAttention
 from axlearn.common.flash_attention.tpu_attention import (
     LegacyTPUFlashAttention,
+    TPUIncrementalSplashAttention,
     TPUSplashAttention,
     TPUSplashAttentionWithAllGather,
 )
@@ -27,9 +28,15 @@ from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
 from axlearn.common.utils import Tensor
 
 BACKENDS = dict(
-    # Always try decoding kernel first, then regular attention kernels.
+    # Always try inference kernels first (decoding then incremental prefill), then training kernels.
     # For TPU, prefer SplashAttention whenever possible, as it's faster than legacy.
-    tpu=[TPUDecoding, TPUSplashAttentionWithAllGather, TPUSplashAttention, LegacyTPUFlashAttention],
+    tpu=[
+        TPUDecoding,
+        TPUIncrementalSplashAttention,
+        TPUSplashAttentionWithAllGather,
+        TPUSplashAttention,
+        LegacyTPUFlashAttention,
+    ],
     gpu=[
         GPUDecoding,
         # For GPU, prefer cuDNN (without bias) whenever possible, as it's the fastest.

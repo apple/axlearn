@@ -84,6 +84,7 @@ SplashResidualsType = tuple[
     mask_info_lib.MaskInfo | None,  # dkv_mask_info
     jax.Array | None,  # prng_key
     jax.Array | None,  # logit_sink
+    jax.Array | None,  # q_positions
 ]
 
 
@@ -297,6 +298,7 @@ def _splash_attention_forward(
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
     save_residuals: Literal[False] = False,
+    q_positions: jax.Array | None = None,
     attn_logits_soft_cap: float | None = None,
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
@@ -320,6 +322,7 @@ def _splash_attention_forward(
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
     save_residuals: Literal[True],
+    q_positions: jax.Array | None = None,
     attn_logits_soft_cap: float | None = None,
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
@@ -341,6 +344,7 @@ def _splash_attention_forward(
     residual_checkpoint_name: str | None,
     save_residuals: bool,
     mask_function: MaskFunctionType | None,
+    q_positions: jax.Array | None = None,
     attn_logits_soft_cap: float | None = None,
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
@@ -534,14 +538,15 @@ def _splash_attention_forward(
         in_specs.append(None)
 
     assert fwd_mask_info.partial_mask_blocks is None or fwd_mask_info.q_sequence is None
+    assert not (
+        q_positions is not None and fwd_mask_info.q_sequence is not None
+    ), "q_positions and fwd_mask_info.q_sequence are mutually exclusive."
+    q_sequence = q_positions if q_positions is not None else fwd_mask_info.q_sequence
 
-    if fwd_mask_info.q_sequence is not None:
-        q_sequence = jax.lax.broadcast_in_dim(
-            fwd_mask_info.q_sequence, (q_seq_len, NUM_LANES), (0,)
-        )
+    if q_sequence is not None:
+        q_sequence = jax.lax.broadcast_in_dim(q_sequence, (q_seq_len, NUM_LANES), (0,))
         in_specs.append(pl.BlockSpec((bq, NUM_LANES), q_segment_ids_index_map))
     else:
-        q_sequence = None
         in_specs.append(None)
 
     if logit_sink is not None:
@@ -659,7 +664,7 @@ def _splash_attention_forward(
     return out
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(8, 9, 10, 11, 12, 13, 14, 15, 17))
+@partial(jax.custom_vjp, nondiff_argnums=(8, 9, 10, 11, 12, 13, 15, 16, 18))
 # TODO: Try to reduce positional arguments
 # pylint: disable-next=too-many-positional-arguments
 def _splash_attention_custom(
@@ -677,6 +682,7 @@ def _splash_attention_custom(
     block_sizes: BlockSizes,
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
+    q_positions: jax.Array | None = None,
     attn_logits_soft_cap: float | None = None,
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
@@ -706,6 +712,7 @@ def _splash_attention_custom(
         residual_checkpoint_name=residual_checkpoint_name,
         save_residuals=save_residuals,
         mask_function=mask_function,
+        q_positions=q_positions,
         attn_logits_soft_cap=attn_logits_soft_cap,
         dropout_rate=dropout_rate,
         prng_key=prng_key,
@@ -730,6 +737,7 @@ def _splash_attention_fwd(
     block_sizes: BlockSizes,
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
+    q_positions: jax.Array | None = None,
     attn_logits_soft_cap: float | None = None,
     dropout_rate: float = 0.0,
     prng_key: jax.Array | None = None,
@@ -754,6 +762,7 @@ def _splash_attention_fwd(
         residual_checkpoint_name=residual_checkpoint_name,
         save_residuals=True,
         mask_function=mask_function,
+        q_positions=q_positions,
         attn_logits_soft_cap=attn_logits_soft_cap,
         dropout_rate=dropout_rate,
         prng_key=prng_key,
@@ -770,6 +779,7 @@ def _splash_attention_fwd(
         dkv_mask_info,
         prng_key,
         logit_sink,
+        q_positions,
     )
 
 
@@ -917,6 +927,7 @@ def _splash_attention_bwd_dq(
     k_layout: QKVLayout,
     v_layout: QKVLayout,
     mask_function: MaskFunctionType | None,
+    q_positions: jax.Array | None = None,
     interpret: bool,
 ):
     num_q_heads, q_seq_len, head_dim = q.shape
@@ -1042,12 +1053,15 @@ def _splash_attention_bwd_dq(
         in_specs.append(None)
 
     assert mask_info.partial_mask_blocks is None or mask_info.q_sequence is None
+    assert not (
+        q_positions is not None and mask_info.q_sequence is not None
+    ), "q_positions and mask_info.q_sequence are mutually exclusive."
+    q_sequence = q_positions if q_positions is not None else mask_info.q_sequence
 
-    if mask_info.q_sequence is not None:
-        q_sequence = jax.lax.broadcast_in_dim(mask_info.q_sequence, (q_seq_len, NUM_LANES), (0,))
+    if q_sequence is not None:
+        q_sequence = jax.lax.broadcast_in_dim(q_sequence, (q_seq_len, NUM_LANES), (0,))
         in_specs.append(pl.BlockSpec((bq, NUM_LANES), q_segment_ids_index_map))
     else:
-        q_sequence = None
         in_specs.append(None)
 
     out_shapes = [
@@ -1375,6 +1389,7 @@ def _splash_attention_bwd_dkv(
     k_layout: QKVLayout,
     v_layout: QKVLayout,
     mask_function: MaskFunctionType | None,
+    q_positions: jax.Array | None = None,
     interpret: bool,
 ):
     num_q_heads, q_seq_len, head_dim = q.shape
@@ -1620,11 +1635,15 @@ def _splash_attention_bwd_dkv(
     else:
         in_specs.append(None)
 
-    if mask_info.q_sequence is not None:
+    assert not (
+        q_positions is not None and mask_info.q_sequence is not None
+    ), "q_positions and mask_info.q_sequence are mutually exclusive."
+    q_sequence = q_positions if q_positions is not None else mask_info.q_sequence
+
+    if q_sequence is not None:
         in_specs.append(pl.BlockSpec((NUM_SUBLANES, bq), q_segment_ids_index_map))
-        q_sequence = jax.lax.broadcast_in_dim(mask_info.q_sequence, (NUM_SUBLANES, q_seq_len), (1,))
+        q_sequence = jax.lax.broadcast_in_dim(q_sequence, (NUM_SUBLANES, q_seq_len), (1,))
     else:
-        q_sequence = None
         in_specs.append(None)
 
     out_shapes = [
@@ -1768,6 +1787,7 @@ def _splash_attention_bwd(
         dkv_mask_info,
         prng_key,
         logit_sink,
+        q_positions,
     ) = res
 
     # di: [num_heads, q_seq_len]
@@ -1819,6 +1839,7 @@ def _splash_attention_bwd(
         k_layout=block_sizes.k_layout,
         v_layout=block_sizes.v_layout,
         mask_function=mask_function,
+        q_positions=q_positions,
         interpret=interpret,
     )
     if not use_fused_bwd_kernel:
@@ -1843,6 +1864,7 @@ def _splash_attention_bwd(
             k_layout=block_sizes.k_layout,
             v_layout=block_sizes.v_layout,
             mask_function=mask_function,
+            q_positions=q_positions,
             interpret=interpret,
         )
     # Match the signature of the fwd function.
@@ -1856,6 +1878,7 @@ def _splash_attention_bwd(
         dv,  # v
         None,  # segment_ids
         d_logit_sink,  # logit_sink gradient
+        None,  # q_positions
         None,  # prng_key
     )
 
@@ -1896,6 +1919,7 @@ def _splash_attention(
     prng_key: jax.Array | None = None,
     residual_checkpoint_name: str | None,
     mask_function: MaskFunctionType | None,
+    q_positions: jax.Array | None = None,
     interpret: bool,
 ) -> SplashCustomReturnType:
     if dropout_rate > 0.0:
@@ -1926,6 +1950,7 @@ def _splash_attention(
         prng_key=pallas_prng_key,
         residual_checkpoint_name=residual_checkpoint_name,
         mask_function=mask_function,
+        q_positions=q_positions,
         interpret=interpret,
     )
 

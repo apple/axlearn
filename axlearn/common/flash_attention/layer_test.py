@@ -1591,6 +1591,124 @@ class TestFlashAttention(TestCase):
                 # Outputs should be different when scale differs
                 self.assertFalse(jnp.allclose(output.data, ref_output.data, atol=1e-3))
 
+    # ---- Incremental prefill tests ----
+
+    @parameterized.product(
+        _ATTN_CONFIGS[:2],
+        prefix_len=[80],
+        suffix_len=[16, 48],
+    )
+    # pylint: disable-next=too-many-positional-arguments
+    def test_incremental_prefill(
+        self,
+        batch,
+        seq_len,
+        num_heads,
+        num_kv_heads,
+        per_head_dim,
+        mesh,
+        mesh_axis_names,
+        prefix_len,
+        suffix_len,
+    ):
+        """Tests that incremental prefill through FlashAttention layer produces same results as full
+        prefill for the suffix portion.
+        """
+        del seq_len
+        if not is_supported_mesh_shape(mesh):
+            self.skipTest(f"Unsupported mesh {mesh}.")
+
+        # Closest power of 2 >= suffix_len.
+        suffix_pad_len = 2 ** math.ceil(math.log2(suffix_len))
+        # Closest power of 2 >= prefix_len + suffix_pad_len.
+        # prefix_len + suffix_pad_len must be <= max_seq_len, or the `dynamic_update_slice` in
+        # KVCache will overwrite existing KV.
+        max_seq_len = 2 ** math.ceil(math.log2(prefix_len + suffix_pad_len))
+
+        with Mesh(mesh_utils.create_device_mesh(mesh), mesh_axis_names):
+            test_layer, _, params, hidden_dim = _prepare_layers(
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                per_head_dim=per_head_dim,
+                mesh_axis_names=mesh_axis_names,
+                mask=CausalAttentionBias.default_config(),
+                inference=True,
+                tpu_block_size=128,
+            )
+
+            # Full prefill as reference.
+            full_query = jax.random.normal(
+                jax.random.PRNGKey(0), [batch, max_seq_len, hidden_dim], dtype=jnp.bfloat16
+            )
+            full_states = test_layer.init_states(
+                batch_size=batch, max_len=max_seq_len, dtype=jnp.bfloat16
+            )
+            (full_states, full_output), _ = F(
+                test_layer,
+                state=params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(123),
+                inputs=dict(
+                    cached_states=full_states,
+                    query=full_query,
+                    is_prefill=True,
+                ),
+                method="extend_step",
+            )
+
+            # Incremental prefill: prefix then suffix.
+            incr_states = test_layer.init_states(
+                batch_size=batch, max_len=max_seq_len, dtype=jnp.bfloat16
+            )
+            prefix_query = full_query.at[:, prefix_len:].set(0)
+            prefix_segment_ids = (
+                jnp.ones((batch, max_seq_len), dtype=jnp.int32).at[:, prefix_len:].set(0)
+            )
+            (incr_states, _), _ = F(
+                test_layer,
+                state=params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(123),
+                inputs=dict(
+                    cached_states=incr_states,
+                    query=prefix_query,
+                    segment_ids=prefix_segment_ids,
+                    is_prefill=True,
+                ),
+                method="extend_step",
+            )
+
+            suffix_query = (
+                jnp.zeros((batch, suffix_pad_len, hidden_dim), dtype=full_query.dtype)
+                .at[:, :suffix_len]
+                .set(full_query[:, prefix_len : prefix_len + suffix_len])
+            )
+            suffix_segment_ids = (
+                jnp.ones((batch, suffix_pad_len), dtype=jnp.int32).at[:, suffix_len:].set(0)
+            )
+            (incr_states, suffix_output), _ = F(
+                test_layer,
+                state=params,
+                is_training=False,
+                prng_key=jax.random.PRNGKey(123),
+                inputs=dict(
+                    cached_states=incr_states,
+                    query=suffix_query,
+                    segment_ids=suffix_segment_ids,
+                    is_prefill=False,
+                ),
+                method="extend_step",
+            )
+
+            # Suffix output should match the suffix portion of the full prefill.
+            self.assertNestedAllClose(
+                suffix_output.data[:, :suffix_len],
+                full_output.data[:, prefix_len : prefix_len + suffix_len],
+                rtol=0.02,
+                atol=1e-4,
+            )
+        jax.clear_caches()
+
 
 if __name__ == "__main__":
     absltest.main()

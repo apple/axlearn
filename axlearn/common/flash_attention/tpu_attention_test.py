@@ -31,6 +31,7 @@ from axlearn.common.flash_attention.common import ReferenceMHA
 from axlearn.common.flash_attention.layer import default_mha_dim_to_partition_spec
 from axlearn.common.flash_attention.splash_attention_mask import ComputableMask
 from axlearn.common.flash_attention.test_utils import generate_attention_data
+from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.test_utils import TestCase, Tolerance, is_supported_mesh_shape
 from axlearn.common.utils import Tensor
 
@@ -871,6 +872,84 @@ class TestFlashAttention(TestCase):
                     0.98: Tolerance(atol=1e-2),
                 },
             )
+
+    @parameterized.product(
+        prefix_len=[[64, 64], [64, 128]],
+        suffix_len=[16, 64],
+        mask=["causal", "sliding", "custom"],
+        per_head_dim=[128],
+    )
+    def test_incremental_prefill(self, prefix_len, suffix_len, mask, per_head_dim):
+        """Tests that TPUIncrementalSplashAttention produces correct results for asymmetric Q/K, as
+        in incremental prefill where Q is the suffix and K/V span the full prefix+suffix.
+        """
+        batch_size = len(prefix_len)
+        num_heads = 4
+        num_kv_heads = num_heads // 2
+        prefix_lens = jnp.array(prefix_len[:batch_size])
+        kv_len = int(prefix_lens.max()) + suffix_len
+
+        q, k, v, _ = generate_attention_data(
+            batch_size,
+            suffix_len,
+            kv_len,
+            num_heads,
+            per_head_dim,
+            num_kv_heads,
+            mask_fn=None,
+            dtype=jnp.bfloat16,
+            query_offset=int(prefix_lens.max()),
+        )
+        # target_positions has shape [batch_size, suffix_len]
+        target_positions = jnp.arange(suffix_len)[None, :] + prefix_lens[:, None]
+        source_positions = jnp.broadcast_to(jnp.arange(kv_len)[None], (batch_size, kv_len))
+
+        match mask:
+            case "causal":
+                bias = CausalAttentionBias(
+                    target_positions=target_positions,
+                    source_positions=source_positions,
+                )
+            case "sliding":
+                bias = SlidingWindowAttentionBias(
+                    mask=sliding_window_causal_mask(64),
+                    sliding_window_size=64,
+                    target_positions=target_positions,
+                    source_positions=source_positions,
+                )
+            case "custom":
+                bias = MaskFnAttentionBias(
+                    mask=causal_mask,
+                    target_positions=target_positions,
+                    source_positions=source_positions,
+                )
+            case _:
+                raise ValueError(f"{mask=} is not supported.")
+
+        cfg = dict(
+            interpret=jax.default_backend() == "cpu",
+            softmax_scale=per_head_dim**-0.5,
+            tpu_block_size=128,
+        )
+
+        ref_fn = ReferenceMHA.default_config().set(**cfg).instantiate()
+        fn = tpu_attention.TPUIncrementalSplashAttention.default_config().set(**cfg).instantiate()
+        input_batch = dict(
+            query=q,
+            key=k,
+            value=v,
+            bias=bias,
+            prng_key=jax.random.PRNGKey(66),
+            logit_sink=None,
+        )
+
+        self.assertTrue(fn.is_supported(input_batch=input_batch, kv_cache_type=KVCache))
+
+        out = fn(input_batch)
+        ref_out = ref_fn(input_batch)
+        self.assertAllCloseWithOutliers(
+            out, ref_out, tolerance_map={1.0: Tolerance(atol=5e-2), 0.98: Tolerance(atol=1e-2)}
+        )
 
 
 if __name__ == "__main__":

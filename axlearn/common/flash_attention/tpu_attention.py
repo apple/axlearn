@@ -29,6 +29,9 @@ from jax.experimental.pallas.ops.tpu.flash_attention import (
 )
 from jax.experimental.pallas.ops.tpu.splash_attention import SegmentIds as SplashSegmentIds
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
+from jax.experimental.pallas.ops.tpu.splash_attention import (
+    splash_attention_mask_info as mask_info_lib,
+)
 from jax.sharding import NamedSharding, PartitionSpec
 
 import axlearn.common.flash_attention.tpu_splash_attention as splash_attention_kernel
@@ -51,8 +54,9 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
-from axlearn.common.flash_attention.splash_attention_mask import ComputableMask
+from axlearn.common.flash_attention.splash_attention_mask import ComputableMask, classify_blocks
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
 from axlearn.common.utils import Nested, Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
@@ -73,7 +77,7 @@ def _to_splash_mask(
         q_seq_shards: Number of query sequence shards.
         unpadded_k_len: Original key length before padding.
     """
-    need_k_limit = unpadded_k_len is not None and unpadded_k_len < mask_shape[0]
+    need_k_limit = unpadded_k_len is not None and unpadded_k_len < mask_shape[1]
 
     if not mask.has_value():
         if need_k_limit:
@@ -884,8 +888,6 @@ class TPUFlashAttention(BaseFlashAttention):
         """See `BaseFlashAttention.is_supported`."""
         if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
-        if kv_cache_type is not None:
-            return self._log_unsupported("TPU attention does not support decoding.")
         return True
 
 
@@ -909,29 +911,30 @@ class TPUSplashAttention(TPUFlashAttention):
         kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
+        cfg = self.config
         if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
         bias: BaseAttentionBias = input_batch["bias"]
         _, _, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+
+        if kv_cache_type is not None:
+            return self._log_unsupported("non-empty KV cache is not supported.")
 
         if explicit_bias.has_value():
             return self._log_unsupported("explicit bias is not supported.")
 
         if (
             not self.get_backend_overrides("splash_use_fused_bwd_kernel", True)
-            and self.cfg.dropout_rate > 0.0
+            and cfg.dropout_rate > 0.0
         ):
             # TODO (bailin): Support dropout with non-fused bwd kernel.
             return self._log_unsupported("dropout with non-fused bwd kernel is not supported.")
 
         # If user doesn't specify splash_use_fused_bwd_kernel, we have some defaults
         # or heuristics to decide whether to use fused bwd kernel.
-        if (
-            not self.cfg.backend_overrides
-            or "splash_use_fused_bwd_kernel" not in self.cfg.backend_overrides
-        ):
+        if not cfg.backend_overrides or "splash_use_fused_bwd_kernel" not in cfg.backend_overrides:
             # When dropout is enabled, we always use the fused bwd kernel.
-            if self.cfg.dropout_rate > 0.0:
+            if cfg.dropout_rate > 0.0:
                 self._use_fused = True
             else:
                 # Heuristic for sliding window attention.
@@ -975,7 +978,7 @@ class TPUSplashAttention(TPUFlashAttention):
         mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         segment_id_tensor = get_segment_ids(query=query, key=key, segment_ids=segment_ids)
 
-        block_size = self.cfg.tpu_block_size
+        block_size = cfg.tpu_block_size
         unpadded_q_len, unpadded_k_len = query.shape[1], key.shape[1]
         query, key, value, segment_id_tensor = maybe_pad_inputs(
             block_size=block_size, query=query, key=key, value=value, segment_id=segment_id_tensor
@@ -989,7 +992,7 @@ class TPUSplashAttention(TPUFlashAttention):
             seg_ids = None
 
         # Switch num_heads and seq_len axes.
-        query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
+        query = jnp.einsum("btnh->bnth", query) * cfg.softmax_scale
         key = jnp.einsum("bsnh->bnsh", key)
         value = jnp.einsum("bsnh->bnsh", value)
 
@@ -1012,7 +1015,7 @@ class TPUSplashAttention(TPUFlashAttention):
             head_shards=1,
             q_seq_shards=1,
             dropout_rate=cfg.dropout_rate,
-            interpret=self.cfg.interpret,
+            interpret=cfg.interpret,
             residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
         )
         p_kernel = functools.partial(kernel, prng_key=prng_key, logit_sink=logit_sink)
@@ -1021,7 +1024,8 @@ class TPUSplashAttention(TPUFlashAttention):
         return jnp.einsum("bnth->btnh", context[:, :, :unpadded_q_len])
 
     def get_block_sizes(self):
-        block_size = self.cfg.tpu_block_size
+        cfg = self.config
+        block_size = cfg.tpu_block_size
         block_sizes = splash_attention_kernel.BlockSizes(
             block_q=self.get_backend_overrides("splash_block_q", block_size),
             block_kv=self.get_backend_overrides("splash_block_kv", block_size),
@@ -1074,7 +1078,7 @@ class TPUSplashAttention(TPUFlashAttention):
             )
 
         # Switch num_heads and seq_len axes.
-        query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
+        query = jnp.einsum("btnh->bnth", query) * cfg.softmax_scale
         key = jnp.einsum("bsnh->bnsh", key)
 
         block_sizes = self.get_block_sizes()
@@ -1146,7 +1150,7 @@ class TPUSplashAttentionWithAllGather(TPUSplashAttention):
         mask, segment_ids, _ = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
 
         # Determine original lengths and whether padding is needed
-        block_size = self.cfg.tpu_block_size
+        block_size = cfg.tpu_block_size
         unpadded_q_len = query.shape[1]
         unpadded_k_len = key.shape[1]
         need_padding = unpadded_q_len % block_size != 0 or unpadded_k_len % block_size != 0
@@ -1272,6 +1276,129 @@ class TPUSplashAttentionWithAllGather(TPUSplashAttention):
         )
 
 
+class TPUIncrementalSplashAttention(TPUFlashAttention):
+    """SplashAttention with runtime block-sparse masking for incremental prefill.
+
+    Uses DynamicMask to compute block-level sparsity via tiled mask function evaluation at runtime,
+    avoiding O(T^2) dense mask materialization. Element-level masking is done on-the-fly in the
+    kernel via mask_function + q_positions with the correct Q offset.
+
+    This kernel is forward-only (no backward pass) since it targets inference.
+    """
+
+    def is_supported(
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        cfg = self.config
+        # Training should use TPUSplashAttention instead.
+        if kv_cache_type is None:
+            return False
+        if kv_cache_type != KVCache:
+            return self._log_unsupported(f"{kv_cache_type=}")
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
+            return False
+        bias: BaseAttentionBias = input_batch["bias"]
+        mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
+        if not mask.has_value():
+            return self._log_unsupported("attention mask is required.")
+        if explicit_bias.has_value():
+            return self._log_unsupported("explicit bias is not supported.")
+        if segment_ids.has_value():
+            return self._log_unsupported("segment_ids is not supported for inference.")
+        if cfg.dropout_rate:
+            return self._log_unsupported("dropout is not supported for inference.")
+        return True
+
+    @functools.partial(jax.jit, static_argnames=["self"])
+    def __call__(
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
+    ) -> Tensor:
+        cfg = self.config
+        bias: BaseAttentionBias = input_batch["bias"]
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
+        logit_sink: Optional[Tensor] = input_batch.get("logit_sink", None)
+        prng_key = input_batch.get("prng_key", None)
+
+        mask, _ = split(bias, MaskFnAttentionBias)
+        assert mask.has_value() and mask.target_positions is not None
+
+        block_size = cfg.tpu_block_size
+        unpadded_q_len = query.shape[1]
+        query, key, value, _ = maybe_pad_inputs(
+            block_size=block_size, query=query, key=key, value=value, segment_id=None
+        )
+
+        # Switch num_heads and seq_len axes.
+        query = jnp.einsum("btnh->bnth", query) * cfg.softmax_scale
+        key = jnp.einsum("bsnh->bnsh", key)
+        value = jnp.einsum("bsnh->bnsh", value)
+
+        q_seq_len = query.shape[2]
+        kv_seq_len = key.shape[2]
+
+        q_positions = mask.target_positions
+        # Pad q_positions to match block-aligned q_seq_len.
+        if q_positions.shape[1] < q_seq_len:
+            q_positions = jnp.pad(q_positions, ((0, 0), (0, q_seq_len - q_positions.shape[1])))
+
+        block_q = self.get_backend_overrides("splash_block_q", block_size)
+        block_kv = self.get_backend_overrides("splash_block_kv", block_size)
+        block_kv_compute = self.get_backend_overrides("splash_block_kv_compute", block_size)
+
+        # Compute block-sparse mask from positions + mask.
+        block_mask, data_next = classify_blocks(
+            mask=mask,
+            q_positions=q_positions,
+            block_shape=(block_q, block_kv),
+            kv_seq_len=kv_seq_len,
+            head_shards=1,
+        )
+
+        fwd_mask_info = mask_info_lib.MaskInfo(
+            data_next=data_next,
+            mask_next=None,
+            block_mask=block_mask,
+            partial_mask_blocks=None,
+            q_sequence=None,
+        )
+        kernel = splash_attention_kernel.SplashAttentionKernel(
+            fwd_mask_info=fwd_mask_info,
+            dq_mask_info=None,
+            dkv_mask_info=None,
+            block_sizes=splash_attention_kernel.BlockSizes(
+                block_q=block_q, block_kv=block_kv, block_kv_compute=block_kv_compute
+            ),
+            is_mqa=False,
+            save_residuals=False,
+            mask_value=splash_attention_kernel.DEFAULT_MASK_VALUE,
+            attn_logits_soft_cap=None,
+            dropout_rate=0.0,
+            residual_checkpoint_name=f"tpu_attention.{FLASH_ATTN_RESIDUAL_NAME}",
+            mask_function=mask.mask,
+            interpret=cfg.interpret,
+        )
+
+        def call_kernel(kernel, q, k, v, q_pos):
+            return kernel(
+                q=q,
+                k=k,
+                v=v,
+                segment_ids=None,
+                prng_key=prng_key,
+                logit_sink=logit_sink,
+                q_positions=q_pos,
+            )
+
+        context = jax.vmap(call_kernel)(kernel, query, key, value, q_positions)
+        return jnp.einsum("bnth->btnh", context[:, :, :unpadded_q_len])
+
+
 class LegacyTPUFlashAttention(TPUFlashAttention):
     """Wraps the legacy (deprecated) implementation of TPU attention."""
 
@@ -1281,16 +1408,19 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
+        cfg = self.config
         if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
             return False
-        block_size = self.cfg.tpu_block_size
+        if kv_cache_type is not None:
+            return self._log_unsupported("non-empty KV cache is not supported.")
+        block_size = cfg.tpu_block_size
         if not self._check_block_size(input_batch=input_batch, block_size=block_size):
             return False
         query: Tensor = input_batch["query"]
         key: Tensor = input_batch["key"]
         if query.dtype != key.dtype:
             return self._log_unsupported(f"{query.dtype=} != {key.dtype=}")
-        if self.cfg.dropout_rate != 0.0:
+        if cfg.dropout_rate != 0.0:
             return self._log_unsupported("dropout is not supported.")
         logit_sink = input_batch.get("logit_sink", None)
         if logit_sink is not None:
@@ -1310,6 +1440,7 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
+        cfg = self.config
         bias: BaseAttentionBias = input_batch["bias"]
         causal_mask, segment_ids, explicit_bias = split(
             bias, CausalAttentionBias, SegmentIdAttentionBias
@@ -1324,11 +1455,11 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
         key = repeat_kv_heads(query.shape[2], key)
         value = repeat_kv_heads(query.shape[2], value)
         # Switch num_heads and seq_len axes.
-        query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
+        query = jnp.einsum("btnh->bnth", query) * cfg.softmax_scale
         key = jnp.einsum("bsnh->bnsh", key)
         value = jnp.einsum("bsnh->bnsh", value)
 
-        block_size = self.cfg.tpu_block_size
+        block_size = cfg.tpu_block_size
         # TODO(tom_gunter): See if we can do better block-size tuning.
         block_sizes = LegacyBlockSizes(
             block_q=block_size,
@@ -1351,6 +1482,6 @@ class LegacyTPUFlashAttention(TPUFlashAttention):
             segment_ids=seg_ids,
             causal=causal_mask.has_value(),
             block_sizes=block_sizes,
-            interpret=self.cfg.interpret,
+            interpret=cfg.interpret,
         )
         return jnp.einsum("bnth->btnh", context)
