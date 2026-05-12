@@ -30,7 +30,6 @@ import jax
 import numpy as np
 import optax
 import pytest
-import torch
 from absl import logging
 from absl.testing import absltest, parameterized
 from jax import nn
@@ -642,19 +641,10 @@ class ALiBiAttentionLogitBiasLayerTest(TestCase):
     """Tests ALiBiAttentionLogitBiasLayer."""
 
     def ref_alibi_implementation(self, batch_size, num_heads, max_len):
-        # Slopes is in jax DeviceArray. Switch it to torch tensor as the ref code.
-        slopes = torch.Tensor(attention.alibi_get_slopes(num_heads))
-        alibi = slopes.unsqueeze(1).unsqueeze(1) * torch.arange(max_len).unsqueeze(0).unsqueeze(
-            0
-        ).expand(num_heads, -1, -1)
-        alibi = alibi.view(num_heads, 1, max_len)
-
-        # Post processing to translate alibi matrix into the jax format.
-        # Alibi matrix shape [batch_size, num_heads, max_len, max_len].
-        alibi = alibi.unsqueeze(0).expand(batch_size, -1, max_len, -1)
-        # Translate from pytorch to jax.
-        alibi = as_tensor(alibi)
-        return alibi
+        slopes = np.array(attention.alibi_get_slopes(num_heads))
+        alibi = slopes[None, :, None, None] * np.arange(max_len)[None, None, None, :]
+        alibi = np.broadcast_to(alibi, (batch_size, num_heads, max_len, max_len))
+        return jnp.asarray(alibi)
 
     def test_alibi_attention_mask(self):
         num_heads = 12

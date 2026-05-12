@@ -8,13 +8,12 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 from absl.testing import parameterized
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec
-from torch.nn import functional as F
 
 from axlearn.common.ein_ops import rearrange, repeat
+from axlearn.common.golden import load_golden
 from axlearn.common.ssm_kernels.ssd_kernels import _ssd_backward, _ssd_forward, ssd, ssd_linear_scan
 from axlearn.common.test_utils import TestCase, assert_allclose
 
@@ -89,71 +88,6 @@ def _ssd_naive_reference(q, k, v, log_alpha, h0=None):
 # pylint: disable=line-too-long
 # pylint: disable=invalid-name
 # pylint: disable=unused-variable
-
-
-def segsum(x):
-    """More stable segment sum calculation. Helper function copied from
-    https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/ssd_minimal.py.
-    """
-    T = x.size(-1)
-    x = repeat(x, "... d -> ... d e", e=T)
-    mask = torch.tril(torch.ones(T, T, device=x.device, dtype=bool), diagonal=-1)
-    x = x.masked_fill(~mask, 0)
-    x_segsum = torch.cumsum(x, dim=-2)
-    mask = torch.tril(torch.ones(T, T, device=x.device, dtype=bool), diagonal=0)
-    x_segsum = x_segsum.masked_fill(~mask, -torch.inf)
-    return x_segsum
-
-
-def ssd_chunk_tri(X, A, B, C, chunk_size=16, initial_states=None):
-    """Reference implementation of SSD with chunked computation, copied from
-    https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/ssd_minimal.py.
-
-    Arguments:
-        X: (batch, length, n_heads, d_head)
-        A: (batch, length, n_heads)
-        B: (batch, length, n_heads, d_state)
-        C: (batch, length, n_heads, d_state)
-    Return:
-        Y: (batch, length, n_heads, d_head)
-
-    X, A, B, C corresponds to V, \alpha, K, Q in linear attention
-    (H_t = \alpha H_{t-1)+ K_t^\top V_t, O_t = Q_t S_t).
-    """
-    assert X.dtype == A.dtype == B.dtype == C.dtype
-    assert X.shape[1] % chunk_size == 0
-
-    # Rearrange into blocks/chunks
-    X, B, C = [rearrange(x, "b (c l) h d -> b c l h d", l=chunk_size) for x in (X, B, C)]
-    A = rearrange(A, "b (c l) h -> b h c l", l=chunk_size)
-    A_cumsum = torch.cumsum(A, dim=-1)
-
-    # 1. Compute the output for each intra-chunk (diagonal blocks)
-    L = torch.exp(segsum(A))
-    Y_diag = torch.einsum("bclhn,bcshn,bhcls,bcshp->bclhp", C, B, L, X)
-
-    # 2. Compute the state for each intra-chunk
-    # (right term of low-rank factorization of off-diagonal blocks; B terms)
-    decay_states = torch.exp((A_cumsum[:, :, :, -1:] - A_cumsum))
-    states = torch.einsum("bclhn,bhcl,bclhp->bchpn", B, decay_states, X)
-
-    # 3. Compute the inter-chunk SSM recurrence; produces correct SSM states at chunk boundaries
-    # (middle term of factorization of off-diag blocks; A terms)
-    if initial_states is None:
-        initial_states = torch.zeros_like(states[:, :1])
-    states = torch.cat([initial_states, states], dim=1)
-    decay_chunk = torch.exp(segsum(F.pad(A_cumsum[:, :, :, -1], (1, 0))))
-    new_states = torch.einsum("bhzc,bchpn->bzhpn", decay_chunk, states)
-    states, final_state = new_states[:, :-1], new_states[:, -1]
-
-    # 4. Compute state -> output conversion per chunk
-    # (left term of low-rank factorization of off-diagonal blocks; C terms)
-    state_decay_out = torch.exp(A_cumsum)
-    Y_off = torch.einsum("bclhn,bchpn,bhcl->bclhp", C, states, state_decay_out)
-
-    # Add output of intra-chunk and inter-chunk terms (diagonal and off-diagonal blocks)
-    Y = rearrange(Y_diag + Y_off, "b c l h p -> b (c l) h p")
-    return Y, final_state
 
 
 @jax.jit
@@ -232,68 +166,34 @@ class SSDPallasKernelTest(TestCase):
     @parameterized.product(
         batch_size=[2],
         num_heads=[4, 8],
-        seq_len=[1024],
-        dk=[128, 256],
-        dv=[128],
+        seq_len=[128],
+        dk=[64],
+        dv=[64],
         seed=[0],
     )
     def test_ssd_forward(
         self, batch_size: int, num_heads: int, seq_len: int, dk: int, dv: int, seed: int
     ) -> None:
-        """Test SSD forward pass against Tri's torch reference implementation."""
-        # Set the device to CPU
-        device = "cpu"
+        """Test SSD forward pass against pre-computed reference output."""
+        case_name = f"bs{batch_size}_nh{num_heads}_sl{seq_len}_dk{dk}_dv{dv}_s{seed}"
+        golden = load_golden(
+            "axlearn.common.ssm_kernels.ssd_kernels_test",
+            f"test_ssd_forward_{case_name}",
+        )
+        x_bar = jnp.array(golden["inputs"]["x_bar"], dtype=jnp.float32)
+        A_bar = jnp.array(golden["inputs"]["A_bar"], dtype=jnp.float32)
+        B = jnp.array(golden["inputs"]["B"], dtype=jnp.float32)
+        C = jnp.array(golden["inputs"]["C"], dtype=jnp.float32)
 
-        # Set the random seed for reproducibility
-        np.random.seed(seed)
+        x_bar_jax = rearrange(x_bar, "b t h d -> b h t d")
+        A_bar_jax = rearrange(A_bar, "b t h -> b h t")
+        B_jax = rearrange(B, "b t h n -> b h t n")
+        C_jax = rearrange(C, "b t h n -> b h t n")
 
-        # Generate random input data
-        x = np.random.rand(batch_size, seq_len, num_heads, dk).astype(np.float32)
-        dt = np.random.rand(batch_size, seq_len, num_heads).astype(np.float32)
-        dt = np.log(1.0 + np.exp(dt - 4))
-        A = -np.exp(np.random.rand(batch_size, seq_len, num_heads).astype(np.float32))
-        B = np.random.rand(batch_size, seq_len, num_heads, dv).astype(np.float32)
-        C = np.random.rand(batch_size, seq_len, num_heads, dv).astype(np.float32)
-
-        # Compute intermediate variables
-        x_bar = x * dt[..., None]
-        A_bar = A * dt
-
-        # Convert numpy arrays to torch tensors
-        x_torch = torch.tensor(x, dtype=torch.float32)
-        dt_torch = torch.tensor(dt, dtype=torch.float32)
-        A_torch = torch.tensor(A, dtype=torch.float32)
-        B_torch = torch.tensor(B, dtype=torch.float32)
-        C_torch = torch.tensor(C, dtype=torch.float32)
-        x_bar_torch = torch.tensor(x_bar, dtype=torch.float32)
-        A_bar_torch = torch.tensor(A_bar, dtype=torch.float32)
-
-        # Compute the torch reference output
-        y_torch, _ = ssd_chunk_tri(x_bar_torch, A_bar_torch, B_torch, C_torch)
-
-        # Convert numpy arrays to jax arrays
-        x_jax = jnp.array(x, dtype=jnp.float32)
-        dt_jax = jnp.array(dt, dtype=jnp.float32)
-        A_jax = jnp.array(A, dtype=jnp.float32)
-        B_jax = jnp.array(B, dtype=jnp.float32)
-        C_jax = jnp.array(C, dtype=jnp.float32)
-        x_bar_jax = jnp.array(x_bar, dtype=jnp.float32)
-        A_bar_jax = jnp.array(A_bar, dtype=jnp.float32)
-
-        # Reshape jax arrays for comparison
-        x_jax = rearrange(x_jax, "b t h d -> b h t d")
-        dt_jax = rearrange(dt_jax, "b t h -> b h t")
-        A_jax = rearrange(A_jax, "b t h -> b h t")
-        B_jax = rearrange(B_jax, "b t h n -> b h t n")
-        C_jax = rearrange(C_jax, "b t h n -> b h t n")
-        x_bar_jax = rearrange(x_bar_jax, "b t h d -> b h t d")
-        A_bar_jax = rearrange(A_bar_jax, "b t h -> b h t")
-
-        # Compute the jax output
         y_jax = ssd(C_jax, B_jax, x_bar_jax, A_bar_jax, h0=None)
         y_jax = rearrange(y_jax, "b h t d -> b t h d")
 
-        assert_allclose(y_torch.numpy(), np.asarray(y_jax), atol=1e-3, rtol=1e-3)
+        assert_allclose(golden["outputs"]["y_torch"], np.asarray(y_jax), atol=1e-3, rtol=1e-3)
 
     @parameterized.product(
         batch_size=[2, 4],

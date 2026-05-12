@@ -20,7 +20,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 from absl.testing import absltest, parameterized
 from jax._src.mesh import ResourceEnv, thread_resources
 from jax.experimental import mesh_utils
@@ -1196,6 +1195,9 @@ class GPUMamba2MixerLayerTest(TestCase):
         super().setUp()
         if jax.default_backend() != "gpu" or not MAMBA_INSTALLED:
             self.skipTest("Test requires mamba_ssm on a GPU machine")
+        import torch  # pylint: disable=import-outside-toplevel
+
+        self.torch = torch
 
     @classmethod
     def setup_class(cls):
@@ -1226,7 +1228,7 @@ class GPUMamba2MixerLayerTest(TestCase):
 
         def _j2t(param):
             """Convert jax array to torch tensor."""
-            return torch.from_numpy(np.array(param))
+            return self.torch.from_numpy(np.array(param))
 
         inputs_data = jax.random.normal(jax.random.PRNGKey(1), [batch_size, seq_len, d_model])
         inputs_torch = _j2t(inputs_data)
@@ -1277,7 +1279,7 @@ class GPUMamba2MixerLayerTest(TestCase):
         xz_w = _j2t(jax_params["xz_proj"]["weight"])  # [d_model, 2, d_inner]
         bc_w = _j2t(jax_params["bc_proj"]["weight"])  # [d_model, 2, dk]
         dt_w = _j2t(jax_params["dt_proj"]["weight"])  # [d_model, num_heads]
-        zxBCdt_w = torch.cat(  # pylint: disable=invalid-name
+        zxBCdt_w = self.torch.cat(  # pylint: disable=invalid-name
             [xz_w[:, 1], xz_w[:, 0], bc_w[:, 0], bc_w[:, 1], dt_w], dim=1
         )
         ref_model.in_proj.weight.data.copy_(zxBCdt_w.T)
@@ -1289,8 +1291,8 @@ class GPUMamba2MixerLayerTest(TestCase):
         b_conv_bias = _j2t(jax_params["b_conv"]["bias"])
         c_conv_w = _j2t(jax_params["c_conv"]["weight"])
         c_conv_bias = _j2t(jax_params["c_conv"]["bias"])
-        xbc_conv_w = torch.cat([x_conv_w, b_conv_w, c_conv_w], dim=2)
-        xbc_conv_bias = torch.cat([x_conv_bias, b_conv_bias, c_conv_bias], dim=0)
+        xbc_conv_w = self.torch.cat([x_conv_w, b_conv_w, c_conv_w], dim=2)
+        xbc_conv_bias = self.torch.cat([x_conv_bias, b_conv_bias, c_conv_bias], dim=0)
         ref_model.conv1d.weight.data.copy_(xbc_conv_w.T)
         ref_model.conv1d.bias.data.copy_(xbc_conv_bias)
 
