@@ -384,7 +384,11 @@ class RoIAlignTest(absltest.TestCase):
         np.testing.assert_allclose(4 * np.ones((2, 2, 1)), roi_features[0][3])
         np.testing.assert_allclose(5 * np.ones((2, 2, 1)), roi_features[0][4])
 
-    # TODO(markblee): Re-enable in CI when we have access to a larger instance.
+    # test_large_input OOMs under the default RBE sandbox budget (features
+    # ~340MB fp32, doubled under JAX_ENABLE_X64, plus roi_align intermediates).
+    # `size = "enormous"` + `shard_count = 4` were empirically insufficient.
+    # The `high_cpu` pytest marker is ignored by absltest, so skip explicitly.
+    @absltest.skip("high memory; OOMs on RBE (see #2470 Table A)")
     @pytest.mark.high_cpu
     def test_large_input(self):
         input_size = 1408
