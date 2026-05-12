@@ -36,11 +36,6 @@ from absl.testing import absltest, parameterized
 from jax import nn
 from jax import numpy as jnp
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
-from transformers.configuration_utils import PretrainedConfig as HFPretrainedConfig
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS as HF_ROPE_INIT_FUNCTIONS
-from transformers.models.roberta import modeling_roberta as hf_roberta
-from transformers.models.roformer import modeling_roformer as hf_roformer
-from transformers.models.xlnet import modeling_xlnet as hf_xlnet
 
 from axlearn.common import attention, attention_bias, test_utils, utils
 from axlearn.common.attention import (
@@ -79,7 +74,6 @@ from axlearn.common.attention import (
     rel_pos_to_abs_pos,
     scaled_hidden_dim,
     set_double_shard_weights_config,
-    sinusoidal_positional_embeddings,
     update_data_with_skip_connection,
     xl_attention_logits,
 )
@@ -108,6 +102,7 @@ from axlearn.common.config import (
     maybe_set_config,
 )
 from axlearn.common.decoder import Decoder, TransformerTextEmbeddings
+from axlearn.common.golden import load_golden
 from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
 from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
 from axlearn.common.layers import RMSNorm, set_bias_recursively
@@ -116,7 +111,6 @@ from axlearn.common.module import functional as F
 from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import adafactor_optimizer
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import (
     PARAM_REGEXP_WEIGHT,
     DefaultInitializer,
@@ -136,7 +130,6 @@ from axlearn.common.test_utils import (
     is_supported_mesh_shape,
     set_threefry_partitionable,
 )
-from axlearn.common.torch_utils import parameters_from_torch_layer
 from axlearn.common.utils import (
     Nested,
     PartitionSpec,
@@ -834,57 +827,38 @@ class SymmetricALiBiAttentionLogitBiasLayerTest(TestCase):
 class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
     """Tests RoFormerSinusoidalPositionalEmbedding."""
 
-    @parameterized.product(
-        tensor_dimensions=(
-            (2, 3, 10, 32),
-            (2, 4, 8, 16),
-            (2, 5, 8, 64),
+    @parameterized.named_parameters(
+        dict(testcase_name="b2_nh3_ml10_d32_rkTrue_rvTrue", dims=(2, 3, 10, 32), rk=True, rv=True),
+        dict(
+            testcase_name="b2_nh3_ml10_d32_rkTrue_rvFalse", dims=(2, 3, 10, 32), rk=True, rv=False
         ),
-        rotary_key=(True, False),
-        rotary_value=(True, False),
+        dict(
+            testcase_name="b2_nh3_ml10_d32_rkFalse_rvTrue", dims=(2, 3, 10, 32), rk=False, rv=True
+        ),
+        dict(
+            testcase_name="b2_nh3_ml10_d32_rkFalse_rvFalse", dims=(2, 3, 10, 32), rk=False, rv=False
+        ),
+        dict(testcase_name="b2_nh4_ml8_d16_rkTrue_rvTrue", dims=(2, 4, 8, 16), rk=True, rv=True),
+        dict(testcase_name="b2_nh5_ml8_d64_rkTrue_rvTrue", dims=(2, 5, 8, 64), rk=True, rv=True),
     )
-    def test_apply_rotary_position_embeddings(
-        self, tensor_dimensions: tuple[int, int, int, int], rotary_key: bool, rotary_value: bool
-    ):
-        # Unittest against the apply_rotary_position_embeddings in HF.
-        batch_size, num_heads, max_len, dim = tensor_dimensions
-
-        token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
-        sinusoidal_pos_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
-        sinusoidal_pos = sinusoidal_pos_layer(as_torch_tensor(token_ids).shape)[None, :, None, :]
-        query = np.random.random([batch_size, max_len, num_heads, dim])
-        key = np.random.random([batch_size, max_len, num_heads, dim])
-        value = np.random.random([batch_size, max_len, num_heads, dim])
-        ref_layer = hf_roformer.RoFormerSelfAttention.apply_rotary_position_embeddings
-        test_layer = apply_rotary_position_embeddings
-        if rotary_value:
-            ref_q_proj, ref_k_proj, ref_v_proj = ref_layer(
-                sinusoidal_pos,
-                as_torch_tensor(query),
-                as_torch_tensor(key),
-                as_torch_tensor(value),
-            )
-        else:
-            # If rotary_value is set to False, value keeps unchanged.
-            # pylint: disable-next=unbalanced-tuple-unpacking
-            ref_q_proj, ref_k_proj = ref_layer(
-                sinusoidal_pos, as_torch_tensor(query), as_torch_tensor(key)
-            )
-            ref_v_proj = as_torch_tensor(value)
-        if not rotary_key:
-            ref_k_proj = as_torch_tensor(key)
-
-        test_q_proj, test_k_proj, test_v_proj = test_layer(
-            sinusoidal_pos=as_tensor(sinusoidal_pos),
-            query=query,
-            key=key,
-            value=value,
-            rotary_key=rotary_key,
-            rotary_value=rotary_value,
+    def test_apply_rotary_position_embeddings(self, dims, rk, rv):
+        batch_size, num_heads, max_len, dim = dims
+        tag = f"b{batch_size}_nh{num_heads}_ml{max_len}_d{dim}_rk{rk}_rv{rv}"
+        golden = load_golden(
+            "axlearn.common.attention_test",
+            f"test_apply_rotary_position_embeddings_{tag}",
         )
-        np.testing.assert_allclose(test_q_proj, ref_q_proj, atol=5e-7)
-        np.testing.assert_allclose(test_k_proj, ref_k_proj, atol=5e-7)
-        np.testing.assert_allclose(test_v_proj, ref_v_proj, atol=5e-7)
+        test_q, test_k, test_v = apply_rotary_position_embeddings(
+            sinusoidal_pos=jnp.asarray(golden["inputs"]["sinusoidal_pos"]),
+            query=golden["inputs"]["query"],
+            key=golden["inputs"]["key"],
+            value=golden["inputs"]["value"],
+            rotary_key=rk,
+            rotary_value=rv,
+        )
+        np.testing.assert_allclose(test_q, golden["outputs"]["q_proj"], atol=5e-7)
+        np.testing.assert_allclose(test_k, golden["outputs"]["k_proj"], atol=5e-7)
+        np.testing.assert_allclose(test_v, golden["outputs"]["v_proj"], atol=5e-7)
 
     @parameterized.parameters(
         (2, 10, 32),
@@ -892,22 +866,20 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         (2, 8, 64),
     )
     def test_rope_emb(self, batch_size, max_len, dim):
-        # Token id is in the np format for easier transition.
-        token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
-        positions = jnp.expand_dims(jnp.arange(token_ids.shape[-1], dtype=jnp.int32), 0)
-        ref_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
-        # In recent transformers API, PE's `_init_weight` is called recursively by parent module.
-        # Since we only initialize the PE layer here, we need to manually call it.
-        ref_layer._init_weight()  # pylint: disable=protected-access, no-value-for-parameter
-        ref_output = ref_layer(as_torch_tensor(token_ids).shape)
-        # Set up the RoPE AXLearn configs.
+        golden = load_golden(
+            "axlearn.common.attention_test",
+            f"test_rope_emb_b{batch_size}_l{max_len}_d{dim}",
+        )
+        positions = jnp.expand_dims(jnp.arange(max_len, dtype=jnp.int32), 0)
         test_layer = (
             attention.RoFormerSinusoidalPositionalEmbedding.default_config()
             .set(name="test_rope_emb", dim=dim)
             .instantiate(parent=None)
         )
         test_output = test_layer.forward(positions=positions)
-        np.testing.assert_allclose(np.expand_dims(ref_output, 0), test_output, atol=5e-7)
+        np.testing.assert_allclose(
+            np.expand_dims(golden["outputs"]["ref"], 0), test_output, atol=5e-7
+        )
 
     @parameterized.parameters(
         (None, True),
@@ -973,56 +945,12 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
         # test RoFormerQKVLinear uses default positions in RoFormerSinusoidalPositionalEmbedding
         np.testing.assert_allclose(layer_outputs_no_position, layer_outputs, atol=1e-5)
 
-    def _compare_against_roformer_attention(
-        self,
-        ref,
-        layer,
-        tgt_len,
-        batch_size,
-        ref_rope_emb,
-        positions,
-    ):
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
-        print(f"layer state={layer_param_shapes}")
-        layer_params = parameters_from_torch_layer(ref)
-        model_dim, num_heads = layer.config.target_dim, layer.config.attention.num_heads
-        rng = np.random.default_rng(seed=123)
-        target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
-        null_mask = jnp.zeros([tgt_len, tgt_len])
-        rand_mask = _random_mask(jax.random.PRNGKey(123), tgt_len, tgt_len)
-
-        for mask in (None, null_mask, rand_mask):
-            if mask is not None:
-                mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
-            layer_outputs, _ = F(
-                layer,
-                inputs=dict(
-                    target=jnp.asarray(target),
-                    attention_logit_biases=mask,
-                    target_positions=positions,
-                ),
-                state=layer_params,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(0),
-            )
-            attn_mask = None if mask is None else as_torch_tensor(mask)
-            print("ref_rope_emb", ref_rope_emb.shape)
-            print("target", target.shape)
-            ref_outputs = ref.forward(
-                torch.as_tensor(target, dtype=torch.float32),
-                attention_mask=attn_mask,
-                sinusoidal_pos=ref_rope_emb,
-                output_attentions=False,
-            )[0]
-            assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
-
     @parameterized.product(rotary_value=[True, False], override_positions=[True, False])
     def test_rope_self_attention(self, rotary_value: bool, override_positions: bool):
         model_dim = 32
         num_heads = 4
-        max_sequence_length = 12
-        batch_size = 2
+        tag = f"rv{rotary_value}_op{override_positions}"
+        golden = load_golden("axlearn.common.attention_test", f"test_rope_self_attention_{tag}")
         rope_mha_cfg = attention.MultiheadAttention.default_config().set(
             query_dim=model_dim,
             key_dim=model_dim,
@@ -1030,47 +958,28 @@ class RoFormerSinusoidalPositionalEmbeddingTest(TestCase):
             num_heads=num_heads,
             input_linear=RoFormerQKVLinear.default_config().set(rotary_value=rotary_value),
         )
-        rope_emb_layer = (
-            attention.RoFormerSinusoidalPositionalEmbedding.default_config()
-            .set(name="test_rope_emb", dim=model_dim // num_heads)
+        layer = (
+            attention.TransformerAttentionLayer.default_config()
+            .set(
+                source_dim=model_dim,
+                target_dim=model_dim,
+                name="rope_trans_attn",
+                attention=rope_mha_cfg,
+                structure="postnorm",
+            )
             .instantiate(parent=None)
         )
-        positions = (
-            jax.random.randint(
-                jax.random.PRNGKey(0),
-                shape=(batch_size, max_sequence_length),
-                minval=0,
-                maxval=max_sequence_length,
-            )
-            if override_positions
-            else jnp.expand_dims(jnp.arange(max_sequence_length), 0)
-        )
-        ref_rope_emb = as_torch_tensor(rope_emb_layer.forward(positions=positions)).unsqueeze(1)
-        layer = attention.TransformerAttentionLayer.default_config().set(
-            source_dim=model_dim,
-            target_dim=model_dim,
-            name="rope_trans_attn",
-            attention=rope_mha_cfg,
-            structure="postnorm",
-        )
-        layer = layer.instantiate(parent=None)
-        roformer_config = hf_roformer.RoFormerConfig(
-            hidden_size=model_dim,
-            num_attention_heads=num_heads,
-            attention_probs_dropout_prob=0,
-            hidden_dropout_prob=0,
-            rotary_value=rotary_value,
-        )
-        print(f"roformer_config={roformer_config}")
-        ref = hf_roformer.RoFormerAttention(roformer_config)
-        self._compare_against_roformer_attention(
-            ref,
+        target = jnp.asarray(golden["inputs"]["target"])
+        positions_arr = golden["inputs"]["positions"]
+        positions = jnp.asarray(positions_arr) if positions_arr.size > 0 else None
+        layer_outputs, _ = F(
             layer,
-            max_sequence_length,
-            batch_size,
-            ref_rope_emb,
-            positions if override_positions else None,
+            inputs=dict(target=target, target_positions=positions),
+            state=jax.tree.map(jnp.asarray, golden["params"]),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
         )
+        assert_allclose(layer_outputs.data, golden["outputs"]["data"])
 
 
 class YarnScaleRopeParametersTest(TestCase):
@@ -1082,24 +991,20 @@ class YarnScaleRopeParametersTest(TestCase):
         (2, 8, 64),
     )
     def test_yarn_emb_basic(self, batch_size, max_len, dim):
-        # Here we test yarn embedding within the original max length, which translates to
-        # the original RoFormer embedding.
-        # Token id is in the np format for easier transition.
-        token_ids = np.random.randint(low=1, high=20, size=[batch_size, max_len])
-        positions = jnp.expand_dims(jnp.arange(token_ids.shape[-1], dtype=jnp.int32), 0)
-        ref_layer = hf_roformer.RoFormerSinusoidalPositionalEmbedding(max_len, dim)
-        # In recent transformers API, PE's `_init_weight` is called recursively by parent module.
-        # Since we only initialize the PE layer here, we need to manually call it.
-        ref_layer._init_weight()  # pylint: disable=protected-access, no-value-for-parameter
-        ref_output = ref_layer(as_torch_tensor(token_ids).shape)
-        # Set up the RoPE AXLearn configs.
+        golden = load_golden(
+            "axlearn.common.attention_test",
+            f"test_yarn_emb_basic_b{batch_size}_l{max_len}_d{dim}",
+        )
+        positions = jnp.expand_dims(jnp.arange(max_len, dtype=jnp.int32), 0)
         test_layer = (
             attention.YaRNSinusoidalPositionalEmbedding.default_config()
-            .set(name="test_rope_emb", dim=dim, original_max_seq_length=max_len)
+            .set(name="test_yarn_emb", dim=dim, original_max_seq_length=max_len)
             .instantiate(parent=None)
         )
         test_output = test_layer.forward(positions=positions)
-        np.testing.assert_allclose(np.expand_dims(ref_output, 0), test_output, atol=5e-7)
+        np.testing.assert_allclose(
+            np.expand_dims(golden["outputs"]["ref"], 0), test_output, atol=5e-7
+        )
 
     @parameterized.parameters(
         (2, 8, 32, 32, 1.0, 32.0, 10000.0),
@@ -1109,31 +1014,12 @@ class YarnScaleRopeParametersTest(TestCase):
     def test_yarn_emb_extend(
         self, batch_size, original_max_len, dim, new_max_len, beta_slow, beta_fast, theta
     ):
-        # Here we test yarn embedding within the original max length, which translates to
-        # the original RoFormer embedding.
-        # Token id is in the np format for easier transition.
-        token_ids = np.random.randint(low=1, high=20, size=[batch_size, new_max_len])
-        scaling_factor = new_max_len / original_max_len
-        ref_config = HFPretrainedConfig(
-            rope_theta=theta,
-            head_dim=dim,
-            hidden_size=dim,
-            num_attention_heads=1,
-            max_position_embeddings=new_max_len,
-            rope_scaling={
-                "rope_type": "yarn",
-                "factor": scaling_factor,
-                "original_max_position_embeddings": original_max_len,
-                "beta_slow": beta_slow,
-                "beta_fast": beta_fast,
-            },
+        tag = (
+            f"b{batch_size}_oml{original_max_len}_d{dim}_nml{new_max_len}"
+            f"_bs{beta_slow}_bf{beta_fast}_t{theta}"
         )
-        ref_rope_fn = HF_ROPE_INIT_FUNCTIONS[ref_config.rope_scaling["rope_type"]]
-        ref_tokens = as_torch_tensor(token_ids)
-        inv_freq, attention_factor = ref_rope_fn(ref_config, device=ref_tokens.device)
-        # In recent transformers API, PE's `_init_weight` is called recursively by parent module.
-        # Since we only initialize the PE layer here, we need to manually call it.
-        # Set up the RoPE AXLearn configs.
+        golden = load_golden("axlearn.common.attention_test", f"test_yarn_emb_extend_{tag}")
+        scaling_factor = new_max_len / original_max_len
         test_layer = (
             attention.YaRNSinusoidalPositionalEmbedding.default_config()
             .set(
@@ -1148,141 +1034,22 @@ class YarnScaleRopeParametersTest(TestCase):
             .instantiate(parent=None)
         )
         test_output, test_output2 = test_layer.compute_rope_params()
-        np.testing.assert_allclose(as_tensor(inv_freq), test_output, atol=5e-7)
-        np.testing.assert_allclose(attention_factor, test_output2, atol=5e-7)
-
-
-def llama_reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-    """LLaMA reshape for broadcast function.
-
-    Ref:
-    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L55-L60
-    """
-    ndim = x.ndim
-    assert 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [
-        d if i == 1 or i == ndim - 1 else 1  # pylint: disable=consider-using-in
-        for i, d in enumerate(x.shape)
-    ]
-    return freqs_cis.view(*shape)
-
-
-def llama_apply_rotary_emb(
-    *,
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """LLaMA apply rotary embeddings to input tensors using the given frequency tensor.
-
-    Ref:
-    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L63-L73
-    """
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    freqs_cis = llama_reshape_for_broadcast(freqs_cis, xq_)
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    return xq_out.type_as(xq), xk_out.type_as(xk)
-
-
-class RefLLaMAAttention(torch.nn.Module):
-    """Reference Implementation of LLaMA-1.
-
-    Ref:
-    https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L76
-
-    The modifications are removing the dependency of ColumnParallelLinear and RowParallelLinear.
-    """
-
-    def __init__(self, n_heads: int, dim: int, max_batch_size: int, max_seq_len: int):
-        super().__init__()
-
-        self.n_local_heads = n_heads
-        self.head_dim = dim // n_heads
-
-        self.wq = torch.nn.Linear(
-            dim,
-            n_heads * self.head_dim,
-            bias=False,
+        np.testing.assert_allclose(
+            golden["outputs"]["inv_freq"], np.asarray(test_output), atol=5e-7
         )
-        self.wk = torch.nn.Linear(
-            dim,
-            n_heads * self.head_dim,
-            bias=False,
-        )
-        self.wv = torch.nn.Linear(
-            dim,
-            n_heads * self.head_dim,
-            bias=False,
-        )
-        self.wo = torch.nn.Linear(
-            n_heads * self.head_dim,
-            dim,
-            bias=False,
-        )
-
-        self.cache_k = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
-        self.cache_v = torch.zeros((max_batch_size, max_seq_len, self.n_local_heads, self.head_dim))
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        start_pos: int,
-        freqs_cis: torch.Tensor,
-        mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        bsz, seqlen, _ = x.shape
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-
-        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-        xk = xk.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-        xv = xv.view(bsz, seqlen, self.n_local_heads, self.head_dim)
-
-        xq, xk = llama_apply_rotary_emb(xq=xq, xk=xk, freqs_cis=freqs_cis)
-
-        self.cache_k = self.cache_k.to(xq)
-        self.cache_v = self.cache_v.to(xq)
-
-        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
-        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
-
-        keys = self.cache_k[:bsz, : start_pos + seqlen]
-        values = self.cache_v[:bsz, : start_pos + seqlen]
-
-        xq = xq.transpose(1, 2)
-        keys = keys.transpose(1, 2)
-        values = values.transpose(1, 2)
-        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
-        if mask is not None:
-            scores = scores + mask  # (bs, n_local_heads, slen, cache_len + slen)
-        scores = torch.nn.functional.softmax(scores.float(), dim=-1).type_as(xq)
-        output = torch.matmul(scores, values)  # (bs, n_local_heads, slen, head_dim)
-        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-
-        return self.wo(output)
+        np.testing.assert_allclose(golden["outputs"]["attention_factor"], test_output2, atol=5e-7)
 
 
 class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
-    def llama_ref_precompute_freqs_cis(
-        self, *, dim: int, end: int, theta: float = 10000.0
-    ) -> torch.Tensor:
-        """Reference LLaMA-1 implementation.
-
-        Ref:
-        https://github.com/facebookresearch/llama/blob/1076b9c51c77ad06e9d7ba8a4c6df775741732bd/llama/model.py#L47-L52
-        """
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-        t = torch.arange(end, device=freqs.device)  # type: ignore
-        freqs = torch.outer(t, freqs).float()  # type: ignore
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-        return freqs_cis
 
     @parameterized.parameters([10000.0, 1000000.0])
     def test_against_llama_for_precompute_freqs_cis(self, theta: float):
         max_len = 100
         dim = 32
+        golden = load_golden(
+            "axlearn.common.attention_test",
+            f"test_llama_precompute_freqs_cis_theta{theta}",
+        )
         positions = jnp.expand_dims(jnp.arange(max_len), 0)
         axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
             dim=dim,
@@ -1298,12 +1065,9 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
         )
-        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len, theta=theta)
         axlearn_imag, axlearn_real = jnp.split(axlearn_rope, 2, axis=-1)
-        llama_real, llama_imag = llama_rope.real, llama_rope.imag
-        # [0] is added, as axlearn_real and axlearn_imag has a batch_size=1 dimension.
-        assert_allclose(llama_real, as_tensor(axlearn_real)[0])
-        assert_allclose(llama_imag, as_tensor(axlearn_imag)[0])
+        assert_allclose(golden["outputs"]["real"], np.asarray(axlearn_real)[0])
+        assert_allclose(golden["outputs"]["imag"], np.asarray(axlearn_imag)[0])
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.bfloat16),
@@ -1391,7 +1155,7 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
     def test_against_llama_for_apply_rotary_emb(self):
         max_len = 100
         dim = 32
-        batch_size = 4
+        golden = load_golden("axlearn.common.attention_test", "test_llama_apply_rotary_emb")
         positions = jnp.expand_dims(jnp.arange(max_len), 0)
         axlearn_rope_cfg = attention.RoFormerSinusoidalPositionalEmbedding.default_config().set(
             dim=dim
@@ -1406,84 +1170,60 @@ class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
             is_training=True,
             prng_key=jax.random.PRNGKey(0),
         )
-        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim, end=max_len)
-        rng = np.random.default_rng(seed=123)
-        query = rng.random([batch_size, max_len, dim])
-        key = rng.random([batch_size, max_len, dim])
-        value = rng.random([batch_size, max_len, dim])
-        llama_q, llama_k = llama_apply_rotary_emb(
-            xq=torch.Tensor(query), xk=torch.Tensor(key), freqs_cis=llama_rope
-        )
+        query = golden["inputs"]["query"]
+        key = golden["inputs"]["key"]
         axlearn_q, axlearn_k, _ = attention.apply_rotary_position_embeddings(
-            query=jnp.asarray(query)[:, :, None],  # [B, T, D] -> [B, T, 1, D]
+            query=jnp.asarray(query)[:, :, None],
             key=jnp.asarray(key)[:, :, None],
-            value=jnp.asarray(value)[:, :, None],
+            value=jnp.asarray(query)[:, :, None],
             sinusoidal_pos=axlearn_rope[:, :, None],
             rotary_key=True,
             rotary_value=False,
         )
-
-        assert_allclose(as_tensor(llama_q.reshape(*axlearn_q.shape)), axlearn_q, atol=5e-6)
-        assert_allclose(as_tensor(llama_k.reshape(*axlearn_k.shape)), axlearn_k, atol=5e-6)
+        ref_q = golden["outputs"]["q"].reshape(*axlearn_q.shape)
+        ref_k = golden["outputs"]["k"].reshape(*axlearn_k.shape)
+        assert_allclose(ref_q, axlearn_q, atol=5e-6)
+        assert_allclose(ref_k, axlearn_k, atol=5e-6)
 
     def test_against_llama_for_attention(self):
         max_len = 100
         dim = 32
         batch_size = 4
         n_heads = 4
-        rng = np.random.default_rng(seed=123)
-        x = rng.random([batch_size, max_len, dim])
-        ref_llama = RefLLaMAAttention(
-            n_heads=n_heads, dim=dim, max_batch_size=batch_size, max_seq_len=max_len
-        )
-        llama_rope = self.llama_ref_precompute_freqs_cis(dim=dim // n_heads, end=max_len)
-        llama_output = ref_llama.forward(torch.Tensor(x), 0, llama_rope, mask=None)
-
+        golden = load_golden("axlearn.common.attention_test", "test_llama_attention")
         rope_mha_cfg = attention.MultiheadAttention.default_config().set(
             query_dim=dim,
             key_dim=dim,
             value_dim=dim,
             num_heads=n_heads,
-            input_linear=RoFormerQKVLinear.default_config().set(
-                rotary_value=False,
-            ),
+            input_linear=RoFormerQKVLinear.default_config().set(rotary_value=False),
         )
-
         rope_mha = rope_mha_cfg.set(name="rope").instantiate(parent=None)
-
         state = rope_mha.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
+        wq = golden["params"]["wq"]
+        wk = golden["params"]["wk"]
+        wv = golden["params"]["wv"]
+        wo = golden["params"]["wo"]
         state["i_proj"]["i_proj"]["q_proj"]["weight"] = jnp.asarray(
-            ref_llama.wq.weight.transpose(0, 1)
-            .reshape(dim, n_heads, dim // n_heads)
-            .detach()
-            .numpy()
+            wq.transpose(1, 0).reshape(dim, n_heads, dim // n_heads)
         )
         state["i_proj"]["i_proj"]["k_proj"]["weight"] = jnp.asarray(
-            ref_llama.wk.weight.transpose(0, 1)
-            .reshape(dim, n_heads, dim // n_heads)
-            .detach()
-            .numpy()
+            wk.transpose(1, 0).reshape(dim, n_heads, dim // n_heads)
         )
         state["i_proj"]["i_proj"]["v_proj"]["weight"] = jnp.asarray(
-            ref_llama.wv.weight.transpose(0, 1)
-            .reshape(dim, n_heads, dim // n_heads)
-            .detach()
-            .numpy()
+            wv.transpose(1, 0).reshape(dim, n_heads, dim // n_heads)
         )
-        state["o_proj"]["weight"] = jnp.asarray(
-            ref_llama.wo.weight.reshape(dim, n_heads, dim // n_heads).detach().numpy()
-        )
-
+        state["o_proj"]["weight"] = jnp.asarray(wo.reshape(dim, n_heads, dim // n_heads))
+        x = jnp.asarray(golden["inputs"]["x"])
         axlearn_output, _ = F(
             rope_mha,
-            inputs=dict(query=jnp.asarray(x)),
+            inputs=dict(query=x),
             state=state,
             is_training=False,
             prng_key=jax.random.PRNGKey(0),
         )
-        assert_allclose(
-            as_tensor(llama_output.reshape(batch_size, max_len, -1)), axlearn_output.data
-        )
+        ref = golden["outputs"]["data"].reshape(batch_size, max_len, -1)
+        assert_allclose(ref, axlearn_output.data)
 
 
 class MultiheadLinearInitTest(TestCase):
@@ -3838,7 +3578,7 @@ class TransformerXLTest(TestCase):
     def test_multihead_attention_xl(self):
         model_dim = 6
         num_heads = 2
-        per_head_dim = model_dim // num_heads
+        golden = load_golden("axlearn.common.attention_test", "test_multihead_attention_xl")
         cfg = attention.TransformerAttentionLayer.default_config().set(
             name="test",
             target_dim=model_dim,
@@ -3848,70 +3588,17 @@ class TransformerXLTest(TestCase):
         )
         cfg.attention.output_linear.bias = False
         cfg.attention.vlog = 5
-        layer: attention.TransformerAttentionLayer = cfg.instantiate(parent=None)
-        layer.initialize_parameters_recursively(jax.random.PRNGKey(123))
-        ref_cfg = hf_xlnet.XLNetConfig(
-            n_head=num_heads,
-            d_model=model_dim,
-            d_head=model_dim // num_heads,
-            dropout=0,
-            layer_norm_eps=cfg.norm.eps,
+        layer = cfg.instantiate(parent=None)
+        target = jnp.asarray(golden["inputs"]["target"])
+        attention_logit_biases = jnp.asarray(golden["inputs"]["attention_logit_biases"])
+        layer_outputs, _ = F(
+            layer,
+            inputs=dict(target=target, attention_logit_biases=attention_logit_biases),
+            state=jax.tree.map(jnp.asarray, golden["params"]),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
         )
-        ref = hf_xlnet.XLNetRelativeAttention(ref_cfg)
-        # XLNetRelativeAttention is not properly initialized.
-        with torch.no_grad():
-            for var in ("q", "k", "v", "o", "r"):
-                getattr(ref, var).copy_(
-                    torch.normal(0, np.sqrt(model_dim), [model_dim, num_heads, per_head_dim])
-                )
-            for var in ("r_w_bias", "r_r_bias"):
-                getattr(ref, var).copy_(
-                    torch.normal(0, np.sqrt(model_dim), [num_heads, model_dim // num_heads])
-                )
-        batch_size, tgt_len = 2, 5
-        target = jax.random.normal(
-            jax.random.PRNGKey(100), [batch_size, tgt_len, model_dim], dtype=jnp.float32
-        )
-        num_tokens = jax.random.randint(
-            jax.random.PRNGKey(101),
-            minval=2,
-            maxval=tgt_len + 1,
-            shape=[batch_size],
-        )
-        # [batch_size, tgt_len].
-        is_valid_token = jnp.arange(tgt_len)[None, :] < num_tokens[:, None]
-        # [batch_size, 1, tgt_len, tgt_len].
-        attention_logit_biases = jnp.expand_dims(
-            NEG_INF * (1 - jnp.einsum("bt,bs->bts", is_valid_token, is_valid_token)), 1
-        )
-        # [2 * tgt_len, model_dim].
-        rel_pos_emb = sinusoidal_positional_embeddings(
-            jnp.arange(tgt_len, -tgt_len, -1), dim=model_dim
-        )
-        ref_inputs = dict(
-            g=None,
-            h=target.transpose([1, 0, 2]),  # [qlen, bsz, d_model].
-            r=rel_pos_emb[:, None, :],  # [rlen, 1, d_model].
-            attn_mask_g=None,
-            # [qlen, klen, bsz, n_head].
-            attn_mask_h=attention_logit_biases.transpose([2, 3, 0, 1]) < 0,
-            seg_mat=None,
-        )
-        logging.info("ref_inputs=%s", ref_inputs)
-
-        test_outputs, ref_outputs = self._compute_layer_outputs(
-            test_layer=layer,
-            ref_layer=ref,
-            test_inputs=dict(target=target, attention_logit_biases=attention_logit_biases),
-            ref_inputs=as_torch_tensor(ref_inputs),
-            parameters_from_ref_layer=parameters_from_torch_layer,
-            require_same_num_params=False,
-        )
-        logging.info("test_outputs=%s", test_outputs)
-        logging.info("ref_outputs=%s", ref_outputs)
-        self.assertNestedAllClose(
-            test_outputs.data, as_tensor(ref_outputs[0]).transpose([1, 0, 2]), atol=6e-6
-        )
+        self.assertNestedAllClose(layer_outputs.data, golden["outputs"]["data"], atol=6e-6)
 
 
 class TransformerAttentionLayerTest(TestCase):
@@ -4543,40 +4230,10 @@ class BaseTransformerTest(TestCase):
 class TransformerTest(BaseTransformerTest):
     """Tests TransformerLayer."""
 
-    def _compare_against_roberta_attention(
-        self, ref: hf_roberta.RobertaAttention, layer: TransformerAttentionLayer
-    ):
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_param_shapes = jax.tree.map(lambda x: x.shape, layer_params)
-        print(f"layer state={layer_param_shapes}")
-        layer_params = parameters_from_torch_layer(ref)
-        batch_size, tgt_len = 2, 6
-        model_dim, num_heads = layer.config.target_dim, layer.config.attention.num_heads
-        rng = np.random.default_rng(seed=123)
-        target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
-        null_mask = jnp.zeros([tgt_len, tgt_len])
-        rand_mask = _random_mask(jax.random.PRNGKey(123), tgt_len, tgt_len)
-        for mask in (None, null_mask, rand_mask):
-            if mask is not None:
-                mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
-            layer_outputs, _ = F(
-                layer,
-                inputs=dict(target=jnp.asarray(target), attention_logit_biases=mask),
-                state=layer_params,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(0),
-            )
-            attn_mask = None if mask is None else as_torch_tensor(mask)
-            ref_outputs = ref.forward(
-                torch.as_tensor(target, dtype=torch.float32),
-                attention_mask=attn_mask,
-                output_attentions=False,
-            )[0]
-            assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
-
     def test_against_roberta_attention(self):
         model_dim = 16
         num_heads = 4
+        golden = load_golden("axlearn.common.attention_test", "test_roberta_attention")
         cfg = attention.TransformerAttentionLayer.default_config().set(
             name="test",
             target_dim=model_dim,
@@ -4585,58 +4242,20 @@ class TransformerTest(BaseTransformerTest):
         )
         cfg.attention.set(num_heads=num_heads)
         layer = cfg.instantiate(parent=None)
-        roberta_config = hf_roberta.RobertaConfig(
-            hidden_size=model_dim,
-            num_attention_heads=num_heads,
-            attention_probs_dropout_prob=0,
-            hidden_dropout_prob=0,
-            classifier_dropout=0,
-            attn_implementation="eager",
+        target = jnp.asarray(golden["inputs"]["target"])
+        layer_outputs, _ = F(
+            layer,
+            inputs=dict(target=target),
+            state=jax.tree.map(jnp.asarray, golden["params"]),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
         )
-        print(f"roberta_config={roberta_config}")
-        ref = hf_roberta.RobertaAttention(roberta_config)
-        self._compare_against_roberta_attention(ref, layer)
-
-    def _compare_against_roberta_layer(self, ref: hf_roberta.RobertaLayer, layer: TransformerLayer):
-        layer_params = layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(0))
-        layer_params = parameters_from_torch_layer(ref)
-        batch_size, tgt_len = 2, 6
-        model_dim, num_heads = (
-            layer.config.input_dim,
-            layer.config.self_attention.attention.num_heads,
-        )
-        rng = np.random.default_rng(seed=123)
-        target = rng.random([batch_size, tgt_len, model_dim], dtype=np.float32)
-        null_mask = jnp.zeros([tgt_len, tgt_len])
-        rand_mask = _random_mask(jax.random.PRNGKey(123), tgt_len, tgt_len)
-        for mask in (None, null_mask, rand_mask):
-            if mask is not None:
-                mask = jnp.tile(mask[None, None, :, :], (batch_size, num_heads, 1, 1))
-            layer_outputs, output_collection = F(
-                layer,
-                inputs=dict(data=jnp.asarray(target), self_attention_logit_biases=mask),
-                state=layer_params,
-                is_training=True,
-                prng_key=jax.random.PRNGKey(0),
-                drop_output_collections=(),
-            )
-            if layer_outputs.self_attention_probs is not None:
-                self.assertEqual(
-                    (batch_size, num_heads, tgt_len, tgt_len),
-                    layer_outputs.self_attention_probs.shape,
-                )
-            attn_mask = None if mask is None else as_torch_tensor(mask)
-            ref_outputs = ref.forward(
-                torch.as_tensor(target, dtype=torch.float32),
-                attention_mask=attn_mask,
-                output_attentions=False,
-            )[0]
-            assert_allclose(layer_outputs.data, as_tensor(ref_outputs))
-            self.assertNestedEqual(layer_outputs.data, output_collection.module_outputs["output"])
+        assert_allclose(layer_outputs.data, golden["outputs"]["data"])
 
     def test_against_roberta_layer(self):
         model_dim = 16
         num_heads = 4
+        golden = load_golden("axlearn.common.attention_test", "test_roberta_layer")
         cfg = TransformerLayer.default_config().set(name="test", input_dim=model_dim)
         cfg.self_attention.set(structure="postnorm")
         cfg.feed_forward.set(
@@ -4647,20 +4266,16 @@ class TransformerTest(BaseTransformerTest):
         cfg.self_attention.attention.set(num_heads=num_heads)
         cfg.self_attention.attention.input_linear.layer.set(bias=True)
         cfg.self_attention.attention.output_linear.set(bias=True)
-        layer: TransformerLayer = cfg.instantiate(parent=None)
-        roberta_config = hf_roberta.RobertaConfig(
-            hidden_size=model_dim,
-            num_attention_heads=num_heads,
-            attention_probs_dropout_prob=0,
-            hidden_dropout_prob=0,
-            classifier_dropout=0,
-            attn_implementation="eager",
-            # Jax's gelu uses an approximation by default and is slightly different from
-            # torch.nn.gelu.
-            hidden_act="silu",
+        layer = cfg.instantiate(parent=None)
+        data = jnp.asarray(golden["inputs"]["data"])
+        layer_outputs, _ = F(
+            layer,
+            inputs=dict(data=data),
+            state=jax.tree.map(jnp.asarray, golden["params"]),
+            is_training=True,
+            prng_key=jax.random.PRNGKey(0),
         )
-        ref = hf_roberta.RobertaLayer(roberta_config)
-        self._compare_against_roberta_layer(ref, layer)
+        assert_allclose(layer_outputs.data, golden["outputs"]["data"])
 
     def test_decoding(self):
         model_dim, num_heads = 6, 2

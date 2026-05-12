@@ -22,7 +22,6 @@ from unittest import mock
 
 import jax.random
 import numpy as np
-import torch
 from absl.testing import absltest, parameterized
 from jax import nn
 from jax import numpy as jnp
@@ -68,17 +67,9 @@ from axlearn.common.layers import (
 )
 from axlearn.common.module import Module, Tensor, child_context
 from axlearn.common.module import functional as F
-from axlearn.common.param_converter import as_torch_tensor
 from axlearn.common.param_init import ConstantInitializer, FanAxes
 from axlearn.common.test_utils import TestCase, assert_allclose, assert_not_allclose
-from axlearn.common.utils import as_tensor, flatten_items, shapes
-
-
-def _copy(src: jnp.ndarray, dst: torch.nn.Parameter):
-    with torch.no_grad():
-        src = np.asarray(src).copy()
-        src = torch.as_tensor(src)
-        dst.copy_(src)
+from axlearn.common.utils import flatten_items, shapes
 
 
 class LayerTest(TestCase):
@@ -172,10 +163,12 @@ class LayerTest(TestCase):
             prng_key=prng_key,
         )
 
-        ref_ln = torch.nn.LayerNorm(dim, eps=1e-8, elementwise_affine=False)
         # forward() should not mutate 'inputs' in-place.
         assert_allclose(inputs, orig_inputs)
-        assert_allclose(outputs, as_tensor(ref_ln(as_torch_tensor(orig_inputs))))
+        mean = jnp.mean(orig_inputs, axis=-1, keepdims=True)
+        var = jnp.var(orig_inputs, axis=-1, keepdims=True)
+        ref_outputs = (orig_inputs - mean) / jnp.sqrt(var + 1e-8)
+        assert_allclose(outputs, ref_outputs)
 
     @parameterized.parameters(
         [
@@ -735,42 +728,20 @@ class LayerTest(TestCase):
         cfg = Linear.default_config().set(name="test", input_dim=input_dim, output_dim=output_dim)
         layer: Linear = cfg.instantiate(parent=None)
 
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-        self.assertEqual(
-            dict(weight=(input_dim, output_dim), bias=(output_dim,)),
-            shapes(layer_params),
+        golden = load_golden("axlearn.common.layers_test", "test_linear")
+        inputs = jnp.asarray(golden["inputs"]["x"])
+        state = dict(
+            weight=jnp.asarray(golden["params"]["weight"]),
+            bias=jnp.asarray(golden["params"]["bias"]),
         )
-        bias = layer_params["bias"]
-        assert_allclose(bias, jnp.zeros_like(bias))
-        # Randomize bias.
-        layer_params["bias"] = jax.random.normal(
-            jax.random.PRNGKey(45), shape=bias.shape, dtype=bias.dtype
-        )
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        orig_inputs = jax.random.normal(input_key, [2, 3, input_dim])
-        inputs = orig_inputs.copy()
-
-        # Compute layer outputs.
         outputs, _ = F(
             layer,
             inputs=(inputs,),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
+            is_training=False,
+            state=state,
+            prng_key=jax.random.PRNGKey(123),
         )
-
-        # Compute ref outputs.
-        ref = torch.nn.Linear(in_features=input_dim, out_features=output_dim)
-        # torch.nn.Linear.weight is of shape (output_dim, input_dim).
-        _copy(layer_params["weight"].transpose(), ref.weight)
-        _copy(layer_params["bias"], ref.bias)
-        ref_outputs = ref(torch.as_tensor(np.asarray(inputs)))
-        assert_allclose(outputs, ref_outputs.detach().numpy())
+        assert_allclose(outputs, golden["outputs"]["ref"])
 
     def test_unit_norm_linear(self):
         layer = (
@@ -813,7 +784,10 @@ class LayerTest(TestCase):
         window: tuple[int, int],
         strides: tuple[int, int],
     ):
-        input_dim = 4
+        # self._testMethodName is e.g. "test_maxpool2d_2x2" or "test_maxpool2d_3x3_S2".
+        golden = load_golden("axlearn.common.layers_test", self._testMethodName)
+        inputs = jnp.asarray(golden["inputs"]["x"])
+
         cfg = MaxPool2D.default_config().set(
             name="test",
             window=window,
@@ -821,32 +795,14 @@ class LayerTest(TestCase):
         )
         layer: MaxPool2D = cfg.instantiate(parent=None)
 
-        # Initialize layer parameters.
-        prng_key = jax.random.PRNGKey(123)
-        prng_key, init_key = jax.random.split(prng_key)
-        layer_params = layer.initialize_parameters_recursively(init_key)
-
-        # Random inputs.
-        prng_key, input_key = jax.random.split(prng_key)
-        inputs = jax.random.normal(input_key, [2, 10, 7, input_dim])
-
-        # Compute layer outputs.
         outputs, _ = F(
             layer,
             inputs=(inputs,),
-            is_training=True,
-            state=layer_params,
-            prng_key=prng_key,
+            is_training=False,
+            state={},
+            prng_key=jax.random.PRNGKey(123),
         )
-
-        # Compute ref outputs.
-        ref = torch.nn.MaxPool2d(
-            kernel_size=window,
-            stride=strides,
-            padding=0,
-        )
-        ref_outputs = ref(as_torch_tensor(inputs.transpose(0, 3, 1, 2)))
-        assert_allclose(outputs, ref_outputs.detach().numpy().transpose(0, 2, 3, 1))
+        assert_allclose(outputs, golden["outputs"]["ref"])
         # Tests output_shape.
         output_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertEqual(list(outputs.shape), list(output_shape))

@@ -30,9 +30,7 @@ import numpy as np
 import optax
 import pytest
 import tensorflow as tf
-import torch
 from absl.testing import absltest, parameterized
-from torch import nn
 
 from axlearn.common.ein_ops import repeat
 from axlearn.common.golden import load_golden
@@ -986,11 +984,6 @@ class LossFunctionsTest(parameterized.TestCase):
         tf_ref_loss = tf.keras.losses.KLDivergence()(targets, predictions)
         assert jnp.allclose(loss, tf_ref_loss.numpy())
 
-        # Test against Torch.
-        torch_ref_loss = nn.KLDivLoss(reduction="batchmean")(
-            torch.from_numpy(log_predictions), torch.from_numpy(targets)
-        )
-        assert jnp.allclose(loss, torch_ref_loss.numpy())
         # pylint: enable=protected-access
         # pytype: enable=module-attr
 

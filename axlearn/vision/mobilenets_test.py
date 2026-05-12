@@ -7,11 +7,8 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Tests mobile networks."""
-import re
-
 import jax.random
 import numpy as np
-import timm
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
 
@@ -30,6 +27,36 @@ from axlearn.vision.mobilenets import (
 
 class MobileNetsTest(parameterized.TestCase):
     """Tests MobileNets."""
+
+    _EXPECTED_PARAM_COUNTS = {
+        (ModelNames.MOBILENETV3, "small-minimal-100", None): 2056848,
+        (ModelNames.MOBILENETV3, "small-075", None): 2051552,
+        (ModelNames.MOBILENETV3, "small-100", None): 2554968,
+        (ModelNames.MOBILENETV3, "large-minimal-100", None): 3948688,
+        (ModelNames.MOBILENETV3, "large-075", None): 4012616,
+        (ModelNames.MOBILENETV3, "large-100", None): 5507432,
+        (ModelNames.EFFICIENTNET, "B0", "V1"): 5330564,
+        (ModelNames.EFFICIENTNET, "B1", "V1"): 7856232,
+        (ModelNames.EFFICIENTNET, "B2", "V1"): 9177562,
+        (ModelNames.EFFICIENTNET, "B3", "V1"): 12320528,
+        (ModelNames.EFFICIENTNET, "B4", "V1"): 19466816,
+        (ModelNames.EFFICIENTNET, "B5", "V1"): 30562520,
+        (ModelNames.EFFICIENTNET, "B6", "V1"): 43265136,
+        (ModelNames.EFFICIENTNET, "B7", "V1"): 66658680,
+        (ModelNames.EFFICIENTNET, "B8", "V1"): 87793174,
+        (ModelNames.EFFICIENTNET, "lite0", "V1"): 4694024,
+        (ModelNames.EFFICIENTNET, "lite1", "V1"): 5470344,
+        (ModelNames.EFFICIENTNET, "lite2", "V1"): 6150168,
+        (ModelNames.EFFICIENTNET, "lite3", "V1"): 8273768,
+        (ModelNames.EFFICIENTNET, "lite4", "V1"): 13118936,
+        (ModelNames.EFFICIENTNET, "B0", "V2"): 7200312,
+        (ModelNames.EFFICIENTNET, "B1", "V2"): 8212124,
+        (ModelNames.EFFICIENTNET, "B2", "V2"): 10178374,
+        (ModelNames.EFFICIENTNET, "B3", "V2"): 14467622,
+        (ModelNames.EFFICIENTNET, "S", "V2"): 21612360,
+        (ModelNames.EFFICIENTNET, "M", "V2"): 54431388,
+        (ModelNames.EFFICIENTNET, "L", "V2"): 119027848,
+    }
 
     # TODO(edaxberger): Unify this test with test_mobilenets in image_classification_test.py.
     @parameterized.parameters(
@@ -75,26 +102,7 @@ class MobileNetsTest(parameterized.TestCase):
         init_params_classifier = classification_model.initialize_parameters_recursively(
             jax.random.PRNGKey(1)
         )
-
-        timm_model_name = {
-            (ModelNames.EFFICIENTNET, "V1"): "efficientnet",
-            (ModelNames.EFFICIENTNET, "V2"): "efficientnetv2",
-            (ModelNames.MOBILENETV3, None): "mobilenetv3",
-        }[(model_name, version)]
-        timm_variant = variant.replace("-", "_").lower()
-
-        ref_model = timm.create_model(f"tf_{timm_model_name}_{timm_variant}", pretrained=False)
-        expected_param_count = 0
-        for name, param in ref_model.named_parameters(recurse=True):
-            if re.match(r".*bn\d.bias", name) is not None:
-                # moving_mean and moving_variance of BatchNorm are not considered parameters
-                # in the reference model. They are however counted in the jax model.
-                # Thus multiply number of bias parameters by 3 to account for this.
-                multiplier = 3
-            else:
-                multiplier = 1
-            expected_param_count += param.numel() * multiplier
-
+        expected_param_count = self._EXPECTED_PARAM_COUNTS[(model_name, variant, version)]
         self.assertEqual(count_model_params(init_params_classifier), expected_param_count)
 
     @parameterized.product(

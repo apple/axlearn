@@ -98,25 +98,6 @@ def random_inputs_for_t5(
     )
 
 
-def prepare_hf_t5_inputs(source_ids, target_ids, target_labels, pad_token_id=0):
-    """Prepare HF T5 inputs from JAX arrays. Used by param_converter_test."""
-    # pylint: disable=import-outside-toplevel
-    import torch
-
-    # pylint: enable=import-outside-toplevel
-    input_ids = torch.as_tensor(np.asarray(source_ids).copy(), dtype=torch.int32)
-    attention_mask = (input_ids != pad_token_id).int()
-    labels = torch.as_tensor(np.asarray(target_labels).copy(), dtype=torch.long)
-    decoder_input_ids = torch.as_tensor(np.asarray(target_ids).copy(), dtype=torch.int32)
-    labels[labels <= 0] = -100
-    return dict(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        decoder_input_ids=decoder_input_ids,
-        labels=labels,
-    )
-
-
 class RelativePositionTest(TestCase):
     def test_mtf_buckets(self):
         seq_len = 20

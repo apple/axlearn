@@ -341,8 +341,7 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_tensor(self):
-        # pylint: disable-next=import-outside-toplevel
-        import torch
+        torch = pytest.importorskip("torch")
 
         # From a number.
         self.assertTensorEqual(jnp.ones([], dtype=jnp.int32), as_tensor(1))
@@ -445,8 +444,7 @@ class TreeUtilsTest(TestCase):
         np.testing.assert_array_equal(a, b)
 
     def test_as_numpy_array(self):
-        # pylint: disable-next=import-outside-toplevel
-        import torch
+        torch = pytest.importorskip("torch")
 
         # From a number.
         self.assertNumpyArrayEqual(np.ones([], dtype=np.int64), as_numpy_array(1))
