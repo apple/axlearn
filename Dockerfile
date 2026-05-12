@@ -37,26 +37,6 @@ RUN pip install -qq --upgrade pip && \
     pip cache purge
 
 ################################################################################
-# CI container spec.                                                           #
-################################################################################
-
-# Leverage multi-stage build for unit tests.
-FROM base AS ci
-
-COPY pyproject.toml README.md /root/
-# TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN uv pip install -qq .[core,audio,orbax,dev,gcp,vertexai_tensorboard] && \
-    uv cache clean
-COPY . .
-
-# Defaults to an empty string, i.e. run pytest against all files.
-ARG PYTEST_FILES=''
-# Defaults to empty string, i.e. do NOT skip precommit
-ARG SKIP_PRECOMMIT=''
-# `exit 1` fails the build.
-RUN ./run_tests.sh $SKIP_PRECOMMIT "${PYTEST_FILES}"
-
-################################################################################
 # Bastion container spec.                                                      #
 ################################################################################
 
