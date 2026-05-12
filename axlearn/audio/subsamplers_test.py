@@ -21,8 +21,11 @@ class ConvSubSamplerTest(TestCase):
     """Tests ConvSubSampler."""
 
     @parameterized.parameters(
-        dict(activation=("nn.tanh", "nn.relu", "nn.silu"), expected=ValueError("pair of string")),
-        dict(activation=("nn.tanh",), expected=ValueError("pair of string")),
+        dict(
+            activation=("nn.tanh", "nn.relu", "nn.silu"),
+            expected=ValueError("list/tuple of string"),
+        ),
+        dict(activation=("nn.tanh",), expected=ValueError("list/tuple of string")),
         dict(activation="nn.tanh"),  # Single value is broadcasted.
         dict(activation=("nn.tanh", None)),  # Some of the values can be None.
         dict(activation=(None, None)),  # Some of the values can be None.
@@ -188,6 +191,86 @@ class ConvSubSamplerTest(TestCase):
         subsampled_shape = layer.output_shape(input_shape=inputs.shape)
         self.assertEqual(tuple(subsampled_shape), outputs["outputs"].shape)
         self.assertEqual(tuple(subsampled_shape)[:2], outputs["segment_ids"].shape)
+
+    @parameterized.parameters(
+        dict(
+            window=5,
+            stride=2,
+            conv_padding=(1, 1),
+            hidden_dim=[12, 16],
+            output_dim=8,
+            activation=("nn.tanh", None, None),
+        ),
+        dict(
+            window=3,
+            stride=2,
+            conv_padding=(1, 0),
+            hidden_dim=[12, 16, 32],
+            output_dim=8,
+            activation=("nn.tanh", None, None, None),
+        ),
+    )
+    def test_multi_layers(
+        self,
+        window: int,
+        stride: int,
+        conv_padding: tuple[int, int],
+        output_dim: int,
+        hidden_dim: Optional[int] = None,
+        activation: Optional[Union[Optional[str], tuple[Optional[str], Optional[str]]]] = None,
+    ):
+        """Tests that padding inputs do not affect outputs."""
+        batch_size, num_frames, num_filters, input_dim = 4, 10, 80, 1
+        cfg = ConvSubSampler.default_config().set(
+            input_dim=input_dim,
+            output_dim=output_dim,
+            hidden_dim=hidden_dim,
+            activation=activation,
+        )
+        cfg.conv.window = (window, window)
+        cfg.conv.strides = (stride, stride)
+        cfg.conv.padding = (conv_padding, conv_padding)
+        cfg.norm = BatchNorm.default_config()
+
+        # Initialize layer parameters.
+        layer = cfg.set(name="test").instantiate(parent=None)
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, data_key = jax.random.split(prng_key, num=3)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        hidden_dim = [cfg.input_dim] + hidden_dim + [cfg.output_dim]
+        self.assertEqual(
+            {
+                f"conv{i + 1}": dict(
+                    weight=(window, window, hidden_dim[i], hidden_dim[i + 1]),
+                    bias=(hidden_dim[i + 1],),
+                )
+                for i in range(len(hidden_dim) - 1)
+            }
+            | {
+                f"norm{i + 1}": dict(
+                    bias=(hidden_dim[i + 1],),
+                    moving_mean=(hidden_dim[i + 1],),
+                    moving_variance=(hidden_dim[i + 1],),
+                    scale=(hidden_dim[i + 1],),
+                )
+                for i in range(len(hidden_dim) - 1)
+            },
+            utils.shapes(layer_params),
+        )
+
+        inputs_shape = [batch_size, num_frames, num_filters, input_dim]
+        inputs = jax.random.normal(key=data_key, shape=inputs_shape) * 10.0
+        segment_ids = jnp.ones([batch_size, num_frames])
+        outputs, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
+            is_training=True,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        expected_shape = layer.output_shape(input_shape=tuple(inputs.shape))
+        self.assertEqual(tuple(expected_shape), outputs["outputs"].shape)
 
     @parameterized.parameters(jnp.float32, jnp.bfloat16)
     def test_activation_summaries(self, dtype):

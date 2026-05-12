@@ -72,6 +72,7 @@ class LConvLayer(BaseLayer):
         """Configures LConvLayer."""
 
         input_dim: Required[int] = REQUIRED  # Input feature dim.
+        num_input_dim_groups: Optional[int] = None  # Num input groups for conv.
         linear1_norm: LayerNorm.Config = LayerNorm.default_config()
         linear1_activation: tuple[str, str] = ("linear", "nn.sigmoid")
         linear1: Linear.Config = Linear.default_config().set(bias=True)
@@ -100,12 +101,14 @@ class LConvLayer(BaseLayer):
             )
 
         # Setup Depthwise Convolution (3 dims are same).
+        if cfg.num_input_dim_groups is None:
+            cfg.num_input_dim_groups = cfg.input_dim
         self._add_child(
             "conv",
             cfg.conv.set(
                 input_dim=cfg.input_dim,
                 output_dim=cfg.input_dim,
-                num_input_dim_groups=cfg.input_dim,
+                num_input_dim_groups=cfg.num_input_dim_groups,
             ),
         )
         self._add_child("conv_norm", cfg.conv_norm.set(input_dim=cfg.input_dim))

@@ -16,6 +16,7 @@ from axlearn.audio.encoder_asr import (
 )
 from axlearn.audio.test_utils import fake_audio
 from axlearn.common.attention import RepeatedTransformerLayer
+from axlearn.common.convolution import Conv1DWithPadding
 from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
 from axlearn.common.module import functional as F
 from axlearn.common.test_utils import TestCase
@@ -261,6 +262,121 @@ class SpeechContextNetworkTest(TestCase):
         )
         self.assertNestedAllClose(
             output_collections.summaries["activations/speech_context_norm"].weight, weights
+        )
+
+    @parameterized.parameters([True, False])
+    @pytest.mark.fp64
+    def test_conformer_without_pos_emb(self, is_training: bool):
+        """Tests SpeechContextNetwork with RepeatedConformerLayer when pos_emb is None."""
+        input_dim, output_dim, dropout_rate, num_layers = 32, 16, 0.2, 2
+
+        cfg = SpeechContextNetwork.default_config().set(
+            input_dim=input_dim, output_dim=output_dim, dtype=jnp.float64
+        )
+        cfg.dropout.rate = dropout_rate
+        cfg.context.num_layers = num_layers
+        cfg.context.layer.self_attention.attention.num_heads = 4
+        cfg.context.layer.lconv.dropout.rate = dropout_rate
+        cfg.pos_emb = None
+
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key, length_key = jax.random.split(prng_key, num=4)
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+
+        # pos_emb should be absent from parameters when disabled.
+        self.assertNotIn("pos_emb", layer.children)
+        self.assertNotIn("pos_emb", layer_params)
+
+        # Generate inputs.
+        batch_size, seq_len = 4, 10
+        inputs = jnp.tile(
+            jax.random.normal(input_key, [batch_size // 2, seq_len, input_dim]), [2, 1, 1]
+        )
+        lengths = jnp.tile(
+            jax.random.randint(length_key, shape=[batch_size // 2, 1], minval=0, maxval=seq_len),
+            [2, 1],
+        )
+        segment_ids = (jnp.arange(seq_len)[None, :] < lengths).astype(jnp.int32)
+        padding_data = jax.random.normal(jax.random.PRNGKey(135), inputs.shape)
+        inputs = jnp.where(segment_ids[..., None] == 0, padding_data, inputs)
+
+        output_batch, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
+            is_training=is_training,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        outputs, output_segment_ids = output_batch["outputs"], output_batch["segment_ids"]
+        self.assertSequenceEqual(outputs.shape, (batch_size, seq_len, output_dim))
+        self.assertTrue(jnp.all(output_segment_ids == segment_ids))
+
+        # If is_training, outputs differ due to dropout; otherwise identical despite padding noise.
+        self.assertEqual(not is_training, bool(jnp.allclose(outputs[:2], outputs[2:])))
+
+    @parameterized.parameters([2, 3, 4, 5])
+    def test_post_downsample(self, strides) -> None:
+        """Test the code branch with RepeatedTransformerLayer as context layer.
+
+        Args:
+            is_training: Whether the is_training code path is tested.
+        """
+        is_training = True
+        input_dim, output_dim, dropout_rate, num_layers = 32, 16, 0.2, 2
+        num_heads = 8
+        hidden_dim = 4 * input_dim
+
+        cfg = SpeechContextNetwork.default_config().set(
+            input_dim=input_dim, output_dim=output_dim, dtype=jnp.float64
+        )
+        cfg.dropout.rate = dropout_rate
+        cfg.context = RepeatedTransformerLayer.default_config().set(num_layers=num_layers)
+        attention = cfg.context.layer.self_attention.attention
+        attention.num_heads = num_heads
+        attention = enable_sliding_window_attention(attention, sliding_window_size=3)
+        cfg.context.layer.self_attention.attention = attention
+        # Dropout in transformer
+        cfg.context.layer.self_attention.dropout.rate = dropout_rate
+        cfg.context.layer.feed_forward.set(
+            hidden_dim=hidden_dim,
+        )
+
+        # Initialize layer parameters.
+        prng_key = jax.random.PRNGKey(123)
+        prng_key, init_key, input_key, length_key = jax.random.split(prng_key, num=4)
+
+        # Generate inputs.
+        batch_size, seq_len = 4, 10
+        inputs = jnp.tile(
+            jax.random.normal(input_key, [batch_size // 2, seq_len, input_dim]), [2, 1, 1]
+        )
+        lengths = jnp.tile(
+            jax.random.randint(length_key, shape=[batch_size // 2, 1], minval=0, maxval=seq_len),
+            [2, 1],
+        )
+        segment_ids = (jnp.arange(seq_len)[None, :] < lengths).astype(jnp.int32)
+        padding_data = jax.random.normal(jax.random.PRNGKey(135), inputs.shape)
+        inputs = jnp.where(segment_ids[..., None] == 0, padding_data, inputs)
+
+        cfg.post_downsample = Conv1DWithPadding.default_config().set(
+            window=strides, strides=strides, padding=((strides - 1, 0),)
+        )
+        layer = cfg.set(name="test").instantiate(parent=None)
+        layer_params = layer.initialize_parameters_recursively(init_key)
+        output_batch, _ = F(
+            layer,
+            inputs=dict(inputs=inputs, segment_ids=segment_ids),
+            is_training=is_training,
+            prng_key=prng_key,
+            state=layer_params,
+        )
+        outputs, output_segment_ids = output_batch["outputs"], output_batch["segment_ids"]
+        self.assertSequenceEqual(
+            outputs.shape, (batch_size, (seq_len + strides - 1) // strides, output_dim)
+        )
+        self.assertSequenceEqual(
+            output_segment_ids.shape, (batch_size, (seq_len + strides - 1) // strides)
         )
 
 

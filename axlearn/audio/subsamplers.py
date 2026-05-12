@@ -33,7 +33,7 @@ class ConvSubSampler(BaseLayer):
         # Output channel dim.
         output_dim: Required[int] = REQUIRED
         # Hidden dim of the conv layers. If None, defaults to output_dim.
-        hidden_dim: Optional[int] = None
+        hidden_dim: int | list[int] | None = None
         # Configures both of the convolutions.
         conv: Conv2DWith1DPadding.Config = Conv2DWith1DPadding.default_config().set(
             window=(3, 3), strides=(2, 2), padding=((1, 1), (1, 1))
@@ -46,27 +46,41 @@ class ConvSubSampler(BaseLayer):
         # activation to only one convolution).
         activation: Optional[Union[Optional[str], tuple[Optional[str], Optional[str]]]] = None
 
+    @classmethod
+    def get_hidden_dim_list(cls, cfg: Config) -> list[int]:
+        if isinstance(cfg.hidden_dim, int):
+            hidden_dim = [cfg.hidden_dim]
+        elif cfg.hidden_dim is None:
+            hidden_dim = [cfg.output_dim]
+        else:
+            hidden_dim = list(cfg.hidden_dim)
+        return hidden_dim
+
     def __init__(self, cfg: Config, *, parent: Optional[Module]):
         super().__init__(cfg, parent=parent)
         cfg = self.config
 
         activation = cfg.activation
+        hidden_dim = [cfg.input_dim] + self.get_hidden_dim_list(cfg) + [cfg.output_dim]
+        self.num_layers = len(hidden_dim) - 1
         if not isinstance(activation, (list, tuple)):
-            activation = (activation, activation)
-        if len(activation) != 2 or not all(x is None or isinstance(x, str) for x in activation):
+            activation = [activation] * self.num_layers
+        if len(activation) != self.num_layers or not all(
+            x is None or isinstance(x, str) for x in activation
+        ):
             raise ValueError(
-                "Expected cfg.activation to be None, a string, or pair of string | None, "
+                "Expected cfg.activation to be None, a string, or list/tuple of string | None, "
                 f"got: {cfg.activation}"
             )
         self._activation = [None if act is None else get_activation_fn(act) for act in activation]
 
-        hidden_dim = cfg.hidden_dim or cfg.output_dim
-        self._add_child("conv1", cfg.conv.set(input_dim=cfg.input_dim, output_dim=hidden_dim))
-        self._add_child("conv2", cfg.conv.set(input_dim=hidden_dim, output_dim=cfg.output_dim))
-
+        for i in range(1, len(hidden_dim)):
+            self._add_child(
+                f"conv{i}", cfg.conv.set(input_dim=hidden_dim[i - 1], output_dim=hidden_dim[i])
+            )
         if cfg.norm:
-            self._add_child("norm1", cfg.norm.set(input_dim=hidden_dim))
-            self._add_child("norm2", cfg.norm.set(input_dim=cfg.output_dim))
+            for i in range(1, len(hidden_dim)):
+                self._add_child(f"norm{i}", cfg.norm.set(input_dim=hidden_dim[i]))
 
     def output_shape(self, *, input_shape: Sequence[Optional[int]]):
         """Computes the output shape after subsampling.
@@ -90,9 +104,9 @@ class ConvSubSampler(BaseLayer):
                 f"input_shape[-1] = {input_shape[-1]} does not match "
                 f"cfg.input_dim = {cfg.input_dim}."
             )
-        conv1_shape = self.conv1.output_shape(input_shape=input_shape)
-        conv2_shape = self.conv2.output_shape(input_shape=conv1_shape)
-        return conv2_shape
+        for i in range(1, self.num_layers + 1):
+            input_shape = self._children[f"conv{i}"].output_shape(input_shape=input_shape)
+        return input_shape
 
     def forward(self, inputs: Tensor, *, segment_ids: Tensor) -> dict[str, Tensor]:
         """Subsamples the speech.
@@ -112,20 +126,14 @@ class ConvSubSampler(BaseLayer):
         self._add_activation_summary(
             name="subsampler_inputs", activations=inputs, activation_paddings=paddings
         )
-        x, paddings = self.conv1(inputs, paddings=paddings)
-        segment_ids = self.conv1.conv_paddings(segment_ids)
-        if cfg.norm:
-            x = self.norm1(x, segment_ids=segment_ids)
-        if self._activation[0]:
-            x = self._activation[0](x)
-
-        x, paddings = self.conv2(x, paddings=paddings)
-        segment_ids = self.conv2.conv_paddings(segment_ids)
-        if cfg.norm:
-            x = self.norm2(x, segment_ids=segment_ids)
-        if self._activation[1]:
-            x = self._activation[1](x)
-
+        x = inputs
+        for i in range(1, self.num_layers + 1):
+            x, paddings = self._children[f"conv{i}"](x, paddings=paddings)
+            segment_ids = self._children[f"conv{i}"].conv_paddings(segment_ids)
+            if cfg.norm:
+                x = self._children[f"norm{i}"](x, segment_ids=segment_ids)
+            if self._activation[i - 1]:
+                x = self._activation[i - 1](x)
         self._add_activation_summary(
             name="subsampler_outputs", activations=x, activation_paddings=paddings
         )
