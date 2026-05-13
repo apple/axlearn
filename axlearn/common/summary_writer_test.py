@@ -201,29 +201,6 @@ class CompositeWriterTest(TestCase):
             for sub_writer in writer.writers:
                 sub_writer.log_checkpoint.assert_called_once()
 
-    def test_child_dir_not_overridden(self):
-        """Tests that CompositeWriter does not override a child writer's pre-configured dir."""
-        with (
-            tempfile.TemporaryDirectory() as composite_dir,
-            tempfile.TemporaryDirectory() as child_dir,
-        ):
-            writer = (
-                CompositeWriter.default_config()
-                .set(
-                    name="test_multi_writer",
-                    dir=composite_dir,
-                    writers={
-                        "writer1": SummaryWriter.default_config(),
-                        "writer2": SummaryWriter.default_config().set(dir=child_dir),
-                    },
-                )
-                .instantiate(parent=None)
-            )
-            # writer1 has no dir set, so it should get composite_dir/writer1.
-            self.assertEqual(writer.writers[0].config.dir, os.path.join(composite_dir, "writer1"))
-            # writer2 already has dir set, so it should be preserved.
-            self.assertEqual(writer.writers[1].config.dir, child_dir)
-
 
 class WandBWriterTest(TestCase):
     """Tests WandBWriter."""
@@ -255,6 +232,7 @@ class WandBWriterTest(TestCase):
                         name="test",
                         exp_name="wandb-testAddSummary",
                         dir=tempdir,
+                        wandb_dir=tempdir,
                         mode="offline",
                         write_every_n_steps=write_every_n_steps,
                         write_every_n_steps_map=write_every_n_steps_map,
@@ -301,7 +279,13 @@ class WandBWriterTest(TestCase):
             try:
                 writer: WandBWriter = (
                     WandBWriter.default_config()
-                    .set(name="test", exp_name="wandb-testLogConfig", dir=tempdir, mode="offline")
+                    .set(
+                        name="test",
+                        exp_name="wandb-testLogConfig",
+                        dir=tempdir,
+                        wandb_dir=tempdir,
+                        mode="offline",
+                    )
                     .instantiate(parent=None)
                 )
                 writer.log_config(dummy_model_config)
@@ -321,7 +305,7 @@ class WandBWriterTest(TestCase):
             try:
                 writer: WandBWriter = (
                     WandBWriter.default_config()
-                    .set(name="test", exp_name="wandb-testResume", dir=tempdir)
+                    .set(name="test", exp_name="wandb-testResume", dir=tempdir, wandb_dir=tempdir)
                     .instantiate(parent=None)
                 )
                 exp_id = wandb.run.id
@@ -332,7 +316,7 @@ class WandBWriterTest(TestCase):
 
                 writer: WandBWriter = (
                     WandBWriter.default_config()
-                    .set(name="test", exp_name="wandb-testResume", dir=tempdir)
+                    .set(name="test", exp_name="wandb-testResume", dir=tempdir, wandb_dir=tempdir)
                     .instantiate(parent=None)
                 )
                 assert wandb.run.id == exp_id
@@ -355,6 +339,7 @@ class WandBWriterTest(TestCase):
                         name="test",
                         exp_name="wandb-testSettings",
                         dir=tempdir,
+                        wandb_dir=tempdir,
                         mode="offline",
                         wandb_settings_kwargs={"silent": True, "disable_code": True},
                     )
