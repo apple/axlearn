@@ -1,0 +1,15 @@
+load("@rules_python//python/uv:lock.bzl", "lock")
+
+package(default_visibility = ["//visibility:public"])
+
+lock(
+    name = "requirements",
+    srcs = ["requirements.in"],
+    out = "requirements_lock.txt",
+    generate_hashes = False,
+    args = [
+        "--torch-backend=cpu",
+        "--find-links=https://storage.googleapis.com/axlearn-wheels/wheels.html",
+        "--find-links=https://storage.googleapis.com/jax-releases/libtpu_releases.html",
+    ],
+)

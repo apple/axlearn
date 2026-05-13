@@ -3,7 +3,6 @@
 """Pallas kernels for Linear Attention (LA) specialized for sliding window attention.
 
 A specialized feature map from the following reference is used to support sliding window attention.
-The chunking strategy is similar to the one used in ssm_kernels/ssd_kernels.py.
 
 Notations:
     nb: number of chunks
