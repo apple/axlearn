@@ -270,7 +270,11 @@ class ASREncoder(BaseLayer):
         return dict()
 
     def extend_step(
-        self, *, cached_states: Nested[Tensor], input_data: Nested[Tensor]
+        self,
+        *,
+        cached_states: Nested[Tensor],
+        input_data: Nested[Tensor],
+        is_prefill: bool = False,
     ) -> tuple[Nested[Tensor], Nested[Tensor]]:
         """Computes encoder outputs for the given input batch.
 
@@ -280,10 +284,12 @@ class ASREncoder(BaseLayer):
             cached_states: Unused cached states (always empty dict).
             input_data: A dict with `x` [BT] and `paddings` [BT] field. `T` must be multiple of
                 time stride.
+            is_prefill: Unused. Accepted for API compatibility with causal encoders.
 
         Returns:
             A tuple of (cached_states, outputs).
         """
+        del is_prefill
         segment_ids = safe_not(input_data["paddings"]).astype(jnp.int32)
         fwd_outputs = self.forward(inputs=input_data["x"], segment_ids=segment_ids)
         outputs = dict(x=fwd_outputs["outputs"], paddings=fwd_outputs["segment_ids"] == 0)
