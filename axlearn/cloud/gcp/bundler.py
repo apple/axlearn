@@ -135,6 +135,9 @@ class CloudBuildBundler(BaseDockerBundler):
                 `wait_until_finished()` to wait for bundling to complete.
             private_worker_pool: If provided, should be the identifier of a private worker pool.
                 See: https://cloud.google.com/build/docs/private-pools/private-pools-overview
+            timeout_seconds: CloudBuild timeout in seconds. Applied both server-side (via the
+                `timeout:` field in cloudbuild.yaml) and to the client-side polling in
+                `wait_until_finished()`.
         """
 
         # GCP project.
@@ -142,6 +145,7 @@ class CloudBuildBundler(BaseDockerBundler):
         # Build image asynchronously.
         is_async: bool = True
         private_worker_pool: Optional[str] = None
+        timeout_seconds: int = 3600
 
     @classmethod
     def from_spec(
@@ -152,6 +156,7 @@ class CloudBuildBundler(BaseDockerBundler):
         cfg.repo = cfg.repo or gcp_settings("docker_repo", required=False, fv=fv)
         cfg.dockerfile = cfg.dockerfile or gcp_settings("default_dockerfile", required=False, fv=fv)
         cfg.is_async = to_bool(cfg.is_async)
+        cfg.timeout_seconds = int(cfg.timeout_seconds)
         return cfg
 
     # pylint: disable-next=no-self-use,unused-argument
@@ -237,7 +242,7 @@ class CloudBuildBundler(BaseDockerBundler):
         cloudbuild_yaml = f"""
 steps:
 {chr(10).join(build_steps)}
-timeout: 3600s
+timeout: {cfg.timeout_seconds}s
 images:
 {chr(10).join([f"- {img}" for img in images_list])}
 tags: [{image_tag}]
@@ -266,7 +271,7 @@ options:
         print(subprocess.run(cmd, check=True))
         return image
 
-    def wait_until_finished(self, name: str, wait_timeout=3600):
+    def wait_until_finished(self, name: str, wait_timeout: Optional[int] = None):
         """Waits for async CloudBuild to finish by polling for status.
 
         Is a no-op if `cfg.is_async` is False.
@@ -280,6 +285,7 @@ options:
             ValueError: If the async build fails.
         """
         cfg: CloudBuildBundler.Config = self.config
+        wait_timeout = wait_timeout or cfg.timeout_seconds
         if cfg.is_async:
             if tag := parse_tag_from_image_id(name):
                 wait_for_cloud_build(

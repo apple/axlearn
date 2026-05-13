@@ -163,6 +163,7 @@ class UtilsTest(TestWithTemporaryCWD):
             if cfg.private_worker_pool:
                 spec_flags.append(f"--bundler_spec=private_worker_pool={cfg.private_worker_pool}")
             spec_flags.append(f"--bundler_spec=is_async={cfg.is_async}")
+            spec_flags.append(f"--bundler_spec=timeout_seconds={cfg.timeout_seconds}")
 
         all_flags = [f"--bundler_type={bundler_klass.TYPE}"] + spec_flags
         actual = _docker_bundler_to_flags(cfg, fv=fv)
