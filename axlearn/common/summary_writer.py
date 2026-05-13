@@ -105,8 +105,7 @@ class BaseWriter(Module):
 class CompositeWriter(BaseWriter):
     """A collection of named writers.
 
-    This class automatically sets the `dir` field of child writers that do not already have one.
-    Child writers with a pre-configured `dir` will retain their own value.
+    This class automatically sets the `dir` field of any child writers.
     """
 
     @config_class
@@ -119,9 +118,9 @@ class CompositeWriter(BaseWriter):
 
         self._writers: list[BaseWriter] = []
         for writer_name, writer_cfg in cfg.writers.items():
-            if not writer_cfg.dir:
-                writer_cfg = writer_cfg.set(dir=os.path.join(cfg.dir, writer_name))
-            self._writers.append(self._add_child(writer_name, writer_cfg))
+            self._writers.append(
+                self._add_child(writer_name, writer_cfg.set(dir=os.path.join(cfg.dir, writer_name)))
+            )
 
     @property
     def writers(self) -> list[BaseWriter]:
@@ -404,6 +403,13 @@ class WandBWriter(BaseWriter):
         # If True, convert any 2D Tensors to wandb.Image before passing to wandb.log.
         convert_2d_to_image: bool = False
 
+        # Local filesystem directory for wandb SDK scratch files (logs, media, etc.).
+        # wandb.init(dir=...) requires a local path; it cannot use remote paths (GCS, S3).
+        # This is separate from `dir`, which may be a remote path used for persisting
+        # the wandb_id file across preemptions.
+        # If None, wandb defaults to writing in "./wandb".
+        wandb_dir: Optional[str] = None
+
         # Dictionary kwargs to pass to wandb.Settings().
         # If None, no additional custom settings will be configured.
         wandb_settings_kwargs: Optional[dict[str, Any]] = None
@@ -418,7 +424,7 @@ class WandBWriter(BaseWriter):
         cfg.notes = os.environ.get("WANDB_NOTES", "")
         tags = os.environ.get("WANDB_TAGS")
         cfg.tags = tags.split(",") if tags else None
-        cfg.dir = os.environ.get("WANDB_DIR")
+        cfg.wandb_dir = os.environ.get("WANDB_DIR")
         cfg.mode = os.environ.get("WANDB_MODE", "online")
         return cfg
 
@@ -466,7 +472,7 @@ class WandBWriter(BaseWriter):
             mode=cfg.mode,
             sync_tensorboard=False,  # do not synchronize with tensorboard.
             resume=cfg.resume,
-            dir=cfg.dir,
+            dir=cfg.wandb_dir,
             group=cfg.group,
             settings=wandb_settings,
         )
