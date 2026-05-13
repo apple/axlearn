@@ -71,11 +71,6 @@ dev = [
     "scipy>=1.12.0",
     "sentencepiece != 0.1.92",
     "tqdm",  # test-only
-    "timm==1.0.17",  # DiT Dependency test-only
-    "torch==2.7.1",  # test-only
-    "torchvision==0.22.1",  # test-only
-    "safetensors<=0.5.3",  # TODO: Remove once torch dependency is >=2.3.0
-    "transformers==4.51.3",  # test-only
     "wandb",  # test-only
     "wrapt",  # implied by tensorflow-datasets, but also used in config tests.
 ]

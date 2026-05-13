@@ -1,0 +1,5 @@
+build --enable_bzlmod
+
+# To prevent running out of inodes
+build --nobuild_runfile_links
+

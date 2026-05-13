@@ -1,0 +1,30 @@
+# Bazel is used to compile and test however releaser is done following PEP 517.
+# Version 0.0.0 is the standard placeholder version used in the Bazel community.
+module(name = "axlearn", version = "0.0.0")
+
+
+bazel_dep(name = "rules_python", version = "1.8.1")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.12")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "axlearn_pip",
+    python_version = "3.12",
+    requirements_lock = "//:requirements_lock.txt",
+    extra_pip_args = [
+        "--index-url=https://download.pytorch.org/whl/cpu",
+        "--extra-index-url=https://pypi.org/simple/",
+        "--find-links=https://storage.googleapis.com/axlearn-wheels/wheels.html",
+        "--find-links=https://storage.googleapis.com/jax-releases/libtpu_releases.html",
+    ],
+)
+pip.parse(hub_name = "parity_pip", python_version = "3.12", requirements_lock = "//axlearn/experiments/testdata/generate_parity_goldens:requirements_parity_lock.txt")
+use_repo(pip, "axlearn_pip", "parity_pip")
+
+# uv toolchain (used by //:requirements lock rule)
+uv = use_extension("@rules_python//python/uv:uv.bzl", "uv")
+uv.configure(version = "0.9.25")
+use_repo(uv, "uv")
+register_toolchains("@uv//:all")

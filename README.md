@@ -4,10 +4,10 @@
 
 | Stage | Status |
 | ----- | ------ |
-| CPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-cpu-main-build)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-cpu-main-build/pipelines) |
-| GPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-gpu-main-publish)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-gpu-main-publish/pipelines) |
-| TPU Unit Tests | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-tpu-main-publish)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-tpu-main-publish/pipelines) |
-| PyPI Release | [![Rio](https://REDACTED/badges/rio?p=ai-axlearn&s=ai-axlearn-release-pypi-main-publish)](https://REDACTED/projects/ai-axlearn/pipeline-specs/ai-axlearn-release-pypi-main-publish/pipelines) |
+| CPU Unit Tests | [![Rio](https://badges.pie.apple.com/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-cpu-main-build)](https://rio.apple.com/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-cpu-main-build/pipelines) |
+| GPU Unit Tests | [![Rio](https://badges.pie.apple.com/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-gpu-main-publish)](https://rio.apple.com/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-gpu-main-publish/pipelines) |
+| TPU Unit Tests | [![Rio](https://badges.pie.apple.com/badges/rio?p=ai-axlearn&s=ai-axlearn-unit-tests-tpu-main-publish)](https://rio.apple.com/projects/ai-axlearn/pipeline-specs/ai-axlearn-unit-tests-tpu-main-publish/pipelines) |
+| PyPI Release | [![Rio](https://badges.pie.apple.com/badges/rio?p=ai-axlearn&s=ai-axlearn-release-pypi-main-publish)](https://rio.apple.com/projects/ai-axlearn/pipeline-specs/ai-axlearn-release-pypi-main-publish/pipelines) |
 
 **This library is under active development and the API is subject to change.**
 

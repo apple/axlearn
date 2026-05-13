@@ -12,7 +12,6 @@ import seqio
 import tensorflow as tf
 from absl.testing import absltest, parameterized
 from seqio import SentencePieceVocabulary
-from transformers.models.bert.tokenization_bert import BasicTokenizer
 
 from axlearn.common import input_text, input_tf_data, test_utils
 from axlearn.common.config import InstantiableConfig, config_for_class, config_for_function
@@ -442,11 +441,6 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
         # BasicTokenizer acts as a pre-tokenization step:
         # https://github.com/google-research/bert/blob/eedf5716ce1268e56f0a50264a88cafad334ac61/tokenization.py#L172
         # https://github.com/huggingface/transformers/blob/31ec2cb2badfbdd4c1ac9c6c9b8a74e974984206/src/transformers/models/bert/tokenization_bert.py#L223
-        hf_tokenizer = BasicTokenizer(
-            do_lower_case=not cased,
-            tokenize_chinese_chars=True,
-            strip_accents=False,
-        )
         texts = [
             # Huggingface BasicTokenizer test queries:
             # https://github.com/huggingface/transformers/blob/31ec2cb2badfbdd4c1ac9c6c9b8a74e974984206/tests/bert/test_tokenization_bert.py#L121-L184
@@ -457,10 +451,30 @@ class TestTextNormalize(parameterized.TestCase, tf.test.TestCase):
             # pylint: disable-next=line-too-long
             f"from tf_text: 株式会社 ＫＡＤＯＫＡＷＡ this  {chr(0xFFFD)}\0  is, å tést! SenTence `🤗` \t\t\f,  ",
         ]
+        # Precomputed once by running:
+        #   BasicTokenizer(do_lower_case=not cased, tokenize_chinese_chars=True,
+        #                  strip_accents=False).tokenize(text)
+        # for each text and joining with " ". Frozen so the test no longer
+        # imports `transformers` at runtime (axlearn #2469).
+        if cased:
+            expected = [
+                "ah \u535a \u63a8 zz",
+                "HeLLo ! how Are yoU ?",
+                "from bert : John Johanson ' s house",
+                # pylint: disable-next=line-too-long
+                "from tf _ text : 株 式 会 社 ＫＡＤＯＫＡＷＡ this is , å tést ! SenTence ` 🤗 ` ,",
+            ]
+        else:
+            expected = [
+                "ah \u535a \u63a8 zz",
+                "hello ! how are you ?",
+                "from bert : john johanson ' s house",
+                # pylint: disable-next=line-too-long
+                "from tf _ text : 株 式 会 社 ｋａｄｏｋａｗａ this is , å tést ! sentence ` 🤗 ` ,",
+            ]
         ds_fn = make_ds_fn(is_training=False, texts=texts, repeat=1)
         mapper_fn = input_text.bert_normalize(cased=cased)
 
-        expected = [" ".join(hf_tokenizer.tokenize(text)) for text in texts]
         actual = [extract_text(x) for x in mapper_fn(ds_fn())]
 
         self.assertEqual(expected, actual)

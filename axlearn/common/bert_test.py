@@ -34,56 +34,6 @@ _MODULE_NAME = "axlearn.common.bert_test"
 # config_converter, to avoid the many variants of this code.
 
 
-def dummy_inputs_for_mlm(
-    batch_size: int,
-    max_seq_len: int,
-    vocab_size: int,
-    type_vocab_size: int,
-    mask_input_id: int,
-    padding_input_id: int,
-    ignored_target_id: int,
-):
-    """Builds dummy inputs for AXLearn and Hugging Face BERT."""
-    # pylint: disable=import-outside-toplevel
-    from axlearn.common.param_converter import as_torch_tensor
-    from axlearn.common.test_utils import dummy_padding_mask
-
-    # pylint: enable=import-outside-toplevel
-
-    rng = np.random.default_rng(seed=123)
-    attention_mask = 1 - dummy_padding_mask(batch_size=batch_size, max_seq_len=max_seq_len)
-
-    targets_mask = rng.integers(0, 2, size=(batch_size, max_seq_len)).astype(bool)
-    targets_mask = np.logical_and(targets_mask, np.logical_not(attention_mask))
-
-    targets = np.full((batch_size, max_seq_len), ignored_target_id)
-    targets_vals = rng.integers(1, vocab_size, size=targets.shape)
-    np.putmask(targets, targets_mask, targets_vals)
-
-    input_ids = rng.choice(
-        list(range(1, mask_input_id)) + list(range(mask_input_id + 1, vocab_size)),
-        size=(batch_size, max_seq_len),
-    )
-    input_type_ids = rng.integers(0, type_vocab_size, size=(batch_size, max_seq_len))
-    np.putmask(input_ids, targets_mask, mask_input_id)
-
-    np.putmask(input_ids, attention_mask, padding_input_id)
-    hf_attention_mask = np.logical_not(attention_mask)
-
-    test_inputs = dict(
-        input_ids=input_ids,
-        token_type_ids=input_type_ids,
-        target_labels=targets,
-    )
-    ref_inputs = dict(
-        input_ids=as_torch_tensor(input_ids),
-        attention_mask=as_torch_tensor(hf_attention_mask),
-        token_type_ids=as_torch_tensor(input_type_ids),
-        labels=as_torch_tensor(targets),
-    )
-    return test_inputs, ref_inputs
-
-
 def bert_encoder_config_from_hf(
     hf_cfg,
     vocab_size: Optional[int] = None,
