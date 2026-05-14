@@ -385,6 +385,13 @@ def _build_base_pathways_worker_container(
     # So workers doesn't need to execute the command by themselves.
     worker_container.pop("command")
 
+    # Health probes (startupProbe, readinessProbe, livenessProbe) are only meaningful on
+    # pathways head nodes (the JAX client containers), where a service exposes an HTTP health
+    # endpoint. Pathways worker containers run the TPU server binary and have no such endpoint,
+    # so strip any probes that may have been embedded by the base container builder.
+    for probe_key in ("startupProbe", "readinessProbe", "livenessProbe"):
+        worker_container.pop(probe_key, None)
+
     return worker_container
 
 
