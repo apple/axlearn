@@ -203,7 +203,7 @@ class CommandGroup:
         """
         if undefok:
             self.namespace.undefok = _add_to_csv(
-                getattr(self.namespace, "undefok", ""), name.lstrip("--")
+                getattr(self.namespace, "undefok", ""), name.removeprefix("--")
             )
         if default is not None:
             self.namespace.defaults[name] = default
