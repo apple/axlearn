@@ -858,6 +858,11 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
             self.assertIn(_PATHWAYS_PROXY_CONTAINER_NAME, container_names)
             self.assertIn(_PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME, container_names)
 
+            head_container = next(
+                c for c in pod_spec["containers"] if c["name"] == "test-telemetry"
+            )
+            head_env_names = [e["name"] for e in head_container["env"]]
+
             if enable_telemetry:
                 # When enable_telemetry=True, otel-sidecar should be present
                 self.assertIn("otel-sidecar", container_names)
@@ -881,9 +886,14 @@ class PathwaysLeaderWorkerTemplateTest(TestCase):
                 # Check otel-sidecar ConfigMap volume is present
                 volume_names = [v["name"] for v in pod_spec["volumes"]]
                 self.assertIn(pathways_utils.OTEL_COLLECTOR_CONFIG_NAME, volume_names)
+
+                # Head container must advertise that telemetry collection is enabled.
+                head_env = {e["name"]: e["value"] for e in head_container["env"]}
+                self.assertEqual(head_env.get("TELEMETRY_COLLECTION_ENABLED"), "true")
             else:
                 # When enable_telemetry=False, otel-sidecar should NOT be present
                 self.assertNotIn("otel-sidecar", container_names)
+                self.assertNotIn("TELEMETRY_COLLECTION_ENABLED", head_env_names)
 
     @parameterized.parameters(
         (False, False),  # Neither flag enabled
