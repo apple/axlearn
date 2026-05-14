@@ -2180,7 +2180,6 @@ py_library(
         "@axlearn_pip//absl_py",
         "@axlearn_pip//jax",
         "@axlearn_pip//numpy",
-        "@parity_pip//torch",
     ],
 )
 
@@ -2899,7 +2898,6 @@ py_test(
         "@axlearn_pip//absl_py",
         "@axlearn_pip//jax",
         "@axlearn_pip//numpy",
-        "@parity_pip//torch",
     ],
 )
 
@@ -3248,7 +3246,6 @@ py_test(
         "@axlearn_pip//pytest",
         "@axlearn_pip//seqio",
         "@axlearn_pip//tensorflow",
-        "@parity_pip//transformers",
     ],
 )
 
@@ -3357,7 +3354,6 @@ py_test(
         "@axlearn_pip//numpy",
         "@axlearn_pip//pytest",
         "@axlearn_pip//tensorflow",
-        "@parity_pip//torch",
     ],
 )
 

@@ -14,14 +14,12 @@ pip.parse(
     python_version = "3.12",
     requirements_lock = "//:requirements_lock.txt",
     extra_pip_args = [
-        "--index-url=https://download.pytorch.org/whl/cpu",
         "--extra-index-url=https://pypi.org/simple/",
         "--find-links=https://storage.googleapis.com/axlearn-wheels/wheels.html",
         "--find-links=https://storage.googleapis.com/jax-releases/libtpu_releases.html",
     ],
 )
-pip.parse(hub_name = "parity_pip", python_version = "3.12", requirements_lock = "//axlearn/experiments/testdata/generate_parity_goldens:requirements_parity_lock.txt")
-use_repo(pip, "axlearn_pip", "parity_pip")
+use_repo(pip, "axlearn_pip")
 
 # uv toolchain (used by //:requirements lock rule)
 uv = use_extension("@rules_python//python/uv:uv.bzl", "uv")
