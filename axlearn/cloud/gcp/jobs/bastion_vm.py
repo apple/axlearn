@@ -33,9 +33,8 @@ from axlearn.cloud.common.quota import QUOTA_CONFIG_DIR, QUOTA_CONFIG_FILE, get_
 from axlearn.cloud.common.utils import configure_logging, parse_action
 from axlearn.cloud.gcp.config import default_env_id, default_project, default_zone, gcp_settings
 from axlearn.cloud.gcp.utils import catch_auth, common_flags
-from axlearn.common.file_system import exists, glob
+from axlearn.common.file_system import exists, glob, readfile
 from axlearn.common.file_system import open as fs_open
-from axlearn.common.file_system import readfile
 
 FLAGS = flags.FLAGS
 
@@ -153,7 +152,7 @@ def main(argv: Sequence[str], *, flag_values: flags.FlagValues = FLAGS):
             except FileNotFoundError as e:
                 limits = get_resource_limits(quota_file(flag_values))
                 raise FileNotFoundError(
-                    f"Available projects are {list(limits.project_resources.keys()) + ["none"]}"
+                    f"Available projects are {list(limits.project_resources.keys()) + ['none']}"
                 ) from e
         print(history)
     else:

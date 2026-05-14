@@ -202,8 +202,10 @@ def named_trainer_configs() -> dict[str, ax.config.TrainerConfigFn]:
 if __name__ == "__main__":
     flags.DEFINE_string("trainer_dir", None, "Output directory.", required=True)
     app.run(
-        lambda _: config_logistic_regression_trainer()
-        .set(dir=flags.FLAGS.trainer_dir)
-        .instantiate(parent=None)
-        .run(jax.random.PRNGKey(42))
+        lambda _: (
+            config_logistic_regression_trainer()
+            .set(dir=flags.FLAGS.trainer_dir)
+            .instantiate(parent=None)
+            .run(jax.random.PRNGKey(42))
+        )
     )

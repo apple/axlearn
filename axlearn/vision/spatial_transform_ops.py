@@ -12,6 +12,7 @@ This module contains differentiable resampling ops in JAX.
 Reference TensorFlow implementation:
 https://github.com/tensorflow/models/blob/master/research/object_detection/utils/spatial_transform_ops.py
 """
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -170,9 +171,9 @@ def get_box_levels(
     Returns:
         An int32 tensor of shape [batch_size, num_boxes] containing feature level indices.
     """
-    assert (
-        min_level <= unit_scale_level <= max_level
-    ), f"`unit_scale_index` must be in [{min_level}, {max_level}]. Found {unit_scale_level}."
+    assert min_level <= unit_scale_level <= max_level, (
+        f"`unit_scale_index` must be in [{min_level}, {max_level}]. Found {unit_scale_level}."
+    )
     box_height_width = jnp.maximum(boxes[:, :, 2:4] - boxes[:, :, 0:2], 0)
     areas_sqrt = jnp.sqrt(jnp.prod(box_height_width, axis=2))
     log_of_scaled_area = jnp.where(

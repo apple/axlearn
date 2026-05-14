@@ -10,6 +10,7 @@
 # https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/blob/main/tpu_info/tpu_info/metrics_test.py
 
 """Test for tpu_client."""
+
 # pytype: disable=pyi-error
 import contextlib
 import functools
@@ -81,9 +82,7 @@ class FakeTpuGrpcService(tpu_metrics_grpc.RuntimeMetricServiceServicer):
         """Create Gauge from float."""
         return tpu_metrics.Gauge(as_double=val)
 
-    def GetRuntimeMetric(
-        self, request: tpu_metrics.MetricRequest, context
-    ):  # pylint: disable=unused-argument
+    def GetRuntimeMetric(self, request: tpu_metrics.MetricRequest, context):  # pylint: disable=unused-argument
         """Get the metric from the fake libtpu server."""
         metric_name = tpu_client.MetricName(request.metric_name)
         resp = self._responses[metric_name]
@@ -103,9 +102,7 @@ class FakeTpuGrpcService(tpu_metrics_grpc.RuntimeMetricServiceServicer):
             )
         )
 
-    def ListSupportedMetrics(
-        self, request: tpu_metrics.ListSupportedMetricsRequest, context
-    ):  # pylint: disable=unused-argument
+    def ListSupportedMetrics(self, request: tpu_metrics.ListSupportedMetricsRequest, context):  # pylint: disable=unused-argument
         """List the supported metrics from the fake libtpu server."""
         # The test supported metrics are based on V5P libtpu.
         supported_metrics = [

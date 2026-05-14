@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests for gradient_monitor.py"""
+
 from functools import partial
 from unittest.mock import patch
 
@@ -25,9 +26,8 @@ from axlearn.common.gradient_monitor import (
 )
 from axlearn.common.kv_cache.base_kv_cache import KVState
 from axlearn.common.learner import ForwardOutputs, Learner
-from axlearn.common.module import child_context
+from axlearn.common.module import child_context, new_output_collection
 from axlearn.common.module import functional as F
-from axlearn.common.module import new_output_collection
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.test_utils import TestCase
 
@@ -331,13 +331,13 @@ class GradientMonitorTest(TestCase):
             # Check stats correctly updated.
             grad_stats_summary = summaries["gradient_monitor"]["top_norms"]
             grad_stats_param = model_params["gradient_monitor"]["stats"]
-            assert (
-                float(grad_stats_param[0]) == mock_grad_stats[iteration]
-            ), "Monitoring layer param should be updated to gradient_stats of current batch."
+            assert float(grad_stats_param[0]) == mock_grad_stats[iteration], (
+                "Monitoring layer param should be updated to gradient_stats of current batch."
+            )
             if iteration > 0:
-                assert (
-                    float(grad_stats_summary[0]) == mock_grad_stats[iteration - 1]
-                ), "Previous batch gradient_stats should be written to summaries."
+                assert float(grad_stats_summary[0]) == mock_grad_stats[iteration - 1], (
+                    "Previous batch gradient_stats should be written to summaries."
+                )
 
     def _assert_pure_states_all_close(self, base_states, monitored_states):
         # Verify initial model params are the same (excluding gradient_monitor path)

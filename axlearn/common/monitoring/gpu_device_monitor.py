@@ -44,9 +44,9 @@ class GPUMonitorClient(DeviceMonitorClient):
 
 def create_gpu_monitor() -> DeviceMonitorClient.Config:
     device_platform: str = jax.local_devices()[0].platform
-    assert (
-        device_platform == "gpu"
-    ), f"device_platform {device_platform} not matching device_monitor gpu."
+    assert device_platform == "gpu", (
+        f"device_platform {device_platform} not matching device_monitor gpu."
+    )
 
     monitor_client = GPUMonitorClient.default_config().set(
         platform=device_platform,

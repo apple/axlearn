@@ -22,6 +22,7 @@ Implementation adapted from:
 https://github.com/rwightman/efficientnet-jax/
 https://github.com/huggingface/pytorch-image-models/blob/main/timm/models/efficientnet.py
 """
+
 import enum
 import math
 from typing import Optional

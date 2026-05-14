@@ -91,9 +91,9 @@ class TextEmbeddingStreamEncoder(StreamEncoder):
         self._add_child("text_encoder", cfg.text_encoder.set(output_dim=hidden_dim))
 
         if hidden_dim != cfg.output_dim:
-            assert (
-                cfg.output_proj is not None
-            ), "output_proj can't be None when hidden_dim != output_dim."
+            assert cfg.output_proj is not None, (
+                "output_proj can't be None when hidden_dim != output_dim."
+            )
 
         if cfg.output_proj is not None:
             self._add_child(
@@ -180,20 +180,20 @@ def flatten_and_concat_embeddings(
                 max_right_negative_inputs = 0 when there is no right_negative_embeddings.
     """
     embedding_dim = left_positive_embeddings.shape[-1]
-    assert (
-        left_positive_embeddings.shape[1] == 1
-    ), "Expecting one positive embedding per example from left encoder."
+    assert left_positive_embeddings.shape[1] == 1, (
+        "Expecting one positive embedding per example from left encoder."
+    )
     # Shape: [num_left_inputs, dim].
     flattened_left_embeddings = left_positive_embeddings.reshape(-1, embedding_dim)
-    assert (
-        right_positive_embeddings.shape[-1] == embedding_dim
-    ), "right_positive_embeddings has a different dim than that of left_embeddings!"
+    assert right_positive_embeddings.shape[-1] == embedding_dim, (
+        "right_positive_embeddings has a different dim than that of left_embeddings!"
+    )
     # Shape: [num_left_inputs * max_right_positive_inputs, dim].
     flattened_right_positive_embeddings = right_positive_embeddings.reshape(-1, embedding_dim)
     if right_negative_embeddings is not None:
-        assert (
-            right_negative_embeddings.shape[-1] == embedding_dim
-        ), "right_negative_embeddings has a different dim than that of left_embeddings!"
+        assert right_negative_embeddings.shape[-1] == embedding_dim, (
+            "right_negative_embeddings has a different dim than that of left_embeddings!"
+        )
         # Shape: [num_left_inputs * max_right_negative_inputs, dim].
         flattened_right_negative_embeddings = right_negative_embeddings.reshape(-1, embedding_dim)
         # Shape: [num_left_inputs * (max_right_positive_inputs + max_right_negative_inputs), dim].
@@ -255,12 +255,12 @@ def flatten_and_concat_embeddings_from_input_batch(
     right_positive_embeddings = right_encoder_emb[POSITIVE_EMBEDDINGS]
     right_positive_paddings = right_encoder_emb[POSITIVE_PADDINGS]
     if assert_one_positive_from_right_encoder:
-        assert (
-            right_positive_embeddings.shape[1] == 1
-        ), "Expecting one positive embedding per example from right encoder."
-        assert (
-            right_positive_paddings.shape[1] == 1
-        ), "Expecting one positive embedding per example from right encoder."
+        assert right_positive_embeddings.shape[1] == 1, (
+            "Expecting one positive embedding per example from right encoder."
+        )
+        assert right_positive_paddings.shape[1] == 1, (
+            "Expecting one positive embedding per example from right encoder."
+        )
 
     return flatten_and_concat_embeddings(
         left_positive_embeddings=left_encoder_emb[POSITIVE_EMBEDDINGS],
@@ -385,9 +385,9 @@ class RankingPairwiseLossLayer(FusionNetwork):
         cfg = self.config
 
         left_embeddings = input_batch[cfg.left_encoder_name][POSITIVE_EMBEDDINGS]
-        assert (
-            left_embeddings.shape[1] == 1
-        ), "Expecting one positive embedding per example from left encoder."
+        assert left_embeddings.shape[1] == 1, (
+            "Expecting one positive embedding per example from left encoder."
+        )
 
         right_embeddings = input_batch[cfg.right_encoder_name][PAIRWISE_LOSS_EMBEDDINGS]
         right_paddings = input_batch[cfg.right_encoder_name][PAIRWISE_LOSS_PADDINGS]

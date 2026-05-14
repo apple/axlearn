@@ -108,7 +108,7 @@ class StragglerMonitor:
             )
         else:
             label = STRAGGLER_POTENTIAL
-            detail = f"modified z-score: {modified_z:.1f}, " f"sensitivity: {self.sensitivity:.1f}"
+            detail = f"modified z-score: {modified_z:.1f}, sensitivity: {self.sensitivity:.1f}"
 
         logging.warning(
             "FT Monitor: %s - replica %d worker %d (%s)\n"
@@ -276,16 +276,14 @@ class StatusMonitor:
     def is_global_manager(self) -> bool:
         """Check if this is a global manager."""
         return (
-            hasattr(self.manager, "_identity")
-            and self.manager._identity.is_global_manager  # pylint: disable=protected-access
+            hasattr(self.manager, "_identity") and self.manager._identity.is_global_manager  # pylint: disable=protected-access
         )
 
     @property
     def is_replica_manager(self) -> bool:
         """Check if this is a replica manager."""
         return (
-            hasattr(self.manager, "_identity")
-            and self.manager._identity.is_replica_manager  # pylint: disable=protected-access
+            hasattr(self.manager, "_identity") and self.manager._identity.is_replica_manager  # pylint: disable=protected-access
         )
 
     def parse_step_from_log(self, log_line: str) -> Optional[int]:

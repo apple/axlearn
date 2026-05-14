@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests for coco_utils.py."""
+
 from typing import Any, Union
 
 import numpy as np

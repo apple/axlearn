@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Sampling Ops."""
+
 from dataclasses import dataclass
 
 import jax

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests RCNN layers."""
+
 import jax.random
 import numpy as np
 from absl.testing import absltest, parameterized

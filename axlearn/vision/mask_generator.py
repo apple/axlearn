@@ -10,6 +10,7 @@
 
 Code reference: https://github.com/microsoft/unilm/blob/master/beit2/masking_generator.py
 """
+
 import math
 import random
 from typing import Optional

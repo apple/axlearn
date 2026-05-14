@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Utils for image and annotation visualizations."""
+
 import numpy as np
 
 from axlearn.common.utils import NestedTensor, Tensor

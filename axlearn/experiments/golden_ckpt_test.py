@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """A unittest for checkpoint backwards-compatibility."""
+
 # pylint: disable=no-self-use
 import dataclasses
 import os.path

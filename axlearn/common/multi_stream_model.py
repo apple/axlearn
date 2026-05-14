@@ -28,6 +28,7 @@ The losses dictionary can be:
 Each encoder/fusion_network consumes items from input_batch and updates the input_batch
     with the new output.
 """
+
 from collections import defaultdict
 from typing import Optional
 

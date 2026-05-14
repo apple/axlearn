@@ -10,6 +10,7 @@
 
 Adapted from: https://github.com/google-research/t5x/blob/main/t5x/decoding_test.py
 """
+
 # pylint: disable=no-self-use,too-many-lines,protected-access
 import logging
 import os
@@ -1349,11 +1350,31 @@ class DecodeTest(parameterized.TestCase):
                 [
                     ["▁", "Contains", "▁sub", "s", "e", "que", "nce", "▁one", "<pad>"],
                     ["▁sub", "s", "e", "que", "nce", "▁two", "<pad>", "<pad>", "<pad>"],
-                    ["▁neither", "</s>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>"],
+                    [
+                        "▁neither",
+                        "</s>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                    ],
                 ],
                 [
                     ["▁sub", "s", "e", "que", "nce", "▁one", "<pad>", "<pad>", "<pad>"],
-                    ["▁neither", "</s>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>"],
+                    [
+                        "▁neither",
+                        "</s>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                    ],
                     ["▁", "Contains", "▁sub", "s", "e", "que", "nce", "▁two", "<pad>"],
                 ],
             ],
@@ -1370,14 +1391,86 @@ class DecodeTest(parameterized.TestCase):
             # fmt: off
             expected=[
                 [
-                    ["▁hello", "▁", "Contains", "▁sub", "s", "e", "que", "nce", "▁one", "<pad>", "<pad>"],
-                    ["▁hello", "▁sub", "s", "e", "que", "nce", "▁two", "<pad>", "<pad>", "<pad>", "<pad>"],
-                    ["▁hello", "▁neither", "</s>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>"],
+                    [
+                        "▁hello",
+                        "▁",
+                        "Contains",
+                        "▁sub",
+                        "s",
+                        "e",
+                        "que",
+                        "nce",
+                        "▁one",
+                        "<pad>",
+                        "<pad>",
+                    ],
+                    [
+                        "▁hello",
+                        "▁sub",
+                        "s",
+                        "e",
+                        "que",
+                        "nce",
+                        "▁two",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                    ],
+                    [
+                        "▁hello",
+                        "▁neither",
+                        "</s>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                    ],
                 ],
                 [
-                    ["▁hello", "▁again", "▁sub", "s", "e", "que", "nce", "▁one", "<pad>", "<pad>", "<pad>"],
-                    ["▁hello", "▁again", "▁neither", "</s>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>", "<pad>"],
-                    ["▁hello", "▁again", "▁", "Contains", "▁sub", "s", "e", "que", "nce", "▁two", "<pad>"],
+                    [
+                        "▁hello",
+                        "▁again",
+                        "▁sub",
+                        "s",
+                        "e",
+                        "que",
+                        "nce",
+                        "▁one",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                    ],
+                    [
+                        "▁hello",
+                        "▁again",
+                        "▁neither",
+                        "</s>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                        "<pad>",
+                    ],
+                    [
+                        "▁hello",
+                        "▁again",
+                        "▁",
+                        "Contains",
+                        "▁sub",
+                        "s",
+                        "e",
+                        "que",
+                        "nce",
+                        "▁two",
+                        "<pad>",
+                    ],
                 ],
             ],
             # fmt: on
@@ -1448,7 +1541,8 @@ class DecodeTest(parameterized.TestCase):
         max_decode_length = int(faked_tokens.shape[-1]) - max_prompt_length - 1
 
         def tokens_to_scores(
-            token_indices: Tensor, state_cache: NestedTensor  # pylint: disable=unused-argument
+            token_indices: Tensor,
+            state_cache: NestedTensor,  # pylint: disable=unused-argument
         ) -> tuple[Tensor, NestedTensor]:
             # [batch_size * num_decodes, 1].
             cur_iter = state_cache["cur_iter"]

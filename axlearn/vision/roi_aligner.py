@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """ROI Align layer."""
+
 import jax
 
 from axlearn.common.base_layer import BaseLayer

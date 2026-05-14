@@ -5,6 +5,7 @@
 FlaxLayer allows users to use flax.linen modules in an AXLearn module hierarchy.
 See the FeedForward layer in adapter_flax_test.py for an example.
 """
+
 from collections.abc import Sequence
 from typing import Any, Callable, Optional, Union
 

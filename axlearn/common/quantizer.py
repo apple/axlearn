@@ -26,6 +26,7 @@ https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/p
 https://github.com/google/praxis/blob/179774fb688aa8fe048307d2184c9f2b338e935f/praxis/layers/quantizer_objectives.py
 https://github.com/facebookresearch/fairseq/blob/d871f6169f8185837d1c11fb28da56abfd83841c/fairseq/modules/gumbel_vector_quantizer.py
 """
+
 from enum import Enum, unique
 from typing import NamedTuple, Optional
 

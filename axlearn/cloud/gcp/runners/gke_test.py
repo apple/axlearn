@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests GKERunnerJob."""
+
 import contextlib
 import dataclasses
 import json

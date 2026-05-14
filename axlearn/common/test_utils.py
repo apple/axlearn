@@ -37,9 +37,14 @@ from axlearn.common.config import (
     config_for_function,
 )
 from axlearn.common.learner import Learner
-from axlearn.common.module import InvocationContext, Module, current_context
+from axlearn.common.module import (
+    InvocationContext,
+    Module,
+    current_context,
+    new_output_collection,
+    set_current_context,
+)
 from axlearn.common.module import functional as F
-from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import opt_param_values
 from axlearn.common.param_init import FanAxes, Initializer, Shape
@@ -907,7 +912,7 @@ def initialize_parameters_with_prebuilt(
     logging.info("prebuilt params: %s", shapes(prebuilt))
     logging.info("initialized params: %s", shapes(initialized))
     return jax.tree.map(
-        lambda prebuilt, initialized: (prebuilt if isinstance(prebuilt, Tensor) else initialized),
+        lambda prebuilt, initialized: prebuilt if isinstance(prebuilt, Tensor) else initialized,
         prebuilt,
         initialized,
     )

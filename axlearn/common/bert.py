@@ -23,6 +23,7 @@
 
 https://arxiv.org/abs/1810.04805
 """
+
 from typing import Optional
 
 import jax.numpy as jnp

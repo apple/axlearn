@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Text encoder module."""
+
 from typing import Optional
 
 from axlearn.common.base_layer import BaseLayer

@@ -20,6 +20,7 @@ quantized dot_general operations.
 This class should not be directly used. Adopters should inherent from
 DenseGeneralBaseLayer instead.
 """
+
 import functools
 from enum import Enum
 from typing import Optional, Union
@@ -162,8 +163,7 @@ class QuantizedDotGeneral(BaseQuantizedEinsum):
             self.rhs_act_dot_general: DotGeneral = rhs_activation_aqt_config()
             if cfg.fp8_amax_history_length is not None:
                 raise ValueError(
-                    "fp8_amax_history_length should not be specified when using "
-                    "Int8 quantization."
+                    "fp8_amax_history_length should not be specified when using Int8 quantization."
                 )
         elif cfg.quantization_type == DotGeneralQuantizationType.FP_8:
             # TODO(jiarui): Is there a way to identify if we are running on H100?

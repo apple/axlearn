@@ -506,7 +506,7 @@ class TrainerTest(test_utils.TestCase):
         cfg.max_step = 12
         cfg.vlog = 2
         # Set XSC policy.
-        cfg.xsc_check_policy = lambda step: (step in [7, 8])
+        cfg.xsc_check_policy = lambda step: step in [7, 8]
         cfg.cache_compiled_train_step = enable_python_cache
 
         # Test training run.

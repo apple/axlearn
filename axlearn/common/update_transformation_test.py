@@ -1,5 +1,6 @@
 # Copyright © 2024 Apple Inc.
 """Tests for update_transformation.py."""
+
 import dataclasses
 from collections.abc import Sequence
 from typing import Any, NamedTuple
@@ -15,9 +16,8 @@ from axlearn.common import optimizers, schedule, test_utils
 from axlearn.common.base_layer import FactorizationSpec, ParameterSpec
 from axlearn.common.config import config_for_function, maybe_instantiate
 from axlearn.common.learner import Learner
-from axlearn.common.module import InvocationContext
+from axlearn.common.module import InvocationContext, new_output_collection, set_current_context
 from axlearn.common.module import functional as F
-from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import (
     NestedOptParam,
     OptParam,

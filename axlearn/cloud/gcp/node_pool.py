@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Node pool utilities"""
+
 import enum
 import hashlib
 import time
@@ -385,7 +386,7 @@ def delete_node_pools(
 
         if wait_timeout <= 0:
             logging.info(
-                "Skip waiting for node pool deletion " "since wait_timeout (%s) is non-positive",
+                "Skip waiting for node pool deletion since wait_timeout (%s) is non-positive",
                 wait_timeout,
             )
             break
@@ -600,7 +601,7 @@ def create_node_pools(
 
         if wait_timeout <= 0:
             logging.info(
-                "Skip waiting for node pool creation " "since wait_timeout (%s) is non-positive",
+                "Skip waiting for node pool creation since wait_timeout (%s) is non-positive",
                 wait_timeout,
             )
             break

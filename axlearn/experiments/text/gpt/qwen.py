@@ -43,12 +43,10 @@ from axlearn.experiments.text.gpt.common import (
     get_trainer_config_fn,
     make_config_name,
     mesh_shape_from_axes,
-)
-from axlearn.experiments.text.gpt.common import model_config as common_model_config
-from axlearn.experiments.text.gpt.common import (
     mup_simple_adam_update_transformation,
     scaled_hidden_dim,
 )
+from axlearn.experiments.text.gpt.common import model_config as common_model_config
 
 CONFIGS = {
     "30B-A3B": [

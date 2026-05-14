@@ -301,9 +301,7 @@ class GoodputRecorderTest(parameterized.TestCase):
             mock_monitor_instance.stop_rolling_window_goodput_uploader.assert_called_once()
 
     @mock.patch("jax.process_index", return_value=1)
-    def test_non_zero_process_index_skips_monitoring(
-        self, mock_process_index
-    ):  # pylint: disable=unused-argument
+    def test_non_zero_process_index_skips_monitoring(self, mock_process_index):  # pylint: disable=unused-argument
         """Tests that monitoring is skipped on non-zero process indices."""
         cfg = GoodputRecorder.default_config().set(
             name="test", upload_dir="/test", upload_interval=30, enable_monitoring=True

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Utilities to clean resources."""
+
 import logging
 from collections.abc import Sequence
 from enum import Enum

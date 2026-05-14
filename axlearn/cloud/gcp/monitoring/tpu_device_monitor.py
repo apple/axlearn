@@ -81,9 +81,9 @@ def create_tpu_monitor() -> DeviceMonitor.Config:
         return None
     device_platform: str = jax.local_devices()[0].platform
     device_kind = jax.local_devices()[0].device_kind
-    assert (
-        device_platform == "tpu"
-    ), f"device_platform {device_platform} not matching device_monitor tpu."
+    assert device_platform == "tpu", (
+        f"device_platform {device_platform} not matching device_monitor tpu."
+    )
     node_ip: str = os.environ["NODE_IP"]
     monitor_client = TPUMonitorClient.default_config().set(
         platform=device_platform,

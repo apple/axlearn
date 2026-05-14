@@ -105,9 +105,13 @@ from axlearn.common.golden import load_golden
 from axlearn.common.kv_cache.paged_kv_cache import PagedKVCache
 from axlearn.common.kv_cache.sliding_window_kv_cache import enable_sliding_window_attention
 from axlearn.common.layers import RMSNorm, set_bias_recursively
-from axlearn.common.module import InvocationContext, Module
+from axlearn.common.module import (
+    InvocationContext,
+    Module,
+    new_output_collection,
+    set_current_context,
+)
 from axlearn.common.module import functional as F
-from axlearn.common.module import new_output_collection, set_current_context
 from axlearn.common.optimizer_base import OptParam
 from axlearn.common.optimizers import adafactor_optimizer
 from axlearn.common.param_init import (
@@ -274,7 +278,6 @@ class MaskTest(absltest.TestCase):
         # Method 1: Use segment_ids directly
         output_with_segment_ids = []
         for seg_ids in (segment_ids, 1 - segment_ids):
-
             output, _ = F(
                 layer,
                 state=layer_params,
@@ -1031,7 +1034,6 @@ class YarnScaleRopeParametersTest(TestCase):
 
 
 class RoFormerSinusoidalPositionalEmbeddingAgainstLLaMATest(TestCase):
-
     @parameterized.parameters([10000.0, 1000000.0])
     def test_against_llama_for_precompute_freqs_cis(self, theta: float):
         max_len = 100
@@ -1741,7 +1743,7 @@ class ScaleQueryTest(TestCase):
             q_proj_scaled = q_proj_scaled * jax.nn.softplus(1.0) * 1.442695041
 
         if scale_factor is None:
-            scale_factor = kwargs["module"].config.per_head_dim**-0.5
+            scale_factor = kwargs["module"].config.per_head_dim ** -0.5
         scale_factor = float(scale_factor)
         q_proj_scaled = q_proj_scaled * scale_factor
 

@@ -30,9 +30,8 @@ from axlearn.common.learner import (
     should_update_with_optimizers,
 )
 from axlearn.common.metrics import MetricAccumulator, WeightedSummary
-from axlearn.common.module import OutputCollection, child_context
+from axlearn.common.module import OutputCollection, child_context, new_output_collection
 from axlearn.common.module import functional as F
-from axlearn.common.module import new_output_collection
 from axlearn.common.optimizer_base import OptParam, OptStateSpec
 from axlearn.common.optimizers import (
     AddDecayedWeightsState,

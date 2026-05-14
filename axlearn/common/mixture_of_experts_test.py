@@ -74,7 +74,6 @@ from axlearn.common.utils import (
 
 # pylint: disable=no-self-use,protected-access
 class TransformerFeedForwardMoETest(TestCase):
-
     @parameterized.parameters(
         {"group_size": 50, "capacity_factor": 40, "num_experts": 40, "expected_capacity": 50},
         {"group_size": 50, "capacity_factor": 2.5, "num_experts": 40, "expected_capacity": 3},

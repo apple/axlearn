@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests dual encoder text metrics."""
+
 from typing import Optional
 
 from jax import numpy as jnp

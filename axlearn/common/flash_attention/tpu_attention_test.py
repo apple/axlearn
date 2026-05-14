@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests TPU FlashAttention kernels."""
+
 from __future__ import annotations
 
 import unittest

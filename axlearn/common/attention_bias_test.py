@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests for attention_bias.py."""
+
 from typing import Optional
 
 import chex

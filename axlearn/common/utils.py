@@ -734,9 +734,9 @@ def complete_partition_spec_tree(
             f"for value tree {treedef}. Original ValueError: {err}"
         ) from None
     axes = [None if a is proxy else a for a in axes]
-    assert (
-        len(axes) == treedef.num_leaves
-    ), f"({len(axes)} vs. {treedef.num_leaves}) {axes} {treedef}"
+    assert len(axes) == treedef.num_leaves, (
+        f"({len(axes)} vs. {treedef.num_leaves}) {axes} {treedef}"
+    )
     return jax.tree_util.tree_unflatten(treedef, axes)
 
 
@@ -1812,9 +1812,9 @@ def create_device_mesh(
         max(getattr(el, device_attr) for el in devices.flatten()) + 1 if is_multi_granule_env else 1
     )
     num_devices = len(devices)
-    assert (
-        num_devices % num_granules == 0
-    ), "Number of devices must be divisible by number of granules."
+    assert num_devices % num_granules == 0, (
+        "Number of devices must be divisible by number of granules."
+    )
     num_devices_per_granule = num_devices // num_granules
 
     # Fallback to a standard mesh if on GPU with incompatible multi-granule mesh.
@@ -2003,8 +2003,8 @@ def raise_for_cycles(tree: Any):
         raise ValueError(
             "Circular reference in args, kwargs, or context.\n"
             "Descendant refers to ancestor.\n"
-            f'Descendant KeyPath: {cycles["descendant"]}.\n'
-            f'Ancestor KeyPath: {cycles["ancestor"]}.'
+            f"Descendant KeyPath: {cycles['descendant']}.\n"
+            f"Ancestor KeyPath: {cycles['ancestor']}."
         )
 
 

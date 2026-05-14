@@ -54,6 +54,7 @@ def h(x: int):
 f()
 ```
 """
+
 import builtins
 import functools
 import linecache
@@ -233,10 +234,10 @@ class _InContextException(Exception):
                     f"{key}: {fqname(value)}" for key, value in aux["kwarg_types"].items()
                 )
                 full_args = ", ".join(arg for arg in [args, kwargs] if arg != "")
-                lines.append(f'  Wrapped call {module}.{aux["method_name"]}' f"({full_args})")
+                lines.append(f"  Wrapped call {module}.{aux['method_name']}({full_args})")
             # Check value to see if function has _stack_summary set.
             if aux.get("include_stack_summary", True):
-                lines.append(f'  File "{filename}", line {lineno}, ' f"in {frame.f_code.co_name}")
+                lines.append(f'  File "{filename}", line {lineno}, in {frame.f_code.co_name}')
                 lines.append(f"    {line}")
         lines.extend(traceback.format_exception_only(type(self.__cause__), self.__cause__))
         return "\n".join(lines)

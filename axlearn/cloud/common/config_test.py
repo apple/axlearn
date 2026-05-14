@@ -25,9 +25,10 @@ from axlearn.cloud.common.config import (
     _prompt_project,
     _repo_root_or_cwd,
     load_configs,
+    update_configs,
+    write_configs_with_header,
 )
 from axlearn.cloud.common.config import main as config_main
-from axlearn.cloud.common.config import update_configs, write_configs_with_header
 from axlearn.common.test_utils import TestWithTemporaryCWD, temp_chdir
 
 

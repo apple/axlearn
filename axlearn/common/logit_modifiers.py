@@ -15,6 +15,7 @@ values of `p`.
 
 Reference: <https://github.com/google-research/t5x/blob/79998013/t5x/binary_search.py>
 """
+
 from functools import partial
 from typing import Callable, Literal, Union
 

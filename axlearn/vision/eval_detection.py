@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Detection metric calculators."""
+
 from typing import Optional, Union
 
 import jax

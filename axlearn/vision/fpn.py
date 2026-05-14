@@ -18,6 +18,7 @@ FPN Reference: https://arxiv.org/abs/1612.03144
 SimpleFPN Reference: https://arxiv.org/abs/2203.16527
 BiFPN Reference: https://arxiv.org/abs/1911.09070
 """
+
 import copy
 import enum
 from collections.abc import Iterable

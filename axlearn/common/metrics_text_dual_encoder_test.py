@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Dual encoder text metrics."""
+
 # pylint: disable=pointless-string-statement, duplicate-code
 from typing import Optional
 

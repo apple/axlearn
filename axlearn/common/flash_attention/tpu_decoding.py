@@ -21,6 +21,7 @@ The main reason why non-fused attention is faster when kv are not padded is that
 matmuls can flatten the non-head dimensions, thus having larger non-contracting dimensions.
 This leads to have better utilization of the matrix and memory units.
 """
+
 from functools import partial
 from typing import Optional
 

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tensorflow utils."""
+
 from typing import Union
 
 import tensorflow as tf

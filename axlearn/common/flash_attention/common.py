@@ -298,7 +298,8 @@ class BaseFlashAttention(Configurable):
         return True
 
     def build(
-        self, input_batch: Nested[Tensor | BaseAttentionBias]  # pylint: disable=unused-argument
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],  # pylint: disable=unused-argument
     ) -> FlashAttentionWithShardMapSpecs:
         """Builds sharding specifications for the flash attention operation.
 

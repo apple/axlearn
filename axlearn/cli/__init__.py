@@ -36,6 +36,7 @@ The executed `Command` ultimately gets processed at `absl_main`. Depending on wh
 contain a `module`, (shell) `command`, or something else. This is used to determine how to process
 the command, and can be easily extended to support additional command types.
 """
+
 # pylint: disable=import-outside-toplevel
 from axlearn.cli.utils import main as base_main
 from axlearn.cli.utils import register_root_command_group

@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests similarity ops."""
+
 import numpy as np
 from absl.testing import absltest
 

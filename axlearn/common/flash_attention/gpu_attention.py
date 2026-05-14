@@ -394,9 +394,7 @@ def _flash_attention_impl(
         index_offset_spec = pl.BlockSpec(
             index_map=(lambda i, _, k: (i, 0)), block_shape=((None, num_kv_blocks))
         )
-        index_offset_size_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: (i)), block_shape=((None,))
-        )
+        index_offset_size_spec = pl.BlockSpec(index_map=(lambda i, _, k: i), block_shape=((None,)))
     in_specs.append(index_offset_spec)
     in_specs.append(index_offset_size_spec)
     out_specs = pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k: (j, i, k, 0))
@@ -680,7 +678,7 @@ def _mha_backward(
             index_map=(lambda i, _, k: (k, 0)), block_shape=((None, num_kv_blocks))
         )
         q_index_offset_size_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: (k)), block_shape=((None,))
+            index_map=(lambda i, _, k: k), block_shape=((None,))
         )
         # Compute the dynamic indices for the key-value for dkdv.
         kv_index_offset, kv_index_offset_size = _key_value_iterator_indices(block_mask_array)
@@ -689,7 +687,7 @@ def _mha_backward(
         )
 
         kv_index_offset_size_spec = pl.BlockSpec(
-            index_map=(lambda i, _, k: (k)), block_shape=((None,))
+            index_map=(lambda i, _, k: k), block_shape=((None,))
         )
 
     in_specs = [

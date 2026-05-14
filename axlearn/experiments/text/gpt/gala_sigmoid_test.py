@@ -1,6 +1,7 @@
 # Copyright © 2024 Apple Inc.
 
 """Tests Gala sigmoid methods."""
+
 from absl.testing import absltest
 
 from axlearn.common import input_tf_data

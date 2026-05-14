@@ -133,13 +133,13 @@ def _compute_metrics(
         if brevity_penalty:
             decode_kwargs["brevity_penalty"] = brevity_penalty
 
-        cfg: (
-            WordErrorRateMetricCalculator.Config
-        ) = WordErrorRateMetricCalculator.default_config().set(
-            vocab=config_for_class(seqio.SentencePieceVocabulary).set(
-                sentencepiece_model_file=vocab_file,
-            ),
-            model_method_kwargs=decode_kwargs,
+        cfg: WordErrorRateMetricCalculator.Config = (
+            WordErrorRateMetricCalculator.default_config().set(
+                vocab=config_for_class(seqio.SentencePieceVocabulary).set(
+                    sentencepiece_model_file=vocab_file,
+                ),
+                model_method_kwargs=decode_kwargs,
+            )
         )
         calculator: WordErrorRateMetricCalculator = cfg.set(name="test-metric").instantiate(
             parent=None, model=model, model_param_partition_specs={}
@@ -303,10 +303,12 @@ class WordErrorRateMetricCalculatorTest(TestCase):
         # Without brevity penalty, outputs match exactly.
         outputs = _compute_metrics(hypotheses, references, vocab_file=_1K_VOCAB_FILE)
         self.assertNestedAllClose(
-            outputs["word_errors/wer"].mean, 0.0  # pytype: disable=attribute-error
+            outputs["word_errors/wer"].mean,
+            0.0,  # pytype: disable=attribute-error
         )
         self.assertNestedAllClose(
-            outputs["word_errors/sentence_accuracy"].mean, 1.0  # pytype: disable=attribute-error
+            outputs["word_errors/sentence_accuracy"].mean,
+            1.0,  # pytype: disable=attribute-error
         )
 
         # With brevity penalty, DummyModel should emit fewer tokens.
@@ -316,7 +318,8 @@ class WordErrorRateMetricCalculatorTest(TestCase):
         )
         self.assertGreater(outputs["word_errors/wer"].mean, 0.0)  # pytype: disable=attribute-error
         self.assertNestedAllClose(
-            outputs["word_errors/sentence_accuracy"].mean, 0.0  # pytype: disable=attribute-error
+            outputs["word_errors/sentence_accuracy"].mean,
+            0.0,  # pytype: disable=attribute-error
         )
 
 

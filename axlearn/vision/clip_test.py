@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests CLIP implementations."""
+
 # pylint: disable=no-self-use
 import jax
 import jax.numpy as jnp

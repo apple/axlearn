@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Tests RNN layers."""
+
 # pylint: disable=no-self-use
 # pytype: disable=name-error
 import jax

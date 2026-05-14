@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Text dual encoder utils."""
+
 from typing import Optional
 
 from axlearn.common.attention import (

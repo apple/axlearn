@@ -371,9 +371,9 @@ class CompositeTensorStats(TensorStats):
                     output_collection.summaries
                 )
             else:
-                self.get_invocation_context().output_collection.summaries[
-                    child_name
-                ] = output_collection.summaries
+                self.get_invocation_context().output_collection.summaries[child_name] = (
+                    output_collection.summaries
+                )
 
 
 class TensorRMSNorm(TensorStats):

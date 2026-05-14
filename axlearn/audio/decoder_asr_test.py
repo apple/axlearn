@@ -947,11 +947,14 @@ class CTCDecoderModelTest(TestCase):
 
     def test_align(self):
         (
-            log_probs,
-            log_prob_paddings,
-            labels,
-            label_paddings,
-        ), expected_align = ctc_aligner_test.generate_batched_test_data(
+            (
+                log_probs,
+                log_prob_paddings,
+                labels,
+                label_paddings,
+            ),
+            expected_align,
+        ) = ctc_aligner_test.generate_batched_test_data(
             batch_size=2, blank_id=0, max_num_frames=32, max_num_labels=5, vocab_size=64
         )
         labels = jnp.where(label_paddings, -1, labels)

@@ -15,6 +15,7 @@
 References:
 - https://github.com/google-research/vision_transformer/blob/main/vit_jax/models.py
 """
+
 # Many similarities with resnet.
 # pylint: disable=duplicate-code
 import copy

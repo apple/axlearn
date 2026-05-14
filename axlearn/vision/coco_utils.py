@@ -53,7 +53,7 @@ class COCOWrapper(coco.COCO):  # pytype: disable=annotation-type-mismatch,base-c
         """
         if (annotation_file and gt_dataset) or ((not annotation_file) and (not gt_dataset)):
             raise ValueError(
-                "One and only one of `annotation_file` and `gt_dataset` " "needs to be specified."
+                "One and only one of `annotation_file` and `gt_dataset` needs to be specified."
             )
 
         if eval_type not in ["box", "mask"]:

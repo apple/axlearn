@@ -257,8 +257,7 @@ def wait_for_cloud_build(
         elapsed_time = time.perf_counter() - start_time
         if elapsed_time > wait_timeout:
             timeout_msg = (
-                f"Timed out waiting for CloudBuild to finish for more than "
-                f"{wait_timeout} seconds."
+                f"Timed out waiting for CloudBuild to finish for more than {wait_timeout} seconds."
             )
             logging.error(timeout_msg)
             raise TimeoutError(timeout_msg)

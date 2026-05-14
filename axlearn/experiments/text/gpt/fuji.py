@@ -62,9 +62,9 @@ from axlearn.experiments.text.gpt.common import (
     get_trainer_config_fn,
     make_config_name,
     mesh_shape_from_axes,
+    scaled_hidden_dim,
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
-from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import (
     SplashAttentionConfigModifier,
     V6eFlashConfigModifier,

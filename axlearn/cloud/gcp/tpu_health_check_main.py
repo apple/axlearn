@@ -5,6 +5,7 @@
 This health check runs a matmul of a column-parallel matrix and a row-parallel matrix, followed
 by an scalar add. An allreduce should be inserted by compiler to produce non-sharded output.
 """
+
 import functools
 import sys
 

@@ -187,7 +187,9 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
             raise
 
     def _handle_worker_status(
-        self, request: manager_pb2.StatusUpdate, context  # pylint: disable=unused-argument
+        self,
+        request: manager_pb2.StatusUpdate,
+        context,  # pylint: disable=unused-argument
     ) -> manager_pb2.StatusUpdateResponse:
         """Handle worker status reports when running as replica manager."""
         worker_identity = WorkerIdentity(
@@ -232,7 +234,9 @@ class ManagerServer(manager_pb2_grpc.ManagerServiceServicer):
         return self._create_success_response(manager_pb2.StatusUpdateResponse)
 
     def _handle_replica_status(
-        self, request: manager_pb2.ReplicaStatusUpdate, context  # pylint: disable=unused-argument
+        self,
+        request: manager_pb2.ReplicaStatusUpdate,
+        context,  # pylint: disable=unused-argument
     ) -> manager_pb2.ReplicaStatusResponse:
         """Handle replica status reports from replica heads."""
         replica_id = request.replica_id

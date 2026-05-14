@@ -1,6 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Implements FlashAttention kernel dispatch."""
+
 from typing import Any, Literal, Optional
 
 from absl import logging

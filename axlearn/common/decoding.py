@@ -19,6 +19,7 @@ The key differences from the reference impl are:
        This is now handled by the common _gather_* functions through the use of NestedTensor.
     2) Cache offset (stacked states of scan-based layers) is supported through vectorized_tree_map.
 """
+
 from collections.abc import Sequence
 
 # pylint: disable=too-many-lines

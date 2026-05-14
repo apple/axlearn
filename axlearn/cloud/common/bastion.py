@@ -133,9 +133,18 @@ from axlearn.common.config import (
     config_for_function,
     maybe_instantiate,
 )
-from axlearn.common.file_system import NotFoundError, copy, exists, isdir, listdir, makedirs
+from axlearn.common.file_system import (
+    NotFoundError,
+    copy,
+    exists,
+    isdir,
+    listdir,
+    makedirs,
+    readfile,
+    remove,
+    rmtree,
+)
 from axlearn.common.file_system import open as fs_open
-from axlearn.common.file_system import readfile, remove, rmtree
 from axlearn.common.utils import Nested
 
 _LATEST_BASTION_VERSION = 1  # Determines job schema (see JobSpec).
@@ -404,7 +413,7 @@ def deserialize_jobspec(f: Union[str, IO]) -> JobSpec:
             metadata=JobMetadata(**metadata_kwargs),
             code_asset_path=data.get("code_asset_path", None),
         )
-    raise ValidationError(f"Unsupported version: {data["version"]}")
+    raise ValidationError(f"Unsupported version: {data['version']}")
 
 
 # TODO(clopeznataren): Refactor into JobValidator

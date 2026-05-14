@@ -101,6 +101,7 @@ class GitSummaryMembers(enum.Enum):
         diff: Git diff ("" if clean).
         porcelain: Git porcelain ("" if clean).
     """
+
     commit = GitSummaryMember(
         label="git-commit", file=".git.commit", cmd=("git", "rev-parse", "HEAD")
     )

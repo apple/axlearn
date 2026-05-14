@@ -459,7 +459,7 @@ class GKERunnerJob(GKEBaseRunnerJob):
         fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("namespace", "default")
         fv.set_default(
-            "output_dir", f"gs://{gcp_settings("ttl_bucket", fv=fv)}/axlearn/jobs/{fv.name}"
+            "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
         )
 
     @classmethod
@@ -1076,7 +1076,7 @@ class LWSRunnerJob(GKEBaseRunnerJob):
         fv.set_default("name", fv.name or generate_job_name())
         fv.set_default("namespace", "default")
         fv.set_default(
-            "output_dir", f"gs://{gcp_settings("ttl_bucket", fv=fv)}/axlearn/jobs/{fv.name}"
+            "output_dir", f"gs://{gcp_settings('ttl_bucket', fv=fv)}/axlearn/jobs/{fv.name}"
         )
 
     @classmethod

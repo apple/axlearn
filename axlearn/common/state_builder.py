@@ -199,9 +199,9 @@ class ChainConverter(Converter):
             if converter.target_state_type() == Builder.StateType.TENSORS:
                 return Builder.StateType.TENSORS
             else:
-                assert (
-                    converter.target_state_type() == Builder.StateType.TENSOR_SPECS
-                ), converter.target_state_type()
+                assert converter.target_state_type() == Builder.StateType.TENSOR_SPECS, (
+                    converter.target_state_type()
+                )
         return Builder.StateType.TENSOR_SPECS
 
     def target_to_source(self, target: Builder.State) -> tuple[Builder.State, Any]:
@@ -342,9 +342,9 @@ class RestoreAndConvertBuilder(Builder):
             flatten_items(input_state), flatten_items(output_state)
         ):
             assert input_key == output_key, f"Key mismatch for {input_key} vs. {output_key}"
-            assert tuple(input_value.shape) == tuple(
-                output_value.shape
-            ), f"Shape mismatch for {input_key}: {input_value.shape} vs. {output_value.shape}"
+            assert tuple(input_value.shape) == tuple(output_value.shape), (
+                f"Shape mismatch for {input_key}: {input_value.shape} vs. {output_value.shape}"
+            )
 
         return converted_state
 

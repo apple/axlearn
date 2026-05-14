@@ -10,6 +10,7 @@
 # https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/blob/main/tpu_info/tpu_info/metrics.py
 
 """Client for fetching TPU metrics from libtpu."""
+
 import enum
 import urllib.request
 from typing import Sequence

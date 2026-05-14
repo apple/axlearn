@@ -1,5 +1,6 @@
 # Copyright © 2025 Apple Inc.
 """Tests GPU and TPU decoding."""
+
 from contextlib import nullcontext
 from typing import Literal
 
