@@ -569,22 +569,6 @@ def get_gpu_dot_precision(dtype) -> jax.lax.DotAlgorithmPreset:
     raise ValueError(f"Unsupported dtype {dtype}")
 
 
-# See https://docs.jax.dev/en/latest/jax.lax.html#jax.lax.DotAlgorithm for information.
-def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
-    """Get the suitable DotAlgorithmPreset for the given dtype.
-
-    TPU Pallas lowering doesn't yet support DotAlgorithmPreset. Use Precision instead.
-    """
-    if dtype == jnp.float32:
-        # HIGHEST uses BF16_BF16_F32_X6, which emulates higher precision with 6 BF16 passes.
-        # Note: jax.lax.Precision.HIGH (BF16_BF16_F32_X3) is not yet supported. We should use it
-        # when it's supported as it's twice as fast and precision is ok.
-        return jax.lax.Precision.HIGHEST
-    if dtype == jnp.bfloat16:
-        return jax.lax.Precision.DEFAULT
-    raise ValueError(f"Unsupported dtype {dtype}")
-
-
 def maybe_pad_inputs(
     block_size: int, query: Tensor, key: Tensor, value: Tensor, segment_id: Optional[Tensor]
 ) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:

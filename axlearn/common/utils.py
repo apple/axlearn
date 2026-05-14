@@ -2157,3 +2157,16 @@ def replace_layer_config_recursively(
 
     cfg.visit(visit_fn=lambda k, v: None, exit_fn=exit_fn)
     return cfg
+
+
+# See https://docs.jax.dev/en/latest/jax.lax.html#jax.lax.DotAlgorithm for information.
+def get_tpu_dot_precision(dtype) -> jax.lax.Precision:
+    """Get the suitable DotAlgorithmPreset for the given dtype.
+
+    TPU Pallas lowering doesn't yet support DotAlgorithmPreset. Use Precision instead.
+    """
+    if dtype == jnp.float32:
+        return jax.lax.Precision.HIGHEST
+    if dtype == jnp.bfloat16:
+        return jax.lax.Precision.DEFAULT
+    raise ValueError(f"Unsupported dtype {dtype}")

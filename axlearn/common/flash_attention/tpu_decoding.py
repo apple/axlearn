@@ -38,11 +38,11 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     split,
 )
-from axlearn.common.flash_attention.common import BaseSingleStepDecoding, get_tpu_dot_precision
+from axlearn.common.flash_attention.common import BaseSingleStepDecoding
 from axlearn.common.flash_attention.tpu_paged_attention_kernel import prepare_block_sparse_map
 from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
 from axlearn.common.kv_cache.kv_cache import KVCache
-from axlearn.common.utils import Nested, Tensor
+from axlearn.common.utils import Nested, Tensor, get_tpu_dot_precision
 
 
 # TODO: Try to reduce positional arguments
