@@ -51,3 +51,4 @@ tensorflow-io-gcs-filesystem @ https://storage.googleapis.com/axlearn-wheels/ten
 pika  # cloud/common/event_queue.py — RabbitMQ AMQP client
 tpu-info  # cloud/gcp/monitoring/tpu_client.py — TPU device metrics
 google-cloud-aiplatform  # cloud/gcp/vertexai_tensorboard.py — VertexAI SDK
+libtpu==0.0.32.4 # For TPU kernels
